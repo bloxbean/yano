@@ -108,7 +108,9 @@ if (includeFirstPartyPluginBundles) {
                     // Scalus is a version-pinned host runtime dependency through
                     // scalus-bridge. Keep the optional EUTxO plugin thin and do
                     // not reassign that host dependency graph to this bundle.
-                    [projectPath: ':appchain-eutxo-ledger', includeProvided: false]
+                    [projectPath: ':appchain-eutxo-ledger', includeProvided: false],
+            'com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano':
+                    [projectPath: ':appchain-eutxo-bridge-cardano', includeProvided: false]
     ])
 }
 if (includeNativePluginConformanceFixture) {
@@ -189,6 +191,7 @@ dependencies {
         runtimeOnly project(':appchain-effects-cardano')
         runtimeOnly project(':appchain-zk')
         runtimeOnly project(':appchain-eutxo-ledger')
+        runtimeOnly project(':appchain-eutxo-bridge-cardano')
         // AWS SDK 2.48.0 compiles its checksum fallback against these optional
         // CRT types. A JVM can defer the absent branch, but native-image links
         // every reachable checksum implementation and therefore requires the
@@ -500,7 +503,8 @@ tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
             ':appchain-ipfs:verifyIpfsArtifactBoundaries',
             ':appchain-evidence-registry:verifyEvidenceRegistryArtifactBoundaries',
             ':appchain-effects-cardano:shadowJar', ':appchain-zk:shadowJar',
-            ':appchain-eutxo-ledger:verifyEutxoLedgerArtifactBoundaries'
+            ':appchain-eutxo-ledger:verifyEutxoLedgerArtifactBoundaries',
+            ':appchain-eutxo-bridge-cardano:verifyEutxoBridgeArtifactBoundaries'
     def verificationIndex = layout.buildDirectory.file(
             'reports/plugin-catalog/first-party-bundles.json')
     inputs.files({
@@ -509,7 +513,8 @@ tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
          project(':appchain-evidence-registry'),
          project(':appchain-effects-cardano'),
          project(':appchain-zk'),
-         project(':appchain-eutxo-ledger')].collect { pluginProject ->
+         project(':appchain-eutxo-ledger'),
+         project(':appchain-eutxo-bridge-cardano')].collect { pluginProject ->
             pluginProject.tasks.named('shadowJar').get().archiveFile.get().asFile
         }
     })
@@ -528,7 +533,8 @@ tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
                 project(':appchain-evidence-registry'),
                 project(':appchain-effects-cardano'),
                 project(':appchain-zk'),
-                project(':appchain-eutxo-ledger')
+                project(':appchain-eutxo-ledger'),
+                project(':appchain-eutxo-bridge-cardano')
         ].collect { pluginProject ->
             pluginProject.tasks.named('shadowJar').get().archiveFile.get().asFile
         }.sort { left, right -> left.absolutePath <=> right.absolutePath }
@@ -549,7 +555,9 @@ tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
                 'com.bloxbean.cardano.yano.appchain.effects.cardano':
                         declaredPluginManifestVersion,
                 'com.bloxbean.cardano.yano.appchain.zk': declaredPluginManifestVersion,
-                'com.bloxbean.cardano.yano.appchain.eutxo': declaredPluginManifestVersion
+                'com.bloxbean.cardano.yano.appchain.eutxo': declaredPluginManifestVersion,
+                'com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano':
+                        declaredPluginManifestVersion
         ])
         def kafkaBundle = index.bundles.find {
             it.manifest?.id == 'com.bloxbean.cardano.yano.appchain.kafka'
@@ -605,6 +613,16 @@ tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
         if (eutxoContributions != Set.of('app-state-machine:eutxo-ledger')) {
             throw new GradleException(
                     "EUTxO bundle contribution inventory is incomplete: ${eutxoContributions}")
+        }
+        def bridgeBundle = index.bundles.find {
+            it.manifest?.id == 'com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano'
+        }
+        def bridgeContributions = bridgeBundle?.manifest?.contributions?.collect {
+            "${it.kind}:${it.name}"
+        } as Set
+        if (bridgeContributions != Set.of('l1-observer:eutxo-vault-deposit-v1')) {
+            throw new GradleException(
+                    "EUTxO bridge contribution inventory is incomplete: ${bridgeContributions}")
         }
         if (includeFirstPartyPluginBundles) {
             def expectedRuntimeVersions = [

@@ -88,6 +88,101 @@ final class EutxoCbor {
         return List.copyOf(records);
     }
 
+    static byte[] encodeDepositClaim(EutxoDepositClaim claim) {
+        Array array = new Array();
+        array.add(uint(claim.abiVersion()));
+        array.add(text(claim.chainId()));
+        outpoint(array, claim.acceptedOutpoint());
+        array.add(uint(claim.l1Slot()));
+        array.add(new ByteString(claim.l1BlockHash()));
+        array.add(text(claim.vaultAddress()));
+        array.add(text(claim.vaultScriptHash()));
+        array.add(new ByteString(claim.acceptedOutputCbor()));
+        array.add(text(claim.l2Address()));
+        array.add(new ByteString(claim.mirroredOutputCbor()));
+        array.add(new ByteString(claim.depositNonce()));
+        outpoint(array, claim.stagingOutpoint());
+        array.add(uint(claim.refundDeadline()));
+        return encode(array);
+    }
+
+    static EutxoDepositClaim decodeDepositClaim(byte[] bytes) {
+        List<DataItem> fields = array(item(bytes), 15, "deposit claim");
+        return new EutxoDepositClaim(
+                integer(fields.get(0), "ABI version"),
+                string(fields.get(1), "chain id"),
+                outpoint(fields.get(2), fields.get(3)),
+                longInteger(fields.get(4), "L1 slot"),
+                bytes(fields.get(5), "L1 block hash"),
+                string(fields.get(6), "vault address"),
+                string(fields.get(7), "vault script hash"),
+                bytes(fields.get(8), "accepted output CBOR"),
+                string(fields.get(9), "L2 address"),
+                bytes(fields.get(10), "mirrored output CBOR"),
+                bytes(fields.get(11), "deposit nonce"),
+                outpoint(fields.get(12), fields.get(13)),
+                longInteger(fields.get(14), "refund deadline"));
+    }
+
+    static byte[] encodeDepositRecord(EutxoDepositRecord record) {
+        Array array = new Array();
+        array.add(uint(VERSION));
+        array.add(new ByteString(record.claim().encode()));
+        outpoint(array, record.mirroredOutpoint());
+        array.add(uint(record.creditedHeight()));
+        return encode(array);
+    }
+
+    static EutxoDepositRecord decodeDepositRecord(byte[] bytes) {
+        List<DataItem> fields = array(item(bytes), 5, "deposit record");
+        version(fields.get(0));
+        return new EutxoDepositRecord(
+                EutxoDepositClaim.decode(bytes(fields.get(1), "deposit claim")),
+                outpoint(fields.get(2), fields.get(3)),
+                longInteger(fields.get(4), "credited height"));
+    }
+
+    static byte[] encodeOptionalDepositRecord(EutxoDepositRecord record) {
+        return encode(record == null ? SimpleValue.NULL : item(record.encode()));
+    }
+
+    static EutxoDepositRecord decodeOptionalDepositRecord(byte[] bytes) {
+        DataItem decoded = item(bytes);
+        return decoded == SimpleValue.NULL
+                ? null : decodeDepositRecord(encode(decoded));
+    }
+
+    static byte[] encodeReserve(EutxoReserve reserve) {
+        Array array = new Array();
+        array.add(uint(VERSION));
+        array.add(text(reserve.assetId()));
+        array.add(uint(reserve.stableVault()));
+        array.add(uint(reserve.spendableMirrored()));
+        array.add(uint(reserve.pendingWithdrawals()));
+        array.add(uint(reserve.confirmedWithdrawals()));
+        return encode(array);
+    }
+
+    static EutxoReserve decodeReserve(byte[] bytes) {
+        List<DataItem> fields = array(item(bytes), 6, "reserve");
+        version(fields.get(0));
+        return new EutxoReserve(
+                string(fields.get(1), "asset id"),
+                bigInteger(fields.get(2), "stable vault"),
+                bigInteger(fields.get(3), "spendable mirrored"),
+                bigInteger(fields.get(4), "pending withdrawals"),
+                bigInteger(fields.get(5), "confirmed withdrawals"));
+    }
+
+    static byte[] encodeOptionalReserve(EutxoReserve reserve) {
+        return encode(reserve == null ? SimpleValue.NULL : item(reserve.encode()));
+    }
+
+    static EutxoReserve decodeOptionalReserve(byte[] bytes) {
+        DataItem decoded = item(bytes);
+        return decoded == SimpleValue.NULL ? null : decodeReserve(encode(decoded));
+    }
+
     private static Array recordItem(EutxoRecord record) {
         Array array = new Array();
         array.add(uint(VERSION));
@@ -97,6 +192,17 @@ final class EutxoCbor {
         array.add(new ByteString(record.outputCbor()));
         array.add(uint(record.origin().ordinal()));
         return array;
+    }
+
+    private static void outpoint(Array array, EutxoOutpoint outpoint) {
+        array.add(text(outpoint.transactionId()));
+        array.add(uint(outpoint.index()));
+    }
+
+    private static EutxoOutpoint outpoint(DataItem transactionId, DataItem index) {
+        return new EutxoOutpoint(
+                string(transactionId, "transaction id"),
+                integer(index, "output index"));
     }
 
     private static EutxoRecord record(DataItem item) {
@@ -179,6 +285,14 @@ final class EutxoCbor {
         return new UnsignedInteger(value);
     }
 
+    private static UnsignedInteger uint(BigInteger value) {
+        Objects.requireNonNull(value, "value");
+        if (value.signum() < 0) {
+            throw new IllegalArgumentException("CBOR unsigned integer cannot be negative");
+        }
+        return new UnsignedInteger(value);
+    }
+
     private static UnicodeString text(String value) {
         return new UnicodeString(Objects.requireNonNull(value, "value"));
     }
@@ -192,19 +306,22 @@ final class EutxoCbor {
     }
 
     private static long longInteger(DataItem item, String field) {
-        BigInteger value;
-        if (item instanceof UnsignedInteger integer) {
-            value = integer.getValue();
-        } else if (item instanceof NegativeInteger integer) {
-            value = integer.getValue();
-        } else {
-            throw new IllegalArgumentException(field + " must be an integer");
-        }
+        BigInteger value = bigInteger(item, field);
         try {
             return value.longValueExact();
         } catch (ArithmeticException failure) {
             throw new IllegalArgumentException(field + " exceeds long range", failure);
         }
+    }
+
+    private static BigInteger bigInteger(DataItem item, String field) {
+        if (item instanceof UnsignedInteger integer) {
+            return integer.getValue();
+        }
+        if (item instanceof NegativeInteger integer) {
+            return integer.getValue();
+        }
+        throw new IllegalArgumentException(field + " must be an integer");
     }
 
     private static String string(DataItem item, String field) {

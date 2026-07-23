@@ -258,5 +258,59 @@
       }
     ],
     "dynamicNamespaces": []
+  },
+  {
+    "schemaVersion": 1,
+    "id": "yano-first-party/appchain-eutxo-bridge-cardano",
+    "properties": [
+      {
+        "key": "yano.app-chain.machines.eutxo.bridge.observer-id",
+        "owner": "yano-first-party/appchain-eutxo-bridge-cardano", "type": "STRING",
+        "defaultValue": null, "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": 1, "maximumUtf8Bytes": 64, "maximumItems": null,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Configured exact vault-deposit observer instance"
+      },
+      {
+        "key": "yano.app-chain.machines.eutxo.bridge.vault-address",
+        "owner": "yano-first-party/appchain-eutxo-bridge-cardano", "type": "STRING",
+        "defaultValue": null, "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": 1, "maximumUtf8Bytes": 256, "maximumItems": null,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Exact Cardano vault address accepted by the EUTxO ledger"
+      },
+      {
+        "key": "yano.app-chain.machines.eutxo.bridge.vault-script-hash",
+        "owner": "yano-first-party/appchain-eutxo-bridge-cardano", "type": "STRING",
+        "defaultValue": null, "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": 56, "maximumUtf8Bytes": 56, "maximumItems": null,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Pinned 28-byte bridge vault script hash"
+      },
+      {
+        "key": "yano.app-chain.observers.bridge-deposits.type",
+        "owner": "yano-first-party/appchain-eutxo-bridge-cardano", "type": "STRING",
+        "defaultValue": "eutxo-vault-deposit-v1", "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": null, "maximumUtf8Bytes": null, "maximumItems": null,
+        "allowedValues": ["eutxo-vault-deposit-v1"], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Exact accepted-vault deposit observer type"
+      }
+    ],
+    "dynamicNamespaces": [
+      {
+        "prefix": "observers.bridge-deposits.",
+        "owner": "yano-first-party/appchain-eutxo-bridge-cardano",
+        "coverage": "PARTIAL",
+        "description": "Bounded exact Cardano vault observer settings"
+      }
+    ]
   }
 ]

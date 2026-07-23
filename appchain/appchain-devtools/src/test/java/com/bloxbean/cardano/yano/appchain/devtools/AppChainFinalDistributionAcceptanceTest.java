@@ -91,6 +91,13 @@ class AppChainFinalDistributionAcceptanceTest {
                         init.add("eutxoGenesisAddress=addr_test1vr8nlm7example");
                         init.add("--answer");
                         init.add("eutxoGenesisLovelace=100000000");
+                    } else if ("eutxo-cardano-bridge".equals(recipe.id())) {
+                        init.add("--answer");
+                        init.add("bridgeVaultAddress=addr_test1wzvault");
+                        init.add("--answer");
+                        init.add("bridgeVaultScriptHash=" + "1".repeat(56));
+                        init.add("--answer");
+                        init.add("bridgeMaxDepositLovelace=100000000");
                     }
 
                     Result initialized = run(launcher, init);

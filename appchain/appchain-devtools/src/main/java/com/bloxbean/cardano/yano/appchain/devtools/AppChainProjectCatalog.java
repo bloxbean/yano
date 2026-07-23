@@ -639,8 +639,9 @@ final class AppChainProjectCatalog {
     private static void validatePropertyPlaceholders(
             AppChainProjectModel.Capability capability) {
         Set<String> allowed = new LinkedHashSet<>(safeList(capability.nonSecretAnswers()));
-        // The fixed sequencer proposer is resolved from the member topology, not user input.
+        // These values are resolved from the project topology, not user input.
         allowed.add("proposer");
+        allowed.add("chainId");
         for (String value : safeMap(capability.properties()).values()) {
             var matcher = PLACEHOLDER.matcher(value);
             while (matcher.find()) {

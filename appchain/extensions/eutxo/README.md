@@ -6,7 +6,9 @@ not a Cardano bridge, a custody product, or a rollup.
 
 ## Virtual-ledger capability
 
-Select `state:eutxo-ledger` for a JVM project. The generated YAML uses:
+Select the `eutxo-ledger` recipe for a JVM project. It combines
+`state:eutxo-ledger` with the separate `funding:eutxo-genesis` capability and
+generates:
 
 ```yaml
 yano:
@@ -80,6 +82,68 @@ Scalus is supplied by Yano's version-pinned host runtime rather than copied
 into the thin plugin bundle. The GraalVM 25.0.2 application image builds with
 the provider included; native runtime compatibility remains unclaimed until
 the packaged conformance suite also passes.
+
+## Stable Cardano deposits
+
+The separate `eutxo-cardano-bridge` recipe selects
+`bridge:cardano-federated`. It deliberately excludes
+`funding:eutxo-genesis`; a Cardano-backed chain cannot mix virtual genesis
+value into its reserve. The generated consensus configuration contains:
+
+```yaml
+yano:
+  app-chain:
+    chains:
+      - chain-id: payments-eutxo
+        state-machine: eutxo-ledger
+        machines:
+          eutxo:
+            profile: yano-eutxo-v2-plutus-v3
+            expected-profile-digest: 8cd4adb72def2c31dc8551a02f67429ea468bb2024dbe85a1dc7300590c9d1bf
+            bridge:
+              observer-id: bridge-deposits
+              vault-address: addr_test1w...
+              vault-script-hash: 0123...
+        observers:
+          bridge-deposits:
+            type: eutxo-vault-deposit-v1
+            chain-id: payments-eutxo
+            vault-address: addr_test1w...
+            vault-script-hash: 0123...
+            max-lovelace: 100000000
+```
+
+The one-way deposit flow is deliberately conservative:
+
+1. The depositor locks lovelace at the refundable staging contract with the
+   target chain, L2 address, nonce, staging outpoint, and refund deadline.
+2. Before the deadline, the federation moves that exact intent into the
+   configured vault. The staging validator requires the vault inline datum to
+   preserve every credited field; it cannot redirect the L2 owner.
+3. Yano's stable L1 observer accepts only the configured vault address and
+   script hash, inline canonical datum, ADA-only value, and one accepted vault
+   output per transaction.
+4. The state machine binds the observation envelope to the exact accepted
+   Cardano outpoint, deduplicates it, creates one mirrored EUTxO, and updates
+   the committed reserve atomically.
+
+Staging outputs are never observed or credited, so a still-refundable output
+cannot inflate L2 supply. A duplicate accepted outpoint is idempotent; the
+same outpoint with different data fails closed. The typed client provides
+root-fixed deposit and reserve snapshot queries.
+
+This path is experimental and deposit-only. `VaultValidator` has no spend
+path, so withdrawals are unavailable. The source validators use Julc
+`0.1.0-pre14`; operators must pin and independently review compiled validator
+artifacts and script hashes before using funds. A deep rollback below the
+highest credited deposit is a fail-closed reconciliation event: stop
+acceptance, persist the bridge halt through the governed operator procedure,
+and reconcile Cardano inventory before resuming. It is not safe to
+automatically debit already-spendable L2 value from a node-local callback.
+
+The optional bridge runtime bundle embeds neither Julc nor ZeroJ. Julc is an
+on-chain contract build tool only; direct validity settlement remains a
+separate future capability.
 
 ## CLI
 

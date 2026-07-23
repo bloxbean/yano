@@ -7,14 +7,20 @@ import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoDepositClaim;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoDepositRecord;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoOutpoint;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoQueryCodec;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReceipt;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoRecord;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReserve;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoStateKeys;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoContract;
+import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
 
+import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -29,15 +35,26 @@ public final class EutxoStateMachine implements AppStateMachine {
     private final EutxoProfile profile;
     private final EutxoGenesis genesis;
     private final UtxoTransitionEngine transitionEngine;
+    private final EutxoBridgeConfig bridge;
 
     EutxoStateMachine(
             EutxoProfile profile,
             EutxoGenesis genesis,
             UtxoTransitionEngine transitionEngine
     ) {
+        this(profile, genesis, transitionEngine, EutxoBridgeConfig.disabled());
+    }
+
+    EutxoStateMachine(
+            EutxoProfile profile,
+            EutxoGenesis genesis,
+            UtxoTransitionEngine transitionEngine,
+            EutxoBridgeConfig bridge
+    ) {
         this.profile = Objects.requireNonNull(profile, "profile");
         this.genesis = Objects.requireNonNull(genesis, "genesis");
         this.transitionEngine = Objects.requireNonNull(transitionEngine, "transitionEngine");
+        this.bridge = Objects.requireNonNull(bridge, "bridge");
     }
 
     @Override
@@ -47,6 +64,14 @@ public final class EutxoStateMachine implements AppStateMachine {
 
     @Override
     public AdmissionResult validate(AppMessage message) {
+        if (bridge.enabled() && bridge.topic().equals(message.getTopic())) {
+            try {
+                acceptedDeposit(message);
+                return AdmissionResult.accept();
+            } catch (IllegalArgumentException failure) {
+                return AdmissionResult.reject("BRIDGE_DEPOSIT_INVALID");
+            }
+        }
         if (!TOPIC.equals(message.getTopic())) {
             return AdmissionResult.reject("EUTxO transactions require topic " + TOPIC);
         }
@@ -71,6 +96,11 @@ public final class EutxoStateMachine implements AppStateMachine {
         ensureGenesis(writer);
         int ordinal = 0;
         for (AppMessage message : block.messages()) {
+            if (bridge.enabled() && bridge.topic().equals(message.getTopic())) {
+                importDeposit(acceptedDeposit(message), block.height(), writer);
+                ordinal++;
+                continue;
+            }
             UtxoTransitionEngine.TransitionResult result =
                     transitionEngine.transition(message.getBody(), block.l1Slot(), writer);
             EutxoReceipt receipt = new EutxoReceipt(
@@ -78,7 +108,7 @@ public final class EutxoStateMachine implements AppStateMachine {
                     result.transactionId(),
                     message.getMessageId(),
                     block.height(),
-                    ordinal++,
+                    ordinal,
                     block.l1Slot(),
                     result.code(),
                     result.detail());
@@ -87,6 +117,7 @@ public final class EutxoStateMachine implements AppStateMachine {
                 writer.put(EutxoStateKeys.transaction(result.transactionId()), receipt.encode());
             }
             writer.put(EutxoStateKeys.attempt(message.getMessageId()), receipt.encode());
+            ordinal++;
         }
     }
 
@@ -114,6 +145,18 @@ public final class EutxoStateMachine implements AppStateMachine {
                     yield EutxoQueryCodec.optionalReceipt(
                             state.get(EutxoStateKeys.attempt(appMessageId))
                                     .map(EutxoReceipt::decode).orElse(null));
+                }
+                case EutxoQueryCodec.DEPOSIT_PATH -> {
+                    EutxoOutpoint outpoint = EutxoQueryCodec.decodeDepositRequest(params);
+                    yield EutxoQueryCodec.optionalDepositRecord(
+                            state.get(EutxoStateKeys.deposit(outpoint))
+                                    .map(EutxoDepositRecord::decode).orElse(null));
+                }
+                case EutxoQueryCodec.RESERVE_PATH -> {
+                    String assetId = EutxoQueryCodec.decodeReserveRequest(params);
+                    yield EutxoQueryCodec.optionalReserve(
+                            state.get(EutxoStateKeys.reserve(assetId))
+                                    .map(EutxoReserve::decode).orElse(null));
                 }
                 case EutxoQueryCodec.PROFILE_PATH ->
                         profile.digestHex().getBytes(StandardCharsets.UTF_8);
@@ -165,6 +208,93 @@ public final class EutxoStateMachine implements AppStateMachine {
                 throw new IllegalStateException("validated EUTxO output already exists");
             }
             putRecord(writer, record);
+        }
+    }
+
+    private EutxoDepositClaim acceptedDeposit(AppMessage message) {
+        L1Observation observation = L1Observation.decode(message.getBody());
+        if (observation == null
+                || !bridge.topic().equals(observation.topic())
+                || !bridge.observerId().equals(observation.observerId())) {
+            throw new IllegalArgumentException("invalid bridge observation envelope");
+        }
+        EutxoDepositClaim claim = EutxoDepositClaim.decode(observation.claim());
+        if (!bridge.chainId().equals(claim.chainId())
+                || !bridge.vaultAddress().equals(claim.vaultAddress())
+                || !bridge.vaultScriptHash().equals(claim.vaultScriptHash())
+                || !claim.acceptedOutpoint().transactionId().equals(
+                java.util.HexFormat.of().formatHex(observation.txHash()))
+                || claim.l1Slot() != observation.slot()
+                || !java.util.Arrays.equals(claim.l1BlockHash(), observation.blockHash())) {
+            throw new IllegalArgumentException("bridge observation does not match its configured identity");
+        }
+        mirroredLovelace(claim);
+        return claim;
+    }
+
+    private void importDeposit(
+            EutxoDepositClaim claim,
+            long creditedHeight,
+            AppStateWriter writer
+    ) {
+        if (writer.get(EutxoStateKeys.bridgeHalt()).isPresent()) {
+            throw new IllegalStateException("the EUTxO bridge is halted");
+        }
+        EutxoDepositRecord expected = new EutxoDepositRecord(
+                claim, claim.mirroredOutpoint(), creditedHeight);
+        byte[] depositKey = EutxoStateKeys.deposit(claim.acceptedOutpoint());
+        EutxoDepositRecord existing = writer.get(depositKey)
+                .map(EutxoDepositRecord::decode)
+                .orElse(null);
+        if (existing != null) {
+            if (!existing.claim().equals(claim)
+                    || !existing.mirroredOutpoint().equals(expected.mirroredOutpoint())) {
+                throw new IllegalStateException(
+                        "accepted L1 outpoint is bound to a different bridge deposit");
+            }
+            return;
+        }
+        EutxoRecord mirrored = new EutxoRecord(
+                claim.mirroredOutpoint(),
+                claim.l2Address(),
+                claim.mirroredOutputCbor(),
+                EutxoRecord.Origin.L1_DEPOSIT);
+        if (writer.get(EutxoStateKeys.utxo(mirrored.outpoint())).isPresent()) {
+            throw new IllegalStateException("derived bridge outpoint already exists");
+        }
+        BigInteger lovelace = mirroredLovelace(claim);
+        byte[] reserveKey = EutxoStateKeys.reserve(EutxoReserve.LOVELACE);
+        EutxoReserve reserve = writer.get(reserveKey)
+                .map(EutxoReserve::decode)
+                .orElseGet(() -> EutxoReserve.empty(EutxoReserve.LOVELACE))
+                .credit(lovelace);
+        putRecord(writer, mirrored);
+        writer.put(depositKey, expected.encode());
+        writer.put(reserveKey, reserve.encode());
+    }
+
+    private static BigInteger mirroredLovelace(EutxoDepositClaim claim) {
+        try {
+            TransactionOutput output = TransactionOutput.deserialize(
+                    com.bloxbean.cardano.client.common.cbor.CborSerializationUtil.deserialize(
+                            claim.mirroredOutputCbor()));
+            if (!claim.l2Address().equals(output.getAddress())
+                    || output.getValue() == null
+                    || output.getValue().getCoin() == null
+                    || output.getValue().getCoin().signum() <= 0
+                    || (output.getValue().getMultiAssets() != null
+                    && !output.getValue().getMultiAssets().isEmpty())
+                    || output.getDatumHash() != null
+                    || output.getInlineDatum() != null
+                    || output.getScriptRef() != null) {
+                throw new IllegalArgumentException(
+                        "mirrored bridge output is outside the lovelace-only profile");
+            }
+            return output.getValue().getCoin();
+        } catch (IllegalArgumentException failure) {
+            throw failure;
+        } catch (Exception failure) {
+            throw new IllegalArgumentException("invalid mirrored bridge output", failure);
         }
     }
 

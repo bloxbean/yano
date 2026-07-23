@@ -22,11 +22,16 @@ import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoDepositClaim;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoDepositRecord;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoOutpoint;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoQueryCodec;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReceipt;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoRecord;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoProfile;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReserve;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoStateKeys;
 import com.bloxbean.cardano.yano.appchain.eutxo.testkit.EutxoTestWallet;
 import com.bloxbean.cardano.yano.appchain.eutxo.testkit.EutxoTransactionFixtures;
 import com.bloxbean.cardano.yano.appchain.eutxo.testkit.MemoryAppState;
@@ -293,6 +298,69 @@ class EutxoStateMachineTest {
         assertThat(records(machine, state, scriptAddress)).hasSize(1);
     }
 
+    @Test
+    void stableVaultObservationCreditsExactlyOnceAndUpdatesReserveAtomically()
+            throws Exception {
+        String vaultAddress = "addr_test1_bridge_vault";
+        String vaultScriptHash = "11".repeat(28);
+        Map<String, String> settings = Map.of(
+                "machines.eutxo.profile", EutxoProfile.V2.id(),
+                "machines.eutxo.bridge.observer-id", "bridge-deposits",
+                "machines.eutxo.bridge.vault-address", vaultAddress,
+                "machines.eutxo.bridge.vault-script-hash", vaultScriptHash);
+        EutxoStateMachine machine = (EutxoStateMachine)
+                new EutxoStateMachineProvider().create(context(settings));
+        MemoryAppState state = new MemoryAppState();
+        TransactionOutput mirroredOutput = TransactionOutput.builder()
+                .address(ALICE.address())
+                .value(Value.fromCoin(BigInteger.valueOf(25)))
+                .build();
+        byte[] outputCbor =
+                com.bloxbean.cardano.client.common.cbor.CborSerializationUtil.serialize(
+                        mirroredOutput.serialize());
+        EutxoDepositClaim claim = new EutxoDepositClaim(
+                1,
+                "eutxo-test",
+                new EutxoOutpoint("22".repeat(32), 1),
+                100,
+                fill(32, 3),
+                vaultAddress,
+                vaultScriptHash,
+                outputCbor,
+                ALICE.address(),
+                outputCbor,
+                fill(32, 4),
+                new EutxoOutpoint("33".repeat(32), 0),
+                1_000);
+        L1Observation observation = new L1Observation(
+                "bridge-deposits",
+                java.util.HexFormat.of().parseHex("22".repeat(32)),
+                100,
+                fill(32, 3),
+                claim.encode());
+        AppMessage deposit = observationMessage(51, observation);
+
+        assertThat(machine.validate(deposit).isAccepted()).isTrue();
+        machine.apply(block(1, deposit, deposit), state);
+
+        assertThat(records(machine, state, ALICE.address()))
+                .singleElement()
+                .satisfies(record -> {
+                    assertThat(record.origin()).isEqualTo(EutxoRecord.Origin.L1_DEPOSIT);
+                    assertThat(record.outpoint()).isEqualTo(claim.mirroredOutpoint());
+                });
+        EutxoDepositRecord retained = state.get(
+                        EutxoStateKeys.deposit(claim.acceptedOutpoint()))
+                .map(EutxoDepositRecord::decode)
+                .orElseThrow();
+        assertThat(retained.claim()).isEqualTo(claim);
+        EutxoReserve reserve = state.get(EutxoStateKeys.reserve(EutxoReserve.LOVELACE))
+                .map(EutxoReserve::decode)
+                .orElseThrow();
+        assertThat(reserve.stableVault()).isEqualTo(BigInteger.valueOf(25));
+        assertThat(reserve.spendableMirrored()).isEqualTo(BigInteger.valueOf(25));
+    }
+
     private static List<Transaction> paymentCorpus(EutxoRecord genesis) {
         List<Transaction> transactions = new ArrayList<>();
         EutxoOutpoint input = genesis.outpoint();
@@ -415,6 +483,28 @@ class EutxoStateMachineTest {
         byte[] seed = new byte[32];
         Arrays.fill(seed, (byte) fill);
         return EutxoTestWallet.fromSeed(seed);
+    }
+
+    private static byte[] fill(int length, int value) {
+        byte[] bytes = new byte[length];
+        Arrays.fill(bytes, (byte) value);
+        return bytes;
+    }
+
+    private static AppMessage observationMessage(int idByte, L1Observation observation) {
+        byte[] id = fill(32, idByte);
+        return AppMessage.builder()
+                .version(1)
+                .messageId(id)
+                .chainId("eutxo-test")
+                .topic(observation.topic())
+                .sender(new byte[32])
+                .senderSeq(idByte)
+                .expiresAt(Long.MAX_VALUE)
+                .body(observation.encode())
+                .authScheme(0)
+                .authProof(new byte[64])
+                .build();
     }
 
     private static AppMessage message(int idByte, Transaction transaction) {
