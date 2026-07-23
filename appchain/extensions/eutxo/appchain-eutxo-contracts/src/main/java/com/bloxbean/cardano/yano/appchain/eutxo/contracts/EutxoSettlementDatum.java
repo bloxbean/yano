@@ -23,7 +23,7 @@ public record EutxoSettlementDatum(
         String chainId,
         long bridgeEpoch,
         String claimId,
-        String destinationAddress,
+        byte[] destinationPlutusData,
         BigInteger lovelace
 ) {
     public static final int ABI_VERSION = 1;
@@ -37,25 +37,62 @@ public record EutxoSettlementDatum(
             throw new IllegalArgumentException("bridge epoch cannot be negative");
         }
         claimId = canonicalHash(claimId);
-        destinationAddress = text(destinationAddress, "destinationAddress", 256);
+        destinationPlutusData = Objects.requireNonNull(
+                destinationPlutusData, "destinationPlutusData").clone();
+        EutxoWithdrawalCommitment.validatePlutusAddressData(
+                destinationPlutusData);
         lovelace = Objects.requireNonNull(lovelace, "lovelace");
-        if (lovelace.signum() <= 0) {
-            throw new IllegalArgumentException("settlement lovelace must be positive");
+        if (lovelace.signum() <= 0
+                || lovelace.compareTo(BigInteger.valueOf(Long.MAX_VALUE)) > 0) {
+            throw new IllegalArgumentException(
+                    "settlement lovelace must fit a positive signed 64-bit integer");
         }
     }
 
+    public static EutxoSettlementDatum forAddress(
+            int abiVersion,
+            String chainId,
+            long bridgeEpoch,
+            String claimId,
+            String destinationAddress,
+            BigInteger lovelace
+    ) {
+        return new EutxoSettlementDatum(
+                abiVersion,
+                chainId,
+                bridgeEpoch,
+                claimId,
+                EutxoWithdrawalCommitment.plutusAddressData(
+                        destinationAddress),
+                lovelace);
+    }
+
+    public boolean matchesDestination(String destinationAddress) {
+        return java.util.Arrays.equals(
+                destinationPlutusData,
+                EutxoWithdrawalCommitment.plutusAddressData(
+                        destinationAddress));
+    }
+
     public byte[] encode() {
-        return ConstrPlutusData.builder()
-                .alternative(2)
-                .data(ListPlutusData.of(
-                        BigIntPlutusData.of(abiVersion),
-                        bytes(chainId),
-                        BigIntPlutusData.of(bridgeEpoch),
-                        BytesPlutusData.of(HexFormat.of().parseHex(claimId)),
-                        bytes(destinationAddress),
-                        BigIntPlutusData.of(lovelace)))
-                .build()
-                .serializeToBytes();
+        try {
+            return ConstrPlutusData.builder()
+                    .alternative(2)
+                    .data(ListPlutusData.of(
+                            BigIntPlutusData.of(abiVersion),
+                            bytes(chainId),
+                            BigIntPlutusData.of(bridgeEpoch),
+                            BytesPlutusData.of(
+                                    HexFormat.of().parseHex(claimId)),
+                            PlutusData.deserialize(
+                                    destinationPlutusData),
+                            BigIntPlutusData.of(lovelace)))
+                    .build()
+                    .serializeToBytes();
+        } catch (Exception failure) {
+            throw new IllegalStateException(
+                    "cannot encode EUTxO settlement datum", failure);
+        }
     }
 
     public static EutxoSettlementDatum decode(byte[] cbor) {
@@ -77,7 +114,7 @@ public record EutxoSettlementDatum(
                     string(fields.get(1), "chain id"),
                     integer(fields.get(2), "bridge epoch").longValueExact(),
                     HexFormat.of().formatHex(bytes(fields.get(3), "claim id")),
-                    string(fields.get(4), "destination address"),
+                    fields.get(4).serializeToBytes(),
                     integer(fields.get(5), "lovelace"));
         } catch (IllegalArgumentException failure) {
             throw failure;
@@ -99,6 +136,36 @@ public record EutxoSettlementDatum(
             throw new IllegalArgumentException(
                     "claimId must be 32-byte lowercase hex", failure);
         }
+    }
+
+    @Override
+    public byte[] destinationPlutusData() {
+        return destinationPlutusData.clone();
+    }
+
+    @Override
+    public boolean equals(Object other) {
+        return other instanceof EutxoSettlementDatum datum
+                && abiVersion == datum.abiVersion
+                && bridgeEpoch == datum.bridgeEpoch
+                && chainId.equals(datum.chainId)
+                && claimId.equals(datum.claimId)
+                && java.util.Arrays.equals(
+                destinationPlutusData,
+                datum.destinationPlutusData)
+                && lovelace.equals(datum.lovelace);
+    }
+
+    @Override
+    public int hashCode() {
+        int result = Objects.hash(
+                abiVersion,
+                chainId,
+                bridgeEpoch,
+                claimId,
+                lovelace);
+        return 31 * result
+                + java.util.Arrays.hashCode(destinationPlutusData);
     }
 
     private static BytesPlutusData bytes(String value) {

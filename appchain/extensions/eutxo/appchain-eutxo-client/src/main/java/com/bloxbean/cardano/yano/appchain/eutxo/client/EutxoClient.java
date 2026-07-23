@@ -5,6 +5,7 @@ import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoContract;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoDepositRecord;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoOutpoint;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoMpfProof;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoQueryCodec;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReceipt;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoRecord;
@@ -114,6 +115,15 @@ public final class EutxoClient {
                 EutxoQueryCodec.withdrawalRequest(claimId));
         return snapshot(result, Optional.ofNullable(
                 EutxoQueryCodec.decodeOptionalWithdrawalRecord(result.payload())));
+    }
+
+    /**
+     * Fetch and locally verify the compact Plutus withdrawal commitment proof
+     * used by the permissionless Cardano relay path.
+     */
+    public Optional<EutxoMpfProof> withdrawalProof(String claimId) {
+        return client.proof(EutxoStateKeys.withdrawalCommitment(claimId))
+                .map(EutxoMpfProofConverter::convert);
     }
 
     public String profileDigest() {

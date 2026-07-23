@@ -192,12 +192,13 @@ final class EutxoCbor {
         array.add(text(claim.destinationAddress()));
         array.add(uint(claim.lovelace()));
         array.add(new ByteString(claim.nonce()));
+        array.add(uint(claim.settlementSequence()));
         array.add(uint(claim.requestedHeight()));
         return encode(array);
     }
 
     static EutxoWithdrawalClaim decodeWithdrawalClaim(byte[] bytes) {
-        List<DataItem> fields = array(item(bytes), 9, "withdrawal claim");
+        List<DataItem> fields = array(item(bytes), 10, "withdrawal claim");
         return new EutxoWithdrawalClaim(
                 integer(fields.get(0), "ABI version"),
                 string(fields.get(1), "chain id"),
@@ -206,7 +207,8 @@ final class EutxoCbor {
                 string(fields.get(5), "destination address"),
                 bigInteger(fields.get(6), "lovelace"),
                 bytes(fields.get(7), "withdrawal nonce"),
-                longInteger(fields.get(8), "requested height"));
+                longInteger(fields.get(8), "settlement sequence"),
+                longInteger(fields.get(9), "requested height"));
     }
 
     static byte[] encodeWithdrawalRecord(EutxoWithdrawalRecord record) {

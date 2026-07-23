@@ -76,7 +76,7 @@ public final class VaultValidator {
         PlutusData f3 = Builtins.tailList(f2);
         byte[] claimId = Builtins.unBData(Builtins.headList(f3));
         PlutusData f4 = Builtins.tailList(f3);
-        byte[] destination = Builtins.unBData(Builtins.headList(f4));
+        PlutusData destination = Builtins.headList(f4);
         PlutusData f5 = Builtins.tailList(f4);
         BigInteger lovelace = Builtins.unIData(Builtins.headList(f5));
         PlutusData trailing = Builtins.tailList(f5);
@@ -86,7 +86,7 @@ public final class VaultValidator {
                 || chainId.length < 1 || chainId.length > 128
                 || bridgeEpoch.signum() < 0
                 || claimId.length != 32
-                || destination.length < 1 || destination.length > 256
+                || Builtins.constrTag(destination) != 0
                 || lovelace.signum() <= 0) {
             return Optional.empty();
         }

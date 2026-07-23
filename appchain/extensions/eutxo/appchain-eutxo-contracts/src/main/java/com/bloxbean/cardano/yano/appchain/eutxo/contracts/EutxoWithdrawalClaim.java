@@ -16,6 +16,7 @@ public record EutxoWithdrawalClaim(
         String destinationAddress,
         BigInteger lovelace,
         byte[] nonce,
+        long settlementSequence,
         long requestedHeight
 ) {
     public static final int ABI_VERSION = 1;
@@ -25,15 +26,17 @@ public record EutxoWithdrawalClaim(
             throw new IllegalArgumentException("unsupported EUTxO withdrawal claim ABI");
         }
         chainId = text(chainId, "chainId", 128);
-        if (bridgeEpoch < 0 || requestedHeight < 0) {
+        if (bridgeEpoch < 0 || settlementSequence < 0 || requestedHeight < 0) {
             throw new IllegalArgumentException(
-                    "bridge epoch and requested height cannot be negative");
+                    "bridge epoch, settlement sequence, and requested height cannot be negative");
         }
         Objects.requireNonNull(withdrawalOutpoint, "withdrawalOutpoint");
         destinationAddress = text(destinationAddress, "destinationAddress", 256);
         lovelace = Objects.requireNonNull(lovelace, "lovelace");
-        if (lovelace.signum() <= 0) {
-            throw new IllegalArgumentException("withdrawal lovelace must be positive");
+        if (lovelace.signum() <= 0
+                || lovelace.compareTo(BigInteger.valueOf(Long.MAX_VALUE)) > 0) {
+            throw new IllegalArgumentException(
+                    "withdrawal lovelace must fit a positive signed 64-bit integer");
         }
         nonce = Objects.requireNonNull(nonce, "nonce").clone();
         if (nonce.length != 32) {
@@ -49,7 +52,7 @@ public record EutxoWithdrawalClaim(
     public String claimId() {
         String identity = abiVersion + "\n" + chainId + "\n" + bridgeEpoch + "\n"
                 + withdrawalOutpoint + "\n" + destinationAddress + "\n" + lovelace
-                + "\n" + HexFormat.of().formatHex(nonce);
+                + "\n" + HexFormat.of().formatHex(nonce) + "\n" + settlementSequence;
         return HexFormat.of().formatHex(
                 Blake2bUtil.blake2bHash256(identity.getBytes(StandardCharsets.UTF_8)));
     }
@@ -72,6 +75,7 @@ public record EutxoWithdrawalClaim(
                 && destinationAddress.equals(claim.destinationAddress)
                 && lovelace.equals(claim.lovelace)
                 && java.util.Arrays.equals(nonce, claim.nonce)
+                && settlementSequence == claim.settlementSequence
                 && requestedHeight == claim.requestedHeight;
     }
 
@@ -79,7 +83,7 @@ public record EutxoWithdrawalClaim(
     public int hashCode() {
         int result = Objects.hash(
                 abiVersion, chainId, bridgeEpoch, withdrawalOutpoint,
-                destinationAddress, lovelace, requestedHeight);
+                destinationAddress, lovelace, settlementSequence, requestedHeight);
         return 31 * result + java.util.Arrays.hashCode(nonce);
     }
 

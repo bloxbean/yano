@@ -420,6 +420,7 @@ class EutxoStateMachineTest {
                 ALICE.address(),
                 BigInteger.valueOf(25),
                 datum.nonce(),
+                0,
                 2);
         AppMessage withdrawalMessage = message(62, withdrawal);
         machine.apply(block(2, withdrawalMessage), state);

@@ -12,8 +12,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class BridgeValidatorSourceCompileTest extends ContractTest {
     @Test
-    void releasePinnedJulcCompilesBothBridgeValidators() {
+    void releasePinnedJulcCompilesAllBridgeValidators() {
         assertThat(compileValidator(DepositStagingValidator.class).program()).isNotNull();
         assertThat(compileValidator(VaultValidator.class).program()).isNotNull();
+        assertThat(compileValidator(FederatedRootValidator.class).program()).isNotNull();
+        assertThat(compileValidator(NullifierStateValidator.class).program()).isNotNull();
+        assertThat(compileValidator(ProofVaultValidator.class).program()).isNotNull();
     }
 }

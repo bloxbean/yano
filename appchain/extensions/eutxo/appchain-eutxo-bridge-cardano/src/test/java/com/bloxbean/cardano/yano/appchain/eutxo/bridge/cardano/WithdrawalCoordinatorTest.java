@@ -229,6 +229,7 @@ class WithdrawalCoordinatorTest {
                 EutxoTestWallet.fromSeed(fill(32, 5)).address(),
                 BigInteger.valueOf(30),
                 fill(32, 6),
+                0,
                 20);
     }
 

@@ -82,7 +82,7 @@ public final class VaultWithdrawalTransactionBuilder {
                         "settlement execution inputs cannot overlap vault spends");
             }
         }
-        EutxoSettlementDatum datum = new EutxoSettlementDatum(
+        EutxoSettlementDatum datum = EutxoSettlementDatum.forAddress(
                 EutxoSettlementDatum.ABI_VERSION,
                 claim.chainId(),
                 claim.bridgeEpoch(),

@@ -9,6 +9,8 @@ import java.util.Objects;
 /** Versioned deterministic keys committed by the Yano app-chain MPF. */
 public final class EutxoStateKeys {
     private static final String PREFIX = "eutxo/v1/";
+    private static final byte[] WITHDRAWAL_COMMITMENT_PREFIX =
+            bytes(PREFIX + "wc/");
 
     private EutxoStateKeys() {
     }
@@ -50,8 +52,35 @@ public final class EutxoStateKeys {
         return bytes(PREFIX + "w/" + transactionId(claimId));
     }
 
+    public static byte[] withdrawalCommitment(String claimId) {
+        byte[] claim = HexFormat.of().parseHex(transactionId(claimId));
+        byte[] key = java.util.Arrays.copyOf(
+                WITHDRAWAL_COMMITMENT_PREFIX,
+                WITHDRAWAL_COMMITMENT_PREFIX.length + claim.length);
+        System.arraycopy(
+                claim,
+                0,
+                key,
+                WITHDRAWAL_COMMITMENT_PREFIX.length,
+                claim.length);
+        return key;
+    }
+
+    public static byte[] withdrawalCommitmentPrefix() {
+        return WITHDRAWAL_COMMITMENT_PREFIX.clone();
+    }
+
     public static byte[] pendingWithdrawalCount() {
         return bytes(PREFIX + "bridge/pending-withdrawal-count");
+    }
+
+    public static byte[] totalWithdrawalCount(long bridgeEpoch) {
+        if (bridgeEpoch < 0) {
+            throw new IllegalArgumentException(
+                    "bridge epoch cannot be negative");
+        }
+        return bytes(PREFIX + "bridge/" + bridgeEpoch
+                + "/total-withdrawal-count");
     }
 
     public static byte[] attempt(byte[] appMessageId) {
