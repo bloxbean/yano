@@ -104,6 +104,12 @@ yano:
               observer-id: bridge-deposits
               vault-address: addr_test1w...
               vault-script-hash: 0123...
+              confirmation-observer-id: bridge-withdrawals
+              withdrawal-address: addr_test1v...
+              epoch: 1
+              max-withdrawal-lovelace: 50000000
+              max-pending-withdrawals: 100
+              withdrawals-paused: false
         observers:
           bridge-deposits:
             type: eutxo-vault-deposit-v1
@@ -111,9 +117,14 @@ yano:
             vault-address: addr_test1w...
             vault-script-hash: 0123...
             max-lovelace: 100000000
+          bridge-withdrawals:
+            type: eutxo-withdrawal-confirmation-v1
+            chain-id: payments-eutxo
+            bridge-epoch: 1
+            vault-address: addr_test1w...
 ```
 
-The one-way deposit flow is deliberately conservative:
+The deposit flow is deliberately conservative:
 
 1. The depositor locks lovelace at the refundable staging contract with the
    target chain, L2 address, nonce, staging outpoint, and refund deadline.
@@ -130,20 +141,80 @@ The one-way deposit flow is deliberately conservative:
 Staging outputs are never observed or credited, so a still-refundable output
 cannot inflate L2 supply. A duplicate accepted outpoint is idempotent; the
 same outpoint with different data fails closed. The typed client provides
-root-fixed deposit and reserve snapshot queries.
+root-fixed deposit, withdrawal, and reserve snapshot queries.
 
-This path is experimental and deposit-only. `VaultValidator` has no spend
-path, so withdrawals are unavailable. The source validators use Julc
+## Federated withdrawals
+
+A withdrawal is a normal signed L2 spend into the configured
+`withdrawal-address`. That output must carry
+`Constr(1, [1, chain-id, bridge-epoch, destination-address, 32-byte-nonce])`
+as inline datum and contain ADA only. The state transition:
+
+1. verifies the ordinary EUTxO owner signature and transaction rules;
+2. checks the bridge epoch, pause state, per-claim limit, pending-count limit,
+   and available mirrored reserve;
+3. burns the sink output rather than making it spendable;
+4. commits an immutable claim under `bridge/withdrawals/record`; and
+5. atomically moves the amount from spendable to pending reserve.
+
+The operator-owned settlement service reads a final claim and proof, builds a
+deterministic vault transaction, and asks a reviewed threshold/HSM service to
+validate and sign the complete body. `WithdrawalCoordinator` forces the exact
+signed bytes to `FileSettlementJournal` before submission. A retry polls and
+resubmits only those bytes and transaction ID; it never rebuilds a second
+payment for the claim. A rejected or competing vault input parks the record
+for manual reconciliation.
+
+Construct the coordinator request with
+`VaultWithdrawalTransactionBuilder.ExecutionPolicy.plutusV3(...)`. It fixes
+the network, collateral, collateral return, reference-script input,
+script-data hash, and required signer hashes before signing. The coordinator
+rejects a signer response if its transaction body differs by even one byte.
+Each payout consumes exactly one sufficiently large vault UTxO; fragmented
+inventory must be consolidated under a separately reviewed operator
+procedure.
+
+The vault script requires the configured settlement signing key, exactly one
+continuing vault output, a claim-bound settlement datum, and exact lovelace
+decrease equal to payout plus fee. The external signer remains part of the
+trust model and must independently verify destination, claim proof, root,
+inventory, fees, limits, and replay state. After Cardano stability, the
+`eutxo-withdrawal-confirmation-v1` observer requires an exact payout and
+continuing vault marker before the ledger moves the claim to `CONFIRMED`.
+
+Node-local signer credentials and endpoints are intentionally not generated
+as consensus properties. Construct `HttpExternalSettlementSigner` from the
+operator's secret/config system, use a dedicated durable journal directory,
+and expose `WithdrawalCoordinator.snapshot()` through the deployment's health
+and metrics adapter. Never put credentials, signed transaction bytes,
+destinations, or datums into metric labels.
+
+### Recovery runbook
+
+- Pause new claims with the consensus-shared `withdrawals-paused` setting
+  before planned custody or bridge-epoch changes.
+- Preserve and back up the settlement journal. Do not delete a `SIGNED`,
+  `SUBMITTED`, or `PARKED` entry to force a rebuild.
+- After a crash, reconcile every retained transaction ID against L1 before
+  accepting new vault inventory.
+- Treat a deep rollback below a credited deposit or confirmed withdrawal as a
+  bridge halt. Reconcile stable Cardano inventory and committed reserve before
+  a governed resume.
+- A `PARKED` transaction may later confirm; the journal permits only that
+  transition, never a replacement payment.
+- A bridge-epoch migration requires a new reviewed contract/config identity
+  and no ambiguous pending signing round.
+
+This path remains experimental. The source validators use Julc
 `0.1.0-pre14`; operators must pin and independently review compiled validator
-artifacts and script hashes before using funds. A deep rollback below the
-highest credited deposit is a fail-closed reconciliation event: stop
-acceptance, persist the bridge halt through the governed operator procedure,
-and reconcile Cardano inventory before resuming. It is not safe to
-automatically debit already-spendable L2 value from a node-local callback.
+artifacts and script hashes before using funds. The runtime SPI has no
+plugin-owned deep-rollback callback, so the halt is an explicit governed
+operator action after `BridgeRollbackGuard` detects the condition.
 
 The optional bridge runtime bundle embeds neither Julc nor ZeroJ. Julc is an
 on-chain contract build tool only; direct validity settlement remains a
-separate future capability.
+separate future capability. The bridge is not production-funds ready until
+independent contract/custody review and operational recovery gates close.
 
 ## CLI
 

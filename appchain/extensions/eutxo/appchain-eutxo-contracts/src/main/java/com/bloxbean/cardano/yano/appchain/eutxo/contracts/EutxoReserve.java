@@ -43,6 +43,35 @@ public record EutxoReserve(
                 confirmedWithdrawals);
     }
 
+    public EutxoReserve requestWithdrawal(BigInteger quantity) {
+        BigInteger amount = positive(quantity, "withdrawal quantity");
+        if (spendableMirrored.compareTo(amount) < 0) {
+            throw new IllegalArgumentException(
+                    "withdrawal exceeds spendable mirrored inventory");
+        }
+        return new EutxoReserve(
+                assetId,
+                stableVault,
+                spendableMirrored.subtract(amount),
+                pendingWithdrawals.add(amount),
+                confirmedWithdrawals);
+    }
+
+    public EutxoReserve confirmWithdrawal(BigInteger quantity) {
+        BigInteger amount = positive(quantity, "withdrawal quantity");
+        if (pendingWithdrawals.compareTo(amount) < 0
+                || stableVault.compareTo(amount) < 0) {
+            throw new IllegalArgumentException(
+                    "withdrawal confirmation exceeds pending vault inventory");
+        }
+        return new EutxoReserve(
+                assetId,
+                stableVault.subtract(amount),
+                spendableMirrored,
+                pendingWithdrawals.subtract(amount),
+                confirmedWithdrawals.add(amount));
+    }
+
     public void requireInvariant() {
         requireInvariant(
                 stableVault, spendableMirrored,

@@ -620,7 +620,9 @@ tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
         def bridgeContributions = bridgeBundle?.manifest?.contributions?.collect {
             "${it.kind}:${it.name}"
         } as Set
-        if (bridgeContributions != Set.of('l1-observer:eutxo-vault-deposit-v1')) {
+        if (bridgeContributions != Set.of(
+                'l1-observer:eutxo-vault-deposit-v1',
+                'l1-observer:eutxo-withdrawal-confirmation-v1')) {
             throw new GradleException(
                     "EUTxO bridge contribution inventory is incomplete: ${bridgeContributions}")
         }

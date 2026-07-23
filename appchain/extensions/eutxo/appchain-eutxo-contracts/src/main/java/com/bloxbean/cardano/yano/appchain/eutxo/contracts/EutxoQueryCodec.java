@@ -12,6 +12,7 @@ public final class EutxoQueryCodec {
     public static final String ATTEMPT_PATH = "attempts/receipt";
     public static final String DEPOSIT_PATH = "bridge/deposits/record";
     public static final String RESERVE_PATH = "bridge/reserve";
+    public static final String WITHDRAWAL_PATH = "bridge/withdrawals/record";
     public static final String PROFILE_PATH = "profile";
 
     private EutxoQueryCodec() {
@@ -118,6 +119,22 @@ public final class EutxoQueryCodec {
 
     public static EutxoReserve decodeOptionalReserve(byte[] bytes) {
         return EutxoCbor.decodeOptionalReserve(bytes);
+    }
+
+    public static byte[] withdrawalRequest(String claimId) {
+        return transactionRequest(claimId);
+    }
+
+    public static String decodeWithdrawalRequest(byte[] bytes) {
+        return decodeTransactionRequest(bytes);
+    }
+
+    public static byte[] optionalWithdrawalRecord(EutxoWithdrawalRecord record) {
+        return EutxoCbor.encodeOptionalWithdrawalRecord(record);
+    }
+
+    public static EutxoWithdrawalRecord decodeOptionalWithdrawalRecord(byte[] bytes) {
+        return EutxoCbor.decodeOptionalWithdrawalRecord(bytes);
     }
 
     private static String boundedUtf8(byte[] bytes, int maximum, String field) {

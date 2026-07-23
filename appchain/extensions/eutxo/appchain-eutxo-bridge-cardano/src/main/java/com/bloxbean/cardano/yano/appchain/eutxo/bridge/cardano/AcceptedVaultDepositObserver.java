@@ -13,6 +13,7 @@ import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observer;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoDepositClaim;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoOutpoint;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoSettlementDatum;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoVaultDatum;
 
 import java.math.BigInteger;
@@ -93,21 +94,33 @@ final class AcceptedVaultDepositObserver implements L1Observer {
             if (!vaultAddress.equals(output.getAddress())) {
                 continue;
             }
-            if (found != null) {
+            if (output.getInlineDatum() == null) {
                 throw new IllegalArgumentException(
-                        "one bridge acceptance transaction may create only one deposit vault output");
+                        "accepted bridge deposit requires an inline datum");
+            }
+            byte[] datumCbor = HexFormat.of().parseHex(output.getInlineDatum());
+            EutxoVaultDatum datum;
+            try {
+                datum = EutxoVaultDatum.decode(datumCbor);
+            } catch (IllegalArgumentException notDeposit) {
+                try {
+                    EutxoSettlementDatum.decode(datumCbor);
+                    continue;
+                } catch (IllegalArgumentException notSettlement) {
+                    throw new IllegalArgumentException(
+                            "vault output contains an unsupported bridge datum",
+                            notDeposit);
+                }
             }
             BigInteger lovelace = exactLovelace(output);
             if (lovelace.signum() <= 0 || lovelace.compareTo(maxLovelace) > 0) {
                 throw new IllegalArgumentException(
                         "accepted bridge deposit is outside the configured lovelace bound");
             }
-            if (output.getInlineDatum() == null) {
+            if (found != null) {
                 throw new IllegalArgumentException(
-                        "accepted bridge deposit requires an inline datum");
+                        "one bridge acceptance transaction may create only one deposit vault output");
             }
-            byte[] datumCbor = HexFormat.of().parseHex(output.getInlineDatum());
-            EutxoVaultDatum datum = EutxoVaultDatum.decode(datumCbor);
             if (!chainId.equals(datum.chainId())) {
                 throw new IllegalArgumentException(
                         "accepted bridge deposit targets a different app chain");

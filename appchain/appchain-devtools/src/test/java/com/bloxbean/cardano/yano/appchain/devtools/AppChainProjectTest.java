@@ -185,10 +185,7 @@ class AppChainProjectTest {
         AppChainProjectModel.Blueprint blueprint = withAnswers(
                 blueprint("eutxo-cardano-bridge", "fixed",
                         List.of("a".repeat(64), "b".repeat(64), "c".repeat(64))),
-                Map.of(
-                        "bridgeVaultAddress", "addr_test1wzvault",
-                        "bridgeVaultScriptHash", "1".repeat(56),
-                        "bridgeMaxDepositLovelace", "100000000"));
+                bridgeAnswers());
 
         AppChainProjectModel.Resolution resolution = resolver.resolve(blueprint);
 
@@ -203,18 +200,28 @@ class AppChainProjectTest {
                         "yano.app-chain.chains[0].machines.eutxo.genesis.address",
                         "yano.app-chain.chains[0].machines.eutxo.genesis.lovelace");
 
+        Map<String, String> unsafeAnswers =
+                new java.util.LinkedHashMap<>(bridgeAnswers());
+        unsafeAnswers.put("eutxoGenesisAddress", "addr_test1vr8nlm7example");
+        unsafeAnswers.put("eutxoGenesisLovelace", "100000000");
         AppChainProjectModel.Blueprint unsafe = withAnswers(withCapabilities(
                         blueprint("eutxo-ledger", "fixed", List.of()),
                         List.of("bridge:cardano-federated")),
-                Map.of(
-                        "eutxoGenesisAddress", "addr_test1vr8nlm7example",
-                        "eutxoGenesisLovelace", "100000000",
-                        "bridgeVaultAddress", "addr_test1wzvault",
-                        "bridgeVaultScriptHash", "1".repeat(56),
-                        "bridgeMaxDepositLovelace", "100000000"));
+                unsafeAnswers);
         assertThatThrownBy(() -> resolver.resolve(unsafe))
                 .hasMessageContaining("Conflicting capabilities")
                 .hasMessageContaining("funding:eutxo-genesis");
+    }
+
+    private static Map<String, String> bridgeAnswers() {
+        return Map.of(
+                "bridgeVaultAddress", "addr_test1wzvault",
+                "bridgeVaultScriptHash", "1".repeat(56),
+                "bridgeMaxDepositLovelace", "100000000",
+                "bridgeWithdrawalAddress", "addr_test1vwithdrawals",
+                "bridgeEpoch", "1",
+                "bridgeMaxWithdrawalLovelace", "50000000",
+                "bridgeMaxPendingWithdrawals", "100");
     }
 
     @Test

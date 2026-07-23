@@ -32,6 +32,10 @@ import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoRecord;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReserve;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoStateKeys;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalClaim;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalConfirmation;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalDatum;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalRecord;
 import com.bloxbean.cardano.yano.appchain.eutxo.testkit.EutxoTestWallet;
 import com.bloxbean.cardano.yano.appchain.eutxo.testkit.EutxoTransactionFixtures;
 import com.bloxbean.cardano.yano.appchain.eutxo.testkit.MemoryAppState;
@@ -45,6 +49,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class EutxoStateMachineTest {
     private static final EutxoTestWallet ALICE = wallet(1);
@@ -359,6 +364,199 @@ class EutxoStateMachineTest {
                 .orElseThrow();
         assertThat(reserve.stableVault()).isEqualTo(BigInteger.valueOf(25));
         assertThat(reserve.spendableMirrored()).isEqualTo(BigInteger.valueOf(25));
+    }
+
+    @Test
+    void signedWithdrawalBecomesIrrevocableAndExactL1ConfirmationReconcilesReserve()
+            throws Exception {
+        String vaultAddress = "addr_test1_bridge_vault";
+        String vaultScriptHash = "11".repeat(28);
+        String withdrawalAddress = BOB.address();
+        Map<String, String> settings = Map.ofEntries(
+                Map.entry("machines.eutxo.profile", EutxoProfile.V2.id()),
+                Map.entry("machines.eutxo.bridge.observer-id", "bridge-deposits"),
+                Map.entry("machines.eutxo.bridge.vault-address", vaultAddress),
+                Map.entry("machines.eutxo.bridge.vault-script-hash", vaultScriptHash),
+                Map.entry("machines.eutxo.bridge.confirmation-observer-id",
+                        "bridge-withdrawals"),
+                Map.entry("machines.eutxo.bridge.withdrawal-address", withdrawalAddress),
+                Map.entry("machines.eutxo.bridge.epoch", "7"),
+                Map.entry("machines.eutxo.bridge.max-withdrawal-lovelace", "25"),
+                Map.entry("machines.eutxo.bridge.max-pending-withdrawals", "2"),
+                Map.entry("machines.eutxo.bridge.withdrawals-paused", "false"));
+        EutxoStateMachine machine = (EutxoStateMachine)
+                new EutxoStateMachineProvider().create(context(settings));
+        MemoryAppState state = new MemoryAppState();
+        EutxoDepositClaim depositClaim = depositClaim(
+                vaultAddress, vaultScriptHash, BigInteger.valueOf(25));
+        L1Observation depositObservation = new L1Observation(
+                "bridge-deposits",
+                java.util.HexFormat.of().parseHex(
+                        depositClaim.acceptedOutpoint().transactionId()),
+                depositClaim.l1Slot(),
+                depositClaim.l1BlockHash(),
+                depositClaim.encode());
+        machine.apply(block(1, observationMessage(61, depositObservation)), state);
+
+        EutxoWithdrawalDatum datum = new EutxoWithdrawalDatum(
+                1, "eutxo-test", 7, ALICE.address(), fill(32, 6));
+        Transaction withdrawal = EutxoTransactionFixtures.signedOutputs(
+                depositClaim.mirroredOutpoint(),
+                ALICE,
+                List.of(TransactionOutput.builder()
+                        .address(withdrawalAddress)
+                        .value(Value.fromCoin(BigInteger.valueOf(25)))
+                        .inlineDatum(PlutusData.deserialize(datum.encode()))
+                        .build()),
+                0,
+                0);
+        String withdrawalTxId = TransactionUtil.getTxHash(
+                EutxoTransactionFixtures.serialize(withdrawal));
+        EutxoWithdrawalClaim claim = new EutxoWithdrawalClaim(
+                1,
+                "eutxo-test",
+                7,
+                new EutxoOutpoint(withdrawalTxId, 0),
+                ALICE.address(),
+                BigInteger.valueOf(25),
+                datum.nonce(),
+                2);
+        AppMessage withdrawalMessage = message(62, withdrawal);
+        machine.apply(block(2, withdrawalMessage), state);
+
+        assertThat(receipt(machine, state, withdrawalMessage).status())
+                .isEqualTo(EutxoReceipt.Status.ACCEPTED);
+        assertThat(records(machine, state, ALICE.address())).isEmpty();
+        assertThat(records(machine, state, withdrawalAddress)).isEmpty();
+        EutxoWithdrawalRecord pending = EutxoQueryCodec.decodeOptionalWithdrawalRecord(
+                machine.query(
+                        EutxoQueryCodec.WITHDRAWAL_PATH,
+                        EutxoQueryCodec.withdrawalRequest(claim.claimId()),
+                        state));
+        assertThat(pending.status()).isEqualTo(EutxoWithdrawalRecord.Status.PENDING);
+        EutxoReserve pendingReserve = EutxoReserve.decode(
+                state.get(EutxoStateKeys.reserve(EutxoReserve.LOVELACE)).orElseThrow());
+        assertThat(pendingReserve.spendableMirrored()).isZero();
+        assertThat(pendingReserve.pendingWithdrawals()).isEqualTo(BigInteger.valueOf(25));
+
+        EutxoWithdrawalConfirmation confirmation =
+                new EutxoWithdrawalConfirmation(
+                        1,
+                        "eutxo-test",
+                        7,
+                        claim.claimId(),
+                        "77".repeat(32),
+                        0,
+                        ALICE.address(),
+                        BigInteger.valueOf(25),
+                        new EutxoOutpoint("77".repeat(32), 1),
+                        BigInteger.ZERO,
+                        200,
+                        fill(32, 7));
+        L1Observation confirmationObservation = new L1Observation(
+                "bridge-withdrawals",
+                java.util.HexFormat.of().parseHex("77".repeat(32)),
+                200,
+                fill(32, 7),
+                confirmation.encode());
+        AppMessage confirmationMessage =
+                observationMessage(63, confirmationObservation);
+        machine.apply(block(3, confirmationMessage, confirmationMessage), state);
+
+        EutxoWithdrawalRecord confirmed = EutxoQueryCodec.decodeOptionalWithdrawalRecord(
+                machine.query(
+                        EutxoQueryCodec.WITHDRAWAL_PATH,
+                        EutxoQueryCodec.withdrawalRequest(claim.claimId()),
+                        state));
+        assertThat(confirmed.status()).isEqualTo(EutxoWithdrawalRecord.Status.CONFIRMED);
+        EutxoReserve reconciled = EutxoReserve.decode(
+                state.get(EutxoStateKeys.reserve(EutxoReserve.LOVELACE)).orElseThrow());
+        assertThat(reconciled.stableVault()).isZero();
+        assertThat(reconciled.pendingWithdrawals()).isZero();
+        assertThat(reconciled.confirmedWithdrawals()).isEqualTo(BigInteger.valueOf(25));
+    }
+
+    @Test
+    void invalidWithdrawalPauseFlagFailsClosed() {
+        Map<String, String> settings = Map.of(
+                "machines.eutxo.bridge.observer-id", "bridge-deposits",
+                "machines.eutxo.bridge.vault-address", "addr_test1vault",
+                "machines.eutxo.bridge.vault-script-hash", "11".repeat(28),
+                "machines.eutxo.bridge.confirmation-observer-id", "bridge-withdrawals",
+                "machines.eutxo.bridge.withdrawal-address", BOB.address(),
+                "machines.eutxo.bridge.withdrawals-paused", "yes");
+
+        assertThatThrownBy(() -> new EutxoStateMachineProvider().create(context(settings)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("true or false");
+    }
+
+    @Test
+    void unknownStableSettlementHaltsTheBridgeWithoutCrashingBlockApplication() {
+        Map<String, String> settings = Map.of(
+                "machines.eutxo.bridge.observer-id", "bridge-deposits",
+                "machines.eutxo.bridge.vault-address", "addr_test1vault",
+                "machines.eutxo.bridge.vault-script-hash", "11".repeat(28),
+                "machines.eutxo.bridge.confirmation-observer-id", "bridge-withdrawals",
+                "machines.eutxo.bridge.withdrawal-address", BOB.address(),
+                "machines.eutxo.bridge.epoch", "1");
+        EutxoStateMachine machine = (EutxoStateMachine)
+                new EutxoStateMachineProvider().create(context(settings));
+        MemoryAppState state = new MemoryAppState();
+        EutxoWithdrawalConfirmation unknown = new EutxoWithdrawalConfirmation(
+                1,
+                "eutxo-test",
+                1,
+                "88".repeat(32),
+                "99".repeat(32),
+                0,
+                ALICE.address(),
+                BigInteger.ONE,
+                new EutxoOutpoint("99".repeat(32), 1),
+                BigInteger.TEN,
+                300,
+                fill(32, 9));
+        L1Observation observation = new L1Observation(
+                "bridge-withdrawals",
+                java.util.HexFormat.of().parseHex("99".repeat(32)),
+                300,
+                fill(32, 9),
+                unknown.encode());
+
+        machine.apply(block(1, observationMessage(64, observation)), state);
+
+        assertThat(new String(
+                state.get(EutxoStateKeys.bridgeHalt()).orElseThrow(),
+                java.nio.charset.StandardCharsets.US_ASCII))
+                .isEqualTo("UNKNOWN_WITHDRAWAL_CONFIRMATION");
+    }
+
+    private static EutxoDepositClaim depositClaim(
+            String vaultAddress,
+            String vaultScriptHash,
+            BigInteger lovelace
+    ) throws Exception {
+        TransactionOutput mirroredOutput = TransactionOutput.builder()
+                .address(ALICE.address())
+                .value(Value.fromCoin(lovelace))
+                .build();
+        byte[] outputCbor =
+                com.bloxbean.cardano.client.common.cbor.CborSerializationUtil.serialize(
+                        mirroredOutput.serialize());
+        return new EutxoDepositClaim(
+                1,
+                "eutxo-test",
+                new EutxoOutpoint("22".repeat(32), 1),
+                100,
+                fill(32, 3),
+                vaultAddress,
+                vaultScriptHash,
+                outputCbor,
+                ALICE.address(),
+                outputCbor,
+                fill(32, 4),
+                new EutxoOutpoint("33".repeat(32), 0),
+                1_000);
     }
 
     private static List<Transaction> paymentCorpus(EutxoRecord genesis) {

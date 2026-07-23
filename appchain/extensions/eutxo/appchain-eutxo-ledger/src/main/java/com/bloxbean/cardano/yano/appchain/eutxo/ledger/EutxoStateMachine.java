@@ -18,6 +18,10 @@ import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoRecord;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReserve;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoStateKeys;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoContract;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalClaim;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalConfirmation;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalDatum;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalRecord;
 import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
 
 import java.math.BigInteger;
@@ -72,6 +76,15 @@ public final class EutxoStateMachine implements AppStateMachine {
                 return AdmissionResult.reject("BRIDGE_DEPOSIT_INVALID");
             }
         }
+        if (bridge.withdrawalsEnabled()
+                && bridge.confirmationTopic().equals(message.getTopic())) {
+            try {
+                withdrawalConfirmation(message);
+                return AdmissionResult.accept();
+            } catch (IllegalArgumentException failure) {
+                return AdmissionResult.reject("BRIDGE_WITHDRAWAL_CONFIRMATION_INVALID");
+            }
+        }
         if (!TOPIC.equals(message.getTopic())) {
             return AdmissionResult.reject("EUTxO transactions require topic " + TOPIC);
         }
@@ -101,8 +114,24 @@ public final class EutxoStateMachine implements AppStateMachine {
                 ordinal++;
                 continue;
             }
+            if (bridge.withdrawalsEnabled()
+                    && bridge.confirmationTopic().equals(message.getTopic())) {
+                confirmWithdrawal(
+                        withdrawalConfirmation(message), block.height(), writer);
+                ordinal++;
+                continue;
+            }
             UtxoTransitionEngine.TransitionResult result =
                     transitionEngine.transition(message.getBody(), block.l1Slot(), writer);
+            WithdrawalPlan withdrawalPlan = WithdrawalPlan.empty();
+            if (result.accepted()) {
+                try {
+                    withdrawalPlan = planWithdrawals(result, block.height(), writer);
+                } catch (WithdrawalFailure failure) {
+                    result = UtxoTransitionEngine.TransitionResult.reject(
+                            result.transactionId(), failure.code(), failure.getMessage());
+                }
+            }
             EutxoReceipt receipt = new EutxoReceipt(
                     result.accepted() ? EutxoReceipt.Status.ACCEPTED : EutxoReceipt.Status.REJECTED,
                     result.transactionId(),
@@ -113,7 +142,7 @@ public final class EutxoStateMachine implements AppStateMachine {
                     result.code(),
                     result.detail());
             if (result.accepted()) {
-                applyAccepted(result, writer);
+                applyAccepted(result, withdrawalPlan, writer);
                 writer.put(EutxoStateKeys.transaction(result.transactionId()), receipt.encode());
             }
             writer.put(EutxoStateKeys.attempt(message.getMessageId()), receipt.encode());
@@ -158,6 +187,12 @@ public final class EutxoStateMachine implements AppStateMachine {
                             state.get(EutxoStateKeys.reserve(assetId))
                                     .map(EutxoReserve::decode).orElse(null));
                 }
+                case EutxoQueryCodec.WITHDRAWAL_PATH -> {
+                    String claimId = EutxoQueryCodec.decodeWithdrawalRequest(params);
+                    yield EutxoQueryCodec.optionalWithdrawalRecord(
+                            state.get(EutxoStateKeys.withdrawal(claimId))
+                                    .map(EutxoWithdrawalRecord::decode).orElse(null));
+                }
                 case EutxoQueryCodec.PROFILE_PATH ->
                         profile.digestHex().getBytes(StandardCharsets.UTF_8);
                 default -> throw new AppQueryException(
@@ -192,6 +227,7 @@ public final class EutxoStateMachine implements AppStateMachine {
 
     private void applyAccepted(
             UtxoTransitionEngine.TransitionResult result,
+            WithdrawalPlan withdrawalPlan,
             AppStateWriter writer
     ) {
         for (EutxoOutpoint outpoint : result.consumed()) {
@@ -204,10 +240,126 @@ public final class EutxoStateMachine implements AppStateMachine {
             writer.delete(key);
         }
         for (EutxoRecord record : result.created()) {
+            if (withdrawalPlan.outpoints().contains(record.outpoint())) {
+                continue;
+            }
             if (writer.get(EutxoStateKeys.utxo(record.outpoint())).isPresent()) {
                 throw new IllegalStateException("validated EUTxO output already exists");
             }
             putRecord(writer, record);
+        }
+        if (!withdrawalPlan.claims().isEmpty()) {
+            withdrawalPlan.claims().forEach(claim -> writer.put(
+                    EutxoStateKeys.withdrawal(claim.claimId()),
+                    EutxoWithdrawalRecord.pending(
+                            claim, claim.requestedHeight()).encode()));
+            writer.put(
+                    EutxoStateKeys.reserve(EutxoReserve.LOVELACE),
+                    withdrawalPlan.reserve().encode());
+            writer.put(EutxoStateKeys.pendingWithdrawalCount(),
+                    longBytes(withdrawalPlan.pendingCount()));
+        }
+    }
+
+    private WithdrawalPlan planWithdrawals(
+            UtxoTransitionEngine.TransitionResult result,
+            long height,
+            AppStateReader state
+    ) {
+        if (!bridge.withdrawalsEnabled()) {
+            return WithdrawalPlan.empty();
+        }
+        List<EutxoWithdrawalClaim> claims = new ArrayList<>();
+        EutxoReserve reserve = state.get(EutxoStateKeys.reserve(EutxoReserve.LOVELACE))
+                .map(EutxoReserve::decode)
+                .orElse(null);
+        long pendingCount = state.get(EutxoStateKeys.pendingWithdrawalCount())
+                .map(EutxoStateMachine::longValue)
+                .orElse(0L);
+        for (EutxoRecord record : result.created()) {
+            if (!bridge.withdrawalAddress().equals(record.address())) {
+                continue;
+            }
+            if (bridge.withdrawalsPaused()
+                    || state.get(EutxoStateKeys.bridgeHalt()).isPresent()) {
+                throw new WithdrawalFailure(
+                        "BRIDGE_WITHDRAWALS_PAUSED",
+                        "bridge withdrawals are paused or halted");
+            }
+            if (reserve == null) {
+                throw new WithdrawalFailure(
+                        "BRIDGE_RESERVE_MISSING",
+                        "bridge withdrawal has no committed reserve");
+            }
+            WithdrawalOutput output = withdrawalOutput(record);
+            if (output.lovelace().compareTo(bridge.maximumWithdrawalLovelace()) > 0) {
+                throw new WithdrawalFailure(
+                        "BRIDGE_WITHDRAWAL_LIMIT",
+                        "withdrawal exceeds the configured per-claim limit");
+            }
+            EutxoWithdrawalDatum datum = output.datum();
+            if (!bridge.chainId().equals(datum.chainId())
+                    || bridge.bridgeEpoch() != datum.bridgeEpoch()) {
+                throw new WithdrawalFailure(
+                        "BRIDGE_WITHDRAWAL_IDENTITY",
+                        "withdrawal targets another chain or bridge epoch");
+            }
+            EutxoWithdrawalClaim claim = new EutxoWithdrawalClaim(
+                    EutxoWithdrawalClaim.ABI_VERSION,
+                    bridge.chainId(),
+                    bridge.bridgeEpoch(),
+                    record.outpoint(),
+                    datum.destinationAddress(),
+                    output.lovelace(),
+                    datum.nonce(),
+                    height);
+            if (state.get(EutxoStateKeys.withdrawal(claim.claimId())).isPresent()) {
+                throw new WithdrawalFailure(
+                        "BRIDGE_WITHDRAWAL_DUPLICATE",
+                        "withdrawal claim already exists");
+            }
+            claims.add(claim);
+            reserve = reserve.requestWithdrawal(output.lovelace());
+            pendingCount++;
+            if (pendingCount > bridge.maximumPendingWithdrawals()) {
+                throw new WithdrawalFailure(
+                        "BRIDGE_PENDING_LIMIT",
+                        "bridge pending-withdrawal limit is reached");
+            }
+        }
+        return claims.isEmpty()
+                ? WithdrawalPlan.empty()
+                : new WithdrawalPlan(List.copyOf(claims), reserve, pendingCount);
+    }
+
+    private WithdrawalOutput withdrawalOutput(EutxoRecord record) {
+        try {
+            TransactionOutput output = TransactionOutput.deserialize(
+                    com.bloxbean.cardano.client.common.cbor.CborSerializationUtil.deserialize(
+                            record.outputCbor()));
+            if (!bridge.withdrawalAddress().equals(output.getAddress())
+                    || output.getValue() == null
+                    || output.getValue().getCoin() == null
+                    || output.getValue().getCoin().signum() <= 0
+                    || (output.getValue().getMultiAssets() != null
+                    && !output.getValue().getMultiAssets().isEmpty())
+                    || output.getInlineDatum() == null
+                    || output.getDatumHash() != null
+                    || output.getScriptRef() != null) {
+                throw new WithdrawalFailure(
+                        "BRIDGE_WITHDRAWAL_OUTPUT_INVALID",
+                        "withdrawal output is outside the lovelace-only bridge profile");
+            }
+            return new WithdrawalOutput(
+                    output.getValue().getCoin(),
+                    EutxoWithdrawalDatum.decode(
+                            output.getInlineDatum().serializeToBytes()));
+        } catch (WithdrawalFailure failure) {
+            throw failure;
+        } catch (Exception failure) {
+            throw new WithdrawalFailure(
+                    "BRIDGE_WITHDRAWAL_OUTPUT_INVALID",
+                    "withdrawal output cannot be decoded");
         }
     }
 
@@ -238,7 +390,7 @@ public final class EutxoStateMachine implements AppStateMachine {
             AppStateWriter writer
     ) {
         if (writer.get(EutxoStateKeys.bridgeHalt()).isPresent()) {
-            throw new IllegalStateException("the EUTxO bridge is halted");
+            return;
         }
         EutxoDepositRecord expected = new EutxoDepositRecord(
                 claim, claim.mirroredOutpoint(), creditedHeight);
@@ -298,6 +450,118 @@ public final class EutxoStateMachine implements AppStateMachine {
         }
     }
 
+    private EutxoWithdrawalConfirmation withdrawalConfirmation(AppMessage message) {
+        L1Observation observation = L1Observation.decode(message.getBody());
+        if (observation == null
+                || !bridge.confirmationTopic().equals(observation.topic())
+                || !bridge.confirmationObserverId().equals(observation.observerId())) {
+            throw new IllegalArgumentException(
+                    "invalid bridge withdrawal confirmation envelope");
+        }
+        EutxoWithdrawalConfirmation confirmation =
+                EutxoWithdrawalConfirmation.decode(observation.claim());
+        String observedTransactionId =
+                java.util.HexFormat.of().formatHex(observation.txHash());
+        if (!bridge.chainId().equals(confirmation.chainId())
+                || bridge.bridgeEpoch() != confirmation.bridgeEpoch()
+                || !observedTransactionId.equals(
+                confirmation.settlementTransactionId())
+                || confirmation.l1Slot() != observation.slot()
+                || !java.util.Arrays.equals(
+                confirmation.l1BlockHash(), observation.blockHash())) {
+            throw new IllegalArgumentException(
+                    "withdrawal confirmation does not match its configured identity");
+        }
+        return confirmation;
+    }
+
+    private void confirmWithdrawal(
+            EutxoWithdrawalConfirmation confirmation,
+            long height,
+            AppStateWriter writer
+    ) {
+        byte[] key = EutxoStateKeys.withdrawal(confirmation.claimId());
+        EutxoWithdrawalRecord record = writer.get(key)
+                .map(EutxoWithdrawalRecord::decode)
+                .orElse(null);
+        if (record == null) {
+            haltBridge(writer, "UNKNOWN_WITHDRAWAL_CONFIRMATION");
+            return;
+        }
+        EutxoWithdrawalClaim claim = record.claim();
+        if (!claim.claimId().equals(confirmation.claimId())
+                || !claim.destinationAddress().equals(
+                confirmation.destinationAddress())
+                || !claim.lovelace().equals(confirmation.lovelace())
+                || claim.bridgeEpoch() != confirmation.bridgeEpoch()) {
+            haltBridge(writer, "WITHDRAWAL_CONFIRMATION_MISMATCH");
+            return;
+        }
+        EutxoWithdrawalRecord confirmed;
+        try {
+            confirmed = record.confirm(
+                    confirmation.settlementTransactionId(),
+                    confirmation.l1Slot(),
+                    confirmation.l1BlockHash(),
+                    height);
+        } catch (IllegalStateException mismatch) {
+            haltBridge(writer, "WITHDRAWAL_CONFIRMATION_REBIND");
+            return;
+        }
+        if (confirmed == record) {
+            return;
+        }
+        byte[] reserveKey = EutxoStateKeys.reserve(EutxoReserve.LOVELACE);
+        EutxoReserve reserve = writer.get(reserveKey)
+                .map(EutxoReserve::decode)
+                .orElse(null);
+        if (reserve == null) {
+            haltBridge(writer, "WITHDRAWAL_RESERVE_MISSING");
+            return;
+        }
+        long pendingCount = writer.get(EutxoStateKeys.pendingWithdrawalCount())
+                .map(EutxoStateMachine::longValue)
+                .orElse(-1L);
+        if (pendingCount <= 0) {
+            haltBridge(writer, "WITHDRAWAL_PENDING_COUNT_INVALID");
+            return;
+        }
+        try {
+            reserve = reserve.confirmWithdrawal(claim.lovelace());
+        } catch (IllegalArgumentException mismatch) {
+            haltBridge(writer, "WITHDRAWAL_RESERVE_MISMATCH");
+            return;
+        }
+        writer.put(key, confirmed.encode());
+        writer.put(reserveKey, reserve.encode());
+        writer.put(EutxoStateKeys.pendingWithdrawalCount(),
+                longBytes(pendingCount - 1));
+    }
+
+    private static void haltBridge(AppStateWriter writer, String reason) {
+        writer.put(
+                EutxoStateKeys.bridgeHalt(),
+                reason.getBytes(StandardCharsets.US_ASCII));
+    }
+
+    private static byte[] longBytes(long value) {
+        if (value < 0) {
+            throw new IllegalArgumentException("counter cannot be negative");
+        }
+        return java.nio.ByteBuffer.allocate(Long.BYTES).putLong(value).array();
+    }
+
+    private static long longValue(byte[] bytes) {
+        if (bytes.length != Long.BYTES) {
+            throw new IllegalArgumentException("invalid committed counter");
+        }
+        long value = java.nio.ByteBuffer.wrap(bytes).getLong();
+        if (value < 0) {
+            throw new IllegalArgumentException("committed counter cannot be negative");
+        }
+        return value;
+    }
+
     private void putRecord(AppStateWriter writer, EutxoRecord record) {
         writer.put(EutxoStateKeys.utxo(record.outpoint()), record.encode());
         List<EutxoRecord> records = new ArrayList<>(addressRecords(writer, record.address()));
@@ -326,5 +590,40 @@ public final class EutxoStateMachine implements AppStateMachine {
         return state.get(EutxoStateKeys.addressIndex(address))
                 .map(EutxoQueryCodec::decodeRecords)
                 .orElse(List.of());
+    }
+
+    private record WithdrawalOutput(
+            BigInteger lovelace,
+            EutxoWithdrawalDatum datum
+    ) {
+    }
+
+    private record WithdrawalPlan(
+            List<EutxoWithdrawalClaim> claims,
+            EutxoReserve reserve,
+            long pendingCount
+    ) {
+        private static WithdrawalPlan empty() {
+            return new WithdrawalPlan(List.of(), null, 0);
+        }
+
+        private java.util.Set<EutxoOutpoint> outpoints() {
+            return claims.stream()
+                    .map(EutxoWithdrawalClaim::withdrawalOutpoint)
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        }
+    }
+
+    private static final class WithdrawalFailure extends RuntimeException {
+        private final String code;
+
+        private WithdrawalFailure(String code, String message) {
+            super(message);
+            this.code = code;
+        }
+
+        private String code() {
+            return code;
+        }
     }
 }

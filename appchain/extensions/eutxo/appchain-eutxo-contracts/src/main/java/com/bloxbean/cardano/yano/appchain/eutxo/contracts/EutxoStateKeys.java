@@ -46,6 +46,14 @@ public final class EutxoStateKeys {
         return bytes(PREFIX + "bridge/halt");
     }
 
+    public static byte[] withdrawal(String claimId) {
+        return bytes(PREFIX + "w/" + transactionId(claimId));
+    }
+
+    public static byte[] pendingWithdrawalCount() {
+        return bytes(PREFIX + "bridge/pending-withdrawal-count");
+    }
+
     public static byte[] attempt(byte[] appMessageId) {
         Objects.requireNonNull(appMessageId, "appMessageId");
         if (appMessageId.length != 32) {

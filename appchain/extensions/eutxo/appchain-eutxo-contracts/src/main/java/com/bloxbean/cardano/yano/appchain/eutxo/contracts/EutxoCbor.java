@@ -183,6 +183,106 @@ final class EutxoCbor {
         return decoded == SimpleValue.NULL ? null : decodeReserve(encode(decoded));
     }
 
+    static byte[] encodeWithdrawalClaim(EutxoWithdrawalClaim claim) {
+        Array array = new Array();
+        array.add(uint(claim.abiVersion()));
+        array.add(text(claim.chainId()));
+        array.add(uint(claim.bridgeEpoch()));
+        outpoint(array, claim.withdrawalOutpoint());
+        array.add(text(claim.destinationAddress()));
+        array.add(uint(claim.lovelace()));
+        array.add(new ByteString(claim.nonce()));
+        array.add(uint(claim.requestedHeight()));
+        return encode(array);
+    }
+
+    static EutxoWithdrawalClaim decodeWithdrawalClaim(byte[] bytes) {
+        List<DataItem> fields = array(item(bytes), 9, "withdrawal claim");
+        return new EutxoWithdrawalClaim(
+                integer(fields.get(0), "ABI version"),
+                string(fields.get(1), "chain id"),
+                longInteger(fields.get(2), "bridge epoch"),
+                outpoint(fields.get(3), fields.get(4)),
+                string(fields.get(5), "destination address"),
+                bigInteger(fields.get(6), "lovelace"),
+                bytes(fields.get(7), "withdrawal nonce"),
+                longInteger(fields.get(8), "requested height"));
+    }
+
+    static byte[] encodeWithdrawalRecord(EutxoWithdrawalRecord record) {
+        Array array = new Array();
+        array.add(uint(VERSION));
+        array.add(new ByteString(record.claim().encode()));
+        array.add(uint(record.status().ordinal()));
+        array.add(text(record.settlementTransactionId()));
+        array.add(uint(record.confirmedSlot()));
+        array.add(new ByteString(record.confirmedBlockHash()));
+        array.add(uint(record.updatedHeight()));
+        return encode(array);
+    }
+
+    static EutxoWithdrawalRecord decodeWithdrawalRecord(byte[] bytes) {
+        List<DataItem> fields = array(item(bytes), 7, "withdrawal record");
+        version(fields.get(0));
+        int status = integer(fields.get(2), "withdrawal status");
+        if (status < 0 || status >= EutxoWithdrawalRecord.Status.values().length) {
+            throw new IllegalArgumentException("invalid withdrawal status");
+        }
+        return new EutxoWithdrawalRecord(
+                EutxoWithdrawalClaim.decode(bytes(fields.get(1), "withdrawal claim")),
+                EutxoWithdrawalRecord.Status.values()[status],
+                string(fields.get(3), "settlement transaction id"),
+                longInteger(fields.get(4), "confirmed slot"),
+                bytes(fields.get(5), "confirmed block hash"),
+                longInteger(fields.get(6), "updated height"));
+    }
+
+    static byte[] encodeOptionalWithdrawalRecord(EutxoWithdrawalRecord record) {
+        return encode(record == null ? SimpleValue.NULL : item(record.encode()));
+    }
+
+    static EutxoWithdrawalRecord decodeOptionalWithdrawalRecord(byte[] bytes) {
+        DataItem decoded = item(bytes);
+        return decoded == SimpleValue.NULL
+                ? null : decodeWithdrawalRecord(encode(decoded));
+    }
+
+    static byte[] encodeWithdrawalConfirmation(
+            EutxoWithdrawalConfirmation confirmation
+    ) {
+        Array array = new Array();
+        array.add(uint(confirmation.abiVersion()));
+        array.add(text(confirmation.chainId()));
+        array.add(uint(confirmation.bridgeEpoch()));
+        array.add(text(confirmation.claimId()));
+        array.add(text(confirmation.settlementTransactionId()));
+        array.add(uint(confirmation.payoutIndex()));
+        array.add(text(confirmation.destinationAddress()));
+        array.add(uint(confirmation.lovelace()));
+        outpoint(array, confirmation.continuingVaultOutpoint());
+        array.add(uint(confirmation.continuingVaultLovelace()));
+        array.add(uint(confirmation.l1Slot()));
+        array.add(new ByteString(confirmation.l1BlockHash()));
+        return encode(array);
+    }
+
+    static EutxoWithdrawalConfirmation decodeWithdrawalConfirmation(byte[] bytes) {
+        List<DataItem> fields = array(item(bytes), 13, "withdrawal confirmation");
+        return new EutxoWithdrawalConfirmation(
+                integer(fields.get(0), "ABI version"),
+                string(fields.get(1), "chain id"),
+                longInteger(fields.get(2), "bridge epoch"),
+                string(fields.get(3), "claim id"),
+                string(fields.get(4), "settlement transaction id"),
+                integer(fields.get(5), "payout index"),
+                string(fields.get(6), "destination address"),
+                bigInteger(fields.get(7), "lovelace"),
+                outpoint(fields.get(8), fields.get(9)),
+                bigInteger(fields.get(10), "continuing vault lovelace"),
+                longInteger(fields.get(11), "L1 slot"),
+                bytes(fields.get(12), "L1 block hash"));
+    }
+
     private static Array recordItem(EutxoRecord record) {
         Array array = new Array();
         array.add(uint(VERSION));

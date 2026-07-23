@@ -3,10 +3,13 @@
 This module owns the Julc-authored Plutus V3 contracts for the optional
 federated EUTxO bridge.
 
-The M3 vault is intentionally one-way: accepted value can enter the vault but
-the `VaultValidator` rejects every spend. Withdrawal paths are introduced only
-with M4 after irreversible claims, external signing, reconciliation, and
-replay protection exist.
+The M4 `VaultValidator` authorizes the reviewed external settlement signer and
+requires exactly one continuing vault output whose inline settlement datum
+binds the claim ID and payout amount. The input-to-continuation lovelace
+decrease must equal that payout plus the transaction fee. The external
+threshold/HSM signer remains responsible for independently checking the exact
+destination, accepted claim root/proof, limits, vault inputs, change, and
+bridge epoch.
 
 `DepositStagingValidator` has two actions:
 
@@ -18,4 +21,5 @@ replay protection exist.
 
 The source is part of the alpha bridge ABI. A production deployment must use
 release-pinned compiled artifacts and hashes; source compilation alone is not
-a production contract identity.
+a production contract identity. The current artifacts have not passed the
+independent audit and material-funds operational gates.
