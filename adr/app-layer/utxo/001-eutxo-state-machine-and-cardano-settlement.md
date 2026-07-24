@@ -2,13 +2,29 @@
 
 ## Status
 
-Proposed — version 3
+Proposed — version 4
 
 Phase A and the automated portions of Phase B are implemented as optional
 modules under `appchain/extensions/eutxo/`. Their schemas and bridge remain
 alpha pending the external operational and independent-review gates recorded
 by the implementation. Phase C is the active implementation plan and remains
 experimental with no production-funds claim.
+
+Version 4:
+
+- records the Z0/Z1 implementation learning that the standalone arithmetic
+  proof's five public inputs are insufficient for L1 replay protection;
+- keeps that circuit as the bounded arithmetic primitive and introduces the
+  settlement-only `yano-eutxo-zk-z3` profile;
+- fixes the L1 ABI to eight ordered public inputs: previous root, next root,
+  transition digest, owner commitment, batch size, settlement context,
+  batch-data commitment, and withdrawal commitment;
+- defines settlement context as a commitment to chain ID, bridge epoch,
+  profile, circuit/proof-system identity, and verification-key identity; and
+- requires ordinary validity-root advancement to be permissionless and
+  proof-only, while profile/circuit/VK migration is an explicit
+  authority-signed root-preserving handoff to a precommitted successor
+  script.
 
 Version 3:
 
@@ -1753,8 +1769,9 @@ Deliver:
 - ZeroJ `0.1.0-pre10` and Julc `0.1.0-pre14` artifact/digest locks;
 - optional validity-commitment integration and dual-root reference model;
 - one bounded key-authorized payment transition circuit;
-- public inputs for chain ID, profile digest, old/new validity roots, batch
-  commitment, withdrawal commitment, and bridge epoch;
+- a five-input feasibility proof for the old/new validity roots, transition
+  digest, owner commitment, and batch size; this standalone proof is not an
+  L1 settlement profile;
 - Groth16 BLS12-381 proof generation and off-chain verification;
 - deterministic test-only setup through ZeroJ's single-development-setup
   ceremony API, with the resulting proving-key, verification-key, and setup
@@ -1823,6 +1840,12 @@ Deliver:
 
 - the deployable validators and budget suite in
   `appchain-eutxo-zk-onchain`;
+- a settlement-bound circuit/profile with exactly eight ordered public
+  inputs: previous root, next root, transition digest, owner commitment,
+  batch size, settlement context, batch-data commitment, and withdrawal
+  commitment;
+- a settlement-context commitment covering chain ID, bridge epoch, profile,
+  circuit/proof system, and verification-key identity;
 - context-bound Julc validity-root validator;
 - old-root to new-root state-thread transition;
 - pinned profile, circuit, proof system, VK, batch-data commitment,

@@ -16,7 +16,7 @@ public record EutxoZkVerificationKey(
         byte[] delta,
         List<byte[]> ic
 ) {
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
 
     public EutxoZkVerificationKey {
         requireIdentity(profileId, "profileId");
@@ -26,8 +26,9 @@ public record EutxoZkVerificationKey(
         gamma = requireBytes(gamma, 96, "gamma");
         delta = requireBytes(delta, 96, "delta");
         Objects.requireNonNull(ic, "ic");
-        if (ic.size() != 6) {
-            throw new IllegalArgumentException("verification key must contain six IC points");
+        if (ic.size() != EutxoZkSettlementPublicInputs.COUNT + 1) {
+            throw new IllegalArgumentException(
+                    "verification key has an invalid public-input basis");
         }
         List<byte[]> copied = new ArrayList<>(ic.size());
         for (byte[] point : ic) {

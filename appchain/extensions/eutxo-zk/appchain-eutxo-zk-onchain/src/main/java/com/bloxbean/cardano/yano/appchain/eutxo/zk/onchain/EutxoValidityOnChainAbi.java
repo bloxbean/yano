@@ -2,6 +2,9 @@ package com.bloxbean.cardano.yano.appchain.eutxo.zk.onchain;
 
 import com.bloxbean.cardano.julc.core.PlutusData;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkPublicInputs;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkProofArtifact;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkSettlementPublicInputs;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkVerificationKey;
 import com.bloxbean.cardano.zeroj.onchain.julc.groth16.codec.SnarkjsToCardano;
 
 import java.util.List;
@@ -19,9 +22,27 @@ public final class EutxoValidityOnChainAbi {
                 .toArray(PlutusData[]::new));
     }
 
+    public static PlutusData publicInputs(
+            EutxoZkSettlementPublicInputs inputs
+    ) {
+        Objects.requireNonNull(inputs, "inputs");
+        return PlutusData.list(inputs.ordered().stream()
+                .map(PlutusData::integer)
+                .toArray(PlutusData[]::new));
+    }
+
     public static PlutusData proof(
             SnarkjsToCardano.ProofCompressed proof
     ) {
+        Objects.requireNonNull(proof, "proof");
+        return PlutusData.constr(
+                0,
+                PlutusData.bytes(proof.piA()),
+                PlutusData.bytes(proof.piB()),
+                PlutusData.bytes(proof.piC()));
+    }
+
+    public static PlutusData proof(EutxoZkProofArtifact proof) {
         Objects.requireNonNull(proof, "proof");
         return PlutusData.constr(
                 0,
@@ -43,5 +64,63 @@ public final class EutxoValidityOnChainAbi {
                 PlutusData.bytes(key.gamma()),
                 PlutusData.bytes(key.delta()),
                 ic);
+    }
+
+    public static List<PlutusData> verificationKeyParameters(
+            EutxoZkVerificationKey key
+    ) {
+        Objects.requireNonNull(key, "key");
+        PlutusData ic = PlutusData.list(key.ic().stream()
+                .map(PlutusData::bytes)
+                .toArray(PlutusData[]::new));
+        return List.of(
+                PlutusData.bytes(key.alpha()),
+                PlutusData.bytes(key.beta()),
+                PlutusData.bytes(key.gamma()),
+                PlutusData.bytes(key.delta()),
+                ic);
+    }
+
+    public static PlutusData rootDatum(
+            String chainId,
+            long bridgeEpoch,
+            long height,
+            EutxoZkSettlementPublicInputs inputs,
+            long generation
+    ) {
+        Objects.requireNonNull(chainId, "chainId");
+        Objects.requireNonNull(inputs, "inputs");
+        return PlutusData.constr(
+                0,
+                PlutusData.integer(1),
+                PlutusData.bytes(
+                        chainId.getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                PlutusData.integer(bridgeEpoch),
+                PlutusData.integer(height),
+                PlutusData.integer(inputs.nextRoot()),
+                PlutusData.integer(inputs.settlementContext()),
+                PlutusData.integer(inputs.batchDataCommitment()),
+                PlutusData.integer(inputs.withdrawalCommitment()),
+                PlutusData.integer(generation));
+    }
+
+    public static PlutusData advanceRedeemer(EutxoZkProofArtifact proof) {
+        Objects.requireNonNull(proof, "proof");
+        EutxoZkSettlementPublicInputs inputs =
+                proof.statement().publicInputs();
+        return PlutusData.constr(
+                0,
+                PlutusData.integer(0),
+                PlutusData.integer(inputs.previousRoot()),
+                PlutusData.integer(inputs.nextRoot()),
+                PlutusData.integer(inputs.transitionDigest()),
+                PlutusData.integer(inputs.ownerCommitment()),
+                PlutusData.integer(inputs.batchSize()),
+                PlutusData.integer(inputs.settlementContext()),
+                PlutusData.integer(inputs.batchDataCommitment()),
+                PlutusData.integer(inputs.withdrawalCommitment()),
+                PlutusData.bytes(proof.piA()),
+                PlutusData.bytes(proof.piB()),
+                PlutusData.bytes(proof.piC()));
     }
 }
