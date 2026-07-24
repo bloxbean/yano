@@ -45,7 +45,12 @@ public final class EutxoGroth16DevelopmentSetup implements AutoCloseable {
     }
 
     public static EutxoGroth16DevelopmentSetup create() {
-        var circuit = EutxoKeyPaymentCircuit.circuit();
+        return create(EutxoKeyPaymentCircuit.circuit());
+    }
+
+    static EutxoGroth16DevelopmentSetup create(
+            com.bloxbean.cardano.zeroj.circuit.CircuitBuilder circuit
+    ) {
         var r1cs = circuit.compileR1CS(CurveId.BLS12_381);
         List<R1CSConstraint> constraints = r1cs.constraints();
         int domainLog = 1;
@@ -65,11 +70,20 @@ public final class EutxoGroth16DevelopmentSetup implements AutoCloseable {
             EutxoZkPublicInputs publicInputs,
             BigInteger ownerSecret
     ) {
+        return prove(
+                publicInputs,
+                EutxoKeyPaymentCircuit.witness(publicInputs, ownerSecret));
+    }
+
+    ProofArtifact prove(
+            EutxoZkPublicInputs publicInputs,
+            BigInteger[] witness
+    ) {
         Objects.requireNonNull(publicInputs, "publicInputs");
+        Objects.requireNonNull(witness, "witness");
         long started = System.nanoTime();
         Groth16ProofBLS381 proof = keys.prove(
-                EutxoKeyPaymentCircuit.witness(publicInputs, ownerSecret),
-                constraints);
+                witness, constraints);
         long proofMillis = Duration.ofNanos(
                 System.nanoTime() - started).toMillis();
         return new ProofArtifact(

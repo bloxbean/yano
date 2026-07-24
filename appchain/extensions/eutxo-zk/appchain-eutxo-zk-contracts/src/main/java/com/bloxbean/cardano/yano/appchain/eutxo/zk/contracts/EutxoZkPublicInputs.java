@@ -23,9 +23,9 @@ public record EutxoZkPublicInputs(
         requireScalar(transitionDigest, "transitionDigest");
         requireScalar(ownerCommitment, "ownerCommitment");
         requireScalar(batchSize, "batchSize");
-        if (!BigInteger.ONE.equals(batchSize)) {
+        if (batchSize.signum() <= 0 || batchSize.compareTo(BigInteger.valueOf(4)) > 0) {
             throw new IllegalArgumentException(
-                    "Z0 supports exactly one transition per proof");
+                    "batch size must be in 1-4");
         }
     }
 

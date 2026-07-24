@@ -26,6 +26,16 @@ public record EutxoZkProfile(
                     1,
                     1,
                     2);
+    public static final EutxoZkProfile Z1_BOUNDED_KEY_PAYMENTS =
+            new EutxoZkProfile(
+                    "yano-eutxo-zk-z1",
+                    1,
+                    "eutxo-key-payment-batch-v1",
+                    "groth16",
+                    "bls12-381",
+                    4,
+                    4,
+                    8);
 
     public EutxoZkProfile {
         if (id == null || id.isBlank() || circuitId == null || circuitId.isBlank()
