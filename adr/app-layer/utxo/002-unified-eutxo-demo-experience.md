@@ -2,12 +2,20 @@
 
 ## Status
 
-Proposed — version 1
+Implemented — version 2
 
 This ADR defines a disposable, development-only product experience for the
 non-ZK and ZeroJ-backed EUTxO capabilities selected by ADR-UTXO-001. It does
 not change the EUTxO ledger, bridge, validity circuit, settlement contracts,
 or production operator trust model.
+
+Version 2 records the implemented M0–M6 delivery. The disposable ZK command
+generates and independently verifies the b16 proof before payout, while its
+packaged quick-demo payout deliberately uses the disposable native-script
+vault and labels that boundary in output. The separately maintained live
+`EutxoZkRollupDevnetE2ETest` remains the acceptance gate for the actual
+validity-root and proof-withdrawal validators. The quick-demo vault must not be
+presented as proof-enforced custody.
 
 ## Date
 
