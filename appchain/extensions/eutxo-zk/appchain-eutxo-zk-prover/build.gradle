@@ -16,3 +16,7 @@ java {
     sourceCompatibility = 25
     targetCompatibility = 25
 }
+
+tasks.named('test') {
+    systemProperty 'zeroj.allowInsecureTrustedSetup', 'true'
+}

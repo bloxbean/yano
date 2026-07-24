@@ -5,6 +5,7 @@ import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkPublicInputs
 import com.bloxbean.cardano.zeroj.onchain.julc.groth16.codec.SnarkjsToCardano;
 
 import java.math.BigInteger;
+import java.nio.file.Path;
 import java.util.Objects;
 
 /** Development-only Groth16 setup facade for the Z1 bounded batch circuit. */
@@ -21,6 +22,24 @@ public final class EutxoBatchGroth16DevelopmentSetup implements AutoCloseable {
         return new EutxoBatchGroth16DevelopmentSetup(
                 EutxoGroth16DevelopmentSetup.create(
                         EutxoKeyPaymentBatchCircuit.circuit()));
+    }
+
+    public static EutxoBatchGroth16DevelopmentSetup create(
+            Path keyDirectory
+    ) {
+        return new EutxoBatchGroth16DevelopmentSetup(
+                EutxoGroth16DevelopmentSetup.create(
+                        EutxoKeyPaymentBatchCircuit.circuit(),
+                        keyDirectory));
+    }
+
+    public static EutxoBatchGroth16DevelopmentSetup load(
+            Path keyDirectory
+    ) {
+        return new EutxoBatchGroth16DevelopmentSetup(
+                EutxoGroth16DevelopmentSetup.load(
+                        EutxoKeyPaymentBatchCircuit.circuit(),
+                        keyDirectory));
     }
 
     public EutxoGroth16DevelopmentSetup.ProofArtifact prove(
