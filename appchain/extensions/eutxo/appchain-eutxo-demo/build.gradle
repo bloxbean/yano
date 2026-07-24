@@ -6,6 +6,9 @@ dependencies {
     api project(':appchain-client')
     api project(':appchain-eutxo-contracts')
     implementation project(':appchain-eutxo-client')
+    implementation project(':appchain-eutxo-bridge-cardano')
+    implementation libs.cardano.client.backend.blockfrost
+    implementation libs.cardano.client.quicktx
     implementation libs.cardano.client.core
     implementation libs.cardano.client.crypto
     implementation libs.jackson.databind
