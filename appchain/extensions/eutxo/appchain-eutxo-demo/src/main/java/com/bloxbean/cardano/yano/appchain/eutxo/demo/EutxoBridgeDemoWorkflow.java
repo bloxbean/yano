@@ -51,7 +51,7 @@ import java.util.Map;
  * Disposable devnet bridge workflow. The native-script vault intentionally
  * models federated demo custody; it is not a production validator deployment.
  */
-final class EutxoBridgeDemoWorkflow {
+public final class EutxoBridgeDemoWorkflow {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final BigInteger DEPOSIT = BigInteger.valueOf(20_000_000);
     private static final BigInteger WITHDRAWAL = BigInteger.valueOf(3_000_000);
@@ -63,7 +63,7 @@ final class EutxoBridgeDemoWorkflow {
     private final UtxoSupplier utxos;
     private final EutxoClient eutxo;
 
-    EutxoBridgeDemoWorkflow(
+    public EutxoBridgeDemoWorkflow(
             EutxoDemoWorkspace workspace,
             EutxoDemoCluster cluster) {
         this.workspace = workspace;
@@ -76,7 +76,7 @@ final class EutxoBridgeDemoWorkflow {
                 .chainId(workspace.manifest().chainId()).build());
     }
 
-    EutxoDemoResult execute(String requested) throws Exception {
+    public EutxoDemoResult execute(String requested) throws Exception {
         requireReady();
         if (List.of("fund", "deposit", "transfer", "settle", "withdraw",
                 "reconcile", "verify", "round-trip").contains(requested)) {
@@ -94,7 +94,9 @@ final class EutxoBridgeDemoWorkflow {
                 "reconcile", "verify", "round-trip").contains(requested)) {
             settle();
         }
-        verify();
+        if (List.of("reconcile", "verify", "round-trip").contains(requested)) {
+            verify();
+        }
         Map<String, Object> fields = reportFields();
         fields.put("trustBoundary",
                 "federated disposable-devnet native-script custody; no validity proof");
