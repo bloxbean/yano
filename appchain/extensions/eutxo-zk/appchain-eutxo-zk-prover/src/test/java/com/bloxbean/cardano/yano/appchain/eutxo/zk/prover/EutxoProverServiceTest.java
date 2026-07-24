@@ -5,9 +5,11 @@ import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkBatchData;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkProofArtifact;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkPublicInputs;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkSettlementPublicInputs;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkStatement;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkVerificationKey;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.zeroj.EutxoKeyPaymentBatchCircuit;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.zeroj.EutxoKeyPaymentSettlementCircuit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -35,7 +37,8 @@ class EutxoProverServiceTest {
 
     @Test
     void jobSurvivesRestartAndFailureRequiresExplicitRetry() {
-        Fixtures fixtures = fixtures();
+        FailingOnceBackend backend = new FailingOnceBackend();
+        Fixtures fixtures = fixtures(backend.verificationKey().digestHex());
         EutxoProverStore store = new EutxoProverStore(
                 temporary.resolve("restart"));
         EutxoProverJob queued = store.create(
@@ -45,7 +48,6 @@ class EutxoProverServiceTest {
                 queued.id(), EutxoProverJob.Status.RUNNING, 1,
                 queued.createdAt(), queued.updatedAt(), "", ""));
 
-        FailingOnceBackend backend = new FailingOnceBackend();
         try (EutxoProverService service = service(store, backend)) {
             assertThat(store.find(queued.id()).orElseThrow().status())
                     .isEqualTo(EutxoProverJob.Status.QUEUED);
@@ -59,7 +61,8 @@ class EutxoProverServiceTest {
             assertThat(service.health().healthy()).isTrue();
             assertThat(store.proof(queued.id())).isPresent();
             EutxoProverJob replay = new EutxoFinalizedBatchIngestor(service)
-                    .ingest("payments", 7, new byte[32], fixtures.witness());
+                    .ingest("payments", 7, 0, new byte[32],
+                            fixtures.witness(), new byte[32]);
             assertThat(replay.id()).isEqualTo(queued.id());
             assertThat(replay.status())
                     .isEqualTo(EutxoProverJob.Status.PROVED);
@@ -69,7 +72,6 @@ class EutxoProverServiceTest {
     @Test
     void timeoutCancellationCapacityAndWitnessPermissionsAreEnforced()
             throws Exception {
-        Fixtures fixtures = fixtures();
         EutxoProverStore store = new EutxoProverStore(
                 temporary.resolve("bounds"));
         EutxoProofBackend slow = new FailingOnceBackend() {
@@ -88,6 +90,7 @@ class EutxoProverServiceTest {
                 return super.prove(statement, witness, proverId);
             }
         };
+        Fixtures fixtures = fixtures(slow.verificationKey().digestHex());
         try (EutxoProverService service = new EutxoProverService(
                 "slow", store, slow, CLOCK,
                 Duration.ofMillis(20), 2, 1)) {
@@ -113,19 +116,20 @@ class EutxoProverServiceTest {
 
     @Test
     void twoIndependentProversUsingOneCeremonyBundleProveSameStatement() {
-        Fixtures fixtures = fixtures();
         Path keys = temporary.resolve("ceremony");
         EutxoZkProofArtifact first;
         EutxoZkVerificationKey verificationKey;
         try (ZerojEutxoProofBackend setup =
                      ZerojEutxoProofBackend.singleParticipantDevelopmentSetup(keys)) {
             verificationKey = setup.verificationKey();
+            Fixtures fixtures = fixtures(verificationKey.digestHex());
             first = setup.prove(
                     fixtures.statement(), fixtures.witness(), "prover-a");
             assertThat(setup.verify(first)).isTrue();
         }
 
         EutxoZkProofArtifact second;
+        Fixtures fixtures = fixtures(verificationKey.digestHex());
         try (ZerojEutxoProofBackend independent =
                      ZerojEutxoProofBackend.loadCeremonyBundle(keys)) {
             assertThat(independent.verificationKey().digestHex())
@@ -152,7 +156,7 @@ class EutxoProverServiceTest {
                 Duration.ofSeconds(30), 3, 10);
     }
 
-    private static Fixtures fixtures() {
+    private static Fixtures fixtures(String verificationKeyDigest) {
         EutxoKeyPaymentBatch witness = new EutxoKeyPaymentBatch(
                 List.of(
                         payment(100, 70),
@@ -163,10 +167,15 @@ class EutxoProverServiceTest {
                         new byte[32], witness);
         EutxoZkBatchData batchData = new EutxoZkBatchData(
                 witness.payments(), inputs.ownerCommitment());
+        EutxoZkSettlementPublicInputs settlementInputs =
+                EutxoKeyPaymentSettlementCircuit.publicInputs(
+                        "payments", 0, verificationKeyDigest,
+                        new byte[32], witness,
+                        batchData.commitment(), new byte[32]);
         EutxoZkStatement statement = new EutxoZkStatement(
-                "payments", 7,
-                EutxoZkProfile.Z1_BOUNDED_KEY_PAYMENTS,
-                inputs, batchData.commitment());
+                "payments", 7, 0,
+                EutxoZkProfile.Z3_VALIDITY_SETTLEMENT,
+                settlementInputs, batchData.commitment());
         return new Fixtures(witness, batchData, statement);
     }
 
@@ -191,11 +200,11 @@ class EutxoProverServiceTest {
         private final AtomicInteger attempts = new AtomicInteger();
         private final EutxoZkVerificationKey key =
                 new EutxoZkVerificationKey(
-                        EutxoZkProfile.Z1_BOUNDED_KEY_PAYMENTS.id(),
-                        EutxoZkProfile.Z1_BOUNDED_KEY_PAYMENTS.circuitId(),
+                        EutxoZkProfile.Z3_VALIDITY_SETTLEMENT.id(),
+                        EutxoZkProfile.Z3_VALIDITY_SETTLEMENT.circuitId(),
                         new byte[48], new byte[96],
                         new byte[96], new byte[96],
-                        Collections.nCopies(6, new byte[48]));
+                        Collections.nCopies(9, new byte[48]));
 
         @Override
         public EutxoZkVerificationKey verificationKey() {

@@ -9,11 +9,12 @@ import java.util.Objects;
 public record EutxoZkStatement(
         String chainId,
         long finalizedHeight,
+        long bridgeEpoch,
         EutxoZkProfile profile,
-        EutxoZkPublicInputs publicInputs,
+        EutxoZkSettlementPublicInputs publicInputs,
         byte[] batchDataCommitment
 ) {
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
 
     public EutxoZkStatement {
         if (chainId == null || chainId.isBlank() || chainId.length() > 128) {
@@ -21,6 +22,9 @@ public record EutxoZkStatement(
         }
         if (finalizedHeight < 1) {
             throw new IllegalArgumentException("finalized height must be positive");
+        }
+        if (bridgeEpoch < 0) {
+            throw new IllegalArgumentException("bridge epoch cannot be negative");
         }
         Objects.requireNonNull(profile, "profile");
         Objects.requireNonNull(publicInputs, "publicInputs");
@@ -37,6 +41,7 @@ public record EutxoZkStatement(
             output.writeInt(VERSION);
             EutxoZkCodec.writeText(output, chainId);
             output.writeLong(finalizedHeight);
+            output.writeLong(bridgeEpoch);
             EutxoZkCodec.writeText(output, profile.id());
             output.writeInt(profile.version());
             EutxoZkCodec.writeText(output, profile.circuitId());
@@ -75,6 +80,7 @@ public record EutxoZkStatement(
             }
             String chainId = EutxoZkCodec.readText(input);
             long finalizedHeight = input.readLong();
+            long bridgeEpoch = input.readLong();
             EutxoZkProfile profile = new EutxoZkProfile(
                     EutxoZkCodec.readText(input),
                     input.readInt(),
@@ -84,7 +90,11 @@ public record EutxoZkStatement(
                     input.readInt(),
                     input.readInt(),
                     input.readInt());
-            EutxoZkPublicInputs publicInputs = new EutxoZkPublicInputs(
+            EutxoZkSettlementPublicInputs publicInputs =
+                    new EutxoZkSettlementPublicInputs(
+                    EutxoZkCodec.readScalar(input),
+                    EutxoZkCodec.readScalar(input),
+                    EutxoZkCodec.readScalar(input),
                     EutxoZkCodec.readScalar(input),
                     EutxoZkCodec.readScalar(input),
                     EutxoZkCodec.readScalar(input),
@@ -93,7 +103,8 @@ public record EutxoZkStatement(
             byte[] batchCommitment = EutxoZkCodec.readBytes(input, 32);
             EutxoZkCodec.requireEnd(input);
             return new EutxoZkStatement(
-                    chainId, finalizedHeight, profile, publicInputs, batchCommitment);
+                    chainId, finalizedHeight, bridgeEpoch,
+                    profile, publicInputs, batchCommitment);
         } catch (IOException exception) {
             throw new IllegalArgumentException("invalid EUTxO ZK statement", exception);
         }

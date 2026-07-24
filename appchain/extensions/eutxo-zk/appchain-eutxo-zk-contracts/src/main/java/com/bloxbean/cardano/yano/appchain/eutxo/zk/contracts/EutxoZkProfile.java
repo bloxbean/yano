@@ -36,6 +36,16 @@ public record EutxoZkProfile(
                     4,
                     4,
                     8);
+    public static final EutxoZkProfile Z3_VALIDITY_SETTLEMENT =
+            new EutxoZkProfile(
+                    "yano-eutxo-zk-z3",
+                    1,
+                    "eutxo-key-payment-settlement-v1",
+                    "groth16",
+                    "bls12-381",
+                    4,
+                    4,
+                    8);
 
     public EutxoZkProfile {
         if (id == null || id.isBlank() || circuitId == null || circuitId.isBlank()

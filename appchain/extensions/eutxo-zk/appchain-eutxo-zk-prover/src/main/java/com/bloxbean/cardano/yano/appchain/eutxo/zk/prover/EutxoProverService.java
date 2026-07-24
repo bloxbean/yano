@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoKeyPaymentBatc
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkBatchData;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkProofArtifact;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkStatement;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkVerificationKey;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -196,6 +197,10 @@ public final class EutxoProverService implements AutoCloseable {
 
     public EutxoProverStore store() {
         return store;
+    }
+
+    public EutxoZkVerificationKey verificationKey() {
+        return backend.verificationKey();
     }
 
     @Override

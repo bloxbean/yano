@@ -4,7 +4,7 @@ import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoKeyPaymentBatc
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkBatchData;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkProofArtifact;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkProfile;
-import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkPublicInputs;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkSettlementPublicInputs;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkStatement;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkVerificationKey;
 import org.junit.jupiter.api.Test;
@@ -52,19 +52,21 @@ class EutxoZkClientTest {
     private static Fixture fixture() {
         var payment = new EutxoKeyPaymentBatch.Payment(
                 BigInteger.TEN, BigInteger.valueOf(6), BigInteger.valueOf(4));
-        var inputs = new EutxoZkPublicInputs(
+        var inputs = new EutxoZkSettlementPublicInputs(
                 BigInteger.ONE, BigInteger.TWO, BigInteger.valueOf(3),
-                BigInteger.valueOf(4), BigInteger.ONE);
+                BigInteger.valueOf(4), BigInteger.ONE,
+                BigInteger.valueOf(5), BigInteger.valueOf(6),
+                BigInteger.valueOf(7));
         var batch = new EutxoZkBatchData(
                 List.of(payment), inputs.ownerCommitment());
         var statement = new EutxoZkStatement(
-                "client-chain", 8,
-                EutxoZkProfile.Z1_BOUNDED_KEY_PAYMENTS,
+                "client-chain", 8, 0,
+                EutxoZkProfile.Z3_VALIDITY_SETTLEMENT,
                 inputs, batch.commitment());
         var key = new EutxoZkVerificationKey(
                 statement.profile().id(), statement.profile().circuitId(),
                 new byte[48], new byte[96], new byte[96], new byte[96],
-                Collections.nCopies(6, new byte[48]));
+                Collections.nCopies(9, new byte[48]));
         var proof = new EutxoZkProofArtifact(
                 statement.digestHex(), key.digestHex(), "client-test",
                 statement, new byte[48], new byte[96], new byte[48], 1);

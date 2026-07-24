@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.appchain.eutxo.zk.zeroj;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoKeyPaymentBatch;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkPublicInputs;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkSettlementPublicInputs;
 import com.bloxbean.cardano.zeroj.api.CurveId;
 import com.bloxbean.cardano.zeroj.circuit.CircuitBuilder;
 import com.bloxbean.cardano.zeroj.circuit.Variable;
@@ -26,14 +27,32 @@ public final class EutxoKeyPaymentBatchCircuit {
     }
 
     public static CircuitBuilder circuit() {
-        CircuitBuilder builder = CircuitBuilder.create(
-                        EutxoZkProfile.Z1_BOUNDED_KEY_PAYMENTS.circuitId())
+        return circuit(EutxoZkProfile.Z1_BOUNDED_KEY_PAYMENTS, false);
+    }
+
+    static CircuitBuilder settlementCircuit() {
+        return circuit(EutxoZkProfile.Z3_VALIDITY_SETTLEMENT, true);
+    }
+
+    private static CircuitBuilder circuit(
+            EutxoZkProfile profile,
+            boolean settlementBound
+    ) {
+        CircuitBuilder builder = CircuitBuilder.create(profile.circuitId())
                 .publicVar("previousRoot")
                 .publicVar("nextRoot")
                 .publicVar("transitionDigest")
                 .publicVar("ownerCommitment")
-                .publicVar("batchSize")
-                .secretVar("ownerSecret");
+                .publicVar("batchSize");
+        if (settlementBound) {
+            builder.publicVar("settlementContext")
+                    .publicVar("batchDataCommitment")
+                    .publicVar("withdrawalCommitment")
+                    .secretVar("settlementContextWitness")
+                    .secretVar("batchDataCommitmentWitness")
+                    .secretVar("withdrawalCommitmentWitness");
+        }
+        builder.secretVar("ownerSecret");
         for (int index = 0; index < MAX_BATCH; index++) {
             builder.secretVar("enabled" + index)
                     .secretVar("input" + index)
@@ -105,6 +124,17 @@ public final class EutxoKeyPaymentBatchCircuit {
             api.assertEqual(api.var("nextRoot"), runningRoot);
             api.assertEqual(api.var("transitionDigest"), runningBatch);
             api.assertEqual(api.var("batchSize"), enabledSum);
+            if (settlementBound) {
+                api.assertEqual(
+                        api.var("settlementContext"),
+                        api.var("settlementContextWitness"));
+                api.assertEqual(
+                        api.var("batchDataCommitment"),
+                        api.var("batchDataCommitmentWitness"));
+                api.assertEqual(
+                        api.var("withdrawalCommitment"),
+                        api.var("withdrawalCommitmentWitness"));
+            }
         });
     }
 
@@ -133,12 +163,43 @@ public final class EutxoKeyPaymentBatchCircuit {
             EutxoZkPublicInputs inputs,
             EutxoKeyPaymentBatch batch
     ) {
+        return witness(circuit(), inputs, null, batch);
+    }
+
+    static BigInteger[] witness(
+            EutxoZkSettlementPublicInputs inputs,
+            EutxoKeyPaymentBatch batch
+    ) {
+        return witness(
+                settlementCircuit(), inputs.batchInputs(), inputs, batch);
+    }
+
+    private static BigInteger[] witness(
+            CircuitBuilder circuit,
+            EutxoZkPublicInputs inputs,
+            EutxoZkSettlementPublicInputs settlementInputs,
+            EutxoKeyPaymentBatch batch
+    ) {
         Map<String, List<BigInteger>> assignments = new LinkedHashMap<>();
         assignments.put("previousRoot", List.of(inputs.previousRoot()));
         assignments.put("nextRoot", List.of(inputs.nextRoot()));
         assignments.put("transitionDigest", List.of(inputs.transitionDigest()));
         assignments.put("ownerCommitment", List.of(inputs.ownerCommitment()));
         assignments.put("batchSize", List.of(inputs.batchSize()));
+        if (settlementInputs != null) {
+            assignments.put("settlementContext",
+                    List.of(settlementInputs.settlementContext()));
+            assignments.put("batchDataCommitment",
+                    List.of(settlementInputs.batchDataCommitment()));
+            assignments.put("withdrawalCommitment",
+                    List.of(settlementInputs.withdrawalCommitment()));
+            assignments.put("settlementContextWitness",
+                    List.of(settlementInputs.settlementContext()));
+            assignments.put("batchDataCommitmentWitness",
+                    List.of(settlementInputs.batchDataCommitment()));
+            assignments.put("withdrawalCommitmentWitness",
+                    List.of(settlementInputs.withdrawalCommitment()));
+        }
         assignments.put("ownerSecret", List.of(batch.ownerSecret()));
         for (int index = 0; index < MAX_BATCH; index++) {
             boolean enabled = index < batch.payments().size();
@@ -155,7 +216,7 @@ public final class EutxoKeyPaymentBatchCircuit {
             assignments.put("secondOutput" + index,
                     List.of(enabled ? payment.secondOutputLovelace() : BigInteger.ZERO));
         }
-        return circuit().calculateWitness(assignments, CurveId.BLS12_381);
+        return circuit.calculateWitness(assignments, CurveId.BLS12_381);
     }
 
     static BigInteger transitionDigest(EutxoKeyPaymentBatch.Payment payment) {

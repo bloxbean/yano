@@ -24,10 +24,12 @@ import java.util.Objects;
  * insecure-setup system property. Production ceremony import is a Z6 gate.</p>
  */
 public final class EutxoBatchProofEngine implements AutoCloseable {
-    private final EutxoBatchGroth16DevelopmentSetup setup;
+    private final EutxoSettlementGroth16DevelopmentSetup setup;
     private final EutxoZkVerificationKey verificationKey;
 
-    private EutxoBatchProofEngine(EutxoBatchGroth16DevelopmentSetup setup) {
+    private EutxoBatchProofEngine(
+            EutxoSettlementGroth16DevelopmentSetup setup
+    ) {
         this.setup = setup;
         this.verificationKey = toVerificationKey(
                 setup.compressedVerificationKey());
@@ -35,21 +37,21 @@ public final class EutxoBatchProofEngine implements AutoCloseable {
 
     public static EutxoBatchProofEngine singleParticipantDevelopmentSetup() {
         return new EutxoBatchProofEngine(
-                EutxoBatchGroth16DevelopmentSetup.create());
+                EutxoSettlementGroth16DevelopmentSetup.create());
     }
 
     public static EutxoBatchProofEngine singleParticipantDevelopmentSetup(
             Path keyDirectory
     ) {
         return new EutxoBatchProofEngine(
-                EutxoBatchGroth16DevelopmentSetup.create(keyDirectory));
+                EutxoSettlementGroth16DevelopmentSetup.create(keyDirectory));
     }
 
     public static EutxoBatchProofEngine loadCeremonyBundle(
             Path keyDirectory
     ) {
         return new EutxoBatchProofEngine(
-                EutxoBatchGroth16DevelopmentSetup.load(keyDirectory));
+                EutxoSettlementGroth16DevelopmentSetup.load(keyDirectory));
     }
 
     public EutxoZkVerificationKey verificationKey() {
@@ -70,9 +72,33 @@ public final class EutxoBatchProofEngine implements AutoCloseable {
             throw new IllegalArgumentException(
                     "witness batch data does not match the public statement");
         }
+        if (!EutxoKeyPaymentSettlementCircuit.commitmentScalar(
+                statement.batchDataCommitment()).equals(
+                statement.publicInputs().batchDataCommitment())) {
+            throw new IllegalArgumentException(
+                    "batch-data scalar does not match the public statement");
+        }
+        byte[] keyDigest = java.util.HexFormat.of().parseHex(
+                verificationKey.digestHex());
+        var expectedContext =
+                EutxoKeyPaymentSettlementCircuit.commitmentScalar(
+                        EutxoKeyPaymentSettlementCircuit.settlementContext(
+                                statement.chainId(),
+                                statement.bridgeEpoch(),
+                                keyDigest));
+        if (!expectedContext.equals(
+                statement.publicInputs().settlementContext())) {
+            throw new IllegalArgumentException(
+                    "settlement context does not match chain, epoch, profile, and key");
+        }
+        if (!statement.profile().equals(
+                EutxoZkProfile.Z3_VALIDITY_SETTLEMENT)) {
+            throw new IllegalArgumentException(
+                    "statement does not select the settlement profile");
+        }
         var expectedInputs = EutxoKeyPaymentBatchCircuit.publicInputs(
                 scalarBytes(statement.publicInputs().previousRoot()), witness);
-        if (!expectedInputs.equals(statement.publicInputs())) {
+        if (!expectedInputs.equals(statement.publicInputs().batchInputs())) {
             throw new IllegalArgumentException(
                     "witness does not produce the public statement");
         }
@@ -138,8 +164,8 @@ public final class EutxoBatchProofEngine implements AutoCloseable {
             SnarkjsToCardano.VkCompressed compressed
     ) {
         return new EutxoZkVerificationKey(
-                EutxoZkProfile.Z1_BOUNDED_KEY_PAYMENTS.id(),
-                EutxoZkProfile.Z1_BOUNDED_KEY_PAYMENTS.circuitId(),
+                EutxoZkProfile.Z3_VALIDITY_SETTLEMENT.id(),
+                EutxoZkProfile.Z3_VALIDITY_SETTLEMENT.circuitId(),
                 compressed.alpha(),
                 compressed.beta(),
                 compressed.gamma(),

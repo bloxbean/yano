@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.eutxo.zk.zeroj;
 
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkPublicInputs;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkSettlementPublicInputs;
 import com.bloxbean.cardano.zeroj.api.CurveId;
 import com.bloxbean.cardano.zeroj.api.R1CSConstraint;
 import com.bloxbean.cardano.zeroj.bls12381.ec.G1Point;
@@ -135,15 +136,42 @@ public final class EutxoGroth16DevelopmentSetup implements AutoCloseable {
                 proofMillis);
     }
 
+    SettlementProofArtifact prove(
+            EutxoZkSettlementPublicInputs publicInputs,
+            BigInteger[] witness
+    ) {
+        Objects.requireNonNull(publicInputs, "publicInputs");
+        Objects.requireNonNull(witness, "witness");
+        long started = System.nanoTime();
+        Groth16ProofBLS381 proof = keys.prove(witness, constraints);
+        long proofMillis = Duration.ofNanos(
+                System.nanoTime() - started).toMillis();
+        return new SettlementProofArtifact(
+                publicInputs,
+                proof,
+                ProverToCardano.compressProof(proof),
+                proofMillis);
+    }
+
     public boolean verify(ProofArtifact artifact) {
         Objects.requireNonNull(artifact, "artifact");
-        List<BigInteger> inputs = artifact.publicInputs().ordered();
+        return verify(artifact.publicInputs().ordered(), artifact.proof());
+    }
+
+    boolean verify(SettlementProofArtifact artifact) {
+        Objects.requireNonNull(artifact, "artifact");
+        return verify(artifact.publicInputs().ordered(), artifact.proof());
+    }
+
+    private boolean verify(
+            List<BigInteger> inputs,
+            Groth16ProofBLS381 proof
+    ) {
         G1Point vkX = toG1(keys.ic()[0]);
         for (int index = 0; index < inputs.size(); index++) {
             vkX = vkX.add(toG1(keys.ic()[index + 1])
                     .scalarMul(inputs.get(index)));
         }
-        Groth16ProofBLS381 proof = artifact.proof();
         return BLS12381Pairing.pairingCheck(
                 new G1Point[]{
                         toG1(proof.a()),
@@ -223,6 +251,23 @@ public final class EutxoGroth16DevelopmentSetup implements AutoCloseable {
             Objects.requireNonNull(compressedProof, "compressedProof");
             if (proofMillis < 0) {
                 throw new IllegalArgumentException("proof duration cannot be negative");
+            }
+        }
+    }
+
+    record SettlementProofArtifact(
+            EutxoZkSettlementPublicInputs publicInputs,
+            Groth16ProofBLS381 proof,
+            SnarkjsToCardano.ProofCompressed compressedProof,
+            long proofMillis
+    ) {
+        SettlementProofArtifact {
+            Objects.requireNonNull(publicInputs, "publicInputs");
+            Objects.requireNonNull(proof, "proof");
+            Objects.requireNonNull(compressedProof, "compressedProof");
+            if (proofMillis < 0) {
+                throw new IllegalArgumentException(
+                        "proof duration cannot be negative");
             }
         }
     }

@@ -5,6 +5,7 @@ import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkBatchData;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkStatement;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.zeroj.EutxoKeyPaymentBatchCircuit;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.zeroj.EutxoKeyPaymentSettlementCircuit;
 
 import java.util.Objects;
 
@@ -24,19 +25,30 @@ public final class EutxoFinalizedBatchIngestor {
     public EutxoProverJob ingest(
             String chainId,
             long finalizedHeight,
+            long bridgeEpoch,
             byte[] previousValidityRoot,
-            EutxoKeyPaymentBatch witness
+            EutxoKeyPaymentBatch witness,
+            byte[] withdrawalCommitment
     ) {
         Objects.requireNonNull(previousValidityRoot, "previousValidityRoot");
         Objects.requireNonNull(witness, "witness");
-        var inputs = EutxoKeyPaymentBatchCircuit.publicInputs(
+        var batchInputs = EutxoKeyPaymentBatchCircuit.publicInputs(
                 previousValidityRoot, witness);
         var batchData = new EutxoZkBatchData(
-                witness.payments(), inputs.ownerCommitment());
+                witness.payments(), batchInputs.ownerCommitment());
+        var inputs = EutxoKeyPaymentSettlementCircuit.publicInputs(
+                chainId,
+                bridgeEpoch,
+                prover.verificationKey().digestHex(),
+                previousValidityRoot,
+                witness,
+                batchData.commitment(),
+                withdrawalCommitment);
         var statement = new EutxoZkStatement(
                 chainId,
                 finalizedHeight,
-                EutxoZkProfile.Z1_BOUNDED_KEY_PAYMENTS,
+                bridgeEpoch,
+                EutxoZkProfile.Z3_VALIDITY_SETTLEMENT,
                 inputs,
                 batchData.commitment());
         return prover.submit(statement, batchData, witness);

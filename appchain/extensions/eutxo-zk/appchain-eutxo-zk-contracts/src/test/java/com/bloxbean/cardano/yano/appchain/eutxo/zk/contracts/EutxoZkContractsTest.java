@@ -38,6 +38,9 @@ class EutxoZkContractsTest {
         assertThat(EutxoZkProfile.Z1_BOUNDED_KEY_PAYMENTS.digestHex())
                 .isEqualTo("d495d0ad6a1d7babd00ba53de5bd9019"
                         + "224ac81fb3c68f33dd902e5e5e9282b3");
+        assertThat(EutxoZkProfile.Z3_VALIDITY_SETTLEMENT.digestHex())
+                .isEqualTo("10dc83ac4311ea6099caa859ac8021973"
+                        + "94e70685139d357a3a5f888532af747");
         EutxoZkPublicInputs inputs = new EutxoZkPublicInputs(
                 BigInteger.ONE, BigInteger.TWO, BigInteger.valueOf(3),
                 BigInteger.valueOf(4), BigInteger.ONE);
@@ -70,20 +73,22 @@ class EutxoZkContractsTest {
     void z2ArtifactsRoundTripCanonicallyAndRejectMutation() {
         var payment = new EutxoKeyPaymentBatch.Payment(
                 BigInteger.TEN, BigInteger.valueOf(6), BigInteger.valueOf(4));
-        var inputs = new EutxoZkPublicInputs(
+        var inputs = new EutxoZkSettlementPublicInputs(
                 BigInteger.ONE, BigInteger.TWO, BigInteger.valueOf(3),
-                BigInteger.valueOf(4), BigInteger.ONE);
+                BigInteger.valueOf(4), BigInteger.ONE,
+                BigInteger.valueOf(5), BigInteger.valueOf(6),
+                BigInteger.valueOf(7));
         var batch = new EutxoZkBatchData(List.of(payment),
                 inputs.ownerCommitment());
         var statement = new EutxoZkStatement(
-                "payments", 12,
-                EutxoZkProfile.Z1_BOUNDED_KEY_PAYMENTS,
+                "payments", 12, 0,
+                EutxoZkProfile.Z3_VALIDITY_SETTLEMENT,
                 inputs, batch.commitment());
         var key = new EutxoZkVerificationKey(
                 statement.profile().id(),
                 statement.profile().circuitId(),
                 new byte[48], new byte[96], new byte[96], new byte[96],
-                java.util.Collections.nCopies(6, new byte[48]));
+                java.util.Collections.nCopies(9, new byte[48]));
         var proof = new EutxoZkProofArtifact(
                 statement.digestHex(), key.digestHex(), "prover-a",
                 statement, new byte[48], new byte[96], new byte[48], 9);
