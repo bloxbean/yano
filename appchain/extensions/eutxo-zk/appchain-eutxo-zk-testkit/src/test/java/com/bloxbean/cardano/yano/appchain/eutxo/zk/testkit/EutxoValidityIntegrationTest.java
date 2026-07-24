@@ -30,12 +30,13 @@ class EutxoValidityIntegrationTest {
     void selectedOptionalProviderMaintainsAtomicSecondRoot() {
         EutxoTestWallet alice = wallet(1);
         EutxoTestWallet bob = wallet(2);
-        Map<String, String> settings = Map.of(
-                "machines.eutxo.profile", "yano-eutxo-v1",
-                "machines.eutxo.genesis.address", alice.address(),
-                "machines.eutxo.genesis.lovelace", "100",
-                "machines.eutxo.validity.enabled", "true",
-                "machines.eutxo.validity.provider",
+        Map<String, String> settings = new java.util.LinkedHashMap<>(
+                ZerojPoseidonValidityProvider.requiredIdentitySettings());
+        settings.put("machines.eutxo.profile", "yano-eutxo-v1");
+        settings.put("machines.eutxo.genesis.address", alice.address());
+        settings.put("machines.eutxo.genesis.lovelace", "100");
+        settings.put("machines.eutxo.validity.enabled", "true");
+        settings.put("machines.eutxo.validity.provider",
                 ZerojPoseidonValidityProvider.ID);
         AppStateMachine machine = new EutxoStateMachineProvider()
                 .create(context(settings));

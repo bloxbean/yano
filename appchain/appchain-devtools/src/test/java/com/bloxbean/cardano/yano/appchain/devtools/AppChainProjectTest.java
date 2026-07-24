@@ -155,7 +155,8 @@ class AppChainProjectTest {
         AppChainProjectModel.Resolution resolution = resolver.resolve(blueprint);
 
         assertThat(resolution.selectedCapabilities())
-                .contains("state:eutxo-ledger", "funding:eutxo-genesis");
+                .contains("state:eutxo-ledger", "profile:eutxo-plutus-v3",
+                        "funding:eutxo-genesis");
         assertThat(resolution.artifacts()).contains("appchain-eutxo-ledger");
         assertThat(resolution.consensusProperties())
                 .containsEntry("yano.app-chain.chains[0].state-machine", "eutxo-ledger")
@@ -179,6 +180,75 @@ class AppChainProjectTest {
     }
 
     @Test
+    void zerojValidityPolicyAllowsTestnetsAndRejectsEveryMainnetSelectionPath()
+            throws Exception {
+        AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
+        AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
+        AppChainProjectResolver resolver = new AppChainProjectResolver(properties, catalog);
+        Map<String, String> genesis = Map.of(
+                "eutxoGenesisAddress", "addr_test1vr8nlm7example",
+                "eutxoGenesisLovelace", "100000000");
+
+        AppChainProjectModel.Blueprint preprod = withAnswers(
+                blueprint("eutxo-zeroj-validity", "fixed", List.of()), genesis);
+        assertThat(resolver.resolve(preprod).selectedCapabilities())
+                .contains("state:eutxo-ledger", "profile:eutxo-key-payments",
+                        "settlement:zeroj-validity");
+        assertThat(resolver.resolve(preprod).consensusProperties())
+                .containsEntry("yano.app-chain.chains[0].machines.eutxo.profile",
+                        "yano-eutxo-v1")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.expected-profile-digest",
+                        "2499d01ee7cb0d09d0d498040c6351accd9da83df31666cd4463d0b1722d1212")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.validity."
+                                + "transaction-format",
+                        "cardano-conway-signed-transaction-cbor-v1")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.validity."
+                                + "expected-profile-digest",
+                        "cfe1767761cbe05c7e2b82f951222fbb9df34afa5eb1f39fb8a5c1cc2af87d45")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.validity.circuit-id",
+                        "eutxo-key-payment-settlement-v2")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.validity.zeroj-version",
+                        "0.1.0-pre10")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.validity.julc-version",
+                        "0.1.0-pre14");
+
+        assertThat(catalog.recipe("eutxo-zeroj-validity")
+                .effectiveSupportedNetworks())
+                .containsExactly("devnet", "preview", "preprod");
+        assertThat(catalog.capability("settlement:zeroj-validity")
+                .effectiveSupportedNetworks())
+                .containsExactly("devnet", "preview", "preprod");
+        assertThat(catalog.recipe("audit-log").effectiveSupportedNetworks())
+                .containsExactly("devnet", "preview", "preprod", "mainnet");
+
+        assertThatThrownBy(() -> resolver.resolve(
+                withNetwork(preprod, "mainnet")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("eutxo-zeroj-validity")
+                .hasMessageContaining("does not support network mainnet");
+        Path rejectedOutput = temporary.resolve("rejected-mainnet-zeroj");
+        assertThatThrownBy(() -> new AppChainProjectRenderer(catalog, resolver)
+                .initialize(rejectedOutput, withNetwork(preprod, "mainnet")))
+                .hasMessageContaining("does not support network mainnet");
+        assertThat(rejectedOutput).doesNotExist();
+
+        AppChainProjectModel.Blueprint explicitCapability = withNetwork(
+                withCapabilities(blueprint("audit-log", "fixed", List.of()),
+                        List.of("settlement:zeroj-validity")),
+                "mainnet");
+        assertThatThrownBy(() -> resolver.resolve(explicitCapability))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("settlement:zeroj-validity")
+                .hasMessageContaining("does not support network mainnet");
+    }
+
+    @Test
     void eutxoBridgeRecipeUsesProjectChainIdAndExcludesVirtualGenesis() throws Exception {
         AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
         AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
@@ -191,7 +261,8 @@ class AppChainProjectTest {
         AppChainProjectModel.Resolution resolution = resolver.resolve(blueprint);
 
         assertThat(resolution.selectedCapabilities())
-                .contains("state:eutxo-ledger", "bridge:cardano-federated", "l1:slot-feed")
+                .contains("state:eutxo-ledger", "profile:eutxo-plutus-v3",
+                        "bridge:cardano-federated", "l1:slot-feed")
                 .doesNotContain("funding:eutxo-genesis");
         assertThat(resolution.consensusProperties())
                 .containsEntry(
@@ -615,7 +686,7 @@ class AppChainProjectTest {
         AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
         AppChainProjectResolver resolver = new AppChainProjectResolver(properties, catalog);
 
-        assertThat(catalog.capabilities()).hasSize(37)
+        assertThat(catalog.capabilities()).hasSize(39)
                 .allSatisfy(capability -> {
                     assertThat(capability.availability()).isIn(
                             "BUNDLED", "FIRST_PARTY_OPTIONAL", "REFERENCE", "EXPERIMENTAL");

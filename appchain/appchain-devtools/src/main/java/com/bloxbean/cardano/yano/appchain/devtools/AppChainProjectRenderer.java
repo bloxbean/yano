@@ -67,6 +67,10 @@ final class AppChainProjectRenderer {
             Map<String, byte[]> componentCatalogInputs) throws IOException {
         Path root = safeRoot(project);
         requireEmptyOrMissing(root);
+        // Resolve before creating the project directory. Unsupported product
+        // policies (especially testnet-only capabilities on mainnet) must
+        // fail without leaving a partial blueprint or bootstrap plan behind.
+        resolver.resolve(blueprint);
         Files.createDirectories(root);
         byte[] blueprintBytes = yaml.writerWithDefaultPrettyPrinter()
                 .writeValueAsBytes(blueprint);

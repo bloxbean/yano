@@ -90,6 +90,47 @@ class AppChainCustomComponentCatalogTest {
     }
 
     @Test
+    void customCapabilityCanDeclareAndEnforceSupportedNetworks() throws Exception {
+        Fixture fixture = fixture("devnet-only", catalog -> {
+            var capability = (com.fasterxml.jackson.databind.node.ObjectNode)
+                    catalog.withArray("capabilities").get(0);
+            capability.putArray("supportedNetworks").add("devnet");
+        });
+        AppChainComponentCatalogLoader.Loaded loaded =
+                new AppChainComponentCatalogLoader().loadJar(
+                        fixture.jar(), Map.of("test-publisher", fixture.publicKey()));
+        AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
+        AppChainProjectCatalog catalog =
+                new AppChainProjectCatalog(properties, List.of(loaded));
+
+        assertThat(catalog.capability("state:devnet-only").effectiveSupportedNetworks())
+                .containsExactly("devnet");
+
+        AppChainProjectModel.Blueprint blueprint = new AppChainProjectModel.Blueprint(
+                AppChainProjectModel.API_VERSION,
+                AppChainProjectModel.BLUEPRINT_KIND,
+                new AppChainProjectModel.Metadata("network-policy"),
+                new AppChainProjectModel.Spec(
+                        "0.1.0-test",
+                        "preprod",
+                        new AppChainProjectModel.RuntimeSelection("jvm"),
+                        new AppChainProjectModel.DeploymentSelection("host"),
+                        List.of(new AppChainProjectModel.ChainIntent(
+                                "network-policy",
+                                "custom-plugin",
+                                List.of("state:devnet-only"),
+                                Map.of(),
+                                new AppChainProjectModel.Topology(
+                                        1, List.of(), List.of(), "all", "fixed",
+                                        "static", null, null)))));
+
+        assertThatThrownBy(() -> new AppChainProjectResolver(properties, catalog)
+                .resolve(blueprint))
+                .hasMessageContaining("state:devnet-only")
+                .hasMessageContaining("does not support network preprod");
+    }
+
+    @Test
     void trustTamperingCollisionsAndUnsupportedClaimsFailClosed() throws Exception {
         Fixture valid = fixture("custom-sample", null);
         AppChainComponentCatalogLoader loader = new AppChainComponentCatalogLoader();

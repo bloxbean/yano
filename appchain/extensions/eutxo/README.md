@@ -6,9 +6,11 @@ not a Cardano bridge, a custody product, or a rollup.
 
 ## Virtual-ledger capability
 
-Select the `eutxo-ledger` recipe for a JVM project. It combines
-`state:eutxo-ledger` with the separate `funding:eutxo-genesis` capability and
-generates:
+Select the `eutxo-ledger` recipe for a JVM project. It combines the reusable
+`state:eutxo-ledger` engine with `profile:eutxo-plutus-v3` and the separate
+`funding:eutxo-genesis` capability. The current ZeroJ development recipe uses
+`profile:eutxo-key-payments` instead, so exactly one immutable ledger profile
+owns the consensus settings. The ordinary recipe generates:
 
 ```yaml
 yano:

@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.ServiceLoader;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class EutxoZ0FeasibilityTest {
 
@@ -27,6 +28,11 @@ class EutxoZ0FeasibilityTest {
         assertThat(first.genesis().root()).isEqualTo(second.genesis().root());
         assertThat(first.genesis().witnessDescriptor())
                 .isEqualTo(second.genesis().witnessDescriptor());
+        assertThatThrownBy(() -> provider.create(
+                "zk-chain", EutxoProfile.V1,
+                Map.of("machines.eutxo.validity.profile", "wrong")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("identity mismatch");
     }
 
     @Test

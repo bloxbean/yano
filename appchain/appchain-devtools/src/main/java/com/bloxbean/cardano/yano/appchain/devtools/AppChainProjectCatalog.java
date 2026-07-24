@@ -54,6 +54,8 @@ final class AppChainProjectCatalog {
             "BUNDLED", "FIRST_PARTY_OPTIONAL", "REFERENCE", "EXPERIMENTAL");
     private static final Set<String> MATURITY = Set.of("stable", "preview", "experimental");
     private static final Set<String> SCOPES = Set.of("chain", "node", "distribution");
+    private static final Set<String> NETWORKS =
+            Set.copyOf(AppChainProjectModel.DEFAULT_SUPPORTED_NETWORKS);
     private static final Set<String> NATIVE_POSTURES = Set.of(
             "bundled", "build-time-only", "unsupported", "not-applicable");
 
@@ -430,6 +432,8 @@ final class AppChainProjectCatalog {
             }
             requireNonEmpty(capability.runtimeTypes(), capability.id(), "runtimeTypes");
             requireNonEmpty(capability.deploymentTargets(), capability.id(), "deploymentTargets");
+            validateSupportedNetworks(
+                    capability.effectiveSupportedNetworks(), capability.id());
             requireText(capability.name(), capability.id(), "name");
             requireText(capability.category(), capability.id(), "category");
             requireEnum(capability.availability(), AVAILABILITY, capability.id(), "availability");
@@ -537,6 +541,7 @@ final class AppChainProjectCatalog {
             requireNonEmpty(recipe.capabilities(), recipe.id(), "capabilities");
             requireNonEmpty(recipe.runtimeTypes(), recipe.id(), "runtimeTypes");
             requireNonEmpty(recipe.deploymentTargets(), recipe.id(), "deploymentTargets");
+            validateSupportedNetworks(recipe.effectiveSupportedNetworks(), recipe.id());
             requireText(recipe.name(), recipe.id(), "name");
             requireText(recipe.category(), recipe.id(), "category");
             requireEnum(recipe.availability(), AVAILABILITY, recipe.id(), "availability");
@@ -612,6 +617,15 @@ final class AppChainProjectCatalog {
         if (value == null || value.isBlank() || value.length() > 2_048
                 || value.chars().anyMatch(Character::isISOControl)) {
             throw new IllegalStateException(id + " must declare a safe " + field);
+        }
+    }
+
+    private static void validateSupportedNetworks(List<String> networks, String owner) {
+        requireNonEmpty(networks, owner, "supportedNetworks");
+        if (!NETWORKS.containsAll(networks)
+                || new LinkedHashSet<>(networks).size() != networks.size()) {
+            throw new IllegalStateException(
+                    owner + " declares invalid or duplicate supportedNetworks");
         }
     }
 
