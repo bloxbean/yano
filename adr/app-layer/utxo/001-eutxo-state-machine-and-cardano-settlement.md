@@ -2,13 +2,29 @@
 
 ## Status
 
-Proposed — version 6
+Proposed — version 7
 
 Phase A and the automated portions of Phase B are implemented as optional
 modules under `appchain/extensions/eutxo/`. Their schemas and bridge remain
 alpha pending the external operational and independent-review gates recorded
 by the implementation. Phase C is the active implementation plan and remains
 experimental with no production-funds claim.
+
+Version 7:
+
+- completes the automatable Z6 hardening with canonical release manifests,
+  fail-closed readiness evidence, ceremony-bundle inventory verification,
+  deterministic circuit fuzzing, key-pinned prover failover, and
+  protocol-parameter-pinned budget assessment;
+- exposes `settlement:zeroj-validity` as an optional JVM-only
+  development/testnet capability and recipe while keeping
+  `rollup:zeroj-cardano` non-selectable;
+- prevents a single-development-setup bundle from being represented as a
+  production multi-party ceremony and requires a verified manifest before an
+  existing proving-key directory can be loaded; and
+- records independent audits, a real production MPC ceremony, external
+  reconstruction, operational L1 retention and accountable production-funds
+  approval as external gates that the build cannot self-certify.
 
 Version 6:
 
@@ -2002,6 +2018,18 @@ Exit criteria:
   and
 - general Plutus support is not inferred from a restricted circuit.
 
+The in-repository implementation completes the automatable portion of Z6:
+artifact and ceremony identities are canonical and verified before load,
+readiness is fail-closed, circuit mutation/fuzz coverage is deterministic,
+prover failover is key- and capacity-constrained, and budget dry runs consume
+an explicitly pinned protocol-parameter snapshot. The independent audits,
+production MPC ceremony, external reconstruction, operational retention
+exercise, mainnet dry-run evidence, findings disposition, and separate
+production-funds decision remain external gates. Consequently,
+`settlement:zeroj-validity` is selectable only with an explicit
+development/testnet trust statement and `rollup:zeroj-cardano` remains
+non-selectable.
+
 Completing UTXO-M0 through UTXO-M5 produces a federated bridge, not a ZK
 system. Completing UTXO-Z0 through UTXO-Z4 produces validity settlement but
 not automatically a rollup. Completing the automatable UTXO-Z5 work adds
@@ -2043,6 +2071,12 @@ The build fails when:
   batch;
 - proof, script, transaction, CPU, or memory budgets exceed their configured
   bounds; or
+- an imported proving-key directory is loaded without a matching ceremony
+  inventory, profile, circuit, and verification-key identity;
+- a release manifest omits the pinned ZeroJ, Julc, profile, circuit, key, or
+  validator identities;
+- a self-certified record satisfies a gate that requires independent or
+  accountable external evidence; or
 - `rollup:zeroj-cardano` is exposed as selectable before its data
   availability, reconstruction, exit, and readiness gates pass.
 

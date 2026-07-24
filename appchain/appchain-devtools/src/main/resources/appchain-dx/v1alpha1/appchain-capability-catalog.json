@@ -13,7 +13,8 @@
     {"id":"appchain-effects-cardano","availability":"FIRST_PARTY_OPTIONAL","bundleId":"com.bloxbean.cardano.yano.appchain.effects.cardano","nativePosture":"build-time-only","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
     {"id":"appchain-zk","availability":"EXPERIMENTAL","bundleId":"com.bloxbean.cardano.yano.appchain.zk","nativePosture":"build-time-only","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
     {"id":"appchain-eutxo-ledger","availability":"FIRST_PARTY_OPTIONAL","bundleId":"com.bloxbean.cardano.yano.appchain.eutxo","nativePosture":"unsupported","runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"]},
-    {"id":"appchain-eutxo-bridge-cardano","availability":"EXPERIMENTAL","bundleId":"com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano","nativePosture":"unsupported","runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"]}
+    {"id":"appchain-eutxo-bridge-cardano","availability":"EXPERIMENTAL","bundleId":"com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano","nativePosture":"unsupported","runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"]},
+    {"id":"appchain-eutxo-zk-zeroj","availability":"EXPERIMENTAL","bundleId":"library:appchain-eutxo-zk-zeroj","nativePosture":"unsupported","runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"]}
   ],
   "capabilities": [
     {
@@ -131,6 +132,23 @@
       "externalPrerequisites":["reviewed-staging-vault-root-nullifier-and-proof-contract-identities","stable-cardano-l1-feed","federated-vault-and-root-operators","external-threshold-or-hsm-settlement-signer-for-signer-mode"],"bootstrapRequirements":["install-appchain-eutxo-bridge-cardano-bundle","configure-durable-settlement-journal-for-signer-mode","pin-current-root-nullifier-and-proof-contract-identities-for-proof-mode","complete-real-funds-custody-review"],"nonSecretAnswers":["bridgeVaultAddress","bridgeVaultScriptHash","bridgeMaxDepositLovelace","bridgeWithdrawalAddress","bridgeEpoch","bridgeMaxWithdrawalLovelace","bridgeMaxPendingWithdrawals"],"secretReferences":{},
       "properties":{"machines.eutxo.bridge.observer-id":"bridge-deposits","machines.eutxo.bridge.vault-address":"${bridgeVaultAddress}","machines.eutxo.bridge.vault-script-hash":"${bridgeVaultScriptHash}","machines.eutxo.bridge.confirmation-observer-id":"bridge-withdrawals","machines.eutxo.bridge.withdrawal-address":"${bridgeWithdrawalAddress}","machines.eutxo.bridge.epoch":"${bridgeEpoch}","machines.eutxo.bridge.max-withdrawal-lovelace":"${bridgeMaxWithdrawalLovelace}","machines.eutxo.bridge.max-pending-withdrawals":"${bridgeMaxPendingWithdrawals}","machines.eutxo.bridge.withdrawals-paused":"false","observers.bridge-deposits.type":"eutxo-vault-deposit-v1","observers.bridge-deposits.chain-id":"${chainId}","observers.bridge-deposits.vault-address":"${bridgeVaultAddress}","observers.bridge-deposits.vault-script-hash":"${bridgeVaultScriptHash}","observers.bridge-deposits.max-lovelace":"${bridgeMaxDepositLovelace}","observers.bridge-withdrawals.type":"eutxo-withdrawal-confirmation-v1","observers.bridge-withdrawals.chain-id":"${chainId}","observers.bridge-withdrawals.bridge-epoch":"${bridgeEpoch}","observers.bridge-withdrawals.vault-address":"${bridgeVaultAddress}"},
       "documentation":"appchain/extensions/eutxo/README.md","acceptanceScenario":"experimental-eutxo-federated-bridge"
+    },
+    {
+      "id":"settlement:zeroj-validity","name":"ZeroJ EUTxO validity settlement","category":"settlement","availability":"EXPERIMENTAL","maturity":"experimental","scope":"chain","selectable":true,
+      "trustStatement":"Restricted ZeroJ Groth16 validity profile for development and testnet use only. It is not production-funds ready and does not imply general Plutus or rollup support; production requires every ADR-UTXO-001 Z5/Z6 external gate and a separate approval.",
+      "description":"Adds the optional Poseidon validity commitment, durable proving interfaces, proof-bound Cardano root advancement, bounded aggregate withdrawal and canonical L1 batch publication.",
+      "provides":["zeroj-validity-settlement"],"requires":["state:eutxo-ledger"],"implies":[],"conflicts":["bridge:cardano-federated"],"runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-eutxo-ledger","appchain-eutxo-zk-zeroj"],"nativePosture":"unsupported",
+      "externalPrerequisites":["zeroj-0.1.0-pre10","julc-0.1.0-pre14","development-or-reviewed-ceremony-bundle","deployed-pinned-validity-root-vault-and-data-availability-contracts"],"bootstrapRequirements":["install-appchain-eutxo-zk-zeroj-module","pin-profile-circuit-verification-key-ceremony-and-validator-identities","do-not-use-production-funds"],"nonSecretAnswers":[],"secretReferences":{},
+      "properties":{"machines.eutxo.validity.enabled":"true","machines.eutxo.validity.provider":"zeroj-poseidon-v1"},
+      "documentation":"appchain/extensions/eutxo-zk/README.md","acceptanceScenario":"experimental-eutxo-zeroj-validity"
+    },
+    {
+      "id":"rollup:zeroj-cardano","name":"ZeroJ Cardano EUTxO rollup label","category":"product-label","availability":"EXPERIMENTAL","maturity":"experimental","scope":"chain","selectable":false,
+      "trustStatement":"Readiness label only. It remains unavailable until independent reconstruction, operational L1 data retention, external audits, production MPC ceremony and accountable production-funds approval are recorded.",
+      "description":"Graduation label for a separately approved ZeroJ validity product; it does not add runtime behavior.",
+      "provides":["zeroj-cardano-rollup-label"],"requires":["settlement:zeroj-validity"],"implies":[],"conflicts":[],"runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-eutxo-ledger","appchain-eutxo-zk-zeroj"],"nativePosture":"unsupported",
+      "externalPrerequisites":["all-adr-utxo-001-z5-z6-gates-passed"],"bootstrapRequirements":["separate-production-readiness-decision"],"nonSecretAnswers":[],"secretReferences":{},"properties":{},
+      "documentation":"appchain/extensions/eutxo-zk/Z6_PRODUCTION_HARDENING.md","acceptanceScenario":"nonselectable-eutxo-rollup-label"
     },
     {
       "id":"sequencer:fixed","name":"Fixed sequencer","category":"sequencer","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,

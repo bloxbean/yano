@@ -4,12 +4,74 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigInteger;
 import java.util.Arrays;
+import java.util.EnumMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class EutxoZkContractsTest {
+
+    @Test
+    void releaseManifestIsOrderIndependentAndReadinessFailsClosed() {
+        Map<String, String> first = new LinkedHashMap<>();
+        first.put("validator", "11".repeat(32));
+        first.put("circuit", "22".repeat(32));
+        Map<String, String> second = new LinkedHashMap<>();
+        second.put("circuit", "22".repeat(32));
+        second.put("validator", "11".repeat(32));
+
+        var left = new EutxoZkReleaseManifest(
+                "phase-c-v1", "0.1.0-pre10", "0.1.0-pre14",
+                EutxoZkProfile.Z3_VALIDITY_SETTLEMENT.digestHex(), first);
+        var right = new EutxoZkReleaseManifest(
+                "phase-c-v1", "0.1.0-pre10", "0.1.0-pre14",
+                EutxoZkProfile.Z3_VALIDITY_SETTLEMENT.digestHex(), second);
+        assertThat(left.digestHex()).isEqualTo(right.digestHex());
+
+        EnumMap<EutxoZkReadinessAssessment.Gate,
+                EutxoZkReadinessAssessment.Evidence> evidence =
+                new EnumMap<>(EutxoZkReadinessAssessment.Gate.class);
+        for (var gate : EutxoZkReadinessAssessment.Gate.values()) {
+            evidence.put(gate, new EutxoZkReadinessAssessment.Evidence(
+                    EutxoZkReadinessAssessment.Status.PASSED,
+                    "33".repeat(32), "test-owner", false));
+        }
+        var selfCertified = new EutxoZkReadinessAssessment(evidence);
+        assertThat(selfCertified.productionFundsReady()).isFalse();
+        assertThat(selfCertified.missingProductionGates())
+                .contains(EutxoZkReadinessAssessment.Gate.CIRCUIT_AUDIT)
+                .doesNotContain(
+                        EutxoZkReadinessAssessment.Gate.RELEASE_REPRODUCIBILITY);
+
+        for (var gate : EutxoZkReadinessAssessment.Gate.values()) {
+            evidence.put(gate, new EutxoZkReadinessAssessment.Evidence(
+                    EutxoZkReadinessAssessment.Status.PASSED,
+                    "44".repeat(32), "accountable-owner", true));
+        }
+        var approved = new EutxoZkReadinessAssessment(evidence);
+        assertThat(approved.productionFundsReady()).isTrue();
+        assertThat(approved.rollupLabelReady()).isTrue();
+    }
+
+    @Test
+    void budgetAssessmentUsesPinnedSnapshotAndSafetyMargin() {
+        var envelope = new EutxoZkBudgetAssessment.Envelope(
+                "mainnet", 600, "55".repeat(32),
+                10_000_000_000L, 14_000_000L, 16_384, 1_000);
+        assertThat(EutxoZkBudgetAssessment.assess(
+                envelope,
+                new EutxoZkBudgetAssessment.Measurement(
+                        4_239_437_341L, 1_219_308L, 12_000))
+                .withinEnvelope()).isTrue();
+        assertThat(EutxoZkBudgetAssessment.assess(
+                envelope,
+                new EutxoZkBudgetAssessment.Measurement(
+                        9_500_000_000L, 1_219_308L, 12_000))
+                .failures()).containsExactly("cpu");
+    }
 
     @Test
     void witnessCodecIsCanonicalAndBounded() {

@@ -41,7 +41,8 @@ class AppChainProjectTest {
         assertThat(catalog.recipes()).extracting(AppChainProjectModel.Recipe::id)
                 .containsExactly("audit-log", "owned-registry", "approval-workflow",
                         "role-approval", "evidence-ledger", "eutxo-ledger",
-                        "eutxo-cardano-bridge", "custom-plugin");
+                        "eutxo-cardano-bridge", "eutxo-zeroj-validity",
+                        "custom-plugin");
         assertThat(catalog.recipes()).allSatisfy(recipe -> {
             assertThat(recipe.primaryOutcome()).isNotBlank();
             assertThat(recipe.firstCommand()).isNotBlank();
@@ -614,7 +615,7 @@ class AppChainProjectTest {
         AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
         AppChainProjectResolver resolver = new AppChainProjectResolver(properties, catalog);
 
-        assertThat(catalog.capabilities()).hasSize(35)
+        assertThat(catalog.capabilities()).hasSize(37)
                 .allSatisfy(capability -> {
                     assertThat(capability.availability()).isIn(
                             "BUNDLED", "FIRST_PARTY_OPTIONAL", "REFERENCE", "EXPERIMENTAL");
@@ -635,6 +636,11 @@ class AppChainProjectTest {
                 blueprint("audit-log", "fixed", List.of()), List.of("ui:console"))))
                 .hasMessageContaining("not selectable")
                 .hasMessageContaining("ui:console");
+        assertThatThrownBy(() -> resolver.resolve(withCapabilities(
+                blueprint("audit-log", "fixed", List.of()),
+                List.of("rollup:zeroj-cardano"))))
+                .hasMessageContaining("not selectable")
+                .hasMessageContaining("rollup:zeroj-cardano");
 
         AppChainProjectModel.Resolution governed = resolver.resolve(withMembership(
                 blueprint("audit-log", "fixed", List.of()), "governed"));
