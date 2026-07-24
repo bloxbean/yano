@@ -428,6 +428,49 @@ class RatificationEngineTest {
         assertThat(status).isEqualTo(Status.ACTIVE);
     }
 
+    @Test
+    @DisplayName("Ratified ParameterChange does not delay a last-chance TreasuryWithdrawal")
+    void parameterChange_doesNotDelayTreasuryWithdrawal() throws Exception {
+        try (var rocks = TestRocksDBHelper.create(tempDir)) {
+            var engine = new RatificationEngine(rocks.governanceStore(), new VoteTallyCalculator());
+            var parameterChangeId = new GovActionId(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 0);
+            var treasuryWithdrawalId = new GovActionId(
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 0);
+
+            var proposals = new LinkedHashMap<GovActionId, GovActionRecord>();
+            proposals.put(treasuryWithdrawalId,
+                    proposal(635, 642, GovActionType.TREASURY_WITHDRAWALS_ACTION, null, null));
+            proposals.put(parameterChangeId,
+                    proposal(640, 648, GovActionType.PARAMETER_CHANGE_ACTION, null, null));
+
+            var results = engine.evaluateAll(
+                    proposals,
+                    Map.of(),
+                    Set.of(),
+                    Map.of(),
+                    Map.of(),
+                    Map.of(),
+                    BigDecimal.ZERO,
+                    NO_PREV,
+                    643,
+                    false,
+                    0,
+                    146,
+                    "NORMAL",
+                    BigInteger.TEN,
+                    Map.of(GovActionType.TREASURY_WITHDRAWALS_ACTION, BigDecimal.ZERO),
+                    Map.of(),
+                    null);
+
+            assertThat(results).extracting(result -> result.proposal().actionType())
+                    .containsExactly(GovActionType.PARAMETER_CHANGE_ACTION,
+                            GovActionType.TREASURY_WITHDRAWALS_ACTION);
+            assertThat(results).extracting(result -> result.status())
+                    .containsExactly(Status.RATIFIED, Status.RATIFIED);
+        }
+    }
+
     // ===== TreasuryWithdrawal =====
 
     @Test
