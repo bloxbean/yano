@@ -9,7 +9,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class EutxoCliTest {
     @Test
-    void noFundsDemoIsOfflineStructuredAndExplicit() {
+    void demoLifecycleIsOwnedByTheTopLevelToolingFacade() {
         StringWriter out = new StringWriter();
         StringWriter err = new StringWriter();
 
@@ -18,11 +18,10 @@ class EutxoCliTest {
                 new PrintWriter(out),
                 new PrintWriter(err));
 
-        assertThat(exit).isZero();
-        assertThat(out.toString())
-                .contains("\"mode\":\"no-real-funds\"")
-                .contains("\"profile\":\"yano-eutxo-v2-plutus-v3\"");
-        assertThat(err.toString()).isEmpty();
+        assertThat(exit).isEqualTo(EutxoCli.EXIT_USAGE);
+        assertThat(out.toString()).isEmpty();
+        assertThat(err.toString()).contains("required argument")
+                .doesNotContain("no-real-funds");
     }
 
     @Test

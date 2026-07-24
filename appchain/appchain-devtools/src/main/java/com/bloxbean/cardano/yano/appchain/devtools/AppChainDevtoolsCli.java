@@ -13,6 +13,7 @@ import com.bloxbean.cardano.yano.appchain.config.TemplateValidationResult;
 import com.bloxbean.cardano.yano.appchain.config.ValidationDiagnostic;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowCli;
 import com.bloxbean.cardano.yano.appchain.eutxo.client.EutxoCli;
+import com.bloxbean.cardano.yano.appchain.eutxo.demo.EutxoDemoCli;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.lifecycle.EutxoValidityLifecycleCli;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
@@ -94,6 +95,10 @@ public final class AppChainDevtoolsCli {
         Objects.requireNonNull(args, "args");
         Objects.requireNonNull(out, "out");
         Objects.requireNonNull(err, "err");
+        if (args.length > 1 && "eutxo".equals(args[0]) && "demo".equals(args[1])) {
+            return EutxoDemoCli.run(
+                    java.util.Arrays.copyOfRange(args, 2, args.length), out, err);
+        }
         if (args.length > 0 && "eutxo".equals(args[0])) {
             return EutxoCli.run(
                     java.util.Arrays.copyOfRange(args, 1, args.length), out, err);

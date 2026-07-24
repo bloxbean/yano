@@ -28,7 +28,6 @@ public final class EutxoCli {
                or: ./yano.sh appchain eutxo utxo list <address> [options]
                or: ./yano.sh appchain eutxo proof <tx-id#index> [options]
                or: ./yano.sh appchain eutxo doctor [--expected-profile-digest <hex>] [options]
-               or: ./yano.sh appchain eutxo demo
             Options:
               --url <api-base>       default http://127.0.0.1:7070/api/v1
               --chain <chain-id>     default eutxo-chain
@@ -45,13 +44,6 @@ public final class EutxoCli {
             Options options = Options.parse(arguments);
             if (options.help) {
                 out.println(USAGE);
-                return EXIT_OK;
-            }
-            if (options.command.equals(List.of("demo"))) {
-                out.println(JSON.writeValueAsString(Map.of(
-                        "mode", "no-real-funds",
-                        "profile", "yano-eutxo-v2-plutus-v3",
-                        "next", "./gradlew :appchain-eutxo-testkit:runNoFundsDemo")));
                 return EXIT_OK;
             }
             EutxoClient client = new EutxoClient(options.client());
@@ -165,7 +157,7 @@ public final class EutxoCli {
             if (options.help) {
                 return options;
             }
-            if (positional.equals(List.of("demo")) || positional.equals(List.of("doctor"))) {
+            if (positional.equals(List.of("doctor"))) {
                 options.command = List.copyOf(positional);
                 return options;
             }
