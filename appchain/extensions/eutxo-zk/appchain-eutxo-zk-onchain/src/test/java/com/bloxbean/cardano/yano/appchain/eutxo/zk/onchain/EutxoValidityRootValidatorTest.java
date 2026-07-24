@@ -328,7 +328,9 @@ class EutxoValidityRootValidatorTest extends ContractTest {
                 new byte[32], witness);
         var batchData = new EutxoZkBatchData(
                 witness.payments(), batchInputs.ownerCommitment());
-        byte[] withdrawalCommitment = fill(32, 19);
+        byte[] withdrawalCommitment =
+                EutxoKeyPaymentSettlementCircuit
+                        .withdrawalCommitment(witness);
         var inputs = EutxoKeyPaymentSettlementCircuit.publicInputs(
                 "payments", 0, engine.verificationKey().digestHex(),
                 new byte[32], witness,

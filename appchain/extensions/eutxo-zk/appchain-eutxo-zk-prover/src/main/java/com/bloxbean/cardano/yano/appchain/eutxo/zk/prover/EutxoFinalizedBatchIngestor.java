@@ -27,8 +27,7 @@ public final class EutxoFinalizedBatchIngestor {
             long finalizedHeight,
             long bridgeEpoch,
             byte[] previousValidityRoot,
-            EutxoKeyPaymentBatch witness,
-            byte[] withdrawalCommitment
+            EutxoKeyPaymentBatch witness
     ) {
         Objects.requireNonNull(previousValidityRoot, "previousValidityRoot");
         Objects.requireNonNull(witness, "witness");
@@ -43,7 +42,8 @@ public final class EutxoFinalizedBatchIngestor {
                 previousValidityRoot,
                 witness,
                 batchData.commitment(),
-                withdrawalCommitment);
+                EutxoKeyPaymentSettlementCircuit
+                        .withdrawalCommitment(witness));
         var statement = new EutxoZkStatement(
                 chainId,
                 finalizedHeight,
