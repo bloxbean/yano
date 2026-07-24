@@ -52,6 +52,7 @@
         "conflicts": {"$ref": "#/$defs/stringList"},
         "runtimeTypes": {"type": "array", "prefixItems": [{"const": "jvm"}], "items": false, "minItems": 1, "maxItems": 1},
         "deploymentTargets": {"type": "array", "minItems": 1, "maxItems": 2, "items": {"enum": ["host", "docker-compose"]}, "uniqueItems": true},
+        "supportedNetworks": {"type": "array", "minItems": 1, "maxItems": 4, "items": {"enum": ["devnet", "preview", "preprod", "mainnet"]}, "uniqueItems": true},
         "artifacts": {"type": "array", "minItems": 1, "maxItems": 1, "items": {"$ref": "#/$defs/id"}},
         "nativePosture": {"const": "unsupported"},
         "externalPrerequisites": {"$ref": "#/$defs/stringList"},

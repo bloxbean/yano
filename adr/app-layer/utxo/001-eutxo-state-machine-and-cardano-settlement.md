@@ -2,13 +2,40 @@
 
 ## Status
 
-Proposed — version 7
+Proposed — version 8
 
 Phase A and the automated portions of Phase B are implemented as optional
 modules under `appchain/extensions/eutxo/`. Their schemas and bridge remain
 alpha pending the external operational and independent-review gates recorded
-by the implementation. Phase C is the active implementation plan and remains
-experimental with no production-funds claim.
+by the implementation. The automatable Phase C components are implemented
+under `appchain/extensions/eutxo-zk/`, but they do not yet form a live
+L1-to-appchain-to-L1 product. Phase D is the active preview-integration plan.
+All ZeroJ functionality remains experimental with no production-funds claim.
+
+Version 8:
+
+- adds Phase D to turn the existing EUTxO and ZeroJ components into one
+  explicitly testnet-only preview product;
+- keeps canonical Cardano transaction CBOR as the L2 transaction format and
+  requires the circuit witness to be derived from the exact finalized
+  runtime-accepted transaction bytes;
+- defines immutable Cardano-shaped L2 protocol-parameter snapshots and Cardano
+  Client Lib `UtxoSupplier`, `ProtocolParamsSupplier`, and
+  `TransactionProcessor` adapters over Yano's existing generic message and
+  query APIs;
+- introduces measured, immutable batch profiles rather than a mutable batch
+  size setting;
+- requires the stock JVM distribution and `./yano.sh` to operate contract
+  bootstrap, proving, permissionless relay, recovery, and status;
+- permits automated devnet, Preview, and Preprod progression while requiring
+  the preview tooling and catalog resolver to reject mainnet; and
+- records that the existing one-to-four-payment Poseidon circuit, manually
+  supplied proof witness, and conflicting federated-bridge/validity
+  capabilities are Phase C building blocks, not completion of the preview
+  flow; and
+- separates the derived `state:eutxo-ledger` engine from its selectable v1
+  key-payment and v2 Plutus profiles, correcting a development recipe that
+  previously selected a ledger profile the ZeroJ provider refused at startup.
 
 Version 7:
 
@@ -146,13 +173,13 @@ the state machine will resolve its inputs from committed app-chain state,
 validate deterministic ledger and Plutus rules through Scalus, and atomically
 consume and create UTxOs under the existing MPF state root.
 
-The EUTxO ledger, federated bridge, and future validity settlement are
+The EUTxO ledger, federated bridge, and validity settlement are
 separate capabilities:
 
 ```text
 state:eutxo-ledger
 bridge:cardano-federated     # optional, explicit trust statement
-settlement:zeroj-validity    # future, proof-verified root transitions
+settlement:zeroj-validity    # experimental proof-verified root transitions
 rollup:zeroj-cardano         # graduation label; requires DA and exit gates
 ```
 
@@ -568,26 +595,37 @@ are not required to install or operate the ZeroJ proving path.
 
 ### 6.2 Mandatory separation of capabilities
 
-`state:eutxo-ledger` MUST NOT imply a bridge or ZK:
+The derived `state:eutxo-ledger` engine MUST NOT imply a profile, bridge, or
+ZK. A product selects exactly one immutable profile:
 
 ```text
 state:eutxo-ledger
-  provides: virtual Cardano-shaped UTxO state and proofs
+  selectable: false; derived from one profile capability
+  provides: Cardano-shaped UTxO state and proofs
   implementation: pinned Scalus adapter
   custody: none
   zeroj dependency: none
 
+profile:eutxo-plutus-v3
+  requires: state:eutxo-ledger
+  provides: immutable EUTxO v2 bounded Plutus profile
+
+profile:eutxo-key-payments
+  requires: state:eutxo-ledger
+  provides: immutable EUTxO v1 key-payment profile
+
 bridge:cardano-federated
-  requires: state:eutxo-ledger, l1:slot-feed, anchor:script
+  requires: profile:eutxo-plutus-v3, l1:slot-feed
   provides: staged deposits, vault accounting, withdrawals
   custody: configured settlement/root threshold
   zeroj dependency: none
 
 settlement:zeroj-validity
-  requires: state:eutxo-ledger, bridge:cardano-federated
-  provides: proof-verified validity-root advancement and withdrawals
+  requires now: profile:eutxo-key-payments
+  conflicts now: bridge:cardano-federated
+  provides: experimental proof-verified validity-root components
   implementation: ZeroJ 0.1.0-pre10, Julc 0.1.0-pre14
-  availability: explicitly declared
+  availability: devnet, Preview, and Preprod development/test only
 
 rollup:zeroj-cardano
   scope: product maturity label
@@ -600,14 +638,19 @@ The supported user selections are:
 
 ```text
 ledger only
-  state:eutxo-ledger
+  profile:eutxo-plutus-v3 -> state:eutxo-ledger
 
 federated bridge, no ZK
-  state:eutxo-ledger + bridge:cardano-federated
+  bridge:cardano-federated
+  -> profile:eutxo-plutus-v3 -> state:eutxo-ledger
 
-validity settlement
-  state:eutxo-ledger + bridge:cardano-federated
-  + settlement:zeroj-validity
+development validity components, virtual funds only
+  settlement:zeroj-validity
+  -> profile:eutxo-key-payments -> state:eutxo-ledger
+
+future live preview after Phase D
+  eutxo-zeroj-preview recipe
+  -> L1 funding + proof settlement with one reviewed compatible profile
 ```
 
 `rollup:zeroj-cardano` is initially a non-selectable graduation label rather
@@ -928,6 +971,45 @@ Deterministic transaction validity MUST use `AppBlock.l1Slot`, not:
 - the local node's live L1 tip;
 - a mutable global Scalus slot supplier; or
 - the app block's proposer timestamp.
+
+### 7.6 L2 protocol-parameter supplier
+
+Each EUTxO chain exposes one immutable Cardano-shaped L2 protocol-parameter
+snapshot. It is part of the authenticated consensus profile and project lock,
+not a node-local convenience setting. The initial snapshot uses zero L2 fees,
+zero unsupported deposits, the selected EUTxO and circuit-profile bounds, the
+exact admitted cost model, and an explicit profile version and digest.
+
+The L2 snapshot MUST NOT be used to build Cardano L1 deposit, root-publication,
+or withdrawal transactions. Those transactions use the selected Cardano
+network's live or explicitly pinned L1 parameters, including real fees and
+minimum-UTxO requirements. API and Java type names MUST distinguish L1 and L2
+parameter sources.
+
+Changing an L2 snapshot requires a new immutable profile or an independently
+specified governed activation boundary. Two members using different L2
+parameter digests cannot participate in the same chain.
+
+### 7.7 Cardano Client Lib compatibility
+
+Cardano Client Lib remains the primary Java construction and signing surface.
+The Yano adapter supplies:
+
+- `UtxoSupplier` from a root-fixed EUTxO query snapshot;
+- `ProtocolParamsSupplier` from the selected L2 profile;
+- `TransactionProcessor` submission through the existing generic appchain
+  message endpoint on topic `eutxo.transactions`;
+- profile-correct transaction evaluation; and
+- typed receipt, finality, proof, and settlement queries.
+
+`TransactionProcessor.submitTransaction(byte[])` returns the standard Cardano
+transaction-body hash after Yano admits the outer app message. Yano's
+app-message ID remains correlation metadata for attempt lookup and MUST NOT be
+reported as the Cardano transaction ID. HTTP `202` means pool admission, not
+state-machine acceptance or finality.
+
+The adapter MUST NOT define a second Yano-specific transaction wire format.
+The submitted body remains canonical signed Cardano transaction CBOR.
 
 The slot-to-time configuration, era boundary inputs, and their digest are part
 of the ledger profile.
@@ -1653,14 +1735,10 @@ The eventual CLI may expose:
 
 ```text
 ./yano.sh appchain capabilities
-./yano.sh appchain init --capability state:eutxo-ledger
-./yano.sh appchain init \
-  --capability state:eutxo-ledger \
-  --capability bridge:cardano-federated
-./yano.sh appchain init \
-  --capability state:eutxo-ledger \
-  --capability bridge:cardano-federated \
-  --capability settlement:zeroj-validity
+./yano.sh appchain init --recipe eutxo-ledger
+./yano.sh appchain init --recipe eutxo-cardano-bridge
+./yano.sh appchain init --recipe eutxo-zeroj-validity
+./yano.sh appchain init --recipe eutxo-zeroj-preview
 ./yano.sh appchain config validate
 
 ./yano.sh appchain eutxo transaction submit <signed-tx.cbor>
@@ -1682,7 +1760,7 @@ The eventual CLI may expose:
 ./yano.sh appchain validity doctor
 ```
 
-These commands are Phase C product goals and are not accepted syntax until
+These commands are Phase D product goals and are not accepted syntax until
 their owning milestone implements and packages them.
 
 The UI and CLI always distinguish:
@@ -2036,6 +2114,211 @@ not automatically a rollup. Completing the automatable UTXO-Z5 work adds
 L1-enforced data publication and recovery tooling, but the rollup label still
 requires external reconstruction, operational retention/recovery evidence,
 and the applicable UTXO-Z6 readiness gates.
+
+### Phase D — Testnet preview product integration
+
+Phase D integrates the Phase A/B EUTxO ledger and Cardano bridge concepts with
+the Phase C proof components. A milestone is not complete merely because its
+interfaces can be exercised by a unit test. Its exit criteria require the
+same bytes and identities to cross the real adjacent boundaries.
+
+Each Phase D milestone is developed on a dedicated
+`feat/eutxo-d*-<description>` branch. It is implemented, tested, reviewed, and
+iterated there before one approved commit is merged into
+`feat/eutxo_state_machine_zkrollup`. The next milestone branch starts from
+that updated integration branch.
+
+#### UTXO-D0 — Preview contract and fail-closed product boundary
+
+Deliver:
+
+- explicit catalog metadata for the networks supported by a recipe and
+  capability;
+- resolver enforcement for both recipe-selected and explicitly added
+  capabilities;
+- a testnet policy permitting `devnet`, `preview`, and `preprod` while
+  rejecting `mainnet` for `settlement:zeroj-validity`;
+- immutable static identities for transaction format, EUTxO profile, validity
+  profile, circuit, proof system, ZeroJ, Julc, and deployment network, plus
+  required identity slots for D4-provisioned L2 protocol parameters,
+  ceremony, verification key, and validators;
+- an explicit distinction between the existing
+  `eutxo-zeroj-validity` development recipe and the future
+  `eutxo-zeroj-preview` live recipe; and
+- catalog, JSON, initializer, and project-lock tests for the policy.
+
+Exit criteria:
+
+- mainnet initialization fails before files, keys, or contract plans are
+  produced;
+- an explicit ZeroJ capability cannot bypass the recipe's network policy;
+- unrestricted existing recipes retain their current behavior;
+- custom component catalogs can declare the same bounded network metadata;
+  and
+- the future preview recipe remains unavailable until D4 supplies an
+  executable packaged lifecycle.
+
+D0 implementation review found that the earlier development recipe selected
+EUTxO profile v2 while `ZerojPoseidonValidityProvider` accepted only profile
+v1. D0 therefore separates the derived state-machine engine from the
+selectable `profile:eutxo-plutus-v3` and
+`profile:eutxo-key-payments` capabilities. The development recipe now pins
+profile v1 and the current static validity identities. D4 owns provisioning
+and locking the remaining deployment-specific ceremony, verification-key,
+protocol-parameter, and validator identities.
+
+#### UTXO-D1 — Finalized Cardano transaction and proof parity
+
+Deliver:
+
+- deterministic derivation of a proof witness from the exact ordered,
+  finalized, runtime-accepted canonical Cardano transaction CBOR;
+- circuit constraints for supported-field decoding, transaction-body hash,
+  input membership and non-reuse, VKey authorization, value conservation,
+  validity interval, output creation, and previous-to-next validity root;
+- one domain-separation commitment binding chain ID, network, ledger profile,
+  validity profile, transaction-body hash, nonce, and expiry;
+- identical runtime, witness, circuit, verifier, and Julc root vectors; and
+- removal of the manual `EutxoKeyPaymentBatch` handoff from the live ingestion
+  boundary.
+
+The initial direct-signature profile verifies ordinary Cardano VKey witnesses.
+A wallet-authorized expiring session-key profile is a later independently
+identified optimization; it MUST NOT weaken the direct profile.
+
+Exit criteria:
+
+- every supported finalized transaction produces one deterministic witness;
+- the circuit proves the exact accepted transaction rather than a parallel
+  amount tuple;
+- changing any accepted transaction byte, resolved input, signer, output,
+  profile, or root invalidates the proof; and
+- unsupported transaction fields fail before they can change withdrawable
+  state.
+
+#### UTXO-D2 — Cardano Client Lib and public L2 client surface
+
+Deliver:
+
+- root-fixed `UtxoSupplier` and paginated address/outpoint queries;
+- immutable `ProtocolParamsSupplier` with an L2 parameter/profile digest;
+- a `TransactionProcessor` adapter that submits canonical signed CBOR through
+  Yano's existing generic `messages` endpoint;
+- deterministic evaluation against the same state root, cost model, L2
+  parameters, and stable L1 slot used by consensus;
+- transaction-ID and app-message-ID receipt correlation;
+- Java, raw HTTP, and command-line examples; and
+- stale-root, profile-mismatch, pagination, duplicate-submission, rejection,
+  and finality tests.
+
+Exit criteria:
+
+- an ordinary Cardano Client Lib builder can select L2 UTxOs, balance with the
+  L2 parameter snapshot, sign, submit, and observe a final receipt;
+- submission returns the Cardano transaction ID while retaining the outer
+  app-message ID for attempt diagnostics;
+- HTTP `202`, app acceptance, app finality, proof generation, and L1
+  settlement remain distinct states; and
+- L2 zero-fee parameters cannot be used accidentally by the L1 builder.
+
+#### UTXO-D3 — Measured scalable batch profiles
+
+Deliver:
+
+- immutable candidate profiles such as `cardano-payment-b16`,
+  `cardano-payment-b32`, and `cardano-payment-b64`;
+- separate circuit, profile, proving-key, verification-key, ceremony, and
+  validator identities per batch bound;
+- benchmarks for constraints, proving time, memory, proving-key size, proof
+  size, canonical L1 batch data, Cardano transaction size, and Julc execution
+  budget;
+- capacity and backpressure policies for the selected default; and
+- mutation and differential suites over minimum, partial, and maximum batches.
+
+Exit criteria:
+
+- batch size is selected by immutable profile and never by an ordinary runtime
+  property;
+- the default is chosen from recorded measurements on supported developer
+  hardware and Cardano devnet/Preview/Preprod limits;
+- proof and public-input size remain bounded as declared; and
+- exceeding the profile bound fails before proving work is queued.
+
+Recursive aggregation may be evaluated later and is not required for the
+first preview.
+
+#### UTXO-D4 — Packaged prover, relay, contracts, and `yano.sh` lifecycle
+
+Deliver:
+
+- stock JVM distribution packaging for the selected ZeroJ provider, prover,
+  client, contract artifacts, and permissionless relay;
+- automatic finalized-block ingestion and durable proof-job operation;
+- pinned development/testnet ceremony import and verification;
+- deploy/bootstrap plans for deposit staging, validity root, batch-data, and
+  proof-withdrawal vault validators;
+- `./yano.sh appchain init --recipe eutxo-zeroj-preview`;
+- project-aware cluster, validity bootstrap/status/prove/proof/doctor, deposit,
+  transaction, settlement, withdrawal, and recovery commands;
+- explicit API-key, secret-reference, filesystem-permission, and log-redaction
+  handling; and
+- idempotent restart, retry, cancellation, relay, and reconciliation behavior.
+
+Exit criteria:
+
+- a generated devnet project starts without source-tree-only classpaths;
+- the stock distribution performs contract bootstrap, deposit observation,
+  transaction finality, proving, root relay, batch publication, and
+  proof-gated withdrawal;
+- every lifecycle step is safely repeatable after partial failure; and
+- mainnet remains rejected by both initialization and lifecycle commands.
+
+#### UTXO-D5 — Live devnet, Preview, and Preprod acceptance
+
+Deliver:
+
+- automated disposable Yano devnet end-to-end acceptance;
+- public Cardano Preview interoperability acceptance;
+- Cardano Preprod mainnet-like rehearsal with pinned scripts and protocol
+  parameters;
+- restart, process crash, L1 rollback, appchain replay, duplicate relay,
+  unavailable prover, unavailable data, operator loss, and recovery tests;
+- cross-node and independent reconstruction checks; and
+- bounded observability, evidence bundles, and operator runbooks.
+
+Exit criteria:
+
+- test ADA completes deposit to rapid L2 transactions to proof-gated L1
+  withdrawal on all three supported networks;
+- rollback and restart cannot duplicate deposits, roots, or withdrawals;
+- another implementation reconstructs the accepted roots from published
+  canonical data; and
+- no step relies on development-only implicit paths or unpinned artifacts.
+
+#### UTXO-D6 — Preview stabilization and release decision
+
+Deliver:
+
+- closure or explicit accountable disposition of preview-blocking findings;
+- reproducible release manifests and packaged acceptance evidence;
+- a compatibility statement for Cardano Client Lib, backend wallets,
+  `cardano-cli`, and tested CIP-30 wallets;
+- a documented `signData` companion-envelope fallback where browser
+  `signTx` cannot sign virtual inputs;
+- clear custody, censorship, data-availability, proving, recovery, and
+  performance limitations; and
+- an explicit release decision changing the live recipe from experimental to
+  preview.
+
+Exit criteria:
+
+- `eutxo-zeroj-preview` is selectable only for devnet, Preview, and Preprod;
+- all generated output and runtime status identify it as preview/testnet and
+  reject production-funds claims;
+- the generic `rollup:zeroj-cardano` graduation label remains non-selectable
+  until its separate Z5/Z6 external and production-readiness gates pass; and
+- mainnet enablement requires a later ADR and cannot be unlocked by a hidden
+  flag, acknowledgement string, or configuration override.
 
 ## 21. Build and release gates
 

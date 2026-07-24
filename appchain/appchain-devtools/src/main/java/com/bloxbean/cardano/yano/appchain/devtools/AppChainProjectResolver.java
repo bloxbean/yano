@@ -24,7 +24,8 @@ import java.util.regex.Pattern;
 final class AppChainProjectResolver {
     private static final Pattern NAME = Pattern.compile("[a-z][a-z0-9-]{0,62}");
     private static final Pattern MEMBER_KEY = Pattern.compile("[0-9a-fA-F]{64}");
-    private static final Set<String> NETWORKS = Set.of("devnet", "preview", "preprod", "mainnet");
+    private static final Set<String> NETWORKS =
+            Set.copyOf(AppChainProjectModel.DEFAULT_SUPPORTED_NETWORKS);
     private static final Set<String> RUNTIMES = Set.of("jvm", "native");
     private static final Set<String> DEPLOYMENTS = Set.of("host", "docker-compose");
 
@@ -42,6 +43,12 @@ final class AppChainProjectResolver {
         AppChainProjectModel.ChainIntent chain = validateBlueprint(blueprint);
         AppChainProjectModel.Spec spec = blueprint.spec();
         AppChainProjectModel.Recipe recipe = catalog.recipe(chain.recipe());
+        if (!recipe.effectiveSelectable()) {
+            throw new IllegalArgumentException("Recipe " + recipe.id()
+                    + " is not selectable for app-chain initialization");
+        }
+        requireSupported(recipe.effectiveSupportedNetworks(), spec.network(),
+                "network", recipe.id());
         requireSupported(recipe.runtimeTypes(), spec.runtime().type(), "runtime", recipe.id());
         requireSupported(recipe.deploymentTargets(), spec.deployment().target(),
                 "deployment target", recipe.id());
@@ -79,6 +86,8 @@ final class AppChainProjectResolver {
                     "runtime", capability.id());
             requireSupported(capability.deploymentTargets(), spec.deployment().target(),
                     "deployment target", capability.id());
+            requireSupported(capability.effectiveSupportedNetworks(), spec.network(),
+                    "network", capability.id());
             for (String dependency : concat(capability.requires(), capability.implies())) {
                 if (!requested.contains(dependency)) implied.add(dependency);
                 queue.addLast(dependency);
