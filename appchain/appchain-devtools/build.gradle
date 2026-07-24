@@ -4,6 +4,7 @@ plugins {
 
 dependencies {
     implementation project(':appchain-eutxo-client')
+    implementation project(':appchain-eutxo-demo')
     implementation project(':appchain-eutxo-zk-lifecycle')
     implementation(project(':appchain-config')) {
         transitive = false
