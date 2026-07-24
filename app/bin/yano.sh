@@ -29,6 +29,7 @@ if [ "$(basename "$SCRIPT_DIR")" = "bin" ] \
     YANO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
     REPOSITORY_ROOT="$(cd "$YANO_ROOT/.." && pwd)"
 fi
+export YANO_HOME="$YANO_ROOT"
 cd "$YANO_ROOT"
 
 usage() {

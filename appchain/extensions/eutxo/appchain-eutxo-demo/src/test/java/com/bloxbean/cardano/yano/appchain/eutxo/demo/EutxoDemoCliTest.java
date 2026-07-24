@@ -1,10 +1,13 @@
 package com.bloxbean.cardano.yano.appchain.eutxo.demo;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -12,6 +15,39 @@ import static org.assertj.core.api.Assertions.assertThat;
 class EutxoDemoCliTest {
     @TempDir
     Path temporary;
+
+    @BeforeEach
+    void installFakeYanoHome() throws Exception {
+        Path home = temporary.resolve("yano-home");
+        Files.createDirectories(home);
+        Path launcher = home.resolve("yano.sh");
+        Files.writeString(launcher, """
+                #!/usr/bin/env bash
+                set -euo pipefail
+                output=""
+                previous=""
+                for value in "$@"; do
+                  if [ "$previous" = "--output" ]; then output="$value"; fi
+                  previous="$value"
+                done
+                if [ -n "$output" ]; then
+                  mkdir -p "$output/scripts" "$output/secrets"
+                  touch "$output/appchain.yaml" "$output/appchain.lock"
+                  for script in start stop; do
+                    printf '#!/usr/bin/env bash\\nexit 0\\n' > "$output/scripts/$script"
+                    chmod +x "$output/scripts/$script"
+                  done
+                fi
+                exit 0
+                """);
+        launcher.toFile().setExecutable(true);
+        System.setProperty("yano.home", home.toString());
+    }
+
+    @AfterEach
+    void clearFakeYanoHome() {
+        System.clearProperty("yano.home");
+    }
 
     @Test
     void discoversScenariosAndSupportsSetupStatusReset() {
