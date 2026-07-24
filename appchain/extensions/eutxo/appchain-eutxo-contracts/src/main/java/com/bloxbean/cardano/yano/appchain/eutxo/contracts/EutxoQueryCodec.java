@@ -16,6 +16,7 @@ public final class EutxoQueryCodec {
     public static final String WITHDRAWAL_PATH = "bridge/withdrawals/record";
     public static final String VALIDITY_TRANSITION_PATH =
             "validity/transitions/finalized";
+    public static final String L2_PARAMETERS_PATH = "protocol-parameters";
     public static final String PROFILE_PATH = "profile";
 
     private EutxoQueryCodec() {
@@ -200,6 +201,14 @@ public final class EutxoQueryCodec {
         byte[] encoded = new byte[length];
         input.get(encoded);
         return EutxoValidityTransition.decode(encoded);
+    }
+
+    public static byte[] l2Parameters(EutxoL2ParameterSnapshot snapshot) {
+        return Objects.requireNonNull(snapshot, "snapshot").encode();
+    }
+
+    public static EutxoL2ParameterSnapshot decodeL2Parameters(byte[] bytes) {
+        return EutxoL2ParameterSnapshot.decode(bytes);
     }
 
     public record Position(long appHeight, int ordinal) {

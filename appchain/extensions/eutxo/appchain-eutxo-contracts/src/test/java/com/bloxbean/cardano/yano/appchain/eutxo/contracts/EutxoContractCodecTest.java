@@ -67,6 +67,40 @@ class EutxoContractCodecTest {
     }
 
     @Test
+    void l2ParameterSnapshotRoundTripsAndBindsEveryIdentity() {
+        EutxoL2ParameterSnapshot snapshot =
+                new EutxoL2ParameterSnapshot(
+                        "payments",
+                        EutxoProfile.V1.digestHex(),
+                        "aa".repeat(32),
+                        "zeroj-jubjub-dev-v1",
+                        "bb".repeat(32),
+                        EutxoProfile.V1.maxTransactionBytes(),
+                        EutxoProfile.V1.maxInputs(),
+                        EutxoProfile.V1.maxOutputs(),
+                        "");
+
+        assertThat(EutxoL2ParameterSnapshot.decode(snapshot.encode()))
+                .isEqualTo(snapshot);
+        assertThat(EutxoQueryCodec.decodeL2Parameters(
+                EutxoQueryCodec.l2Parameters(snapshot)))
+                .isEqualTo(snapshot);
+        assertThat(snapshot.digest()).matches("[0-9a-f]{64}");
+        assertThatThrownBy(() -> new EutxoL2ParameterSnapshot(
+                snapshot.chainId(),
+                snapshot.ledgerProfileDigest(),
+                snapshot.validityProfileDigest(),
+                snapshot.authorizationProfile(),
+                snapshot.authorizationProfileDigest(),
+                snapshot.maxTransactionBytes(),
+                snapshot.maxInputs(),
+                snapshot.maxOutputs(),
+                "00".repeat(32)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("digest mismatch");
+    }
+
+    @Test
     void validityDomainRoundTripsAsBodyBoundCardanoMetadata() throws Exception {
         EutxoTransactionDomain domain = new EutxoTransactionDomain(
                 "payments-zk",

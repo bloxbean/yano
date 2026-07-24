@@ -6,6 +6,7 @@ import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoContract;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoDepositRecord;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoOutpoint;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoMpfProof;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2ParameterSnapshot;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoQueryCodec;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReceipt;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoRecord;
@@ -152,6 +153,14 @@ public final class EutxoClient {
                 client.query(EutxoQueryCodec.PROFILE_PATH, new byte[0]);
         return snapshot(result, new String(result.payload(),
                 java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    public EutxoSnapshot<EutxoL2ParameterSnapshot> l2ParametersSnapshot() {
+        AppChainClient.QueryResult result = client.query(
+                EutxoQueryCodec.L2_PARAMETERS_PATH, new byte[0]);
+        return snapshot(
+                result,
+                EutxoQueryCodec.decodeL2Parameters(result.payload()));
     }
 
     private static <T> EutxoSnapshot<T> snapshot(
