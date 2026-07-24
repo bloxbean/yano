@@ -2,8 +2,6 @@ package com.bloxbean.cardano.yano.appchain.eutxo.contracts;
 
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.client.common.cbor.CborSerializationUtil;
-import com.bloxbean.cardano.client.transaction.spec.Transaction;
-import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -28,6 +26,8 @@ public record EutxoValidityTransition(
         String network,
         String profileDigest,
         String validityProfileDigest,
+        String authorizationProfile,
+        String authorizationProfileDigest,
         byte[] domainCommitment,
         String transactionId,
         byte[] canonicalTransaction,
@@ -38,8 +38,8 @@ public record EutxoValidityTransition(
         long appHeight,
         int ordinal
 ) {
-    private static final int VERSION = 2;
-    private static final int MAX_TRANSACTION_BYTES = 64 * 1024;
+    private static final int VERSION = 3;
+    private static final int MAX_TRANSACTION_BYTES = 128 * 1024;
     private static final int MAX_RECORDS = 16;
     private static final int MAX_ENCODED_BYTES = 1024 * 1024;
 
@@ -54,6 +54,11 @@ public record EutxoValidityTransition(
         profileDigest = digest(profileDigest, "profile digest");
         validityProfileDigest = digest(
                 validityProfileDigest, "validity profile digest");
+        authorizationProfile = text(
+                authorizationProfile, "authorization profile", 63);
+        authorizationProfileDigest = digest(
+                authorizationProfileDigest,
+                "authorization profile digest");
         domainCommitment = copy32(
                 domainCommitment, "domain commitment");
         transactionId = digest(transactionId, "transaction id");
@@ -82,9 +87,10 @@ public record EutxoValidityTransition(
         if (created.isEmpty() || l1Slot < 0 || appHeight < 1 || ordinal < 0) {
             throw new IllegalArgumentException("invalid validity transition identity");
         }
-        validateCardanoTransaction(
+        validateL2Transaction(
                 canonicalTransaction, chainId, network, profileDigest,
-                validityProfileDigest, domainCommitment, transactionId,
+                validityProfileDigest, authorizationProfile,
+                authorizationProfileDigest, domainCommitment, transactionId,
                 resolvedInputs, consumed, created);
     }
 
@@ -115,13 +121,15 @@ public record EutxoValidityTransition(
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
             try (DataOutputStream output = new DataOutputStream(bytes)) {
                 output.writeInt(VERSION);
-                writeBytes(output, "yano:eutxo:validity-transition:v2"
+                writeBytes(output, "yano:eutxo:validity-transition:v3"
                         .getBytes(StandardCharsets.US_ASCII));
                 writeBytes(output, previousRoot);
                 writeText(output, chainId);
                 writeText(output, network);
                 writeText(output, profileDigest);
                 writeText(output, validityProfileDigest);
+                writeText(output, authorizationProfile);
+                writeText(output, authorizationProfileDigest);
                 writeBytes(output, domainCommitment);
                 writeText(output, transactionId);
                 writeBytes(output, canonicalTransaction);
@@ -167,7 +175,7 @@ public record EutxoValidityTransition(
             }
             byte[] domain = readBytes(input, 128);
             if (!java.util.Arrays.equals(domain,
-                    "yano:eutxo:validity-transition:v2"
+                    "yano:eutxo:validity-transition:v3"
                             .getBytes(StandardCharsets.US_ASCII))) {
                 throw new IllegalArgumentException(
                         "invalid validity transition domain");
@@ -177,6 +185,8 @@ public record EutxoValidityTransition(
             String network = readText(input, 16);
             String profileDigest = readText(input, 64);
             String validityProfileDigest = readText(input, 64);
+            String authorizationProfile = readText(input, 63);
+            String authorizationProfileDigest = readText(input, 64);
             byte[] domainCommitment = readBytes(input, 32);
             String transactionId = readText(input, 64);
             byte[] transaction = readBytes(input, MAX_TRANSACTION_BYTES);
@@ -197,7 +207,8 @@ public record EutxoValidityTransition(
             }
             return new EutxoValidityTransition(
                     previousRoot, chainId, network, profileDigest,
-                    validityProfileDigest, domainCommitment,
+                    validityProfileDigest, authorizationProfile,
+                    authorizationProfileDigest, domainCommitment,
                     transactionId, transaction, resolved, consumed, created,
                     l1Slot, height, ordinal);
         } catch (IOException exception) {
@@ -216,6 +227,10 @@ public record EutxoValidityTransition(
                 && profileDigest.equals(transition.profileDigest)
                 && validityProfileDigest.equals(
                 transition.validityProfileDigest)
+                && authorizationProfile.equals(
+                transition.authorizationProfile)
+                && authorizationProfileDigest.equals(
+                transition.authorizationProfileDigest)
                 && java.util.Arrays.equals(
                 domainCommitment, transition.domainCommitment)
                 && transactionId.equals(transition.transactionId)
@@ -234,7 +249,8 @@ public record EutxoValidityTransition(
     public int hashCode() {
         int result = Objects.hash(
                 chainId, network, profileDigest,
-                validityProfileDigest, transactionId,
+                validityProfileDigest, authorizationProfile,
+                authorizationProfileDigest, transactionId,
                 resolvedInputs, consumed, created,
                 l1Slot, appHeight, ordinal);
         result = 31 * result + java.util.Arrays.hashCode(previousRoot);
@@ -333,12 +349,14 @@ public record EutxoValidityTransition(
         return count;
     }
 
-    private static void validateCardanoTransaction(
+    private static void validateL2Transaction(
             byte[] transactionCbor,
             String chainId,
             String network,
             String profileDigest,
             String validityProfileDigest,
+            String authorizationProfile,
+            String authorizationProfileDigest,
             byte[] domainCommitment,
             String transactionId,
             List<EutxoRecord> resolvedInputs,
@@ -346,41 +364,42 @@ public record EutxoValidityTransition(
             List<EutxoRecord> created
     ) {
         try {
-            Transaction transaction = Transaction.deserialize(transactionCbor);
+            EutxoL2Transaction transaction =
+                    EutxoL2Transaction.decode(transactionCbor);
             if (!java.util.Arrays.equals(
-                    transactionCbor, transaction.serialize())) {
+                    transactionCbor, transaction.canonicalBytes())) {
                 throw new IllegalArgumentException(
-                        "validity transition transaction is not canonical CBOR");
+                        "validity transition L2 transaction is not canonical");
             }
             if (!transactionId.equals(
-                    TransactionUtil.getTxHash(transactionCbor))) {
+                    transaction.transactionId())) {
                 throw new IllegalArgumentException(
-                        "validity transition transaction id does not match CBOR");
+                        "validity transition transaction id does not match envelope");
             }
-            EutxoTransactionDomain domain =
-                    EutxoTransactionDomain.from(transaction);
+            EutxoL2Domain domain = transaction.domain();
             domain.requireExpected(
                     chainId, network, profileDigest,
-                    validityProfileDigest);
+                    validityProfileDigest, authorizationProfile,
+                    authorizationProfileDigest);
             if (!java.util.Arrays.equals(
                     domainCommitment, domain.commitment())) {
                 throw new IllegalArgumentException(
                         "validity transition domain commitment does not match");
             }
-            if (transaction.getBody() == null
-                    || transaction.getBody().getInputs() == null
-                    || transaction.getBody().getOutputs() == null
-                    || transaction.getBody().getInputs().size()
+            var body = transaction.decodedBody();
+            if (body.getInputs() == null
+                    || body.getOutputs() == null
+                    || body.getInputs().size()
                     != resolvedInputs.size()
-                    || transaction.getBody().getOutputs().size()
+                    || body.getOutputs().size()
                     != created.size()) {
                 throw new IllegalArgumentException(
-                        "validity transition shape differs from transaction CBOR");
+                        "validity transition shape differs from L2 body");
             }
             for (int index = 0;
-                 index < transaction.getBody().getInputs().size();
+                 index < body.getInputs().size();
                  index++) {
-                var input = transaction.getBody().getInputs().get(index);
+                var input = body.getInputs().get(index);
                 EutxoOutpoint expected = new EutxoOutpoint(
                         input.getTransactionId(), input.getIndex());
                 if (!expected.equals(consumed.get(index))) {
@@ -389,11 +408,11 @@ public record EutxoValidityTransition(
                 }
             }
             for (int index = 0;
-                 index < transaction.getBody().getOutputs().size();
+                 index < body.getOutputs().size();
                  index++) {
                 EutxoRecord record = created.get(index);
                 byte[] expected = CborSerializationUtil.serialize(
-                        transaction.getBody().getOutputs().get(index).serialize());
+                        body.getOutputs().get(index).serialize());
                 if (!record.outpoint().equals(
                         new EutxoOutpoint(transactionId, index))
                         || !java.util.Arrays.equals(
@@ -406,7 +425,7 @@ public record EutxoValidityTransition(
             throw failure;
         } catch (Exception failure) {
             throw new IllegalArgumentException(
-                    "validity transition contains invalid Cardano CBOR",
+                    "validity transition contains an invalid L2 transaction",
                     failure);
         }
     }

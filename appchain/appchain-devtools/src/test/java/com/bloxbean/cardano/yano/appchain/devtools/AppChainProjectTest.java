@@ -206,7 +206,7 @@ class AppChainProjectTest {
                 .containsEntry(
                         "yano.app-chain.chains[0].machines.eutxo.validity."
                                 + "transaction-format",
-                        "cardano-conway-signed-transaction-cbor-v1")
+                        "yano-eutxo-l2-envelope-v1")
                 .containsEntry(
                         "yano.app-chain.chains[0].machines.eutxo.validity."
                                 + "expected-profile-digest",
@@ -219,7 +219,19 @@ class AppChainProjectTest {
                         "0.1.0-pre10")
                 .containsEntry(
                         "yano.app-chain.chains[0].machines.eutxo.validity.julc-version",
-                        "0.1.0-pre14");
+                        "0.1.0-pre14")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.validity."
+                                + "authorization-profile",
+                        "zeroj-jubjub-dev-v1")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.validity."
+                                + "authorization-trusted-prover-required",
+                        "true")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.validity."
+                                + "funds-policy",
+                        "disposable-test-funds-only");
 
         assertThat(catalog.recipe("eutxo-zeroj-validity")
                 .effectiveSupportedNetworks())

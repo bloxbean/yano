@@ -3,7 +3,7 @@ package com.bloxbean.cardano.yano.appchain.eutxo.ledger;
 import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoOutpoint;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoRecord;
-import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoTransactionDomain;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2Transaction;
 
 import java.util.List;
 import java.util.Objects;
@@ -38,7 +38,7 @@ public interface UtxoTransitionEngine {
             boolean accepted,
             String transactionId,
             byte[] canonicalTransaction,
-            EutxoTransactionDomain validityDomain,
+            EutxoL2Transaction l2Transaction,
             List<EutxoRecord> resolvedInputs,
             List<EutxoOutpoint> consumed,
             List<EutxoRecord> created,
@@ -64,7 +64,7 @@ public interface UtxoTransitionEngine {
                         "resolved input records must match consumed outpoints");
             }
             if (!accepted && (canonicalTransaction.length != 0
-                    || validityDomain != null
+                    || l2Transaction != null
                     || !resolvedInputs.isEmpty()
                     || !consumed.isEmpty() || !created.isEmpty())) {
                 throw new IllegalArgumentException("rejected transitions must not contain a mutation");
@@ -79,13 +79,13 @@ public interface UtxoTransitionEngine {
         public static TransitionResult accept(
                 String transactionId,
                 byte[] canonicalTransaction,
-                EutxoTransactionDomain validityDomain,
+                EutxoL2Transaction l2Transaction,
                 List<EutxoRecord> resolvedInputs,
                 List<EutxoOutpoint> consumed,
                 List<EutxoRecord> created
         ) {
             return new TransitionResult(
-                    true, transactionId, canonicalTransaction, validityDomain,
+                    true, transactionId, canonicalTransaction, l2Transaction,
                     resolvedInputs,
                     consumed, created, "", "");
         }

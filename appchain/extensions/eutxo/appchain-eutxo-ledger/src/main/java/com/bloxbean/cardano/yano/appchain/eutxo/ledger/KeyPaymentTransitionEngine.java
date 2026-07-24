@@ -19,7 +19,10 @@ import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoOutpoint;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoRecord;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoStateKeys;
-import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoTransactionDomain;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2Authorization;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2KeyRegistration;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2Transaction;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoValidityCommitmentEngine;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
@@ -126,7 +129,8 @@ class KeyPaymentTransitionEngine implements UtxoTransitionEngine {
         if (scriptValidation != null) {
             return reject(transactionId, scriptValidation);
         }
-        Failure authorization = authorize(transactionCbor, transaction, inputs);
+        Failure authorization = authorize(
+                transactionCbor, transaction, parsed.l2Transaction, inputs, state);
         if (authorization != null) {
             return reject(transactionId, authorization);
         }
@@ -151,7 +155,7 @@ class KeyPaymentTransitionEngine implements UtxoTransitionEngine {
             }
         }
         return TransitionResult.accept(
-                transactionId, transactionCbor, parsed.domain,
+                transactionId, transactionCbor, parsed.l2Transaction,
                 inputs, consumed, created);
     }
 
@@ -159,32 +163,50 @@ class KeyPaymentTransitionEngine implements UtxoTransitionEngine {
         if (transactionCbor == null || transactionCbor.length == 0) {
             return Parsed.failed("", "EMPTY_TRANSACTION", "transaction CBOR is empty");
         }
-        if (transactionCbor.length > profile.maxTransactionBytes()) {
+        int maximumPayload = domainPolicy == null
+                ? profile.maxTransactionBytes()
+                : Math.addExact(profile.maxTransactionBytes(), 16 * 1024);
+        if (transactionCbor.length > maximumPayload) {
             return Parsed.failed("", "TRANSACTION_TOO_LARGE", "transaction exceeds profile size");
         }
         final Transaction transaction;
         final String transactionId;
+        EutxoL2Transaction l2Transaction = null;
         try {
-            transaction = Transaction.deserialize(transactionCbor);
-            transactionId = TransactionUtil.getTxHash(transactionCbor);
-        } catch (Exception failure) {
-            return Parsed.failed("", "INVALID_CBOR", "transaction CBOR cannot be decoded");
-        }
-        try {
-            if (!Arrays.equals(transactionCbor, transaction.serialize())) {
-                return Parsed.failed(transactionId, "NON_CANONICAL_CBOR",
-                        "transaction CBOR is not canonical");
+            if (domainPolicy == null) {
+                transaction = Transaction.deserialize(transactionCbor);
+                transactionId = TransactionUtil.getTxHash(transactionCbor);
+            } else {
+                l2Transaction = EutxoL2Transaction.decode(transactionCbor);
+                transaction = Transaction.builder()
+                        .body(l2Transaction.decodedBody())
+                        .isValid(true)
+                        .build();
+                transactionId = l2Transaction.transactionId();
             }
         } catch (Exception failure) {
-            return Parsed.failed(transactionId, "INVALID_CBOR",
-                    "transaction cannot be canonically encoded");
+            return Parsed.failed("", domainPolicy == null
+                            ? "INVALID_CBOR" : "INVALID_L2_TRANSACTION",
+                    domainPolicy == null
+                            ? "transaction CBOR cannot be decoded"
+                            : "L2 transaction cannot be decoded");
+        }
+        if (domainPolicy == null) {
+            try {
+                if (!Arrays.equals(transactionCbor, transaction.serialize())) {
+                    return Parsed.failed(transactionId, "NON_CANONICAL_CBOR",
+                            "transaction CBOR is not canonical");
+                }
+            } catch (Exception failure) {
+                return Parsed.failed(transactionId, "INVALID_CBOR",
+                        "transaction cannot be canonically encoded");
+            }
         }
 
         Failure shape = validateShape(transaction);
-        EutxoTransactionDomain domain = null;
         if (shape == null && domainPolicy != null) {
             try {
-                domain = validatedDomain(transaction);
+                validatedDomain(l2Transaction);
             } catch (RuntimeException failure) {
                 shape = failure(
                         "INVALID_VALIDITY_DOMAIN",
@@ -194,19 +216,20 @@ class KeyPaymentTransitionEngine implements UtxoTransitionEngine {
             }
         }
         return shape == null
-                ? new Parsed(transaction, transactionId, domain, null)
+                ? new Parsed(transaction, transactionId, l2Transaction, null)
                 : new Parsed(transaction, transactionId, null, shape);
     }
 
-    private EutxoTransactionDomain validatedDomain(Transaction transaction) {
-        EutxoTransactionDomain domain =
-                EutxoTransactionDomain.from(transaction);
+    private void validatedDomain(EutxoL2Transaction transaction) {
+        Objects.requireNonNull(transaction, "transaction");
+        var domain = transaction.domain();
         domain.requireExpected(
                 domainPolicy.chainId(),
                 domainPolicy.network(),
                 profile.digestHex(),
-                domainPolicy.validityProfileDigest());
-        return domain;
+                domainPolicy.validityEngine().profileDigest(),
+                domainPolicy.validityEngine().authorizationProfile(),
+                domainPolicy.validityEngine().authorizationProfileDigest());
     }
 
     private Failure validateShape(Transaction transaction) {
@@ -323,8 +346,13 @@ class KeyPaymentTransitionEngine implements UtxoTransitionEngine {
     private Failure authorize(
             byte[] transactionCbor,
             Transaction transaction,
-            List<EutxoRecord> inputs
+            EutxoL2Transaction l2Transaction,
+            List<EutxoRecord> inputs,
+            AppStateReader state
     ) {
+        if (l2Transaction != null) {
+            return authorizeL2(l2Transaction, inputs, state);
+        }
         byte[] bodyHash = Blake2bUtil.blake2bHash256(
                 TransactionUtil.extractTransactionBodyFromTx(transactionCbor));
         Map<String, VkeyWitness> validWitnesses = new HashMap<>();
@@ -401,6 +429,77 @@ class KeyPaymentTransitionEngine implements UtxoTransitionEngine {
             }
         }
         return null;
+    }
+
+    private Failure authorizeL2(
+            EutxoL2Transaction transaction,
+            List<EutxoRecord> inputs,
+            AppStateReader state
+    ) {
+        Map<String, List<Integer>> expected = new java.util.TreeMap<>();
+        for (int index = 0; index < inputs.size(); index++) {
+            String credential = paymentCredential(inputs.get(index));
+            expected.computeIfAbsent(
+                    credential, ignored -> new ArrayList<>()).add(index);
+        }
+        Map<String, EutxoL2Authorization> supplied = new java.util.TreeMap<>();
+        for (EutxoL2Authorization authorization :
+                transaction.authorizations()) {
+            if (supplied.putIfAbsent(
+                    authorization.paymentCredential(), authorization) != null) {
+                return failure(
+                        "DUPLICATE_L2_AUTHORIZATION",
+                        "L2 transaction repeats an authorization credential");
+            }
+        }
+        if (!expected.keySet().equals(supplied.keySet())) {
+            return failure(
+                    "L2_AUTHORIZATION_SET_MISMATCH",
+                    "L2 authorizations must exactly match input credentials");
+        }
+        List<EutxoL2KeyRegistration> registrations = new ArrayList<>();
+        for (Map.Entry<String, List<Integer>> entry : expected.entrySet()) {
+            EutxoL2Authorization authorization = supplied.get(entry.getKey());
+            if (!entry.getValue().equals(authorization.inputIndexes())) {
+                return failure(
+                        "L2_AUTHORIZATION_INPUT_MISMATCH",
+                        "L2 authorization input indexes are not exact");
+            }
+            EutxoL2KeyRegistration registration = state.get(
+                            EutxoStateKeys.l2Key(entry.getKey()))
+                    .map(EutxoL2KeyRegistration::decode)
+                    .orElse(null);
+            if (registration == null) {
+                return failure(
+                        "L2_KEY_NOT_REGISTERED",
+                        "input credential has no registered L2 key");
+            }
+            registrations.add(registration);
+        }
+        EutxoValidityCommitmentEngine.AuthorizationResult result =
+                domainPolicy.validityEngine().verifyAuthorization(
+                        transaction, registrations);
+        return result.accepted()
+                ? null : failure(result.code(), result.detail());
+    }
+
+    private static String paymentCredential(EutxoRecord input) {
+        try {
+            Address address = new Address(input.address());
+            if (!AddressProvider.isPubKeyHashInPaymentPart(address)) {
+                throw new IllegalArgumentException(
+                        "L2 validity profile requires key-controlled inputs");
+            }
+            return AddressProvider.getPaymentCredentialHash(address)
+                    .map(HexFormat.of()::formatHex)
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            "input has no payment credential"));
+        } catch (IllegalArgumentException failure) {
+            throw failure;
+        } catch (RuntimeException failure) {
+            throw new IllegalStateException(
+                    "committed EUTxO address is invalid", failure);
+        }
     }
 
     private Failure validateScripts(
@@ -557,7 +656,7 @@ class KeyPaymentTransitionEngine implements UtxoTransitionEngine {
     record DomainPolicy(
             String chainId,
             String network,
-            String validityProfileDigest
+            EutxoValidityCommitmentEngine validityEngine
     ) {
         static final int MAX_INPUTS = 16;
         static final int MAX_OUTPUTS = 16;
@@ -565,8 +664,13 @@ class KeyPaymentTransitionEngine implements UtxoTransitionEngine {
         DomainPolicy {
             chainId = required(chainId, "chainId");
             network = required(network, "network");
-            validityProfileDigest = required(
-                    validityProfileDigest, "validityProfileDigest");
+            validityEngine = Objects.requireNonNull(
+                    validityEngine, "validityEngine");
+            if (validityEngine.authorizationProfile().isBlank()
+                    || validityEngine.authorizationProfileDigest().isBlank()) {
+                throw new IllegalArgumentException(
+                        "validity engine has no L2 authorization profile");
+            }
         }
 
         private static String required(String value, String label) {
@@ -581,7 +685,7 @@ class KeyPaymentTransitionEngine implements UtxoTransitionEngine {
     private record Parsed(
             Transaction transaction,
             String transactionId,
-            EutxoTransactionDomain domain,
+            EutxoL2Transaction l2Transaction,
             Failure failure
     ) {
         static Parsed failed(String transactionId, String code, String detail) {

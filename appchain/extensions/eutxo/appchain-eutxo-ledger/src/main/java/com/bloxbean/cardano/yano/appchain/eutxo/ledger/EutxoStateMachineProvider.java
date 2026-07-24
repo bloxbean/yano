@@ -49,7 +49,7 @@ public final class EutxoStateMachineProvider implements AppStateMachineProvider 
                         context.chainId(), profile, context.settings());
         KeyPaymentTransitionEngine.DomainPolicy domainPolicy =
                 validity == null ? null : new KeyPaymentTransitionEngine.DomainPolicy(
-                        context.chainId(), network, validity.profileDigest());
+                        context.chainId(), network, validity);
         return new EutxoStateMachine(
                 profile,
                 EutxoGenesis.from(context.settings()),

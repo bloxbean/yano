@@ -48,6 +48,12 @@ public final class EutxoStateKeys {
                 + appHeight + "/" + ordinal);
     }
 
+    /** Active L2 authorization key for one Cardano payment credential. */
+    public static byte[] l2Key(String paymentCredential) {
+        String credential = EutxoL2Authorization.credential(paymentCredential);
+        return bytes(PREFIX + "validity/l2-key/" + credential);
+    }
+
     public static byte[] utxo(EutxoOutpoint outpoint) {
         return bytes(PREFIX + "u/" + Objects.requireNonNull(outpoint, "outpoint"));
     }

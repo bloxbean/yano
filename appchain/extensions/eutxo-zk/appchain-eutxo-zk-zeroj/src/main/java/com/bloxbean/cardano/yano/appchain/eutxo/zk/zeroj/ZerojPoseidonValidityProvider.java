@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoValidityCommitmentEngine;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoValidityCommitmentProvider;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkProfile;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkAuthorizationProfile;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -13,7 +14,7 @@ public final class ZerojPoseidonValidityProvider
         implements EutxoValidityCommitmentProvider {
     public static final String ID = "zeroj-poseidon-v1";
     public static final String TRANSACTION_FORMAT =
-            "cardano-conway-signed-transaction-cbor-v1";
+            "yano-eutxo-l2-envelope-v1";
     public static final String ZEROJ_VERSION = "0.1.0-pre10";
     public static final String JULC_VERSION = "0.1.0-pre14";
     private static final String PREFIX = "machines.eutxo.validity.";
@@ -52,6 +53,13 @@ public final class ZerojPoseidonValidityProvider
                 throw new IllegalArgumentException(
                         "EUTxO validity requires an explicit supported test network");
             }
+            if (!"devnet".equals(network)
+                    && !Boolean.parseBoolean(settings.getOrDefault(
+                    PREFIX + "acknowledge-unsafe-jubjub-dev", "false"))) {
+                throw new IllegalArgumentException(
+                        "Preview/Preprod require explicit acknowledgement of "
+                                + "the trusted-prover Jubjub development profile");
+            }
         }
         return new ZerojPoseidonValidityEngine(chainId, profile);
     }
@@ -72,6 +80,17 @@ public final class ZerojPoseidonValidityProvider
         identities.put(PREFIX + "curve", profile.curve());
         identities.put(PREFIX + "zeroj-version", ZEROJ_VERSION);
         identities.put(PREFIX + "julc-version", JULC_VERSION);
+        EutxoZkAuthorizationProfile authorization =
+                EutxoZkAuthorizationProfile.JUBJUB_DEVELOPMENT_V1;
+        identities.put(PREFIX + "authorization-profile", authorization.id());
+        identities.put(PREFIX + "authorization-profile-digest",
+                authorization.digestHex());
+        identities.put(PREFIX + "authorization-trusted-prover-required",
+                Boolean.toString(authorization.trustedProverRequired()));
+        identities.put(PREFIX + "authorization-point-checks",
+                authorization.hardenedPointChecks()
+                        ? "in-circuit-hardened" : "host-only-development");
+        identities.put(PREFIX + "funds-policy", authorization.fundsPolicy());
         return Map.copyOf(identities);
     }
 }

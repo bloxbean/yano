@@ -6,10 +6,12 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoContract;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2Authorization;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2Domain;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2Transaction;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoQueryCodec;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoStateKeys;
-import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoTransactionDomain;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoValidityTransition;
 import com.bloxbean.cardano.yano.appchain.eutxo.ledger.EutxoStateMachineProvider;
 import com.bloxbean.cardano.yano.appchain.eutxo.testkit.EutxoTestWallet;
@@ -19,6 +21,8 @@ import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoFinalizedProof
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoValidityWitness;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.zeroj.ZerojPoseidonValidityProvider;
+import com.bloxbean.cardano.zeroj.circuit.lib.jubjub.EdDSAJubjub;
+import com.bloxbean.cardano.zeroj.circuit.lib.jubjub.JubjubCurve;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigInteger;
@@ -46,6 +50,11 @@ class EutxoValidityIntegrationTest {
         settings.put("machines.eutxo.validity.enabled", "true");
         settings.put("machines.eutxo.validity.provider",
                 ZerojPoseidonValidityProvider.ID);
+        BigInteger aliceL2Secret = BigInteger.valueOf(101);
+        var aliceL2Key = EdDSAJubjub.keypairFromSecret(aliceL2Secret);
+        settings.put("machines.eutxo.genesis.l2-public-key",
+                HexFormat.of().formatHex(aliceL2Key.pk().toBytes()));
+        settings.put("machines.eutxo.genesis.l2-key-epoch", "1");
         AppStateMachine machine = new EutxoStateMachineProvider()
                 .create(context(settings));
         MemoryAppState state = new MemoryAppState();
@@ -69,27 +78,33 @@ class EutxoValidityIntegrationTest {
                         EutxoTransactionFixtures.serialize(noDomain)));
         assertThat(noDomainAdmission.isAccepted()).isFalse();
         assertThat(noDomainAdmission.reason())
-                .contains("INVALID_VALIDITY_DOMAIN");
+                .contains("INVALID_L2_TRANSACTION");
 
         byte[] nonce = new byte[32];
         Arrays.fill(nonce, (byte) 9);
-        EutxoTransactionDomain domain = new EutxoTransactionDomain(
+        var authorizationProfile =
+                com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts
+                        .EutxoZkAuthorizationProfile.JUBJUB_DEVELOPMENT_V1;
+        EutxoL2Domain domain = new EutxoL2Domain(
                 "eutxo-zk-test",
                 "devnet",
                 EutxoProfile.V1.digestHex(),
                 EutxoZkProfile.Z3_VALIDITY_SETTLEMENT.digestHex(),
+                authorizationProfile.id(),
+                authorizationProfile.digestHex(),
                 nonce,
                 100);
-        var payment = EutxoTransactionFixtures.signedPayment(
+        var cardanoBody = EutxoTransactionFixtures.signedPayment(
                 genesis.outpoint(),
                 alice,
                 List.of(new EutxoTransactionFixtures.Payment(
                         bob.address(), BigInteger.valueOf(100))),
                 0,
-                100,
-                domain);
+                100).getBody();
 
-        byte[] transactionCbor = EutxoTransactionFixtures.serialize(payment);
+        EutxoL2Transaction payment = l2Transaction(
+                cardanoBody, domain, alice, aliceL2Secret);
+        byte[] transactionCbor = payment.canonicalBytes();
         machine.apply(block(2, message(transactionCbor)), state);
 
         byte[] nextRoot = state.get(EutxoStateKeys.validityRoot())
@@ -125,7 +140,7 @@ class EutxoValidityIntegrationTest {
         EutxoFinalizedProofWitness proofWitness =
                 EutxoFinalizedProofWitness.derive(transition);
         assertThat(HexFormat.of().formatHex(
-                proofWitness.transactionBodyHash()))
+                proofWitness.signingCommitment()))
                 .isEqualTo(transition.transactionId());
         assertThat(proofWitness.domain()).isEqualTo(domain);
         assertThat(proofWitness.authorizations()).hasSize(1);
@@ -148,6 +163,8 @@ class EutxoValidityIntegrationTest {
                 "preview",
                 transition.profileDigest(),
                 transition.validityProfileDigest(),
+                transition.authorizationProfile(),
+                transition.authorizationProfileDigest(),
                 transition.domainCommitment(),
                 transition.transactionId(),
                 transition.canonicalTransaction(),
@@ -167,6 +184,8 @@ class EutxoValidityIntegrationTest {
                 transition.network(),
                 transition.profileDigest(),
                 transition.validityProfileDigest(),
+                transition.authorizationProfile(),
+                transition.authorizationProfileDigest(),
                 wrongDomain,
                 transition.transactionId(),
                 transition.canonicalTransaction(),
@@ -178,24 +197,40 @@ class EutxoValidityIntegrationTest {
                 transition.ordinal()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("domain commitment");
-        byte[] mutatedTransaction = transactionCbor.clone();
-        mutatedTransaction[mutatedTransaction.length - 1] ^= 1;
-        assertThatThrownBy(() -> new EutxoValidityTransition(
+        byte[] mutatedS = payment.authorizations().getFirst().s();
+        mutatedS[0] ^= 1;
+        EutxoL2Authorization mutatedAuthorization =
+                new EutxoL2Authorization(
+                        payment.authorizations().getFirst()
+                                .paymentCredential(),
+                        payment.authorizations().getFirst().keyEpoch(),
+                        payment.authorizations().getFirst().publicKey(),
+                        payment.authorizations().getFirst().rPoint(),
+                        mutatedS,
+                        payment.authorizations().getFirst().inputIndexes());
+        EutxoL2Transaction mutatedEnvelope = new EutxoL2Transaction(
+                payment.domain(), payment.transactionBody(),
+                List.of(mutatedAuthorization));
+        EutxoValidityTransition mutatedTransition =
+                new EutxoValidityTransition(
                 transition.previousRoot(),
                 transition.chainId(),
                 transition.network(),
                 transition.profileDigest(),
                 transition.validityProfileDigest(),
+                transition.authorizationProfile(),
+                transition.authorizationProfileDigest(),
                 transition.domainCommitment(),
                 transition.transactionId(),
-                mutatedTransaction,
+                mutatedEnvelope.canonicalBytes(),
                 transition.resolvedInputs(),
                 transition.consumed(),
                 transition.created(),
                 transition.l1Slot(),
                 transition.appHeight(),
-                transition.ordinal()))
-                .isInstanceOf(IllegalArgumentException.class);
+                transition.ordinal());
+        assertThat(mutatedTransition.digest())
+                .isNotEqualTo(transition.digest());
         assertThat(EutxoQueryCodec.decodeOptionalValidityTransition(
                 machine.query(
                         EutxoQueryCodec.VALIDITY_TRANSITION_PATH,
@@ -257,5 +292,58 @@ class EutxoValidityIntegrationTest {
         byte[] seed = new byte[32];
         Arrays.fill(seed, (byte) value);
         return EutxoTestWallet.fromSeed(seed);
+    }
+
+    private static EutxoL2Transaction l2Transaction(
+            com.bloxbean.cardano.client.transaction.spec.TransactionBody body,
+            EutxoL2Domain domain,
+            EutxoTestWallet owner,
+            BigInteger secret
+    ) {
+        try {
+            byte[] bodyCbor =
+                    com.bloxbean.cardano.client.common.cbor.CborSerializationUtil
+                            .serialize(body.serialize());
+            String credential = new com.bloxbean.cardano.client.address.Address(
+                    owner.address()).getPaymentCredentialHash()
+                    .map(HexFormat.of()::formatHex)
+                    .orElseThrow();
+            var keypair = EdDSAJubjub.keypairFromSecret(secret);
+            EutxoL2Authorization unsigned = new EutxoL2Authorization(
+                    credential, 1, keypair.pk().toBytes(),
+                    new byte[32], new byte[32], List.of(0));
+            EutxoL2Transaction template = new EutxoL2Transaction(
+                    domain, bodyCbor, List.of(unsigned));
+            BigInteger message = new BigInteger(
+                    1, template.signingCommitment()).mod(
+                    com.bloxbean.cardano.zeroj.circuit.lib.jubjub
+                            .JubjubCurve.BASE_FIELD_PRIME);
+            EdDSAJubjub.Signature signature =
+                    EdDSAJubjub.sign(secret, message);
+            EutxoL2Authorization signed = new EutxoL2Authorization(
+                    credential, 1, keypair.pk().toBytes(),
+                    signature.r().toBytes(),
+                    littleEndian32(signature.s()),
+                    List.of(0));
+            return new EutxoL2Transaction(
+                    domain, bodyCbor, List.of(signed));
+        } catch (Exception failure) {
+            throw new IllegalStateException(
+                    "cannot build L2 test transaction", failure);
+        }
+    }
+
+    private static byte[] littleEndian32(BigInteger value) {
+        if (value.signum() < 0
+                || value.compareTo(JubjubCurve.SUBGROUP_ORDER) >= 0) {
+            throw new IllegalArgumentException("invalid Jubjub scalar");
+        }
+        byte[] bigEndian = value.toByteArray();
+        int start = bigEndian.length > 1 && bigEndian[0] == 0 ? 1 : 0;
+        byte[] result = new byte[32];
+        for (int index = start; index < bigEndian.length; index++) {
+            result[bigEndian.length - 1 - index] = bigEndian[index];
+        }
+        return result;
     }
 }

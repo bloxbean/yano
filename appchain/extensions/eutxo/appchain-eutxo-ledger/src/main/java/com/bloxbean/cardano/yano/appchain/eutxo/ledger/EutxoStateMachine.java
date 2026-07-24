@@ -17,7 +17,9 @@ import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReceipt;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoRecord;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReserve;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoStateKeys;
-import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoTransactionDomain;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2Domain;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2KeyRegistration;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2Transaction;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoContract;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalClaim;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalCommitment;
@@ -275,6 +277,12 @@ public final class EutxoStateMachine implements AppStateMachine {
         for (EutxoRecord record : genesis.records()) {
             putRecord(writer, record);
         }
+        for (EutxoL2KeyRegistration registration :
+                genesis.l2KeyRegistrations()) {
+            writer.put(
+                    EutxoStateKeys.l2Key(registration.paymentCredential()),
+                    registration.encode());
+        }
         writer.put(EutxoStateKeys.genesis(),
                 genesis.transactionId().getBytes(StandardCharsets.UTF_8));
         ensureValidityState(writer, true);
@@ -337,15 +345,18 @@ public final class EutxoStateMachine implements AppStateMachine {
         byte[] previousRoot = writer.get(EutxoStateKeys.validityRoot())
                 .orElseThrow(() -> new IllegalStateException(
                         "selected EUTxO validity engine has no committed root"));
-        EutxoTransactionDomain domain = Objects.requireNonNull(
-                result.validityDomain(),
-                "validity-enabled accepted transition has no signed domain");
+        EutxoL2Transaction l2Transaction = Objects.requireNonNull(
+                result.l2Transaction(),
+                "validity-enabled accepted transition has no L2 envelope");
+        EutxoL2Domain domain = l2Transaction.domain();
         EutxoValidityTransition transition = new EutxoValidityTransition(
                 previousRoot,
                 chainId,
                 network,
                 profile.digestHex(),
                 validityEngine.profileDigest(),
+                validityEngine.authorizationProfile(),
+                validityEngine.authorizationProfileDigest(),
                 domain.commitment(),
                 result.transactionId(),
                 result.canonicalTransaction(),

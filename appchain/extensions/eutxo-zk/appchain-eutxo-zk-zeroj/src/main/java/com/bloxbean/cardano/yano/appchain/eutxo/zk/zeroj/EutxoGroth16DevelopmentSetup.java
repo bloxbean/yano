@@ -153,6 +153,27 @@ public final class EutxoGroth16DevelopmentSetup implements AutoCloseable {
                 proofMillis);
     }
 
+    GenericProofArtifact prove(
+            List<BigInteger> publicInputs,
+            BigInteger[] witness
+    ) {
+        Objects.requireNonNull(publicInputs, "publicInputs");
+        Objects.requireNonNull(witness, "witness");
+        if (publicInputs.size() != r1cs.numPublicInputs()) {
+            throw new IllegalArgumentException(
+                    "public input count differs from the circuit");
+        }
+        long started = System.nanoTime();
+        Groth16ProofBLS381 proof = keys.prove(witness, constraints);
+        long proofMillis = Duration.ofNanos(
+                System.nanoTime() - started).toMillis();
+        return new GenericProofArtifact(
+                List.copyOf(publicInputs),
+                proof,
+                ProverToCardano.compressProof(proof),
+                proofMillis);
+    }
+
     public boolean verify(ProofArtifact artifact) {
         Objects.requireNonNull(artifact, "artifact");
         return verify(artifact.publicInputs().ordered(), artifact.proof());
@@ -161,6 +182,11 @@ public final class EutxoGroth16DevelopmentSetup implements AutoCloseable {
     boolean verify(SettlementProofArtifact artifact) {
         Objects.requireNonNull(artifact, "artifact");
         return verify(artifact.publicInputs().ordered(), artifact.proof());
+    }
+
+    boolean verify(GenericProofArtifact artifact) {
+        Objects.requireNonNull(artifact, "artifact");
+        return verify(artifact.publicInputs(), artifact.proof());
     }
 
     private boolean verify(
@@ -263,6 +289,24 @@ public final class EutxoGroth16DevelopmentSetup implements AutoCloseable {
     ) {
         SettlementProofArtifact {
             Objects.requireNonNull(publicInputs, "publicInputs");
+            Objects.requireNonNull(proof, "proof");
+            Objects.requireNonNull(compressedProof, "compressedProof");
+            if (proofMillis < 0) {
+                throw new IllegalArgumentException(
+                        "proof duration cannot be negative");
+            }
+        }
+    }
+
+    record GenericProofArtifact(
+            List<BigInteger> publicInputs,
+            Groth16ProofBLS381 proof,
+            SnarkjsToCardano.ProofCompressed compressedProof,
+            long proofMillis
+    ) {
+        GenericProofArtifact {
+            publicInputs = List.copyOf(Objects.requireNonNull(
+                    publicInputs, "publicInputs"));
             Objects.requireNonNull(proof, "proof");
             Objects.requireNonNull(compressedProof, "compressedProof");
             if (proofMillis < 0) {
