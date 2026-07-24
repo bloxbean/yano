@@ -29,6 +29,7 @@ credentials unless a guide explicitly says otherwise.
 | Understand and verify Cardano settlement | [Anchors and independent verification](tutorials/07-anchors-and-verification.md) | No |
 | Implement new business rules without forking Yano | [Plugins and composites](tutorials/08-plugins-and-composites.md) | Small Java plugin |
 | Prepare a pilot deployment | [From demo to pilot](tutorials/09-from-demo-to-pilot.md) | Operations work |
+| Trace an experimental EUTxO ZK round trip on devnet | [EUTxO ZK devnet walkthrough](../../appchain/extensions/eutxo-zk/DEVNET_WALKTHROUGH.md) | Cardano builder integration |
 
 If you are unsure, complete tutorials 1, 2, 4, and 5 in that order. They show
 the progression from a replicated log to proofs, external actions, and

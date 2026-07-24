@@ -16,8 +16,10 @@
         ]
       },
       "liveDepositToWithdrawal": {
-        "status": "NOT_EXERCISED",
-        "evidence": ["D5_ACCEPTANCE.md#network-evidence"]
+        "status": "PASSED",
+        "evidence": [
+          "EutxoZkRollupDevnetE2ETest#depositFinalizeProveSettleAndWithdrawOnDevnet"
+        ]
       },
       "rollbackAndRecovery": {
         "status": "NOT_EXERCISED",

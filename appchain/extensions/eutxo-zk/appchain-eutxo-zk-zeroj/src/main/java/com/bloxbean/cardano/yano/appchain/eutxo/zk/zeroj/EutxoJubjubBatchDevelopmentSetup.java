@@ -1,8 +1,10 @@
 package com.bloxbean.cardano.yano.appchain.eutxo.zk.zeroj;
 
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2Transaction;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoFinalizedProofWitness;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkBatchProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkBatchProof;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkBatchSettlement;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkBatchVerificationKey;
 import com.bloxbean.cardano.zeroj.bls12381.Bls12381Codecs;
 import com.bloxbean.cardano.zeroj.bls12381.ec.G1Point;
@@ -11,6 +13,7 @@ import com.bloxbean.cardano.zeroj.bls12381.pairing.BLS12381Pairing;
 import com.bloxbean.cardano.zeroj.onchain.julc.groth16.codec.SnarkjsToCardano;
 
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 
@@ -74,14 +77,93 @@ public final class EutxoJubjubBatchDevelopmentSetup implements AutoCloseable {
             byte[] previousRoot,
             List<EutxoL2Transaction> transactions
     ) {
+        return prove(
+                previousRoot,
+                transactions,
+                EutxoZkBatchSettlement.forTransactions(
+                        profile,
+                        verificationKey.digestHex(),
+                        transactions,
+                        java.math.BigInteger.ZERO));
+    }
+
+    public EutxoZkBatchProof prove(
+            byte[] previousRoot,
+            List<EutxoL2Transaction> transactions,
+            EutxoZkBatchSettlement settlement
+    ) {
+        Objects.requireNonNull(settlement, "settlement").requireMatches(
+                profile, verificationKey.digestHex(), transactions);
         var statement = EutxoJubjubBatchCircuit.statement(
-                profile, previousRoot, transactions);
+                profile, previousRoot, transactions, settlement);
         var witness = EutxoJubjubBatchCircuit.witness(
                 profile, statement, transactions);
         var generated = delegate.prove(statement.ordered(), witness);
         if (!delegate.verify(generated)) {
             throw new IllegalStateException(
                     "ZeroJ rejected the generated Jubjub batch proof");
+        }
+        var compressed = generated.compressedProof();
+        return new EutxoZkBatchProof(
+                profile.id(),
+                profile.digest(),
+                profile.authorizationProfile(),
+                verificationKey.digestHex(),
+                statement.ordered(),
+                transactions.stream()
+                        .map(EutxoL2Transaction::transactionId)
+                        .toList(),
+                compressed.piA(),
+                compressed.piB(),
+                compressed.piC(),
+                generated.proofMillis());
+    }
+
+    /**
+     * Proves the exact ordered transition digests emitted by the finalized
+     * EUTxO state machine while proving each enclosed Jubjub authorization.
+     */
+    public EutxoZkBatchProof proveFinalized(
+            byte[] previousRoot,
+            List<EutxoFinalizedProofWitness> finalized,
+            EutxoZkBatchSettlement settlement
+    ) {
+        Objects.requireNonNull(finalized, "finalized");
+        if (finalized.isEmpty()
+                || finalized.size() > profile.maximumTransactions()) {
+            throw new IllegalArgumentException(
+                    "finalized batch exceeds immutable profile");
+        }
+        byte[] expectedRoot = Objects.requireNonNull(
+                previousRoot, "previousRoot").clone();
+        for (EutxoFinalizedProofWitness item : finalized) {
+            if (!Arrays.equals(
+                    expectedRoot,
+                    item.transition().previousRoot())) {
+                throw new IllegalArgumentException(
+                        "finalized transitions do not form one validity-root chain");
+            }
+            expectedRoot = EutxoJubjubBatchCircuit.nextValidityRoot(
+                    expectedRoot, item.transitionDigest());
+        }
+        List<EutxoL2Transaction> transactions = finalized.stream()
+                .map(EutxoFinalizedProofWitness::transition)
+                .map(transition -> EutxoL2Transaction.decode(
+                        transition.canonicalTransaction()))
+                .toList();
+        Objects.requireNonNull(settlement, "settlement")
+                .requireMatchesFinalized(
+                        profile,
+                        verificationKey.digestHex(),
+                        finalized);
+        var statement = EutxoJubjubBatchCircuit.statementFromFinalized(
+                profile, previousRoot, finalized, settlement);
+        var witness = EutxoJubjubBatchCircuit.witnessFromFinalized(
+                profile, statement, finalized);
+        var generated = delegate.prove(statement.ordered(), witness);
+        if (!delegate.verify(generated)) {
+            throw new IllegalStateException(
+                    "ZeroJ rejected the finalized Jubjub batch proof");
         }
         var compressed = generated.compressedProof();
         return new EutxoZkBatchProof(

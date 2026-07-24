@@ -28,6 +28,7 @@ class EutxoProofWithdrawalVaultValidatorTest extends ContractTest {
     private static final byte[] ROOT_POLICY = fill(28, 52);
     private static final byte[] VAULT_SCRIPT = fill(28, 53);
     private static final byte[] ROOT_SCRIPT = fill(28, 54);
+    private static final byte[] FUNDS_VAULT_SCRIPT = fill(28, 58);
     private static final byte[] MIGRATION_AUTHORITY = fill(28, 55);
     private static final byte[] MIGRATION_TARGET = fill(28, 56);
     private static final Address PAYOUT = new Address(
@@ -89,6 +90,7 @@ class EutxoProofWithdrawalVaultValidatorTest extends ContractTest {
                         PlutusData.bytes(ROOT_POLICY),
                         PlutusData.bytes(new byte[0]),
                         PlutusData.bytes(ROOT_SCRIPT),
+                        PlutusData.bytes(FUNDS_VAULT_SCRIPT),
                         PAYOUT.toPlutusData(),
                         PlutusData.bytes(MIGRATION_AUTHORITY),
                         PlutusData.bytes(MIGRATION_TARGET));
@@ -119,8 +121,12 @@ class EutxoProofWithdrawalVaultValidatorTest extends ContractTest {
         Value inputValue = threadedValue(
                 VAULT_INPUT, VAULT_POLICY);
         Value nextValue = threadedValue(
-                VAULT_INPUT.subtract(BigInteger.valueOf(actionAmount)),
+                VAULT_INPUT,
                 VAULT_POLICY);
+        Value fundsInputValue = Value.lovelace(VAULT_INPUT);
+        Value fundsOutputValue = Value.lovelace(
+                VAULT_INPUT.subtract(
+                        BigInteger.valueOf(actionAmount)));
         var builder = spendingContext(ownRef, current)
                 .redeemer(action)
                 .input(new TxInInfo(
@@ -128,6 +134,12 @@ class EutxoProofWithdrawalVaultValidatorTest extends ContractTest {
                         output(
                                 scriptAddress(VAULT_SCRIPT),
                                 inputValue,
+                                current)))
+                .input(new TxInInfo(
+                        ref(8),
+                        output(
+                                scriptAddress(FUNDS_VAULT_SCRIPT),
+                                fundsInputValue,
                                 current)))
                 .referenceInput(new TxInInfo(
                         ref(2),
@@ -140,7 +152,11 @@ class EutxoProofWithdrawalVaultValidatorTest extends ContractTest {
                 .output(output(
                         scriptAddress(VAULT_SCRIPT),
                         nextValue,
-                        next));
+                        next))
+                .output(output(
+                        scriptAddress(FUNDS_VAULT_SCRIPT),
+                        fundsOutputValue,
+                        current));
         for (int index = 0; index < payoutCount; index++) {
             builder.output(new TxOut(
                     PAYOUT,

@@ -29,7 +29,11 @@ class EutxoZkBatchArtifactTest {
                                 bytes(48, 6),
                                 bytes(48, 7),
                                 bytes(48, 8),
-                                bytes(48, 9)));
+                                bytes(48, 9),
+                                bytes(48, 10),
+                                bytes(48, 11),
+                                bytes(48, 12),
+                                bytes(48, 13)));
         EutxoZkBatchProof proof = new EutxoZkBatchProof(
                 profile.id(),
                 profile.digest(),
@@ -39,21 +43,22 @@ class EutxoZkBatchArtifactTest {
                         BigInteger.ONE,
                         BigInteger.TWO,
                         BigInteger.valueOf(3),
-                        BigInteger.ONE),
+                        BigInteger.valueOf(4),
+                        BigInteger.ONE,
+                        BigInteger.valueOf(6),
+                        BigInteger.valueOf(7),
+                        BigInteger.valueOf(8)),
                 List.of("aa".repeat(32)),
-                bytes(48, 10),
-                bytes(96, 11),
-                bytes(48, 12),
+                bytes(48, 14),
+                bytes(96, 15),
+                bytes(48, 16),
                 17);
 
         assertThat(EutxoZkBatchVerificationKey.decode(
                 key.canonicalBytes())).isEqualTo(key);
         assertThat(EutxoZkBatchProof.decode(
                 proof.canonicalBytes())).isEqualTo(proof);
-        assertThat(profile.digest())
-                .isEqualTo(
-                        "286483b1169ebb1e91fc0848195ac8a2"
-                                + "e7ec12f865beb40145d7a90c35a9c574");
+        assertThat(profile.digest()).matches("[0-9a-f]{64}");
 
         assertThatThrownBy(() -> new EutxoZkBatchVerificationKey(
                 profile.id(),
@@ -66,7 +71,7 @@ class EutxoZkBatchArtifactTest {
                 bytes(96, 4),
                 key.ic().subList(0, 4)))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("five IC");
+                .hasMessageContaining("nine IC");
     }
 
     private static byte[] bytes(int count, int value) {

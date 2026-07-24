@@ -187,7 +187,12 @@ public final class EutxoStateMachine implements AppStateMachine {
                     result.detail());
             if (result.accepted()) {
                 applyValidity(
-                        result, block.l1Slot(), block.height(), ordinal, writer);
+                        result,
+                        withdrawalPlan,
+                        block.l1Slot(),
+                        block.height(),
+                        ordinal,
+                        writer);
                 applyAccepted(result, withdrawalPlan, writer);
                 writer.put(EutxoStateKeys.transaction(result.transactionId()), receipt.encode());
             }
@@ -345,6 +350,7 @@ public final class EutxoStateMachine implements AppStateMachine {
 
     private void applyValidity(
             UtxoTransitionEngine.TransitionResult result,
+            WithdrawalPlan withdrawalPlan,
             long l1Slot,
             long appHeight,
             int ordinal,
@@ -374,6 +380,7 @@ public final class EutxoStateMachine implements AppStateMachine {
                 result.resolvedInputs(),
                 result.consumed(),
                 result.created(),
+                withdrawalPlan.claims(),
                 l1Slot,
                 appHeight,
                 ordinal);

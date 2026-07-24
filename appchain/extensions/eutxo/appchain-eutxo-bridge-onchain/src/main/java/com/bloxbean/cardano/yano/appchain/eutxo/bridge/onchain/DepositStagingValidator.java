@@ -30,8 +30,6 @@ public final class DepositStagingValidator {
             byte[] chainId,
             byte[] l2Owner,
             byte[] nonce,
-            byte[] stagingTransactionId,
-            BigInteger stagingIndex,
             byte[] depositorKeyHash,
             BigInteger refundDeadline
     ) {
@@ -43,12 +41,13 @@ public final class DepositStagingValidator {
     @Entrypoint
     public static boolean validate(
             StagingDatum datum,
-            BigInteger action,
+            PlutusData redeemer,
             ScriptContext context
     ) {
         if (!shapeValid(datum)) {
             return false;
         }
+        BigInteger action = decodeAction(redeemer);
         if (action.equals(ACCEPT)) {
             return acceptsToVaultBeforeDeadline(datum, context);
         }
@@ -56,6 +55,10 @@ public final class DepositStagingValidator {
             return refundsToDepositorAfterDeadline(datum, context);
         }
         return false;
+    }
+
+    static BigInteger decodeAction(PlutusData redeemer) {
+        return Builtins.unIData(redeemer);
     }
 
     private static boolean acceptsToVaultBeforeDeadline(
@@ -70,7 +73,11 @@ public final class DepositStagingValidator {
         TxOut accepted = outputs.head();
         return ValuesLib.lovelaceOf(accepted.value())
                 .compareTo(ownInputLovelace(context)) >= 0
-                && acceptedDatumMatches(accepted.datum(), datum);
+                && acceptedDatumMatches(
+                accepted.datum(),
+                datum,
+                ContextsLib.findOwnInput(context).get().outRef().txId().hash(),
+                ContextsLib.findOwnInput(context).get().outRef().index());
     }
 
     private static boolean refundsToDepositorAfterDeadline(
@@ -92,8 +99,6 @@ public final class DepositStagingValidator {
                 && datum.chainId().length >= 1 && datum.chainId().length <= 128
                 && datum.l2Owner().length >= 1 && datum.l2Owner().length <= 256
                 && datum.nonce().length == 32
-                && datum.stagingTransactionId().length == 32
-                && datum.stagingIndex().signum() >= 0
                 && datum.depositorKeyHash().length == 28
                 && datum.refundDeadline().signum() >= 0;
     }
@@ -102,16 +107,27 @@ public final class DepositStagingValidator {
      * The federation cannot change the intended L2 owner or replay another
      * staging output's datum while moving value into the accepted vault.
      */
-    static boolean acceptedDatumMatches(OutputDatum outputDatum, StagingDatum staging) {
+    static boolean acceptedDatumMatches(
+            OutputDatum outputDatum,
+            StagingDatum staging,
+            byte[] stagingTransactionId,
+            BigInteger stagingIndex
+    ) {
         if (outputDatum instanceof OutputDatum.OutputDatumInline inlineDatum) {
-            return acceptedInlineDatumMatches(inlineDatum.datum(), staging);
+            return acceptedInlineDatumMatches(
+                    inlineDatum.datum(),
+                    staging,
+                    stagingTransactionId,
+                    stagingIndex);
         }
         return false;
     }
 
     private static boolean acceptedInlineDatumMatches(
             PlutusData datum,
-            StagingDatum staging
+            StagingDatum staging,
+            byte[] stagingTransactionId,
+            BigInteger stagingIndex
     ) {
         PlutusData fields = Builtins.constrFields(datum);
         BigInteger version = Builtins.unIData(Builtins.headList(fields));
@@ -135,8 +151,9 @@ public final class DepositStagingValidator {
                 && Builtins.equalsByteString(chainId, staging.chainId())
                 && Builtins.equalsByteString(owner, staging.l2Owner())
                 && Builtins.equalsByteString(nonce, staging.nonce())
-                && Builtins.equalsByteString(transactionId, staging.stagingTransactionId())
-                && outputIndex.equals(staging.stagingIndex())
+                && Builtins.equalsByteString(
+                transactionId, stagingTransactionId)
+                && outputIndex.equals(stagingIndex)
                 && deadline.equals(staging.refundDeadline());
     }
 }

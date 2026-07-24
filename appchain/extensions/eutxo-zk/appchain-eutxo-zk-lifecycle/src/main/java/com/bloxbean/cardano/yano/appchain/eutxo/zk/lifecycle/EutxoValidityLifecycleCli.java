@@ -1,13 +1,21 @@
 package com.bloxbean.cardano.yano.appchain.eutxo.zk.lifecycle;
 
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.client.EutxoL2SessionKey;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.net.URI;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.PosixFilePermission;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.EnumSet;
+import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /** Command-line facade for the project-aware EUTxO validity lifecycle. */
@@ -18,7 +26,8 @@ public final class EutxoValidityLifecycleCli {
     public static final int EXIT_IO = 74;
 
     public static final String USAGE = """
-            Usage: ./yano.sh appchain validity bootstrap --project <dir> [--development-ceremony --yes]
+            Usage: ./yano.sh appchain validity key generate --output <file> --password-env <name>
+               or: ./yano.sh appchain validity bootstrap --project <dir> [--development-ceremony --yes]
                or: ./yano.sh appchain validity status --project <dir>
                or: ./yano.sh appchain validity prove --project <dir> --previous-root <hex> --transition <file>...
                or: ./yano.sh appchain validity proof <proof-id> --project <dir>
@@ -33,6 +42,7 @@ public final class EutxoValidityLifecycleCli {
                or: ./yano.sh appchain validity reconcile --project <dir>
 
             Safety:
+              Key generation writes an encrypted local Jubjub session key and prints only its public key.
               zeroj-jubjub-dev-v1 always requires a trusted prover and disposable test funds.
               Preview and Preprod require a durable project acknowledgement.
               Mainnet is rejected unconditionally.
@@ -52,6 +62,13 @@ public final class EutxoValidityLifecycleCli {
             Options options = Options.parse(arguments);
             if (options.help) {
                 out.println(USAGE);
+                return EXIT_OK;
+            }
+            if (options.command.equals(List.of("key", "generate"))) {
+                out.println(JSON.writerWithDefaultPrettyPrinter()
+                        .writeValueAsString(generateKey(
+                                options.output,
+                                password(options.passwordEnvironment))));
                 return EXIT_OK;
             }
             EutxoValidityLifecycle lifecycle =
@@ -144,6 +161,71 @@ public final class EutxoValidityLifecycleCli {
                         "API key environment variable is not set"));
     }
 
+    private static char[] password(String environment) {
+        if (environment == null) {
+            throw new Usage("key generate requires --password-env");
+        }
+        String value = Optional.ofNullable(System.getenv(environment))
+                .filter(item -> !item.isBlank())
+                .orElseThrow(() -> new Usage(
+                        "password environment variable is not set"));
+        return value.toCharArray();
+    }
+
+    static Map<String, String> generateKey(
+            Path output,
+            char[] password
+    ) throws IOException {
+        if (output == null) {
+            throw new Usage("key generate requires --output");
+        }
+        Path target = output.toAbsolutePath().normalize();
+        Path parent = target.getParent();
+        if (parent == null) {
+            throw new Usage("key output must have a parent directory");
+        }
+        Files.createDirectories(parent);
+        byte[] encrypted;
+        String publicKey;
+        try (EutxoL2SessionKey key = EutxoL2SessionKey.random()) {
+            encrypted = key.encrypt(password);
+            publicKey = HexFormat.of().formatHex(key.publicKey());
+        } finally {
+            Arrays.fill(password, '\0');
+        }
+        boolean created = false;
+        try {
+            Files.write(target, encrypted,
+                    StandardOpenOption.CREATE_NEW,
+                    StandardOpenOption.WRITE);
+            created = true;
+            try {
+                Files.setPosixFilePermissions(
+                        target,
+                        EnumSet.of(
+                                PosixFilePermission.OWNER_READ,
+                                PosixFilePermission.OWNER_WRITE));
+            } catch (UnsupportedOperationException ignored) {
+                // Windows and other non-POSIX file systems rely on their ACLs.
+            }
+        } catch (IOException failure) {
+            if (created) {
+                try {
+                    Files.deleteIfExists(target);
+                } catch (IOException cleanupFailure) {
+                    failure.addSuppressed(cleanupFailure);
+                }
+            }
+            throw failure;
+        } finally {
+            Arrays.fill(encrypted, (byte) 0);
+        }
+        return Map.of(
+                "status", "L2_SESSION_KEY_CREATED",
+                "encryptedKey", target.toString(),
+                "publicKey", publicKey);
+    }
+
     private static String safe(String message) {
         if (message == null || message.isBlank()) {
             return "operation rejected";
@@ -165,6 +247,8 @@ public final class EutxoValidityLifecycleCli {
         private URI url;
         private String transactionId;
         private String apiKeyEnvironment;
+        private String passwordEnvironment;
+        private Path output;
         private boolean developmentCeremony;
         private boolean confirmed;
         private boolean help;
@@ -206,6 +290,13 @@ public final class EutxoValidityLifecycleCli {
                             once(options.apiKeyEnvironment,
                                     required(arguments, ++index, value),
                                     value);
+                    case "--password-env" ->
+                            options.passwordEnvironment =
+                                    once(options.passwordEnvironment,
+                                            required(arguments, ++index, value),
+                                            value);
+                    case "--output" -> options.output = Path.of(
+                            required(arguments, ++index, value));
                     case "--development-ceremony" ->
                             options.developmentCeremony = true;
                     case "--yes" -> options.confirmed = true;
@@ -236,6 +327,10 @@ public final class EutxoValidityLifecycleCli {
                 return List.copyOf(positional);
             }
             if (positional.size() == 2
+                    && positional.equals(List.of("key", "generate"))) {
+                return List.copyOf(positional);
+            }
+            if (positional.size() == 2
                     && "proof".equals(positional.getFirst())) {
                 options.argument = positional.get(1);
                 return List.of("proof");
@@ -253,6 +348,14 @@ public final class EutxoValidityLifecycleCli {
         }
 
         private static void validate(Options options) {
+            if (options.command.equals(List.of("key", "generate"))) {
+                if (options.output == null
+                        || options.passwordEnvironment == null) {
+                    throw new Usage(
+                            "key generate requires --output and --password-env");
+                }
+                return;
+            }
             if (options.command.equals(List.of("prove"))
                     && (options.previousRoot == null
                     || options.transitions.isEmpty())) {

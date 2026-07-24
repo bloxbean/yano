@@ -14,7 +14,7 @@
     "No independently maintained third-party catalog has supplied compatibility evidence yet.",
     "Preview role recipes have module-level outcome and packaged-provider evidence, not an external operator field trial.",
     "Native runtime execution remains a platform-specific release gate; the portable matrix verifies generation, packaging, and declared compatibility.",
-    "The EUTxO ZeroJ testnet lifecycle uses zeroj-jubjub-dev-v1 with a trusted prover and disposable funds; malicious-prover security, Preview/Preprod live acceptance, and production readiness are NOT_EXERCISED."
+    "The EUTxO ZeroJ testnet lifecycle uses zeroj-jubjub-dev-v1 with a trusted prover and disposable funds; its complete Yano-devnet L1-to-L2-to-L1 round trip passes, while malicious-prover security, Preview/Preprod live acceptance, restart/rollback, independent reconstruction, and production readiness are NOT_EXERCISED."
   ],
   "capabilityEvidence": {
     "state:ordered-log": ["appchain/appchain-devtools/src/test/scripts/final-distribution-stock-outcomes.sh#recipe-audit-log"],
@@ -111,7 +111,7 @@
       "gitOpsTargets": ["helm", "kustomize"],
       "outcomeLevel": "OPERATOR_OWNED_REFERENCE",
       "acceptanceScenario": "recipe-eutxo-cardano-bridge",
-      "evidence": ["appchain/extensions/eutxo/appchain-eutxo-ledger/src/test/java/com/bloxbean/cardano/yano/appchain/eutxo/ledger/EutxoStateMachineTest.java#signedWithdrawalBecomesIrrevocableAndExactL1ConfirmationReconcilesReserve", "appchain/extensions/eutxo/appchain-eutxo-bridge-cardano/src/test/java/com/bloxbean/cardano/yano/appchain/eutxo/bridge/cardano/WithdrawalCoordinatorTest.java#crashAfterSubmitRetriesTheSameSignedTransactionWithoutResigning", "appchain/extensions/eutxo/appchain-eutxo-bridge-cardano/src/test/java/com/bloxbean/cardano/yano/appchain/eutxo/bridge/cardano/ProofWithdrawalTransactionBuilderTest.java#permissionlessRelayReturnsExactReusableSignedBytes", "appchain/extensions/eutxo/appchain-eutxo-bridge-onchain/src/test/java/com/bloxbean/cardano/yano/appchain/eutxo/bridge/onchain/ProofVaultValidatorConformanceTest.java#realMpfClaimSettlesPermissionlesslyWithinBudget", "appchain/extensions/eutxo/appchain-eutxo-bridge-onchain/src/test/java/com/bloxbean/cardano/yano/appchain/eutxo/bridge/onchain/BridgeValidatorSourceCompileTest.java#releasePinnedJulcCompilesAllBridgeValidators"]
+      "evidence": ["appchain/extensions/eutxo/appchain-eutxo-ledger/src/test/java/com/bloxbean/cardano/yano/appchain/eutxo/ledger/EutxoStateMachineTest.java#signedWithdrawalBecomesIrrevocableAndExactL1ConfirmationReconcilesReserve", "appchain/extensions/eutxo/appchain-eutxo-bridge-cardano/src/test/java/com/bloxbean/cardano/yano/appchain/eutxo/bridge/cardano/WithdrawalCoordinatorTest.java#crashAfterSubmitRetriesTheSameSignedTransactionWithoutResigning", "appchain/extensions/eutxo/appchain-eutxo-bridge-cardano/src/test/java/com/bloxbean/cardano/yano/appchain/eutxo/bridge/cardano/ProofWithdrawalTransactionBuilderTest.java#permissionlessRelayReturnsExactReusableSignedBytes", "appchain/extensions/eutxo/appchain-eutxo-bridge-onchain/src/test/java/com/bloxbean/cardano/yano/appchain/eutxo/bridge/onchain/ProofVaultValidatorConformanceTest.java#realMpfClaimSettlesPermissionlesslyWithinBudget", "appchain/extensions/eutxo/appchain-eutxo-bridge-onchain/src/test/java/com/bloxbean/cardano/yano/appchain/eutxo/bridge/onchain/BridgeValidatorSourceCompileTest.java#releasePinnedJulcCompilesAllBridgeValidators", "app/src/test/java/com/bloxbean/cardano/yano/app/e2e/EutxoZkRollupDevnetE2ETest.java#depositFinalizeProveSettleAndWithdrawOnDevnet"]
     },
     {
       "id": "eutxo-zeroj-validity", "maturity": "experimental",
@@ -129,7 +129,7 @@
       "gitOpsTargets": ["helm", "kustomize"],
       "outcomeLevel": "OPERATOR_OWNED_REFERENCE",
       "acceptanceScenario": "recipe-eutxo-zeroj-preview",
-      "evidence": ["appchain/extensions/eutxo-zk/appchain-eutxo-zk-lifecycle/src/test/java/com/bloxbean/cardano/yano/appchain/eutxo/zk/lifecycle/EutxoValidityLifecycleTest.java#bootstrapIsIdempotentAndFailClosedByNetwork", "appchain/extensions/eutxo-zk/D5_ACCEPTANCE.md#network-evidence", "appchain/extensions/eutxo-zk/D6_RELEASE_DECISION.md#release-decision"]
+      "evidence": ["appchain/extensions/eutxo-zk/appchain-eutxo-zk-lifecycle/src/test/java/com/bloxbean/cardano/yano/appchain/eutxo/zk/lifecycle/EutxoValidityLifecycleTest.java#bootstrapIsIdempotentAndFailClosedByNetwork", "app/src/test/java/com/bloxbean/cardano/yano/app/e2e/EutxoZkRollupDevnetE2ETest.java#depositFinalizeProveSettleAndWithdrawOnDevnet", "appchain/extensions/eutxo-zk/D5_ACCEPTANCE.md#network-evidence", "appchain/extensions/eutxo-zk/D6_RELEASE_DECISION.md#release-decision"]
     },
     {
       "id": "custom-plugin", "maturity": "experimental", "availability": "REFERENCE",

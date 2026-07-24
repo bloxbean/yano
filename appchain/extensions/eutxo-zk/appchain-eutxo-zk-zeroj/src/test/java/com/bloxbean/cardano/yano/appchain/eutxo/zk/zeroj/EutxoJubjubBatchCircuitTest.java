@@ -14,6 +14,7 @@ import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.testkit.EutxoTestWallet;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkAuthorizationProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkBatchProfile;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkBatchSettlement;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkProfile;
 import com.bloxbean.cardano.zeroj.circuit.lib.jubjub.EdDSAJubjub;
 import com.bloxbean.cardano.zeroj.circuit.lib.jubjub.JubjubCurve;
@@ -49,7 +50,7 @@ class EutxoJubjubBatchCircuitTest {
                 EutxoJubjubBatchCircuit.circuit(profile))) {
             var proof = setup.prove(statement.ordered(), witness);
             assertThat(setup.verify(proof)).isTrue();
-            assertThat(setup.publicInputCount()).isEqualTo(4);
+            assertThat(setup.publicInputCount()).isEqualTo(8);
             assertThat(statement.batchSize()).isEqualTo(
                     BigInteger.valueOf(16));
             assertThat(proof.compressedProof()).isNotNull();
@@ -61,12 +62,43 @@ class EutxoJubjubBatchCircuitTest {
                     proof.proofMillis());
         }
 
+    }
+
+    @Test
+    void rejectsBatchLargerThanCanonicalB16Manifest() throws Exception {
+        var profile = EutxoZkBatchProfile.CARDANO_PAYMENT_B16;
+        var transaction = transaction(BigInteger.ONE, 0);
+
         assertThatThrownBy(() -> EutxoJubjubBatchCircuit.statement(
                 profile,
-                previousRoot,
-                java.util.Collections.nCopies(17, transactions.getFirst())))
+                new byte[32],
+                java.util.Collections.nCopies(17, transaction)))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("immutable profile");
+                .hasMessageContaining("1-16 transaction ids");
+    }
+
+    @Test
+    void trustedProverBoundaryRejectsMismatchedSettlementMetadata()
+            throws Exception {
+        var profile = EutxoZkBatchProfile.CARDANO_PAYMENT_B16;
+        var transaction = transaction(BigInteger.ONE, 0);
+        String verificationKeyDigest = "42".repeat(32);
+        var settlement = EutxoZkBatchSettlement.forTransactions(
+                profile,
+                verificationKeyDigest,
+                List.of(transaction),
+                BigInteger.ZERO);
+        settlement.requireMatches(
+                profile, verificationKeyDigest, List.of(transaction));
+        var mismatched = new EutxoZkBatchSettlement(
+                settlement.settlementContext().add(BigInteger.ONE),
+                settlement.batchDataCommitment(),
+                settlement.withdrawalLovelace());
+
+        assertThatThrownBy(() -> mismatched.requireMatches(
+                profile, verificationKeyDigest, List.of(transaction)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("does not match");
     }
 
     @Test

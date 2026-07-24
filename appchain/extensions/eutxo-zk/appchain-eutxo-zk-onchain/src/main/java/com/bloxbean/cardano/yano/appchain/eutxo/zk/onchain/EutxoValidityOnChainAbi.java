@@ -2,6 +2,9 @@ package com.bloxbean.cardano.yano.appchain.eutxo.zk.onchain;
 
 import com.bloxbean.cardano.julc.core.PlutusData;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkBatchData;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkBatchManifest;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkBatchProof;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkBatchVerificationKey;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkPublicInputs;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkProofArtifact;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkSettlementPublicInputs;
@@ -82,6 +85,21 @@ public final class EutxoValidityOnChainAbi {
                 ic);
     }
 
+    public static List<PlutusData> verificationKeyParameters(
+            EutxoZkBatchVerificationKey key
+    ) {
+        Objects.requireNonNull(key, "key");
+        PlutusData ic = PlutusData.list(key.ic().stream()
+                .map(PlutusData::bytes)
+                .toArray(PlutusData[]::new));
+        return List.of(
+                PlutusData.bytes(key.alpha()),
+                PlutusData.bytes(key.beta()),
+                PlutusData.bytes(key.gamma()),
+                PlutusData.bytes(key.delta()),
+                ic);
+    }
+
     public static PlutusData rootDatum(
             String chainId,
             long bridgeEpoch,
@@ -134,6 +152,38 @@ public final class EutxoValidityOnChainAbi {
                 PlutusData.integer(inputs.batchDataCommitment()),
                 PlutusData.integer(inputs.withdrawalCommitment()),
                 PlutusData.bytes(batchData.canonicalBytes()),
+                PlutusData.bytes(proof.piA()),
+                PlutusData.bytes(proof.piB()),
+                PlutusData.bytes(proof.piC()));
+    }
+
+    public static PlutusData advanceRedeemer(
+            EutxoZkBatchProof proof,
+            EutxoZkBatchManifest manifest
+    ) {
+        Objects.requireNonNull(proof, "proof");
+        Objects.requireNonNull(manifest, "manifest");
+        EutxoZkSettlementPublicInputs inputs =
+                proof.settlementInputs();
+        if (!manifest.transactionIds().equals(
+                proof.transactionIds())
+                || !manifest.commitmentScalar().equals(
+                inputs.batchDataCommitment())) {
+            throw new IllegalArgumentException(
+                    "batch manifest does not match proof statement");
+        }
+        return PlutusData.constr(
+                0,
+                PlutusData.integer(0),
+                PlutusData.integer(inputs.previousRoot()),
+                PlutusData.integer(inputs.nextRoot()),
+                PlutusData.integer(inputs.transitionDigest()),
+                PlutusData.integer(inputs.ownerCommitment()),
+                PlutusData.integer(inputs.batchSize()),
+                PlutusData.integer(inputs.settlementContext()),
+                PlutusData.integer(inputs.batchDataCommitment()),
+                PlutusData.integer(inputs.withdrawalCommitment()),
+                PlutusData.bytes(manifest.canonicalBytes()),
                 PlutusData.bytes(proof.piA()),
                 PlutusData.bytes(proof.piB()),
                 PlutusData.bytes(proof.piC()));

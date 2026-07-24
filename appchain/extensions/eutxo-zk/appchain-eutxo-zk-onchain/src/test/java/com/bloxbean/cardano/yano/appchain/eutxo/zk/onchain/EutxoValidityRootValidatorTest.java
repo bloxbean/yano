@@ -187,6 +187,9 @@ class EutxoValidityRootValidatorTest extends ContractTest {
                         PlutusData.bytes(new byte[0]),
                         PlutusData.integer(
                                 fixture.inputs().settlementContext()),
+                        PlutusData.integer(4),
+                        PlutusData.integer(
+                                EutxoZkBatchData.CANONICAL_BYTES),
                         keyParams.get(0),
                         keyParams.get(1),
                         keyParams.get(2),

@@ -92,7 +92,9 @@ def buildTimePluginBundles = [
         'com.bloxbean.cardano.yano.appchain.evidence-profile':
                 [projectPath: ':appchain-evidence-profile', includeProvided: false],
         'com.bloxbean.cardano.yano.appchain.eutxo':
-                [projectPath: ':appchain-eutxo-ledger', includeProvided: false]
+                [projectPath: ':appchain-eutxo-ledger', includeProvided: false],
+        'com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano':
+                [projectPath: ':appchain-eutxo-bridge-cardano', includeProvided: false]
 ]
 if (includeFirstPartyPluginBundles) {
     buildTimePluginBundles.putAll([
@@ -105,9 +107,7 @@ if (includeFirstPartyPluginBundles) {
             'com.bloxbean.cardano.yano.appchain.effects.cardano':
                     [projectPath: ':appchain-effects-cardano', includeProvided: true],
             'com.bloxbean.cardano.yano.appchain.zk':
-                    [projectPath: ':appchain-zk', includeProvided: true],
-            'com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano':
-                    [projectPath: ':appchain-eutxo-bridge-cardano', includeProvided: false]
+                    [projectPath: ':appchain-zk', includeProvided: true]
     ])
 }
 if (includeNativePluginConformanceFixture) {
@@ -187,7 +187,6 @@ dependencies {
         runtimeOnly project(':appchain-ipfs')
         runtimeOnly project(':appchain-effects-cardano')
         runtimeOnly project(':appchain-zk')
-        runtimeOnly project(':appchain-eutxo-bridge-cardano')
         // AWS SDK 2.48.0 compiles its checksum fallback against these optional
         // CRT types. A JVM can defer the absent branch, but native-image links
         // every reachable checksum implementation and therefore requires the
@@ -206,6 +205,7 @@ dependencies {
     // EUTxO engine and ZeroJ validity provider. Selection remains entirely
     // configuration-driven; native distributions do not claim this posture.
     runtimeOnly project(':appchain-eutxo-ledger')
+    runtimeOnly project(':appchain-eutxo-bridge-cardano')
     runtimeOnly project(':appchain-eutxo-zk-zeroj')
 
     implementation("com.google.auto.service:auto-service:1.1.1")
@@ -220,10 +220,23 @@ dependencies {
     testImplementation 'io.rest-assured:rest-assured'
 
     testImplementation project(':testkit')
+    testImplementation project(':scalus-bridge')
+    testImplementation project(':appchain-eutxo-client')
+    testImplementation project(':appchain-eutxo-bridge-onchain')
+    testImplementation project(':appchain-eutxo-zk-onchain')
+    testImplementation project(':appchain-eutxo-zk-zeroj')
     testImplementation libs.cardano.client.lib
     testImplementation libs.cardano.client.backend.blockfrost
     testImplementation libs.cardano.client.quicktx
     testImplementation libs.cardano.client.cip20
+    testImplementation libs.zeroj.circuit.lib
+    testImplementation libs.zeroj.onchain.julc
+    testImplementation "com.bloxbean.cardano:julc-stdlib:${libs.versions.julc.get()}"
+    testImplementation "com.bloxbean.cardano:julc-ledger-api:${libs.versions.julc.get()}"
+    testImplementation "com.bloxbean.cardano:julc-testkit:${libs.versions.julc.get()}"
+    testImplementation "com.bloxbean.cardano:julc-compiler:${libs.versions.julc.get()}"
+    testImplementation libs.julc.cardano.client.lib
+    testRuntimeOnly "com.bloxbean.cardano:julc-vm-java:${libs.versions.julc.get()}"
 }
 
 application {
@@ -715,6 +728,8 @@ tasks.register('e2eTest', Test) {
     }
     testClassesDirs = sourceSets.test.output.classesDirs
     classpath = sourceSets.test.runtimeClasspath
+    maxHeapSize = '4g'
+    systemProperty 'zeroj.allowInsecureTrustedSetup', 'true'
     if (System.getProperty('yano.e2e.baseUrl') != null) {
         systemProperty 'yano.e2e.baseUrl', System.getProperty('yano.e2e.baseUrl')
     }

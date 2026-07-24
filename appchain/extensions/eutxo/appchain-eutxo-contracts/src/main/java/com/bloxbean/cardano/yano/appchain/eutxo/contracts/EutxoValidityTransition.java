@@ -34,11 +34,12 @@ public record EutxoValidityTransition(
         List<EutxoRecord> resolvedInputs,
         List<EutxoOutpoint> consumed,
         List<EutxoRecord> created,
+        List<EutxoWithdrawalClaim> withdrawals,
         long l1Slot,
         long appHeight,
         int ordinal
 ) {
-    private static final int VERSION = 3;
+    private static final int VERSION = 4;
     private static final int MAX_TRANSACTION_BYTES = 128 * 1024;
     private static final int MAX_RECORDS = 16;
     private static final int MAX_ENCODED_BYTES = 1024 * 1024;
@@ -72,6 +73,7 @@ public record EutxoValidityTransition(
         resolvedInputs = records(resolvedInputs, "resolvedInputs");
         consumed = List.copyOf(Objects.requireNonNull(consumed, "consumed"));
         created = records(created, "created");
+        withdrawals = withdrawals(withdrawals, created, chainId, appHeight);
         if (consumed.isEmpty() || consumed.size() > MAX_RECORDS
                 || resolvedInputs.size() != consumed.size()) {
             throw new IllegalArgumentException(
@@ -91,7 +93,7 @@ public record EutxoValidityTransition(
                 canonicalTransaction, chainId, network, profileDigest,
                 validityProfileDigest, authorizationProfile,
                 authorizationProfileDigest, domainCommitment, transactionId,
-                resolvedInputs, consumed, created);
+                resolvedInputs, consumed, created, withdrawals);
     }
 
     @Override
@@ -121,7 +123,7 @@ public record EutxoValidityTransition(
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
             try (DataOutputStream output = new DataOutputStream(bytes)) {
                 output.writeInt(VERSION);
-                writeBytes(output, "yano:eutxo:validity-transition:v3"
+                writeBytes(output, "yano:eutxo:validity-transition:v4"
                         .getBytes(StandardCharsets.US_ASCII));
                 writeBytes(output, previousRoot);
                 writeText(output, chainId);
@@ -147,6 +149,10 @@ public record EutxoValidityTransition(
                 output.writeInt(created.size());
                 for (EutxoRecord record : created) {
                     writeBytes(output, record.encode());
+                }
+                output.writeInt(withdrawals.size());
+                for (EutxoWithdrawalClaim withdrawal : withdrawals) {
+                    writeBytes(output, withdrawal.encode());
                 }
             }
             return bytes.toByteArray();
@@ -175,7 +181,7 @@ public record EutxoValidityTransition(
             }
             byte[] domain = readBytes(input, 128);
             if (!java.util.Arrays.equals(domain,
-                    "yano:eutxo:validity-transition:v3"
+                    "yano:eutxo:validity-transition:v4"
                             .getBytes(StandardCharsets.US_ASCII))) {
                 throw new IllegalArgumentException(
                         "invalid validity transition domain");
@@ -201,6 +207,14 @@ public record EutxoValidityTransition(
                 consumed.add(EutxoOutpoint.parse(readText(input, 66)));
             }
             List<EutxoRecord> created = readRecords(input);
+            int withdrawalCount =
+                    boundedCount(input.readInt(), 0, MAX_RECORDS);
+            java.util.ArrayList<EutxoWithdrawalClaim> withdrawals =
+                    new java.util.ArrayList<>(withdrawalCount);
+            for (int index = 0; index < withdrawalCount; index++) {
+                withdrawals.add(EutxoWithdrawalClaim.decode(
+                        readBytes(input, 32 * 1024)));
+            }
             if (input.read() != -1) {
                 throw new IllegalArgumentException(
                         "trailing validity transition bytes");
@@ -210,6 +224,7 @@ public record EutxoValidityTransition(
                     validityProfileDigest, authorizationProfile,
                     authorizationProfileDigest, domainCommitment,
                     transactionId, transaction, resolved, consumed, created,
+                    List.copyOf(withdrawals),
                     l1Slot, height, ordinal);
         } catch (IOException exception) {
             throw new IllegalArgumentException(
@@ -240,6 +255,7 @@ public record EutxoValidityTransition(
                 && resolvedInputs.equals(transition.resolvedInputs)
                 && consumed.equals(transition.consumed)
                 && created.equals(transition.created)
+                && withdrawals.equals(transition.withdrawals)
                 && l1Slot == transition.l1Slot
                 && appHeight == transition.appHeight
                 && ordinal == transition.ordinal;
@@ -251,7 +267,7 @@ public record EutxoValidityTransition(
                 chainId, network, profileDigest,
                 validityProfileDigest, authorizationProfile,
                 authorizationProfileDigest, transactionId,
-                resolvedInputs, consumed, created,
+                resolvedInputs, consumed, created, withdrawals,
                 l1Slot, appHeight, ordinal);
         result = 31 * result + java.util.Arrays.hashCode(previousRoot);
         result = 31 * result
@@ -342,11 +358,60 @@ public record EutxoValidityTransition(
     }
 
     private static int boundedCount(int count) {
-        if (count < 1 || count > MAX_RECORDS) {
+        return boundedCount(count, 1, MAX_RECORDS);
+    }
+
+    private static int boundedCount(
+            int count,
+            int minimum,
+            int maximum
+    ) {
+        if (count < minimum || count > maximum) {
             throw new IllegalArgumentException(
                     "invalid validity transition record count");
         }
         return count;
+    }
+
+    private static List<EutxoWithdrawalClaim> withdrawals(
+            List<EutxoWithdrawalClaim> withdrawals,
+            List<EutxoRecord> created,
+            String chainId,
+            long appHeight
+    ) {
+        List<EutxoWithdrawalClaim> copy = List.copyOf(
+                Objects.requireNonNull(withdrawals, "withdrawals"));
+        if (copy.size() > MAX_RECORDS) {
+            throw new IllegalArgumentException(
+                    "withdrawals exceed the validity transition bound");
+        }
+        java.util.Set<EutxoOutpoint> createdOutpoints =
+                created.stream()
+                        .map(EutxoRecord::outpoint)
+                        .collect(java.util.stream.Collectors.toSet());
+        java.util.Set<String> claimIds = new java.util.HashSet<>();
+        java.util.Set<EutxoOutpoint> withdrawalOutpoints =
+                new java.util.HashSet<>();
+        for (EutxoWithdrawalClaim withdrawal : copy) {
+            if (!chainId.equals(withdrawal.chainId())
+                    || withdrawal.requestedHeight() != appHeight
+                    || !createdOutpoints.contains(
+                    withdrawal.withdrawalOutpoint())
+                    || !withdrawalOutpoints.add(
+                    withdrawal.withdrawalOutpoint())
+                    || !claimIds.add(withdrawal.claimId())) {
+                throw new IllegalArgumentException(
+                        "withdrawal differs from the validity transition");
+            }
+        }
+        return copy;
+    }
+
+    public java.math.BigInteger withdrawalLovelace() {
+        return withdrawals.stream()
+                .map(EutxoWithdrawalClaim::lovelace)
+                .reduce(java.math.BigInteger.ZERO,
+                        java.math.BigInteger::add);
     }
 
     private static void validateL2Transaction(
@@ -361,7 +426,8 @@ public record EutxoValidityTransition(
             String transactionId,
             List<EutxoRecord> resolvedInputs,
             List<EutxoOutpoint> consumed,
-            List<EutxoRecord> created
+            List<EutxoRecord> created,
+            List<EutxoWithdrawalClaim> withdrawals
     ) {
         try {
             EutxoL2Transaction transaction =
@@ -419,6 +485,41 @@ public record EutxoValidityTransition(
                         expected, record.outputCbor())) {
                     throw new IllegalArgumentException(
                             "created record differs from transaction output");
+                }
+            }
+            for (EutxoWithdrawalClaim withdrawal : withdrawals) {
+                int index = withdrawal.withdrawalOutpoint().index();
+                if (index < 0 || index >= body.getOutputs().size()) {
+                    throw new IllegalArgumentException(
+                            "withdrawal output index is outside the transaction");
+                }
+                var output = body.getOutputs().get(index);
+                if (!withdrawal.destinationAddress().equals(
+                        output.getAddress())
+                        || output.getValue() == null
+                        || !withdrawal.lovelace().equals(
+                        output.getValue().getCoin())
+                        || (output.getValue().getMultiAssets() != null
+                        && !output.getValue().getMultiAssets().isEmpty())
+                        || output.getInlineDatum() == null
+                        || output.getDatumHash() != null
+                        || output.getScriptRef() != null) {
+                    throw new IllegalArgumentException(
+                            "withdrawal claim differs from its lovelace-only output");
+                }
+                EutxoWithdrawalDatum datum =
+                        EutxoWithdrawalDatum.decode(
+                                output.getInlineDatum()
+                                        .serializeToBytes());
+                if (!withdrawal.chainId().equals(datum.chainId())
+                        || withdrawal.bridgeEpoch()
+                        != datum.bridgeEpoch()
+                        || !withdrawal.destinationAddress().equals(
+                        datum.destinationAddress())
+                        || !java.util.Arrays.equals(
+                        withdrawal.nonce(), datum.nonce())) {
+                    throw new IllegalArgumentException(
+                            "withdrawal claim differs from its inline datum");
                 }
             }
         } catch (IllegalArgumentException failure) {

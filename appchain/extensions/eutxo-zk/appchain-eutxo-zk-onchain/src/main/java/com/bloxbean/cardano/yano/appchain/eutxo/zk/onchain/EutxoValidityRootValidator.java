@@ -28,8 +28,6 @@ import java.util.Optional;
 public final class EutxoValidityRootValidator {
     private static final BigInteger BLS12_381_SCALAR_FIELD = new BigInteger(
             "52435875175126190479447740508185965837690552500527637822603658699938581184513");
-    private static final long CANONICAL_BATCH_DATA_BYTES = 101;
-
     @Param
     static byte[] rootThreadPolicyId;
 
@@ -38,6 +36,12 @@ public final class EutxoValidityRootValidator {
 
     @Param
     static BigInteger settlementContext;
+
+    @Param
+    static BigInteger maximumBatchSize;
+
+    @Param
+    static BigInteger canonicalBatchDataBytes;
 
     @Param
     static byte[] vkAlpha;
@@ -186,8 +190,17 @@ public final class EutxoValidityRootValidator {
     static boolean datumShapeValid(RootDatum datum) {
         PlutusData fields = Builtins.sndPair(
                 Builtins.unConstrData(datum));
+        PlutusData f1 = Builtins.tailList(fields);
+        PlutusData f2 = Builtins.tailList(f1);
+        PlutusData f3 = Builtins.tailList(f2);
+        PlutusData f4 = Builtins.tailList(f3);
+        PlutusData f5 = Builtins.tailList(f4);
+        PlutusData f6 = Builtins.tailList(f5);
+        PlutusData f7 = Builtins.tailList(f6);
+        PlutusData f8 = Builtins.tailList(f7);
+        PlutusData f9 = Builtins.tailList(f8);
         return Builtins.constrTag(datum) == 0
-                && Builtins.nullList(Builtins.dropList(9, fields));
+                && Builtins.nullList(f9);
     }
 
     private static boolean proofShapeValid(Action action) {
@@ -196,7 +209,10 @@ public final class EutxoValidityRootValidator {
                 && action.transitionDigest().signum() >= 0
                 && action.ownerCommitment().signum() >= 0
                 && action.batchSize().compareTo(BigInteger.ONE) >= 0
-                && action.batchSize().compareTo(BigInteger.valueOf(4)) <= 0
+                && maximumBatchSize.compareTo(BigInteger.ONE) >= 0
+                && maximumBatchSize.compareTo(
+                BigInteger.valueOf(64)) <= 0
+                && action.batchSize().compareTo(maximumBatchSize) <= 0
                 && action.settlementContext().equals(settlementContext)
                 && action.batchDataCommitment().signum() >= 0
                 && action.withdrawalCommitment().signum() >= 0;
@@ -213,7 +229,12 @@ public final class EutxoValidityRootValidator {
     ) {
         long length = Builtins.lengthOfByteString(action.batchData());
         if (Builtins.lengthOfByteString(dataAvailabilityScriptHash) != 28
-                || length != CANONICAL_BATCH_DATA_BYTES
+                || canonicalBatchDataBytes.compareTo(
+                BigInteger.ONE) < 0
+                || canonicalBatchDataBytes.compareTo(
+                BigInteger.valueOf(16384)) > 0
+                || !BigInteger.valueOf(length).equals(
+                canonicalBatchDataBytes)
                 || !digestScalar(action.batchData()).equals(
                 action.batchDataCommitment())) {
             return false;

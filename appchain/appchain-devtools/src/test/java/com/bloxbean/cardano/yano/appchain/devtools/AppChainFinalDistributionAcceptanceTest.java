@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.devtools;
 
 import com.bloxbean.cardano.yano.appchain.config.AppChainPropertyRegistry;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -89,12 +90,17 @@ class AppChainFinalDistributionAcceptanceTest {
                     } else if ("eutxo-zeroj-preview".equals(recipe.id())) {
                         init.add("--acknowledge");
                         init.add("EUTXO_ZEROJ_UNSAFE_DEVELOPMENT_TESTNET");
+                        addBridgeAnswers(init);
+                        addL2Answers(init);
                     } else if ("eutxo-ledger".equals(recipe.id())
                             || "eutxo-zeroj-validity".equals(recipe.id())) {
                         init.add("--answer");
                         init.add("eutxoGenesisAddress=addr_test1vr8nlm7example");
                         init.add("--answer");
                         init.add("eutxoGenesisLovelace=100000000");
+                        if ("eutxo-zeroj-validity".equals(recipe.id())) {
+                            addL2Answers(init);
+                        }
                     } else if ("eutxo-cardano-bridge".equals(recipe.id())) {
                         init.add("--answer");
                         init.add("bridgeVaultAddress=addr_test1wzvault");
@@ -201,6 +207,8 @@ class AppChainFinalDistributionAcceptanceTest {
                 .contains("\"authorizationProfile\""
                                 + ": \"zeroj-jubjub-dev-v1\"",
                         "\"liveDepositToWithdrawal\"",
+                        "EutxoZkRollupDevnetE2ETest"
+                                + "#depositFinalizeProveSettleAndWithdrawOnDevnet",
                         "\"status\": \"NOT_EXERCISED\"");
         Path releaseContract = release.resolve(
                 "evidence/eutxo-zk/preview-release-contract-v1.json");
@@ -210,6 +218,23 @@ class AppChainFinalDistributionAcceptanceTest {
                                 + ": \"EXPERIMENTAL_TESTNET_ONLY\"",
                         "\"mainnet\": \"REJECTED\"",
                         "\"trustedProverRequired\": true");
+
+        Path sessionKey = temporary.resolve("l2-session-key.enc");
+        Result keyGenerated = run(launcher, List.of(
+                        "appchain", "validity", "key", "generate",
+                        "--output", sessionKey.toString(),
+                        "--password-env", "YANO_TEST_L2_PASSWORD"),
+                Map.of("YANO_TEST_L2_PASSWORD",
+                        "acceptance-password"));
+        assertThat(keyGenerated.exit())
+                .as(keyGenerated.error()).isZero();
+        assertThat(keyGenerated.output())
+                .contains("L2_SESSION_KEY_CREATED")
+                .doesNotContain("acceptance-password");
+        assertThat(new ObjectMapper().readTree(
+                keyGenerated.output()).path("publicKey").asText())
+                .matches("[0-9a-f]{64}");
+        assertThat(sessionKey).isRegularFile();
 
         Path devnet = temporary.resolve("payments-zk-devnet");
         Result initialized = run(launcher,
@@ -291,12 +316,32 @@ class AppChainFinalDistributionAcceptanceTest {
             command.add("--member-key");
             command.add(memberKey);
         }
+        addBridgeAnswers(command);
+        addL2Answers(command);
         if (acknowledge) {
             command.add("--acknowledge");
             command.add(
                     "EUTXO_ZEROJ_UNSAFE_DEVELOPMENT_TESTNET");
         }
         return command;
+    }
+
+    private static void addBridgeAnswers(List<String> command) {
+        command.addAll(List.of(
+                "--answer", "bridgeVaultAddress=addr_test1wzvault",
+                "--answer", "bridgeVaultScriptHash=" + "1".repeat(56),
+                "--answer", "bridgeMaxDepositLovelace=100000000",
+                "--answer", "bridgeWithdrawalAddress=addr_test1vwithdrawals",
+                "--answer", "bridgeEpoch=1",
+                "--answer", "bridgeMaxWithdrawalLovelace=50000000",
+                "--answer", "bridgeMaxPendingWithdrawals=100"));
+    }
+
+    private static void addL2Answers(List<String> command) {
+        command.addAll(List.of(
+                "--answer",
+                "eutxoL2Address=addr_test1vr8nlm7example",
+                "--answer", "eutxoL2PublicKey=" + "2".repeat(64)));
     }
 
     private void assertStudioBlueprintRoundTrips(Path release, Path launcher) throws Exception {

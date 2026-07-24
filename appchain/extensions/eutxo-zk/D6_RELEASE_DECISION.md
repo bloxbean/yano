@@ -70,10 +70,18 @@ project locks, evidence, or L1 batch data.
 
 - A trusted sequencer/prover is required because not all host-enforced
   transaction semantics and Jubjub point constraints are adversarially
-  constrained in the current circuit.
+  constrained in the current circuit. In particular, the integrated
+  development lifecycle derives and matches the settlement context,
+  transaction-manifest commitment, and aggregate withdrawal at its host
+  boundary; the circuit exposes them as public inputs but does not yet derive
+  the withdrawal from Cardano-shaped transaction CBOR.
 - The b16 development setup is single-party and unsuitable for production.
-- Live contract deployment and deposit-to-withdrawal evidence remain
-  `NOT_EXERCISED` on devnet, Preview, and Preprod.
+- Yano devnet staging acceptance, stable deposit credit, root/vault
+  deployment, validity-root settlement, payout from accepted custody funds,
+  and stable withdrawal reconciliation have a disposable-funds source test.
+  Maximum-batch, rollback/recovery, and independent-reconstruction evidence
+  remain open on devnet; all live rows remain `NOT_EXERCISED` on Preview and
+  Preprod.
 - Data publication/reconstruction, rollback, disaster recovery, censorship,
   proof availability, operator loss, and long-running performance need live
   evidence.

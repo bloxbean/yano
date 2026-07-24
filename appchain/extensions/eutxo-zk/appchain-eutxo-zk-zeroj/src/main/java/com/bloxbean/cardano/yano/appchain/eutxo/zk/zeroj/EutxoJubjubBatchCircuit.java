@@ -2,6 +2,9 @@ package com.bloxbean.cardano.yano.appchain.eutxo.zk.zeroj;
 
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2Authorization;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2Transaction;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoFinalizedProofWitness;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkBatchSettlement;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkBatchManifest;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkBatchProfile;
 import com.bloxbean.cardano.zeroj.api.CurveId;
 import com.bloxbean.cardano.zeroj.circuit.CircuitAPI;
@@ -34,6 +37,8 @@ import java.util.Objects;
 public final class EutxoJubjubBatchCircuit {
     private static final BigInteger BATCH_DOMAIN =
             ZerojScalars.domain("yano:eutxo:jubjub-batch:dev:v1");
+    private static final BigInteger AUTHORIZATION_DOMAIN =
+            ZerojScalars.domain("yano:eutxo:jubjub-authorizations:dev:v1");
     private static final BigInteger DUMMY_SECRET = BigInteger.ONE;
     private static final BigInteger DUMMY_MESSAGE = BigInteger.ZERO;
 
@@ -46,11 +51,19 @@ public final class EutxoJubjubBatchCircuit {
                 .publicVar("previousRoot")
                 .publicVar("nextRoot")
                 .publicVar("batchDigest")
-                .publicVar("batchSize");
+                .publicVar("authorizationCommitment")
+                .publicVar("batchSize")
+                .publicVar("settlementContext")
+                .publicVar("batchDataCommitment")
+                .publicVar("withdrawalCommitment")
+                .secretVar("settlementContextWitness")
+                .secretVar("batchDataCommitmentWitness")
+                .secretVar("withdrawalCommitmentWitness");
         for (int index = 0;
-             index < profile.maximumTransactions();
+            index < profile.maximumTransactions();
              index++) {
             builder.secretVar(name("enabled", index))
+                    .secretVar(name("transitionDigest", index))
                     .secretVar(name("message", index))
                     .secretVar(name("publicKeyU", index))
                     .secretVar(name("publicKeyV", index))
@@ -68,10 +81,70 @@ public final class EutxoJubjubBatchCircuit {
             byte[] previousRoot,
             List<EutxoL2Transaction> transactions
     ) {
+        EutxoZkBatchManifest manifest = new EutxoZkBatchManifest(
+                transactions.stream()
+                        .map(EutxoL2Transaction::transactionId)
+                        .toList());
+        return statement(
+                profile,
+                previousRoot,
+                transactions,
+                developmentTransitionDigests(transactions),
+                new EutxoZkBatchSettlement(
+                        BigInteger.ZERO,
+                        manifest.commitmentScalar(),
+                        BigInteger.ZERO));
+    }
+
+    public static Statement statement(
+            EutxoZkBatchProfile profile,
+            byte[] previousRoot,
+            List<EutxoL2Transaction> transactions,
+            EutxoZkBatchSettlement settlement
+    ) {
+        return statement(
+                profile,
+                previousRoot,
+                transactions,
+                developmentTransitionDigests(transactions),
+                settlement);
+    }
+
+    public static Statement statementFromFinalized(
+            EutxoZkBatchProfile profile,
+            byte[] previousRoot,
+            List<EutxoFinalizedProofWitness> finalized,
+            EutxoZkBatchSettlement settlement
+    ) {
+        Objects.requireNonNull(finalized, "finalized");
+        List<EutxoL2Transaction> transactions =
+                finalizedTransactions(finalized);
+        return statement(
+                profile,
+                previousRoot,
+                transactions,
+                finalized.stream()
+                        .map(EutxoFinalizedProofWitness::transitionDigest)
+                        .map(ZerojScalars::scalar)
+                        .toList(),
+                settlement);
+    }
+
+    private static Statement statement(
+            EutxoZkBatchProfile profile,
+            byte[] previousRoot,
+            List<EutxoL2Transaction> transactions,
+            List<BigInteger> transitionDigests,
+            EutxoZkBatchSettlement settlement
+    ) {
         requireBatch(profile, transactions);
+        requireTransitionDigests(transactions, transitionDigests);
+        Objects.requireNonNull(settlement, "settlement");
         BigInteger root = ZerojScalars.scalar(previousRoot);
         BigInteger digest = BATCH_DOMAIN;
-        for (EutxoL2Transaction transaction : transactions) {
+        BigInteger authorizations = AUTHORIZATION_DOMAIN;
+        for (int index = 0; index < transactions.size(); index++) {
+            EutxoL2Transaction transaction = transactions.get(index);
             EutxoL2Authorization authorization =
                     onlyAuthorization(transaction);
             JubjubPoint publicKey =
@@ -80,16 +153,25 @@ public final class EutxoJubjubBatchCircuit {
                     ZerojScalars.scalar(transaction.signingCommitment());
             BigInteger publicKeyCommitment = poseidon(
                     publicKey.affineU(), publicKey.affineV());
-            BigInteger transition =
+            BigInteger authorizationBinding =
                     poseidon(message, publicKeyCommitment);
+            BigInteger transition = transitionDigests.get(index);
             root = poseidon(root, transition);
-            digest = poseidon(digest, transition);
+            digest = poseidon(
+                    digest,
+                    poseidon(transition, authorizationBinding));
+            authorizations = poseidon(
+                    authorizations, publicKeyCommitment);
         }
         return new Statement(
                 ZerojScalars.scalar(previousRoot),
                 root,
                 digest,
-                BigInteger.valueOf(transactions.size()));
+                authorizations,
+                BigInteger.valueOf(transactions.size()),
+                settlement.settlementContext(),
+                settlement.batchDataCommitment(),
+                settlement.withdrawalLovelace());
     }
 
     public static BigInteger[] witness(
@@ -97,12 +179,58 @@ public final class EutxoJubjubBatchCircuit {
             Statement statement,
             List<EutxoL2Transaction> transactions
     ) {
+        return witness(
+                profile,
+                statement,
+                transactions,
+                developmentTransitionDigests(transactions));
+    }
+
+    public static BigInteger[] witnessFromFinalized(
+            EutxoZkBatchProfile profile,
+            Statement statement,
+            List<EutxoFinalizedProofWitness> finalized
+    ) {
+        Objects.requireNonNull(finalized, "finalized");
+        List<EutxoL2Transaction> transactions =
+                finalizedTransactions(finalized);
+        return witness(
+                profile,
+                statement,
+                transactions,
+                finalized.stream()
+                        .map(EutxoFinalizedProofWitness::transitionDigest)
+                        .map(ZerojScalars::scalar)
+                        .toList());
+    }
+
+    private static BigInteger[] witness(
+            EutxoZkBatchProfile profile,
+            Statement statement,
+            List<EutxoL2Transaction> transactions,
+            List<BigInteger> transitionDigests
+    ) {
         requireBatch(profile, transactions);
+        requireTransitionDigests(transactions, transitionDigests);
         Map<String, List<BigInteger>> assignments = new LinkedHashMap<>();
         assignments.put("previousRoot", List.of(statement.previousRoot()));
         assignments.put("nextRoot", List.of(statement.nextRoot()));
         assignments.put("batchDigest", List.of(statement.batchDigest()));
+        assignments.put("authorizationCommitment",
+                List.of(statement.authorizationCommitment()));
         assignments.put("batchSize", List.of(statement.batchSize()));
+        assignments.put("settlementContext",
+                List.of(statement.settlementContext()));
+        assignments.put("batchDataCommitment",
+                List.of(statement.batchDataCommitment()));
+        assignments.put("withdrawalCommitment",
+                List.of(statement.withdrawalCommitment()));
+        assignments.put("settlementContextWitness",
+                List.of(statement.settlementContext()));
+        assignments.put("batchDataCommitmentWitness",
+                List.of(statement.batchDataCommitment()));
+        assignments.put("withdrawalCommitmentWitness",
+                List.of(statement.withdrawalCommitment()));
         for (int index = 0;
              index < profile.maximumTransactions();
              index++) {
@@ -112,6 +240,10 @@ public final class EutxoJubjubBatchCircuit {
                     : dummyWitness();
             assignments.put(name("enabled", index),
                     List.of(enabled ? BigInteger.ONE : BigInteger.ZERO));
+            assignments.put(name("transitionDigest", index),
+                    List.of(enabled
+                            ? transitionDigests.get(index)
+                            : BigInteger.ZERO));
             assignments.put(name("message", index),
                     List.of(item.message()));
             assignments.put(name("publicKeyU", index),
@@ -138,12 +270,16 @@ public final class EutxoJubjubBatchCircuit {
     ) {
         Variable runningRoot = api.var("previousRoot");
         Variable runningBatch = api.constant(BATCH_DOMAIN);
+        Variable runningAuthorizations =
+                api.constant(AUTHORIZATION_DOMAIN);
         Variable enabledSum = api.constant(0);
         Variable previousEnabled = api.constant(1);
         for (int index = 0;
              index < profile.maximumTransactions();
              index++) {
             Variable enabled = api.var(name("enabled", index));
+            Variable transitionDigest =
+                    api.var(name("transitionDigest", index));
             Variable message = api.var(name("message", index));
             Variable publicKeyU = api.var(name("publicKeyU", index));
             Variable publicKeyV = api.var(name("publicKeyV", index));
@@ -163,6 +299,9 @@ public final class EutxoJubjubBatchCircuit {
             api.assertEqual(
                     api.mul(enabled, api.not(previousEnabled)),
                     api.constant(0));
+            api.assertEqual(
+                    api.mul(api.not(enabled), transitionDigest),
+                    api.constant(0));
             assertNotIdentity(api, publicKey);
             assertNotIdentity(api, rPoint);
             InCircuitEdDSAJubjub.verify(
@@ -178,7 +317,7 @@ public final class EutxoJubjubBatchCircuit {
                     PoseidonParamsBLS12_381T3.INSTANCE,
                     publicKeyU,
                     publicKeyV);
-            Variable transition = Poseidon.hash(
+            Variable authorizationBinding = Poseidon.hash(
                     api,
                     PoseidonParamsBLS12_381T3.INSTANCE,
                     message,
@@ -187,20 +326,79 @@ public final class EutxoJubjubBatchCircuit {
                     api,
                     PoseidonParamsBLS12_381T3.INSTANCE,
                     runningRoot,
-                    transition);
+                    transitionDigest);
+            Variable batchBinding = Poseidon.hash(
+                    api,
+                    PoseidonParamsBLS12_381T3.INSTANCE,
+                    transitionDigest,
+                    authorizationBinding);
             Variable candidateBatch = Poseidon.hash(
                     api,
                     PoseidonParamsBLS12_381T3.INSTANCE,
                     runningBatch,
-                    transition);
+                    batchBinding);
+            Variable candidateAuthorization = Poseidon.hash(
+                    api,
+                    PoseidonParamsBLS12_381T3.INSTANCE,
+                    runningAuthorizations,
+                    publicKeyCommitment);
             runningRoot = api.select(enabled, candidateRoot, runningRoot);
             runningBatch = api.select(enabled, candidateBatch, runningBatch);
+            runningAuthorizations = api.select(
+                    enabled,
+                    candidateAuthorization,
+                    runningAuthorizations);
             enabledSum = api.add(enabledSum, enabled);
             previousEnabled = enabled;
         }
         api.assertEqual(api.var("nextRoot"), runningRoot);
         api.assertEqual(api.var("batchDigest"), runningBatch);
+        api.assertEqual(
+                api.var("authorizationCommitment"),
+                runningAuthorizations);
         api.assertEqual(api.var("batchSize"), enabledSum);
+        api.assertEqual(
+                api.var("settlementContext"),
+                api.var("settlementContextWitness"));
+        api.assertEqual(
+                api.var("batchDataCommitment"),
+                api.var("batchDataCommitmentWitness"));
+        api.assertEqual(
+                api.var("withdrawalCommitment"),
+                api.var("withdrawalCommitmentWitness"));
+    }
+
+    private static List<BigInteger> developmentTransitionDigests(
+            List<EutxoL2Transaction> transactions
+    ) {
+        Objects.requireNonNull(transactions, "transactions");
+        return transactions.stream()
+                .map(EutxoL2Transaction::signingCommitment)
+                .map(ZerojScalars::scalar)
+                .toList();
+    }
+
+    private static List<EutxoL2Transaction> finalizedTransactions(
+            List<EutxoFinalizedProofWitness> finalized
+    ) {
+        return finalized.stream()
+                .map(EutxoFinalizedProofWitness::transition)
+                .map(transition -> EutxoL2Transaction.decode(
+                        transition.canonicalTransaction()))
+                .toList();
+    }
+
+    private static void requireTransitionDigests(
+            List<EutxoL2Transaction> transactions,
+            List<BigInteger> transitionDigests
+    ) {
+        if (transitionDigests == null
+                || transitionDigests.size() != transactions.size()
+                || transitionDigests.stream().anyMatch(
+                Objects::isNull)) {
+            throw new IllegalArgumentException(
+                    "every transaction needs one transition digest");
+        }
     }
 
     private static SignatureWitness signatureWitness(
@@ -306,6 +504,15 @@ public final class EutxoJubjubBatchCircuit {
                 PoseidonParamsBLS12_381T3.INSTANCE, left, right);
     }
 
+    static byte[] nextValidityRoot(
+            byte[] previousRoot,
+            byte[] transitionDigest
+    ) {
+        return ZerojScalars.bytes32(poseidon(
+                ZerojScalars.scalar(previousRoot),
+                ZerojScalars.scalar(transitionDigest)));
+    }
+
     private static String name(String prefix, int index) {
         return prefix + index;
     }
@@ -314,18 +521,38 @@ public final class EutxoJubjubBatchCircuit {
             BigInteger previousRoot,
             BigInteger nextRoot,
             BigInteger batchDigest,
-            BigInteger batchSize
+            BigInteger authorizationCommitment,
+            BigInteger batchSize,
+            BigInteger settlementContext,
+            BigInteger batchDataCommitment,
+            BigInteger withdrawalCommitment
     ) {
         public Statement {
             Objects.requireNonNull(previousRoot, "previousRoot");
             Objects.requireNonNull(nextRoot, "nextRoot");
             Objects.requireNonNull(batchDigest, "batchDigest");
+            Objects.requireNonNull(
+                    authorizationCommitment,
+                    "authorizationCommitment");
             Objects.requireNonNull(batchSize, "batchSize");
+            Objects.requireNonNull(
+                    settlementContext, "settlementContext");
+            Objects.requireNonNull(
+                    batchDataCommitment, "batchDataCommitment");
+            Objects.requireNonNull(
+                    withdrawalCommitment, "withdrawalCommitment");
         }
 
         public List<BigInteger> ordered() {
             return List.of(
-                    previousRoot, nextRoot, batchDigest, batchSize);
+                    previousRoot,
+                    nextRoot,
+                    batchDigest,
+                    authorizationCommitment,
+                    batchSize,
+                    settlementContext,
+                    batchDataCommitment,
+                    withdrawalCommitment);
         }
     }
 

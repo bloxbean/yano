@@ -112,8 +112,19 @@ class AppChainReleaseStabilizationTest {
         assertThat(networks.get("mainnet").get("policy"))
                 .isEqualTo("REJECTED");
 
-        for (String network : List.of(
-                "devnet", "preview", "preprod")) {
+        Map<String, Object> devnet = networks.get("devnet");
+        assertThat(status(devnet, "packagedLifecycle"))
+                .isEqualTo("PASSED");
+        assertThat(status(devnet, "liveDepositToWithdrawal"))
+                .isEqualTo("PASSED");
+        assertThat(devnet.get("liveDepositToWithdrawal").toString())
+                .contains("EutxoZkRollupDevnetE2ETest");
+        assertThat(status(devnet, "rollbackAndRecovery"))
+                .isEqualTo("NOT_EXERCISED");
+        assertThat(status(devnet, "independentReconstruction"))
+                .isEqualTo("NOT_EXERCISED");
+
+        for (String network : List.of("preview", "preprod")) {
             Map<String, Object> result = networks.get(network);
             assertThat(status(result, "packagedLifecycle"))
                     .isEqualTo("PASSED");
@@ -224,7 +235,8 @@ class AppChainReleaseStabilizationTest {
         assertThat((List<String>) contract.get("openSecurityGates"))
                 .isNotEmpty()
                 .contains("jubjub-adversarial-circuit-hardening",
-                        "live-devnet-preview-preprod-round-trip",
+                        "live-preview-preprod-round-trip",
+                        "devnet-maximum-batch-restart-and-rollback",
                         "accountable-production-funds-approval");
     }
 

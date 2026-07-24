@@ -5,21 +5,28 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoContract;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoDepositClaim;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2Authorization;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2Domain;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2ParameterSnapshot;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2Transaction;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoOutpoint;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoQueryCodec;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoRecord;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoStateKeys;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoValidityTransition;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalClaim;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalDatum;
 import com.bloxbean.cardano.yano.appchain.eutxo.ledger.EutxoStateMachineProvider;
 import com.bloxbean.cardano.yano.appchain.eutxo.testkit.EutxoTestWallet;
 import com.bloxbean.cardano.yano.appchain.eutxo.testkit.EutxoTransactionFixtures;
 import com.bloxbean.cardano.yano.appchain.eutxo.testkit.MemoryAppState;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoFinalizedProofWitness;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoValidityWitness;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkAuthorizationProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.zeroj.ZerojPoseidonValidityProvider;
 import com.bloxbean.cardano.zeroj.circuit.lib.jubjub.EdDSAJubjub;
@@ -33,10 +40,197 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 
+import com.bloxbean.cardano.client.common.cbor.CborSerializationUtil;
+import com.bloxbean.cardano.client.plutus.spec.PlutusData;
+import com.bloxbean.cardano.client.spec.NetworkId;
+import com.bloxbean.cardano.client.transaction.spec.TransactionBody;
+import com.bloxbean.cardano.client.transaction.spec.TransactionInput;
+import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
+import com.bloxbean.cardano.client.transaction.spec.Value;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class EutxoValidityIntegrationTest {
+    @Test
+    void stableDepositWithdrawalValidityTransitionReplaysExactly()
+            throws Exception {
+        EutxoTestWallet alice = wallet(3);
+        EutxoTestWallet bob = wallet(4);
+        BigInteger l2Secret = BigInteger.valueOf(303);
+        var l2Key = EdDSAJubjub.keypairFromSecret(l2Secret);
+        String vaultAddress = "addr_test1_bridge_vault";
+        String vaultScriptHash = "11".repeat(28);
+        Map<String, String> settings = new java.util.LinkedHashMap<>(
+                ZerojPoseidonValidityProvider.requiredIdentitySettings());
+        settings.put("machines.eutxo.profile", EutxoProfile.V1.id());
+        settings.put("machines.eutxo.network", "devnet");
+        settings.put("machines.eutxo.genesis.l2-address", alice.address());
+        settings.put("machines.eutxo.genesis.l2-public-key",
+                HexFormat.of().formatHex(l2Key.pk().toBytes()));
+        settings.put("machines.eutxo.genesis.l2-key-epoch", "1");
+        settings.put("machines.eutxo.validity.enabled", "true");
+        settings.put("machines.eutxo.validity.provider",
+                ZerojPoseidonValidityProvider.ID);
+        settings.put("machines.eutxo.bridge.observer-id",
+                "bridge-deposits");
+        settings.put("machines.eutxo.bridge.vault-address",
+                vaultAddress);
+        settings.put("machines.eutxo.bridge.vault-script-hash",
+                vaultScriptHash);
+        settings.put("machines.eutxo.bridge.confirmation-observer-id",
+                "bridge-withdrawals");
+        settings.put("machines.eutxo.bridge.withdrawal-address",
+                bob.address());
+        settings.put("machines.eutxo.bridge.epoch", "0");
+        settings.put("machines.eutxo.bridge.max-withdrawal-lovelace",
+                "100");
+        settings.put("machines.eutxo.bridge.max-pending-withdrawals",
+                "4");
+        settings.put("machines.eutxo.bridge.withdrawals-paused",
+                "false");
+
+        AppStateMachine first = new EutxoStateMachineProvider()
+                .create(context(settings));
+        AppStateMachine replay = new EutxoStateMachineProvider()
+                .create(context(settings));
+        MemoryAppState firstState = new MemoryAppState();
+        MemoryAppState replayState = new MemoryAppState();
+        AppBlock genesis = block(1);
+        first.apply(genesis, firstState);
+        replay.apply(genesis, replayState);
+
+        TransactionOutput mirrored = TransactionOutput.builder()
+                .address(alice.address())
+                .value(Value.fromCoin(BigInteger.valueOf(100)))
+                .build();
+        byte[] outputCbor = CborSerializationUtil.serialize(
+                mirrored.serialize());
+        var accepted = new EutxoOutpoint("22".repeat(32), 0);
+        EutxoDepositClaim claim = new EutxoDepositClaim(
+                1,
+                "eutxo-zk-test",
+                accepted,
+                10,
+                new byte[32],
+                vaultAddress,
+                vaultScriptHash,
+                outputCbor,
+                alice.address(),
+                outputCbor,
+                fill(32, 5),
+                new EutxoOutpoint("33".repeat(32), 0),
+                100);
+        L1Observation observation = new L1Observation(
+                "bridge-deposits",
+                HexFormat.of().parseHex(accepted.transactionId()),
+                10,
+                new byte[32],
+                claim.encode());
+        AppBlock depositBlock = block(
+                2, observationMessage(8, observation));
+        first.apply(depositBlock, firstState);
+        replay.apply(depositBlock, replayState);
+
+        long expiry = 100;
+        EutxoWithdrawalDatum withdrawal = new EutxoWithdrawalDatum(
+                EutxoWithdrawalDatum.ABI_VERSION,
+                "eutxo-zk-test",
+                0,
+                bob.address(),
+                fill(32, 6));
+        TransactionBody body = TransactionBody.builder()
+                .inputs(List.of(TransactionInput.builder()
+                        .transactionId(claim.mirroredOutpoint()
+                                .transactionId())
+                        .index(claim.mirroredOutpoint().index())
+                        .build()))
+                .outputs(List.of(
+                        TransactionOutput.builder()
+                                .address(alice.address())
+                                .value(Value.fromCoin(
+                                        BigInteger.valueOf(70)))
+                                .build(),
+                        TransactionOutput.builder()
+                                .address(bob.address())
+                                .value(Value.fromCoin(
+                                        BigInteger.valueOf(30)))
+                                .inlineDatum(PlutusData.deserialize(
+                                        withdrawal.encode()))
+                                .build()))
+                .fee(BigInteger.ZERO)
+                .ttl(expiry)
+                .networkId(NetworkId.TESTNET)
+                .build();
+        var authorization =
+                EutxoZkAuthorizationProfile.JUBJUB_DEVELOPMENT_V1;
+        EutxoL2Domain domain = new EutxoL2Domain(
+                "eutxo-zk-test",
+                "devnet",
+                EutxoProfile.V1.digestHex(),
+                EutxoZkProfile.Z3_VALIDITY_SETTLEMENT.digestHex(),
+                authorization.id(),
+                authorization.digestHex(),
+                fill(32, 7),
+                expiry);
+        EutxoL2Transaction transaction = l2Transaction(
+                body, domain, alice, l2Secret);
+        AppBlock withdrawalBlock = block(
+                3, message(transaction.canonicalBytes()));
+        first.apply(withdrawalBlock, firstState);
+        replay.apply(withdrawalBlock, replayState);
+
+        EutxoValidityTransition transition =
+                EutxoValidityTransition.decode(firstState.get(
+                        EutxoStateKeys.validityTransition(3, 0))
+                        .orElseThrow());
+        assertThat(transition.withdrawals()).singleElement()
+                .satisfies(created -> {
+                    assertThat(created.lovelace())
+                            .isEqualTo(BigInteger.valueOf(30));
+                    assertThat(created.destinationAddress())
+                            .isEqualTo(bob.address());
+                });
+        assertThat(transition.resolvedInputs().getFirst().origin())
+                .isEqualTo(EutxoRecord.Origin.L1_DEPOSIT);
+        EutxoWithdrawalClaim claimFromTransition =
+                transition.withdrawals().getFirst();
+        EutxoWithdrawalClaim wrongAmount =
+                new EutxoWithdrawalClaim(
+                        claimFromTransition.abiVersion(),
+                        claimFromTransition.chainId(),
+                        claimFromTransition.bridgeEpoch(),
+                        claimFromTransition.withdrawalOutpoint(),
+                        claimFromTransition.destinationAddress(),
+                        claimFromTransition.lovelace()
+                                .add(BigInteger.ONE),
+                        claimFromTransition.nonce(),
+                        claimFromTransition.settlementSequence(),
+                        claimFromTransition.requestedHeight());
+        assertThatThrownBy(() -> new EutxoValidityTransition(
+                transition.previousRoot(),
+                transition.chainId(),
+                transition.network(),
+                transition.profileDigest(),
+                transition.validityProfileDigest(),
+                transition.authorizationProfile(),
+                transition.authorizationProfileDigest(),
+                transition.domainCommitment(),
+                transition.transactionId(),
+                transition.canonicalTransaction(),
+                transition.resolvedInputs(),
+                transition.consumed(),
+                transition.created(),
+                List.of(wrongAmount),
+                transition.l1Slot(),
+                transition.appHeight(),
+                transition.ordinal()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("lovelace-only output");
+        assertThat(firstState.sameState(replayState)).isTrue();
+        assertThat(firstState.stateRoot())
+                .isEqualTo(replayState.stateRoot());
+    }
 
     @Test
     void selectedOptionalProviderMaintainsAtomicSecondRoot() {
@@ -186,6 +380,7 @@ class EutxoValidityIntegrationTest {
                 transition.resolvedInputs(),
                 transition.consumed(),
                 transition.created(),
+                transition.withdrawals(),
                 transition.l1Slot(),
                 transition.appHeight(),
                 transition.ordinal()))
@@ -207,6 +402,7 @@ class EutxoValidityIntegrationTest {
                 transition.resolvedInputs(),
                 transition.consumed(),
                 transition.created(),
+                transition.withdrawals(),
                 transition.l1Slot(),
                 transition.appHeight(),
                 transition.ordinal()))
@@ -241,6 +437,7 @@ class EutxoValidityIntegrationTest {
                 transition.resolvedInputs(),
                 transition.consumed(),
                 transition.created(),
+                transition.withdrawals(),
                 transition.l1Slot(),
                 transition.appHeight(),
                 transition.ordinal());
@@ -285,6 +482,32 @@ class EutxoValidityIntegrationTest {
                 .authScheme(0)
                 .authProof(new byte[64])
                 .build();
+    }
+
+    private static AppMessage observationMessage(
+            int idByte,
+            L1Observation observation
+    ) {
+        byte[] id = new byte[32];
+        Arrays.fill(id, (byte) idByte);
+        return AppMessage.builder()
+                .version(1)
+                .messageId(id)
+                .chainId("eutxo-zk-test")
+                .topic(observation.topic())
+                .sender(new byte[32])
+                .senderSeq(idByte)
+                .expiresAt(Long.MAX_VALUE)
+                .body(observation.encode())
+                .authScheme(0)
+                .authProof(new byte[64])
+                .build();
+    }
+
+    private static byte[] fill(int length, int value) {
+        byte[] bytes = new byte[length];
+        Arrays.fill(bytes, (byte) value);
+        return bytes;
     }
 
     private static AppBlock block(long height, AppMessage... messages) {

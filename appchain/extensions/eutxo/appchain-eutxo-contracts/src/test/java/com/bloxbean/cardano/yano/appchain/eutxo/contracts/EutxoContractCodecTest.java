@@ -136,6 +136,16 @@ class EutxoContractCodecTest {
 
     @Test
     void bridgeContractsRoundTripAndReserveRejectsInflation() {
+        EutxoStagingDatum staging = new EutxoStagingDatum(
+                EutxoStagingDatum.ABI_VERSION,
+                "payments",
+                "addr_test1owner",
+                fill(32, 9),
+                fill(28, 8),
+                100);
+        assertThat(EutxoStagingDatum.decode(staging.encode()))
+                .isEqualTo(staging);
+
         EutxoDepositClaim claim = new EutxoDepositClaim(
                 1,
                 "payments",

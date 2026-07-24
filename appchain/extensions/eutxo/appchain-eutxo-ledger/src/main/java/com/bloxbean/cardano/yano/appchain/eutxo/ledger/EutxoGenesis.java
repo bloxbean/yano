@@ -90,7 +90,7 @@ final class EutxoGenesis {
             return new EutxoGenesis(
                     HexFormat.of().formatHex(Blake2bUtil.blake2bHash256(new byte[0])),
                     List.of(),
-                    List.of());
+                    l2Registrations(settings, List.of()));
         }
         int expected = 0;
         List<PendingOutput> pending = new ArrayList<>();
@@ -158,13 +158,32 @@ final class EutxoGenesis {
         if (publicKeyHex == null || publicKeyHex.isBlank()) {
             return List.of();
         }
-        if (records.size() != 1) {
-            throw new IllegalArgumentException(
-                    "simple genesis L2 key registration requires exactly one output");
-        }
         if (profile == null || profile.isBlank()) {
             throw new IllegalArgumentException(
                     "genesis L2 key requires an authorization profile");
+        }
+        String registrationAddress =
+                settings.get("machines.eutxo.genesis.l2-address");
+        if (records.size() == 1) {
+            if (registrationAddress != null
+                    && !registrationAddress.isBlank()
+                    && !records.getFirst().address().equals(
+                    registrationAddress.trim())) {
+                throw new IllegalArgumentException(
+                        "genesis L2 address differs from the single genesis output");
+            }
+            registrationAddress = records.getFirst().address();
+        } else if (records.isEmpty()) {
+            if (registrationAddress == null
+                    || registrationAddress.isBlank()) {
+                throw new IllegalArgumentException(
+                        "fundless genesis L2 key registration requires "
+                                + "machines.eutxo.genesis.l2-address");
+            }
+            registrationAddress = registrationAddress.trim();
+        } else {
+            throw new IllegalArgumentException(
+                    "simple genesis L2 key registration supports zero or one output");
         }
         try {
             String canonical = publicKeyHex.trim();
@@ -176,7 +195,7 @@ final class EutxoGenesis {
             }
             byte[] publicKey = HexFormat.of().parseHex(canonical);
             long keyEpoch = Long.parseLong(epochValue);
-            Address address = new Address(records.getFirst().address());
+            Address address = new Address(registrationAddress);
             String credential = AddressProvider
                     .getPaymentCredentialHash(address)
                     .map(HexFormat.of()::formatHex)

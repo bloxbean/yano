@@ -41,6 +41,9 @@ public final class EutxoProofWithdrawalVaultValidator {
     static byte[] rootScriptHash;
 
     @Param
+    static byte[] fundsVaultScriptHash;
+
+    @Param
     static PlutusData payoutAddress;
 
     @Param
@@ -104,9 +107,12 @@ public final class EutxoProofWithdrawalVaultValidator {
     ) {
         Optional<Root> root = acceptedRoot(context);
         Optional<TxInInfo> ownInput = ContextsLib.findOwnInput(context);
+        Optional<TxOut> fundsInput = fundsVaultInput(context);
+        Optional<TxOut> fundsOutput = fundsVaultOutput(context);
         JulcList<TxOut> continuing =
                 ContextsLib.getContinuingOutputs(context);
         if (root.isEmpty() || ownInput.isEmpty()
+                || fundsInput.isEmpty() || fundsOutput.isEmpty()
                 || !hasVaultThread(ownInput.get().resolved())
                 || !singleVaultThreadTransition(context)
                 || continuing.size() != 1
@@ -146,9 +152,12 @@ public final class EutxoProofWithdrawalVaultValidator {
             }
         }
         return payoutCount.equals(BigInteger.ONE)
+                && ValuesLib.eq(
+                ownInput.get().resolved().value(),
+                continuing.head().value())
                 && exactVaultValueTransition(
-                ownInput.get().resolved(),
-                continuing.head(),
+                fundsInput.get(),
+                fundsOutput.get(),
                 action.withdrawalLovelace());
     }
 
@@ -181,8 +190,14 @@ public final class EutxoProofWithdrawalVaultValidator {
     static boolean stateShapeValid(VaultState state) {
         PlutusData fields = Builtins.sndPair(
                 Builtins.unConstrData(state));
+        PlutusData f1 = Builtins.tailList(fields);
+        PlutusData f2 = Builtins.tailList(f1);
+        PlutusData f3 = Builtins.tailList(f2);
+        PlutusData f4 = Builtins.tailList(f3);
+        PlutusData f5 = Builtins.tailList(f4);
+        PlutusData f6 = Builtins.tailList(f5);
         return Builtins.constrTag(state) == 0
-                && Builtins.nullList(Builtins.dropList(6, fields));
+                && Builtins.nullList(f6);
     }
 
     static boolean stateValid(VaultState state) {
@@ -351,6 +366,37 @@ public final class EutxoProofWithdrawalVaultValidator {
                                 Builtins.emptyByteString(),
                                 Builtins.emptyByteString(),
                                 withdrawal)));
+    }
+
+    private static Optional<TxOut> fundsVaultInput(
+            ScriptContext context
+    ) {
+        Optional<TxOut> result = Optional.empty();
+        BigInteger count = BigInteger.ZERO;
+        for (TxInInfo input : context.txInfo().inputs()) {
+            if (atScriptAddress(
+                    input.resolved(), fundsVaultScriptHash)) {
+                count = count.add(BigInteger.ONE);
+                result = Optional.of(input.resolved());
+            }
+        }
+        return count.equals(BigInteger.ONE)
+                ? result : Optional.empty();
+    }
+
+    private static Optional<TxOut> fundsVaultOutput(
+            ScriptContext context
+    ) {
+        Optional<TxOut> result = Optional.empty();
+        BigInteger count = BigInteger.ZERO;
+        for (TxOut output : context.txInfo().outputs()) {
+            if (atScriptAddress(output, fundsVaultScriptHash)) {
+                count = count.add(BigInteger.ONE);
+                result = Optional.of(output);
+            }
+        }
+        return count.equals(BigInteger.ONE)
+                ? result : Optional.empty();
     }
 
     private static boolean hasVaultThread(TxOut output) {

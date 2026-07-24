@@ -33,8 +33,8 @@ public record EutxoZkSettlementPublicInputs(
         requireScalar(batchDataCommitment, "batchDataCommitment");
         requireScalar(withdrawalCommitment, "withdrawalCommitment");
         if (batchSize.signum() <= 0
-                || batchSize.compareTo(BigInteger.valueOf(4)) > 0) {
-            throw new IllegalArgumentException("batch size must be in 1-4");
+                || batchSize.compareTo(BigInteger.valueOf(64)) > 0) {
+            throw new IllegalArgumentException("batch size must be in 1-64");
         }
     }
 

@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.appchain.eutxo.zk.lifecycle;
 
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.client.EutxoL2SessionKey;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkAuthorizationProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkBatchProfile;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -13,6 +14,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -23,6 +26,44 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class EutxoValidityLifecycleTest {
     @TempDir
     Path temporary;
+
+    @Test
+    void createsEncryptedL2SessionKeyWithoutExposingPrivateMaterial()
+            throws Exception {
+        Path output = temporary.resolve("operator/l2-session-key.enc");
+        char[] password = "development-password".toCharArray();
+
+        Map<String, String> result =
+                EutxoValidityLifecycleCli.generateKey(output, password);
+
+        assertThat(result)
+                .containsEntry("status", "L2_SESSION_KEY_CREATED")
+                .containsEntry("encryptedKey",
+                        output.toAbsolutePath().toString());
+        assertThat(result.get("publicKey"))
+                .matches("[0-9a-f]{64}");
+        assertThat(password)
+                .containsOnly('\0');
+        byte[] envelope = Files.readAllBytes(output);
+        assertThat(new String(
+                envelope, StandardCharsets.ISO_8859_1))
+                .doesNotContain(result.get("publicKey"));
+        char[] decryptPassword =
+                "development-password".toCharArray();
+        try (EutxoL2SessionKey opened =
+                     EutxoL2SessionKey.decrypt(
+                             envelope, decryptPassword)) {
+            assertThat(HexFormat.of().formatHex(opened.publicKey()))
+                    .isEqualTo(result.get("publicKey"));
+        } finally {
+            Arrays.fill(decryptPassword, '\0');
+        }
+        assertThatThrownBy(() ->
+                EutxoValidityLifecycleCli.generateKey(
+                        output,
+                        "development-password".toCharArray()))
+                .isInstanceOf(java.nio.file.FileAlreadyExistsException.class);
+    }
 
     @Test
     void bootstrapIsIdempotentAndFailClosedByNetwork()
@@ -75,6 +116,24 @@ class EutxoValidityLifecycleTest {
                         .bootstrap(false, false))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("mainnet");
+
+        Path invalidIdentity = project("devnet", List.of(
+                EutxoValidityLifecycle.TRUST_WARNING));
+        ObjectMapper mapper = new ObjectMapper();
+        var invalidLock = mapper.readTree(
+                invalidIdentity.resolve("appchain.lock").toFile());
+        invalidLock.withObject("/consensusValues").put(
+                "yano.app-chain.chains[0].machines.eutxo.genesis."
+                        + "l2-public-key",
+                "not-a-public-key");
+        mapper.writeValue(
+                invalidIdentity.resolve("appchain.lock").toFile(),
+                invalidLock);
+        assertThatThrownBy(() ->
+                new EutxoValidityLifecycle(invalidIdentity)
+                        .bootstrap(false, false))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("L2 address");
     }
 
     @Test
@@ -101,7 +160,11 @@ class EutxoValidityLifecycleTest {
                 new EutxoValidityLifecycle(project);
         lifecycle.bootstrap(false, false);
         lifecycle.prepareOperation(
-                "settlement", "settlement-1", null, null);
+                "deposit", "deposit-1", null, null);
+        assertThatThrownBy(() -> lifecycle.prepareOperation(
+                "settlement", "settlement-1", null, null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("--proof");
         Path transaction = project.resolve("signed.cbor");
         Files.write(transaction, new byte[] {(byte) 0x84, 1, 2, 3});
 
@@ -132,7 +195,7 @@ class EutxoValidityLifecycleTest {
             URI node = URI.create("http://127.0.0.1:"
                     + server.getAddress().getPort());
             var submitted = lifecycle.submitOperation(
-                    "settlement", "settlement-1",
+                    "deposit", "deposit-1",
                     transaction, node, "not-persisted");
             assertThat(submitted.status())
                     .isEqualTo("OPERATION_SUBMITTED");
@@ -144,11 +207,11 @@ class EutxoValidityLifecycleTest {
 
         String retained = Files.readString(project.resolve(
                 "runtime/validity/operations/"
-                        + "settlement-settlement-1.json"));
+                        + "deposit-deposit-1.json"));
         assertThat(retained).contains(transactionId)
                 .doesNotContain("not-persisted");
         assertThat(lifecycle.markStable(
-                "settlement", "settlement-1", transactionId).status())
+                "deposit", "deposit-1", transactionId).status())
                 .isEqualTo("OPERATION_STABLE");
     }
 
@@ -172,12 +235,35 @@ class EutxoValidityLifecycleTest {
         consensus.put(prefix
                         + "machines.eutxo.validity.funds-policy",
                 "disposable-test-funds-only");
+        consensus.put(prefix
+                        + "machines.eutxo.bridge.vault-address",
+                "addr_test1wzvault");
+        consensus.put(prefix
+                        + "machines.eutxo.bridge.vault-script-hash",
+                "1".repeat(56));
+        consensus.put(prefix
+                        + "machines.eutxo.bridge.withdrawal-address",
+                "addr_test1vwithdrawals");
+        consensus.put(prefix
+                        + "machines.eutxo.bridge.epoch",
+                "1");
+        consensus.put(prefix
+                        + "machines.eutxo.genesis.l2-address",
+                "addr_test1vr8nlm7example");
+        consensus.put(prefix
+                        + "machines.eutxo.genesis.l2-public-key",
+                "2".repeat(64));
+        consensus.put(prefix
+                        + "machines.eutxo.genesis.l2-key-epoch",
+                "1");
         Map<String, Object> lock = new LinkedHashMap<>();
         lock.put("blueprintDigest", "ab".repeat(32));
         lock.put("network", network);
         lock.put("recipe", "eutxo-zeroj-preview:1");
         lock.put("selectedCapabilities",
-                List.of("settlement:zeroj-validity"));
+                List.of(
+                        "settlement:zeroj-validity",
+                        "bridge:cardano-federated"));
         lock.put("consensusValues", consensus);
         lock.put("acknowledgements",
                 new ArrayList<>(acknowledgements));

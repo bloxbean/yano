@@ -185,9 +185,11 @@ class AppChainProjectTest {
         AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
         AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
         AppChainProjectResolver resolver = new AppChainProjectResolver(properties, catalog);
-        Map<String, String> genesis = Map.of(
+        Map<String, String> genesis =
+                new java.util.LinkedHashMap<>(l2Answers());
+        genesis.putAll(Map.of(
                 "eutxoGenesisAddress", "addr_test1vr8nlm7example",
-                "eutxoGenesisLovelace", "100000000");
+                "eutxoGenesisLovelace", "100000000"));
 
         AppChainProjectModel.Blueprint preprod = withAnswers(
                 blueprint("eutxo-zeroj-validity", "fixed", List.of()), genesis);
@@ -201,6 +203,18 @@ class AppChainProjectTest {
                         "yano.app-chain.chains[0].machines.eutxo.network",
                         "preprod")
                 .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.genesis."
+                                + "l2-address",
+                        "addr_test1vr8nlm7example")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.genesis."
+                                + "l2-public-key",
+                        "2".repeat(64))
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.genesis."
+                                + "l2-key-epoch",
+                        "1")
+                .containsEntry(
                         "yano.app-chain.chains[0].machines.eutxo.expected-profile-digest",
                         "2499d01ee7cb0d09d0d498040c6351accd9da83df31666cd4463d0b1722d1212")
                 .containsEntry(
@@ -213,7 +227,7 @@ class AppChainProjectTest {
                         "cfe1767761cbe05c7e2b82f951222fbb9df34afa5eb1f39fb8a5c1cc2af87d45")
                 .containsEntry(
                         "yano.app-chain.chains[0].machines.eutxo.validity.circuit-id",
-                        "eutxo-jubjub-batch-dev-b16-v1")
+                        "eutxo-jubjub-batch-dev-b16-v4")
                 .containsEntry(
                         "yano.app-chain.chains[0].machines.eutxo.validity."
                                 + "batch-profile",
@@ -221,8 +235,8 @@ class AppChainProjectTest {
                 .containsEntry(
                         "yano.app-chain.chains[0].machines.eutxo.validity."
                                 + "batch-profile-digest",
-                        "286483b1169ebb1e91fc0848195ac8a2"
-                                + "e7ec12f865beb40145d7a90c35a9c574")
+                        "bd0835736116cb6338a82069e913f381"
+                                + "5547008e4994508f110065c5dfc64747")
                 .containsEntry(
                         "yano.app-chain.chains[0].machines.eutxo.validity.zeroj-version",
                         "0.1.0-pre10")
@@ -272,10 +286,10 @@ class AppChainProjectTest {
                 .hasMessageContaining("does not support network mainnet");
 
         AppChainProjectModel.Blueprint previewRecipe =
-                withNetwork(blueprint(
+                withAnswers(withNetwork(blueprint(
                         "eutxo-zeroj-preview",
                         "fixed",
-                        List.of()), "preview");
+                        List.of()), "preview"), previewAnswers());
         assertThatThrownBy(() -> resolver.resolve(previewRecipe))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining(
@@ -289,7 +303,9 @@ class AppChainProjectTest {
         assertThat(resolver.resolve(acknowledged)
                 .selectedCapabilities())
                 .contains("settlement:zeroj-validity",
-                        "profile:eutxo-key-payments");
+                        "profile:eutxo-key-payments",
+                        "bridge:cardano-federated",
+                        "l1:slot-feed");
         Path previewOutput =
                 temporary.resolve("acknowledged-zeroj-preview");
         AppChainProjectModel.Lock lock =
@@ -320,6 +336,9 @@ class AppChainProjectTest {
                 .doesNotContain("funding:eutxo-genesis");
         assertThat(resolution.consensusProperties())
                 .containsEntry(
+                        "yano.app-chain.chains[0].l1.stability-depth",
+                        "2")
+                .containsEntry(
                         "yano.app-chain.chains[0].observers.bridge-deposits.chain-id",
                         "product-evidence")
                 .doesNotContainKeys(
@@ -348,6 +367,19 @@ class AppChainProjectTest {
                 "bridgeEpoch", "1",
                 "bridgeMaxWithdrawalLovelace", "50000000",
                 "bridgeMaxPendingWithdrawals", "100");
+    }
+
+    private static Map<String, String> l2Answers() {
+        return Map.of(
+                "eutxoL2Address", "addr_test1vr8nlm7example",
+                "eutxoL2PublicKey", "2".repeat(64));
+    }
+
+    private static Map<String, String> previewAnswers() {
+        Map<String, String> answers =
+                new java.util.LinkedHashMap<>(bridgeAnswers());
+        answers.putAll(l2Answers());
+        return Map.copyOf(answers);
     }
 
     @Test
@@ -549,7 +581,9 @@ class AppChainProjectTest {
                     assertShellSyntax(project.resolve("scripts/status"));
                     if ("host".equals(deployment)) {
                         assertThat(Files.readString(project.resolve("scripts/stop")))
-                                .contains("did not stop within 10 seconds");
+                                .contains("did not stop within 10 seconds")
+                                .doesNotContain("records[@]");
+                        assertScriptSucceeds(project.resolve("scripts/stop"));
                     }
                     if (Files.exists(project.resolve("scripts/start-node"))) {
                         assertShellSyntax(project.resolve("scripts/start-node"));
@@ -574,6 +608,15 @@ class AppChainProjectTest {
 
     private static void assertShellSyntax(Path script) throws Exception {
         Process process = new ProcessBuilder("bash", "-n", script.toString())
+                .redirectErrorStream(true)
+                .start();
+        String diagnostics = new String(process.getInputStream().readAllBytes(),
+                StandardCharsets.UTF_8);
+        assertThat(process.waitFor()).as("%s: %s", script, diagnostics).isZero();
+    }
+
+    private static void assertScriptSucceeds(Path script) throws Exception {
+        Process process = new ProcessBuilder("bash", script.toString())
                 .redirectErrorStream(true)
                 .start();
         String diagnostics = new String(process.getInputStream().readAllBytes(),

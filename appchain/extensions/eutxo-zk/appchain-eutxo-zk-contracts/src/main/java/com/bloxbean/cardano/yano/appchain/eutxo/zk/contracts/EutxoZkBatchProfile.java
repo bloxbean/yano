@@ -28,15 +28,15 @@ public record EutxoZkBatchProfile(
 
     public static final EutxoZkBatchProfile CARDANO_PAYMENT_B16 =
             create("cardano-payment-b16", 16,
-                    "eutxo-jubjub-batch-dev-b16-v1",
+                    "eutxo-jubjub-batch-dev-b16-v4",
                     Status.MEASURED_DEVELOPMENT_DEFAULT);
     public static final EutxoZkBatchProfile CARDANO_PAYMENT_B32 =
             create("cardano-payment-b32", 32,
-                    "eutxo-jubjub-batch-dev-b32-v1",
+                    "eutxo-jubjub-batch-dev-b32-v4",
                     Status.UNMEASURED_CANDIDATE);
     public static final EutxoZkBatchProfile CARDANO_PAYMENT_B64 =
             create("cardano-payment-b64", 64,
-                    "eutxo-jubjub-batch-dev-b64-v1",
+                    "eutxo-jubjub-batch-dev-b64-v4",
                     Status.UNMEASURED_CANDIDATE);
 
     public EutxoZkBatchProfile {

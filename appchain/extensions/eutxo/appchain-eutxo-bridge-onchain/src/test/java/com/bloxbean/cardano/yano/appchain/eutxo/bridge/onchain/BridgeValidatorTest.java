@@ -10,6 +10,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class BridgeValidatorTest {
     @Test
+    void stagingActionUsesTheCardanoIntegerDataAbi() {
+        assertThat(DepositStagingValidator.decodeAction(
+                PlutusData.integer(BigInteger.ZERO)))
+                .isEqualTo(BigInteger.ZERO);
+        assertThat(DepositStagingValidator.decodeAction(
+                PlutusData.integer(BigInteger.ONE)))
+                .isEqualTo(BigInteger.ONE);
+    }
+
+    @Test
     void stagingDatumShapeIsStrictlyBounded() {
         DepositStagingValidator.StagingDatum valid =
                 new DepositStagingValidator.StagingDatum(
@@ -17,8 +27,6 @@ class BridgeValidatorTest {
                         new byte[]{1},
                         new byte[]{2},
                         new byte[32],
-                        new byte[32],
-                        BigInteger.ZERO,
                         new byte[28],
                         BigInteger.TEN);
         assertThat(DepositStagingValidator.shapeValid(valid)).isTrue();
@@ -28,8 +36,6 @@ class BridgeValidatorTest {
                         valid.chainId(),
                         valid.l2Owner(),
                         valid.nonce(),
-                        valid.stagingTransactionId(),
-                        valid.stagingIndex(),
                         valid.depositorKeyHash(),
                         valid.refundDeadline())))
                 .isFalse();
@@ -65,16 +71,22 @@ class BridgeValidatorTest {
                         new byte[]{1},
                         new byte[]{2},
                         filled(3, 32),
-                        filled(4, 32),
-                        BigInteger.valueOf(5),
                         filled(6, 28),
                         BigInteger.TEN);
+        byte[] transactionId = filled(4, 32);
+        BigInteger outputIndex = BigInteger.valueOf(5);
         OutputDatum exact = new OutputDatum.OutputDatumInline(vaultDatum(staging, staging.l2Owner()));
         OutputDatum redirected = new OutputDatum.OutputDatumInline(vaultDatum(staging, new byte[]{9}));
 
-        assertThat(DepositStagingValidator.acceptedDatumMatches(exact, staging)).isTrue();
-        assertThat(DepositStagingValidator.acceptedDatumMatches(redirected, staging)).isFalse();
-        assertThat(DepositStagingValidator.acceptedDatumMatches(new OutputDatum.NoOutputDatum(), staging))
+        assertThat(DepositStagingValidator.acceptedDatumMatches(
+                exact, staging, transactionId, outputIndex)).isTrue();
+        assertThat(DepositStagingValidator.acceptedDatumMatches(
+                redirected, staging, transactionId, outputIndex)).isFalse();
+        assertThat(DepositStagingValidator.acceptedDatumMatches(
+                new OutputDatum.NoOutputDatum(),
+                staging,
+                transactionId,
+                outputIndex))
                 .isFalse();
     }
 
@@ -87,8 +99,8 @@ class BridgeValidatorTest {
                 PlutusData.bytes(staging.chainId()),
                 PlutusData.bytes(owner),
                 PlutusData.bytes(staging.nonce()),
-                PlutusData.bytes(staging.stagingTransactionId()),
-                PlutusData.integer(staging.stagingIndex()),
+                PlutusData.bytes(filled(4, 32)),
+                PlutusData.integer(BigInteger.valueOf(5)),
                 PlutusData.integer(staging.refundDeadline()));
     }
 

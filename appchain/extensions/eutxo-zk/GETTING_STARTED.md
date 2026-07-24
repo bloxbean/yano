@@ -1,5 +1,10 @@
 # EUTxO ZeroJ validity settlement: getting started
 
+For a protocol-oriented, step-by-step walkthrough of project generation,
+three-member cluster startup, the devnet faucet, L1 deposit publication, L2
+Jubjub submission, proof generation, L1 root settlement, and proof withdrawal,
+see [EUTxO ZK rollup on Yano devnet](DEVNET_WALKTHROUGH.md).
+
 ## Current status
 
 The current capability is an experimental, JVM-only testnet lifecycle. The
@@ -17,10 +22,21 @@ operator must authorize:
 - Yano submits the signed CBOR, records its transaction ID, and reconciles the
   stable result without persisting credentials.
 
-Contract deployment and the complete deposit-to-withdrawal path have not yet
-been exercised on live Yano devnet, Preview, or Preprod. Public-network gates
-therefore remain `NOT_EXERCISED`; the lifecycle must not be described as a
-production-ready rollup.
+Yano devnet now has a source-level live deposit-to-withdrawal test. It creates
+and accepts a real L1 staging deposit, waits for stable mirrored L2 credit,
+spends that exact EUTxO, proves the finalized transition, advances the L1
+validity root, atomically spends the proof controller and accepted custody
+funds, pays the Cardano withdrawal, and waits for stable L2 reconciliation.
+Preview and Preprod, maximum-batch, restart/rollback, and independent
+reconstruction evidence remain open; the lifecycle must not be described as
+a production-ready rollup.
+
+The integrated development prover fails closed when the settlement context or
+ordered transaction-manifest commitment does not match the finalized batch.
+Its aggregate withdrawal is still a trusted-prover, host-supplied public
+input; it is not yet derived from Cardano-shaped transaction CBOR
+in-circuit. The smoke test proves lifecycle and validator interoperability,
+not permissionless withdrawal security.
 
 Do not use this profile with real funds. The commands in
 [Current executable developer flow](#current-executable-developer-flow) are
@@ -62,10 +78,32 @@ This exercises:
 - Julc Plutus V3 validity-root and withdrawal validators; and
 - reconstruction and recovery behavior.
 
-The tests execute the boundaries in one build, but they do not deploy the
-validators or submit transactions to a live Cardano network.
+The module tests execute the boundaries in one build, but they do not deploy
+the validators or submit transactions to a live Cardano network.
 
-### 2. Build or extract a JVM distribution
+### 2. Run the live Yano devnet validity-settlement smoke test
+
+```bash
+./gradlew :app:e2eTest \
+  --tests \
+  'com.bloxbean.cardano.yano.app.e2e.EutxoZkRollupDevnetE2ETest' \
+  --rerun-tasks
+```
+
+The test uses disposable funds and a fresh development ceremony. It verifies:
+
+- a real 10 ADA L1 staging deposit accepted into the custody vault;
+- stable L1 observation and exact-outpoint mirrored L2 credit;
+- a real Cardano-shaped L2 transaction through the generic app-chain REST
+  submission path, creating a 3 ADA withdrawal and 7 ADA change;
+- app-chain finalization and exact finalized-transition witness derivation;
+- a real Groth16 proof bound to the runtime validity-root transition;
+- actual Julc Plutus V3 staging, root, and vault scripts on Yano devnet L1;
+- stable root advancement; and
+- a proof-authorized 3 ADA payout from the same accepted custody funds,
+  followed by stable withdrawal reconciliation on L2.
+
+### 3. Build or extract a JVM distribution
 
 From source:
 
@@ -78,7 +116,30 @@ cd build/yano-eutxo-preview/yano-*
 From a release, extract `yano-{version}.zip` and enter its directory. All
 remaining commands use that directory's `./yano.sh`.
 
-### 3. Generate a devnet project
+### 4. Generate the local L2 session identity
+
+Create a password through your normal local secret mechanism and export only
+its environment-variable name to the command. For disposable development:
+
+```bash
+export YANO_L2_KEY_PASSWORD='<development password of at least 12 characters>'
+./yano.sh appchain validity key generate \
+  --output l2-session-key.enc \
+  --password-env YANO_L2_KEY_PASSWORD
+```
+
+The command refuses to overwrite an existing file, writes an encrypted
+owner-only key envelope, and prints JSON containing its 64-hex-character
+Jubjub public key. It never prints the private scalar or password. Keep the
+encrypted file outside generated project configuration and backups intended
+for public sharing.
+
+Choose the Cardano-formatted testnet address whose payment credential will own
+deposited L2 EUTxOs. The project records that address, the public key, and key
+epoch 1 as a fundless genesis registration. This does not mint L2 value;
+spendable value arrives only through a stable accepted L1 deposit.
+
+### 5. Generate a devnet project
 
 ```bash
 ./yano.sh appchain init --non-interactive \
@@ -89,6 +150,18 @@ remaining commands use that directory's `./yano.sh`.
   --deployment host \
   --name payments-zk \
   --chain-id payments-zk \
+  --member-key <node-0-public-member-key> \
+  --member-key <node-1-public-member-key> \
+  --member-key <node-2-public-member-key> \
+  --answer eutxoL2Address=<testnet-address-for-the-L2-owner> \
+  --answer eutxoL2PublicKey=<publicKey-from-key-generate> \
+  --answer bridgeVaultAddress=<accepted-custody-script-address> \
+  --answer bridgeVaultScriptHash=<56-hex-script-hash> \
+  --answer bridgeMaxDepositLovelace=100000000 \
+  --answer bridgeWithdrawalAddress=<ordinary-testnet-payout-address> \
+  --answer bridgeEpoch=1 \
+  --answer bridgeMaxWithdrawalLovelace=50000000 \
+  --answer bridgeMaxPendingWithdrawals=100 \
   --output payments-zk
 ```
 
@@ -104,6 +177,18 @@ blueprint and lock:
   --deployment host \
   --name payments-zk-preview \
   --chain-id payments-zk-preview \
+  --member-key <node-0-public-member-key> \
+  --member-key <node-1-public-member-key> \
+  --member-key <node-2-public-member-key> \
+  --answer eutxoL2Address=<testnet-address-for-the-L2-owner> \
+  --answer eutxoL2PublicKey=<publicKey-from-key-generate> \
+  --answer bridgeVaultAddress=<accepted-custody-script-address> \
+  --answer bridgeVaultScriptHash=<56-hex-script-hash> \
+  --answer bridgeMaxDepositLovelace=100000000 \
+  --answer bridgeWithdrawalAddress=<ordinary-testnet-payout-address> \
+  --answer bridgeEpoch=1 \
+  --answer bridgeMaxWithdrawalLovelace=50000000 \
+  --answer bridgeMaxPendingWithdrawals=100 \
   --acknowledge EUTXO_ZEROJ_UNSAFE_DEVELOPMENT_TESTNET \
   --output payments-zk-preview
 ```
@@ -111,7 +196,7 @@ blueprint and lock:
 Omitting the acknowledgement fails closed. Selecting mainnet also fails
 closed and cannot be bypassed with an acknowledgement or hidden flag.
 
-### 4. Inspect the contract plan and bootstrap development proof keys
+### 6. Inspect the contract plan and bootstrap development proof keys
 
 Plan-only bootstrap is fast and does not generate secret proving material:
 
@@ -144,7 +229,7 @@ The command writes:
 - `runtime/validity/operations/` — durable content-addressed operation
   journals.
 
-### 5. Prove finalized L2 transitions
+### 7. Prove finalized L2 transitions
 
 Export each finalized `EutxoValidityTransition` as canonical binary and pass
 the exact ordered files:
@@ -168,7 +253,7 @@ Proof generation refuses a transition from another chain/network, an
 unmeasured batch profile, a mismatched ceremony/VK identity, an invalid
 authorization, or more than 16 transitions.
 
-### 6. Prepare, submit, and reconcile L1 operations
+### 8. Prepare, submit, and reconcile L1 operations
 
 Prepare an idempotent operation from a non-secret JSON request:
 
@@ -181,6 +266,11 @@ Prepare an idempotent operation from a non-secret JSON request:
 ./yano.sh appchain validity settlement prepare \
   --project payments-zk \
   --id settlement-0001 \
+  --proof <proof-digest>
+
+./yano.sh appchain validity withdrawal prepare \
+  --project payments-zk \
+  --id withdrawal-0001 \
   --proof <proof-digest>
 ```
 
@@ -220,11 +310,14 @@ stable Cardano result:
 ./yano.sh appchain validity reconcile --project payments-zk
 ```
 
-The same `prepare`, `submit`, and `stable` shape applies to `deposit`,
-`withdrawal`, and `recovery`. Repeating a completed step returns the retained
-result instead of creating a duplicate operation.
+The same `submit` and `stable` shape applies to `deposit`, `withdrawal`, and
+`recovery`. Settlement and withdrawal preparation both require the proof
+digest, ensuring their journals retain the same previous/next root,
+batch-data, withdrawal amount, and finalized transaction identities.
+Repeating a completed step returns the retained result instead of creating a
+duplicate operation.
 
-### 7. Run the standalone proof and validator examples
+### 9. Run the standalone proof and validator examples
 
 The bounded proof regression is:
 
@@ -275,10 +368,11 @@ Cardano test ADA
 
 The lifecycle currently automates project safety, artifact identity, proof
 generation/verification, transaction submission, journals, and
-reconciliation. It does not yet build/sign Cardano transactions, infer
-stability from a public node, or claim live contract deployment. Those are
-explicit operator/acceptance boundaries, so a plan-only bootstrap is reported
-as `PLANNED_NOT_SUBMITTED`, never as deployed.
+reconciliation. The executable Yano-devnet test additionally builds and signs
+transactions with disposable test keys and checks actual L1 stability. The
+packaged operator lifecycle intentionally does not hold keys or silently
+claim deployment: the operator supplies externally signed Cardano CBOR, and a
+plan-only bootstrap is reported as `PLANNED_NOT_SUBMITTED`.
 
 ## Network progression
 
@@ -311,9 +405,9 @@ cannot be selected. Increasing the bound has different effects:
 - Cardano transaction-size and execution-budget limits constrain the final
   profile.
 
-The b16 run produced 356,915 constraints and a constant 192-byte proof; on the
-recorded local Java 25 run, single-party development setup took 99.210 seconds
-and proof generation took 14.883 seconds. See
+The b16 run produced 383,495 constraints and a constant 192-byte proof; on the
+recorded local Java 25 run, single-party development setup took 109.263
+seconds and proof generation took 15.058 seconds. See
 [D3_BATCH_PROFILES.md](D3_BATCH_PROFILES.md) for the exact command and
 unexercised measurements. A public-testnet default still requires Yano devnet,
 Preview, and Preprod evidence. Recursive proof aggregation is a later

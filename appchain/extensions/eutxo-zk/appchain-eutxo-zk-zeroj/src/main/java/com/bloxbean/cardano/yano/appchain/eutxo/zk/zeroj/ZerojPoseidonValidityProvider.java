@@ -3,8 +3,9 @@ package com.bloxbean.cardano.yano.appchain.eutxo.zk.zeroj;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoValidityCommitmentEngine;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoValidityCommitmentProvider;
-import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkAuthorizationProfile;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkBatchProfile;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkProfile;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -33,12 +34,6 @@ public final class ZerojPoseidonValidityProvider
         if (!EutxoProfile.V1.equals(profile)) {
             throw new IllegalArgumentException(
                     "the Z0 validity profile supports key-controlled EUTxO v1 only");
-        }
-        String bridgeObserver =
-                settings.get("machines.eutxo.bridge.observer-id");
-        if (bridgeObserver != null && !bridgeObserver.isBlank()) {
-            throw new IllegalArgumentException(
-                    "the Z0 validity profile does not cover bridge transitions");
         }
         if (!settings.isEmpty()) {
             requiredIdentitySettings().forEach((key, expected) -> {
@@ -71,11 +66,13 @@ public final class ZerojPoseidonValidityProvider
      */
     public static Map<String, String> requiredIdentitySettings() {
         EutxoZkProfile profile = EutxoZkProfile.Z3_VALIDITY_SETTLEMENT;
+        EutxoZkBatchProfile batchProfile =
+                EutxoZkBatchProfile.CARDANO_PAYMENT_B16;
         Map<String, String> identities = new LinkedHashMap<>();
         identities.put(PREFIX + "transaction-format", TRANSACTION_FORMAT);
         identities.put(PREFIX + "profile", profile.id());
         identities.put(PREFIX + "expected-profile-digest", profile.digestHex());
-        identities.put(PREFIX + "circuit-id", profile.circuitId());
+        identities.put(PREFIX + "circuit-id", batchProfile.circuitId());
         identities.put(PREFIX + "proof-system", profile.proofSystem());
         identities.put(PREFIX + "curve", profile.curve());
         identities.put(PREFIX + "zeroj-version", ZEROJ_VERSION);

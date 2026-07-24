@@ -14,6 +14,7 @@ import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2Transaction;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.testkit.EutxoTestWallet;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkAuthorizationProfile;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkBatchProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkProfile;
 import com.bloxbean.cardano.zeroj.circuit.lib.jubjub.EdDSAJubjub;
 import com.bloxbean.cardano.zeroj.circuit.lib.jubjub.JubjubCurve;
@@ -111,6 +112,12 @@ class EutxoJubjubAuthorizationCircuitTest {
 
         var settings = new java.util.LinkedHashMap<>(
                 ZerojPoseidonValidityProvider.requiredIdentitySettings());
+        assertThat(settings.get("machines.eutxo.validity.circuit-id"))
+                .isEqualTo(EutxoZkBatchProfile.CARDANO_PAYMENT_B16.circuitId());
+        settings.put("machines.eutxo.network", "devnet");
+        assertThat(new ZerojPoseidonValidityProvider()
+                .create("devnet-chain", EutxoProfile.V1, settings))
+                .isNotNull();
         settings.put("machines.eutxo.network", "preview");
         assertThatThrownBy(() -> new ZerojPoseidonValidityProvider()
                 .create("preview-chain", EutxoProfile.V1, settings))

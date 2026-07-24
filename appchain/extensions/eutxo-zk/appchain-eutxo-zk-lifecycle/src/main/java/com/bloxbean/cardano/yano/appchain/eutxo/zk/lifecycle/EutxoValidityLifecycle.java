@@ -1,11 +1,11 @@
 package com.bloxbean.cardano.yano.appchain.eutxo.zk.lifecycle;
 
-import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2Transaction;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoValidityTransition;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoFinalizedProofWitness;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkAuthorizationProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkBatchProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkBatchProof;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkBatchSettlement;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkBatchVerificationKey;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.zeroj.EutxoCeremonyManifest;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.zeroj.EutxoJubjubBatchDevelopmentSetup;
@@ -170,7 +170,7 @@ public final class EutxoValidityLifecycle {
             throw new IllegalStateException(
                     "ceremony, batch profile, and verification key differ");
         }
-        List<EutxoL2Transaction> transactions =
+        List<EutxoFinalizedProofWitness> finalized =
                 new ArrayList<>(transitionFiles.size());
         for (Path transitionFile : transitionFiles) {
             byte[] bytes = readBounded(
@@ -185,15 +185,20 @@ public final class EutxoValidityLifecycle {
                 throw new IllegalArgumentException(
                         "finalized transition belongs to another project");
             }
-            transactions.add(EutxoL2Transaction.decode(
-                    witness.transition().canonicalTransaction()));
+            finalized.add(witness);
         }
 
         EutxoZkBatchProof proof;
         try (EutxoJubjubBatchDevelopmentSetup setup =
                      EutxoJubjubBatchDevelopmentSetup.load(
                              profile, ceremonyDirectory, manifest)) {
-            proof = setup.prove(previousRoot, transactions);
+            proof = setup.proveFinalized(
+                    previousRoot,
+                    finalized,
+                    EutxoZkBatchSettlement.forFinalized(
+                            profile,
+                            key.digestHex(),
+                            finalized));
         }
         if (!EutxoJubjubBatchDevelopmentSetup.verify(proof, key)) {
             throw new IllegalStateException(
@@ -251,6 +256,18 @@ public final class EutxoValidityLifecycle {
         check(checks, "trusted-prover",
                 identity.trustedProverRequired(),
                 Boolean.toString(identity.trustedProverRequired()));
+        check(checks, "cardano-bridge",
+                !identity.fundsVaultAddress().isBlank()
+                        && identity.fundsVaultScriptHash()
+                        .matches("[0-9a-f]{56}"),
+                identity.fundsVaultScriptHash());
+        check(checks, "l2-session-identity",
+                !identity.l2Address().isBlank()
+                        && identity.l2PublicKey()
+                        .matches("[0-9a-f]{64}")
+                        && identity.l2KeyEpoch() > 0,
+                identity.l2Address() + ":epoch-"
+                        + identity.l2KeyEpoch());
         check(checks, "test-funds",
                 "disposable-test-funds-only".equals(
                         identity.fundsPolicy()),
@@ -326,6 +343,12 @@ public final class EutxoValidityLifecycle {
         operation.put("trustedProverRequired", true);
         operation.put("fundsPolicy", identity.fundsPolicy());
         operation.put("status", "PREPARED");
+        if (Set.of("settlement", "withdrawal").contains(
+                normalizedKind) && proofId == null) {
+            throw new IllegalArgumentException(
+                    normalizedKind
+                            + " preparation requires --proof");
+        }
         if (request != null) {
             byte[] bytes = readBounded(request, "operation request");
             operation.put("requestDigest", sha256(bytes));
@@ -338,6 +361,17 @@ public final class EutxoValidityLifecycle {
             operation.put("proofId", proof.digestHex());
             operation.put("verificationKeyDigest",
                     proof.verificationKeyDigest());
+            var statement = proof.settlementInputs();
+            operation.put("previousRoot",
+                    statement.previousRoot().toString());
+            operation.put("nextRoot",
+                    statement.nextRoot().toString());
+            operation.put("batchDataCommitment",
+                    statement.batchDataCommitment().toString());
+            operation.put("withdrawalLovelace",
+                    statement.withdrawalCommitment().toString());
+            operation.put("transactionIds",
+                    proof.transactionIds());
         }
         operation.put("createdAt", Instant.now().toString());
         Path output = operationPath(normalizedKind, id);
@@ -558,9 +592,12 @@ public final class EutxoValidityLifecycle {
                 stringList(lock.path("selectedCapabilities"));
         if (!recipe.startsWith("eutxo-zeroj-preview:")
                 || !capabilities.contains(
-                "settlement:zeroj-validity")) {
+                "settlement:zeroj-validity")
+                || !capabilities.contains(
+                "bridge:cardano-federated")) {
             throw new IllegalArgumentException(
-                    "project does not select eutxo-zeroj-preview");
+                    "project does not select the complete "
+                            + "eutxo-zeroj-preview bridge and validity profile");
         }
         Map<String, String> consensus = json.convertValue(
                 lock.path("consensusValues"),
@@ -585,6 +622,27 @@ public final class EutxoValidityLifecycle {
                 authorization,
                 trusted,
                 funds,
+                requiredConsensus(
+                        consensus,
+                        "machines.eutxo.bridge.vault-address"),
+                requiredConsensus(
+                        consensus,
+                        "machines.eutxo.bridge.vault-script-hash"),
+                requiredConsensus(
+                        consensus,
+                        "machines.eutxo.bridge.withdrawal-address"),
+                Long.parseLong(requiredConsensus(
+                        consensus,
+                        "machines.eutxo.bridge.epoch")),
+                requiredConsensus(
+                        consensus,
+                        "machines.eutxo.genesis.l2-address"),
+                requiredConsensus(
+                        consensus,
+                        "machines.eutxo.genesis.l2-public-key"),
+                Long.parseLong(requiredConsensus(
+                        consensus,
+                        "machines.eutxo.genesis.l2-key-epoch")),
                 stringList(lock.path("acknowledgements")));
     }
 
@@ -627,6 +685,14 @@ public final class EutxoValidityLifecycle {
             throw new IllegalArgumentException(
                     "development lifecycle trust policy is not pinned");
         }
+        if (identity.l2Address().isBlank()
+                || !identity.l2PublicKey().matches("[0-9a-f]{64}")
+                || identity.l2KeyEpoch() < 1) {
+            throw new IllegalArgumentException(
+                    "development lifecycle requires a fundless initial "
+                            + "L2 address, lowercase 32-byte public key, "
+                            + "and positive key epoch");
+        }
     }
 
     private Map<String, Object> contractPlan(
@@ -642,9 +708,33 @@ public final class EutxoValidityLifecycle {
         plan.put("trustedProverRequired", true);
         plan.put("fundsPolicy", identity.fundsPolicy());
         plan.put("deploymentStatus", "PLANNED_NOT_SUBMITTED");
+        plan.put("custody", Map.of(
+                "fundsVaultAddress", identity.fundsVaultAddress(),
+                "fundsVaultScriptHash",
+                identity.fundsVaultScriptHash(),
+                "withdrawalAddress",
+                identity.withdrawalAddress(),
+                "bridgeEpoch", identity.bridgeEpoch(),
+                "model",
+                "proof-controller-plus-separate-funds-vault"));
+        plan.put("l2SessionIdentity", Map.of(
+                "address", identity.l2Address(),
+                "publicKeyDigest", sha256(HexFormat.of().parseHex(
+                        identity.l2PublicKey())),
+                "keyEpoch", identity.l2KeyEpoch(),
+                "funding", "none-genesis-registration-only"));
+        plan.put("withdrawalComposition", List.of(
+                "spend-current-validity-root-as-reference",
+                "spend-proof-controller",
+                "spend-accepted-funds-vault",
+                "preserve-proof-controller-thread-value",
+                "decrease-funds-vault-by-exact-proof-withdrawal",
+                "pay-exact-configured-destination"));
         plan.put("validators", List.of(
                 validator("deposit-staging",
                         "com.bloxbean.cardano.yano.appchain.eutxo.bridge.onchain.DepositStagingValidator"),
+                validator("accepted-funds-vault",
+                        "deployment-pinned-native-or-reviewed-custody-script"),
                 validator("validity-root",
                         "com.bloxbean.cardano.yano.appchain.eutxo.zk.onchain.EutxoValidityRootValidator"),
                 validator("batch-data",
@@ -1048,9 +1138,20 @@ public final class EutxoValidityLifecycle {
             String authorizationProfile,
             boolean trustedProverRequired,
             String fundsPolicy,
+            String fundsVaultAddress,
+            String fundsVaultScriptHash,
+            String withdrawalAddress,
+            long bridgeEpoch,
+            String l2Address,
+            String l2PublicKey,
+            long l2KeyEpoch,
             List<String> acknowledgements
     ) {
         ProjectIdentity {
+            l2Address = Objects.requireNonNull(
+                    l2Address, "l2Address").trim();
+            l2PublicKey = Objects.requireNonNull(
+                    l2PublicKey, "l2PublicKey").trim();
             acknowledgements = List.copyOf(acknowledgements);
         }
     }

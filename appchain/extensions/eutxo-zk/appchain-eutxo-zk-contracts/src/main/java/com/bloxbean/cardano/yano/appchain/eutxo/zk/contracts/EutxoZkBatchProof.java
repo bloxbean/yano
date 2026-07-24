@@ -29,11 +29,11 @@ public record EutxoZkBatchProof(
         requireDigest(verificationKeyDigest, "verificationKeyDigest");
         publicInputs = List.copyOf(Objects.requireNonNull(
                 publicInputs, "publicInputs"));
-        if (publicInputs.size() != 4
+        if (publicInputs.size() != EutxoZkSettlementPublicInputs.COUNT
                 || publicInputs.stream().anyMatch(value ->
                 value == null || value.signum() < 0 || value.bitLength() > 255)) {
             throw new IllegalArgumentException(
-                    "batch proof requires four canonical public scalars");
+                    "batch proof requires eight canonical public scalars");
         }
         transactionIds = List.copyOf(Objects.requireNonNull(
                 transactionIds, "transactionIds"));
@@ -91,6 +91,18 @@ public record EutxoZkBatchProof(
 
     public String digestHex() {
         return EutxoZkCodec.digestHex(canonicalBytes());
+    }
+
+    public EutxoZkSettlementPublicInputs settlementInputs() {
+        return new EutxoZkSettlementPublicInputs(
+                publicInputs.get(0),
+                publicInputs.get(1),
+                publicInputs.get(2),
+                publicInputs.get(3),
+                publicInputs.get(4),
+                publicInputs.get(5),
+                publicInputs.get(6),
+                publicInputs.get(7));
     }
 
     @Override

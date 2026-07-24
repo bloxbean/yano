@@ -27,23 +27,29 @@ The build gate
 
 compiled and proved a full 16-transaction batch using Java 25, a 4 GiB test
 heap, ZeroJ's explicitly insecure single-participant development setup, and
-the real Groth16 prover:
+the real Groth16 prover. The statement uses the same eight ordered public
+inputs consumed by the settlement validator:
 
 | Metric | Result |
 |---|---:|
-| constraints | 356,915 |
-| wires | 731,869 |
-| public inputs | 4 |
-| development setup | 99,210 ms |
-| proof generation | 14,883 ms |
+| constraints | 383,495 |
+| wires | 777,269 |
+| public inputs | 8 |
+| development setup | 109,263 ms |
+| proof generation | 15,058 ms |
 | compressed proof | 192 bytes |
 
+The actual Julc Plutus V3 settlement-bound validator accepted another full
+b16 proof with a measured `ExBudget` of 4,246,292,718 CPU and 1,239,176
+memory units on the disposable Yano devnet profile. The live smoke test also
+submitted a finalized L2 transition, advanced its validity-root UTxO, and
+consumed a proof-authorized 3 ADA withdrawal.
+
 Timing is one local observation, not a performance guarantee. Peak resident
-memory, persisted proving-key size, canonical L1 batch-data size, Cardano
-transaction size, and Julc execution units were not captured by this run.
-Preview and Preprod measurements are `NOT_EXERCISED`. Therefore b16 is only
-the development default; b32 and b64 cannot be selected or described as
-supported profiles.
+memory, persisted proving-key size, canonical L1 batch-data size, and Cardano
+transaction size were not captured by this run. Preview and Preprod
+measurements are `NOT_EXERCISED`. Therefore b16 is only the development
+default; b32 and b64 cannot be selected or described as supported profiles.
 
 ## Backpressure
 

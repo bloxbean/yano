@@ -10,11 +10,27 @@ ZeroJ circuit computes that sum from the private bounded-batch witness and
 constrains the public input to it. A prover therefore cannot authorize more
 lovelace than those outputs without producing an invalid proof.
 
-`EutxoProofWithdrawalVaultValidator` releases that aggregate amount to one
-deployment-fixed Cardano address. It requires exactly one reference input
-carrying the validity-root thread token at the proof validator's script. The
-root's chain, bridge epoch, generation, height, and proved withdrawal amount
-must match the claim.
+That statement applies to the original bounded
+`EutxoKeyPaymentSettlementCircuit`. The integrated
+`zeroj-jubjub-dev-v1` b16 lifecycle is intentionally weaker: it proves the
+exact finalized validity-root transition and Jubjub authorization, while its
+settlement context, ordered transaction-manifest commitment, and aggregate
+withdrawal scalar are derived and matched by the trusted-prover host
+boundary. The current circuit exposes those values as proof public inputs but
+does not yet derive the aggregate withdrawal from Cardano-shaped transaction
+CBOR in-circuit. Consequently the integrated profile remains
+`EXPERIMENTAL_TESTNET_ONLY`, requires a trusted prover and disposable funds,
+and must not be described as a permissionless or economically secure
+withdrawal system. The future hardened profile must constrain the same
+transaction/withdrawal relationship in-circuit before graduation.
+
+`EutxoProofWithdrawalVaultValidator` is a proof-controller validator. It
+authorizes release of that aggregate amount from a separately identified
+accepted-funds vault to one deployment-fixed Cardano address. It requires
+exactly one reference input carrying the validity-root thread token at the
+proof validator's script and exactly one input/output transition at the
+configured funds-vault script. The root's chain, bridge epoch, generation,
+height, and proved withdrawal amount must match the claim.
 
 The vault's own thread datum records:
 
@@ -24,10 +40,12 @@ The vault's own thread datum records:
 - migration generation.
 
 The claim is permissionless. A successful transaction must consume exactly
-one vault thread, produce exactly one continuing thread, increase the
-sequence, move to a strictly newer root height, pay exactly one matching
-output, and preserve every non-withdrawn vault asset. Reusing a root, sequence,
-or thread fails. Extra signatures cannot bypass these checks.
+one proof-controller thread, reproduce its value exactly in one continuing
+controller output, increase the sequence, move to a strictly newer root
+height, consume and recreate exactly one accepted-funds-vault UTxO, pay
+exactly one matching output, and preserve every non-withdrawn funds-vault
+asset. Reusing a root, sequence, or thread fails. Extra signatures cannot
+bypass these checks.
 
 Migration is a distinct authority-signed action that preserves vault value,
 sequence, and last consumed root while moving the thread to a precommitted

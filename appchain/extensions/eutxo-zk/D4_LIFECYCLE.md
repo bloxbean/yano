@@ -10,7 +10,9 @@ acceptance.
 The packaged boundary contains:
 
 - the `eutxo-zeroj-preview` recipe for devnet, Preview, and Preprod;
-- the EUTxO state-machine provider and ZeroJ validity provider;
+- encrypted local Jubjub session-key generation, with only the L2 address,
+  public key, and key epoch materialized in generated consensus configuration;
+- the EUTxO state-machine, Cardano bridge, and ZeroJ validity providers;
 - the measured `cardano-payment-b16` development circuit;
 - ceremony generation/import verification, proving, and independent proof
   verification;
@@ -56,6 +58,19 @@ semantic identity before reusing output, and applies owner-only POSIX
 permissions where supported. API keys are accepted only by environment
 variable name and are never persisted.
 
+Generate the fundless initial L2 identity before project initialization:
+
+```bash
+./yano.sh appchain validity key generate \
+  --output l2-session-key.enc \
+  --password-env YANO_L2_KEY_PASSWORD
+```
+
+The output JSON includes the public key required by
+`--answer eutxoL2PublicKey=...`. The encrypted key file is local operator
+state, not generated project state. `eutxoL2Address` selects the testnet
+payment credential to which that public key is registered.
+
 ## Operator boundary
 
 Yano does not hold an L1 signing key. A Cardano builder or wallet constructs
@@ -79,9 +94,13 @@ silently becomes “deployed.”
   :appchain-devtools:test
 ```
 
-The D4 tests cover profile/VK/proof identity binding, project/network policy,
-idempotent plan and operation state, public-testnet acknowledgement, mainnet
-rejection, packaged provider presence, and catalog/distribution parity.
+The D4 tests cover encrypted session-key generation, profile/VK/proof identity
+binding, project/network policy, idempotent plan and operation state,
+public-testnet acknowledgement, mainnet rejection, packaged provider presence,
+and catalog/distribution parity.
 
-Live contract deployment and deposit-to-withdrawal acceptance remain D5
-evidence and must stay `NOT_EXERCISED` until performed on the named network.
+The complete deposit-to-withdrawal path is exercised on Yano devnet by
+`EutxoZkRollupDevnetE2ETest`. Preview and Preprod live transactions,
+maximum-b16 batching, rollback/recovery, and independent reconstruction remain
+D5 evidence and must stay `NOT_EXERCISED` until performed on the named
+network.

@@ -8,9 +8,11 @@ The current implementation is pre-production. Development Groth16 setup keys
 are test-only; production release remains blocked until the ADR's ceremony,
 audit, data-availability and operational gates are satisfied.
 
-Start with [GETTING_STARTED.md](GETTING_STARTED.md). It distinguishes the
-developer proof/validator workflow that is executable today from the planned
-live Cardano L1-to-appchain-to-L1 preview workflow.
+Start with [GETTING_STARTED.md](GETTING_STARTED.md) for status and module
+verification. Use
+[DEVNET_WALKTHROUGH.md](DEVNET_WALKTHROUGH.md) for the step-by-step
+Cardano L1 deposit, appchain L2 transaction, proof, root settlement, and L1
+withdrawal flow.
 
 Milestone notes:
 

@@ -11,6 +11,7 @@ dependencies {
 
     testImplementation project(':appchain-eutxo-zk-zeroj')
     testImplementation libs.zeroj.crypto
+    testImplementation libs.zeroj.circuit.lib
     testImplementation "com.bloxbean.cardano:julc-stdlib:${libs.versions.julc.get()}"
     testImplementation "com.bloxbean.cardano:julc-ledger-api:${libs.versions.julc.get()}"
     testImplementation "com.bloxbean.cardano:julc-testkit:${libs.versions.julc.get()}"
@@ -30,4 +31,5 @@ java {
 
 tasks.named('test') {
     systemProperty 'zeroj.allowInsecureTrustedSetup', 'true'
+    maxHeapSize = '4g'
 }

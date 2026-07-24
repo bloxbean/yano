@@ -927,14 +927,14 @@ final class AppChainProjectRenderer {
                 #!/usr/bin/env bash
                 set -euo pipefail
                 root="$(cd "$(dirname "$0")/.." && pwd)"
-                shopt -s nullglob
-                records=("$root"/run/node*.pid)
-                for record in "${records[@]}"; do
+                for record in "$root"/run/node*.pid; do
+                  [ -f "$record" ] || continue
                   pid="$(cat "$record")"
                   kill "$pid" 2>/dev/null || true
                 done
                 failed=0
-                for record in "${records[@]}"; do
+                for record in "$root"/run/node*.pid; do
+                  [ -f "$record" ] || continue
                   pid="$(cat "$record")"
                   stopped=0
                   for attempt in $(seq 1 100); do

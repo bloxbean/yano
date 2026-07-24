@@ -6,7 +6,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
-/** Compressed Groth16 verification key for one immutable four-input batch profile. */
+/** Compressed Groth16 verification key for one immutable settlement-bound batch profile. */
 public record EutxoZkBatchVerificationKey(
         String batchProfileId,
         String batchProfileDigest,
@@ -19,7 +19,8 @@ public record EutxoZkBatchVerificationKey(
         List<byte[]> ic
 ) {
     private static final int VERSION = 1;
-    private static final int PUBLIC_INPUT_COUNT = 4;
+    private static final int PUBLIC_INPUT_COUNT =
+            EutxoZkSettlementPublicInputs.COUNT;
 
     public EutxoZkBatchVerificationKey {
         requireText(batchProfileId, "batchProfileId");
@@ -33,7 +34,7 @@ public record EutxoZkBatchVerificationKey(
         Objects.requireNonNull(ic, "ic");
         if (ic.size() != PUBLIC_INPUT_COUNT + 1) {
             throw new IllegalArgumentException(
-                    "batch verification key must have five IC points");
+                    "batch verification key must have nine IC points");
         }
         List<byte[]> copied = new ArrayList<>(ic.size());
         for (byte[] point : ic) {

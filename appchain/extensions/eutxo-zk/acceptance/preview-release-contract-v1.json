@@ -21,17 +21,17 @@
     "authorizationProfileDigest": "d4d23eb620057fa280616f8e117aa7b38f7895fc3be2626566a3fd06444cb035",
     "authorizationPointChecks": "host-only-development",
     "batchProfile": "cardano-payment-b16",
-    "batchProfileDigest": "286483b1169ebb1e91fc0848195ac8a2e7ec12f865beb40145d7a90c35a9c574",
+    "batchProfileDigest": "bd0835736116cb6338a82069e913f3815547008e4994508f110065c5dfc64747",
     "maximumTransactions": "16",
-    "circuitId": "eutxo-jubjub-batch-dev-b16-v1",
+    "circuitId": "eutxo-jubjub-batch-dev-b16-v4",
     "proofSystem": "groth16",
     "curve": "bls12-381",
     "verificationKeyIdentity": "project-pinned-at-ceremony-bootstrap",
     "validatorIdentity": "project-pinned-at-contract-bootstrap"
   },
   "sourceDigests": {
-    "capabilityCatalogSha256": "3eb686a3f4c35719e58cbb65abbcfeb1f222f6af72d242a195881d335e1044ff",
-    "networkAcceptanceSha256": "429c4b135865c54b786000ea942201aa4fb68b2053f56def90e862710bd014f5"
+    "capabilityCatalogSha256": "fc1f5e8c99ea20e87ff6b4ef7fd00f741bff8e078206386cf25d284e1cf14d8d",
+    "networkAcceptanceSha256": "1e1705d4d14e46024d8468ba2e0ccbc7e9dd766d96b756dc19594b386762278c"
   },
   "compatibility": {
     "cardanoClientLib": "SUPPORTED_WITH_YANO_ENVELOPE",
@@ -45,7 +45,8 @@
     "jubjub-adversarial-circuit-hardening",
     "independent-circuit-and-validator-audit",
     "production-multi-party-ceremony",
-    "live-devnet-preview-preprod-round-trip",
+    "live-preview-preprod-round-trip",
+    "devnet-maximum-batch-restart-and-rollback",
     "rollback-and-disaster-recovery-evidence",
     "independent-data-reconstruction",
     "accountable-production-funds-approval"

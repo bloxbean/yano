@@ -2,21 +2,95 @@
 
 ## Status
 
-Proposed — version 12
+Proposed — version 15
 
 Phase A and the automated portions of Phase B are implemented as optional
 modules under `appchain/extensions/eutxo/`. Their schemas and bridge remain
 alpha pending the external operational and independent-review gates recorded
 by the implementation. The automatable Phase C components are implemented
-under `appchain/extensions/eutxo-zk/`, but they do not yet form a live
-L1-to-appchain-to-L1 product. The automatable D1-D6 integration, lifecycle,
-packaging, and evidence controls are implemented; live devnet, Preview, and
-Preprod acceptance rows remain open external gates. All ZeroJ functionality
-remains experimental with no production-funds claim.
+under `appchain/extensions/eutxo-zk/`. The automatable D1-D6 integration,
+lifecycle, packaging, and evidence controls are implemented, and a complete
+disposable-funds Yano-devnet test now exercises L1 staging deposit, accepted
+custody, stable L2 credit, a Jubjub-authorized L2 spend, exact finalized
+transition proving, L1 validity-root advancement, payout from the same
+custody funds, and stable L2 withdrawal reconciliation. Preview, Preprod,
+maximum-batch, rollback/recovery, independent-reconstruction, and security
+graduation gates remain open. All ZeroJ functionality remains experimental
+with no production-funds claim.
 Phase D development and disposable-funds testing may proceed against the
 version-pinned development authorization profile while ZeroJ hardening happens
 in parallel. A later ZeroJ release can preserve the Java API, but it cannot
 preserve or silently upgrade the circuit-security identity.
+
+Version 15:
+
+- makes L2 identity bootstrap an explicit, fundless genesis registration:
+  `eutxo-zeroj-preview` requires an L2 address and Jubjub public key, while
+  `appchain validity key generate` creates an encrypted, owner-only local
+  session-key envelope and never places its private scalar in the blueprint,
+  lock, generated configuration, or console output;
+- makes lifecycle bootstrap and doctor fail early when that address,
+  32-byte lowercase public key, or positive key epoch is absent, and records
+  only a public-key digest in the generated contract plan; and
+- requires every withdrawal claim in a finalized validity transition to match
+  one unique created output, exact lovelace, destination, bridge epoch, nonce,
+  and inline datum. A decoded or externally supplied transition therefore
+  cannot substitute a host-authored claim that differs from the canonical L2
+  transaction.
+
+Version 14:
+
+- makes the preview recipe a real composition of the reusable Cardano bridge
+  and ZeroJ settlement capabilities instead of treating them as conflicting;
+  the stock JVM distribution packages the ledger, bridge observer, validity
+  provider, prover, and lifecycle boundaries needed by that composition;
+- removes the circular staging-datum requirement to name its own transaction
+  ID: the Julc staging validator derives the accepted deposit outpoint from
+  the consumed script input and carries it into the accepted-vault datum;
+- defines `EutxoValidityTransition` v4 with the exact canonical withdrawal
+  claims emitted by the accepted L2 transition, so proof preparation and
+  operation journals derive the same withdrawal amount and transaction
+  identities from finalized state;
+- separates the proof-controller thread from the accepted-funds vault: a
+  successful claim preserves the controller value, consumes and recreates one
+  configured custody UTxO, and pays the proof-bound amount from those same
+  accepted funds;
+- records an automated Yano-devnet L1 → L2 → L1 result using 10 ADA of
+  disposable custody funds, a 3 ADA withdrawal, and 7 ADA L2 change, followed
+  by stable withdrawal reconciliation; and
+- moves the development b16 circuit to
+  `eutxo-jubjub-batch-dev-b16-v4` with digest
+  `bd0835736116cb6338a82069e913f3815547008e4994508f110065c5dfc64747`.
+  Preview and Preprod use the same network-neutral transaction/proof
+  boundaries but remain `NOT_EXERCISED` until funded public-testnet runs are
+  retained.
+
+Version 13:
+
+- replaces the development b16 circuit identity with
+  `eutxo-jubjub-batch-dev-b16-v3` and eight settlement public inputs binding
+  previous root, next root, transition digest, authorization commitment,
+  batch size, settlement context, batch-data commitment, and withdrawal
+  commitment;
+- binds proof generation to the exact ordered finalized-transition witnesses
+  emitted by the running EUTxO app chain and constrains each transition digest
+  into the development authorization accumulator;
+- adds a canonical fixed-width b16 transaction manifest and enforces the same
+  manifest, profile, verification key, context, and withdrawal statement
+  across the trusted-prover host boundary, ZeroJ public statement, and Julc
+  root/vault validators;
+- fixes the Julc-generated validators to use Plutus V3/PV11-supported list
+  operations and verifies the actual b16 proof against the actual compiled
+  settlement validator;
+- records a live disposable Yano-devnet validity-settlement smoke test from
+  configured L2 genesis through app-chain finalization, Groth16 proof, L1 root
+  advancement, and a proof-authorized 3 ADA withdrawal; and
+- keeps stable L1 deposit observation/credit, maximum-b16 live batching,
+  rollback/recovery, independent reconstruction, Preview, and Preprod
+  acceptance explicitly open rather than overstating the narrower smoke test.
+  It also keeps in-circuit Cardano-CBOR-to-withdrawal derivation open: the
+  integrated development profile host-matches that public input and therefore
+  remains trusted-prover-only.
 
 Version 12:
 
@@ -694,14 +768,14 @@ profile:eutxo-key-payments
   provides: immutable EUTxO v1 key-payment profile
 
 bridge:cardano-federated
-  requires: profile:eutxo-plutus-v3, l1:slot-feed
+  requires: state:eutxo-ledger, l1:slot-feed
   provides: staged deposits, vault accounting, withdrawals
   custody: configured settlement/root threshold
   zeroj dependency: none
+  conflicts: funding:eutxo-genesis
 
 settlement:zeroj-validity
   requires now: profile:eutxo-key-payments
-  conflicts now: bridge:cardano-federated
   provides: experimental proof-verified validity-root components
   implementation: ZeroJ 0.1.0-pre10, Julc 0.1.0-pre14
   availability: devnet, Preview, and Preprod development/test only
@@ -723,13 +797,14 @@ federated bridge, no ZK
   bridge:cardano-federated
   -> profile:eutxo-plutus-v3 -> state:eutxo-ledger
 
-development validity components, virtual funds only
+development validity components, virtual funds
   settlement:zeroj-validity
   -> profile:eutxo-key-payments -> state:eutxo-ledger
 
-future live preview after Phase D
+integrated experimental testnet flow
   eutxo-zeroj-preview recipe
-  -> L1 funding + proof settlement with one reviewed compatible profile
+  -> bridge:cardano-federated + settlement:zeroj-validity
+  -> profile:eutxo-key-payments + state:eutxo-ledger + l1:slot-feed
 ```
 
 `rollup:zeroj-cardano` is initially a non-selectable graduation label rather
@@ -2493,41 +2568,52 @@ first preview.
 D3 defines immutable b16, b32, and b64 identities that bind the batch bound,
 circuit, proof system, ZeroJ version, and authorization-security profile. The
 new development circuit proves an ordered prefix of one to sixteen Jubjub
-authorizations with four constant public inputs and a constant 192-byte
-Groth16 proof. A real maximum-b16 run recorded 356,915 constraints, 731,869
-wires, 99,210 ms development setup, and 14,883 ms proof generation under the
-documented local Java 25/4 GiB test-heap environment.
+authorizations with eight constant settlement public inputs and a constant
+192-byte Groth16 proof. A real maximum-b16 run recorded 383,495 constraints,
+777,269 wires, 109,263 ms development setup, and 15,058 ms proof generation
+under the documented local Java 25/4 GiB test-heap environment. The actual
+Julc settlement validator accepted another full-b16 proof on the Yano devnet
+profile with a measured execution budget of 4,246,292,718 CPU and 1,239,176
+memory units.
 
 Only b16 is the measured **development** default. b32 and b64 remain
-unselectable candidates, and all Cardano devnet/Preview/Preprod transaction,
-Julc-budget, persisted-key, and peak-memory measurements remain
-`NOT_EXERCISED`; no value is invented for those fields.
+unselectable candidates. Preview/Preprod transaction and Julc-budget
+measurements, plus persisted-key and peak-memory measurements on all
+networks, remain `NOT_EXERCISED`; no value is invented for those fields.
 `EutxoFinalizedBatchScheduler` provides bounded FIFO ingestion, validates each
 finalized-witness digest, and rejects queue overflow before proving work is
 accepted.
 
 #### UTXO-D4 — Packaged prover, relay, contracts, and `yano.sh` lifecycle
 
-Implementation status (version 11):
+Implementation status (version 15):
 
 - the stock JVM distribution now packages the EUTxO state-machine provider,
-  ZeroJ validity provider, b16 prover support, and lifecycle CLI;
-- `eutxo-zeroj-preview` generates a project for devnet, Preview, or Preprod;
+  Cardano bridge observer, ZeroJ validity provider, b16 prover support, and
+  lifecycle CLI;
+- `eutxo-zeroj-preview` composes the bridge and settlement capabilities and
+  generates a project for devnet, Preview, or Preprod;
   the two public testnets require a durable unsafe-development
   acknowledgement and mainnet is rejected at resolution and lifecycle time;
 - `appchain validity` provides project-aware bootstrap, status, prove, proof,
   doctor, deposit, settlement, withdrawal, recovery, and reconciliation
   commands;
+- `appchain validity key generate` creates the initial encrypted local Jubjub
+  session key before project generation; the preview recipe then materializes
+  only its public key, L2 address, and key epoch as a fundless registration;
 - deterministic contract plans, content-addressed proofs, operation journals,
   secret-by-reference submission, and retained-artifact verification are
   implemented;
 - an external Cardano builder/wallet remains responsible for constructing and
   signing ordinary L1 transactions; the lifecycle submits signed CBOR and
   records stability without taking custody of an L1 key; and
-- live contract deployment, automatic finalized-block ingestion, stable-L1
-  observation, and a complete deposit-to-withdrawal run remain D5 acceptance
-  gates. Until that evidence exists, status must say
-  `PLANNED_NOT_SUBMITTED`/`NOT_EXERCISED`, not “deployed” or “live rollup.”
+- a source-level Yano-devnet test now stages and accepts a real L1 deposit,
+  waits for stable L2 credit, submits and finalizes a Jubjub-authorized L2
+  withdrawal, creates and verifies the exact proof, advances the root, pays
+  from the accepted custody funds, and waits for stable withdrawal
+  reconciliation. Packaged plan-only commands must still report
+  `PLANNED_NOT_SUBMITTED`, and unrun public-network or recovery rows must
+  remain `NOT_EXERCISED`.
 
 Deliver:
 
@@ -2562,7 +2648,7 @@ Exit criteria:
 
 #### UTXO-D5 — Live devnet, Preview, and Preprod acceptance
 
-Implementation status (version 11):
+Implementation status (version 15):
 
 - a final-distribution black-box gate exercises recipe generation, project
   validation, contract-plan bootstrap, lifecycle status, public-testnet
@@ -2571,8 +2657,13 @@ Implementation status (version 11):
   archive and build tests prevent it from overstating the development
   authorization profile;
 - packaged lifecycle policy is `PASSED` for devnet, Preview, and Preprod;
-- live deposit-to-withdrawal, rollback/recovery, and independent
-  reconstruction remain `NOT_EXERCISED` on all three supported networks; and
+- the complete live Yano-devnet path from staged L1 deposit through stable L2
+  credit, an actual app-chain transition, Groth16 proof, L1 root advancement,
+  payout from accepted custody funds, and stable L2 withdrawal reconciliation
+  is `PASSED`;
+- maximum-b16, rollback/recovery, and independent reconstruction remain
+  `NOT_EXERCISED` on devnet; all live rows remain `NOT_EXERCISED` on Preview
+  and Preprod; and
 - those external rows are not milestone code defects, but they remain release
   evidence gates and prevent a preview/production-readiness claim.
 
@@ -2604,7 +2695,7 @@ networks and independent implementation have been used.
 
 #### UTXO-D6 — Preview stabilization and release decision
 
-Implementation status (version 12):
+Implementation status (version 15):
 
 - the release decision is `EXPERIMENTAL_TESTNET_ONLY`;
 - a schema-bounded release contract pins the catalog/evidence digests and all

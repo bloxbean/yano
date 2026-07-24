@@ -25,6 +25,9 @@
     "appchain-composite",
     "appchain-role-workflow",
     "appchain-evidence-profile",
+    "appchain-eutxo-ledger",
+    "appchain-eutxo-bridge-cardano",
+    "appchain-eutxo-zk-zeroj",
     "appchain-eutxo-zk-runtime",
     "appchain-eutxo-zk-lifecycle"
   ],
@@ -35,7 +38,7 @@
       "archivePattern": "yano-{version}.zip",
       "tooling": "bundled",
       "platforms": ["java-25"],
-      "artifacts": ["yano-runtime", "appchain-stdlib", "appchain-evidence-registry", "appchain-composite", "appchain-role-workflow", "appchain-evidence-profile", "appchain-eutxo-zk-runtime", "appchain-eutxo-zk-lifecycle"]
+      "artifacts": ["yano-runtime", "appchain-stdlib", "appchain-evidence-registry", "appchain-composite", "appchain-role-workflow", "appchain-evidence-profile", "appchain-eutxo-ledger", "appchain-eutxo-bridge-cardano", "appchain-eutxo-zk-zeroj", "appchain-eutxo-zk-runtime", "appchain-eutxo-zk-lifecycle"]
     },
     {
       "id": "native-unix",
