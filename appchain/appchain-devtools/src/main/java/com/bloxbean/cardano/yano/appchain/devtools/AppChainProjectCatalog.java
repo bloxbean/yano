@@ -656,6 +656,7 @@ final class AppChainProjectCatalog {
         // These values are resolved from the project topology, not user input.
         allowed.add("proposer");
         allowed.add("chainId");
+        allowed.add("network");
         for (String value : safeMap(capability.properties()).values()) {
             var matcher = PLACEHOLDER.matcher(value);
             while (matcher.find()) {

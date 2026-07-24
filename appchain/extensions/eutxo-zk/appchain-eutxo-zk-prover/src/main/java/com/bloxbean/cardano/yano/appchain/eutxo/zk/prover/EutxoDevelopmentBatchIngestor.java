@@ -9,15 +9,19 @@ import com.bloxbean.cardano.yano.appchain.eutxo.zk.zeroj.EutxoKeyPaymentSettleme
 import java.util.Objects;
 
 /**
- * Deterministic boundary from a finalized bounded batch to one durable job.
+ * Phase C development boundary from a manually assembled amount tuple to one
+ * durable job.
  *
- * <p>The runtime adapter calls this only after finality. Replaying the same
- * finalized batch is idempotent because the statement digest is the job ID.</p>
+ * <p>This is deliberately not a live runtime adapter. The preview ingestion
+ * path consumes {@code EutxoFinalizedProofWitness} values derived from exact
+ * finalized Cardano transactions. Keeping the old feasibility path visibly
+ * named prevents an amount tuple from being mistaken for the accepted runtime
+ * transition.</p>
  */
-public final class EutxoFinalizedBatchIngestor {
+public final class EutxoDevelopmentBatchIngestor {
     private final EutxoProverService prover;
 
-    public EutxoFinalizedBatchIngestor(EutxoProverService prover) {
+    public EutxoDevelopmentBatchIngestor(EutxoProverService prover) {
         this.prover = Objects.requireNonNull(prover, "prover");
     }
 

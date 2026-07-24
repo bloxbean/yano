@@ -338,11 +338,14 @@ creation. Merely letting the runtime parse Cardano CBOR while the circuit
 proves a separate amount tuple is insufficient.
 
 Cardano's transaction body has a network identifier but no Yano appchain ID.
-The supported profile therefore also needs a standard Cardano auxiliary-data
-entry whose hash is carried by the transaction body and which binds at least
-the appchain ID, EUTxO profile, validity profile, and command nonce. Cardano
-SDKs already support transaction metadata, so this provides replay-domain
-separation without changing the Cardano transaction format.
+Validity-enabled Yano EUTxO therefore uses a fixed standard Cardano
+auxiliary-data entry under the numeric `YANO` label. Its hash is carried by the
+signed transaction body and binds the appchain ID, network, EUTxO profile,
+validity profile, 32-byte command nonce, and expiry. Use
+`EutxoTransactionDomain.attach(transaction)` before signing. Runtime admission
+rejects a missing or mismatched envelope without changing EUTxO state. This
+provides replay-domain separation without changing the Cardano transaction
+format.
 
 ## Cardano wallet authorization
 

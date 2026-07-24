@@ -38,6 +38,16 @@ public final class EutxoStateKeys {
         return bytes(PREFIX + "validity/witness");
     }
 
+    /** Exact finalized transition witness keyed by app height and message ordinal. */
+    public static byte[] validityTransition(long appHeight, int ordinal) {
+        if (appHeight < 1 || ordinal < 0) {
+            throw new IllegalArgumentException(
+                    "invalid validity transition position");
+        }
+        return bytes(PREFIX + "validity/transition/"
+                + appHeight + "/" + ordinal);
+    }
+
     public static byte[] utxo(EutxoOutpoint outpoint) {
         return bytes(PREFIX + "u/" + Objects.requireNonNull(outpoint, "outpoint"));
     }

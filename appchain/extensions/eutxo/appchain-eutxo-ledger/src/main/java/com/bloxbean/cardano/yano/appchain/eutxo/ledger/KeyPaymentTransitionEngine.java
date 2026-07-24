@@ -19,6 +19,7 @@ import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoOutpoint;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoRecord;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoStateKeys;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoTransactionDomain;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
@@ -37,14 +38,16 @@ class KeyPaymentTransitionEngine implements UtxoTransitionEngine {
     private final EutxoProfile profile;
     private final SigningProvider signingProvider;
     private final PlutusV3Evaluator plutusV3Evaluator;
+    private final DomainPolicy domainPolicy;
 
     KeyPaymentTransitionEngine(EutxoProfile profile) {
         this(profile, CryptoConfiguration.INSTANCE.getSigningProvider(),
-                profile.scriptsEnabled() ? new ScalusPlutusV3Evaluator() : null);
+                profile.scriptsEnabled() ? new ScalusPlutusV3Evaluator() : null,
+                null);
     }
 
     KeyPaymentTransitionEngine(EutxoProfile profile, SigningProvider signingProvider) {
-        this(profile, signingProvider, null);
+        this(profile, signingProvider, null, null);
     }
 
     KeyPaymentTransitionEngine(
@@ -52,9 +55,19 @@ class KeyPaymentTransitionEngine implements UtxoTransitionEngine {
             SigningProvider signingProvider,
             PlutusV3Evaluator plutusV3Evaluator
     ) {
+        this(profile, signingProvider, plutusV3Evaluator, null);
+    }
+
+    KeyPaymentTransitionEngine(
+            EutxoProfile profile,
+            SigningProvider signingProvider,
+            PlutusV3Evaluator plutusV3Evaluator,
+            DomainPolicy domainPolicy
+    ) {
         this.profile = Objects.requireNonNull(profile, "profile");
         this.signingProvider = Objects.requireNonNull(signingProvider, "signingProvider");
         this.plutusV3Evaluator = plutusV3Evaluator;
+        this.domainPolicy = domainPolicy;
         if (profile.scriptsEnabled() && plutusV3Evaluator == null) {
             throw new IllegalArgumentException("script-enabled profile requires a Plutus V3 evaluator");
         }
@@ -137,7 +150,9 @@ class KeyPaymentTransitionEngine implements UtxoTransitionEngine {
                 throw new IllegalStateException("validated output cannot be encoded", failure);
             }
         }
-        return TransitionResult.accept(transactionId, consumed, created);
+        return TransitionResult.accept(
+                transactionId, transactionCbor, parsed.domain,
+                inputs, consumed, created);
     }
 
     private Parsed parse(byte[] transactionCbor) {
@@ -166,9 +181,32 @@ class KeyPaymentTransitionEngine implements UtxoTransitionEngine {
         }
 
         Failure shape = validateShape(transaction);
+        EutxoTransactionDomain domain = null;
+        if (shape == null && domainPolicy != null) {
+            try {
+                domain = validatedDomain(transaction);
+            } catch (RuntimeException failure) {
+                shape = failure(
+                        "INVALID_VALIDITY_DOMAIN",
+                        Objects.requireNonNullElse(
+                                failure.getMessage(),
+                                "invalid signed EUTxO validity domain"));
+            }
+        }
         return shape == null
-                ? new Parsed(transaction, transactionId, null)
-                : new Parsed(transaction, transactionId, shape);
+                ? new Parsed(transaction, transactionId, domain, null)
+                : new Parsed(transaction, transactionId, null, shape);
+    }
+
+    private EutxoTransactionDomain validatedDomain(Transaction transaction) {
+        EutxoTransactionDomain domain =
+                EutxoTransactionDomain.from(transaction);
+        domain.requireExpected(
+                domainPolicy.chainId(),
+                domainPolicy.network(),
+                profile.digestHex(),
+                domainPolicy.validityProfileDigest());
+        return domain;
     }
 
     private Failure validateShape(Transaction transaction) {
@@ -187,8 +225,20 @@ class KeyPaymentTransitionEngine implements UtxoTransitionEngine {
                 || body.getOutputs().size() > profile.maxOutputs()) {
             return failure("OUTPUT_BOUND", "transaction output count is outside the profile bound");
         }
+        if (domainPolicy != null
+                && (body.getInputs().size() > DomainPolicy.MAX_INPUTS
+                || body.getOutputs().size() > DomainPolicy.MAX_OUTPUTS)) {
+            return failure(
+                    "VALIDITY_SHAPE_BOUND",
+                    "the direct validity profile supports at most 16 inputs and outputs");
+        }
         if (body.getFee() == null || body.getFee().signum() != 0) {
             return failure("NON_ZERO_FEE", "profile v1 requires a zero L2 fee");
+        }
+        if (domainPolicy != null && nonEmpty(body.getRequiredSigners())) {
+            return failure(
+                    "REQUIRED_SIGNERS_UNSUPPORTED",
+                    "the direct validity profile authorizes input credentials only");
         }
         if (nonEmpty(body.getMint())) {
             return failure("MINT_UNSUPPORTED", "minting and burning are not supported");
@@ -284,15 +334,34 @@ class KeyPaymentTransitionEngine implements UtxoTransitionEngine {
             for (VkeyWitness witness : witnesses) {
                 if (witness == null || witness.getVkey() == null || witness.getVkey().length != 32
                         || witness.getSignature() == null || witness.getSignature().length != 64) {
+                    if (domainPolicy != null) {
+                        return failure(
+                                "INVALID_VKEY_WITNESS",
+                                "the direct validity profile requires exact VKey witnesses");
+                    }
                     continue;
                 }
-                if (signingProvider.verify(
+                if (!signingProvider.verify(
                         witness.getSignature(), bodyHash, witness.getVkey())) {
-                    validWitnesses.put(
-                            KeyGenUtil.getKeyHash(witness.getVkey()), witness);
+                    if (domainPolicy != null) {
+                        return failure(
+                                "INVALID_VKEY_WITNESS",
+                                "the direct validity profile rejects invalid VKey witnesses");
+                    }
+                    continue;
+                }
+                String credential = KeyGenUtil.getKeyHash(
+                        witness.getVkey());
+                if (validWitnesses.put(credential, witness) != null
+                        && domainPolicy != null) {
+                    return failure(
+                            "DUPLICATE_VKEY_WITNESS",
+                            "the direct validity profile rejects duplicate VKeys");
                 }
             }
         }
+        java.util.Set<String> inputCredentials =
+                new java.util.LinkedHashSet<>();
         for (EutxoRecord input : inputs) {
             final Address address;
             try {
@@ -310,10 +379,18 @@ class KeyPaymentTransitionEngine implements UtxoTransitionEngine {
             String credential = AddressProvider.getPaymentCredentialHash(address)
                     .map(HexFormat.of()::formatHex)
                     .orElse("");
+            inputCredentials.add(credential);
             if (!validWitnesses.containsKey(credential)) {
                 return failure("MISSING_INPUT_WITNESS",
                         "a valid witness for every input payment credential is required");
             }
+        }
+        if (domainPolicy != null
+                && (!inputCredentials.containsAll(validWitnesses.keySet())
+                || validWitnesses.size() != inputCredentials.size())) {
+            return failure(
+                    "UNRELATED_VKEY_WITNESS",
+                    "the direct validity profile rejects unrelated VKeys");
         }
         if (transaction.getBody().getRequiredSigners() != null) {
             for (byte[] requiredSigner : transaction.getBody().getRequiredSigners()) {
@@ -477,9 +554,38 @@ class KeyPaymentTransitionEngine implements UtxoTransitionEngine {
     private record Failure(String code, String detail) {
     }
 
-    private record Parsed(Transaction transaction, String transactionId, Failure failure) {
+    record DomainPolicy(
+            String chainId,
+            String network,
+            String validityProfileDigest
+    ) {
+        static final int MAX_INPUTS = 16;
+        static final int MAX_OUTPUTS = 16;
+
+        DomainPolicy {
+            chainId = required(chainId, "chainId");
+            network = required(network, "network");
+            validityProfileDigest = required(
+                    validityProfileDigest, "validityProfileDigest");
+        }
+
+        private static String required(String value, String label) {
+            value = Objects.requireNonNull(value, label).trim();
+            if (value.isEmpty()) {
+                throw new IllegalArgumentException(label + " is required");
+            }
+            return value;
+        }
+    }
+
+    private record Parsed(
+            Transaction transaction,
+            String transactionId,
+            EutxoTransactionDomain domain,
+            Failure failure
+    ) {
         static Parsed failed(String transactionId, String code, String detail) {
-            return new Parsed(null, transactionId,
+            return new Parsed(null, transactionId, null,
                     KeyPaymentTransitionEngine.failure(code, detail));
         }
     }

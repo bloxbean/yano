@@ -46,6 +46,12 @@ public final class ZerojPoseidonValidityProvider
                             "EUTxO validity identity mismatch for " + key);
                 }
             });
+            String network = settings.get("machines.eutxo.network");
+            if (network == null || !java.util.Set.of(
+                    "devnet", "preview", "preprod").contains(network)) {
+                throw new IllegalArgumentException(
+                        "EUTxO validity requires an explicit supported test network");
+            }
         }
         return new ZerojPoseidonValidityEngine(chainId, profile);
     }

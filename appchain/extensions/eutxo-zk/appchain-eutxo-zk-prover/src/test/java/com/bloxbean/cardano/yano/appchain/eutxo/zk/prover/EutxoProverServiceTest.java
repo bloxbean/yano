@@ -63,7 +63,7 @@ class EutxoProverServiceTest {
                     .isEqualTo(EutxoProverJob.Status.PROVED);
             assertThat(service.health().healthy()).isTrue();
             assertThat(store.proof(queued.id())).isPresent();
-            EutxoProverJob replay = new EutxoFinalizedBatchIngestor(service)
+            EutxoProverJob replay = new EutxoDevelopmentBatchIngestor(service)
                     .ingest("payments", 7, 0, new byte[32],
                             fixtures.witness());
             assertThat(replay.id()).isEqualTo(queued.id());

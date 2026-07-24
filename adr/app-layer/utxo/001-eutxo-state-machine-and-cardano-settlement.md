@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — version 8
+Proposed — version 9
 
 Phase A and the automated portions of Phase B are implemented as optional
 modules under `appchain/extensions/eutxo/`. Their schemas and bridge remain
@@ -11,6 +11,19 @@ by the implementation. The automatable Phase C components are implemented
 under `appchain/extensions/eutxo-zk/`, but they do not yet form a live
 L1-to-appchain-to-L1 product. Phase D is the active preview-integration plan.
 All ZeroJ functionality remains experimental with no production-funds claim.
+
+Version 9:
+
+- records the D1 implementation correction that validity roots and prover
+  input must commit the exact finalized canonical Cardano transaction rather
+  than a separately supplied amount tuple;
+- adds a signed Cardano auxiliary-data replay domain binding chain, network,
+  ledger and validity profiles, nonce, and expiry;
+- defines a root-fixed finalized-transition query and deterministic,
+  secret-free `EutxoFinalizedProofWitness` derivation; and
+- keeps D1 open because ZeroJ `0.1.0-pre10` does not yet provide the complete
+  reviewed RFC 8032 verification gadget required by the direct-signature
+  circuit.
 
 Version 8:
 
@@ -2195,6 +2208,44 @@ Exit criteria:
   profile, or root invalidates the proof; and
 - unsupported transaction fields fail before they can change withdrawable
   state.
+
+D1 implementation review identified and corrected a Phase C boundary mismatch:
+the runtime validity accumulator previously committed a canonical mutation
+descriptor while the development circuit independently accumulated amount
+tuples. Those were not the same transition. The D1 runtime boundary now
+commits a versioned finalized-transition witness containing the exact canonical
+signed Cardano transaction CBOR, ordered resolved input records, ordered
+consumed outpoints and created outputs, chain ID, test network, EUTxO profile
+digest, validity-profile digest, signed replay-domain commitment, stable L1
+slot, app height, and message ordinal. Its BLAKE2b-256 digest is the sole
+transition value accumulated into the validity root, and the exact witness is
+available through a root-fixed typed query for asynchronous proving.
+
+Validity-enabled transactions now carry a fixed Cardano auxiliary-data
+envelope under the numeric `YANO` label. The transaction body hash binds the
+chain ID, network, EUTxO profile digest, validity-profile digest, 32-byte
+command nonce, and expiry. Runtime admission rejects a missing, malformed,
+cross-chain, cross-network, cross-profile, hash-mismatched, or TTL-mismatched
+envelope before state changes. Ledger-only EUTxO remains unchanged.
+
+`EutxoFinalizedProofWitness` deterministically derives the exact transaction
+body, transaction-body hash, signed domain, ordered input/output records, and
+public VKey/signature authorization data from the persisted transition. It
+requires valid, non-duplicate VKeys with no unrelated signers. The former
+manual amount-tuple adapter is retained only as the explicitly named
+`EutxoDevelopmentBatchIngestor`; it is not a live finalized-runtime boundary.
+
+That correction is necessary but not sufficient to complete D1. ZeroJ
+`0.1.0-pre10` provides SHA-512, Blake2b, Ed25519 foreign-field arithmetic and
+fixed-base scalar multiplication, but it does not provide compressed-point
+decoding, variable-base scalar multiplication, subgroup checks, scalar
+reduction, or a complete RFC 8032 signature-verification gadget. Host-side
+signature verification cannot substitute for those circuit constraints. D1
+therefore remains open until those reusable primitives are delivered and
+benchmarked in ZeroJ (or an equivalently reviewed reusable module), then used
+to prove the transaction body hash, VKey authorization, and exact transition
+witness. Yano MUST NOT vendor a one-off unaudited signature gadget merely to
+make this milestone appear complete.
 
 #### UTXO-D2 — Cardano Client Lib and public L2 client surface
 

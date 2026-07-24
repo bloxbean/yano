@@ -38,6 +38,12 @@ public final class ZerojPoseidonValidityEngine
     }
 
     @Override
+    public String profileDigest() {
+        return com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts
+                .EutxoZkProfile.Z3_VALIDITY_SETTLEMENT.digestHex();
+    }
+
+    @Override
     public EutxoValidityCommitment genesis() {
         EutxoValidityWitness witness = new EutxoValidityWitness(
                 id(),

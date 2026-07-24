@@ -1,9 +1,11 @@
 package com.bloxbean.cardano.yano.appchain.eutxo.ledger;
 
+import com.bloxbean.cardano.client.crypto.config.CryptoConfiguration;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoProfile;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoValidityCommitmentEngine;
 
 /** Service-loaded provider for {@code state:eutxo-ledger}. */
 public final class EutxoStateMachineProvider implements AppStateMachineProvider {
@@ -40,12 +42,26 @@ public final class EutxoStateMachineProvider implements AppStateMachineProvider 
             throw new IllegalArgumentException(
                     "configured EUTxO profile digest does not match " + profile.id());
         }
+        String network = context.settings().getOrDefault(
+                "machines.eutxo.network", "devnet");
+        EutxoValidityCommitmentEngine validity =
+                EutxoValidityEngines.discover(
+                        context.chainId(), profile, context.settings());
+        KeyPaymentTransitionEngine.DomainPolicy domainPolicy =
+                validity == null ? null : new KeyPaymentTransitionEngine.DomainPolicy(
+                        context.chainId(), network, validity.profileDigest());
         return new EutxoStateMachine(
                 profile,
                 EutxoGenesis.from(context.settings()),
-                new KeyPaymentTransitionEngine(profile),
+                new KeyPaymentTransitionEngine(
+                        profile,
+                        CryptoConfiguration.INSTANCE.getSigningProvider(),
+                        profile.scriptsEnabled()
+                                ? new ScalusPlutusV3Evaluator() : null,
+                        domainPolicy),
                 EutxoBridgeConfig.from(context.chainId(), context.settings()),
-                EutxoValidityEngines.discover(
-                        context.chainId(), profile, context.settings()));
+                validity,
+                context.chainId(),
+                network);
     }
 }

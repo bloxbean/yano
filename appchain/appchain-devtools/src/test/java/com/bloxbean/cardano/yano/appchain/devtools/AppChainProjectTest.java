@@ -198,6 +198,9 @@ class AppChainProjectTest {
                 .containsEntry("yano.app-chain.chains[0].machines.eutxo.profile",
                         "yano-eutxo-v1")
                 .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.network",
+                        "preprod")
+                .containsEntry(
                         "yano.app-chain.chains[0].machines.eutxo.expected-profile-digest",
                         "2499d01ee7cb0d09d0d498040c6351accd9da83df31666cd4463d0b1722d1212")
                 .containsEntry(

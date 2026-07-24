@@ -11,6 +11,9 @@ public interface EutxoValidityCommitmentEngine {
 
     String id();
 
+    /** Digest of the immutable validity circuit/profile semantics. */
+    String profileDigest();
+
     EutxoValidityCommitment genesis();
 
     EutxoValidityCommitment commit(EutxoValidityTransition transition);
