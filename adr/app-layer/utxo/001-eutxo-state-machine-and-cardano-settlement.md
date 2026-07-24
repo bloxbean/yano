@@ -2,19 +2,37 @@
 
 ## Status
 
-Proposed — version 11
+Proposed — version 12
 
 Phase A and the automated portions of Phase B are implemented as optional
 modules under `appchain/extensions/eutxo/`. Their schemas and bridge remain
 alpha pending the external operational and independent-review gates recorded
 by the implementation. The automatable Phase C components are implemented
 under `appchain/extensions/eutxo-zk/`, but they do not yet form a live
-L1-to-appchain-to-L1 product. Phase D is the active preview-integration plan.
-All ZeroJ functionality remains experimental with no production-funds claim.
+L1-to-appchain-to-L1 product. The automatable D1-D6 integration, lifecycle,
+packaging, and evidence controls are implemented; live devnet, Preview, and
+Preprod acceptance rows remain open external gates. All ZeroJ functionality
+remains experimental with no production-funds claim.
 Phase D development and disposable-funds testing may proceed against the
 version-pinned development authorization profile while ZeroJ hardening happens
 in parallel. A later ZeroJ release can preserve the Java API, but it cannot
 preserve or silently upgrade the circuit-security identity.
+
+Version 12:
+
+- completes the automatable Phase D lifecycle, final-distribution acceptance,
+  network-evidence schema, and release-contract gates;
+- records the explicit release decision
+  `EXPERIMENTAL_TESTNET_ONLY` while `zeroj-jubjub-dev-v1` is selected;
+- ships a reproducible contract binding the capability catalog and network
+  evidence digests to the exact ledger, validity, authorization, batch,
+  circuit, ZeroJ, Julc, proof-system, and curve identities;
+- documents Cardano Client Lib, `cardano-cli`, backend-wallet, CIP-30, random
+  session-key, and deterministic CIP-8-derived-key compatibility/security
+  boundaries; and
+- keeps live L1 round trips, rollback/recovery, independent reconstruction,
+  adversarial circuit hardening, audit, and production ceremony visibly open
+  instead of treating missing external resources as a pass.
 
 Version 11:
 
@@ -2585,6 +2603,20 @@ evidence schema but MUST report those gates as `NOT_EXERCISED` until the real
 networks and independent implementation have been used.
 
 #### UTXO-D6 — Preview stabilization and release decision
+
+Implementation status (version 12):
+
+- the release decision is `EXPERIMENTAL_TESTNET_ONLY`;
+- a schema-bounded release contract pins the catalog/evidence digests and all
+  stable product identities, and is included in the JVM archive;
+- build gates assert experimental maturity, JVM-only runtime, exact supported
+  networks, mainnet rejection, non-selectable graduation label, trusted
+  prover, test-funds policy, and the open security gates;
+- Cardano Client Lib, `cardano-cli`, backend-wallet, CIP-30, random-key, and
+  CIP-8-derived-key behavior and limitations are documented; and
+- D6's automatable exit criteria are complete, while the named D5 live-network
+  and Z5/Z6 security gates remain `NOT_EXERCISED` and continue to block
+  preview/production graduation.
 
 Deliver:
 

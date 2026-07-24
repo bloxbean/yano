@@ -24,3 +24,4 @@ Milestone notes:
 - [D3 fixed batch profiles and measurements](D3_BATCH_PROFILES.md)
 - [D4 packaged testnet lifecycle](D4_LIFECYCLE.md)
 - [D5 network acceptance and evidence status](D5_ACCEPTANCE.md)
+- [D6 experimental testnet release decision](D6_RELEASE_DECISION.md)

@@ -2,7 +2,7 @@
   "schemaVersion": "v1alpha1",
   "schemaStatus": "alpha",
   "stabilizationDecision": "RETAIN_V1ALPHA1",
-  "reviewedOn": "2026-07-22",
+  "reviewedOn": "2026-07-24",
   "externalThirdPartyUsage": false,
   "cleanRoomExercises": [
     "final-distribution-generated-project-matrix",
@@ -129,7 +129,7 @@
       "gitOpsTargets": ["helm", "kustomize"],
       "outcomeLevel": "OPERATOR_OWNED_REFERENCE",
       "acceptanceScenario": "recipe-eutxo-zeroj-preview",
-      "evidence": ["appchain/extensions/eutxo-zk/appchain-eutxo-zk-lifecycle/src/test/java/com/bloxbean/cardano/yano/appchain/eutxo/zk/lifecycle/EutxoValidityLifecycleTest.java#bootstrapIsIdempotentAndFailClosedByNetwork", "appchain/extensions/eutxo-zk/D5_ACCEPTANCE.md#network-evidence"]
+      "evidence": ["appchain/extensions/eutxo-zk/appchain-eutxo-zk-lifecycle/src/test/java/com/bloxbean/cardano/yano/appchain/eutxo/zk/lifecycle/EutxoValidityLifecycleTest.java#bootstrapIsIdempotentAndFailClosedByNetwork", "appchain/extensions/eutxo-zk/D5_ACCEPTANCE.md#network-evidence", "appchain/extensions/eutxo-zk/D6_RELEASE_DECISION.md#release-decision"]
     },
     {
       "id": "custom-plugin", "maturity": "experimental", "availability": "REFERENCE",

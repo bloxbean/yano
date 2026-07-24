@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yano.dev/schema/eutxo-zk-preview-release-contract-v1.json",
+  "title": "Yano EUTxO ZeroJ preview release contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "releaseDecision",
+    "recipe",
+    "runtimeTypes",
+    "supportedNetworks",
+    "mainnet",
+    "fundsPolicy",
+    "trustedProverRequired",
+    "identities",
+    "sourceDigests",
+    "compatibility",
+    "openSecurityGates"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "eutxo-zk-preview-release-contract/v1"
+    },
+    "releaseDecision": {
+      "const": "EXPERIMENTAL_TESTNET_ONLY"
+    },
+    "recipe": {
+      "const": "eutxo-zeroj-preview:1"
+    },
+    "runtimeTypes": {
+      "const": ["jvm"]
+    },
+    "supportedNetworks": {
+      "const": ["devnet", "preview", "preprod"]
+    },
+    "mainnet": {
+      "const": "REJECTED"
+    },
+    "fundsPolicy": {
+      "const": "disposable-test-funds-only"
+    },
+    "trustedProverRequired": {
+      "const": true
+    },
+    "identities": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "minLength": 1}
+    },
+    "sourceDigests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capabilityCatalogSha256", "networkAcceptanceSha256"],
+      "properties": {
+        "capabilityCatalogSha256": {"$ref": "#/$defs/digest"},
+        "networkAcceptanceSha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": {
+        "enum": [
+          "SUPPORTED_L1",
+          "SUPPORTED_L2_BODY_ONLY",
+          "SUPPORTED_WITH_YANO_ENVELOPE",
+          "REQUIRES_COMPATIBILITY_TESTING"
+        ]
+      }
+    },
+    "openSecurityGates": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1,
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}
