@@ -21,3 +21,4 @@ Milestone notes:
 - [Z4 withdrawals](Z4_PROOF_WITHDRAWALS.md)
 - [Z5 data availability and recovery](Z5_DATA_AVAILABILITY.md)
 - [Z6 production hardening and release gates](Z6_PRODUCTION_HARDENING.md)
+- [D3 fixed batch profiles and measurements](D3_BATCH_PROFILES.md)

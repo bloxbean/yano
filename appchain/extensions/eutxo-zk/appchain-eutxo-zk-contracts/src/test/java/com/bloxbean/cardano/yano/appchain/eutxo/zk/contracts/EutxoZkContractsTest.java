@@ -116,6 +116,28 @@ class EutxoZkContractsTest {
     }
 
     @Test
+    void scalableBatchProfilesHaveDistinctImmutableSecurityIdentities() {
+        assertThat(EutxoZkBatchProfile.values())
+                .extracting(EutxoZkBatchProfile::maximumTransactions)
+                .containsExactly(16, 32, 64);
+        assertThat(EutxoZkBatchProfile.values())
+                .extracting(EutxoZkBatchProfile::digest)
+                .doesNotHaveDuplicates();
+        assertThat(EutxoZkBatchProfile.CARDANO_PAYMENT_B16.status())
+                .isEqualTo(EutxoZkBatchProfile.Status
+                        .MEASURED_DEVELOPMENT_DEFAULT);
+        assertThat(EutxoZkBatchProfile.CARDANO_PAYMENT_B32.status())
+                .isEqualTo(EutxoZkBatchProfile.Status.UNMEASURED_CANDIDATE);
+        assertThatThrownBy(() -> new EutxoZkBatchMeasurement(
+                EutxoZkBatchProfile.CARDANO_PAYMENT_B32.digest(),
+                "not-run",
+                1, 0, 0, 0, 0, 0, 0, 0,
+                EutxoZkBatchMeasurement.Gate.NOT_EXERCISED))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("invented");
+    }
+
+    @Test
     void batchContractRejectsInflationAndMoreThanFourPayments() {
         var payment = new EutxoKeyPaymentBatch.Payment(
                 BigInteger.TEN, BigInteger.valueOf(6), BigInteger.valueOf(4));

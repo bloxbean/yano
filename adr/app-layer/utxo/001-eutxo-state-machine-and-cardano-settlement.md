@@ -2450,6 +2450,22 @@ Exit criteria:
 Recursive aggregation may be evaluated later and is not required for the
 first preview.
 
+D3 defines immutable b16, b32, and b64 identities that bind the batch bound,
+circuit, proof system, ZeroJ version, and authorization-security profile. The
+new development circuit proves an ordered prefix of one to sixteen Jubjub
+authorizations with four constant public inputs and a constant 192-byte
+Groth16 proof. A real maximum-b16 run recorded 356,915 constraints, 731,869
+wires, 99,210 ms development setup, and 14,883 ms proof generation under the
+documented local Java 25/4 GiB test-heap environment.
+
+Only b16 is the measured **development** default. b32 and b64 remain
+unselectable candidates, and all Cardano devnet/Preview/Preprod transaction,
+Julc-budget, persisted-key, and peak-memory measurements remain
+`NOT_EXERCISED`; no value is invented for those fields.
+`EutxoFinalizedBatchScheduler` provides bounded FIFO ingestion, validates each
+finalized-witness digest, and rejects queue overflow before proving work is
+accepted.
+
 #### UTXO-D4 — Packaged prover, relay, contracts, and `yano.sh` lifecycle
 
 Deliver:

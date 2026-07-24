@@ -188,8 +188,10 @@ The bound is compiled into the circuit and therefore identifies a distinct
 profile, proving key, verification key, ceremony, and validator deployment.
 It must not be changed through an ordinary runtime property.
 
-The next preview should benchmark fixed profiles such as 16, 32, and 64
-transactions. Increasing the bound has different effects:
+The implementation defines fixed 16, 32, and 64 transaction identities.
+Only `cardano-payment-b16` has a real local Groth16 measurement and is the
+development default. The b32 and b64 identities are unmeasured candidates and
+cannot be selected. Increasing the bound has different effects:
 
 - Groth16 proof size and the number of public settlement inputs can stay
   constant.
@@ -201,9 +203,13 @@ transactions. Increasing the bound has different effects:
 - Cardano transaction-size and execution-budget limits constrain the final
   profile.
 
-The default must be selected from measured Yano devnet, Preview, and Preprod
-results. Recursive proof aggregation is a later optimization, not a
-prerequisite for the first preview.
+The b16 run produced 356,915 constraints and a constant 192-byte proof; on the
+recorded local Java 25 run, single-party development setup took 99.210 seconds
+and proof generation took 14.883 seconds. See
+[D3_BATCH_PROFILES.md](D3_BATCH_PROFILES.md) for the exact command and
+unexercised measurements. A public-testnet default still requires Yano devnet,
+Preview, and Preprod evidence. Recursive proof aggregation is a later
+optimization, not a prerequisite for the first experimental release.
 
 ## L1 and L2 transaction compatibility
 
