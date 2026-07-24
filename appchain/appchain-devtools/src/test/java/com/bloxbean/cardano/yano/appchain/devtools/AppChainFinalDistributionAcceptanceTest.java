@@ -190,6 +190,10 @@ class AppChainFinalDistributionAcceptanceTest {
         assertThat(release.resolve(
                 "config/schema/eutxo-zk-network-acceptance.schema.json"))
                 .isRegularFile();
+        assertThat(release.resolve(
+                "config/schema/"
+                        + "eutxo-zk-preview-release-contract.schema.json"))
+                .isRegularFile();
         Path evidence = release.resolve(
                 "evidence/eutxo-zk/network-acceptance-v1.json");
         assertThat(evidence).isRegularFile();
@@ -198,6 +202,14 @@ class AppChainFinalDistributionAcceptanceTest {
                                 + ": \"zeroj-jubjub-dev-v1\"",
                         "\"liveDepositToWithdrawal\"",
                         "\"status\": \"NOT_EXERCISED\"");
+        Path releaseContract = release.resolve(
+                "evidence/eutxo-zk/preview-release-contract-v1.json");
+        assertThat(releaseContract).isRegularFile();
+        assertThat(Files.readString(releaseContract))
+                .contains("\"releaseDecision\""
+                                + ": \"EXPERIMENTAL_TESTNET_ONLY\"",
+                        "\"mainnet\": \"REJECTED\"",
+                        "\"trustedProverRequired\": true");
 
         Path devnet = temporary.resolve("payments-zk-devnet");
         Result initialized = run(launcher,
