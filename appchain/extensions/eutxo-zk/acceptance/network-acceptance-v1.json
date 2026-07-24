@@ -1,0 +1,113 @@
+{
+  "schemaVersion": "eutxo-zk-network-acceptance/v1",
+  "reviewedOn": "2026-07-24",
+  "recipe": "eutxo-zeroj-preview:1",
+  "authorizationProfile": "zeroj-jubjub-dev-v1",
+  "batchProfile": "cardano-payment-b16",
+  "trustedProverRequired": true,
+  "fundsPolicy": "disposable-test-funds-only",
+  "networks": {
+    "devnet": {
+      "policy": "ALLOWED",
+      "packagedLifecycle": {
+        "status": "PASSED",
+        "evidence": [
+          "AppChainFinalDistributionAcceptanceTest#finalDistributionRunsEutxoValidityLifecyclePolicy"
+        ]
+      },
+      "liveDepositToWithdrawal": {
+        "status": "NOT_EXERCISED",
+        "evidence": ["D5_ACCEPTANCE.md#network-evidence"]
+      },
+      "rollbackAndRecovery": {
+        "status": "NOT_EXERCISED",
+        "evidence": ["D5_ACCEPTANCE.md#network-evidence"]
+      },
+      "independentReconstruction": {
+        "status": "NOT_EXERCISED",
+        "evidence": ["D5_ACCEPTANCE.md#network-evidence"]
+      }
+    },
+    "preview": {
+      "policy": "ACKNOWLEDGEMENT_REQUIRED",
+      "packagedLifecycle": {
+        "status": "PASSED",
+        "evidence": [
+          "AppChainFinalDistributionAcceptanceTest#finalDistributionRunsEutxoValidityLifecyclePolicy"
+        ]
+      },
+      "liveDepositToWithdrawal": {
+        "status": "NOT_EXERCISED",
+        "evidence": ["D5_ACCEPTANCE.md#network-evidence"]
+      },
+      "rollbackAndRecovery": {
+        "status": "NOT_EXERCISED",
+        "evidence": ["D5_ACCEPTANCE.md#network-evidence"]
+      },
+      "independentReconstruction": {
+        "status": "NOT_EXERCISED",
+        "evidence": ["D5_ACCEPTANCE.md#network-evidence"]
+      }
+    },
+    "preprod": {
+      "policy": "ACKNOWLEDGEMENT_REQUIRED",
+      "packagedLifecycle": {
+        "status": "PASSED",
+        "evidence": [
+          "AppChainFinalDistributionAcceptanceTest#finalDistributionRunsEutxoValidityLifecyclePolicy"
+        ]
+      },
+      "liveDepositToWithdrawal": {
+        "status": "NOT_EXERCISED",
+        "evidence": ["D5_ACCEPTANCE.md#network-evidence"]
+      },
+      "rollbackAndRecovery": {
+        "status": "NOT_EXERCISED",
+        "evidence": ["D5_ACCEPTANCE.md#network-evidence"]
+      },
+      "independentReconstruction": {
+        "status": "NOT_EXERCISED",
+        "evidence": ["D5_ACCEPTANCE.md#network-evidence"]
+      }
+    },
+    "mainnet": {
+      "policy": "REJECTED",
+      "packagedLifecycle": {
+        "status": "REJECTED",
+        "evidence": [
+          "AppChainFinalDistributionAcceptanceTest#finalDistributionRunsEutxoValidityLifecyclePolicy"
+        ]
+      },
+      "liveDepositToWithdrawal": {
+        "status": "REJECTED",
+        "evidence": ["ADR-UTXO-001#utxo-d6"]
+      },
+      "rollbackAndRecovery": {
+        "status": "REJECTED",
+        "evidence": ["ADR-UTXO-001#utxo-d6"]
+      },
+      "independentReconstruction": {
+        "status": "REJECTED",
+        "evidence": ["ADR-UTXO-001#utxo-d6"]
+      }
+    }
+  },
+  "securityGates": {
+    "maliciousProverSecurity": {
+      "status": "BLOCKED_BY_PROFILE",
+      "evidence": ["D4_LIFECYCLE.md#safety-boundary"]
+    },
+    "jubjubAdversarialHardening": {
+      "status": "NOT_EXERCISED",
+      "evidence": ["D4_LIFECYCLE.md#safety-boundary"]
+    },
+    "productionCeremony": {
+      "status": "NOT_EXERCISED",
+      "evidence": ["Z6_PRODUCTION_HARDENING.md#external-gates"]
+    },
+    "independentAudit": {
+      "status": "NOT_EXERCISED",
+      "evidence": ["Z6_PRODUCTION_HARDENING.md#external-gates"]
+    }
+  }
+}

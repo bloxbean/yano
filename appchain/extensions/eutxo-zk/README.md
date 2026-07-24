@@ -23,3 +23,4 @@ Milestone notes:
 - [Z6 production hardening and release gates](Z6_PRODUCTION_HARDENING.md)
 - [D3 fixed batch profiles and measurements](D3_BATCH_PROFILES.md)
 - [D4 packaged testnet lifecycle](D4_LIFECYCLE.md)
+- [D5 network acceptance and evidence status](D5_ACCEPTANCE.md)

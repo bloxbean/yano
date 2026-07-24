@@ -86,6 +86,9 @@ class AppChainFinalDistributionAcceptanceTest {
                     if ("custom-plugin".equals(recipe.id())) {
                         init.add("--answer");
                         init.add("stateMachine=com.example.acceptance");
+                    } else if ("eutxo-zeroj-preview".equals(recipe.id())) {
+                        init.add("--acknowledge");
+                        init.add("EUTXO_ZEROJ_UNSAFE_DEVELOPMENT_TESTNET");
                     } else if ("eutxo-ledger".equals(recipe.id())
                             || "eutxo-zeroj-validity".equals(recipe.id())) {
                         init.add("--answer");
@@ -169,6 +172,119 @@ class AppChainFinalDistributionAcceptanceTest {
                 .sum();
         assertThat(accepted).isEqualTo(advertised);
         assertThat(catalog.releaseAcceptanceIndex().recipes()).hasSameSizeAs(catalog.recipes());
+    }
+
+    @Test
+    void finalDistributionRunsEutxoValidityLifecyclePolicy()
+            throws Exception {
+        Path archive = Path.of(System.getProperty(
+                        "yano.test.final-yano-dist-zip"))
+                .toAbsolutePath().normalize();
+        Path release = extractRelease(
+                archive, temporary.resolve("validity-release"));
+        Path launcher = release.resolve("yano.sh");
+        assertThat(launcher.toFile().setExecutable(true)).isTrue();
+        assertThat(release.resolve(
+                        "tools/yano-appchain/bin/yano-appchain")
+                .toFile().setExecutable(true)).isTrue();
+        assertThat(release.resolve(
+                "config/schema/eutxo-zk-network-acceptance.schema.json"))
+                .isRegularFile();
+        Path evidence = release.resolve(
+                "evidence/eutxo-zk/network-acceptance-v1.json");
+        assertThat(evidence).isRegularFile();
+        assertThat(Files.readString(evidence))
+                .contains("\"authorizationProfile\""
+                                + ": \"zeroj-jubjub-dev-v1\"",
+                        "\"liveDepositToWithdrawal\"",
+                        "\"status\": \"NOT_EXERCISED\"");
+
+        Path devnet = temporary.resolve("payments-zk-devnet");
+        Result initialized = run(launcher,
+                previewInit(devnet, "devnet", false));
+        assertThat(initialized.exit()).as(initialized.error()).isZero();
+        Result validated = run(launcher, List.of(
+                "appchain", "config", "validate",
+                "--mode", "project", devnet.toString(),
+                "--format", "json"));
+        assertThat(validated.exit()).as(validated.error()).isZero();
+        Result bootstrapped = run(launcher, List.of(
+                "appchain", "validity", "bootstrap",
+                "--project", devnet.toString()));
+        assertThat(bootstrapped.exit()).as(bootstrapped.error()).isZero();
+        assertThat(bootstrapped.output())
+                .contains("CONTRACTS_PLANNED_CEREMONY_REQUIRED",
+                        "zeroj-jubjub-dev-v1",
+                        "disposable-test-funds-only");
+        assertThat(Files.readString(devnet.resolve(
+                "runtime/validity/contract-plan.json")))
+                .contains("PLANNED_NOT_SUBMITTED");
+        Result status = run(launcher, List.of(
+                "appchain", "validity", "status",
+                "--project", devnet.toString()));
+        assertThat(status.exit()).as(status.error()).isZero();
+        assertThat(status.output())
+                .contains("CONTRACTS_PLANNED_CEREMONY_REQUIRED",
+                        "cardano-payment-b16");
+
+        for (String network : List.of("preview", "preprod")) {
+            Path missingAcknowledgement = temporary.resolve(
+                    "payments-zk-" + network + "-rejected");
+            Result rejected = run(launcher, previewInit(
+                    missingAcknowledgement, network, false));
+            assertThat(rejected.exit()).isNotZero();
+            assertThat(rejected.error())
+                    .contains("EUTXO_ZEROJ_UNSAFE_DEVELOPMENT_TESTNET");
+
+            Path acknowledged = temporary.resolve(
+                    "payments-zk-" + network);
+            Result accepted = run(launcher, previewInit(
+                    acknowledged, network, true));
+            assertThat(accepted.exit()).as(accepted.error()).isZero();
+            assertThat(Files.readString(
+                    acknowledged.resolve("appchain.lock")))
+                    .contains("EUTXO_ZEROJ_UNSAFE_DEVELOPMENT_TESTNET");
+            Result publicBootstrap = run(launcher, List.of(
+                    "appchain", "validity", "bootstrap",
+                    "--project", acknowledged.toString()));
+            assertThat(publicBootstrap.exit())
+                    .as(publicBootstrap.error()).isZero();
+        }
+
+        Result mainnet = run(launcher, previewInit(
+                temporary.resolve("payments-zk-mainnet"),
+                "mainnet", true));
+        assertThat(mainnet.exit()).isNotZero();
+        assertThat(mainnet.error().toLowerCase())
+                .contains("mainnet");
+    }
+
+    private static List<String> previewInit(
+            Path output,
+            String network,
+            boolean acknowledge
+    ) {
+        List<String> command = new ArrayList<>(List.of(
+                "appchain", "init", "--non-interactive",
+                "--recipe", "eutxo-zeroj-preview",
+                "--network", network,
+                "--members", "3",
+                "--runtime", "jvm",
+                "--deployment", "host",
+                "--name", output.getFileName().toString(),
+                "--chain-id", output.getFileName().toString(),
+                "--output", output.toString(),
+                "--format", "json"));
+        for (String memberKey : MEMBER_KEYS) {
+            command.add("--member-key");
+            command.add(memberKey);
+        }
+        if (acknowledge) {
+            command.add("--acknowledge");
+            command.add(
+                    "EUTXO_ZEROJ_UNSAFE_DEVELOPMENT_TESTNET");
+        }
+        return command;
     }
 
     private void assertStudioBlueprintRoundTrips(Path release, Path launcher) throws Exception {

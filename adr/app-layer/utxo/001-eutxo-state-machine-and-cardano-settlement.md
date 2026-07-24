@@ -2544,6 +2544,20 @@ Exit criteria:
 
 #### UTXO-D5 — Live devnet, Preview, and Preprod acceptance
 
+Implementation status (version 11):
+
+- a final-distribution black-box gate exercises recipe generation, project
+  validation, contract-plan bootstrap, lifecycle status, public-testnet
+  acknowledgement, and mainnet rejection through packaged `./yano.sh`;
+- a versioned, schema-bounded network evidence file is shipped in the JVM
+  archive and build tests prevent it from overstating the development
+  authorization profile;
+- packaged lifecycle policy is `PASSED` for devnet, Preview, and Preprod;
+- live deposit-to-withdrawal, rollback/recovery, and independent
+  reconstruction remain `NOT_EXERCISED` on all three supported networks; and
+- those external rows are not milestone code defects, but they remain release
+  evidence gates and prevent a preview/production-readiness claim.
+
 Deliver:
 
 - automated disposable Yano devnet end-to-end acceptance;
