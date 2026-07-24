@@ -5,6 +5,7 @@ import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkProofArtifac
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkStatement;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkVerificationKey;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.zeroj.EutxoBatchProofEngine;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.zeroj.EutxoCeremonyManifest;
 
 import java.nio.file.Path;
 
@@ -30,10 +31,12 @@ public final class ZerojEutxoProofBackend implements EutxoProofBackend {
     }
 
     public static ZerojEutxoProofBackend loadCeremonyBundle(
-            Path keyDirectory
+            Path keyDirectory,
+            EutxoCeremonyManifest manifest
     ) {
         return new ZerojEutxoProofBackend(
-                EutxoBatchProofEngine.loadCeremonyBundle(keyDirectory));
+                EutxoBatchProofEngine.loadCeremonyBundle(
+                        keyDirectory, manifest));
     }
 
     @Override

@@ -48,10 +48,20 @@ public final class EutxoBatchProofEngine implements AutoCloseable {
     }
 
     public static EutxoBatchProofEngine loadCeremonyBundle(
-            Path keyDirectory
+            Path keyDirectory,
+            EutxoCeremonyManifest manifest
     ) {
-        return new EutxoBatchProofEngine(
+        EutxoCeremonyBundleVerifier.verifyBeforeLoad(keyDirectory, manifest);
+        EutxoBatchProofEngine engine = new EutxoBatchProofEngine(
                 EutxoSettlementGroth16DevelopmentSetup.load(keyDirectory));
+        try {
+            EutxoCeremonyBundleVerifier.verifyAfterLoad(
+                    engine.verificationKey(), manifest);
+            return engine;
+        } catch (RuntimeException failure) {
+            engine.close();
+            throw failure;
+        }
     }
 
     public EutxoZkVerificationKey verificationKey() {

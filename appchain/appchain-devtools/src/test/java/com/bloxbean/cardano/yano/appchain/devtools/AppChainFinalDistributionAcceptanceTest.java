@@ -86,7 +86,8 @@ class AppChainFinalDistributionAcceptanceTest {
                     if ("custom-plugin".equals(recipe.id())) {
                         init.add("--answer");
                         init.add("stateMachine=com.example.acceptance");
-                    } else if ("eutxo-ledger".equals(recipe.id())) {
+                    } else if ("eutxo-ledger".equals(recipe.id())
+                            || "eutxo-zeroj-validity".equals(recipe.id())) {
                         init.add("--answer");
                         init.add("eutxoGenesisAddress=addr_test1vr8nlm7example");
                         init.add("--answer");
