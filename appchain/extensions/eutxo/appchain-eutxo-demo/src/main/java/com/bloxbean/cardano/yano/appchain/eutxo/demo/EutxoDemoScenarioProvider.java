@@ -19,6 +19,11 @@ public interface EutxoDemoScenarioProvider {
 
     Set<String> operations();
 
+    default void setup(
+            EutxoDemoWorkspace workspace,
+            EutxoDemoOptions options) throws Exception {
+    }
+
     default EutxoDemoResult execute(
             String operation,
             EutxoDemoWorkspace workspace,

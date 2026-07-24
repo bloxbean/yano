@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.eutxo.demo;
 
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
+import com.bloxbean.cardano.yano.appchain.eutxo.client.EutxoKeyWallet;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -40,6 +41,25 @@ public final class EutxoDemoIdentityService {
             java.util.Arrays.fill(seed, (byte) 0);
         }
         return List.copyOf(publicKeys);
+    }
+
+    public WalletIdentity generateWallet(Path target) throws IOException {
+        if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalStateException("wallet secret already exists");
+        }
+        ownerDirectory(target.getParent());
+        byte[] seed = new byte[32];
+        RANDOM.nextBytes(seed);
+        EutxoKeyWallet wallet = EutxoKeyWallet.fromSeed(seed);
+        Files.writeString(target, HexFormat.of().formatHex(seed) + "\n",
+                StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+        ownerFile(target);
+        java.util.Arrays.fill(seed, (byte) 0);
+        return new WalletIdentity(wallet.address(),
+                HexFormat.of().formatHex(wallet.verificationKey().getBytes()));
+    }
+
+    public record WalletIdentity(String address, String publicKey) {
     }
 
     static void ownerDirectory(Path directory) throws IOException {

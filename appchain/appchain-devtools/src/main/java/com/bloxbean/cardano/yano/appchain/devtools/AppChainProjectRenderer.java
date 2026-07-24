@@ -874,7 +874,8 @@ final class AppChainProjectRenderer {
                 "$root/scripts/validate"
                 %s
                 for node in $(seq 0 %d); do
-                  "$root/scripts/start-node" "$node" >"$root/logs/node${node}.log" 2>&1 &
+                  nohup "$root/scripts/start-node" "$node" \
+                    </dev/null >"$root/logs/node${node}.log" 2>&1 &
                   echo $! >"$root/run/node${node}.pid"
                   port=$((%d + node))
                   ready=0

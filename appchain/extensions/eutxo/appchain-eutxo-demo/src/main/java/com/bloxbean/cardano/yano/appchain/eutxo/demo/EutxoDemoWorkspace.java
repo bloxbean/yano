@@ -11,6 +11,7 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -61,11 +62,24 @@ public final class EutxoDemoWorkspace {
         }
         List<String> memberKeys = new EutxoDemoIdentityService()
                 .generateMembers(root.resolve("secrets/members"), options.members());
+        EutxoDemoIdentityService identities = new EutxoDemoIdentityService();
+        EutxoDemoIdentityService.WalletIdentity ledgerWallet =
+                identities.generateWallet(root.resolve("secrets/cardano/ledger.seed"));
+        EutxoDemoIdentityService.WalletIdentity recipientWallet =
+                identities.generateWallet(root.resolve("secrets/cardano/recipient.seed"));
         Map<String, String> secretReferences = new LinkedHashMap<>();
         for (int index = 0; index < options.members(); index++) {
             secretReferences.put("member" + index,
                     "secrets/members/node" + index + ".env");
         }
+        secretReferences.put("ledgerWallet", "secrets/cardano/ledger.seed");
+        secretReferences.put("recipientWallet", "secrets/cardano/recipient.seed");
+        Map<String, String> publicIdentities = new LinkedHashMap<>();
+        publicIdentities.put("trustBoundary", provider.trustBoundary());
+        publicIdentities.put("ledgerAddress", ledgerWallet.address());
+        publicIdentities.put("ledgerPublicKey", ledgerWallet.publicKey());
+        publicIdentities.put("recipientAddress", recipientWallet.address());
+        publicIdentities.put("recipientPublicKey", recipientWallet.publicKey());
         String implementationVersion = EutxoDemoWorkspace.class.getPackage()
                 .getImplementationVersion();
         EutxoDemoManifest manifest = new EutxoDemoManifest(
@@ -82,7 +96,7 @@ public final class EutxoDemoWorkspace {
                 options.httpPortBase(),
                 options.serverPortBase(),
                 memberKeys,
-                Map.of("trustBoundary", provider.trustBoundary()),
+                publicIdentities,
                 secretReferences,
                 Instant.now().toString());
         writeManifest(root, manifest);
@@ -126,6 +140,24 @@ public final class EutxoDemoWorkspace {
 
     public EutxoDemoJournal journal() {
         return new EutxoDemoJournal(root);
+    }
+
+    public byte[] readSecretSeed(String referenceName) throws IOException {
+        String relative = manifest.secretReferences().get(referenceName);
+        if (relative == null || !relative.matches("secrets/[a-z0-9/.-]+")) {
+            throw new IllegalArgumentException("unknown demo secret reference");
+        }
+        Path path = root.resolve(relative).normalize();
+        if (!path.startsWith(root.resolve("secrets"))
+                || !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)
+                || Files.isSymbolicLink(path)) {
+            throw new IllegalStateException("demo secret reference is unsafe");
+        }
+        String value = Files.readString(path).trim();
+        if (!value.matches("[0-9a-f]{64}")) {
+            throw new IllegalStateException("demo secret seed is malformed");
+        }
+        return HexFormat.of().parseHex(value);
     }
 
     public void reset() throws IOException {
