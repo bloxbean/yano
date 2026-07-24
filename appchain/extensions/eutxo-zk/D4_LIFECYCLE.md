@@ -45,7 +45,7 @@ All lifecycle state is below `<project>/runtime/validity`:
 
 | Path | Purpose |
 |---|---|
-| `contracts.json` | Deterministic contract identities and deployment plan |
+| `contract-plan.json` | Deterministic contract identities and deployment plan |
 | `ceremony/` | Development or imported proving and verification artifacts |
 | `proofs/<digest>.proof` | Content-addressed proof artifacts |
 | `operations/<kind>/<id>.json` | Idempotent L1 operation journals |

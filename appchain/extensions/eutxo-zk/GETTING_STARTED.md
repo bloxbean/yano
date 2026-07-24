@@ -138,7 +138,7 @@ available and is never copied into the project lock.
 
 The command writes:
 
-- `runtime/validity/contracts.json` — deterministic, pinned contract plan;
+- `runtime/validity/contract-plan.json` — deterministic, pinned contract plan;
 - `runtime/validity/ceremony/` — development proving/verification artifacts;
 - `runtime/validity/state.json` — lifecycle identity and stage; and
 - `runtime/validity/operations/` — durable content-addressed operation
