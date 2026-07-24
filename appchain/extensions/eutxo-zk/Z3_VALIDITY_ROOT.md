@@ -6,8 +6,9 @@ as an alternative to a proof.
 
 The original Z1 bounded-payment circuit remains the arithmetic primitive.
 Review found that its five public inputs did not bind enough L1 context, so Z3
-adds the `yano-eutxo-zk-z3` profile and
-`eutxo-key-payment-settlement-v1` circuit. Its ordered public inputs are:
+adds the `yano-eutxo-zk-z3` profile. Z5 advances that profile to version 2
+and the `eutxo-key-payment-settlement-v2` circuit so the circuit derives the
+canonical batch-data commitment. Its ordered public inputs remain:
 
 1. previous validity root;
 2. next validity root;

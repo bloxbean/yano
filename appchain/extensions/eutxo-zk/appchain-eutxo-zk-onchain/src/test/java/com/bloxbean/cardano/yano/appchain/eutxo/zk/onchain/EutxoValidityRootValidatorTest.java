@@ -34,12 +34,14 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class EutxoValidityRootValidatorTest extends ContractTest {
     private static final byte[] THREAD_POLICY = fill(28, 31);
     private static final byte[] SCRIPT = fill(28, 32);
     private static final byte[] MIGRATION_AUTHORITY = fill(28, 33);
     private static final byte[] MIGRATION_TARGET = fill(28, 34);
+    private static final byte[] DATA_AVAILABILITY_SCRIPT = fill(28, 35);
 
     @Test
     void settlementBoundProofVerifiesInStockJulcVerifier() {
@@ -135,6 +137,40 @@ class EutxoValidityRootValidatorTest extends ContractTest {
     }
 
     @Test
+    void rootAdvanceRequiresOneExactProofBoundDataPublication() {
+        Fixture fixture = fixture();
+        try (fixture) {
+            Program program = program(fixture);
+            byte[] corrupt = fixture.batchData().canonicalBytes();
+            corrupt[corrupt.length - 1] ^= 1;
+
+            assertFailure(evaluate(program, advanceContext(
+                    fixture, false, corrupt, 1)));
+            assertFailure(evaluate(program, advanceContext(
+                    fixture, false,
+                    fixture.batchData().canonicalBytes(), 0)));
+            assertFailure(evaluate(program, advanceContext(
+                    fixture, false,
+                    fixture.batchData().canonicalBytes(), 2)));
+        }
+    }
+
+    @Test
+    void canonicalAbiCarriesOnlyTheProofBoundBatch() {
+        Fixture fixture = fixture();
+        try (fixture) {
+            assertThat(EutxoValidityOnChainAbi.advanceRedeemer(
+                    fixture.proof(), fixture.batchData())).isNotNull();
+            var other = new EutxoZkBatchData(
+                    List.of(payment(100, 59)));
+            assertThatThrownBy(() ->
+                    EutxoValidityOnChainAbi.advanceRedeemer(
+                            fixture.proof(), other))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+    }
+
+    @Test
     void releasePinnedJulcCompilesContextBoundValidator() {
         assertThat(compileValidator(
                 EutxoValidityRootValidator.class).program()).isNotNull();
@@ -156,6 +192,7 @@ class EutxoValidityRootValidatorTest extends ContractTest {
                         keyParams.get(2),
                         keyParams.get(3),
                         keyParams.get(4),
+                        PlutusData.bytes(DATA_AVAILABILITY_SCRIPT),
                         PlutusData.bytes(MIGRATION_AUTHORITY),
                         PlutusData.bytes(MIGRATION_TARGET));
     }
@@ -192,6 +229,39 @@ class EutxoValidityRootValidatorTest extends ContractTest {
             boolean corruptProof
     ) {
         var inputs = fixture.inputs();
+        return advanceContext(
+                fixture, batchCommitment, contextCommitment,
+                nextRoot, corruptProof,
+                fixture.batchData().canonicalBytes(), 1);
+    }
+
+    private PlutusData advanceContext(
+            Fixture fixture,
+            boolean corruptProof,
+            byte[] batchData,
+            int dataOutputs
+    ) {
+        var inputs = fixture.inputs();
+        return advanceContext(
+                fixture,
+                inputs.batchDataCommitment(),
+                inputs.settlementContext(),
+                inputs.nextRoot(),
+                corruptProof,
+                batchData,
+                dataOutputs);
+    }
+
+    private PlutusData advanceContext(
+            Fixture fixture,
+            BigInteger batchCommitment,
+            BigInteger contextCommitment,
+            BigInteger nextRoot,
+            boolean corruptProof,
+            byte[] batchData,
+            int dataOutputs
+    ) {
+        var inputs = fixture.inputs();
         PlutusData current = rootDatum(
                 0, 6, inputs.previousRoot(),
                 inputs.settlementContext(), BigInteger.ZERO,
@@ -202,7 +272,7 @@ class EutxoValidityRootValidatorTest extends ContractTest {
                 inputs.withdrawalCommitment(), 0);
         PlutusData redeemer = advanceRedeemer(
                 fixture.proof(), batchCommitment, contextCommitment,
-                nextRoot, corruptProof);
+                nextRoot, batchData, corruptProof);
         TxOutRef ownRef = ref(1);
         Address address = scriptAddress(SCRIPT);
         var builder = spendingContext(ownRef, current)
@@ -211,6 +281,9 @@ class EutxoValidityRootValidatorTest extends ContractTest {
                         ownRef,
                         output(address, current)))
                 .output(output(address, next));
+        for (int index = 0; index < dataOutputs; index++) {
+            builder.output(dataOutput(batchData));
+        }
         if (corruptProof) {
             builder.signer(MIGRATION_AUTHORITY);
         }
@@ -253,6 +326,7 @@ class EutxoValidityRootValidatorTest extends ContractTest {
             BigInteger batchCommitment,
             BigInteger contextCommitment,
             BigInteger nextRoot,
+            byte[] batchData,
             boolean corruptProof
     ) {
         var inputs = proof.statement().publicInputs();
@@ -271,6 +345,7 @@ class EutxoValidityRootValidatorTest extends ContractTest {
                 PlutusData.integer(contextCommitment),
                 PlutusData.integer(batchCommitment),
                 PlutusData.integer(inputs.withdrawalCommitment()),
+                PlutusData.bytes(batchData),
                 PlutusData.bytes(piA),
                 PlutusData.bytes(proof.piB()),
                 PlutusData.bytes(proof.piC()));
@@ -288,6 +363,7 @@ class EutxoValidityRootValidatorTest extends ContractTest {
                 PlutusData.integer(0),
                 PlutusData.integer(0),
                 PlutusData.integer(0),
+                PlutusData.bytes(new byte[0]),
                 PlutusData.bytes(new byte[0]),
                 PlutusData.bytes(new byte[0]),
                 PlutusData.bytes(new byte[0]));
@@ -326,8 +402,7 @@ class EutxoValidityRootValidatorTest extends ContractTest {
                 BigInteger.valueOf(424242));
         var batchInputs = EutxoKeyPaymentBatchCircuit.publicInputs(
                 new byte[32], witness);
-        var batchData = new EutxoZkBatchData(
-                witness.payments(), batchInputs.ownerCommitment());
+        var batchData = new EutxoZkBatchData(witness.payments());
         byte[] withdrawalCommitment =
                 EutxoKeyPaymentSettlementCircuit
                         .withdrawalCommitment(witness);
@@ -340,7 +415,7 @@ class EutxoValidityRootValidatorTest extends ContractTest {
                 EutxoZkProfile.Z3_VALIDITY_SETTLEMENT,
                 inputs, batchData.commitment());
         var proof = engine.prove(statement, witness, "validator-test");
-        return new Fixture(engine, inputs, proof);
+        return new Fixture(engine, inputs, proof, batchData);
     }
 
     private static EutxoKeyPaymentBatch.Payment payment(
@@ -365,6 +440,15 @@ class EutxoValidityRootValidatorTest extends ContractTest {
                 Optional.empty());
     }
 
+    private static TxOut dataOutput(byte[] batchData) {
+        return new TxOut(
+                scriptAddress(DATA_AVAILABILITY_SCRIPT),
+                Value.lovelace(BigInteger.valueOf(2_000_000)),
+                new OutputDatum.OutputDatumInline(
+                        PlutusData.bytes(batchData)),
+                Optional.empty());
+    }
+
     private static Address scriptAddress(byte[] hash) {
         return new Address(
                 new Credential.ScriptCredential(new ScriptHash(hash)),
@@ -385,7 +469,8 @@ class EutxoValidityRootValidatorTest extends ContractTest {
     private record Fixture(
             EutxoBatchProofEngine engine,
             EutxoZkSettlementPublicInputs inputs,
-            EutxoZkProofArtifact proof
+            EutxoZkProofArtifact proof,
+            EutxoZkBatchData batchData
     ) implements AutoCloseable {
         @Override
         public void close() {

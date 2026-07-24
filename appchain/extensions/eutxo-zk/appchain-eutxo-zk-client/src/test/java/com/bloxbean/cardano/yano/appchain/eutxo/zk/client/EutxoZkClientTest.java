@@ -49,16 +49,71 @@ class EutxoZkClientTest {
                 .isEqualTo(EutxoZkClient.State.VERIFIED);
     }
 
+    @Test
+    void availabilityMonitorRejectsMissingCorruptAndExpiredData() {
+        Fixture fixture = fixture();
+        EutxoDataAvailabilityMonitor monitor =
+                new EutxoDataAvailabilityMonitor();
+
+        assertThat(monitor.assess(
+                fixture.statement, fixture.batch.canonicalBytes(),
+                100, 110, 20).state())
+                .isEqualTo(EutxoDataAvailabilityMonitor.State.AVAILABLE);
+        assertThat(monitor.assess(
+                fixture.statement, null,
+                100, 110, 20).state())
+                .isEqualTo(EutxoDataAvailabilityMonitor.State.MISSING);
+        assertThat(monitor.assess(
+                fixture.statement, new byte[]{1},
+                100, 110, 20).state())
+                .isEqualTo(EutxoDataAvailabilityMonitor.State.CORRUPT);
+        assertThat(monitor.assess(
+                fixture.statement, fixture.batch.canonicalBytes(),
+                100, 121, 20).state())
+                .isEqualTo(
+                        EutxoDataAvailabilityMonitor.State
+                                .OUTSIDE_DECLARED_HORIZON);
+    }
+
+    @Test
+    void exitPlannerIsPermissionlessOnlyAfterProofVerification() {
+        EutxoExitRecoveryPlanner planner =
+                new EutxoExitRecoveryPlanner();
+        assertThat(planner.plan(
+                new EutxoZkClient.Status(
+                        EutxoZkClient.State.WAITING_FOR_PROOF,
+                        "", ""),
+                false, false))
+                .isEqualTo(new EutxoExitRecoveryPlanner.Plan(
+                        EutxoExitRecoveryPlanner.Action.WAIT_FOR_PROOF,
+                        false));
+        assertThat(planner.plan(
+                new EutxoZkClient.Status(
+                        EutxoZkClient.State.VERIFIED,
+                        "ab".repeat(32), ""),
+                false, false))
+                .isEqualTo(new EutxoExitRecoveryPlanner.Plan(
+                        EutxoExitRecoveryPlanner.Action
+                                .RELAY_VALIDITY_ROOT,
+                        true));
+        assertThat(planner.plan(
+                new EutxoZkClient.Status(
+                        EutxoZkClient.State.VERIFIED,
+                        "ab".repeat(32), ""),
+                true, false).action())
+                .isEqualTo(
+                        EutxoExitRecoveryPlanner.Action.RELAY_WITHDRAWAL);
+    }
+
     private static Fixture fixture() {
         var payment = new EutxoKeyPaymentBatch.Payment(
                 BigInteger.TEN, BigInteger.valueOf(6), BigInteger.valueOf(4));
+        var batch = new EutxoZkBatchData(List.of(payment));
         var inputs = new EutxoZkSettlementPublicInputs(
                 BigInteger.ONE, BigInteger.TWO, BigInteger.valueOf(3),
                 BigInteger.valueOf(4), BigInteger.ONE,
-                BigInteger.valueOf(5), BigInteger.valueOf(6),
+                BigInteger.valueOf(5), batch.commitmentScalar(),
                 BigInteger.valueOf(7));
-        var batch = new EutxoZkBatchData(
-                List.of(payment), inputs.ownerCommitment());
         var statement = new EutxoZkStatement(
                 "client-chain", 8, 0,
                 EutxoZkProfile.Z3_VALIDITY_SETTLEMENT,

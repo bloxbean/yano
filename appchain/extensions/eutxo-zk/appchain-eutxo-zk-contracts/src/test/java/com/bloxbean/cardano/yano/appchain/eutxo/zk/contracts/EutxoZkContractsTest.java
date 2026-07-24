@@ -39,8 +39,8 @@ class EutxoZkContractsTest {
                 .isEqualTo("d495d0ad6a1d7babd00ba53de5bd9019"
                         + "224ac81fb3c68f33dd902e5e5e9282b3");
         assertThat(EutxoZkProfile.Z3_VALIDITY_SETTLEMENT.digestHex())
-                .isEqualTo("10dc83ac4311ea6099caa859ac8021973"
-                        + "94e70685139d357a3a5f888532af747");
+                .isEqualTo("cfe1767761cbe05c7e2b82f951222fbb"
+                        + "9df34afa5eb1f39fb8a5c1cc2af87d45");
         EutxoZkPublicInputs inputs = new EutxoZkPublicInputs(
                 BigInteger.ONE, BigInteger.TWO, BigInteger.valueOf(3),
                 BigInteger.valueOf(4), BigInteger.ONE);
@@ -78,8 +78,7 @@ class EutxoZkContractsTest {
                 BigInteger.valueOf(4), BigInteger.ONE,
                 BigInteger.valueOf(5), BigInteger.valueOf(6),
                 BigInteger.valueOf(7));
-        var batch = new EutxoZkBatchData(List.of(payment),
-                inputs.ownerCommitment());
+        var batch = new EutxoZkBatchData(List.of(payment));
         var statement = new EutxoZkStatement(
                 "payments", 12, 0,
                 EutxoZkProfile.Z3_VALIDITY_SETTLEMENT,
@@ -95,6 +94,14 @@ class EutxoZkContractsTest {
 
         assertThat(EutxoZkBatchData.decode(batch.canonicalBytes())
                 .canonicalBytes()).isEqualTo(batch.canonicalBytes());
+        assertThat(batch.canonicalBytes())
+                .hasSize(EutxoZkBatchData.CANONICAL_BYTES);
+        byte[] nonCanonicalPadding = batch.canonicalBytes();
+        nonCanonicalPadding[nonCanonicalPadding.length - 1] = 1;
+        assertThatThrownBy(() ->
+                EutxoZkBatchData.decode(nonCanonicalPadding))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("padding");
         assertThat(EutxoZkStatement.decode(statement.canonicalBytes())
                 .canonicalBytes()).isEqualTo(statement.canonicalBytes());
         assertThat(EutxoZkVerificationKey.decode(key.canonicalBytes())

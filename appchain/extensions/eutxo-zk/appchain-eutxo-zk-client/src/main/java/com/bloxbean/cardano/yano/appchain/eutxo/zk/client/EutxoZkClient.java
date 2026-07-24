@@ -38,7 +38,10 @@ public final class EutxoZkClient {
         }
         if (!Arrays.equals(
                 batch.orElseThrow().commitment(),
-                statement.orElseThrow().batchDataCommitment())) {
+                statement.orElseThrow().batchDataCommitment())
+                || !batch.orElseThrow().commitmentScalar().equals(
+                statement.orElseThrow().publicInputs()
+                        .batchDataCommitment())) {
             return new Status(State.INVALID, "", "batch-data commitment mismatch");
         }
         Optional<EutxoZkProofArtifact> proof = source.proof(statementDigest);

@@ -93,7 +93,9 @@ public final class EutxoProverStore {
             throw new IllegalStateException("prover job capacity reached");
         }
         if (!java.util.Arrays.equals(
-                batchData.commitment(), statement.batchDataCommitment())) {
+                batchData.commitment(), statement.batchDataCommitment())
+                || !batchData.commitmentScalar().equals(
+                statement.publicInputs().batchDataCommitment())) {
             throw new IllegalArgumentException("batch data does not match statement");
         }
         writeAtomic(statements.resolve(id + ".statement"),

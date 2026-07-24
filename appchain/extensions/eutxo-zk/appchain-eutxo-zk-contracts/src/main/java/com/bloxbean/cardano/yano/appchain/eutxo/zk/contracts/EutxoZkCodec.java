@@ -78,6 +78,28 @@ final class EutxoZkCodec {
         return value;
     }
 
+    static void writeSizedBytes(
+            DataOutputStream output,
+            byte[] value
+    ) throws IOException {
+        if (value == null || value.length == 0
+                || value.length > MAX_ARTIFACT_BYTES) {
+            throw new IllegalArgumentException(
+                    "invalid embedded artifact size");
+        }
+        output.writeInt(value.length);
+        output.write(value);
+    }
+
+    static byte[] readSizedBytes(DataInputStream input) throws IOException {
+        int length = input.readInt();
+        if (length <= 0 || length > MAX_ARTIFACT_BYTES) {
+            throw new IllegalArgumentException(
+                    "invalid embedded artifact size");
+        }
+        return readBytes(input, length);
+    }
+
     static void writeScalar(DataOutputStream output, BigInteger value)
             throws IOException {
         if (value == null || value.signum() < 0 || value.bitLength() > 255) {

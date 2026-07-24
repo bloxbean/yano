@@ -165,8 +165,8 @@ class EutxoProverServiceTest {
         EutxoZkPublicInputs inputs =
                 EutxoKeyPaymentBatchCircuit.publicInputs(
                         new byte[32], witness);
-        EutxoZkBatchData batchData = new EutxoZkBatchData(
-                witness.payments(), inputs.ownerCommitment());
+        EutxoZkBatchData batchData =
+                new EutxoZkBatchData(witness.payments());
         EutxoZkSettlementPublicInputs settlementInputs =
                 EutxoKeyPaymentSettlementCircuit.publicInputs(
                         "payments", 0, verificationKeyDigest,

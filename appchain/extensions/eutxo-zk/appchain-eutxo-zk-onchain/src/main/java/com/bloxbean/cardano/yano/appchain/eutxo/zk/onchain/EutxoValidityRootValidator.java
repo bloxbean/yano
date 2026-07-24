@@ -26,6 +26,10 @@ import java.util.Optional;
  */
 @SpendingValidator
 public final class EutxoValidityRootValidator {
+    private static final BigInteger BLS12_381_SCALAR_FIELD = new BigInteger(
+            "52435875175126190479447740508185965837690552500527637822603658699938581184513");
+    private static final long CANONICAL_BATCH_DATA_BYTES = 101;
+
     @Param
     static byte[] rootThreadPolicyId;
 
@@ -49,6 +53,9 @@ public final class EutxoValidityRootValidator {
 
     @Param
     static PlutusData vkIc;
+
+    @Param
+    static byte[] dataAvailabilityScriptHash;
 
     @Param
     static byte[] migrationAuthority;
@@ -79,6 +86,7 @@ public final class EutxoValidityRootValidator {
             BigInteger settlementContext,
             BigInteger batchDataCommitment,
             BigInteger withdrawalCommitment,
+            byte[] batchData,
             byte[] piA,
             byte[] piB,
             byte[] piC
@@ -120,7 +128,8 @@ public final class EutxoValidityRootValidator {
                 || continuing.size() != 1
                 || !hasThread(continuing.head())
                 || !advanceOutputValid(
-                continuing.head().datum(), current, action)) {
+                continuing.head().datum(), current, action)
+                || !dataPublished(action, context)) {
             return false;
         }
         return proofShapeValid(action)
@@ -191,6 +200,47 @@ public final class EutxoValidityRootValidator {
                 && action.settlementContext().equals(settlementContext)
                 && action.batchDataCommitment().signum() >= 0
                 && action.withdrawalCommitment().signum() >= 0;
+    }
+
+    /**
+     * The root transition is accepted only when its canonical public batch
+     * bytes are published in the same L1 transaction at the configured DA
+     * script. The proof binds the reduced BLAKE2b-256 commitment.
+     */
+    private static boolean dataPublished(
+            Action action,
+            ScriptContext context
+    ) {
+        long length = Builtins.lengthOfByteString(action.batchData());
+        if (Builtins.lengthOfByteString(dataAvailabilityScriptHash) != 28
+                || length != CANONICAL_BATCH_DATA_BYTES
+                || !digestScalar(action.batchData()).equals(
+                action.batchDataCommitment())) {
+            return false;
+        }
+        JulcList<TxOut> outputs = ContextsLib.scriptOutputsAt(
+                context.txInfo(), dataAvailabilityScriptHash);
+        if (outputs.size() != 1) {
+            return false;
+        }
+        OutputDatum datum = outputs.head().datum();
+        if (datum instanceof OutputDatum.OutputDatumInline inline) {
+            return Builtins.equalsData(
+                    inline.datum(), Builtins.bData(action.batchData()));
+        }
+        return false;
+    }
+
+    private static BigInteger digestScalar(byte[] value) {
+        BigInteger raw = Builtins.byteStringToInteger(
+                true, Builtins.blake2b_256(value));
+        BigInteger once = raw.compareTo(
+                BLS12_381_SCALAR_FIELD) >= 0
+                ? raw.subtract(BLS12_381_SCALAR_FIELD)
+                : raw;
+        return once.compareTo(BLS12_381_SCALAR_FIELD) >= 0
+                ? once.subtract(BLS12_381_SCALAR_FIELD)
+                : once;
     }
 
     private static PlutusData publicInputs(Action action) {
