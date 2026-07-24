@@ -178,6 +178,36 @@ class AppChainProjectTest {
     }
 
     @Test
+    void eutxoAnswersRejectLabeledAndMalformedPublicValuesBeforeRendering() {
+        AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
+        AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
+        AppChainProjectResolver resolver = new AppChainProjectResolver(properties, catalog);
+        Map<String, String> labeled = Map.of(
+                "eutxoGenesisAddress",
+                "L2_ADDRESS=addr_test1vr8nlm7example",
+                "eutxoGenesisLovelace",
+                "100000000");
+
+        assertThatThrownBy(() -> resolver.resolve(withAnswers(
+                blueprint("eutxo-ledger", "fixed", List.of()), labeled)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("eutxoGenesisAddress")
+                .hasMessageContaining("not NAME=value")
+                .hasMessageNotContaining("L2_ADDRESS=");
+
+        Map<String, String> malformed = Map.of(
+                "eutxoGenesisAddress",
+                "addr_test1vr8nlm7example",
+                "eutxoGenesisLovelace",
+                "not-a-number");
+        assertThatThrownBy(() -> resolver.resolve(withAnswers(
+                blueprint("eutxo-ledger", "fixed", List.of()), malformed)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("eutxoGenesisLovelace")
+                .hasMessageContaining("bounded decimal integer");
+    }
+
+    @Test
     void eutxoBridgeRecipeUsesProjectChainIdAndExcludesVirtualGenesis() throws Exception {
         AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
         AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);

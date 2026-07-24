@@ -55,11 +55,13 @@ import com.bloxbean.cardano.yano.api.model.SnapshotInfo;
 import com.bloxbean.cardano.yano.api.model.TimeAdvanceResult;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.runtime.StartupEvent;
+import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Inject;
 import jakarta.inject.Named;
+import jakarta.interceptor.Interceptor;
 import org.eclipse.microprofile.config.Config;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.slf4j.Logger;
@@ -966,7 +968,8 @@ public class YanoProducer {
                 .orElseThrow(() -> new IllegalStateException("Runtime maintenance gate unavailable"));
     }
 
-    void onStart(@Observes StartupEvent event) {
+    void onStart(
+            @Observes @Priority(Interceptor.Priority.APPLICATION) StartupEvent event) {
         if (apiPrefixContract != null) {
             apiPrefixContract.verify();
         }
@@ -997,12 +1000,14 @@ public class YanoProducer {
                 // the application boundary with a new cause-free exception so
                 // neither a wrapper nor suppressed cleanup failures leak.
                 PluginStartupException sanitized = sanitizedPluginStartupFailure(pluginFailure);
+                log.error("YANO_STARTUP_FAILURE code=PLUGIN_ACTIVATION_FAILED");
                 log.error(sanitized.getMessage());
                 throw sanitized;
             }
             if (e instanceof Error error) {
                 throw error;
             }
+            log.error("YANO_STARTUP_FAILURE code=RUNTIME_INITIALIZATION_FAILED");
             log.error("Failed to initialize or auto-start Yano: {}", e.getMessage(), e);
             if (bootstrapEnabled) {
                 log.error("Bootstrap mode is enabled but failed. "
