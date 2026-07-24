@@ -42,7 +42,7 @@ class AppChainProjectTest {
                 .containsExactly("audit-log", "owned-registry", "approval-workflow",
                         "role-approval", "evidence-ledger", "eutxo-ledger",
                         "eutxo-cardano-bridge", "eutxo-zeroj-validity",
-                        "custom-plugin");
+                        "eutxo-zeroj-preview", "custom-plugin");
         assertThat(catalog.recipes()).allSatisfy(recipe -> {
             assertThat(recipe.primaryOutcome()).isNotBlank();
             assertThat(recipe.firstCommand()).isNotBlank();
@@ -213,7 +213,16 @@ class AppChainProjectTest {
                         "cfe1767761cbe05c7e2b82f951222fbb9df34afa5eb1f39fb8a5c1cc2af87d45")
                 .containsEntry(
                         "yano.app-chain.chains[0].machines.eutxo.validity.circuit-id",
-                        "eutxo-key-payment-settlement-v2")
+                        "eutxo-jubjub-batch-dev-b16-v1")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.validity."
+                                + "batch-profile",
+                        "cardano-payment-b16")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.validity."
+                                + "batch-profile-digest",
+                        "286483b1169ebb1e91fc0848195ac8a2"
+                                + "e7ec12f865beb40145d7a90c35a9c574")
                 .containsEntry(
                         "yano.app-chain.chains[0].machines.eutxo.validity.zeroj-version",
                         "0.1.0-pre10")
@@ -261,6 +270,36 @@ class AppChainProjectTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("settlement:zeroj-validity")
                 .hasMessageContaining("does not support network mainnet");
+
+        AppChainProjectModel.Blueprint previewRecipe =
+                withNetwork(blueprint(
+                        "eutxo-zeroj-preview",
+                        "fixed",
+                        List.of()), "preview");
+        assertThatThrownBy(() -> resolver.resolve(previewRecipe))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining(
+                        AppChainProjectResolver
+                                .EUTXO_UNSAFE_TESTNET_ACKNOWLEDGEMENT);
+        AppChainProjectModel.Blueprint acknowledged =
+                withAcknowledgements(
+                        previewRecipe,
+                        List.of(AppChainProjectResolver
+                                .EUTXO_UNSAFE_TESTNET_ACKNOWLEDGEMENT));
+        assertThat(resolver.resolve(acknowledged)
+                .selectedCapabilities())
+                .contains("settlement:zeroj-validity",
+                        "profile:eutxo-key-payments");
+        Path previewOutput =
+                temporary.resolve("acknowledged-zeroj-preview");
+        AppChainProjectModel.Lock lock =
+                new AppChainProjectRenderer(catalog, resolver)
+                        .initialize(previewOutput, acknowledged);
+        assertThat(lock.acknowledgements())
+                .contains(
+                        "EUTXO_ZEROJ_TRUSTED_PROVER_TEST_FUNDS_ONLY",
+                        AppChainProjectResolver
+                                .EUTXO_UNSAFE_TESTNET_ACKNOWLEDGEMENT);
     }
 
     @Test
@@ -933,6 +972,20 @@ class AppChainProjectTest {
                 blueprint.apiVersion(), blueprint.kind(), blueprint.metadata(),
                 new AppChainProjectModel.Spec(spec.yanoVersion(), network, spec.runtime(),
                         spec.deployment(), spec.chains()));
+    }
+
+    private static AppChainProjectModel.Blueprint withAcknowledgements(
+            AppChainProjectModel.Blueprint blueprint,
+            List<String> acknowledgements) {
+        AppChainProjectModel.Spec spec = blueprint.spec();
+        return new AppChainProjectModel.Blueprint(
+                blueprint.apiVersion(), blueprint.kind(),
+                blueprint.metadata(),
+                new AppChainProjectModel.Spec(
+                        spec.yanoVersion(), spec.network(),
+                        spec.runtime(), spec.deployment(),
+                        spec.chains(), spec.componentCatalogs(),
+                        acknowledgements));
     }
 
     private static AppChainProjectModel.Blueprint withHosts(

@@ -26,11 +26,20 @@ final class AppChainProjectModel {
             RuntimeSelection runtime,
             DeploymentSelection deployment,
             List<ChainIntent> chains,
-            List<ComponentCatalogRef> componentCatalogs) {
+            List<ComponentCatalogRef> componentCatalogs,
+            List<String> acknowledgements) {
 
         Spec(String yanoVersion, String network, RuntimeSelection runtime,
              DeploymentSelection deployment, List<ChainIntent> chains) {
-            this(yanoVersion, network, runtime, deployment, chains, List.of());
+            this(yanoVersion, network, runtime, deployment, chains,
+                    List.of(), List.of());
+        }
+
+        Spec(String yanoVersion, String network, RuntimeSelection runtime,
+             DeploymentSelection deployment, List<ChainIntent> chains,
+             List<ComponentCatalogRef> componentCatalogs) {
+            this(yanoVersion, network, runtime, deployment, chains,
+                    componentCatalogs, List.of());
         }
     }
 

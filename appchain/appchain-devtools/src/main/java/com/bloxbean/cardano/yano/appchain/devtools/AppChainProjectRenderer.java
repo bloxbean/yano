@@ -166,6 +166,12 @@ final class AppChainProjectRenderer {
         if (resolution.selectedCapabilities().contains("state:custom-plugin")) {
             acknowledgements.add("CUSTOM_PLUGIN_REVIEW_AND_METADATA_REQUIRED");
         }
+        if (resolution.selectedCapabilities().contains(
+                "settlement:zeroj-validity")) {
+            acknowledgements.add("EUTXO_ZEROJ_TRUSTED_PROVER_TEST_FUNDS_ONLY");
+            acknowledgements.addAll(
+                    safeList(blueprint.spec().acknowledgements()));
+        }
         AppChainProjectModel.Lock lock = new AppChainProjectModel.Lock(
                 AppChainProjectModel.API_VERSION,
                 AppChainProjectModel.LOCK_KIND,

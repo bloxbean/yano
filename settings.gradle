@@ -59,6 +59,8 @@ include 'appchain-eutxo-zk-prover'
 include 'appchain-eutxo-zk-client'
 include 'appchain-eutxo-zk-onchain'
 include 'appchain-eutxo-zk-testkit'
+include 'appchain-eutxo-zk-runtime'
+include 'appchain-eutxo-zk-lifecycle'
 include 'appchain-spring-boot-starter'
 include 'appchain-anchor-onchain'
 include 'appchain-plugin-conformance'
@@ -120,6 +122,10 @@ project(':appchain-eutxo-zk-onchain').projectDir =
         file('appchain/extensions/eutxo-zk/appchain-eutxo-zk-onchain')
 project(':appchain-eutxo-zk-testkit').projectDir =
         file('appchain/extensions/eutxo-zk/appchain-eutxo-zk-testkit')
+project(':appchain-eutxo-zk-runtime').projectDir =
+        file('appchain/extensions/eutxo-zk/appchain-eutxo-zk-runtime')
+project(':appchain-eutxo-zk-lifecycle').projectDir =
+        file('appchain/extensions/eutxo-zk/appchain-eutxo-zk-lifecycle')
 project(':appchain-plugin-conformance').projectDir =
         file('appchain/fixtures/appchain-plugin-conformance')
 project(':appchain-spring-boot-starter').projectDir = file('spring-starters/appchain-spring-boot-starter')

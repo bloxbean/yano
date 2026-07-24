@@ -2,28 +2,31 @@
 
 ## Current status
 
-The current capability is experimental. It provides executable circuit,
-prover, data-availability, reconstruction, and Julc validator components, but
-it is not yet a single live Cardano L1-to-appchain-to-L1 product.
+The current capability is an experimental, JVM-only testnet lifecycle. The
+stock JVM distribution carries the EUTxO state machine, the ZeroJ validity
+provider, project generation, a measured 16-transaction development circuit,
+proof tooling, deterministic Cardano contract plans, and durable operation
+journals for deposit, settlement, withdrawal, and recovery.
 
-In particular:
+It deliberately separates what Yano can automate from transactions that an
+operator must authorize:
 
-- the stock Yano distribution does not yet package and operate the ZeroJ
-  prover and settlement relay;
-- `./yano.sh appchain cluster` does not yet accept an EUTxO-ZK recipe or
-  bootstrap the Cardano contracts;
-- the federated bridge and `settlement:zeroj-validity` capabilities currently
-  conflict;
-- the bounded proof witness is not yet derived automatically from finalized
-  signed EUTxO transactions; and
-- the current circuit proves a restricted one-to-four-payment arithmetic
-  transition, not Cardano VKey or CIP-8 signatures.
+- Yano generates and verifies the project, circuit, ceremony, proof, contract
+  plan, and content-addressed operation state.
+- An external Cardano builder/wallet constructs and signs each L1 transaction.
+- Yano submits the signed CBOR, records its transaction ID, and reconciles the
+  stable result without persisting credentials.
+
+Contract deployment and the complete deposit-to-withdrawal path have not yet
+been exercised on live Yano devnet, Preview, or Preprod. Public-network gates
+therefore remain `NOT_EXERCISED`; the lifecycle must not be described as a
+production-ready rollup.
 
 Do not use this profile with real funds. The commands in
 [Current executable developer flow](#current-executable-developer-flow) are
-available now. The commands in
-[Target preview user flow](#target-preview-user-flow) define the intended
-preview product and are not accepted CLI syntax yet.
+available now. The only supported authorization profile,
+`zeroj-jubjub-dev-v1`, requires a trusted sequencer/prover and disposable test
+funds. Mainnet is rejected unconditionally.
 
 ## Current executable developer flow
 
@@ -44,7 +47,9 @@ From the repository root:
   :appchain-eutxo-zk-prover:test \
   :appchain-eutxo-zk-client:test \
   :appchain-eutxo-zk-onchain:test \
-  :appchain-eutxo-zk-testkit:test
+  :appchain-eutxo-zk-testkit:test \
+  :appchain-eutxo-zk-lifecycle:test \
+  :appchain-eutxo-zk-runtime:check
 ```
 
 This exercises:
@@ -60,20 +65,177 @@ This exercises:
 The tests execute the boundaries in one build, but they do not deploy the
 validators or submit transactions to a live Cardano network.
 
-### 2. Run the bounded proof example
+### 2. Build or extract a JVM distribution
+
+From source:
+
+```bash
+./gradlew :app:yanoDistZip
+unzip app/build/distributions/yano-*.zip -d build/yano-eutxo-preview
+cd build/yano-eutxo-preview/yano-*
+```
+
+From a release, extract `yano-{version}.zip` and enter its directory. All
+remaining commands use that directory's `./yano.sh`.
+
+### 3. Generate a devnet project
+
+```bash
+./yano.sh appchain init --non-interactive \
+  --recipe eutxo-zeroj-preview \
+  --network devnet \
+  --members 3 \
+  --runtime jvm \
+  --deployment host \
+  --name payments-zk \
+  --chain-id payments-zk \
+  --output payments-zk
+```
+
+Preview and Preprod require a durable acknowledgement in the generated
+blueprint and lock:
+
+```bash
+./yano.sh appchain init --non-interactive \
+  --recipe eutxo-zeroj-preview \
+  --network preview \
+  --members 3 \
+  --runtime jvm \
+  --deployment host \
+  --name payments-zk-preview \
+  --chain-id payments-zk-preview \
+  --acknowledge EUTXO_ZEROJ_UNSAFE_DEVELOPMENT_TESTNET \
+  --output payments-zk-preview
+```
+
+Omitting the acknowledgement fails closed. Selecting mainnet also fails
+closed and cannot be bypassed with an acknowledgement or hidden flag.
+
+### 4. Inspect the contract plan and bootstrap development proof keys
+
+Plan-only bootstrap is fast and does not generate secret proving material:
+
+```bash
+./yano.sh appchain validity bootstrap --project payments-zk
+./yano.sh appchain validity status --project payments-zk
+```
+
+For a disposable local ceremony:
+
+```bash
+./yano.sh appchain validity bootstrap \
+  --project payments-zk \
+  --development-ceremony \
+  --yes
+
+./yano.sh appchain validity doctor --project payments-zk
+```
+
+The b16 setup needs several gigabytes of heap and can take roughly two minutes
+on a developer workstation. The packaged tooling reserves a 4 GiB maximum
+heap. The generated proving key is owner-only where POSIX permissions are
+available and is never copied into the project lock.
+
+The command writes:
+
+- `runtime/validity/contracts.json` — deterministic, pinned contract plan;
+- `runtime/validity/ceremony/` — development proving/verification artifacts;
+- `runtime/validity/state.json` — lifecycle identity and stage; and
+- `runtime/validity/operations/` — durable content-addressed operation
+  journals.
+
+### 5. Prove finalized L2 transitions
+
+Export each finalized `EutxoValidityTransition` as canonical binary and pass
+the exact ordered files:
+
+```bash
+./yano.sh appchain validity prove \
+  --project payments-zk \
+  --previous-root <64-hex-root> \
+  --transition transition-0001.cbor \
+  --transition transition-0002.cbor
+```
+
+The result returns a proof digest. Independently reload and verify it with:
+
+```bash
+./yano.sh appchain validity proof <proof-digest> \
+  --project payments-zk
+```
+
+Proof generation refuses a transition from another chain/network, an
+unmeasured batch profile, a mismatched ceremony/VK identity, an invalid
+authorization, or more than 16 transitions.
+
+### 6. Prepare, submit, and reconcile L1 operations
+
+Prepare an idempotent operation from a non-secret JSON request:
+
+```bash
+./yano.sh appchain validity deposit prepare \
+  --project payments-zk \
+  --id deposit-0001 \
+  --request deposit-0001.json
+
+./yano.sh appchain validity settlement prepare \
+  --project payments-zk \
+  --id settlement-0001 \
+  --proof <proof-digest>
+```
+
+Build and sign the corresponding ordinary Cardano transaction with Cardano
+Client Lib, `cardano-cli`, or a wallet-backed service. Then submit its raw
+signed CBOR through Yano:
+
+```bash
+./yano.sh appchain validity settlement submit \
+  --project payments-zk \
+  --id settlement-0001 \
+  --tx settlement-0001.signed.cbor \
+  --url http://127.0.0.1:7070
+```
+
+If the node requires an API key, pass only its environment-variable name:
+
+```bash
+export YANO_L1_API_KEY='<secret>'
+./yano.sh appchain validity settlement submit \
+  --project payments-zk \
+  --id settlement-0001 \
+  --tx settlement-0001.signed.cbor \
+  --url https://node.example \
+  --api-key-env YANO_L1_API_KEY
+```
+
+The value is neither logged nor persisted. After an independently observed
+stable Cardano result:
+
+```bash
+./yano.sh appchain validity settlement stable \
+  --project payments-zk \
+  --id settlement-0001 \
+  --tx-id <64-hex-cardano-tx-id>
+
+./yano.sh appchain validity reconcile --project payments-zk
+```
+
+The same `prepare`, `submit`, and `stable` shape applies to `deposit`,
+`withdrawal`, and `recovery`. Repeating a completed step returns the retained
+result instead of creating a duplicate operation.
+
+### 7. Run the standalone proof and validator examples
+
+The bounded proof regression is:
 
 ```bash
 ./gradlew :appchain-eutxo-zk-zeroj:test \
   --tests \
-  'com.bloxbean.cardano.yano.appchain.eutxo.zk.zeroj.EutxoZ1BatchCircuitTest.realFourPaymentProofVerifiesAndPublicTamperingFails' \
+  'com.bloxbean.cardano.yano.appchain.eutxo.zk.zeroj.EutxoJubjubBatchCircuitTest.b16MaximumBatchProducesOneRealConstantSizeProof' \
   --rerun-tasks
 ```
 
-Expected output includes the circuit constraint and wire counts and the local
-proof duration. The test also changes public inputs and proves that the
-mutated statement is rejected.
-
-### 3. Run the proof-bound L1 validator example
+The proof-bound L1 validator regression is:
 
 ```bash
 ./gradlew :appchain-eutxo-zk-onchain:test \
@@ -93,40 +255,9 @@ that a normal root advance requires:
 
 It is a VM-level contract test, not a live devnet transaction.
 
-### 4. Inspect the generated development project
+## Lifecycle boundary and target live flow
 
-Build the version-matched tooling, then generate the current virtual-value
-recipe:
-
-```bash
-./gradlew :appchain-devtools:installDist
-
-./app/yano.sh appchain init --non-interactive \
-  --recipe eutxo-zeroj-validity \
-  --network devnet \
-  --members 3 \
-  --runtime jvm \
-  --deployment host \
-  --name eutxo-zk-development \
-  --chain-id payments-zk \
-  --answer eutxoGenesisAddress=<testnet-address> \
-  --answer eutxoGenesisLovelace=100000000 \
-  --output build/eutxo-zk-development
-```
-
-The generated project is useful for inspecting and validating the selected
-capabilities and consensus configuration. It is not yet a live ZK-rollup
-launcher because the distribution, prover, relay, and L1 bootstrap work
-listed above is still required.
-
-The recipe selects `profile:eutxo-key-payments`, not
-`profile:eutxo-plutus-v3`. This matches the current ZeroJ provider's reviewed
-transaction subset and prevents generated projects from claiming Plutus
-transitions that the circuit cannot prove.
-
-## Target preview user flow
-
-The preview should eventually provide this flow through `./yano.sh`:
+The modules and commands now model this flow:
 
 ```text
 Cardano test ADA
@@ -142,35 +273,12 @@ Cardano test ADA
   -> stable Cardano testnet output
 ```
 
-The intended command shape is:
-
-```bash
-# Proposed preview syntax — not implemented yet.
-./yano.sh appchain init --recipe eutxo-zeroj-preview \
-  --network devnet --members 3 --runtime jvm \
-  --name payments-zk --output payments-zk
-
-./yano.sh appchain cluster start --project payments-zk
-./yano.sh appchain validity bootstrap --project payments-zk
-./yano.sh appchain validity status --project payments-zk
-
-./yano.sh appchain bridge deposit prepare --project payments-zk ...
-./yano.sh appchain bridge deposit status --project payments-zk <l1-outpoint>
-
-./yano.sh appchain eutxo transaction submit \
-  --project payments-zk <wallet-signed-command.cbor>
-
-./yano.sh appchain validity prove --project payments-zk <finalized-height>
-./yano.sh appchain validity settle --project payments-zk <finalized-height>
-
-./yano.sh appchain bridge withdraw prepare --project payments-zk ...
-./yano.sh appchain bridge withdraw status --project payments-zk <withdrawal-id>
-```
-
-The final implementation may combine automatic proving and settlement behind
-one operator process. Status must still expose each distinct stage: app final,
-witness ready, proof generated, proof verified, root submitted, root stable,
-withdrawal submitted, and withdrawal stable.
+The lifecycle currently automates project safety, artifact identity, proof
+generation/verification, transaction submission, journals, and
+reconciliation. It does not yet build/sign Cardano transactions, infer
+stability from a public node, or claim live contract deployment. Those are
+explicit operator/acceptance boundaries, so a plan-only bootstrap is reported
+as `PLANNED_NOT_SUBMITTED`, never as deployed.
 
 ## Network progression
 

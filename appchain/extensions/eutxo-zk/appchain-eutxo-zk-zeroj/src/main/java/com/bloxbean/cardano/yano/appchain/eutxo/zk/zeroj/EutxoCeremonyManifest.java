@@ -84,6 +84,21 @@ public record EutxoCeremonyManifest(
             EutxoZkVerificationKey verificationKey
     ) {
         Objects.requireNonNull(verificationKey, "verificationKey");
+        return development(
+                ceremonyId,
+                keyDirectory,
+                EutxoZkProfile.Z3_VALIDITY_SETTLEMENT.digestHex(),
+                EutxoZkProfile.Z3_VALIDITY_SETTLEMENT.circuitId(),
+                verificationKey.digestHex());
+    }
+
+    public static EutxoCeremonyManifest development(
+            String ceremonyId,
+            Path keyDirectory,
+            String profileDigest,
+            String circuitId,
+            String verificationKeyDigest
+    ) {
         Map<String, String> files = inventory(keyDirectory);
         MessageDigest transcript = sha256();
         new TreeMap<>(files).forEach((name, digest) -> {
@@ -96,9 +111,9 @@ public record EutxoCeremonyManifest(
                 "zeroj-single-development-setup",
                 1,
                 HexFormat.of().formatHex(transcript.digest()),
-                EutxoZkProfile.Z3_VALIDITY_SETTLEMENT.digestHex(),
-                EutxoZkProfile.Z3_VALIDITY_SETTLEMENT.circuitId(),
-                verificationKey.digestHex(),
+                profileDigest,
+                circuitId,
+                verificationKeyDigest,
                 files);
     }
 

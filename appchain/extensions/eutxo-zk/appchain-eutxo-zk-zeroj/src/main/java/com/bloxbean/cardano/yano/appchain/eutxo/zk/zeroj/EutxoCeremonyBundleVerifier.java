@@ -16,10 +16,21 @@ public final class EutxoCeremonyBundleVerifier {
             Path keyDirectory,
             EutxoCeremonyManifest manifest
     ) {
-        Objects.requireNonNull(manifest, "manifest");
         EutxoZkProfile profile = EutxoZkProfile.Z3_VALIDITY_SETTLEMENT;
-        if (!profile.digestHex().equals(manifest.profileDigest())
-                || !profile.circuitId().equals(manifest.circuitId())) {
+        verifyBeforeLoad(
+                keyDirectory, manifest,
+                profile.digestHex(), profile.circuitId());
+    }
+
+    public static void verifyBeforeLoad(
+            Path keyDirectory,
+            EutxoCeremonyManifest manifest,
+            String expectedProfileDigest,
+            String expectedCircuitId
+    ) {
+        Objects.requireNonNull(manifest, "manifest");
+        if (!Objects.equals(expectedProfileDigest, manifest.profileDigest())
+                || !Objects.equals(expectedCircuitId, manifest.circuitId())) {
             throw new IllegalArgumentException(
                     "ceremony profile or circuit identity mismatch");
         }
@@ -36,9 +47,16 @@ public final class EutxoCeremonyBundleVerifier {
             EutxoCeremonyManifest manifest
     ) {
         Objects.requireNonNull(verificationKey, "verificationKey");
+        verifyAfterLoad(verificationKey.digestHex(), manifest);
+    }
+
+    public static void verifyAfterLoad(
+            String verificationKeyDigest,
+            EutxoCeremonyManifest manifest
+    ) {
+        Objects.requireNonNull(verificationKeyDigest, "verificationKeyDigest");
         Objects.requireNonNull(manifest, "manifest");
-        if (!verificationKey.digestHex().equals(
-                manifest.verificationKeyDigest())) {
+        if (!verificationKeyDigest.equals(manifest.verificationKeyDigest())) {
             throw new IllegalArgumentException(
                     "ceremony verification-key identity mismatch");
         }

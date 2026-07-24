@@ -351,12 +351,18 @@ final class AppChainProjectCatalog {
                     "Release capability index must match the embedded catalogs");
         }
         for (AppChainProjectModel.DistributionFlavor flavor : index.distributions()) {
+            Set<String> expectedFlavorArtifacts = artifacts.values().stream()
+                    .filter(artifact -> "BUNDLED".equals(artifact.availability()))
+                    .filter(artifact -> safeList(artifact.runtimeTypes())
+                            .contains(flavor.runtimeType()))
+                    .map(AppChainProjectModel.Artifact::id)
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
             if (!index.runtimeTypes().contains(flavor.runtimeType())
                     || flavor.id() == null || flavor.archivePattern() == null
                     || flavor.tooling() == null || flavor.platforms() == null
                     || flavor.artifacts() == null
                     || !knownArtifacts.containsAll(flavor.artifacts())
-                    || !Set.copyOf(flavor.artifacts()).equals(Set.copyOf(index.artifacts()))) {
+                    || !Set.copyOf(flavor.artifacts()).equals(expectedFlavorArtifacts)) {
                 throw new IllegalStateException("Release distribution flavor is invalid");
             }
         }

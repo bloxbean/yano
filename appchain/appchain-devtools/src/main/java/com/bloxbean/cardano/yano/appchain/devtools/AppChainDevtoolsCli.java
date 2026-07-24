@@ -13,6 +13,7 @@ import com.bloxbean.cardano.yano.appchain.config.TemplateValidationResult;
 import com.bloxbean.cardano.yano.appchain.config.ValidationDiagnostic;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowCli;
 import com.bloxbean.cardano.yano.appchain.eutxo.client.EutxoCli;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.lifecycle.EutxoValidityLifecycleCli;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 
@@ -54,6 +55,7 @@ public final class AppChainDevtoolsCli {
                or: ./yano.sh appchain migrate [project-directory] [--dry-run]
                or: ./yano.sh appchain role public-key|key-proof|sign|govern-* [options]
                or: ./yano.sh appchain eutxo transaction|utxo|proof|doctor|demo [options]
+               or: ./yano.sh appchain validity bootstrap|status|prove|proof|doctor|... [options]
             Options:
               --config <yml|yaml>                        repeatable, later source wins
               --format text|json                         validate/explain
@@ -94,6 +96,10 @@ public final class AppChainDevtoolsCli {
         Objects.requireNonNull(err, "err");
         if (args.length > 0 && "eutxo".equals(args[0])) {
             return EutxoCli.run(
+                    java.util.Arrays.copyOfRange(args, 1, args.length), out, err);
+        }
+        if (args.length > 0 && "validity".equals(args[0])) {
+            return EutxoValidityLifecycleCli.run(
                     java.util.Arrays.copyOfRange(args, 1, args.length), out, err);
         }
         if (roleCommand(args)) {
