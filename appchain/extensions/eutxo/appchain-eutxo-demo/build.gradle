@@ -35,3 +35,22 @@ publishing {
         }
     }
 }
+
+tasks.register('verifyNoZerojDependency') {
+    group = 'verification'
+    doLast {
+        def forbidden = configurations.runtimeClasspath.resolvedConfiguration
+                .resolvedArtifacts.findAll {
+                    it.moduleVersion.id.group.contains('zeroj')
+                            || it.name.contains('eutxo-zk')
+                }
+        if (!forbidden.isEmpty()) {
+            throw new GradleException(
+                    "Base EUTxO demo must not load ZK artifacts: ${forbidden}")
+        }
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyNoZerojDependency')
+}

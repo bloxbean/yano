@@ -22,6 +22,7 @@ public final class EutxoDemoCli {
             Usage: ./yano.sh appchain eutxo demo setup [options]
                or: ./yano.sh appchain eutxo demo start|up|stop [options]
                or: ./yano.sh appchain eutxo demo status [options]
+               or: ./yano.sh appchain eutxo demo ceremony --yes [options]
                or: ./yano.sh appchain eutxo demo round-trip|verify [options]
                or: ./yano.sh appchain eutxo demo reset --yes [options]
             Options:
