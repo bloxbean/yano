@@ -12,6 +12,7 @@ import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoRecord;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReserve;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoStateKeys;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalRecord;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoValidityTransition;
 
 import java.util.List;
 import java.util.Objects;
@@ -115,6 +116,22 @@ public final class EutxoClient {
                 EutxoQueryCodec.withdrawalRequest(claimId));
         return snapshot(result, Optional.ofNullable(
                 EutxoQueryCodec.decodeOptionalWithdrawalRecord(result.payload())));
+    }
+
+    /**
+     * Fetches the exact finalized Cardano transition witness committed by the
+     * validity root. The returned snapshot height lets a prover reject reads
+     * that are not yet final under its configured policy.
+     */
+    public EutxoSnapshot<Optional<EutxoValidityTransition>>
+            finalizedValidityTransition(long appHeight, int ordinal) {
+        AppChainClient.QueryResult result = client.query(
+                EutxoQueryCodec.VALIDITY_TRANSITION_PATH,
+                EutxoQueryCodec.validityTransitionRequest(
+                        appHeight, ordinal));
+        return snapshot(result, Optional.ofNullable(
+                EutxoQueryCodec.decodeOptionalValidityTransition(
+                        result.payload())));
     }
 
     /**

@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.eutxo.contracts;
 
+import com.bloxbean.cardano.client.transaction.spec.Transaction;
+import com.bloxbean.cardano.client.transaction.spec.TransactionBody;
 import org.junit.jupiter.api.Test;
 
 import java.util.HexFormat;
@@ -62,6 +64,40 @@ class EutxoContractCodecTest {
                 "2499d01ee7cb0d09d0d498040c6351accd9da83df31666cd4463d0b1722d1212");
         assertThat(EutxoProfile.V2.digestHex()).isEqualTo(
                 "8cd4adb72def2c31dc8551a02f67429ea468bb2024dbe85a1dc7300590c9d1bf");
+    }
+
+    @Test
+    void validityDomainRoundTripsAsBodyBoundCardanoMetadata() throws Exception {
+        EutxoTransactionDomain domain = new EutxoTransactionDomain(
+                "payments-zk",
+                "preview",
+                EutxoProfile.V1.digestHex(),
+                "aa".repeat(32),
+                fill(32, 7),
+                900);
+        Transaction transaction = Transaction.builder()
+                .body(TransactionBody.builder().ttl(900).build())
+                .build();
+
+        domain.attach(transaction);
+        Transaction decoded = Transaction.deserialize(
+                transaction.serialize());
+
+        assertThat(EutxoTransactionDomain.from(decoded))
+                .isEqualTo(domain);
+        assertThat(EutxoTransactionDomain.from(decoded).commitment())
+                .isEqualTo(domain.commitment());
+        assertThat(decoded.getBody().getAuxiliaryDataHash())
+                .isEqualTo(decoded.getAuxiliaryData()
+                        .getAuxiliaryDataHash());
+
+        decoded.getBody().getAuxiliaryDataHash()[0] ^= 1;
+        assertThatThrownBy(() -> EutxoTransactionDomain.from(decoded))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("hash");
+        assertThatThrownBy(() -> domain.attach(transaction))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("empty auxiliary-data");
     }
 
     @Test

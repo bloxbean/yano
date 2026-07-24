@@ -38,6 +38,22 @@ public final class EutxoStateKeys {
         return bytes(PREFIX + "validity/witness");
     }
 
+    /** Exact finalized transition witness keyed by app height and message ordinal. */
+    public static byte[] validityTransition(long appHeight, int ordinal) {
+        if (appHeight < 1 || ordinal < 0) {
+            throw new IllegalArgumentException(
+                    "invalid validity transition position");
+        }
+        return bytes(PREFIX + "validity/transition/"
+                + appHeight + "/" + ordinal);
+    }
+
+    /** Active L2 authorization key for one Cardano payment credential. */
+    public static byte[] l2Key(String paymentCredential) {
+        String credential = EutxoL2Authorization.credential(paymentCredential);
+        return bytes(PREFIX + "validity/l2-key/" + credential);
+    }
+
     public static byte[] utxo(EutxoOutpoint outpoint) {
         return bytes(PREFIX + "u/" + Objects.requireNonNull(outpoint, "outpoint"));
     }

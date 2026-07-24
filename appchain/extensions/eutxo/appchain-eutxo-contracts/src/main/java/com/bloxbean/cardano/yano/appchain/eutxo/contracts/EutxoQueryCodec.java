@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.eutxo.contracts;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.ByteBuffer;
 import java.util.List;
 import java.util.Objects;
 
@@ -13,6 +14,8 @@ public final class EutxoQueryCodec {
     public static final String DEPOSIT_PATH = "bridge/deposits/record";
     public static final String RESERVE_PATH = "bridge/reserve";
     public static final String WITHDRAWAL_PATH = "bridge/withdrawals/record";
+    public static final String VALIDITY_TRANSITION_PATH =
+            "validity/transitions/finalized";
     public static final String PROFILE_PATH = "profile";
 
     private EutxoQueryCodec() {
@@ -135,6 +138,71 @@ public final class EutxoQueryCodec {
 
     public static EutxoWithdrawalRecord decodeOptionalWithdrawalRecord(byte[] bytes) {
         return EutxoCbor.decodeOptionalWithdrawalRecord(bytes);
+    }
+
+    public static byte[] validityTransitionRequest(
+            long appHeight,
+            int ordinal
+    ) {
+        if (appHeight < 1 || ordinal < 0) {
+            throw new IllegalArgumentException(
+                    "invalid validity transition position");
+        }
+        return ByteBuffer.allocate(Long.BYTES + Integer.BYTES)
+                .putLong(appHeight).putInt(ordinal).array();
+    }
+
+    public static Position decodeValidityTransitionRequest(byte[] bytes) {
+        Objects.requireNonNull(bytes, "bytes");
+        if (bytes.length != Long.BYTES + Integer.BYTES) {
+            throw new IllegalArgumentException(
+                    "invalid validity transition request");
+        }
+        ByteBuffer input = ByteBuffer.wrap(bytes);
+        Position position = new Position(
+                input.getLong(), input.getInt());
+        if (position.appHeight() < 1 || position.ordinal() < 0) {
+            throw new IllegalArgumentException(
+                    "invalid validity transition position");
+        }
+        return position;
+    }
+
+    public static byte[] optionalValidityTransition(
+            EutxoValidityTransition transition
+    ) {
+        if (transition == null) {
+            return new byte[]{0};
+        }
+        byte[] encoded = transition.canonicalBytes();
+        return ByteBuffer.allocate(1 + Integer.BYTES + encoded.length)
+                .put((byte) 1).putInt(encoded.length).put(encoded).array();
+    }
+
+    public static EutxoValidityTransition decodeOptionalValidityTransition(
+            byte[] bytes
+    ) {
+        Objects.requireNonNull(bytes, "bytes");
+        if (bytes.length == 1 && bytes[0] == 0) {
+            return null;
+        }
+        if (bytes.length < 1 + Integer.BYTES || bytes[0] != 1) {
+            throw new IllegalArgumentException(
+                    "invalid optional validity transition");
+        }
+        ByteBuffer input = ByteBuffer.wrap(bytes);
+        input.get();
+        int length = input.getInt();
+        if (length < 1 || length != input.remaining()) {
+            throw new IllegalArgumentException(
+                    "invalid optional validity transition length");
+        }
+        byte[] encoded = new byte[length];
+        input.get(encoded);
+        return EutxoValidityTransition.decode(encoded);
+    }
+
+    public record Position(long appHeight, int ordinal) {
     }
 
     private static String boundedUtf8(byte[] bytes, int maximum, String field) {

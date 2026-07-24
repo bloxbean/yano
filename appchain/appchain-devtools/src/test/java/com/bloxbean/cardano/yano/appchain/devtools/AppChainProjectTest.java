@@ -198,12 +198,15 @@ class AppChainProjectTest {
                 .containsEntry("yano.app-chain.chains[0].machines.eutxo.profile",
                         "yano-eutxo-v1")
                 .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.network",
+                        "preprod")
+                .containsEntry(
                         "yano.app-chain.chains[0].machines.eutxo.expected-profile-digest",
                         "2499d01ee7cb0d09d0d498040c6351accd9da83df31666cd4463d0b1722d1212")
                 .containsEntry(
                         "yano.app-chain.chains[0].machines.eutxo.validity."
                                 + "transaction-format",
-                        "cardano-conway-signed-transaction-cbor-v1")
+                        "yano-eutxo-l2-envelope-v1")
                 .containsEntry(
                         "yano.app-chain.chains[0].machines.eutxo.validity."
                                 + "expected-profile-digest",
@@ -216,7 +219,19 @@ class AppChainProjectTest {
                         "0.1.0-pre10")
                 .containsEntry(
                         "yano.app-chain.chains[0].machines.eutxo.validity.julc-version",
-                        "0.1.0-pre14");
+                        "0.1.0-pre14")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.validity."
+                                + "authorization-profile",
+                        "zeroj-jubjub-dev-v1")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.validity."
+                                + "authorization-trusted-prover-required",
+                        "true")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.validity."
+                                + "funds-policy",
+                        "disposable-test-funds-only");
 
         assertThat(catalog.recipe("eutxo-zeroj-validity")
                 .effectiveSupportedNetworks())

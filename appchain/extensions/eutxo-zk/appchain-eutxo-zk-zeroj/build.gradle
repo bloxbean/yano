@@ -13,6 +13,7 @@ dependencies {
     implementation libs.zeroj.onchain.julc
 
     testImplementation libs.zeroj.verifier.groth16
+    testImplementation project(':appchain-eutxo-testkit')
     testImplementation libs.junit.jupiter.api
     testRuntimeOnly libs.junit.jupiter.engine
     testRuntimeOnly libs.junit.platform.launcher

@@ -1,7 +1,8 @@
 # Z2 durable prover pipeline
 
 Z2 keeps proof generation entirely outside deterministic app-chain apply.
-The runtime adapter hands a bounded batch to `EutxoFinalizedBatchIngestor`
+The Phase C feasibility adapter hands a manually assembled bounded amount tuple
+to `EutxoDevelopmentBatchIngestor`
 only after that batch is final. The ingestor derives one canonical public
 statement and uses its SHA-256 digest as the durable job ID, so replay is
 idempotent and redundant provers agree on what they are proving.

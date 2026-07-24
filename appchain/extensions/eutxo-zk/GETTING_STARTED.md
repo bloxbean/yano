@@ -205,25 +205,33 @@ The default must be selected from measured Yano devnet, Preview, and Preprod
 results. Recursive proof aggregation is a later optimization, not a
 prerequisite for the first preview.
 
-## Cardano transaction-format compatibility
+## L1 and L2 transaction compatibility
 
-The preview must keep canonical Cardano transaction CBOR as the submitted
-EUTxO transaction format. The ZeroJ profile defines which Cardano transaction
-semantics it proves; it does not define a replacement payment wire format.
+Keep two protocols separate:
 
-Consequently, Cardano tooling such as Cardano Client Lib can continue to:
+| Boundary | Transaction | Authorization |
+|---|---|---|
+| Cardano L1 | Ordinary ledger-CDDL Cardano transaction | Ed25519 VKey witness |
+| Yano L2 | Canonical Yano envelope containing a Cardano-compatible transaction body | Jubjub session-key signature |
+
+Deposits, key registration/recovery, proof publication, and withdrawals remain
+ordinary Cardano transactions. Jubjub keys and signatures never appear in a
+Cardano VKey witness set and are never published as individual L1
+transactions.
+
+Cardano tooling such as Cardano Client Lib can still construct the L2
+transaction body:
 
 - construct a Conway transaction body;
 - refer to appchain EUTxOs with ordinary transaction-hash/index inputs;
-- create ordinary Cardano outputs and inline datums;
-- calculate the standard Cardano transaction-body hash;
-- produce an ordinary VKey witness set; and
-- serialize the result as canonical Cardano transaction CBOR.
+- create ordinary Cardano outputs and inline datums; and
+- calculate the standard Cardano transaction-body hash.
 
-An appchain SDK adapter supplies the changing pieces: appchain UTxO lookup,
-the selected profile limits, zero or configured L2 fees, current L1 slot,
-submission, and receipt queries. Existing builders and signing providers do
-not need a Yano-specific transaction model.
+The Yano client adapter then wraps that body with the L2 replay domain and
+Jubjub authorizations. It supplies appchain UTxO lookup, selected profile
+limits, zero or configured L2 fees, current stable L1 slot, submission, and
+receipt queries. Existing CCL body builders remain reusable; a normal Cardano
+transaction signer is used only for L1 operations.
 
 ### L2 protocol parameters
 
@@ -264,13 +272,12 @@ GET /api/v1/app-chain/chains/{chainId}/eutxo/utxos?address={address}
 POST /api/v1/app-chain/chains/{chainId}/messages
 ```
 
-The submission request carries the canonical signed transaction without
-re-encoding it into a Yano-specific transaction model:
+The submission request carries the canonical L2 envelope:
 
 ```json
 {
   "topic": "eutxo.transactions",
-  "bodyHex": "<canonical-signed-cardano-transaction-cbor>"
+  "bodyHex": "<canonical-yano-eutxo-l2-envelope>"
 }
 ```
 
@@ -280,28 +287,24 @@ that the EUTxO transition is final. The client subsequently queries
 `transactions/receipt` by Cardano transaction ID, or `attempts/receipt` by
 app-message ID, to distinguish accepted, rejected, and finalized outcomes.
 
-Programmatic construction remains standard Cardano Client Lib:
+Programmatic body construction remains standard Cardano Client Lib. The Yano
+adapter signs the envelope after the body is built:
 
 ```java
 UtxoSupplier l2Utxos = yanoEutxoClient.utxoSupplier();
 ProtocolParamsSupplier l2Params =
         yanoEutxoClient.protocolParamsSupplier();
-TransactionProcessor l2Transactions =
-        yanoEutxoClient.transactionProcessor();
-
 TxBuilderContext context =
         TxBuilderContext.init(l2Utxos, l2Params);
 
-Result<String> submitted =
-        l2Transactions.submitTransaction(signedTransaction.serialize());
+EutxoL2Submission submitted =
+        yanoEutxoClient.signAndSubmit(transactionBody, jubjubSessionKey);
 ```
 
-The `TransactionProcessor` adapter delegates submission to the existing
-`EutxoClient.submit(byte[])`, which posts to the generic message endpoint on
-topic `eutxo.transactions`. On HTTP `202`, its `Result<String>.value` is the
-standard Cardano transaction-body hash calculated from the submitted CBOR,
-not Yano's outer app-message ID. The adapter retains the app-message ID as
-correlation metadata so callers can inspect an individual rejected attempt.
+The adapter delegates submission to the existing generic message endpoint on
+topic `eutxo.transactions`. Its result keeps three identities distinct: the
+L2 transaction ID, the contained Cardano body hash, and Yano's outer
+app-message ID. HTTP `202` means message-pool admission only.
 
 Because Cardano Client Lib's `TransactionProcessor` also extends
 `TransactionEvaluator`, the adapter must provide profile-correct evaluation.
@@ -319,9 +322,9 @@ Format compatibility does not mean that every Cardano ledger feature is
 enabled. The first proof profile should fail closed on fields outside its
 reviewed subset. The initial subset is:
 
-- Conway transaction/body/witness-set encoding;
+- canonical L2 envelope and Conway transaction-body encoding;
 - key-controlled lovelace inputs and outputs;
-- standard Ed25519 VKey witnesses;
+- registered Jubjub session-key authorization;
 - bounded input and output counts;
 - zero L2 fee;
 - validity start and expiry slots; and
@@ -331,53 +334,42 @@ Minting, native assets, staking, governance, certificates, withdrawals,
 reference inputs/scripts, collateral, and general Plutus execution remain
 unsupported until separate circuit profiles prove them.
 
-The circuit must be constrained to the exact canonical transaction bytes. It
-must verify the transaction-body hash, supported-field decoding, input
-membership and non-reuse, VKey authorization, conservation, and output
-creation. Merely letting the runtime parse Cardano CBOR while the circuit
-proves a separate amount tuple is insufficient.
+The L2 envelope binds the chain ID, network, ledger profile, validity profile,
+authorization profile, body hash, key epoch, 32-byte command nonce, and
+expiry. Runtime admission rejects a missing or mismatched domain before
+changing EUTxO state.
 
-Cardano's transaction body has a network identifier but no Yano appchain ID.
-The supported profile therefore also needs a standard Cardano auxiliary-data
-entry whose hash is carried by the transaction body and which binds at least
-the appchain ID, EUTxO profile, validity profile, and command nonce. Cardano
-SDKs already support transaction metadata, so this provides replay-domain
-separation without changing the Cardano transaction format.
+The experimental `zeroj-jubjub-dev-v1` circuit proves the Jubjub signature
+equation over the exact envelope signing commitment. Deterministic host
+validation enforces canonical point encodings, group checks, active
+registration, supported Cardano-body semantics, ownership, conservation, and
+the finalized transition/root. This split is allowed only with a trusted
+sequencer/prover and disposable test funds. A hardened successor must
+constrain all security-critical semantics against an adversarial prover and
+must use new circuit, ceremony, key, validator, and lock identities.
 
-## Cardano wallet authorization
+## Cardano wallet and L2 authorization
 
-The base EUTxO state machine already verifies standard Cardano VKey witnesses
-over transaction-body hashes. The current ZK circuit does not prove that
-verification; it uses a Poseidon owner-secret commitment instead. A prover
-must never require a user's Cardano private key.
+The Cardano wallet remains the L1 identity and gatekeeper. It signs a normal
+Cardano registration or deposit transaction that binds its payment credential
+to one L2 Jubjub public key and key epoch. High-frequency L2 transactions are
+then signed by the corresponding Jubjub session key in the Yano client SDK.
+The proof compresses those L2 authorizations; individual signatures do not
+appear on L1.
 
-Two wallet-compatible validity profiles are useful:
+Two session-key sources are part of the design:
 
-1. **Direct Cardano signature profile.** Cardano Client Lib, `cardano-cli`,
-   or a compatible CIP-30 wallet signs the canonical Cardano transaction
-   body. The public key, VKey signature, and transaction bytes become proof
-   witness data, and the circuit proves the Ed25519 verification and
-   payment-credential binding. This is the simplest trust model but is
-   expensive when repeated for every transaction.
-2. **Wallet-authorized session profile.** The Cardano wallet signs a bounded,
-   expiring delegation to a ZK-friendly session key. The registration
-   transition proves the Cardano signature once; subsequent appchain
-   transactions use the cheaper session-key signature. This preserves wallet
-   control while providing better throughput.
+1. a randomly generated encrypted key, with explicit backup, rotation,
+   revocation, and L1 recovery; or
+2. an optional deterministic key derived from one domain-separated CIP-8
+   `signData` result.
 
-Backend and programmatic wallets can sign the standard transaction directly.
-Browser-wallet behavior needs compatibility testing: a CIP-30 wallet may
-refuse `signTx` when it cannot find virtual appchain inputs on Cardano L1. If
-that prevents portable browser support, `CIP-30 signData` can authorize the
-standard Cardano transaction body hash as a companion envelope; it does not
-replace the Cardano transaction payload. The signed payload must bind the
-appchain ID, network, profiles, transaction-body hash, nonce, and expiry to
-prevent cross-chain and replay use.
-
-ZeroJ currently contains the SHA-512, Blake2b, Ed25519 point, BIP32-Ed25519,
-and CIP-1852 derivation building blocks. A complete audited RFC 8032
-signature-verification gadget and its cost benchmark are still required for
-the direct profile.
+The deterministic option needs wallet compatibility and security testing. Its
+derivation input must bind the appchain, network, profiles, account, purpose,
+and version. The SDK must never log the signature, derived scalar, or key
+material, and a wallet whose `signData` output is not stable for the same
+request must use the random-key flow. No Cardano private key is exposed to the
+prover.
 
 ## Preview graduation criteria
 
