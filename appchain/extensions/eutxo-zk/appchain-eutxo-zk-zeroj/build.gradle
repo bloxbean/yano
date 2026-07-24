@@ -27,6 +27,8 @@ java {
 
 tasks.named('test') {
     systemProperty 'zeroj.allowInsecureTrustedSetup', 'true'
+    // The measured b16 Groth16 gate compiles and proves the full fixed circuit.
+    maxHeapSize = '4g'
 }
 
 publishing {
