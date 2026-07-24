@@ -3,6 +3,8 @@ package com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigInteger;
+import java.util.Arrays;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -61,6 +63,46 @@ class EutxoZkContractsTest {
                 .hasMessageContaining("conserve");
         assertThatThrownBy(() -> new EutxoKeyPaymentBatch(
                 java.util.Collections.nCopies(5, payment), BigInteger.valueOf(9)))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void z2ArtifactsRoundTripCanonicallyAndRejectMutation() {
+        var payment = new EutxoKeyPaymentBatch.Payment(
+                BigInteger.TEN, BigInteger.valueOf(6), BigInteger.valueOf(4));
+        var inputs = new EutxoZkPublicInputs(
+                BigInteger.ONE, BigInteger.TWO, BigInteger.valueOf(3),
+                BigInteger.valueOf(4), BigInteger.ONE);
+        var batch = new EutxoZkBatchData(List.of(payment),
+                inputs.ownerCommitment());
+        var statement = new EutxoZkStatement(
+                "payments", 12,
+                EutxoZkProfile.Z1_BOUNDED_KEY_PAYMENTS,
+                inputs, batch.commitment());
+        var key = new EutxoZkVerificationKey(
+                statement.profile().id(),
+                statement.profile().circuitId(),
+                new byte[48], new byte[96], new byte[96], new byte[96],
+                java.util.Collections.nCopies(6, new byte[48]));
+        var proof = new EutxoZkProofArtifact(
+                statement.digestHex(), key.digestHex(), "prover-a",
+                statement, new byte[48], new byte[96], new byte[48], 9);
+
+        assertThat(EutxoZkBatchData.decode(batch.canonicalBytes())
+                .canonicalBytes()).isEqualTo(batch.canonicalBytes());
+        assertThat(EutxoZkStatement.decode(statement.canonicalBytes())
+                .canonicalBytes()).isEqualTo(statement.canonicalBytes());
+        assertThat(EutxoZkVerificationKey.decode(key.canonicalBytes())
+                .canonicalBytes()).isEqualTo(key.canonicalBytes());
+        assertThat(EutxoZkProofArtifact.decode(proof.canonicalBytes())
+                .canonicalBytes()).isEqualTo(proof.canonicalBytes());
+
+        byte[] mutated = proof.canonicalBytes();
+        mutated[mutated.length - 1] ^= 1;
+        EutxoZkProofArtifact decoded = EutxoZkProofArtifact.decode(mutated);
+        assertThat(decoded.digestHex()).isNotEqualTo(proof.digestHex());
+        assertThatThrownBy(() -> EutxoZkProofArtifact.decode(
+                Arrays.copyOf(mutated, mutated.length - 2)))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 

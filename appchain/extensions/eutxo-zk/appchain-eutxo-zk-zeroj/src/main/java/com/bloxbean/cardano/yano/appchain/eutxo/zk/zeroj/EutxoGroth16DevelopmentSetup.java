@@ -14,7 +14,9 @@ import com.bloxbean.cardano.zeroj.crypto.setup.PowersOfTauBLS381;
 import com.bloxbean.cardano.zeroj.onchain.julc.groth16.codec.ProverToCardano;
 import com.bloxbean.cardano.zeroj.onchain.julc.groth16.codec.SnarkjsToCardano;
 
+import java.io.IOException;
 import java.math.BigInteger;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
@@ -51,6 +53,28 @@ public final class EutxoGroth16DevelopmentSetup implements AutoCloseable {
     static EutxoGroth16DevelopmentSetup create(
             com.bloxbean.cardano.zeroj.circuit.CircuitBuilder circuit
     ) {
+        return create(circuit, null, false);
+    }
+
+    static EutxoGroth16DevelopmentSetup create(
+            com.bloxbean.cardano.zeroj.circuit.CircuitBuilder circuit,
+            Path keyDirectory
+    ) {
+        return create(circuit, keyDirectory, false);
+    }
+
+    static EutxoGroth16DevelopmentSetup load(
+            com.bloxbean.cardano.zeroj.circuit.CircuitBuilder circuit,
+            Path keyDirectory
+    ) {
+        return create(circuit, keyDirectory, true);
+    }
+
+    private static EutxoGroth16DevelopmentSetup create(
+            com.bloxbean.cardano.zeroj.circuit.CircuitBuilder circuit,
+            Path keyDirectory,
+            boolean loadOnly
+    ) {
         var r1cs = circuit.compileR1CS(CurveId.BLS12_381);
         List<R1CSConstraint> constraints = r1cs.constraints();
         int domainLog = 1;
@@ -58,9 +82,27 @@ public final class EutxoGroth16DevelopmentSetup implements AutoCloseable {
             domainLog++;
         }
         long started = System.nanoTime();
-        BigInteger tau = PowersOfTauBLS381.generate(domainLog + 2).tauScalar();
-        Groth16Keys keys = Groth16Keys.setupInMemory(
-                constraints, r1cs.numWires(), r1cs.numPublicInputs(), tau);
+        Groth16Keys keys;
+        try {
+            if (loadOnly) {
+                keys = Groth16Keys.load(Objects.requireNonNull(
+                        keyDirectory, "keyDirectory"));
+            } else {
+                BigInteger tau = PowersOfTauBLS381.generate(
+                        domainLog + 2).tauScalar();
+                keys = keyDirectory == null
+                        ? Groth16Keys.setupInMemory(
+                        constraints, r1cs.numWires(),
+                        r1cs.numPublicInputs(), tau)
+                        : Groth16Keys.setupToStore(
+                        r1cs.flat(), r1cs.numWires(),
+                        r1cs.numPublicInputs(), tau,
+                        keyDirectory, true);
+            }
+        } catch (IOException exception) {
+            throw new IllegalStateException(
+                    "cannot initialize Groth16 proving keys", exception);
+        }
         return new EutxoGroth16DevelopmentSetup(
                 r1cs, constraints, keys,
                 Duration.ofNanos(System.nanoTime() - started).toMillis());
