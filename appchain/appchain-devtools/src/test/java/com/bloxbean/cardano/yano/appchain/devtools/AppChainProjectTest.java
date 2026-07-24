@@ -180,6 +180,33 @@ class AppChainProjectTest {
     }
 
     @Test
+    void eutxoAnswersRejectLabeledAndMalformedPublicValuesBeforeRendering() throws Exception {
+        AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
+        AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
+        AppChainProjectResolver resolver = new AppChainProjectResolver(properties, catalog);
+        Map<String, String> labeled = new java.util.LinkedHashMap<>(l2Answers());
+        labeled.put("eutxoGenesisAddress", "addr_test1vr8nlm7example");
+        labeled.put("eutxoGenesisLovelace", "100000000");
+        labeled.put("eutxoL2Address",
+                "L2_ADDRESS=addr_test1vr8nlm7example");
+
+        assertThatThrownBy(() -> resolver.resolve(withAnswers(
+                blueprint("eutxo-zeroj-validity", "fixed", List.of()), labeled)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("eutxoL2Address")
+                .hasMessageContaining("not NAME=value")
+                .hasMessageNotContaining("L2_ADDRESS=");
+
+        Map<String, String> malformedKey = new java.util.LinkedHashMap<>(labeled);
+        malformedKey.put("eutxoL2Address", "addr_test1vr8nlm7example");
+        malformedKey.put("eutxoL2PublicKey", "ABC123");
+        assertThatThrownBy(() -> resolver.resolve(withAnswers(
+                blueprint("eutxo-zeroj-validity", "fixed", List.of()), malformedKey)))
+                .hasMessageContaining("eutxoL2PublicKey")
+                .hasMessageContaining("64 lowercase hexadecimal");
+    }
+
+    @Test
     void zerojValidityPolicyAllowsTestnetsAndRejectsEveryMainnetSelectionPath()
             throws Exception {
         AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();

@@ -11,9 +11,11 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.runtime.StartupEvent;
+import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
+import jakarta.interceptor.Interceptor;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -97,7 +99,8 @@ public class AppChainMetrics {
     private static final List<String> EXECUTOR_READINESS = List.of(
             "ready", "degraded", "unavailable", "unknown");
 
-    void onStart(@Observes StartupEvent event) {
+    void onStart(
+            @Observes @Priority(Interceptor.Priority.APPLICATION + 100) StartupEvent event) {
         if (!appChainEnabled && firstChainId.isEmpty()) {
             return;
         }
