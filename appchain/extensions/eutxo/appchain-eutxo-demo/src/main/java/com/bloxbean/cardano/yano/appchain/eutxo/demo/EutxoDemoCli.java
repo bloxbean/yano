@@ -20,7 +20,9 @@ public final class EutxoDemoCli {
 
     public static final String USAGE = """
             Usage: ./yano.sh appchain eutxo demo setup [options]
+               or: ./yano.sh appchain eutxo demo start|up|stop [options]
                or: ./yano.sh appchain eutxo demo status [options]
+               or: ./yano.sh appchain eutxo demo round-trip|verify [options]
                or: ./yano.sh appchain eutxo demo reset --yes [options]
             Options:
               --scenario ledger|bridge|zk  default ledger
@@ -96,7 +98,16 @@ public final class EutxoDemoCli {
         if ("setup".equals(options.command())) {
             EutxoDemoScenarioProvider provider = scenarios.require(options.scenario());
             EutxoDemoWorkspace workspace = EutxoDemoWorkspace.create(options, provider);
+            provider.setup(workspace, options);
             return ready(workspace);
+        }
+        if ("up".equals(options.command())
+                && !java.nio.file.Files.exists(
+                options.workspace().resolve(".yano-eutxo-demo"))) {
+            EutxoDemoScenarioProvider provider = scenarios.require(options.scenario());
+            EutxoDemoWorkspace workspace = EutxoDemoWorkspace.create(options, provider);
+            provider.setup(workspace, options);
+            return provider.execute("up", workspace, options);
         }
         EutxoDemoWorkspace workspace = EutxoDemoWorkspace.open(options.workspace());
         if (options.scenario() != null
@@ -107,14 +118,14 @@ public final class EutxoDemoCli {
         EutxoDemoScenarioProvider provider =
                 scenarios.require(workspace.manifest().scenario());
         if ("status".equals(options.command())) {
-            Map<String, Object> fields = common(workspace);
-            fields.put("operations", workspace.journal().read());
-            fields.put("trustBoundary", provider.trustBoundary());
-            return EutxoDemoResult.of("EUTXO_DEMO_STATUS", fields);
+            return provider.execute("status", workspace, options);
         }
         if ("reset".equals(options.command())) {
             if (!options.confirmed()) {
                 throw new Usage("reset requires --yes");
+            }
+            if (provider.operations().contains("stop")) {
+                provider.execute("stop", workspace, options);
             }
             Path removed = workspace.root();
             workspace.reset();
@@ -230,7 +241,8 @@ public final class EutxoDemoCli {
                 throw new Usage("unknown EUTxO demo command: " + command);
             }
         }
-        if (scenario == null && ("setup".equals(command) || "scenarios".equals(command))) {
+        if (scenario == null && ("setup".equals(command)
+                || "up".equals(command) || "scenarios".equals(command))) {
             scenario = "ledger";
         }
         if (chainId == null) {
