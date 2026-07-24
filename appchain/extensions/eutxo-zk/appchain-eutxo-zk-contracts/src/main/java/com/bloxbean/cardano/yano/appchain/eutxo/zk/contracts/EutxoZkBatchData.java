@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts;
 
+import com.bloxbean.cardano.client.crypto.Blake2bUtil;
+
 import java.io.DataInputStream;
 import java.io.IOException;
 import java.math.BigInteger;
@@ -14,10 +16,13 @@ import java.util.Objects;
  * prover witness store.</p>
  */
 public record EutxoZkBatchData(
-        List<EutxoKeyPaymentBatch.Payment> payments,
-        BigInteger ownerCommitment
+        List<EutxoKeyPaymentBatch.Payment> payments
 ) {
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
+    public static final int CANONICAL_BYTES = 4 + 1 + (4 * 3 * 8);
+    private static final BigInteger BLS12_381_SCALAR_FIELD =
+            new BigInteger(
+                    "52435875175126190479447740508185965837690552500527637822603658699938581184513");
 
     public EutxoZkBatchData {
         payments = List.copyOf(Objects.requireNonNull(payments, "payments"));
@@ -26,27 +31,41 @@ public record EutxoZkBatchData(
                 > EutxoZkProfile.Z1_BOUNDED_KEY_PAYMENTS.maximumBatchSize()) {
             throw new IllegalArgumentException("batch data must contain 1-4 payments");
         }
-        Objects.requireNonNull(ownerCommitment, "ownerCommitment");
-        if (ownerCommitment.signum() < 0 || ownerCommitment.bitLength() > 255) {
-            throw new IllegalArgumentException("owner commitment is outside the scalar envelope");
-        }
     }
 
     public byte[] canonicalBytes() {
         return EutxoZkCodec.encode(output -> {
             output.writeInt(VERSION);
             output.writeByte(payments.size());
-            for (EutxoKeyPaymentBatch.Payment payment : payments) {
-                output.writeLong(payment.inputLovelace().longValue());
-                output.writeLong(payment.firstOutputLovelace().longValue());
-                output.writeLong(payment.secondOutputLovelace().longValue());
+            for (int index = 0;
+                 index < EutxoZkProfile.Z1_BOUNDED_KEY_PAYMENTS
+                         .maximumBatchSize();
+                 index++) {
+                if (index < payments.size()) {
+                    EutxoKeyPaymentBatch.Payment payment =
+                            payments.get(index);
+                    output.writeLong(
+                            payment.inputLovelace().longValue());
+                    output.writeLong(
+                            payment.firstOutputLovelace().longValue());
+                    output.writeLong(
+                            payment.secondOutputLovelace().longValue());
+                } else {
+                    output.writeLong(0);
+                    output.writeLong(0);
+                    output.writeLong(0);
+                }
             }
-            EutxoZkCodec.writeScalar(output, ownerCommitment);
         });
     }
 
     public byte[] commitment() {
-        return EutxoZkCodec.sha256(canonicalBytes());
+        return Blake2bUtil.blake2bHash256(canonicalBytes());
+    }
+
+    public BigInteger commitmentScalar() {
+        return new BigInteger(1, commitment())
+                .mod(BLS12_381_SCALAR_FIELD);
     }
 
     public static EutxoZkBatchData decode(byte[] encoded) {
@@ -59,16 +78,27 @@ public record EutxoZkBatchData(
                     || count > EutxoZkProfile.Z1_BOUNDED_KEY_PAYMENTS.maximumBatchSize()) {
                 throw new IllegalArgumentException("invalid batch-data count");
             }
-            List<EutxoKeyPaymentBatch.Payment> payments = new ArrayList<>(count);
-            for (int index = 0; index < count; index++) {
-                payments.add(new EutxoKeyPaymentBatch.Payment(
-                        unsigned(input.readLong()),
-                        unsigned(input.readLong()),
-                        unsigned(input.readLong())));
+            List<EutxoKeyPaymentBatch.Payment> payments =
+                    new ArrayList<>(count);
+            for (int index = 0;
+                 index < EutxoZkProfile.Z1_BOUNDED_KEY_PAYMENTS
+                         .maximumBatchSize();
+                 index++) {
+                BigInteger inputAmount = unsigned(input.readLong());
+                BigInteger first = unsigned(input.readLong());
+                BigInteger second = unsigned(input.readLong());
+                if (index < count) {
+                    payments.add(new EutxoKeyPaymentBatch.Payment(
+                            inputAmount, first, second));
+                } else if (inputAmount.signum() != 0
+                        || first.signum() != 0
+                        || second.signum() != 0) {
+                    throw new IllegalArgumentException(
+                            "non-zero canonical batch padding");
+                }
             }
-            BigInteger ownerCommitment = EutxoZkCodec.readScalar(input);
             EutxoZkCodec.requireEnd(input);
-            return new EutxoZkBatchData(payments, ownerCommitment);
+            return new EutxoZkBatchData(payments);
         } catch (IOException exception) {
             throw new IllegalArgumentException("invalid EUTxO ZK batch data", exception);
         }

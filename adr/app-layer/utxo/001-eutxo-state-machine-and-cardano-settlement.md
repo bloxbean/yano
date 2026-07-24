@@ -2,13 +2,31 @@
 
 ## Status
 
-Proposed — version 5
+Proposed — version 6
 
 Phase A and the automated portions of Phase B are implemented as optional
 modules under `appchain/extensions/eutxo/`. Their schemas and bridge remain
 alpha pending the external operational and independent-review gates recorded
 by the implementation. Phase C is the active implementation plan and remains
 experimental with no production-funds claim.
+
+Version 6:
+
+- selects L1-enforced publication for the bounded Z5 profile: every normal
+  validity-root advance must publish the exact canonical batch bytes as one
+  inline datum at a deployment-pinned Cardano script in the same transaction;
+- fixes the v2 canonical data shape at 101 bytes and requires both the ZeroJ
+  circuit and Julc root validator to derive the same reduced BLAKE2b-256
+  commitment before accepting the proof/root;
+- adds portable publication, data-availability monitoring, independent
+  reference reconstruction from genesis or a verified snapshot, and a
+  secret-free post-proof recovery bundle;
+- makes root and aggregate-withdrawal relay permissionless after a proof
+  exists, while explicitly retaining the pre-proof witness/prover and
+  transaction-censorship limitations; and
+- keeps `rollup:zeroj-cardano` blocked until an external implementation
+  reconstructs the vectors and an operational exercise demonstrates the
+  declared L1-history retention and recovery horizon.
 
 Version 5:
 
@@ -673,7 +691,7 @@ appchain/extensions/eutxo-zk/appchain-eutxo-zk-prover
 
 appchain/extensions/eutxo-zk/appchain-eutxo-zk-client
   typed validity status, statement, witness, proof, data-availability,
-  reconstruction, and relay APIs
+  monitoring, recovery planning, and relay APIs
 
 appchain/extensions/eutxo-zk/appchain-eutxo-zk-onchain
   Julc proof-verifier/validity-root validator, verification-key binding,
@@ -1466,6 +1484,34 @@ reconstruct state. Therefore:
 - missing data or proof service halts rollup graduation rather than being
   hidden behind an otherwise valid root.
 
+For the first bounded validity profile, the approved L1-enforced publication
+mechanism is part of the validity-root transition itself:
+
+- the redeemer carries the exact canonical `EutxoZkBatchData` bytes;
+- the same transaction creates exactly one output at a deployment-pinned DA
+  script with those bytes as an inline datum;
+- the v2 encoding is exactly 101 bytes: version, count, four fixed payment
+  slots, and zero-filled unused slots;
+- the ZeroJ circuit derives BLAKE2b-256 from those constrained payment values,
+  while the root validator derives it from the inline bytes; both reduce the
+  digest into the BLS12-381 scalar field and compare it with the same
+  proof-bound public input; and
+- missing, duplicate, differently addressed, oversized, or mutated batch
+  publication makes the root transition invalid.
+
+The Cardano transaction/output reference and inline datum are the canonical
+publication identity. An operator MUST configure and monitor an L1 history
+source that serves those transactions for the declared security horizon.
+Merely observing the unspent DA output is insufficient because the
+publication remains part of transaction history after that output is spent.
+
+The first recovery bundle contains public batch data, the proof, and its
+verification key. It contains no owner secret. Once the proof exists, root
+advancement and the bounded aggregate withdrawal are permissionless to relay.
+Before the proof exists, recovery requires a party that already possesses the
+private witness and a compatible proving service/key. The design does not
+force inclusion of a transaction censored before app-chain finality.
+
 `rollup:zeroj-cardano` may be claimed only when the accepted transaction data
 needed for independent reconstruction is available through the approved L1
 or L1-enforced availability design and the approved exit/recovery path does
@@ -1906,21 +1952,31 @@ Deliver:
 - reconstruction and adversarial fixtures in
   `appchain-eutxo-zk-testkit`;
 - canonical batch publication format bound by the proof;
-- approved L1 or L1-enforced data-availability mechanism;
+- L1-enforced inline-datum publication in the root-advance transaction;
 - independent state reconstruction from genesis or a verified snapshot;
 - public proof/data availability monitoring;
-- withdrawal-proof recovery and approved exit behavior; and
+- secret-free post-proof recovery bundles and permissionless root/withdrawal
+  relay behavior; and
 - censorship, unavailable-data, unavailable-prover, and operator-loss
   exercises.
 
 Exit criteria:
 
-- an independent implementation reconstructs every accepted validity root;
-- required batch data remains available for the declared security horizon;
+- a separately implemented reference oracle reconstructs every accepted
+  validity root in automated vectors, followed by confirmation from an
+  implementation outside the authoring environment;
+- required batch data remains available for the declared security horizon in
+  an operational L1-history exercise;
 - the approved exit/recovery path does not rely solely on the current
-  operator threshold; and
+  operator threshold after proof generation, and the pre-proof witness/prover
+  limitation is explicit; and
 - only after these gates pass may the product request the
   `rollup:zeroj-cardano` label.
+
+The in-repository implementation and adversarial fixtures satisfy the
+automatable portions of this milestone. External reconstruction and
+operational retention are release/readiness evidence, not facts a unit test
+can manufacture; they remain open and keep the rollup label non-selectable.
 
 ### UTXO-Z6 — Production hardening and bounded expansion
 
@@ -1948,7 +2004,9 @@ Exit criteria:
 
 Completing UTXO-M0 through UTXO-M5 produces a federated bridge, not a ZK
 system. Completing UTXO-Z0 through UTXO-Z4 produces validity settlement but
-not automatically a rollup. The rollup label additionally requires UTXO-Z5
+not automatically a rollup. Completing the automatable UTXO-Z5 work adds
+L1-enforced data publication and recovery tooling, but the rollup label still
+requires external reconstruction, operational retention/recovery evidence,
 and the applicable UTXO-Z6 readiness gates.
 
 ## 21. Build and release gates
@@ -1979,6 +2037,8 @@ The build fails when:
   or validity root;
 - a Julc/Cardano negative vector accepts a mismatched chain, profile, old/new
   root, batch commitment, withdrawal commitment, VK, or bridge epoch;
+- a validity root can advance without exactly one proof-bound canonical batch
+  datum at the pinned L1 data-availability script;
 - the validity-root public statement is not reproducible from the finalized
   batch;
 - proof, script, transaction, CPU, or memory budgets exceed their configured

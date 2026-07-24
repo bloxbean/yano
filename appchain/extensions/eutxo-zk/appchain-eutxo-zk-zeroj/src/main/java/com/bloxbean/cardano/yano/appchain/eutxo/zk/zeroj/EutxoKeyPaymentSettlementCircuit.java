@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.eutxo.zk.zeroj;
 
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoKeyPaymentBatch;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkBatchData;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkSettlementPublicInputs;
 import com.bloxbean.cardano.zeroj.circuit.CircuitBuilder;
@@ -41,6 +42,14 @@ public final class EutxoKeyPaymentSettlementCircuit {
         }
         requireDigest(batchDataCommitment, "batchDataCommitment");
         requireDigest(withdrawalCommitment, "withdrawalCommitment");
+        byte[] expectedBatchData =
+                new EutxoZkBatchData(batch.payments()).commitment();
+        if (!java.util.Arrays.equals(
+                expectedBatchData, batchDataCommitment)) {
+            throw new IllegalArgumentException(
+                    "batch-data commitment must be derived from "
+                            + "the canonical bounded batch");
+        }
         byte[] expectedWithdrawal = withdrawalCommitment(batch);
         if (!java.util.Arrays.equals(
                 expectedWithdrawal, withdrawalCommitment)) {

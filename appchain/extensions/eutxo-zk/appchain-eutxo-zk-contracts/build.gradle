@@ -4,6 +4,7 @@ plugins {
 
 dependencies {
     api project(':appchain-eutxo-contracts')
+    implementation libs.cardano.client.crypto
 
     testImplementation libs.junit.jupiter.api
     testRuntimeOnly libs.junit.jupiter.engine

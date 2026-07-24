@@ -4,7 +4,6 @@ import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoKeyPaymentBatc
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkBatchData;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkStatement;
-import com.bloxbean.cardano.yano.appchain.eutxo.zk.zeroj.EutxoKeyPaymentBatchCircuit;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.zeroj.EutxoKeyPaymentSettlementCircuit;
 
 import java.util.Objects;
@@ -31,10 +30,7 @@ public final class EutxoFinalizedBatchIngestor {
     ) {
         Objects.requireNonNull(previousValidityRoot, "previousValidityRoot");
         Objects.requireNonNull(witness, "witness");
-        var batchInputs = EutxoKeyPaymentBatchCircuit.publicInputs(
-                previousValidityRoot, witness);
-        var batchData = new EutxoZkBatchData(
-                witness.payments(), batchInputs.ownerCommitment());
+        var batchData = new EutxoZkBatchData(witness.payments());
         var inputs = EutxoKeyPaymentSettlementCircuit.publicInputs(
                 chainId,
                 bridgeEpoch,

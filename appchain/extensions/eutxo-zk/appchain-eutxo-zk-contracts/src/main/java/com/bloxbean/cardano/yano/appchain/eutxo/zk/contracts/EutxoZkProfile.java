@@ -39,8 +39,8 @@ public record EutxoZkProfile(
     public static final EutxoZkProfile Z3_VALIDITY_SETTLEMENT =
             new EutxoZkProfile(
                     "yano-eutxo-zk-z3",
-                    1,
-                    "eutxo-key-payment-settlement-v1",
+                    2,
+                    "eutxo-key-payment-settlement-v2",
                     "groth16",
                     "bls12-381",
                     4,

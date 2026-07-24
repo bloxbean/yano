@@ -5,9 +5,11 @@ import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkPublicInputs;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkSettlementPublicInputs;
 import com.bloxbean.cardano.zeroj.api.CurveId;
+import com.bloxbean.cardano.zeroj.circuit.CircuitAPI;
 import com.bloxbean.cardano.zeroj.circuit.CircuitBuilder;
 import com.bloxbean.cardano.zeroj.circuit.Variable;
 import com.bloxbean.cardano.zeroj.circuit.lib.Poseidon;
+import com.bloxbean.cardano.zeroj.circuit.lib.hash.Blake2b;
 import com.bloxbean.cardano.zeroj.circuit.lib.poseidon.PoseidonHash;
 import com.bloxbean.cardano.zeroj.circuit.lib.poseidon.PoseidonParamsBLS12_381T3;
 
@@ -49,7 +51,6 @@ public final class EutxoKeyPaymentBatchCircuit {
                     .publicVar("batchDataCommitment")
                     .publicVar("withdrawalCommitment")
                     .secretVar("settlementContextWitness")
-                    .secretVar("batchDataCommitmentWitness")
                     .secretVar("withdrawalCommitmentWitness");
         }
         builder.secretVar("ownerSecret");
@@ -73,11 +74,17 @@ public final class EutxoKeyPaymentBatchCircuit {
             Variable runningWithdrawal = api.constant(0);
             Variable enabledSum = api.constant(0);
             Variable previousEnabled = api.constant(1);
+            Variable[] inputValues = new Variable[MAX_BATCH];
+            Variable[] firstValues = new Variable[MAX_BATCH];
+            Variable[] secondValues = new Variable[MAX_BATCH];
             for (int index = 0; index < MAX_BATCH; index++) {
                 Variable enabled = api.var("enabled" + index);
                 Variable input = api.var("input" + index);
                 Variable first = api.var("firstOutput" + index);
                 Variable second = api.var("secondOutput" + index);
+                inputValues[index] = input;
+                firstValues[index] = first;
+                secondValues[index] = second;
                 api.assertBoolean(enabled);
                 api.assertInRange(input, 64);
                 api.assertInRange(first, 64);
@@ -134,7 +141,9 @@ public final class EutxoKeyPaymentBatchCircuit {
                         api.var("settlementContextWitness"));
                 api.assertEqual(
                         api.var("batchDataCommitment"),
-                        api.var("batchDataCommitmentWitness"));
+                        batchDataCommitment(
+                                api, enabledSum,
+                                inputValues, firstValues, secondValues));
                 api.assertEqual(
                         api.var("withdrawalCommitment"),
                         api.var("withdrawalCommitmentWitness"));
@@ -202,8 +211,6 @@ public final class EutxoKeyPaymentBatchCircuit {
                     List.of(settlementInputs.withdrawalCommitment()));
             assignments.put("settlementContextWitness",
                     List.of(settlementInputs.settlementContext()));
-            assignments.put("batchDataCommitmentWitness",
-                    List.of(settlementInputs.batchDataCommitment()));
             assignments.put("withdrawalCommitmentWitness",
                     List.of(settlementInputs.withdrawalCommitment()));
         }
@@ -230,6 +237,67 @@ public final class EutxoKeyPaymentBatchCircuit {
         return poseidon(
                 poseidon(payment.inputLovelace(), payment.firstOutputLovelace()),
                 payment.secondOutputLovelace());
+    }
+
+    private static Variable batchDataCommitment(
+            CircuitAPI api,
+            Variable count,
+            Variable[] inputs,
+            Variable[] firstOutputs,
+            Variable[] secondOutputs
+    ) {
+        Variable[] message = new Variable[4 + 1 + (MAX_BATCH * 3 * 8)];
+        int cursor = 0;
+        message[cursor++] = api.constant(0);
+        message[cursor++] = api.constant(0);
+        message[cursor++] = api.constant(0);
+        message[cursor++] = api.constant(2);
+        message[cursor++] = count;
+        for (int index = 0; index < MAX_BATCH; index++) {
+            cursor = append(
+                    message, cursor,
+                    bigEndian64(api, inputs[index]));
+            cursor = append(
+                    message, cursor,
+                    bigEndian64(api, firstOutputs[index]));
+            cursor = append(
+                    message, cursor,
+                    bigEndian64(api, secondOutputs[index]));
+        }
+        Variable[] digest = Blake2b.hash256(api, message);
+        Variable[] scalarBits = new Variable[256];
+        for (int index = 0; index < digest.length; index++) {
+            Variable[] byteBits = api.toBinary(digest[index], 8);
+            int bitOffset = (digest.length - 1 - index) * 8;
+            System.arraycopy(
+                    byteBits, 0, scalarBits, bitOffset, 8);
+        }
+        return api.fromBinary(scalarBits);
+    }
+
+    private static Variable[] bigEndian64(
+            CircuitAPI api,
+            Variable value
+    ) {
+        Variable[] bits = api.toBinary(value, 64);
+        Variable[] bytes = new Variable[8];
+        for (int byteIndex = 0; byteIndex < bytes.length; byteIndex++) {
+            Variable[] byteBits = new Variable[8];
+            int bitOffset = (bytes.length - 1 - byteIndex) * 8;
+            System.arraycopy(
+                    bits, bitOffset, byteBits, 0, 8);
+            bytes[byteIndex] = api.fromBinary(byteBits);
+        }
+        return bytes;
+    }
+
+    private static int append(
+            Variable[] target,
+            int cursor,
+            Variable[] source
+    ) {
+        System.arraycopy(source, 0, target, cursor, source.length);
+        return cursor + source.length;
     }
 
     private static BigInteger poseidon(BigInteger left, BigInteger right) {

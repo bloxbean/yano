@@ -65,8 +65,8 @@ public final class EutxoBatchProofEngine implements AutoCloseable {
     ) {
         Objects.requireNonNull(statement, "statement");
         Objects.requireNonNull(witness, "witness");
-        EutxoZkBatchData batchData = new EutxoZkBatchData(
-                witness.payments(), statement.publicInputs().ownerCommitment());
+        EutxoZkBatchData batchData =
+                new EutxoZkBatchData(witness.payments());
         if (!java.util.Arrays.equals(
                 batchData.commitment(), statement.batchDataCommitment())) {
             throw new IllegalArgumentException(

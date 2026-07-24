@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.eutxo.zk.onchain;
 
 import com.bloxbean.cardano.julc.core.PlutusData;
+import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkBatchData;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkPublicInputs;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkProofArtifact;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkSettlementPublicInputs;
@@ -104,8 +105,21 @@ public final class EutxoValidityOnChainAbi {
                 PlutusData.integer(generation));
     }
 
-    public static PlutusData advanceRedeemer(EutxoZkProofArtifact proof) {
+    public static PlutusData advanceRedeemer(
+            EutxoZkProofArtifact proof,
+            EutxoZkBatchData batchData
+    ) {
         Objects.requireNonNull(proof, "proof");
+        Objects.requireNonNull(batchData, "batchData");
+        if (!java.util.Arrays.equals(
+                batchData.commitment(),
+                proof.statement().batchDataCommitment())
+                || !batchData.commitmentScalar().equals(
+                proof.statement().publicInputs()
+                        .batchDataCommitment())) {
+            throw new IllegalArgumentException(
+                    "batch data does not match proof statement");
+        }
         EutxoZkSettlementPublicInputs inputs =
                 proof.statement().publicInputs();
         return PlutusData.constr(
@@ -119,6 +133,7 @@ public final class EutxoValidityOnChainAbi {
                 PlutusData.integer(inputs.settlementContext()),
                 PlutusData.integer(inputs.batchDataCommitment()),
                 PlutusData.integer(inputs.withdrawalCommitment()),
+                PlutusData.bytes(batchData.canonicalBytes()),
                 PlutusData.bytes(proof.piA()),
                 PlutusData.bytes(proof.piB()),
                 PlutusData.bytes(proof.piC()));
