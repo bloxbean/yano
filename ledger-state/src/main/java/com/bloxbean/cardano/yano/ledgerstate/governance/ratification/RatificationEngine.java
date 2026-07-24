@@ -930,7 +930,7 @@ public class RatificationEngine {
     static boolean isDelayingAction(GovActionType type) {
         return switch (type) {
             case NO_CONFIDENCE, UPDATE_COMMITTEE, NEW_CONSTITUTION,
-                 HARD_FORK_INITIATION_ACTION, PARAMETER_CHANGE_ACTION -> true;
+                 HARD_FORK_INITIATION_ACTION -> true;
             default -> false;
         };
     }
