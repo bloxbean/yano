@@ -62,7 +62,7 @@ class EutxoProverServiceTest {
             assertThat(store.proof(queued.id())).isPresent();
             EutxoProverJob replay = new EutxoFinalizedBatchIngestor(service)
                     .ingest("payments", 7, 0, new byte[32],
-                            fixtures.witness(), new byte[32]);
+                            fixtures.witness());
             assertThat(replay.id()).isEqualTo(queued.id());
             assertThat(replay.status())
                     .isEqualTo(EutxoProverJob.Status.PROVED);
@@ -171,7 +171,9 @@ class EutxoProverServiceTest {
                 EutxoKeyPaymentSettlementCircuit.publicInputs(
                         "payments", 0, verificationKeyDigest,
                         new byte[32], witness,
-                        batchData.commitment(), new byte[32]);
+                        batchData.commitment(),
+                        EutxoKeyPaymentSettlementCircuit
+                                .withdrawalCommitment(witness));
         EutxoZkStatement statement = new EutxoZkStatement(
                 "payments", 7, 0,
                 EutxoZkProfile.Z3_VALIDITY_SETTLEMENT,

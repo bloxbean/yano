@@ -70,6 +70,7 @@ public final class EutxoKeyPaymentBatchCircuit {
 
             Variable runningRoot = api.var("previousRoot");
             Variable runningBatch = api.constant(BATCH_DOMAIN);
+            Variable runningWithdrawal = api.constant(0);
             Variable enabledSum = api.constant(0);
             Variable previousEnabled = api.constant(1);
             for (int index = 0; index < MAX_BATCH; index++) {
@@ -118,6 +119,9 @@ public final class EutxoKeyPaymentBatchCircuit {
                         transitionDigest);
                 runningRoot = api.select(enabled, candidateRoot, runningRoot);
                 runningBatch = api.select(enabled, candidateBatch, runningBatch);
+                runningWithdrawal = api.add(
+                        runningWithdrawal,
+                        api.mul(enabled, second));
                 enabledSum = api.add(enabledSum, enabled);
                 previousEnabled = enabled;
             }
@@ -134,6 +138,9 @@ public final class EutxoKeyPaymentBatchCircuit {
                 api.assertEqual(
                         api.var("withdrawalCommitment"),
                         api.var("withdrawalCommitmentWitness"));
+                api.assertEqual(
+                        api.var("withdrawalCommitment"),
+                        runningWithdrawal);
             }
         });
     }

@@ -4,6 +4,7 @@ import com.bloxbean.cardano.julc.core.PlutusData;
 import com.bloxbean.cardano.julc.core.types.JulcList;
 import com.bloxbean.cardano.julc.ledger.OutputDatum;
 import com.bloxbean.cardano.julc.ledger.ScriptContext;
+import com.bloxbean.cardano.julc.ledger.TxInInfo;
 import com.bloxbean.cardano.julc.ledger.TxOut;
 import com.bloxbean.cardano.julc.stdlib.Builtins;
 import com.bloxbean.cardano.julc.stdlib.annotation.Entrypoint;
@@ -14,6 +15,7 @@ import com.bloxbean.cardano.julc.stdlib.lib.ValuesLib;
 import com.bloxbean.cardano.zeroj.onchain.julc.groth16.lib.Groth16BLS12381Lib;
 
 import java.math.BigInteger;
+import java.util.Optional;
 
 /**
  * Proof-gated validity-root thread.
@@ -110,7 +112,12 @@ public final class EutxoValidityRootValidator {
     ) {
         JulcList<TxOut> continuing =
                 ContextsLib.getContinuingOutputs(context);
-        if (continuing.size() != 1
+        Optional<TxInInfo> ownInput =
+                ContextsLib.findOwnInput(context);
+        if (ownInput.isEmpty()
+                || !hasThread(ownInput.get().resolved())
+                || !singleThreadTransition(context)
+                || continuing.size() != 1
                 || !hasThread(continuing.head())
                 || !advanceOutputValid(
                 continuing.head().datum(), current, action)) {
@@ -143,7 +150,12 @@ public final class EutxoValidityRootValidator {
         }
         JulcList<TxOut> targets = ContextsLib.scriptOutputsAt(
                 context.txInfo(), migrationTargetScriptHash);
-        return targets.size() == 1
+        Optional<TxInInfo> ownInput =
+                ContextsLib.findOwnInput(context);
+        return ownInput.isPresent()
+                && hasThread(ownInput.get().resolved())
+                && singleThreadTransition(context)
+                && targets.size() == 1
                 && hasThread(targets.head())
                 && migrationOutputValid(
                 targets.head().datum(), current, action);
@@ -305,5 +317,24 @@ public final class EutxoValidityRootValidator {
                 rootThreadPolicyId,
                 rootThreadAssetName)
                 .equals(BigInteger.ONE);
+    }
+
+    private static boolean singleThreadTransition(
+            ScriptContext context
+    ) {
+        BigInteger inputs = BigInteger.ZERO;
+        BigInteger outputs = BigInteger.ZERO;
+        for (TxInInfo input : context.txInfo().inputs()) {
+            if (hasThread(input.resolved())) {
+                inputs = inputs.add(BigInteger.ONE);
+            }
+        }
+        for (TxOut output : context.txInfo().outputs()) {
+            if (hasThread(output)) {
+                outputs = outputs.add(BigInteger.ONE);
+            }
+        }
+        return inputs.equals(BigInteger.ONE)
+                && outputs.equals(BigInteger.ONE);
     }
 }

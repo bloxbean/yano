@@ -2,13 +2,27 @@
 
 ## Status
 
-Proposed — version 4
+Proposed — version 5
 
 Phase A and the automated portions of Phase B are implemented as optional
 modules under `appchain/extensions/eutxo/`. Their schemas and bridge remain
 alpha pending the external operational and independent-review gates recorded
 by the implementation. Phase C is the active implementation plan and remains
 experimental with no production-funds claim.
+
+Version 5:
+
+- narrows the first Z4 withdrawal profile to one aggregate lovelace
+  withdrawal per proved bounded batch and one deployment-fixed destination;
+- defines that public withdrawal commitment as the canonical aggregate of
+  the batch's second outputs and requires the circuit to constrain it;
+- integrates replay protection into the vault state thread through a
+  sequence and last-consumed validity-root height;
+- keeps general recipient, multi-asset, and withdrawal-tree support outside
+  this profile until their circuits and inclusion rules receive separate
+  review; and
+- defines proof-finalized, L1-submitted, L1-stable, and rollback
+  reconciliation states as node-local metadata that cannot authorize funds.
 
 Version 4:
 
@@ -1867,6 +1881,9 @@ Exit criteria:
 Deliver:
 
 - withdrawal commitment in the proved transition;
+- an initial bounded profile with one aggregate lovelace withdrawal per
+  proved batch to a deployment-fixed destination; general claim trees,
+  arbitrary recipients, and multi-asset withdrawal require a later profile;
 - claim inclusion and nullifier/state-thread enforcement;
 - permissionless withdrawal relay;
 - proof-validated vault release;

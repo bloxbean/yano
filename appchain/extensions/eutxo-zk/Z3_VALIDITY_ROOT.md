@@ -46,8 +46,8 @@ single-participant-development-ceremony proof verifies through the composed
 validator at approximately:
 
 ```text
-CPU:    4,117,378,740
-Memory:       822,428
+CPU:    4,195,247,881
+Memory:     1,078,650
 ```
 
 These are development measurements, not a production budget approval.

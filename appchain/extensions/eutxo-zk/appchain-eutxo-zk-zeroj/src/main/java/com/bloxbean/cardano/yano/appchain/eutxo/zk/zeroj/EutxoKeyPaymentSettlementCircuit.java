@@ -41,6 +41,13 @@ public final class EutxoKeyPaymentSettlementCircuit {
         }
         requireDigest(batchDataCommitment, "batchDataCommitment");
         requireDigest(withdrawalCommitment, "withdrawalCommitment");
+        byte[] expectedWithdrawal = withdrawalCommitment(batch);
+        if (!java.util.Arrays.equals(
+                expectedWithdrawal, withdrawalCommitment)) {
+            throw new IllegalArgumentException(
+                    "withdrawal commitment must canonically encode "
+                            + "the aggregate second-output lovelace");
+        }
         byte[] keyDigest;
         try {
             keyDigest = HexFormat.of().parseHex(verificationKeyDigest);
@@ -61,6 +68,27 @@ public final class EutxoKeyPaymentSettlementCircuit {
                         chainId, bridgeEpoch, keyDigest)),
                 ZerojScalars.scalar(batchDataCommitment),
                 ZerojScalars.scalar(withdrawalCommitment));
+    }
+
+    /**
+     * Canonical Z4 aggregate-withdrawal commitment: unsigned 32-byte
+     * big-endian total of every enabled payment's second output.
+     */
+    public static byte[] withdrawalCommitment(
+            EutxoKeyPaymentBatch batch
+    ) {
+        Objects.requireNonNull(batch, "batch");
+        java.math.BigInteger total = batch.payments().stream()
+                .map(EutxoKeyPaymentBatch.Payment::secondOutputLovelace)
+                .reduce(java.math.BigInteger.ZERO, java.math.BigInteger::add);
+        byte[] source = total.toByteArray();
+        byte[] fixed = new byte[32];
+        int offset = source.length == 33 && source[0] == 0 ? 1 : 0;
+        System.arraycopy(
+                source, offset,
+                fixed, fixed.length - (source.length - offset),
+                source.length - offset);
+        return fixed;
     }
 
     static java.math.BigInteger[] witness(
