@@ -263,14 +263,18 @@ L1 protocol parameters, including real L1 fees and minimum-UTxO requirements.
 The client APIs and Java types must name these sources explicitly so zero-fee
 L2 parameters can never be used to build an L1 settlement transaction.
 
-The intended client surface reuses Yano's generic appchain submission and
-query APIs. A separate transaction-submission REST endpoint is unnecessary:
+The client surface reuses Yano's generic appchain submission and query APIs.
+A separate transaction-submission REST endpoint is unnecessary:
 
 ```text
-GET /api/v1/app-chain/chains/{chainId}/eutxo/protocol-parameters
-GET /api/v1/app-chain/chains/{chainId}/eutxo/utxos?address={address}
+POST /api/v1/app-chain/chains/{chainId}/query/protocol-parameters
+POST /api/v1/app-chain/chains/{chainId}/query/utxos/address
 POST /api/v1/app-chain/chains/{chainId}/messages
 ```
+
+Query requests use the generic `{"paramsHex":"..."}` envelope. The typed Java
+client handles the canonical codecs and retains the committed height and state
+root returned by the node.
 
 The submission request carries the canonical L2 envelope:
 
@@ -287,24 +291,50 @@ that the EUTxO transition is final. The client subsequently queries
 `transactions/receipt` by Cardano transaction ID, or `attempts/receipt` by
 app-message ID, to distinguish accepted, rejected, and finalized outcomes.
 
-Programmatic body construction remains standard Cardano Client Lib. The Yano
-adapter signs the envelope after the body is built:
+Programmatic body construction remains standard Cardano Client Lib. The
+implemented D2 client signs the envelope after the body is built:
 
 ```java
+AppChainClient appchain = AppChainClient.builder(
+        "http://127.0.0.1:7070/api/v1")
+    .chainId("payments-zk")
+    .build();
+EutxoClient eutxo = new EutxoClient(appchain);
+EutxoL2ProtocolParameters l2Params =
+        EutxoL2ProtocolParameters.from(
+                eutxo.l2ParametersSnapshot().value());
+EutxoL2Client yanoEutxoClient =
+        new EutxoL2Client(eutxo, l2Params);
 UtxoSupplier l2Utxos = yanoEutxoClient.utxoSupplier();
-ProtocolParamsSupplier l2Params =
-        yanoEutxoClient.protocolParamsSupplier();
 TxBuilderContext context =
         TxBuilderContext.init(l2Utxos, l2Params);
 
-EutxoL2Submission submitted =
-        yanoEutxoClient.signAndSubmit(transactionBody, jubjubSessionKey);
+try (EutxoL2SessionKey key =
+        EutxoL2SessionKey.decrypt(encryptedKey, password)) {
+    EutxoL2Transaction transaction =
+            EutxoL2TransactionBuilder.sign(
+                    domain,
+                    transactionBody,
+                    List.of(new EutxoL2TransactionBuilder.Signer(
+                            paymentCredential,
+                            keyEpoch,
+                            List.of(0),
+                            key)));
+    EutxoL2Client.Submission submitted =
+            yanoEutxoClient.submit(transaction);
+}
 ```
 
 The adapter delegates submission to the existing generic message endpoint on
 topic `eutxo.transactions`. Its result keeps three identities distinct: the
 L2 transaction ID, the contained Cardano body hash, and Yano's outer
 app-message ID. HTTP `202` means message-pool admission only.
+
+`EutxoRootFixedUtxoSupplier` pins its first read to one committed state root
+and rejects later reads from a different root. `EutxoL2SessionKey` supports a
+random key encrypted locally with AES-256-GCM/PBKDF2 and an optional
+domain-separated CIP-8-signature derivation. Its string representation is
+always redacted and closing it clears the retained scalar bytes.
 
 Because Cardano Client Lib's `TransactionProcessor` also extends
 `TransactionEvaluator`, the adapter must provide profile-correct evaluation.

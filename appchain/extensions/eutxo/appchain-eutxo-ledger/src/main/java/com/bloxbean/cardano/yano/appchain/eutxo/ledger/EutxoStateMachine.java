@@ -19,6 +19,7 @@ import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReserve;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoStateKeys;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2Domain;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2KeyRegistration;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2ParameterSnapshot;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2Transaction;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoContract;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalClaim;
@@ -247,6 +248,16 @@ public final class EutxoStateMachine implements AppStateMachine {
                                             position.ordinal()))
                                     .map(EutxoValidityTransition::decode)
                                     .orElse(null));
+                }
+                case EutxoQueryCodec.L2_PARAMETERS_PATH -> {
+                    if (params.length != 0 || validityEngine == null) {
+                        throw new AppQueryException(
+                                AppQueryException.Code.UNSUPPORTED,
+                                "L2 protocol parameters require a validity profile");
+                    }
+                    yield EutxoQueryCodec.l2Parameters(
+                            EutxoL2ParameterSnapshot.create(
+                                    chainId, profile, validityEngine));
                 }
                 case EutxoQueryCodec.PROFILE_PATH ->
                         profile.digestHex().getBytes(StandardCharsets.UTF_8);

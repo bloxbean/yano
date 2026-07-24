@@ -8,6 +8,7 @@ import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoContract;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2Authorization;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2Domain;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2ParameterSnapshot;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2Transaction;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoQueryCodec;
@@ -157,6 +158,20 @@ class EutxoValidityIntegrationTest {
         assertThat(EutxoValidityTransition.decode(
                 transition.canonicalBytes())).isEqualTo(transition);
         assertThat(queried).isEqualTo(transition);
+        EutxoL2ParameterSnapshot parameters =
+                EutxoQueryCodec.decodeL2Parameters(machine.query(
+                        EutxoQueryCodec.L2_PARAMETERS_PATH,
+                        new byte[0],
+                        state));
+        assertThat(parameters.chainId()).isEqualTo("eutxo-zk-test");
+        assertThat(parameters.ledgerProfileDigest())
+                .isEqualTo(transition.profileDigest());
+        assertThat(parameters.validityProfileDigest())
+                .isEqualTo(transition.validityProfileDigest());
+        assertThat(parameters.authorizationProfile())
+                .isEqualTo(transition.authorizationProfile());
+        assertThat(parameters.authorizationProfileDigest())
+                .isEqualTo(transition.authorizationProfileDigest());
         assertThatThrownBy(() -> new EutxoValidityTransition(
                 transition.previousRoot(),
                 transition.chainId(),

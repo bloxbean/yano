@@ -2405,6 +2405,23 @@ Exit criteria:
   settlement remain distinct states; and
 - L2 zero-fee parameters cannot be used accidentally by the L1 builder.
 
+D2 implements the public client boundary in
+`appchain-eutxo-zk-client`: `EutxoRootFixedUtxoSupplier` provides deterministic
+CCL paging and rejects mixed-root sessions; `EutxoL2ProtocolParameters`
+exposes a zero-fee CCL snapshot whose digest binds the chain, ledger,
+validity, and authorization profiles; `EutxoL2TransactionBuilder` wraps the
+CCL body and creates ordered Jubjub authorizations; and `EutxoL2Client`
+preserves the L2 transaction ID, contained Cardano body hash, and outer Yano
+message ID. The state machine exposes the canonical parameter snapshot through
+the generic `protocol-parameters` query path.
+
+Random session keys can be stored through an authenticated AES-256-GCM
+envelope using PBKDF2-HMAC-SHA256. An optional deterministic CIP-8 signature
+derivation is domain-separated; both paths redact key material and support
+explicit in-memory destruction. L1 registration, rotation, revocation, and
+recovery remain lifecycle operations owned by D4 rather than hidden client
+side effects.
+
 #### UTXO-D3 — Measured scalable batch profiles
 
 Deliver:
