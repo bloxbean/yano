@@ -1,5 +1,9 @@
 # Yano EUTxO product family
 
+For the disposable three-scenario quick start, see
+[EUTxO demos](DEMO.md). It covers the virtual ledger, Cardano bridge, and
+optional ZeroJ b16 proof experience without JShell or manual YAML editing.
+
 This optional extension provides a deterministic, Cardano-shaped EUTxO state
 machine. Its first milestone is a **no-real-funds experimental ledger**. It is
 not a Cardano bridge, a custody product, or a rollup.

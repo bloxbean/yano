@@ -1,5 +1,9 @@
 # Optional EUTxO validity and ZK-rollup modules
 
+The shortest disposable devnet path is the unified
+[EUTxO demo guide](../eutxo/DEMO.md). The manual lifecycle and public-testnet
+operator path remain in [GETTING_STARTED.md](GETTING_STARTED.md).
+
 These sibling modules implement Phase C of ADR-UTXO-001. They are optional:
 the base EUTxO ledger has no ZeroJ or Julc dependency and behaves exactly as
 before unless `machines.eutxo.validity.enabled=true`.
