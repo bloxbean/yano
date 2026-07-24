@@ -15,6 +15,10 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import com.bloxbean.cardano.client.address.AddressProvider;
+import com.bloxbean.cardano.client.common.model.Networks;
+import com.bloxbean.cardano.client.crypto.VerificationKey;
+import com.bloxbean.cardano.client.transaction.spec.script.ScriptPubkey;
 
 /** Verified demo workspace and its public/secret boundary. */
 public final class EutxoDemoWorkspace {
@@ -80,6 +84,22 @@ public final class EutxoDemoWorkspace {
         publicIdentities.put("ledgerPublicKey", ledgerWallet.publicKey());
         publicIdentities.put("recipientAddress", recipientWallet.address());
         publicIdentities.put("recipientPublicKey", recipientWallet.publicKey());
+        ScriptPubkey vaultScript;
+        String vaultScriptHash;
+        try {
+            vaultScript = ScriptPubkey.create(
+                    VerificationKey.create(HexFormat.of().parseHex(
+                            ledgerWallet.publicKey())));
+            vaultScriptHash = vaultScript.getPolicyId();
+        } catch (Exception failure) {
+            throw new IOException("cannot create disposable demo vault identity", failure);
+        }
+        publicIdentities.put("operatorAddress", ledgerWallet.address());
+        publicIdentities.put("operatorPublicKey", ledgerWallet.publicKey());
+        publicIdentities.put("payoutAddress", recipientWallet.address());
+        publicIdentities.put("vaultAddress", AddressProvider.getEntAddress(
+                vaultScript, Networks.testnet()).toBech32());
+        publicIdentities.put("vaultScriptHash", vaultScriptHash);
         String implementationVersion = EutxoDemoWorkspace.class.getPackage()
                 .getImplementationVersion();
         EutxoDemoManifest manifest = new EutxoDemoManifest(
