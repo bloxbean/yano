@@ -52,6 +52,16 @@
       "externalPrerequisites":["zeroj-0.1.0-pre10","julc-0.1.0-pre14","development-ceremony-bundle"],"bootstrapRequirements":["install-appchain-eutxo-ledger-and-zk-zeroj-modules","use-test-keys-and-no-real-funds"],"nonSecretAnswers":["eutxoGenesisAddress","eutxoGenesisLovelace"],"documentation":"appchain/extensions/eutxo-zk/README.md","acceptanceScenario":"recipe-eutxo-zeroj-validity"
     },
     {
+      "id":"eutxo-zeroj-preview","version":"1","name":"ZeroJ EUTxO testnet lifecycle","category":"application","availability":"EXPERIMENTAL","maturity":"experimental","scope":"chain","selectable":true,
+      "trustStatement":"Testnet lifecycle for zeroj-jubjub-dev-v1. It requires a trusted prover, permits disposable test funds only, rejects mainnet, and does not claim malicious-prover security or production rollup readiness.",
+      "description":"Packages the Cardano-shaped L2 client, measured b16 development circuit, durable lifecycle tooling, contract plans, prover artifacts, relay handoff, and recovery evidence as one JVM-only testnet project.",
+      "primaryOutcome":"A project can bootstrap pinned development artifacts, accept finalized Jubjub-authorized L2 transactions, produce a constant-size proof, and prepare idempotent Cardano deposit, settlement, withdrawal, and recovery operations.",
+      "firstCommand":"./yano.sh appchain validity bootstrap --project <project> --development-ceremony --yes",
+      "verificationQuery":"./yano.sh appchain validity doctor --project <project>",
+      "capabilities":["settlement:zeroj-validity","l1:slot-feed","sequencer:fixed"],"recommended":{"blockIntervalMs":"1000"},"runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"],"supportedNetworks":["devnet","preview","preprod"],"artifacts":["yano-runtime","appchain-eutxo-zk-runtime","appchain-eutxo-zk-lifecycle"],"nativePosture":"unsupported",
+      "externalPrerequisites":["zeroj-0.1.0-pre10","julc-0.1.0-pre14","funded-testnet-operator-key-for-live-L1-operations"],"bootstrapRequirements":["trusted-proof-submitter","development-ceremony-or-reviewed-testnet-ceremony","deployed-pinned-contract-identities","disposable-test-funds-only"],"nonSecretAnswers":[],"documentation":"appchain/extensions/eutxo-zk/GETTING_STARTED.md","acceptanceScenario":"recipe-eutxo-zeroj-preview"
+    },
+    {
       "id":"custom-plugin","version":"1","name":"Custom state-machine project","category":"custom-plugin","availability":"REFERENCE","maturity":"experimental","scope":"chain","selectable":true,
       "trustStatement":"Advanced JVM-only path; the operator owns plugin implementation, code review, metadata trust, compatibility, and distribution.","description":"A generated project boundary for a separately reviewed custom state-machine plugin.","primaryOutcome":"The operator-defined state-machine contract is loaded from a reviewed pinned plugin bundle.","firstCommand":"install the reviewed bundle and submit its documented command","verificationQuery":"plugin-defined committed query or state proof",
       "capabilities":["state:custom-plugin","sequencer:fixed"],"recommended":{"blockIntervalMs":"1000"},"runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"unsupported",

@@ -88,6 +88,7 @@ Validate and operate:
                                   Work with signed custom component catalogs
   metadata verify ...             Verify custom-plugin metadata signatures
   role ...                        Encode/sign role commands offline (seed files only)
+  validity ...                    Operate an experimental EUTxO ZeroJ testnet lifecycle
 
 Run a local cluster:
   cluster start [members]         Start or resume a same-machine cluster
@@ -99,6 +100,7 @@ Examples:
   ./yano.sh appchain init --recipe owned-registry --network devnet --members 3
   ./yano.sh appchain config validate --mode project ./owned-registry
   ./yano.sh appchain cluster start 3
+  ./yano.sh appchain validity status --project ./payments-zk
 
 Use './yano.sh appchain <command> --help' for command-specific options.
 EOF

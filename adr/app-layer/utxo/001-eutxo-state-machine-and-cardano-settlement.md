@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — version 10
+Proposed — version 11
 
 Phase A and the automated portions of Phase B are implemented as optional
 modules under `appchain/extensions/eutxo/`. Their schemas and bridge remain
@@ -11,6 +11,28 @@ by the implementation. The automatable Phase C components are implemented
 under `appchain/extensions/eutxo-zk/`, but they do not yet form a live
 L1-to-appchain-to-L1 product. Phase D is the active preview-integration plan.
 All ZeroJ functionality remains experimental with no production-funds claim.
+Phase D development and disposable-funds testing may proceed against the
+version-pinned development authorization profile while ZeroJ hardening happens
+in parallel. A later ZeroJ release can preserve the Java API, but it cannot
+preserve or silently upgrade the circuit-security identity.
+
+Version 11:
+
+- records that the ZeroJ team's reusable Jubjub hardening is not a blocker for
+  Yano's lifecycle, packaging, devnet, or explicitly acknowledged public
+  testnet engineering;
+- keeps `zeroj-jubjub-dev-v1` fail-closed as a trusted-prover,
+  disposable-test-funds profile and prohibits using Phase D evidence to claim
+  malicious-prover security;
+- requires the project blueprint, lock, lifecycle status, proof artifacts,
+  contract plan, and release evidence to carry the authorization-security
+  profile rather than inferring it from a library version;
+- requires any hardened ZeroJ successor, even with an unchanged Java API, to
+  select a new batch/circuit identity and new ceremony, proving-key,
+  verification-key, validator, and release-manifest identities; and
+- permits devnet by default, requires an explicit durable unsafe-development
+  acknowledgement for Preview and Preprod, and retains an unconditional
+  mainnet rejection in both project initialization and lifecycle commands.
 
 Version 10:
 
@@ -2468,11 +2490,32 @@ accepted.
 
 #### UTXO-D4 — Packaged prover, relay, contracts, and `yano.sh` lifecycle
 
+Implementation status (version 11):
+
+- the stock JVM distribution now packages the EUTxO state-machine provider,
+  ZeroJ validity provider, b16 prover support, and lifecycle CLI;
+- `eutxo-zeroj-preview` generates a project for devnet, Preview, or Preprod;
+  the two public testnets require a durable unsafe-development
+  acknowledgement and mainnet is rejected at resolution and lifecycle time;
+- `appchain validity` provides project-aware bootstrap, status, prove, proof,
+  doctor, deposit, settlement, withdrawal, recovery, and reconciliation
+  commands;
+- deterministic contract plans, content-addressed proofs, operation journals,
+  secret-by-reference submission, and retained-artifact verification are
+  implemented;
+- an external Cardano builder/wallet remains responsible for constructing and
+  signing ordinary L1 transactions; the lifecycle submits signed CBOR and
+  records stability without taking custody of an L1 key; and
+- live contract deployment, automatic finalized-block ingestion, stable-L1
+  observation, and a complete deposit-to-withdrawal run remain D5 acceptance
+  gates. Until that evidence exists, status must say
+  `PLANNED_NOT_SUBMITTED`/`NOT_EXERCISED`, not “deployed” or “live rollup.”
+
 Deliver:
 
 - stock JVM distribution packaging for the selected ZeroJ provider, prover,
   client, contract artifacts, and permissionless relay;
-- automatic finalized-block ingestion and durable proof-job operation;
+- canonical finalized-transition import and durable proof-job operation;
 - pinned development/testnet ceremony import and verification;
 - deploy/bootstrap plans for deposit staging, validity root, batch-data, and
   proof-withdrawal vault validators;
@@ -2488,9 +2531,12 @@ Deliver:
 Exit criteria:
 
 - a generated devnet project starts without source-tree-only classpaths;
-- the stock distribution performs contract bootstrap, deposit observation,
-  transaction finality, proving, root relay, batch publication, and
-  proof-gated withdrawal;
+- the stock distribution performs artifact bootstrap, exact finalized
+  transition proving, proof verification, signed-CBOR relay, operation
+  journaling, and reconciliation without a source-tree-only classpath;
+- deterministic contract and operation plans make every still-external
+  Cardano build/sign/stability step explicit; D5 owns live deployment,
+  observation, root stability, and proof-gated withdrawal evidence;
 - every lifecycle step is safely repeatable after partial failure; and
 - mainnet remains rejected by both initialization and lifecycle commands;
   Preview and Preprod reject the development profile unless the explicit

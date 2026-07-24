@@ -22,3 +22,4 @@ Milestone notes:
 - [Z5 data availability and recovery](Z5_DATA_AVAILABILITY.md)
 - [Z6 production hardening and release gates](Z6_PRODUCTION_HARDENING.md)
 - [D3 fixed batch profiles and measurements](D3_BATCH_PROFILES.md)
+- [D4 packaged testnet lifecycle](D4_LIFECYCLE.md)
