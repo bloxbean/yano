@@ -3,53 +3,70 @@
   import { onMount } from 'svelte';
   import { ApiError, apiFailureMessage, resolveApiBase, YanoApi } from '$lib/api/client';
   import type {
-    AppChainStatus, ChainSummary, EutxoTransactionDetail, EutxoTransactionPage,
-    EutxoTransactionSummary
+    AppChainStatus, ChainSummary, EutxoDeposit, EutxoIndexEnvelope, EutxoIndexedAccount,
+    EutxoIndexPage, EutxoIndexStatus, EutxoLineage, EutxoTransactionDetail,
+    EutxoTransactionPage, EutxoTransactionSummary, EutxoWithdrawal, L1Transaction,
+    L1TransactionUtxos
   } from '$lib/api/types';
   import CopyValue from '$lib/components/CopyValue.svelte';
   import {
-    canonicalEutxoIdentifier, EUTXO_BUNDLE_ID, formatLovelace, isEutxoChain, transactionTitle
+    canonicalEutxoIdentifier, canonicalEutxoOutpoint, EUTXO_BUNDLE_ID, formatLovelace,
+    indexStatusLabel, isCompleteProjection, isEutxoChain, transactionIdFromOutpoint,
+    transactionTitle
   } from '$lib/eutxo/model';
+
+  type View = 'overview' | 'transactions' | 'accounts' | 'bridge' | 'validity';
+  type L1Detail = {
+    id: string; state: 'loading' | 'ready' | 'unavailable' | 'not-found' | 'failed';
+    transaction?: L1Transaction; utxos?: L1TransactionUtxos; message?: string
+  };
 
   let api: YanoApi | null = null;
   let chains: ChainSummary[] = [];
   let selectedChain = '';
   let status: AppChainStatus | null = null;
+  let activeView: View = 'overview';
+  let indexEnvelope: EutxoIndexEnvelope<EutxoIndexStatus> | null = null;
+  let indexAvailable: boolean | null = null;
   let transactions: EutxoTransactionSummary[] = [];
-  let selected: EutxoTransactionSummary | null = null;
-  let committedHeight = 0;
-  let stateRoot = '';
-  let nextBefore = 0;
+  let transactionCursor = '';
+  let selectedTransaction: EutxoTransactionSummary | null = null;
+  let deposits: EutxoDeposit[] = [];
+  let withdrawals: EutxoWithdrawal[] = [];
+  let selectedDeposit: EutxoDeposit | null = null;
+  let selectedWithdrawal: EutxoWithdrawal | null = null;
+  let lineage: EutxoLineage | null = null;
+  let account: EutxoIndexedAccount | null = null;
+  let accountInput = '';
   let searchInput = '';
+  let searchError = '';
+  let pageError = '';
   let loading = false;
   let loadingMore = false;
-  let pageError = '';
-  let searchError = '';
+  let l1Detail: L1Detail | null = null;
   let controller: AbortController | null = null;
+  let refreshTimer: ReturnType<typeof setInterval> | null = null;
 
-  const short = (value: string, width = 18) =>
+  const short = (value: string, width = 20) =>
     value.length <= width ? value : `${value.slice(0, Math.max(6, width - 7))}…${value.slice(-6)}`;
-  const firstAddress = (value: EutxoTransactionSummary) =>
-    value.inputs[0]?.address ?? (value.status === 'REJECTED' ? 'not resolved' : '-');
-  const outputValue = (value: EutxoTransactionSummary) => {
+  const total = (entries: Array<{ lovelace: string }>) => {
     try {
-      return formatLovelace(value.outputs.reduce(
-        (total, entry) => total + BigInt(entry.lovelace), 0n).toString());
+      return formatLovelace(entries.reduce((sum, entry) => sum + BigInt(entry.lovelace), 0n).toString());
     } catch {
       return '-';
     }
   };
+  const query = () => ({ chain: selectedChain });
 
   onMount(() => {
     let disposed = false;
     void (async () => {
       try {
-        const apiBase = await resolveApiBase();
-        api = new YanoApi(apiBase);
+        api = new YanoApi(await resolveApiBase());
         chains = await api.chains();
         if (disposed) return;
-        const query = new URLSearchParams(location.search);
-        const requested = query.get('chain');
+        const parameters = new URLSearchParams(location.search);
+        const requested = parameters.get('chain');
         selectedChain = chains.some((chain) => chain.chainId === requested)
           ? requested! : chains[0]?.chainId ?? '';
         if (!selectedChain) {
@@ -57,11 +74,13 @@
           return;
         }
         await activateChain(selectedChain);
-        const deepLink = query.get('transaction') ?? query.get('message');
-        if (deepLink && !disposed && isEutxoChain(status)) {
+        const deepLink = parameters.get('transaction') ?? parameters.get('message')
+          ?? parameters.get('claim') ?? parameters.get('outpoint');
+        if (deepLink && !disposed) {
           searchInput = deepLink;
           await search();
         }
+        refreshTimer = setInterval(() => void refreshIndexStatus(), 5_000);
       } catch (cause) {
         pageError = apiFailureMessage(cause, 'Unable to load the EUTxO explorer');
       }
@@ -69,6 +88,7 @@
     return () => {
       disposed = true;
       controller?.abort();
+      if (refreshTimer) clearInterval(refreshTimer);
     };
   });
 
@@ -79,92 +99,258 @@
     const signal = controller.signal;
     selectedChain = chainId;
     status = null;
+    indexEnvelope = null;
+    indexAvailable = null;
     transactions = [];
-    selected = null;
-    nextBefore = 0;
-    stateRoot = '';
-    committedHeight = 0;
+    transactionCursor = '';
+    deposits = [];
+    withdrawals = [];
+    selectedTransaction = null;
+    selectedDeposit = null;
+    selectedWithdrawal = null;
+    account = null;
+    l1Detail = null;
     pageError = '';
     searchError = '';
     loading = true;
     try {
       status = await api.chainStatus(chainId, signal);
       if (!isEutxoChain(status)) return;
-      await loadTransactions(false, signal);
-      const query = new URLSearchParams(location.search);
-      query.set('chain', chainId);
-      query.delete('transaction');
-      query.delete('message');
-      history.replaceState({}, '', `${base}/app-chain/eutxo/?${query}`);
+      try {
+        await refreshIndexStatus(signal);
+        indexAvailable = true;
+        await Promise.all([
+          loadTransactions(false, signal),
+          loadBridge(signal)
+        ]);
+      } catch (cause) {
+        if (!(cause instanceof ApiError) || ![404, 409].includes(cause.status)) throw cause;
+        indexAvailable = false;
+        await loadCommittedFallback(signal);
+      }
+      const parameters = new URLSearchParams(location.search);
+      parameters.set('chain', chainId);
+      history.replaceState({}, '', `${base}/app-chain/eutxo/?${parameters}`);
     } catch (cause) {
       if (!(cause instanceof DOMException && cause.name === 'AbortError')) {
-        pageError = apiFailureMessage(cause, 'Unable to load EUTxO transactions');
+        pageError = apiFailureMessage(cause, 'Unable to load EUTxO lifecycle data');
       }
     } finally {
       if (!signal.aborted) loading = false;
     }
   }
 
+  async function refreshIndexStatus(signal?: AbortSignal): Promise<void> {
+    if (!api || !selectedChain || indexAvailable === false || !isEutxoChain(status)) return;
+    try {
+      const envelope = await api.eutxoIndex<EutxoIndexEnvelope<EutxoIndexStatus>>(
+        'status', query(), signal);
+      assertEnvelope(envelope);
+      indexEnvelope = envelope;
+      indexAvailable = true;
+    } catch (cause) {
+      if (cause instanceof ApiError && [404, 409].includes(cause.status)) indexAvailable = false;
+      else throw cause;
+    }
+  }
+
   async function loadTransactions(append: boolean, signal?: AbortSignal): Promise<void> {
-    if (!api || !selectedChain || !isEutxoChain(status)) return;
+    if (!api || indexAvailable === false) return;
     if (append) loadingMore = true;
     try {
-      const parameters: Record<string, string> = {
-        chain: selectedChain,
-        limit: '20'
-      };
-      if (append && nextBefore > 0) parameters.before = String(nextBefore);
-      const page = await api.domain<EutxoTransactionPage>(
-        EUTXO_BUNDLE_ID, 'transactions', parameters, signal);
-      if (page.chainId !== selectedChain || page.stateMachineId !== 'eutxo-ledger'
-        || !Array.isArray(page.data)) {
-        throw new Error('EUTxO explorer response identity does not match the selected chain');
-      }
-      transactions = append ? [...transactions, ...page.data] : page.data;
-      committedHeight = page.committedHeight;
-      stateRoot = page.stateRoot;
-      nextBefore = page.nextBefore;
+      const parameters: Record<string, string> = { ...query(), limit: '25' };
+      if (append && transactionCursor) parameters.cursor = transactionCursor;
+      const envelope = await api.eutxoIndex<EutxoIndexEnvelope<EutxoIndexPage<EutxoTransactionSummary>>>(
+        'transactions', parameters, signal);
+      assertEnvelope(envelope);
+      transactions = append ? [...transactions, ...envelope.data.items] : envelope.data.items;
+      transactionCursor = envelope.data.cursor;
+      indexEnvelope = { ...envelope, data: indexEnvelope?.data ?? {
+        storeType: '', checkpointHeight: envelope.projection.indexedHeight,
+        finalizedHeight: envelope.projection.finalizedHeight,
+        lagBlocks: envelope.projection.lagBlocks,
+        coverage: envelope.projection.fullHistory ? 'FULL' : 'PARTIAL', normalizedDigest: ''
+      }};
     } finally {
       loadingMore = false;
     }
   }
 
+  async function loadBridge(signal?: AbortSignal): Promise<void> {
+    if (!api || indexAvailable === false) return;
+    const [depositPage, withdrawalPage] = await Promise.all([
+      api.eutxoIndex<EutxoIndexEnvelope<EutxoIndexPage<EutxoDeposit>>>(
+        'bridge/deposits', { ...query(), limit: '25' }, signal),
+      api.eutxoIndex<EutxoIndexEnvelope<EutxoIndexPage<EutxoWithdrawal>>>(
+        'bridge/withdrawals', { ...query(), limit: '25' }, signal)
+    ]);
+    assertEnvelope(depositPage);
+    assertEnvelope(withdrawalPage);
+    deposits = depositPage.data.items;
+    withdrawals = withdrawalPage.data.items;
+  }
+
+  async function loadCommittedFallback(signal?: AbortSignal): Promise<void> {
+    if (!api) return;
+    const page = await api.domain<EutxoTransactionPage>(
+      EUTXO_BUNDLE_ID, 'transactions', { ...query(), limit: '20' }, signal);
+    if (page.chainId !== selectedChain || page.stateMachineId !== 'eutxo-ledger') {
+      throw new Error('Committed EUTxO response identity does not match the selected chain');
+    }
+    transactions = page.data;
+  }
+
+  async function selectTransaction(id: string, byMessage = false): Promise<void> {
+    if (!api) return;
+    if (indexAvailable) {
+      const path = byMessage ? `messages/${id}` : `transactions/${id}`;
+      const envelope = await api.eutxoIndex<EutxoIndexEnvelope<EutxoTransactionSummary>>(
+        path, query());
+      assertEnvelope(envelope);
+      selectedTransaction = envelope.data;
+    } else {
+      const detail = await api.domain<EutxoTransactionDetail>(
+        EUTXO_BUNDLE_ID, `${byMessage ? 'messages' : 'transactions'}/${id}`, query());
+      selectedTransaction = detail.data;
+    }
+    activeView = 'transactions';
+  }
+
+  async function loadAccount(): Promise<void> {
+    if (!api || !indexAvailable) return;
+    const address = accountInput.trim();
+    if (!address || address.length > 256 || !/^[A-Za-z0-9_]+$/.test(address)) {
+      searchError = 'Enter a canonical bounded L2 address.';
+      return;
+    }
+    const envelope = await api.eutxoIndex<EutxoIndexEnvelope<EutxoIndexedAccount>>(
+      `accounts/${address}`, query());
+    assertEnvelope(envelope);
+    account = envelope.data;
+    activeView = 'accounts';
+  }
+
   async function search(): Promise<void> {
     if (!api || !isEutxoChain(status)) return;
     searchError = '';
-    selected = null;
+    l1Detail = null;
+    const value = searchInput.trim();
     try {
-      const id = canonicalEutxoIdentifier(searchInput);
-      let detail: EutxoTransactionDetail;
+      if (value.includes('#')) {
+        if (!indexAvailable) throw new Error('Deposit lookup requires the local lifecycle index');
+        const outpoint = canonicalEutxoOutpoint(value);
+        const envelope = await api.eutxoIndex<EutxoIndexEnvelope<EutxoDeposit>>(
+          `bridge/deposits/${outpoint.transactionId}/${outpoint.outputIndex}`, query());
+        assertEnvelope(envelope);
+        selectedDeposit = envelope.data;
+        selectedWithdrawal = null;
+        activeView = 'bridge';
+        return;
+      }
+      if (value.startsWith('addr')) {
+        accountInput = value;
+        await loadAccount();
+        return;
+      }
+      const id = canonicalEutxoIdentifier(value);
       try {
-        detail = await api.domain<EutxoTransactionDetail>(
-          EUTXO_BUNDLE_ID, `transactions/${id}`, { chain: selectedChain });
+        await selectTransaction(id);
+        return;
       } catch (cause) {
         if (!(cause instanceof ApiError) || cause.status !== 404) throw cause;
-        detail = await api.domain<EutxoTransactionDetail>(
-          EUTXO_BUNDLE_ID, `messages/${id}`, { chain: selectedChain });
       }
-      if (detail.chainId !== selectedChain || detail.stateMachineId !== 'eutxo-ledger') {
-        throw new Error('EUTxO explorer response identity does not match the selected chain');
+      try {
+        await selectTransaction(id, true);
+        return;
+      } catch (cause) {
+        if (!(cause instanceof ApiError) || cause.status !== 404 || !indexAvailable) throw cause;
       }
-      selected = detail.data;
-      committedHeight = detail.committedHeight;
-      stateRoot = detail.stateRoot;
+      const envelope = await api.eutxoIndex<EutxoIndexEnvelope<EutxoWithdrawal>>(
+        `bridge/withdrawals/${id}`, query());
+      assertEnvelope(envelope);
+      selectedWithdrawal = envelope.data;
+      selectedDeposit = null;
+      activeView = 'bridge';
     } catch (cause) {
       searchError = cause instanceof ApiError && cause.status === 404
-        ? 'No finalized EUTxO transaction matches that transaction or message ID.'
-        : apiFailureMessage(cause, 'EUTxO transaction lookup failed');
+        ? 'No indexed transaction, message, deposit, or withdrawal matches that value.'
+        : apiFailureMessage(cause, 'Lifecycle lookup failed');
+    }
+  }
+
+  async function showDeposit(value: EutxoDeposit): Promise<void> {
+    selectedDeposit = value;
+    selectedWithdrawal = null;
+    lineage = null;
+    l1Detail = null;
+    activeView = 'bridge';
+    if (!api) return;
+    try {
+      const outpoint = canonicalEutxoOutpoint(value.mirroredOutpoint);
+      const envelope = await api.eutxoIndex<EutxoIndexEnvelope<EutxoLineage>>(
+        `lineage/outpoints/${outpoint.transactionId}/${outpoint.outputIndex}`,
+        { ...query(), direction: 'both', depth: '3' });
+      assertEnvelope(envelope);
+      lineage = envelope.data;
+    } catch {
+      lineage = null;
+    }
+  }
+
+  function showWithdrawal(value: EutxoWithdrawal): void {
+    selectedWithdrawal = value;
+    selectedDeposit = null;
+    lineage = null;
+    l1Detail = null;
+    activeView = 'bridge';
+  }
+
+  async function loadL1(transactionId: string): Promise<void> {
+    if (!api) return;
+    let id: string;
+    try {
+      id = canonicalEutxoIdentifier(transactionId);
+    } catch {
+      l1Detail = { id: transactionId, state: 'failed', message: 'Invalid L1 transaction identity' };
+      return;
+    }
+    l1Detail = { id, state: 'loading' };
+    try {
+      const [transaction, utxos] = await Promise.all([
+        api.l1Transaction(id),
+        api.l1TransactionUtxos(id)
+      ]);
+      if (transaction.hash && transaction.hash !== id || utxos.hash && utxos.hash !== id) {
+        l1Detail = { id, state: 'failed', message: 'L1 source identity does not match' };
+      } else {
+        l1Detail = { id, state: 'ready', transaction, utxos };
+      }
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.status === 404) {
+        l1Detail = { id, state: 'not-found', message: 'Transaction is outside retained L1 history.' };
+      } else if (cause instanceof ApiError && cause.status === 503) {
+        l1Detail = { id, state: 'unavailable', message: 'L1 UTxO state is disabled on this node.' };
+      } else {
+        l1Detail = { id, state: 'failed', message: apiFailureMessage(cause, 'L1 lookup failed') };
+      }
+    }
+  }
+
+  function assertEnvelope(value: EutxoIndexEnvelope<unknown>): void {
+    if (value.apiVersion !== 'eutxo-index/v1' || value.chainId !== selectedChain
+      || value.stateMachineId !== 'eutxo-ledger' || value.projection.kind !== 'DERIVED') {
+      throw new Error('EUTxO index response identity does not match the selected chain');
     }
   }
 </script>
 
 <svelte:head><title>Yano · EUTxO Explorer</title></svelte:head>
 
-<div data-console-route="eutxo" class="mb-4 flex flex-wrap items-end justify-between gap-3">
+<header data-console-route="eutxo" class="mb-4 flex flex-wrap items-end justify-between gap-3">
   <div>
-    <p class="m-0 text-xs font-semibold uppercase tracking-[.18em] text-cyan-400">State-machine view</p>
+    <p class="m-0 text-xs font-semibold uppercase tracking-[.18em] text-cyan-400">Lifecycle explorer</p>
     <h1 class="mt-1 text-2xl font-bold">EUTxO Explorer</h1>
-    <p class="mb-0 mt-1 text-sm text-slate-500">Finalized Cardano-shaped L2 transactions from committed app state.</p>
+    <p class="mb-0 mt-1 text-sm text-slate-500">Canonical L1 → L2 → L1 history, derived from finalized records.</p>
   </div>
   <div class="flex flex-wrap items-end gap-2">
     <label class="text-xs text-slate-400">Chain
@@ -176,10 +362,10 @@
     <a class="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 no-underline hover:border-slate-500"
        href={`${base}/app-chain/?chain=${encodeURIComponent(selectedChain)}`}>Generic app-chain view</a>
   </div>
-</div>
+</header>
 
 {#if pageError}
-  <div class="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-300">{pageError}</div>
+  <div role="alert" class="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-300">{pageError}</div>
 {/if}
 
 {#if status && !isEutxoChain(status)}
@@ -187,122 +373,257 @@
     <h2 class="m-0 text-lg font-semibold">Explorer unavailable for this chain</h2>
     <p class="mb-0 mt-2 text-sm text-slate-400">
       <strong>{selectedChain}</strong> uses <code>{status.stateMachine ?? 'an unknown state machine'}</code>.
-      This reviewed view is enabled only for the bundled <code>eutxo-ledger</code> capability.
+      This reviewed route is enabled only for <code>eutxo-ledger</code>.
     </p>
   </section>
 {:else}
-  <section class="card overflow-hidden p-5">
-    <div class="flex flex-wrap items-end justify-between gap-5">
-      <div>
-        <div class="text-xs font-semibold uppercase tracking-[.18em] text-slate-500">Committed projection</div>
-        <div class="mt-2 text-3xl font-bold text-cyan-300">{committedHeight.toLocaleString()}</div>
-        <div class="mt-1 flex flex-wrap items-center gap-1 text-xs text-slate-500">
-          <span>height · state root</span>
-          <CopyValue value={stateRoot} width={30} label="EUTxO projection state root" />
-        </div>
+  <section class="card p-4">
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div class="flex flex-wrap gap-2 text-xs">
+        <span class="badge">chain {selectedChain || '-'}</span>
+        <span class="badge">eutxo-ledger</span>
+        {#if indexEnvelope}
+          <span class="badge {isCompleteProjection(indexEnvelope.projection.status,
+            indexEnvelope.projection.fullHistory, indexEnvelope.projection.lagBlocks) ? 'badge-ok' : 'badge-warn'}">
+            {indexStatusLabel(indexEnvelope.projection.status)}
+          </span>
+          <span class="badge">{indexEnvelope.projection.fullHistory ? 'full history' : 'partial history'}</span>
+          <span class="badge">lag {indexEnvelope.projection.lagBlocks}</span>
+        {/if}
       </div>
-      <form class="flex min-w-[min(100%,30rem)] flex-1 gap-2 sm:max-w-2xl"
+      <form class="flex min-w-[min(100%,31rem)] gap-2"
             onsubmit={(event) => { event.preventDefault(); void search(); }}>
-        <label class="sr-only" for="eutxo-search">Transaction or message ID</label>
-        <input id="eutxo-search" class="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-slate-100"
-               bind:value={searchInput} autocomplete="off" spellcheck="false"
-               placeholder="64-character transaction or app-message ID" />
-        <button type="submit" class="rounded-lg bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400">Find</button>
+        <label class="sr-only" for="eutxo-search">Search lifecycle identity</label>
+        <input id="eutxo-search" bind:value={searchInput} autocomplete="off" spellcheck="false"
+               class="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs"
+               placeholder="transaction, message, claim, outpoint, or address" />
+        <button class="rounded-lg bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400">Find</button>
       </form>
     </div>
-    {#if searchError}<p class="mb-0 mt-3 text-sm text-rose-300">{searchError}</p>{/if}
+    {#if searchError}<p role="alert" class="mb-0 mt-3 text-sm text-rose-300">{searchError}</p>{/if}
   </section>
 
-  <div class="section-title">Finalized transactions</div>
-  <section class="card overflow-hidden">
-    <div class="overflow-x-auto">
-      <table class="w-full min-w-[860px] text-left text-xs">
-        <thead class="text-slate-500">
-          <tr><th class="p-3">Position</th><th>Status</th><th>Transaction</th><th>From</th><th>Outputs</th><th>Value</th><th>Authorization</th></tr>
-        </thead>
-        <tbody>
-          {#each transactions as transaction}
-            <tr class="border-t border-slate-800/60 hover:bg-slate-800/35">
-              <td class="p-3 font-mono">{transaction.appHeight}:{transaction.ordinal}</td>
-              <td><span class="badge {transaction.status === 'ACCEPTED' ? 'badge-ok' : 'badge-bad'}">{transaction.status}</span></td>
-              <td>
-                <button type="button" class="font-mono text-cyan-300 hover:text-cyan-200"
-                        title={transactionTitle(transaction)} onclick={() => selected = transaction}>
-                  {short(transaction.transactionId || transaction.messageId, 24)}
-                </button>
-              </td>
-              <td class="max-w-52 truncate font-mono text-slate-400" title={firstAddress(transaction)}>{short(firstAddress(transaction), 25)}</td>
-              <td>{transaction.outputs.length}</td>
-              <td class="font-mono">{outputValue(transaction)}</td>
-              <td><span class="badge">{transaction.authorizationProfile || 'unknown'}</span></td>
-            </tr>
-          {:else}
-            <tr><td colspan="7" class="p-6 text-center text-sm text-slate-500">
-              {loading ? 'Loading finalized EUTxO transactions…' : 'No finalized EUTxO transactions yet.'}
-            </td></tr>
-          {/each}
-        </tbody>
-      </table>
+  {#if indexAvailable === false}
+    <div class="mt-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100">
+      The optional lifecycle index is unavailable. Finalized L2 transactions remain visible below;
+      account history, bridge lineage, and validity batches require <code>indexer:eutxo-lifecycle</code>.
     </div>
-    {#if nextBefore > 1 && transactions.length > 0}
-      <div class="border-t border-slate-800 p-3 text-center">
-        <button type="button" disabled={loadingMore}
-                class="rounded-lg border border-slate-700 px-4 py-2 text-xs text-slate-300 hover:border-slate-500 disabled:opacity-50"
-                onclick={() => void loadTransactions(true)}>
-          {loadingMore ? 'Loading…' : 'Load older transactions'}
-        </button>
-      </div>
-    {/if}
-  </section>
+  {/if}
 
-  {#if selected}
-    <div class="section-title">Transaction detail</div>
-    <section class="card overflow-hidden">
-      <div class="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 p-4">
-        <div>
-          <h2 class="m-0 text-base font-semibold">Finalized attempt {selected.appHeight}:{selected.ordinal}</h2>
-          <p class="mb-0 mt-1 text-xs text-slate-500">L1 slot {selected.l1Slot.toLocaleString()} · sequence {selected.sequence.toLocaleString()}</p>
-        </div>
-        <span class="badge {selected.status === 'ACCEPTED' ? 'badge-ok' : 'badge-bad'}">{selected.status}</span>
-      </div>
-      <div class="grid gap-4 p-4 lg:grid-cols-2">
-        <div class="space-y-3 text-xs">
-          <div><div class="text-slate-500">Transaction ID</div><div class="mt-1 break-all font-mono"><CopyValue value={selected.transactionId} width={72} label="EUTxO transaction ID" /></div></div>
-          <div><div class="text-slate-500">App-message ID</div><div class="mt-1 break-all font-mono"><CopyValue value={selected.messageId} width={72} label="app-message ID" /></div></div>
-          <div><div class="text-slate-500">Authorization</div><div class="mt-1 font-mono">{selected.authorizationProfile || 'unknown'}</div></div>
-          {#if selected.code}<div><div class="text-slate-500">Result code</div><div class="mt-1 font-mono text-rose-300">{selected.code}</div></div>{/if}
-        </div>
-        <div class="space-y-3 text-xs">
-          <div><div class="text-slate-500">Committed height</div><div class="mt-1 font-mono">{committedHeight.toLocaleString()}</div></div>
-          <div><div class="text-slate-500">State root</div><div class="mt-1 break-all font-mono"><CopyValue value={stateRoot} width={72} label="committed state root" /></div></div>
-        </div>
-      </div>
-      <div class="grid border-t border-slate-800 lg:grid-cols-2">
-        <div class="border-b border-slate-800 p-4 lg:border-b-0 lg:border-r">
-          <h3 class="m-0 text-xs font-semibold uppercase tracking-[.14em] text-slate-500">Resolved inputs</h3>
-          <div class="mt-3 space-y-3">
-            {#each selected.inputs as entry}
-              <div class="rounded-lg bg-slate-950/70 p-3 text-xs">
-                <div class="flex items-center gap-1 break-all font-mono"><CopyValue value={entry.outpoint} width={56} label="input outpoint" /></div>
-                <div class="mt-2 flex items-center gap-1 break-all font-mono text-slate-400"><CopyValue value={entry.address} width={56} label="input address" /></div>
-                <div class="mt-2 font-mono text-cyan-300">{formatLovelace(entry.lovelace)}</div>
-              </div>
-            {:else}<p class="text-sm text-slate-500">No safe input projection is available.</p>{/each}
-          </div>
-        </div>
-        <div class="p-4">
-          <h3 class="m-0 text-xs font-semibold uppercase tracking-[.14em] text-slate-500">Created outputs</h3>
-          <div class="mt-3 space-y-3">
-            {#each selected.outputs as entry}
-              <div class="rounded-lg bg-slate-950/70 p-3 text-xs">
-                <div class="flex items-center gap-1 break-all font-mono"><CopyValue value={entry.outpoint} width={56} label="output outpoint" /></div>
-                <div class="mt-2 flex items-center gap-1 break-all font-mono text-slate-400"><CopyValue value={entry.address} width={56} label="output address" /></div>
-                <div class="mt-2 font-mono text-cyan-300">{formatLovelace(entry.lovelace)}</div>
-              </div>
-            {:else}<p class="text-sm text-slate-500">No outputs were created.</p>{/each}
-          </div>
-        </div>
-      </div>
+  <nav aria-label="EUTxO views" class="mt-4 flex gap-1 overflow-x-auto border-b border-slate-800">
+    {#each (indexAvailable ? ['overview', 'transactions', 'accounts', 'bridge'] : ['transactions']) as view}
+      <button type="button" class="whitespace-nowrap border-b-2 px-4 py-3 text-sm capitalize
+              {activeView === view ? 'border-cyan-400 text-cyan-300' : 'border-transparent text-slate-400'}"
+              aria-current={activeView === view ? 'page' : undefined}
+              onclick={() => activeView = view as View}>{view}</button>
+    {/each}
+  </nav>
+
+  {#if activeView === 'overview' && indexAvailable}
+    <div class="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <section class="card p-4"><div class="text-xs uppercase text-slate-500">Indexed height</div>
+        <div class="mt-2 text-2xl font-bold">{indexEnvelope?.projection.indexedHeight.toLocaleString() ?? '-'}</div></section>
+      <section class="card p-4"><div class="text-xs uppercase text-slate-500">Recent L2 attempts</div>
+        <div class="mt-2 text-2xl font-bold">{transactions.length}</div><div class="text-xs text-slate-500">bounded page</div></section>
+      <section class="card p-4"><div class="text-xs uppercase text-slate-500">Stable deposits</div>
+        <div class="mt-2 text-2xl font-bold">{deposits.length}</div><div class="text-xs text-slate-500">bounded page</div></section>
+      <section class="card p-4"><div class="text-xs uppercase text-slate-500">Withdrawal claims</div>
+        <div class="mt-2 text-2xl font-bold">{withdrawals.length}</div><div class="text-xs text-slate-500">bounded page</div></section>
+    </div>
+    <section class="card mt-4 p-5">
+      <h2 class="m-0 text-base font-semibold">Projection health</h2>
+      <dl class="mt-4 grid gap-4 text-xs sm:grid-cols-2 lg:grid-cols-4">
+        <div><dt class="text-slate-500">Coverage</dt><dd class="mt-1">{indexEnvelope?.data.coverage ?? '-'}</dd></div>
+        <div><dt class="text-slate-500">Finalized height</dt><dd class="mt-1">{indexEnvelope?.projection.finalizedHeight ?? '-'}</dd></div>
+        <div><dt class="text-slate-500">Store</dt><dd class="mt-1">{indexEnvelope?.data.storeType ?? '-'}</dd></div>
+        <div><dt class="text-slate-500">Projection digest</dt><dd class="mt-1"><CopyValue value={indexEnvelope?.data.normalizedDigest ?? ''} width={28} label="projection digest" /></dd></div>
+      </dl>
+      {#if indexEnvelope && !indexEnvelope.projection.fullHistory}
+        <p class="mb-0 mt-4 text-amber-300">Results begin at app height {indexEnvelope.projection.historyFromHeight}; absence before that point is unknown, not zero.</p>
+      {/if}
     </section>
+  {/if}
+
+  {#if activeView === 'transactions'}
+    <section class="card mt-4 overflow-hidden">
+      <div class="overflow-x-auto">
+        <table class="w-full min-w-[860px] text-left text-xs">
+          <thead class="text-slate-500"><tr>
+            <th class="p-3">Position</th><th>Status</th><th>Transaction</th><th>Message</th>
+            <th>Inputs</th><th>Outputs</th><th>Output value</th><th>Authorization</th>
+          </tr></thead>
+          <tbody>
+            {#each transactions as transaction}
+              <tr class="border-t border-slate-800/60 hover:bg-slate-800/35">
+                <td class="p-3 font-mono">{transaction.appHeight}:{transaction.ordinal}</td>
+                <td><span class="badge {transaction.status === 'ACCEPTED' ? 'badge-ok' : 'badge-bad'}">{transaction.status}</span></td>
+                <td><button class="font-mono text-cyan-300 hover:text-cyan-200" title={transactionTitle(transaction)}
+                            onclick={() => void selectTransaction(
+                              transaction.transactionId || transaction.messageId,
+                              !transaction.transactionId)}>
+                  {short(transaction.transactionId || '-', 22)}</button></td>
+                <td><CopyValue value={transaction.messageId} width={20} label="app-message ID" /></td>
+                <td>{transaction.inputs.length}</td><td>{transaction.outputs.length}</td>
+                <td class="font-mono">{total(transaction.outputs)}</td>
+                <td><span class="badge">{transaction.authorizationProfile || 'unknown'}</span></td>
+              </tr>
+            {:else}
+              <tr><td colspan="8" class="p-6 text-center text-sm text-slate-500">
+                {loading ? 'Loading finalized EUTxO transactions…' : 'No finalized EUTxO transactions in this coverage window.'}
+              </td></tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+      {#if transactionCursor}
+        <div class="border-t border-slate-800 p-3 text-center">
+          <button disabled={loadingMore} class="rounded-lg border border-slate-700 px-4 py-2 text-xs disabled:opacity-50"
+                  onclick={() => void loadTransactions(true)}>{loadingMore ? 'Loading…' : 'Load older transactions'}</button>
+        </div>
+      {/if}
+    </section>
+    {#if selectedTransaction}
+      <section class="card mt-4 overflow-hidden" aria-live="polite">
+        <div class="flex flex-wrap justify-between gap-3 border-b border-slate-800 p-4">
+          <div><h2 class="m-0 text-base font-semibold">L2 transaction {selectedTransaction.appHeight}:{selectedTransaction.ordinal}</h2>
+            <p class="mb-0 mt-1 text-xs text-slate-500">L1 slot context {selectedTransaction.l1Slot} · sender sequence {selectedTransaction.sequence}</p></div>
+          <span class="badge {selectedTransaction.status === 'ACCEPTED' ? 'badge-ok' : 'badge-bad'}">{selectedTransaction.status}</span>
+        </div>
+        <div class="grid gap-5 p-4 lg:grid-cols-2">
+          <div class="space-y-3 text-xs">
+            <div><div class="text-slate-500">Transaction ID</div><CopyValue value={selectedTransaction.transactionId} width={60} label="L2 transaction ID" /></div>
+            <div><div class="text-slate-500">App-message ID</div><CopyValue value={selectedTransaction.messageId} width={60} label="app-message ID" /></div>
+            <div><div class="text-slate-500">Authorization</div><div class="mt-1">{selectedTransaction.authorizationProfile}</div></div>
+            {#if selectedTransaction.code}<div><div class="text-slate-500">Result</div><div class="mt-1 text-rose-300">{selectedTransaction.code}</div></div>{/if}
+          </div>
+          <div class="grid gap-3 text-xs sm:grid-cols-2">
+            <div><h3 class="m-0 text-xs uppercase text-slate-500">Inputs</h3>
+              {#each selectedTransaction.inputs as entry}<div class="mt-2 rounded-lg bg-slate-950/60 p-2">
+                <CopyValue value={entry.outpoint} width={28} label="input outpoint" /><div class="mt-1">{formatLovelace(entry.lovelace)}</div>
+              </div>{/each}</div>
+            <div><h3 class="m-0 text-xs uppercase text-slate-500">Outputs</h3>
+              {#each selectedTransaction.outputs as entry}<div class="mt-2 rounded-lg bg-slate-950/60 p-2">
+                <CopyValue value={entry.outpoint} width={28} label="output outpoint" /><div class="mt-1">{formatLovelace(entry.lovelace)}</div>
+              </div>{/each}</div>
+          </div>
+        </div>
+      </section>
+    {/if}
+  {/if}
+
+  {#if activeView === 'accounts' && indexAvailable}
+    <section class="card mt-4 p-5">
+      <h2 class="m-0 text-base font-semibold">Account activity</h2>
+      <form class="mt-4 flex gap-2" onsubmit={(event) => { event.preventDefault(); void loadAccount(); }}>
+        <label class="sr-only" for="account-address">L2 address</label>
+        <input id="account-address" bind:value={accountInput} class="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs"
+               placeholder="addr_test… or profile address" />
+        <button class="rounded-lg bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950">Open</button>
+      </form>
+      {#if account}
+        <div class="mt-5 grid gap-4 lg:grid-cols-3">
+          <div><div class="text-xs text-slate-500">Address</div><CopyValue value={account.address} width={34} label="account address" /></div>
+          <div><div class="text-xs text-slate-500">Indexed unspent balance</div><div class="mt-1 font-mono text-cyan-300">{formatLovelace(account.lovelace)}</div></div>
+          <div><div class="text-xs text-slate-500">Current UTxOs</div><div class="mt-1">{account.utxos.length}</div></div>
+        </div>
+        <div class="mt-5 grid gap-5 lg:grid-cols-2">
+          <div><h3 class="text-xs uppercase text-slate-500">Current UTxOs</h3>
+            {#each account.utxos as entry}<div class="mt-2 rounded-lg bg-slate-950/60 p-3 text-xs">
+              <CopyValue value={entry.outpoint} width={42} label="account outpoint" />
+              <div class="mt-1 font-mono">{formatLovelace(entry.lovelace)}</div></div>
+            {:else}<p class="text-sm text-slate-500">No current UTxOs.</p>{/each}</div>
+          <div><h3 class="text-xs uppercase text-slate-500">Bounded activity</h3>
+            {#each account.activityTransactionIds as id}<button class="mt-2 block font-mono text-xs text-cyan-300"
+                    onclick={() => void selectTransaction(id)}>{short(id, 36)}</button>
+            {:else}<p class="text-sm text-slate-500">No activity in indexed history.</p>{/each}</div>
+        </div>
+      {/if}
+    </section>
+  {/if}
+
+  {#if activeView === 'bridge' && indexAvailable}
+    <div class="mt-4 grid gap-4 lg:grid-cols-2">
+      <section class="card p-4"><h2 class="m-0 text-base font-semibold">Stable deposits</h2>
+        {#each deposits as deposit}<button class="mt-3 block w-full rounded-lg border border-slate-800 p-3 text-left hover:border-cyan-700"
+                onclick={() => void showDeposit(deposit)}>
+          <div class="flex justify-between gap-2 text-xs"><span class="badge badge-ok">L1 accepted</span><span>credited #{deposit.creditedHeight}</span></div>
+          <div class="mt-2 font-mono text-xs text-cyan-300">{short(deposit.acceptedOutpoint, 40)}</div>
+          <div class="mt-1 truncate text-xs text-slate-500">{deposit.l2Address}</div>
+        </button>{:else}<p class="text-sm text-slate-500">No stable deposits in this page.</p>{/each}
+      </section>
+      <section class="card p-4"><h2 class="m-0 text-base font-semibold">Withdrawal claims</h2>
+        {#each withdrawals as withdrawal}<button class="mt-3 block w-full rounded-lg border border-slate-800 p-3 text-left hover:border-cyan-700"
+                onclick={() => showWithdrawal(withdrawal)}>
+          <div class="flex justify-between gap-2 text-xs"><span class="badge">{withdrawal.status}</span><span>{formatLovelace(withdrawal.lovelace)}</span></div>
+          <div class="mt-2 font-mono text-xs text-cyan-300">{short(withdrawal.claimId, 40)}</div>
+          <div class="mt-1 truncate text-xs text-slate-500">{withdrawal.destinationAddress}</div>
+        </button>{:else}<p class="text-sm text-slate-500">No withdrawal claims in this page.</p>{/each}
+      </section>
+    </div>
+
+    {#if selectedDeposit || selectedWithdrawal}
+      <section class="card mt-4 p-5">
+        <h2 class="m-0 text-base font-semibold">Canonical lifecycle</h2>
+        <ol class="mt-5 grid gap-3 text-xs lg:grid-cols-5">
+          {#if selectedDeposit}
+            <li class="rounded-lg border border-emerald-700/50 p-3"><span class="badge badge-ok">1 · L1 accepted</span>
+              <div class="mt-2"><CopyValue value={selectedDeposit.acceptedOutpoint} width={28} label="accepted deposit outpoint" /></div>
+              <div class="mt-1 text-slate-500">slot {selectedDeposit.l1Slot}</div></li>
+            <li class="rounded-lg border border-emerald-700/50 p-3"><span class="badge badge-ok">2 · L2 credited</span>
+              <div class="mt-2"><CopyValue value={selectedDeposit.mirroredOutpoint} width={28} label="mirrored L2 outpoint" /></div>
+              <div class="mt-1 text-slate-500">app height {selectedDeposit.creditedHeight}</div></li>
+            <li class="rounded-lg border border-slate-700 p-3"><span class="badge">3 · L2 activity</span>
+              <div class="mt-2 text-slate-400">{lineage?.nodes.length ?? 0} bounded lineage nodes</div></li>
+            <li class="rounded-lg border border-slate-800 p-3 text-slate-500">4 · Withdrawal not selected</li>
+            <li class="rounded-lg border border-slate-800 p-3 text-slate-500">5 · L1 payout not selected</li>
+          {:else if selectedWithdrawal}
+            <li class="rounded-lg border border-slate-800 p-3 text-slate-500">1 · Funding origins in bounded lineage</li>
+            <li class="rounded-lg border border-slate-800 p-3 text-slate-500">2 · L2 activity</li>
+            <li class="rounded-lg border border-emerald-700/50 p-3"><span class="badge badge-ok">3 · Withdrawal requested</span>
+              <div class="mt-2"><CopyValue value={selectedWithdrawal.claimId} width={28} label="withdrawal claim ID" /></div>
+              <div class="mt-1">{formatLovelace(selectedWithdrawal.lovelace)}</div></li>
+            <li class="rounded-lg border border-slate-700 p-3"><span class="badge">4 · {selectedWithdrawal.status}</span>
+              <div class="mt-2 text-slate-500">updated app height {selectedWithdrawal.updatedHeight}</div></li>
+            <li class="rounded-lg border border-slate-700 p-3"><span class="badge {selectedWithdrawal.confirmedSlot > 0 ? 'badge-ok' : ''}">5 · L1 payout</span>
+              {#if selectedWithdrawal.settlementTransactionId}<div class="mt-2"><CopyValue value={selectedWithdrawal.settlementTransactionId} width={28} label="settlement transaction ID" /></div>{/if}
+              <div class="mt-1 text-slate-500">{selectedWithdrawal.confirmedSlot > 0 ? `stable at slot ${selectedWithdrawal.confirmedSlot}` : 'not stably confirmed'}</div></li>
+          {/if}
+        </ol>
+        <div class="mt-5 flex flex-wrap gap-2">
+          {#if selectedDeposit}
+            <button class="rounded-lg border border-slate-700 px-3 py-2 text-xs"
+                    onclick={() => void loadL1(transactionIdFromOutpoint(selectedDeposit!.acceptedOutpoint))}>Inspect accepted L1 transaction</button>
+            <button class="rounded-lg border border-slate-700 px-3 py-2 text-xs"
+                    onclick={() => void loadL1(transactionIdFromOutpoint(selectedDeposit!.stagingOutpoint))}>Inspect staging L1 transaction</button>
+          {:else if selectedWithdrawal?.settlementTransactionId}
+            <button class="rounded-lg border border-slate-700 px-3 py-2 text-xs"
+                    onclick={() => void loadL1(selectedWithdrawal!.settlementTransactionId)}>Inspect payout L1 transaction</button>
+          {/if}
+        </div>
+      </section>
+    {/if}
+
+    {#if l1Detail}
+      <section class="card mt-4 p-5" aria-live="polite">
+        <h2 class="m-0 text-base font-semibold">L1 transaction detail</h2>
+        <div class="mt-2"><CopyValue value={l1Detail.id} width={60} label="L1 transaction ID" /></div>
+        {#if l1Detail.state === 'loading'}<p class="text-sm text-slate-400">Loading retained L1 data…</p>
+        {:else if l1Detail.state !== 'ready'}<p class="text-sm text-amber-300">{l1Detail.message}</p>
+        {:else}
+          <dl class="mt-4 grid gap-4 text-xs sm:grid-cols-2 lg:grid-cols-4">
+            <div><dt class="text-slate-500">Block</dt><dd class="mt-1"><CopyValue value={l1Detail.transaction?.block ?? ''} width={24} label="L1 block hash" /></dd></div>
+            <div><dt class="text-slate-500">Slot</dt><dd class="mt-1">{l1Detail.transaction?.slot ?? '-'}</dd></div>
+            <div><dt class="text-slate-500">Fee</dt><dd class="mt-1">{formatLovelace(l1Detail.transaction?.fees ?? '0')}</dd></div>
+            <div><dt class="text-slate-500">Inputs / outputs</dt><dd class="mt-1">{l1Detail.utxos?.inputs?.length ?? 0} / {l1Detail.utxos?.outputs?.length ?? 0}</dd></div>
+          </dl>
+          <div class="mt-4 grid gap-4 lg:grid-cols-2">
+            <div><h3 class="text-xs uppercase text-slate-500">Inputs</h3>
+              {#each l1Detail.utxos?.inputs ?? [] as item}<div class="mt-2 truncate rounded bg-slate-950/60 p-2 font-mono text-xs" title={item.address}>{item.address}</div>{/each}</div>
+            <div><h3 class="text-xs uppercase text-slate-500">Outputs</h3>
+              {#each l1Detail.utxos?.outputs ?? [] as item}<div class="mt-2 truncate rounded bg-slate-950/60 p-2 font-mono text-xs" title={item.address}>{item.address}</div>{/each}</div>
+          </div>
+        {/if}
+      </section>
+    {/if}
   {/if}
 {/if}
