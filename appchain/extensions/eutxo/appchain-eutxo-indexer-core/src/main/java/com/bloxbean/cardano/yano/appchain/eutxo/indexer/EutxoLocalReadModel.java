@@ -281,6 +281,8 @@ public final class EutxoLocalReadModel
                 + string(health.checkpoint().coverage().name())
                 + ",\"normalizedDigest\":"
                 + string(store.reader().normalizedDigest())
+                + ",\"diagnosticCode\":"
+                + string(health.diagnostic())
                 + ",\"validityAvailable\":" + (validity != null) + "}";
     }
 

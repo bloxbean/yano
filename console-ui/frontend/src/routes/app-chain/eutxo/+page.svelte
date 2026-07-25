@@ -438,6 +438,16 @@
       account history, bridge lineage, and validity batches require <code>indexer:eutxo-lifecycle</code>.
     </div>
   {/if}
+  {#if indexEnvelope?.data.diagnosticCode}
+    <div role="alert"
+         class="mt-4 rounded-xl border border-rose-500/40 bg-rose-500/10 p-4 text-sm text-rose-100">
+      <strong>Bridge reconciliation required.</strong>
+      The committed bridge diagnostic is
+      <code>{indexEnvelope.data.diagnosticCode}</code>. Previously accepted
+      lifecycle history remains visible, but operators must reconcile the L1
+      source before treating new bridge activity as healthy.
+    </div>
+  {/if}
 
   <nav aria-label="EUTxO views" class="mt-4 flex gap-1 overflow-x-auto border-b border-slate-800">
     {#each (indexAvailable

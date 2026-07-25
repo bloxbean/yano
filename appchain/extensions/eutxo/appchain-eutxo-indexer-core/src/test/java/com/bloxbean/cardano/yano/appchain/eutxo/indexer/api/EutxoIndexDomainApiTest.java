@@ -83,13 +83,70 @@ class EutxoIndexDomainApiTest {
                     Map.of(), Map.of(
                             "chain", List.of("payments"),
                             "cursor", List.of("c1_not-valid")))))
-                    .isInstanceOf(IllegalArgumentException.class);
+                    .isInstanceOf(DomainApiException.class)
+                    .extracting(failure ->
+                            ((DomainApiException) failure).code())
+                    .isEqualTo(
+                            DomainApiException.Code.INVALID_REQUEST);
             assertThatThrownBy(() -> api.handle(request(
                     "index-status", "index/v1/status",
                     Map.of(), Map.of(
                             "chain", List.of("payments"),
                             "sql", List.of("select *")))))
                     .isInstanceOf(DomainApiException.class);
+        }
+    }
+
+    @Test
+    void malformedIdentifiersAddressesBoundsAndDuplicatesUseStableCode() {
+        try (InMemoryEutxoIndexStore store =
+                     new InMemoryEutxoIndexStore(
+                             EutxoIndexFixtures.identity())) {
+            applyFixture(store);
+            EutxoIndexDomainApi api = api(store);
+            List<DomainApiRequest> invalid = List.of(
+                    request(
+                            "index-transaction",
+                            "index/v1/transactions/not-hex",
+                            Map.of("transaction_id", "not-hex"),
+                            Map.of("chain", List.of("payments"))),
+                    request(
+                            "index-account",
+                            "index/v1/accounts/not-an-address",
+                            Map.of("address", "not-an-address"),
+                            Map.of("chain", List.of("payments"))),
+                    request(
+                            "index-transactions",
+                            "index/v1/transactions",
+                            Map.of(),
+                            Map.of(
+                                    "chain", List.of("payments"),
+                                    "limit", List.of("101"))),
+                    request(
+                            "index-transactions",
+                            "index/v1/transactions",
+                            Map.of(),
+                            Map.of(
+                                    "chain", List.of(
+                                            "payments", "payments"))),
+                    request(
+                            "index-lineage",
+                            "index/v1/lineage/outpoints/"
+                                    + EutxoIndexFixtures.hex(1)
+                                    + "/70000",
+                            Map.of(
+                                    "transaction_id",
+                                    EutxoIndexFixtures.hex(1),
+                                    "output_index", "70000"),
+                            Map.of("chain", List.of("payments"))));
+            for (DomainApiRequest request : invalid) {
+                assertThatThrownBy(() -> api.handle(request))
+                        .isInstanceOf(DomainApiException.class)
+                        .extracting(failure ->
+                                ((DomainApiException) failure).code())
+                        .isEqualTo(
+                                DomainApiException.Code.INVALID_REQUEST);
+            }
         }
     }
 

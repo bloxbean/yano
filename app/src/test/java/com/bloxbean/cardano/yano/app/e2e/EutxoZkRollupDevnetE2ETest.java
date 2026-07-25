@@ -524,7 +524,9 @@ class EutxoZkRollupDevnetE2ETest extends BaseE2ETest {
                 operator.enterpriseAddress(),
                 stagingDatum.depositNonce(),
                 stagingOutpoint,
-                refundDeadline);
+                refundDeadline,
+                stagingDatum.depositorKeyHash(),
+                stagingDatum.l2KeyBinding());
         String acceptanceTransaction = submit(new ScriptTx()
                 .collectFrom(
                         staged,

@@ -572,6 +572,11 @@ class EutxoStateMachineTest {
                 state.get(EutxoStateKeys.bridgeHalt()).orElseThrow(),
                 java.nio.charset.StandardCharsets.US_ASCII))
                 .isEqualTo("UNKNOWN_WITHDRAWAL_CONFIRMATION");
+        assertThat(EutxoQueryCodec.decodeBridgeHalt(machine.query(
+                EutxoQueryCodec.BRIDGE_HALT_PATH,
+                new byte[0],
+                state)))
+                .isEqualTo("UNKNOWN_WITHDRAWAL_CONFIRMATION");
     }
 
     private static EutxoDepositClaim depositClaim(

@@ -127,12 +127,19 @@ Open:
 http://127.0.0.1:7070/ui/app-chain/
 ```
 
-Select the EUTxO chain and choose **EUTxO Explorer**. The explorer lists up to
-20 recent finalized attempts at a time and can page backward or find either
-the Cardano-shaped L2 transaction ID or its outer app-chain message ID.
-Details show input/output outpoints, owners, lovelace, final app block, L1
-slot, and authorization profile. Decoding is performed by the EUTxO plugin
-from committed state; the generic console remains state-machine neutral.
+Select the EUTxO chain and choose **EUTxO Explorer**. Each demo node starts an
+owned SQLite lifecycle index automatically. The explorer pages finalized
+transactions and can search by account address, Cardano-shaped L2 transaction
+ID, outer app-chain message ID, L1 deposit outpoint, or withdrawal claim ID.
+Bridge views connect the exact L1 deposit, mirrored L2 value, L2 activity,
+claim, and final L1 payout. The ZK scenario adds the ordered validity batch,
+proof identity, roots, data commitment, root settlement, and payout as
+separate stages.
+
+The UI and index read only canonical finalized records; neither reads the demo
+journal. Index health, lag, history coverage, and a committed bridge-recovery
+diagnostic remain visible. See
+[EUTxO lifecycle indexer](INDEXER_OPERATIONS.md) for API and recovery details.
 
 ## Status, restart, and cleanup
 

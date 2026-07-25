@@ -52,6 +52,14 @@ select it explicitly.
 | `state:zk-gate` | `state` | `EXPERIMENTAL` | `experimental` | `chain` | yes | JVM, native | `build-time-only` | `yano-runtime`, `appchain-zk` | [ZK extension](../../appchain/extensions/appchain-zk/README.md) |
 | `state:zk-membership` | `state` | `EXPERIMENTAL` | `experimental` | `chain` | yes | JVM, native | `build-time-only` | `yano-runtime`, `appchain-zk` | [ZK extension](../../appchain/extensions/appchain-zk/README.md) |
 | `state:credential-registry` | `state` | `EXPERIMENTAL` | `experimental` | `chain` | yes | JVM, native | `build-time-only` | `yano-runtime`, `appchain-zk` | [ZK extension](../../appchain/extensions/appchain-zk/README.md) |
+| `state:eutxo-ledger` | `state` | `FIRST_PARTY_OPTIONAL` | `experimental` | `chain` | derived | JVM | `unsupported` | `yano-runtime`, `appchain-eutxo-ledger` | [EUTxO extension](../../appchain/extensions/eutxo/README.md) |
+| `profile:eutxo-plutus-v3` | `profile` | `FIRST_PARTY_OPTIONAL` | `experimental` | `chain` | yes | JVM | `unsupported` | `yano-runtime`, `appchain-eutxo-ledger` | [EUTxO profiles](../../appchain/extensions/eutxo/README.md) |
+| `profile:eutxo-key-payments` | `profile` | `FIRST_PARTY_OPTIONAL` | `experimental` | `chain` | yes | JVM | `unsupported` | `yano-runtime`, `appchain-eutxo-ledger` | [EUTxO profiles](../../appchain/extensions/eutxo/README.md) |
+| `funding:eutxo-genesis` | `funding` | `FIRST_PARTY_OPTIONAL` | `experimental` | `chain` | yes | JVM | `unsupported` | `yano-runtime`, `appchain-eutxo-ledger` | [EUTxO genesis](../../appchain/extensions/eutxo/README.md) |
+| `bridge:cardano-federated` | `bridge` | `EXPERIMENTAL` | `experimental` | `chain` | yes | JVM | `unsupported` | `yano-runtime`, `appchain-eutxo-ledger`, `appchain-eutxo-bridge-cardano` | [EUTxO bridge](../../appchain/extensions/eutxo/README.md) |
+| `settlement:zeroj-validity` | `settlement` | `EXPERIMENTAL` | `experimental` | `chain` | yes | JVM | `unsupported` | `yano-runtime`, `appchain-eutxo-zk-zeroj`, `appchain-eutxo-zk-runtime`, `appchain-eutxo-zk-lifecycle` | [ZeroJ validity](../../appchain/extensions/eutxo-zk/README.md) |
+| `rollup:zeroj-cardano` | `product-label` | `EXPERIMENTAL` | `experimental` | `chain` | derived | JVM | `unsupported` | `yano-runtime`, `appchain-eutxo-ledger`, `appchain-eutxo-zk-zeroj` | [ZK production gates](../../appchain/extensions/eutxo-zk/Z6_PRODUCTION_HARDENING.md) |
+| `indexer:eutxo-lifecycle` | `indexer` | `FIRST_PARTY_OPTIONAL` | `preview` | `node` | derived | JVM | `unsupported` | `yano-runtime`, `appchain-eutxo-indexer-core`, `appchain-eutxo-indexer-jdbc` | [Indexer operations](../../appchain/extensions/eutxo/INDEXER_OPERATIONS.md) |
 | `sequencer:fixed` | `sequencer` | `BUNDLED` | `stable` | `chain` | yes | JVM, native | `bundled` | `yano-runtime` | [App-chain guide](README.md) |
 | `sequencer:rotating` | `sequencer` | `BUNDLED` | `experimental` | `chain` | yes | JVM, native | `bundled` | `yano-runtime` | [App-chain guide](README.md) |
 | `membership:static` | `membership` | `BUNDLED` | `stable` | `chain` | yes | JVM, native | `bundled` | `yano-runtime` | [App-chain guide](README.md) |
@@ -88,6 +96,10 @@ capabilities first; users may then add only compatible selectable capabilities.
 | `approval-workflow` | `BUNDLED` | `stable` | JVM, native | `bundled` | `yano-runtime`, `appchain-stdlib` | [Approvals](state-machines/approvals.md) |
 | `role-approval` | `BUNDLED` | `preview` | JVM, native | `bundled` | `yano-runtime`, `appchain-composite`, `appchain-role-workflow` | [Generic role approvals](state-machines/role-approvals.md) |
 | `evidence-ledger` | `BUNDLED` | `preview` | JVM, native | `bundled` | `yano-runtime`, `appchain-stdlib`, `appchain-evidence-registry`, `appchain-composite`, `appchain-role-workflow`, `appchain-evidence-profile` | [Evidence](tutorials/04-evidence-publication.md) |
+| `eutxo-ledger` | `FIRST_PARTY_OPTIONAL` | `experimental` | JVM | `unsupported` | `yano-runtime`, `appchain-eutxo-ledger` | [EUTxO ledger](../../appchain/extensions/eutxo/README.md) |
+| `eutxo-cardano-bridge` | `EXPERIMENTAL` | `experimental` | JVM | `unsupported` | `yano-runtime`, `appchain-eutxo-ledger`, `appchain-eutxo-bridge-cardano` | [EUTxO bridge](../../appchain/extensions/eutxo/README.md) |
+| `eutxo-zeroj-validity` | `EXPERIMENTAL` | `experimental` | JVM | `unsupported` | `yano-runtime`, `appchain-eutxo-ledger`, `appchain-eutxo-zk-zeroj` | [ZeroJ validity](../../appchain/extensions/eutxo-zk/README.md) |
+| `eutxo-zeroj-preview` | `EXPERIMENTAL` | `experimental` | JVM | `unsupported` | `yano-runtime`, `appchain-eutxo-ledger`, `appchain-eutxo-bridge-cardano`, `appchain-eutxo-zk-zeroj`, `appchain-eutxo-zk-runtime`, `appchain-eutxo-zk-lifecycle` | [ZeroJ lifecycle](../../appchain/extensions/eutxo-zk/GETTING_STARTED.md) |
 | `custom-plugin` | `REFERENCE` | `experimental` | JVM | `unsupported` | `yano-runtime` | [Custom plugins](tutorials/08-plugins-and-composites.md) |
 <!-- recipe-catalog:end -->
 

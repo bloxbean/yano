@@ -22,6 +22,7 @@ public final class EutxoQueryCodec {
     public static final String DEPOSITS_PATH = "bridge/deposits/records";
     public static final String DEPOSIT_COUNT_PATH = "bridge/deposits/count";
     public static final String RESERVE_PATH = "bridge/reserve";
+    public static final String BRIDGE_HALT_PATH = "bridge/halt";
     public static final String WITHDRAWAL_PATH = "bridge/withdrawals/record";
     public static final String WITHDRAWALS_PATH = "bridge/withdrawals/records";
     public static final String WITHDRAWAL_COUNT_PATH =
@@ -182,6 +183,26 @@ public final class EutxoQueryCodec {
 
     public static String decodeReserveRequest(byte[] bytes) {
         return boundedUtf8(bytes, 120, "asset id");
+    }
+
+    public static byte[] bridgeHalt(String code) {
+        String normalized = Objects.requireNonNullElse(
+                code, "").trim();
+        if (!normalized.isEmpty()
+                && (normalized.length() > 128
+                || !normalized.matches("[A-Z0-9_]+"))) {
+            throw new IllegalArgumentException(
+                    "invalid bridge halt code");
+        }
+        return normalized.getBytes(StandardCharsets.US_ASCII);
+    }
+
+    public static String decodeBridgeHalt(byte[] bytes) {
+        Objects.requireNonNull(bytes, "bytes");
+        return new String(
+                bridgeHalt(new String(
+                        bytes, StandardCharsets.US_ASCII)),
+                StandardCharsets.US_ASCII);
     }
 
     public static byte[] optionalDepositRecord(EutxoDepositRecord record) {

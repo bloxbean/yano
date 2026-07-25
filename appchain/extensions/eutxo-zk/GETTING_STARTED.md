@@ -90,7 +90,13 @@ The wallet signs ordinary Cardano L1 CBOR. The supplied Jubjub key is public
 and becomes the committed L2 authorization for the same Cardano payment
 credential. High-frequency L2 spends are then signed by the user's SDK-held
 Jubjub session key. Open `/ui/app-chain/`, select the chain, and choose
-**EUTxO Explorer** to inspect the decoded finalized transactions.
+**EUTxO Explorer** to inspect the complete indexed lifecycle. The generated
+nodes enable one SQLite index each and the page keeps the ordered L2
+transactions, b16 proof and verification-key identities, data commitment,
+previous/next validity roots, root-settlement transaction, and payout
+transaction as distinct stages. `demo status` and `demo verify` wait for zero
+index lag and matching logical digests across members. See the
+[indexer runbook](../eutxo/INDEXER_OPERATIONS.md) for API and recovery details.
 
 ## Current executable developer flow
 

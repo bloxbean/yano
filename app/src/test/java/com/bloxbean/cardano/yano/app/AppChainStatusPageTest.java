@@ -56,8 +56,9 @@ class AppChainStatusPageTest {
 
         assertTrue(page.contains("Yano · EUTxO Explorer"));
         assertTrue(page.contains("data-console-route=\"eutxo\""));
-        assertTrue(page.contains("Finalized transactions"));
-        assertTrue(page.contains("Transaction or message ID"));
+        assertTrue(page.contains("Lifecycle explorer"));
+        assertTrue(page.contains(
+                "transaction, message, claim, outpoint, or address"));
     }
 
 }

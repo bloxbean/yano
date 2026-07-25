@@ -13,6 +13,8 @@
     {"id":"appchain-effects-cardano","availability":"FIRST_PARTY_OPTIONAL","bundleId":"com.bloxbean.cardano.yano.appchain.effects.cardano","nativePosture":"build-time-only","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
     {"id":"appchain-zk","availability":"EXPERIMENTAL","bundleId":"com.bloxbean.cardano.yano.appchain.zk","nativePosture":"build-time-only","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
     {"id":"appchain-eutxo-ledger","availability":"BUNDLED","bundleId":"com.bloxbean.cardano.yano.appchain.eutxo","nativePosture":"unsupported","runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"]},
+    {"id":"appchain-eutxo-indexer-core","availability":"BUNDLED","bundleId":"com.bloxbean.cardano.yano.appchain.eutxo.indexer","nativePosture":"unsupported","runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"]},
+    {"id":"appchain-eutxo-indexer-jdbc","availability":"BUNDLED","bundleId":"library:appchain-eutxo-indexer-jdbc","nativePosture":"unsupported","runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"]},
     {"id":"appchain-eutxo-bridge-cardano","availability":"BUNDLED","bundleId":"com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano","nativePosture":"unsupported","runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"]},
     {"id":"appchain-eutxo-zk-zeroj","availability":"BUNDLED","bundleId":"library:appchain-eutxo-zk-zeroj","nativePosture":"unsupported","runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"]},
     {"id":"appchain-eutxo-zk-runtime","availability":"BUNDLED","bundleId":"library:appchain-eutxo-zk-runtime","nativePosture":"unsupported","runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"]},
@@ -169,6 +171,14 @@
       "provides":["zeroj-cardano-rollup-label"],"requires":["settlement:zeroj-validity"],"implies":[],"conflicts":[],"runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"],"supportedNetworks":["devnet","preview","preprod"],"artifacts":["yano-runtime","appchain-eutxo-ledger","appchain-eutxo-zk-zeroj"],"nativePosture":"unsupported",
       "externalPrerequisites":["all-adr-utxo-001-z5-z6-gates-passed"],"bootstrapRequirements":["separate-production-readiness-decision"],"nonSecretAnswers":[],"secretReferences":{},"properties":{},
       "documentation":"appchain/extensions/eutxo-zk/Z6_PRODUCTION_HARDENING.md","acceptanceScenario":"nonselectable-eutxo-rollup-label"
+    },
+    {
+      "id":"indexer:eutxo-lifecycle","name":"EUTxO lifecycle indexer","category":"indexer","availability":"FIRST_PARTY_OPTIONAL","maturity":"preview","scope":"node","selectable":false,
+      "trustStatement":"Derived node-local SQLite projection. It is rebuildable and never participates in transaction validation, state roots, finality, bridge authorization, proof verification, or settlement.",
+      "description":"Indexes finalized EUTxO transactions, accounts, bridge lifecycle records, and optional validity batches for bounded APIs and the unified console.",
+      "provides":["eutxo-lifecycle-index"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-eutxo-indexer-core","appchain-eutxo-indexer-jdbc"],"nativePosture":"unsupported",
+      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{},
+      "documentation":"appchain/extensions/eutxo/INDEXER_OPERATIONS.md","acceptanceScenario":"eutxo-lifecycle-indexer"
     },
     {
       "id":"sequencer:fixed","name":"Fixed sequencer","category":"sequencer","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,
