@@ -26,6 +26,6 @@ public record IndexCheckpoint(
     public static IndexCheckpoint origin(IndexIdentity identity) {
         return new IndexCheckpoint(
                 identity.digest(), SourcePoint.ORIGIN, 0, 0, 0,
-                IndexCoverage.REBUILDING);
+                IndexCoverage.FULL);
     }
 }

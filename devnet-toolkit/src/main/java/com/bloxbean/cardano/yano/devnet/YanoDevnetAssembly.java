@@ -236,6 +236,12 @@ public final class YanoDevnetAssembly {
         }
 
         @Override
+        public Optional<com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelHost>
+                localReadModels() {
+            return delegate.localReadModels();
+        }
+
+        @Override
         public Optional<RuntimeMaintenanceGate> maintenanceGate() {
             return delegate.maintenanceGate();
         }
