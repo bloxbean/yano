@@ -92,6 +92,15 @@ public final class EutxoStateKeys {
                 acceptedOutpoint, "acceptedOutpoint"));
     }
 
+    /** Immutable deposit record in canonical acceptance order. */
+    public static byte[] depositIndex(long sequence) {
+        return indexedKey(PREFIX + "bridge/deposit/index/", sequence);
+    }
+
+    public static byte[] depositCount() {
+        return bytes(PREFIX + "bridge/deposit/count");
+    }
+
     public static byte[] reserve(String assetId) {
         Objects.requireNonNull(assetId, "assetId");
         if (assetId.isBlank() || assetId.length() > 120) {
@@ -106,6 +115,17 @@ public final class EutxoStateKeys {
 
     public static byte[] withdrawal(String claimId) {
         return bytes(PREFIX + "w/" + transactionId(claimId));
+    }
+
+    /** Withdrawal claim id in canonical order within one bridge epoch. */
+    public static byte[] withdrawalIndex(long bridgeEpoch, long sequence) {
+        if (bridgeEpoch < 0) {
+            throw new IllegalArgumentException(
+                    "bridge epoch cannot be negative");
+        }
+        return indexedKey(
+                PREFIX + "bridge/" + bridgeEpoch + "/withdrawal/index/",
+                sequence);
     }
 
     public static byte[] withdrawalCommitment(String claimId) {
@@ -158,6 +178,14 @@ public final class EutxoStateKeys {
 
     private static String transactionId(String value) {
         return new EutxoOutpoint(value, 0).transactionId();
+    }
+
+    private static byte[] indexedKey(String prefix, long sequence) {
+        if (sequence < 1) {
+            throw new IllegalArgumentException("index sequence must be positive");
+        }
+        return bytes(prefix + String.format(
+                java.util.Locale.ROOT, "%020d", sequence));
     }
 
     private static byte[] bytes(String value) {
