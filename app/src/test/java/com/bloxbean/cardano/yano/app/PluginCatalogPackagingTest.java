@@ -69,7 +69,8 @@ class PluginCatalogPackagingTest {
             "com.bloxbean.cardano.yano.appchain.evidence-profile",
             "com.bloxbean.cardano.yano.appchain.evidence-registry",
             "com.bloxbean.cardano.yano.appchain.eutxo",
-            "com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano");
+            "com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano",
+            "com.bloxbean.cardano.yano.appchain.eutxo.indexer");
     private static final Set<String> OPTIONAL_BUNDLES = Set.of(
             "com.bloxbean.cardano.yano.appchain.kafka",
             "com.bloxbean.cardano.yano.appchain.objectstore.s3",

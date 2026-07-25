@@ -93,6 +93,9 @@ def buildTimePluginBundles = [
                 [projectPath: ':appchain-evidence-profile', includeProvided: false],
         'com.bloxbean.cardano.yano.appchain.eutxo':
                 [projectPath: ':appchain-eutxo-ledger', includeProvided: false],
+        'com.bloxbean.cardano.yano.appchain.eutxo.indexer':
+                [projectPath: ':appchain-eutxo-indexer-core',
+                 includeProvided: false],
         'com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano':
                 [projectPath: ':appchain-eutxo-bridge-cardano', includeProvided: false]
 ]
@@ -183,6 +186,8 @@ dependencies {
     // Uses the release-matched, bounded MPF verifier for the console's
     // node-assisted existing-proof verification endpoint.
     implementation project(':appchain-client')
+    implementation project(':appchain-eutxo-indexer-core')
+    implementation project(':appchain-eutxo-indexer-jdbc')
     // Optional T3 integrations stay out of the stock artifact. Native/custom
     // builds can opt in before catalog-index and reflection generation.
     if (includeFirstPartyPluginBundles) {

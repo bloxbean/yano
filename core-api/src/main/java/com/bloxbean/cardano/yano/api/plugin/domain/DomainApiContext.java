@@ -27,10 +27,21 @@ public final class DomainApiContext {
 
     private final Map<String, Object> bundleConfig;
     private final DomainQueryService queryService;
+    private final LocalReadModelQueryService localReadModels;
 
     public DomainApiContext(Map<String, ?> bundleConfig, DomainQueryService queryService) {
+        this(bundleConfig, queryService, LocalReadModelQueryService.unavailable());
+    }
+
+    public DomainApiContext(
+            Map<String, ?> bundleConfig,
+            DomainQueryService queryService,
+            LocalReadModelQueryService localReadModels
+    ) {
         this.bundleConfig = DomainApiValidation.bundleConfig(bundleConfig);
         this.queryService = bounded(Objects.requireNonNull(queryService, "queryService"));
+        this.localReadModels = bounded(Objects.requireNonNull(
+                localReadModels, "localReadModels"));
     }
 
     /**
@@ -47,11 +58,51 @@ public final class DomainApiContext {
         return queryService;
     }
 
+    /** Bounded node-local derived-model facade; never exposes storage handles. */
+    public LocalReadModelQueryService localReadModels() {
+        return localReadModels;
+    }
+
     /** Never renders configuration keys or values, which may be credentials. */
     @Override
     public String toString() {
         return "DomainApiContext[bundleConfigEntries=" + bundleConfig.size()
                 + ", queryService=<host-owned>]";
+    }
+
+    private static LocalReadModelQueryService bounded(
+            LocalReadModelQueryService delegate
+    ) {
+        return (modelId, chainId, operation, request) -> {
+            String validatedModel = identifier(modelId, "modelId", 160);
+            String validatedChain = DomainApiValidation.chainId(chainId);
+            String validatedOperation =
+                    identifier(operation, "operation", 160);
+            Objects.requireNonNull(request, "request");
+            if (request.length > LocalReadModelQueryService.MAX_REQUEST_BYTES) {
+                throw new IllegalArgumentException(
+                        "local read-model request exceeds 65536 bytes");
+            }
+            return Objects.requireNonNull(delegate.query(
+                            validatedModel,
+                            validatedChain,
+                            validatedOperation,
+                            request.clone()),
+                    "localReadModels.query() must not return null");
+        };
+    }
+
+    private static String identifier(
+            String value,
+            String field,
+            int maximum
+    ) {
+        String normalized = Objects.requireNonNull(value, field).trim();
+        if (normalized.isEmpty() || normalized.length() > maximum
+                || !normalized.matches("[A-Za-z0-9][A-Za-z0-9._:-]*")) {
+            throw new IllegalArgumentException("invalid " + field);
+        }
+        return normalized;
     }
 
     private static DomainQueryService bounded(DomainQueryService delegate) {

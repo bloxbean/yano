@@ -17,6 +17,7 @@ import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiRouteInfo;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiRouteSet;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainHttpMethod;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainQueryService;
+import com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelQueryService;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginOperationOutcome;
 import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 import org.slf4j.Logger;
@@ -67,6 +68,7 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
     private final PluginProviderRegistry pluginProviders;
     private final Function<String, Map<String, Object>> bundleConfig;
     private final AppChainGateways appChains;
+    private final LocalReadModelQueryService localReadModels;
     private final Logger log;
     private final OperationsObserver operations;
     private final List<String> bundleIds;
@@ -93,7 +95,8 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
             AppChainGateways appChains,
             Logger log
     ) {
-        this(environment, appChains, log, null);
+        this(environment, appChains, log,
+                LocalReadModelQueryService.unavailable(), null);
     }
 
     public DomainApiRegistry(
@@ -102,9 +105,21 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
             Logger log,
             PluginOperationsRegistry operations
     ) {
+        this(environment, appChains, log,
+                LocalReadModelQueryService.unavailable(), operations);
+    }
+
+    public DomainApiRegistry(
+            PluginRuntimeEnvironment environment,
+            AppChainGateways appChains,
+            Logger log,
+            LocalReadModelQueryService localReadModels,
+            PluginOperationsRegistry operations
+    ) {
         this(Objects.requireNonNull(environment, "environment").providers(),
                 environment::domainApiConfig, appChains, log,
-                DEFAULT_CALLER_TIMEOUT, DEFAULT_QUEUE_CAPACITY, operations);
+                DEFAULT_CALLER_TIMEOUT, DEFAULT_QUEUE_CAPACITY,
+                localReadModels, observer(operations));
     }
 
     /** Package-private timing seam for deterministic lifecycle tests. */
@@ -117,7 +132,9 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
             int queueCapacity
     ) {
         this(pluginProviders, bundleConfig, appChains, log,
-                callerTimeout, queueCapacity, OperationsObserver.NOOP);
+                callerTimeout, queueCapacity,
+                LocalReadModelQueryService.unavailable(),
+                OperationsObserver.NOOP);
     }
 
     DomainApiRegistry(
@@ -130,7 +147,9 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
             PluginOperationsRegistry operations
     ) {
         this(pluginProviders, bundleConfig, appChains, log,
-                callerTimeout, queueCapacity, observer(operations));
+                callerTimeout, queueCapacity,
+                LocalReadModelQueryService.unavailable(),
+                observer(operations));
     }
 
     DomainApiRegistry(
@@ -142,9 +161,27 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
             int queueCapacity,
             OperationsObserver operations
     ) {
+        this(pluginProviders, bundleConfig, appChains, log,
+                callerTimeout, queueCapacity,
+                LocalReadModelQueryService.unavailable(),
+                operations);
+    }
+
+    DomainApiRegistry(
+            PluginProviderRegistry pluginProviders,
+            Function<String, Map<String, Object>> bundleConfig,
+            AppChainGateways appChains,
+            Logger log,
+            Duration callerTimeout,
+            int queueCapacity,
+            LocalReadModelQueryService localReadModels,
+            OperationsObserver operations
+    ) {
         this.pluginProviders = Objects.requireNonNull(pluginProviders, "pluginProviders");
         this.bundleConfig = Objects.requireNonNull(bundleConfig, "bundleConfig");
         this.appChains = Objects.requireNonNull(appChains, "appChains");
+        this.localReadModels = Objects.requireNonNull(
+                localReadModels, "localReadModels");
         this.log = Objects.requireNonNull(log, "log");
         this.operations = Objects.requireNonNull(operations, "operations");
         Objects.requireNonNull(callerTimeout, "callerTimeout");
@@ -577,7 +614,8 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
                 Map<String, Object> config = Objects.requireNonNull(
                         bundleConfig.apply(bundleId), "bundleConfig must not return null");
                 DomainApi api = Objects.requireNonNull(
-                        provider.create(new DomainApiContext(config, queryService())),
+                        provider.create(new DomainApiContext(
+                                config, queryService(), localReadModels)),
                         "DomainApiProvider.create() must not return null");
                 BundleLane lane = lanes.computeIfAbsent(bundleId,
                         ignored -> new BundleLane(bundleId));
