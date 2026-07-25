@@ -5,7 +5,7 @@
   import type {
     AppChainStatus, ChainSummary, EutxoDeposit, EutxoIndexEnvelope, EutxoIndexedAccount,
     EutxoIndexPage, EutxoIndexStatus, EutxoLineage, EutxoTransactionDetail,
-    EutxoTransactionPage, EutxoTransactionSummary, EutxoWithdrawal, L1Transaction,
+    EutxoTransactionPage, EutxoTransactionSummary, EutxoValidityBatch, EutxoWithdrawal, L1Transaction,
     L1TransactionUtxos
   } from '$lib/api/types';
   import CopyValue from '$lib/components/CopyValue.svelte';
@@ -35,6 +35,8 @@
   let withdrawals: EutxoWithdrawal[] = [];
   let selectedDeposit: EutxoDeposit | null = null;
   let selectedWithdrawal: EutxoWithdrawal | null = null;
+  let validityBatches: EutxoValidityBatch[] = [];
+  let selectedValidity: EutxoValidityBatch | null = null;
   let lineage: EutxoLineage | null = null;
   let account: EutxoIndexedAccount | null = null;
   let accountInput = '';
@@ -108,6 +110,8 @@
     selectedTransaction = null;
     selectedDeposit = null;
     selectedWithdrawal = null;
+    validityBatches = [];
+    selectedValidity = null;
     account = null;
     l1Detail = null;
     pageError = '';
@@ -121,7 +125,8 @@
         indexAvailable = true;
         await Promise.all([
           loadTransactions(false, signal),
-          loadBridge(signal)
+          loadBridge(signal),
+          loadValidity(signal)
         ]);
       } catch (cause) {
         if (!(cause instanceof ApiError) || ![404, 409].includes(cause.status)) throw cause;
@@ -188,6 +193,21 @@
     assertEnvelope(withdrawalPage);
     deposits = depositPage.data.items;
     withdrawals = withdrawalPage.data.items;
+  }
+
+  async function loadValidity(signal?: AbortSignal): Promise<void> {
+    if (!api || indexAvailable === false
+      || indexEnvelope?.data.validityAvailable === false) return;
+    try {
+      const envelope = await api.eutxoIndex<
+        EutxoIndexEnvelope<EutxoIndexPage<EutxoValidityBatch>>
+      >('validity/batches', { ...query(), limit: '25' }, signal);
+      assertEnvelope(envelope);
+      validityBatches = envelope.data.items;
+    } catch (cause) {
+      if (!(cause instanceof ApiError) || cause.status !== 409) throw cause;
+      validityBatches = [];
+    }
   }
 
   async function loadCommittedFallback(signal?: AbortSignal): Promise<void> {
@@ -265,12 +285,21 @@
       } catch (cause) {
         if (!(cause instanceof ApiError) || cause.status !== 404 || !indexAvailable) throw cause;
       }
-      const envelope = await api.eutxoIndex<EutxoIndexEnvelope<EutxoWithdrawal>>(
-        `bridge/withdrawals/${id}`, query());
-      assertEnvelope(envelope);
-      selectedWithdrawal = envelope.data;
-      selectedDeposit = null;
-      activeView = 'bridge';
+      try {
+        const envelope = await api.eutxoIndex<EutxoIndexEnvelope<EutxoWithdrawal>>(
+          `bridge/withdrawals/${id}`, query());
+        assertEnvelope(envelope);
+        selectedWithdrawal = envelope.data;
+        selectedDeposit = null;
+        activeView = 'bridge';
+      } catch (cause) {
+        if (!(cause instanceof ApiError) || cause.status !== 404 || !indexAvailable) throw cause;
+        const envelope = await api.eutxoIndex<EutxoIndexEnvelope<EutxoValidityBatch>>(
+          `validity/batches/${id}`, query());
+        assertEnvelope(envelope);
+        selectedValidity = envelope.data;
+        activeView = 'validity';
+      }
     } catch (cause) {
       searchError = cause instanceof ApiError && cause.status === 404
         ? 'No indexed transaction, message, deposit, or withdrawal matches that value.'
@@ -411,7 +440,10 @@
   {/if}
 
   <nav aria-label="EUTxO views" class="mt-4 flex gap-1 overflow-x-auto border-b border-slate-800">
-    {#each (indexAvailable ? ['overview', 'transactions', 'accounts', 'bridge'] : ['transactions']) as view}
+    {#each (indexAvailable
+      ? ['overview', 'transactions', 'accounts', 'bridge',
+        ...(indexEnvelope?.data.validityAvailable ? ['validity'] : [])]
+      : ['transactions']) as view}
       <button type="button" class="whitespace-nowrap border-b-2 px-4 py-3 text-sm capitalize
               {activeView === view ? 'border-cyan-400 text-cyan-300' : 'border-transparent text-slate-400'}"
               aria-current={activeView === view ? 'page' : undefined}
@@ -507,6 +539,18 @@
               </div>{/each}</div>
           </div>
         </div>
+        {#if validityBatches.find((batch) =>
+          batch.transactionIds.includes(selectedTransaction!.transactionId))}
+          <div class="border-t border-slate-800 p-4 text-xs">
+            Included in validity batch
+            <button class="ml-2 font-mono text-cyan-300" onclick={() => {
+              selectedValidity = validityBatches.find((batch) =>
+                batch.transactionIds.includes(selectedTransaction!.transactionId)) ?? null;
+              activeView = 'validity';
+            }}>{short(validityBatches.find((batch) =>
+              batch.transactionIds.includes(selectedTransaction!.transactionId))?.batchId ?? '', 30)}</button>
+          </div>
+        {/if}
       </section>
     {/if}
   {/if}
@@ -622,6 +666,67 @@
             <div><h3 class="text-xs uppercase text-slate-500">Outputs</h3>
               {#each l1Detail.utxos?.outputs ?? [] as item}<div class="mt-2 truncate rounded bg-slate-950/60 p-2 font-mono text-xs" title={item.address}>{item.address}</div>{/each}</div>
           </div>
+        {/if}
+      </section>
+    {/if}
+  {/if}
+
+  {#if activeView === 'validity' && indexAvailable}
+    <section class="card mt-4 overflow-hidden">
+      <div class="border-b border-slate-800 p-4">
+        <h2 class="m-0 text-base font-semibold">Validity batches</h2>
+        <p class="mb-0 mt-1 text-xs text-slate-500">Proof generation, verification, L1 root acceptance, and payout remain separate facts.</p>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full min-w-[820px] text-left text-xs">
+          <thead class="text-slate-500"><tr><th class="p-3">Batch</th><th>Profile</th>
+            <th>Transactions</th><th>Proof</th><th>Data</th><th>L1 root settlement</th></tr></thead>
+          <tbody>
+            {#each validityBatches as batch}
+              <tr class="border-t border-slate-800/60">
+                <td class="p-3"><button class="font-mono text-cyan-300"
+                    onclick={() => selectedValidity = batch}>{short(batch.batchId, 24)}</button></td>
+                <td>{batch.profileId}</td><td>{batch.transactionIds.length}</td>
+                <td><span class="badge badge-ok">{batch.proofStatus}</span></td>
+                <td><span class="badge">{batch.dataStatus}</span></td>
+                <td><span class="badge {batch.settlementStatus === 'STABLE' ? 'badge-ok' : ''}">{batch.settlementStatus}</span></td>
+              </tr>
+            {:else}<tr><td colspan="6" class="p-6 text-center text-slate-500">No verified validity batches have been published in this lifecycle source.</td></tr>{/each}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    {#if selectedValidity}
+      <section class="card mt-4 p-5">
+        <h2 class="m-0 text-base font-semibold">Validity batch detail</h2>
+        <div class="mt-2"><CopyValue value={selectedValidity.batchId} width={60} label="validity batch ID" /></div>
+        <ol class="mt-5 grid gap-3 text-xs lg:grid-cols-5">
+          <li class="rounded-lg border border-emerald-700/50 p-3"><span class="badge badge-ok">1 · L2 app-final</span>
+            <div class="mt-2">{selectedValidity.transactionIds.length} ordered transaction(s)</div></li>
+          <li class="rounded-lg border border-emerald-700/50 p-3"><span class="badge badge-ok">2 · Proof generated</span>
+            <div class="mt-2"><CopyValue value={selectedValidity.proofDigest} width={24} label="proof digest" /></div></li>
+          <li class="rounded-lg border border-emerald-700/50 p-3"><span class="badge badge-ok">3 · {selectedValidity.proofStatus}</span>
+            <div class="mt-2">{selectedValidity.provider} · {selectedValidity.proofSystem}</div></li>
+          <li class="rounded-lg border border-slate-700 p-3"><span class="badge">4 · L1 root {selectedValidity.settlementStatus}</span>
+            {#if selectedValidity.settlementTransactionId}<div class="mt-2"><CopyValue value={selectedValidity.settlementTransactionId} width={24} label="root settlement transaction" /></div>{/if}</li>
+          <li class="rounded-lg border border-slate-700 p-3"><span class="badge">5 · Payout independent</span>
+            <div class="mt-2 text-slate-500">See the withdrawal lifecycle for stable L1 payout.</div></li>
+        </ol>
+        <dl class="mt-5 grid gap-4 text-xs sm:grid-cols-2 lg:grid-cols-4">
+          <div><dt class="text-slate-500">Previous root</dt><dd><CopyValue value={selectedValidity.previousRoot} width={24} label="previous validity root" /></dd></div>
+          <div><dt class="text-slate-500">Next root</dt><dd><CopyValue value={selectedValidity.nextRoot} width={24} label="next validity root" /></dd></div>
+          <div><dt class="text-slate-500">Verification key</dt><dd><CopyValue value={selectedValidity.verificationKeyDigest} width={24} label="verification-key digest" /></dd></div>
+          <div><dt class="text-slate-500">DA commitment</dt><dd><CopyValue value={selectedValidity.dataCommitment} width={24} label="data-availability commitment" /></dd></div>
+        </dl>
+        <div class="mt-5"><h3 class="text-xs uppercase text-slate-500">Ordered L2 transactions</h3>
+          {#each selectedValidity.transactionIds as id, index}
+            <button class="mt-2 mr-2 rounded-lg border border-slate-800 px-3 py-2 font-mono text-xs text-cyan-300"
+                    onclick={() => void selectTransaction(id)}>{index + 1}. {short(id, 28)}</button>
+          {/each}
+        </div>
+        {#if selectedValidity.settlementTransactionId}
+          <button class="mt-5 rounded-lg border border-slate-700 px-3 py-2 text-xs"
+                  onclick={() => void loadL1(selectedValidity!.settlementTransactionId)}>Inspect root-settlement L1 transaction</button>
         {/if}
       </section>
     {/if}

@@ -588,6 +588,9 @@ public final class YanoPropertyKeys {
         /** Optional explicit single-chain JDBC URL; empty derives a safe path. */
         public static final String EUTXO_INDEXER_JDBC_URL =
                 "yano.app-chain.eutxo-indexer.store.jdbc.url";
+        /** Optional canonical validity-lifecycle root for provider adapters. */
+        public static final String EUTXO_INDEXER_VALIDITY_PATH =
+                "yano.app-chain.eutxo-indexer.validity.path";
 
         private AppChain() {
         }

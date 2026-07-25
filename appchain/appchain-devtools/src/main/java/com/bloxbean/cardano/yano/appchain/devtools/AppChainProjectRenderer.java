@@ -348,6 +348,11 @@ final class AppChainProjectRenderer {
         if (resolution.selectedCapabilities().contains("state:eutxo-ledger")) {
             values.put("yano.app-chain.eutxo-indexer.enabled", "true");
             values.put("yano.app-chain.eutxo-indexer.store.type", "jdbc");
+            if (resolution.selectedCapabilities().contains(
+                    "settlement:zeroj-validity")) {
+                values.put("yano.app-chain.eutxo-indexer.validity.path",
+                        "${YANO_APPCHAIN_PROJECT_ROOT}/runtime/validity");
+            }
         }
         if ("devnet".equals(resolution.blueprint().spec().network()) && node > 0) {
             values.put("yano.block-producer.enabled", "false");
@@ -848,6 +853,7 @@ final class AppChainProjectRenderer {
                 . "$secret"
                 set +a
                 : "${YANO_APPCHAIN_SIGNING_KEY:?Missing signing key in node env file}"
+                export YANO_APPCHAIN_PROJECT_ROOT="$root"
                 export YANO_APPCHAIN_DATA_ROOT="${YANO_APPCHAIN_DATA_ROOT:-$root/data}"
                 mkdir -p "$YANO_APPCHAIN_DATA_ROOT/node${node}"
                 %s

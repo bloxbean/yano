@@ -309,6 +309,27 @@ export interface EutxoIndexStatus {
   lagBlocks: number;
   coverage: 'NONE' | 'PARTIAL' | 'FULL';
   normalizedDigest: string;
+  validityAvailable?: boolean;
+}
+
+export interface EutxoValidityBatch {
+  batchId: string;
+  provider: string;
+  proofSystem: string;
+  profileId: string;
+  profileDigest: string;
+  transactionIds: string[];
+  previousRoot: string;
+  nextRoot: string;
+  dataCommitment: string;
+  dataStatus: string;
+  proofDigest: string;
+  verificationKeyDigest: string;
+  proofStatus: string;
+  settlementStatus: string;
+  settlementTransactionId: string;
+  settlementSlot: number;
+  settlementBlockHash: string;
 }
 
 export interface EutxoIndexedAccount {

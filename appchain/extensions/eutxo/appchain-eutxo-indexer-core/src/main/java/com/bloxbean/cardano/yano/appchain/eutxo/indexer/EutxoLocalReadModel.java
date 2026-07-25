@@ -37,13 +37,14 @@ public final class EutxoLocalReadModel
     private final EutxoIndexStore store;
     private final Supplier<IndexHealth> health;
     private final EutxoIndexMetrics metrics;
+    private final EutxoValidityIndexSource validity;
 
     public EutxoLocalReadModel(
             String chainId,
             EutxoIndexStore store,
             Supplier<IndexHealth> health
     ) {
-        this(chainId, store, health, new EutxoIndexMetrics());
+        this(chainId, store, health, new EutxoIndexMetrics(), null);
     }
 
     public EutxoLocalReadModel(
@@ -52,10 +53,21 @@ public final class EutxoLocalReadModel
             Supplier<IndexHealth> health,
             EutxoIndexMetrics metrics
     ) {
+        this(chainId, store, health, metrics, null);
+    }
+
+    public EutxoLocalReadModel(
+            String chainId,
+            EutxoIndexStore store,
+            Supplier<IndexHealth> health,
+            EutxoIndexMetrics metrics,
+            EutxoValidityIndexSource validity
+    ) {
         this.chainId = Objects.requireNonNull(chainId, "chainId");
         this.store = Objects.requireNonNull(store, "store");
         this.health = Objects.requireNonNull(health, "health");
         this.metrics = Objects.requireNonNull(metrics, "metrics");
+        this.validity = validity;
     }
 
     @Override
@@ -84,8 +96,8 @@ public final class EutxoLocalReadModel
                 case WITHDRAWALS -> withdrawals(request);
                 case WITHDRAWAL -> withdrawal(request.id());
                 case LINEAGE -> lineage(request);
-                case VALIDITY_BATCHES, VALIDITY_BATCH ->
-                        "{\"error\":\"CAPABILITY_UNAVAILABLE\"}";
+                case VALIDITY_BATCHES -> validityBatches(request);
+                case VALIDITY_BATCH -> validityBatch(request.id());
                 default -> throw new IllegalArgumentException(
                         "unsupported EUTxO index operation");
             };
@@ -268,7 +280,62 @@ public final class EutxoLocalReadModel
                 + ",\"coverage\":"
                 + string(health.checkpoint().coverage().name())
                 + ",\"normalizedDigest\":"
-                + string(store.reader().normalizedDigest()) + "}";
+                + string(store.reader().normalizedDigest())
+                + ",\"validityAvailable\":" + (validity != null) + "}";
+    }
+
+    private String validityBatches(EutxoIndexRequest request) {
+        if (validity == null) {
+            return "{\"error\":\"CAPABILITY_UNAVAILABLE\"}";
+        }
+        List<EutxoValidityBatchRecord> batches = validity.batches();
+        int from = (int) Math.min(request.before(), batches.size());
+        int to = Math.min(batches.size(), from + request.limit());
+        String items = batches.subList(from, to).stream()
+                .map(EutxoLocalReadModel::validityBatch)
+                .collect(Collectors.joining(",", "[", "]"));
+        return "{\"items\":" + items + ",\"cursor\":"
+                + string(to < batches.size()
+                ? EutxoCursorCodec.encode(
+                        chainId, VALIDITY_BATCHES, to) : "") + "}";
+    }
+
+    private String validityBatch(String batchId) {
+        if (validity == null) {
+            return "{\"error\":\"CAPABILITY_UNAVAILABLE\"}";
+        }
+        return validity.batches().stream()
+                .filter(batch -> batch.batchId().equals(batchId))
+                .findFirst()
+                .map(EutxoLocalReadModel::validityBatch)
+                .orElse("{\"error\":\"NOT_FOUND\"}");
+    }
+
+    private static String validityBatch(EutxoValidityBatchRecord value) {
+        String transactions = value.transactionIds().stream()
+                .map(EutxoLocalReadModel::string)
+                .collect(Collectors.joining(",", "[", "]"));
+        return "{\"batchId\":" + string(value.batchId())
+                + ",\"provider\":" + string(value.provider())
+                + ",\"proofSystem\":" + string(value.proofSystem())
+                + ",\"profileId\":" + string(value.profileId())
+                + ",\"profileDigest\":" + string(value.profileDigest())
+                + ",\"transactionIds\":" + transactions
+                + ",\"previousRoot\":" + string(value.previousRoot())
+                + ",\"nextRoot\":" + string(value.nextRoot())
+                + ",\"dataCommitment\":" + string(value.dataCommitment())
+                + ",\"dataStatus\":" + string(value.dataStatus())
+                + ",\"proofDigest\":" + string(value.proofDigest())
+                + ",\"verificationKeyDigest\":"
+                + string(value.verificationKeyDigest())
+                + ",\"proofStatus\":" + string(value.proofStatus())
+                + ",\"settlementStatus\":"
+                + string(value.settlementStatus())
+                + ",\"settlementTransactionId\":"
+                + string(value.settlementTransactionId())
+                + ",\"settlementSlot\":" + value.settlementSlot()
+                + ",\"settlementBlockHash\":"
+                + string(value.settlementBlockHash()) + "}";
     }
 
     private static String summary(EutxoTransactionSummary value) {
