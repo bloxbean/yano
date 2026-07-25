@@ -178,4 +178,6 @@ independent real-world auditing.
 - Stop one member and exercise catch-up using the isolated E2E gate.
 - Replace RustFS with a tested S3-compatible production service while keeping
   the `object.put` contract unchanged.
+- Review the [optional connector packaging and security matrix](../OPTIONAL_CONNECTORS.md)
+  before translating the demo into a deployment.
 - Continue with [domain-role authorization](05-domain-role-approvals.md).

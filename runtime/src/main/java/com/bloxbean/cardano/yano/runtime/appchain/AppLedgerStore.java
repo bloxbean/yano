@@ -388,6 +388,83 @@ final class AppLedgerStore implements AutoCloseable {
                 keySnapshot, value, proof.orElseThrow(), root, committed.height()));
     }
 
+    /** Build a proof against the exact post-state root of a retained block. */
+    Optional<AppStateProofSnapshot> stateProofSnapshotAtHeight(long height, byte[] key) {
+        if (height <= 0) {
+            return Optional.empty();
+        }
+        byte[] keySnapshot = Objects.requireNonNull(key, "key").clone();
+        Optional<AppBlock> block = block(height);
+        if (block.isEmpty()) {
+            return Optional.empty();
+        }
+        byte[] root = block.orElseThrow().stateRoot();
+        Optional<byte[]> proof = stateProofWireAtRoot(root, keySnapshot);
+        if (proof.isEmpty()) {
+            return Optional.empty();
+        }
+        byte[] value = stateGetAtRoot(root, keySnapshot).orElse(null);
+        return Optional.of(new AppStateProofSnapshot(
+                keySnapshot, value, proof.orElseThrow(), root, height));
+    }
+
+    /**
+     * Atomically read the confirmed-anchor marker and its referenced app block.
+     * Anchor metadata is written in one RocksDB batch; a snapshot prevents a
+     * reader from combining fields from consecutive confirmations.
+     */
+    Optional<ConfirmedAnchorSnapshot> confirmedAnchorSnapshot() {
+        Snapshot snapshot = db.getSnapshot();
+        try (ReadOptions readOptions = new ReadOptions().setSnapshot(snapshot)) {
+            byte[] heightBytes = db.get(metaCf, readOptions,
+                    "anchor_last_height".getBytes(StandardCharsets.UTF_8));
+            byte[] blockHash = db.get(metaCf, readOptions,
+                    "anchor_last_block_hash".getBytes(StandardCharsets.UTF_8));
+            byte[] txBytes = db.get(metaCf, readOptions,
+                    "anchor_last_tx".getBytes(StandardCharsets.UTF_8));
+            byte[] slotBytes = db.get(metaCf, readOptions,
+                    "anchor_last_slot".getBytes(StandardCharsets.UTF_8));
+            if (heightBytes == null || heightBytes.length != Long.BYTES
+                    || slotBytes == null || slotBytes.length != Long.BYTES
+                    || blockHash == null || blockHash.length != 32
+                    || txBytes == null || txBytes.length == 0) {
+                return Optional.empty();
+            }
+            long height = ByteBuffer.wrap(heightBytes).getLong();
+            long slot = ByteBuffer.wrap(slotBytes).getLong();
+            if (height <= 0 || slot < 0) {
+                return Optional.empty();
+            }
+            String transactionHash = new String(txBytes, StandardCharsets.UTF_8);
+            if (transactionHash.isBlank()) {
+                return Optional.empty();
+            }
+            byte[] blockBytes = db.get(blocksCf, readOptions, heightKey(height));
+            if (blockBytes == null) {
+                return Optional.empty();
+            }
+            AppBlock block = AppBlockCodec.deserialize(blockBytes);
+            return Optional.of(new ConfirmedAnchorSnapshot(
+                    height, blockHash, transactionHash, slot, block));
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to read confirmed app-chain anchor", e);
+        } finally {
+            db.releaseSnapshot(snapshot);
+        }
+    }
+
+    record ConfirmedAnchorSnapshot(
+            long height, byte[] blockHash, String transactionHash, long l1Slot, AppBlock block) {
+        ConfirmedAnchorSnapshot {
+            blockHash = blockHash.clone();
+        }
+
+        @Override
+        public byte[] blockHash() {
+            return blockHash.clone();
+        }
+    }
+
     /**
      * Persisted vote lock: the block hash this member voted for at the given
      * height. Guarantees at-most-one vote per height across restarts.

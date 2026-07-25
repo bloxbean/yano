@@ -8,14 +8,17 @@ quarkus:
       add-runner-suffix: false
   http:
     port: 7070
+    # Off by default. External console deployments must explicitly allow
+    # their exact origin; never use "*" together with API keys.
+    cors:
+      enabled: ${YANO_HTTP_CORS_ENABLED:false}
     test-port: 0
     filter:
       plugin-dashboard-security:
         matches: /ui/plugins/.*
         header:
           "Content-Security-Policy": >-
-            default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self';
-            img-src 'self' data:; object-src 'none'; base-uri 'none';
+            connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none';
             frame-ancestors 'none'; form-action 'self'
           "X-Frame-Options": DENY
           "X-Content-Type-Options": nosniff

@@ -468,8 +468,14 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
         this.protocolMagic = protocolMagic;
         this.log = Objects.requireNonNull(log, "log");
         this.upstreamConfig = config.effectiveUpstream();
-        this.upstreamPeers = new CopyOnWriteArrayList<>(
-                buildUpstreamPeers(this.upstreamConfig, remoteCardanoHost, remoteCardanoPort, protocolMagic));
+        // A server-only/local-producer node may still carry the distribution's
+        // legacy remote defaults. They are configuration fallbacks, not
+        // operational peers, and must not be seeded into the governor unless
+        // client sync is actually enabled.
+        this.upstreamPeers = new CopyOnWriteArrayList<>(config.isClientEnabled()
+                ? buildUpstreamPeers(this.upstreamConfig, remoteCardanoHost,
+                        remoteCardanoPort, protocolMagic)
+                : List.of());
         this.configuredUpstreamPeerCount = this.upstreamPeers.size();
         this.candidateHeaderStore = new InMemoryCandidateHeaderStore();
         this.headerFanIn = new HeaderFanIn(candidateHeaderStore);

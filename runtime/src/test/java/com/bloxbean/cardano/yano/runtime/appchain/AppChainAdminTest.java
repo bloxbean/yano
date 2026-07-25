@@ -70,7 +70,9 @@ class AppChainAdminTest {
                 .containsEntry("membershipEpochActive", true)
                 .containsEntry("membershipActiveMembers", 2)
                 .containsEntry("membershipActiveThreshold", 2)
-                .containsEntry("memberActiveForNextBlock", true);
+                .containsEntry("memberActiveForNextBlock", true)
+                .containsEntry("configuredBlockIntervalMs", 300L)
+                .doesNotContainKey("blockIntervalMs");
 
         // Submissions land in the pool (no proposer running → not finalized)
         node.submit("t", "m1".getBytes(StandardCharsets.UTF_8));
