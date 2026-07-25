@@ -24,15 +24,25 @@ public final class EutxoDemoCli {
                or: ./yano.sh appchain eutxo demo status [options]
                or: ./yano.sh appchain eutxo demo ceremony --yes [options]
                or: ./yano.sh appchain eutxo demo round-trip|verify [options]
+               or: ./yano.sh appchain eutxo demo deposit-build [options]
+               or: ./yano.sh appchain eutxo demo deposit-submit [options]
                or: ./yano.sh appchain eutxo demo reset --yes [options]
             Options:
-              --scenario ledger|bridge|zk  default ledger
+              --scenario ledger|bridge|zk  default ledger for a new workspace;
+                                           inferred for an existing workspace
               --workspace <directory>      default $YANO_HOME/eutxo-demo
               --name <project-name>        default payments-eutxo
               --chain-id <chain-id>        default project name
               --members <count>            default 3
+              --count <round-trips>        default 1, maximum 16
               --http-port-base <port>      default 7070
               --server-port-base <port>    default 13337
+              --address <Cardano address>  external L1 depositor
+              --l2-address <address>       defaults to --address
+              --l2-public-key <hex>        required for an external ZK user
+              --amount <lovelace>          external deposit amount
+              --output <file>              unsigned transaction output
+              --signed-transaction <file>  externally signed transaction CBOR
               --format text|json           default text
             """.stripTrailing();
 
@@ -105,7 +115,8 @@ public final class EutxoDemoCli {
         if ("up".equals(options.command())
                 && !java.nio.file.Files.exists(
                 options.workspace().resolve(".yano-eutxo-demo"))) {
-            EutxoDemoScenarioProvider provider = scenarios.require(options.scenario());
+            EutxoDemoScenarioProvider provider = scenarios.require(
+                    options.scenario() == null ? "ledger" : options.scenario());
             EutxoDemoWorkspace workspace = EutxoDemoWorkspace.create(options, provider);
             provider.setup(workspace, options);
             return provider.execute("up", workspace, options);
@@ -193,8 +204,15 @@ public final class EutxoDemoCli {
         String name = "payments-eutxo";
         String chainId = null;
         int members = 3;
+        int count = 1;
         int httpPortBase = 7070;
         int serverPortBase = 13337;
+        String address = null;
+        String l2Address = null;
+        String l2PublicKey = null;
+        long amount = 20_000_000L;
+        Path output = null;
+        Path signedTransaction = null;
         EutxoDemoOptions.Format format = EutxoDemoOptions.Format.TEXT;
         boolean confirmed = false;
         boolean help = arguments.length == 0;
@@ -211,10 +229,24 @@ public final class EutxoDemoCli {
                         chainId = name(required(arguments, ++index, value), value);
                 case "--members" ->
                         members = integer(required(arguments, ++index, value), value, 1, 32);
+                case "--count" ->
+                        count = integer(required(arguments, ++index, value), value, 1, 16);
                 case "--http-port-base" -> httpPortBase = integer(
                         required(arguments, ++index, value), value, 1024, 65533);
                 case "--server-port-base" -> serverPortBase = integer(
                         required(arguments, ++index, value), value, 1024, 65533);
+                case "--address" -> address = required(arguments, ++index, value);
+                case "--l2-address" -> l2Address = required(arguments, ++index, value);
+                case "--l2-public-key" ->
+                        l2PublicKey = required(arguments, ++index, value);
+                case "--amount" -> amount = longInteger(
+                        required(arguments, ++index, value), value,
+                        1_000_000L, 100_000_000L);
+                case "--output" ->
+                        output = Path.of(required(arguments, ++index, value));
+                case "--signed-transaction" ->
+                        signedTransaction = Path.of(
+                                required(arguments, ++index, value));
                 case "--format" -> format = switch (
                         required(arguments, ++index, value)) {
                     case "text" -> EutxoDemoOptions.Format.TEXT;
@@ -238,19 +270,23 @@ public final class EutxoDemoCli {
             if (!List.of("setup", "status", "reset", "scenarios",
                     "start", "up", "stop", "fund", "deposit", "transfer",
                     "prove", "settle", "withdraw", "reconcile", "verify",
-                    "ceremony", "round-trip").contains(command)) {
+                    "ceremony", "round-trip", "deposit-build",
+                    "deposit-submit").contains(command)) {
                 throw new Usage("unknown EUTxO demo command: " + command);
             }
         }
         if (scenario == null && ("setup".equals(command)
-                || "up".equals(command) || "scenarios".equals(command))) {
+                || "scenarios".equals(command))) {
             scenario = "ledger";
         }
         if (chainId == null) {
             chainId = name;
         }
         return new EutxoDemoOptions(command, scenario, workspace, name, chainId,
-                members, httpPortBase, serverPortBase, format, confirmed, help);
+                members, count, httpPortBase, serverPortBase,
+                address, l2Address, l2PublicKey, amount, output,
+                signedTransaction,
+                format, confirmed, help);
     }
 
     private static Path defaultWorkspace() {
@@ -282,6 +318,22 @@ public final class EutxoDemoCli {
         try {
             int parsed = Integer.parseInt(value);
             if (parsed < minimum || parsed > maximum) throw new NumberFormatException();
+            return parsed;
+        } catch (NumberFormatException invalid) {
+            throw new Usage(option + " is outside its supported range");
+        }
+    }
+
+    private static long longInteger(
+            String value,
+            String option,
+            long minimum,
+            long maximum) {
+        try {
+            long parsed = Long.parseLong(value);
+            if (parsed < minimum || parsed > maximum) {
+                throw new NumberFormatException();
+            }
             return parsed;
         } catch (NumberFormatException invalid) {
             throw new Usage(option + " is outside its supported range");

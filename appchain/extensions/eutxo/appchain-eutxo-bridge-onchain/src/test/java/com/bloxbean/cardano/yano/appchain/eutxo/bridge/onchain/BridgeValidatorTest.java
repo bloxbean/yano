@@ -23,21 +23,27 @@ class BridgeValidatorTest {
     void stagingDatumShapeIsStrictlyBounded() {
         DepositStagingValidator.StagingDatum valid =
                 new DepositStagingValidator.StagingDatum(
-                        BigInteger.ONE,
+                        BigInteger.TWO,
                         new byte[]{1},
                         new byte[]{2},
                         new byte[32],
                         new byte[28],
-                        BigInteger.TEN);
+                        BigInteger.TEN,
+                        new byte[0],
+                        BigInteger.ZERO,
+                        new byte[0]);
         assertThat(DepositStagingValidator.shapeValid(valid)).isTrue();
         assertThat(DepositStagingValidator.shapeValid(
                 new DepositStagingValidator.StagingDatum(
-                        BigInteger.TWO,
+                        BigInteger.ONE,
                         valid.chainId(),
                         valid.l2Owner(),
                         valid.nonce(),
                         valid.depositorKeyHash(),
-                        valid.refundDeadline())))
+                        valid.refundDeadline(),
+                        valid.authorizationProfile(),
+                        valid.l2KeyEpoch(),
+                        valid.l2PublicKey())))
                 .isFalse();
     }
 
@@ -67,12 +73,15 @@ class BridgeValidatorTest {
     void acceptedVaultDatumMustPreserveTheStagingIntentExactly() {
         DepositStagingValidator.StagingDatum staging =
                 new DepositStagingValidator.StagingDatum(
-                        BigInteger.ONE,
+                        BigInteger.TWO,
                         new byte[]{1},
                         new byte[]{2},
                         filled(3, 32),
                         filled(6, 28),
-                        BigInteger.TEN);
+                        BigInteger.TEN,
+                        new byte[]{7},
+                        BigInteger.ONE,
+                        filled(8, 32));
         byte[] transactionId = filled(4, 32);
         BigInteger outputIndex = BigInteger.valueOf(5);
         OutputDatum exact = new OutputDatum.OutputDatumInline(vaultDatum(staging, staging.l2Owner()));
@@ -101,7 +110,11 @@ class BridgeValidatorTest {
                 PlutusData.bytes(staging.nonce()),
                 PlutusData.bytes(filled(4, 32)),
                 PlutusData.integer(BigInteger.valueOf(5)),
-                PlutusData.integer(staging.refundDeadline()));
+                PlutusData.integer(staging.refundDeadline()),
+                PlutusData.bytes(staging.depositorKeyHash()),
+                PlutusData.bytes(staging.authorizationProfile()),
+                PlutusData.integer(staging.l2KeyEpoch()),
+                PlutusData.bytes(staging.l2PublicKey()));
     }
 
     private static byte[] filled(int value, int length) {

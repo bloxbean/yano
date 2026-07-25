@@ -26,9 +26,22 @@ public record EutxoStagingDatum(
         String l2Address,
         byte[] depositNonce,
         byte[] depositorKeyHash,
-        long refundDeadline
+        long refundDeadline,
+        EutxoL2KeyBinding l2KeyBinding
 ) {
-    public static final int ABI_VERSION = 1;
+    public static final int ABI_VERSION = 2;
+
+    public EutxoStagingDatum(
+            int abiVersion,
+            String chainId,
+            String l2Address,
+            byte[] depositNonce,
+            byte[] depositorKeyHash,
+            long refundDeadline
+    ) {
+        this(abiVersion, chainId, l2Address, depositNonce,
+                depositorKeyHash, refundDeadline, EutxoL2KeyBinding.none());
+    }
 
     public EutxoStagingDatum {
         if (abiVersion != ABI_VERSION) {
@@ -41,6 +54,8 @@ public record EutxoStagingDatum(
                 depositNonce, "deposit nonce", 32);
         depositorKeyHash = bytes(
                 depositorKeyHash, "depositor key hash", 28);
+        l2KeyBinding = Objects.requireNonNull(
+                l2KeyBinding, "l2KeyBinding");
         if (refundDeadline < 0) {
             throw new IllegalArgumentException(
                     "refund deadline cannot be negative");
@@ -66,7 +81,10 @@ public record EutxoStagingDatum(
                         textBytes(l2Address),
                         BytesPlutusData.of(depositNonce),
                         BytesPlutusData.of(depositorKeyHash),
-                        BigIntPlutusData.of(refundDeadline)))
+                        BigIntPlutusData.of(refundDeadline),
+                        textBytes(l2KeyBinding.authorizationProfile()),
+                        BigIntPlutusData.of(l2KeyBinding.keyEpoch()),
+                        BytesPlutusData.of(l2KeyBinding.publicKey())))
                 .build()
                 .serializeToBytes();
     }
@@ -87,9 +105,9 @@ public record EutxoStagingDatum(
             }
             List<PlutusData> fields =
                     constructor.getData().getPlutusDataList();
-            if (fields.size() != 6) {
+            if (fields.size() != 9) {
                 throw new IllegalArgumentException(
-                        "staging datum must contain six fields");
+                        "staging datum must contain nine fields");
             }
             return new EutxoStagingDatum(
                     integer(fields.get(0), "ABI version").intValueExact(),
@@ -98,7 +116,12 @@ public record EutxoStagingDatum(
                     rawBytes(fields.get(3), "deposit nonce"),
                     rawBytes(fields.get(4), "depositor key hash"),
                     integer(fields.get(5), "refund deadline")
-                            .longValueExact());
+                            .longValueExact(),
+                    new EutxoL2KeyBinding(
+                            string(fields.get(6), "authorization profile"),
+                            integer(fields.get(7), "L2 key epoch")
+                                    .longValueExact(),
+                            rawBytes(fields.get(8), "L2 public key")));
         } catch (IllegalArgumentException failure) {
             throw failure;
         } catch (Exception failure) {
@@ -117,13 +140,15 @@ public record EutxoStagingDatum(
                 depositNonce, datum.depositNonce)
                 && java.util.Arrays.equals(
                 depositorKeyHash, datum.depositorKeyHash)
-                && refundDeadline == datum.refundDeadline;
+                && refundDeadline == datum.refundDeadline
+                && l2KeyBinding.equals(datum.l2KeyBinding);
     }
 
     @Override
     public int hashCode() {
         int result = Objects.hash(
-                abiVersion, chainId, l2Address, refundDeadline);
+                abiVersion, chainId, l2Address, refundDeadline,
+                l2KeyBinding);
         result = 31 * result
                 + java.util.Arrays.hashCode(depositNonce);
         return 31 * result

@@ -21,6 +21,7 @@ import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2Domain;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2KeyRegistration;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2ParameterSnapshot;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2Transaction;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoTransactionSummary;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoContract;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalClaim;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalCommitment;
@@ -30,12 +31,15 @@ import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalRecord;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoValidityCommitment;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoValidityCommitmentEngine;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoValidityTransition;
+import com.bloxbean.cardano.client.address.Address;
+import com.bloxbean.cardano.client.address.AddressProvider;
 import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
 
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 
@@ -152,6 +156,9 @@ public final class EutxoStateMachine implements AppStateMachine {
     public void apply(AppBlock block, AppStateWriter writer) {
         ensureGenesis(writer);
         int ordinal = 0;
+        long summarySequence = writer.get(EutxoStateKeys.summaryCount())
+                .map(EutxoStateMachine::longValue)
+                .orElse(0L);
         for (AppMessage message : block.messages()) {
             if (bridge.enabled() && bridge.topic().equals(message.getTopic())) {
                 importDeposit(acceptedDeposit(message), block.height(), writer);
@@ -176,6 +183,8 @@ public final class EutxoStateMachine implements AppStateMachine {
                             result.transactionId(), failure.code(), failure.getMessage());
                 }
             }
+            List<EutxoRecord> resolvedInputs = result.accepted()
+                    ? result.resolvedInputs() : List.of();
             EutxoReceipt receipt = new EutxoReceipt(
                     result.accepted() ? EutxoReceipt.Status.ACCEPTED : EutxoReceipt.Status.REJECTED,
                     result.transactionId(),
@@ -197,8 +206,22 @@ public final class EutxoStateMachine implements AppStateMachine {
                 writer.put(EutxoStateKeys.transaction(result.transactionId()), receipt.encode());
             }
             writer.put(EutxoStateKeys.attempt(message.getMessageId()), receipt.encode());
+            EutxoTransactionSummary summary = summary(
+                    result, resolvedInputs, message,
+                    Math.addExact(summarySequence, 1),
+                    block.height(), ordinal, block.l1Slot());
+            summarySequence = summary.sequence();
+            byte[] summaryBytes = summary.encode();
+            writer.put(EutxoStateKeys.messageSummary(
+                    message.getMessageId()), summaryBytes);
+            if (!result.transactionId().isBlank()) {
+                writer.put(EutxoStateKeys.transactionSummary(
+                        result.transactionId()), summaryBytes);
+            }
+            writer.put(EutxoStateKeys.summaryIndex(summarySequence), summaryBytes);
             ordinal++;
         }
+        writer.put(EutxoStateKeys.summaryCount(), longBytes(summarySequence));
     }
 
     @Override
@@ -219,6 +242,37 @@ public final class EutxoStateMachine implements AppStateMachine {
                     yield EutxoQueryCodec.optionalReceipt(
                             state.get(EutxoStateKeys.transaction(transactionId))
                                     .map(EutxoReceipt::decode).orElse(null));
+                }
+                case EutxoQueryCodec.TRANSACTION_SUMMARY_PATH -> {
+                    String transactionId =
+                            EutxoQueryCodec.decodeTransactionRequest(params);
+                    yield state.get(EutxoStateKeys.transactionSummary(
+                            transactionId)).orElse(new byte[0]);
+                }
+                case EutxoQueryCodec.MESSAGE_SUMMARY_PATH -> {
+                    byte[] appMessageId =
+                            EutxoQueryCodec.decodeAttemptRequest(params);
+                    yield state.get(EutxoStateKeys.messageSummary(
+                            appMessageId)).orElse(new byte[0]);
+                }
+                case EutxoQueryCodec.TRANSACTION_SUMMARIES_PATH -> {
+                    EutxoQueryCodec.SummaryPage page =
+                            EutxoQueryCodec.decodeSummaryPageRequest(params);
+                    long count = state.get(EutxoStateKeys.summaryCount())
+                            .map(EutxoStateMachine::longValue)
+                            .orElse(0L);
+                    long cursor = page.before() == 0
+                            ? count : Math.min(count, page.before() - 1);
+                    List<EutxoTransactionSummary> summaries =
+                            new ArrayList<>();
+                    while (cursor > 0
+                            && summaries.size() < page.limit()) {
+                        state.get(EutxoStateKeys.summaryIndex(cursor))
+                                .map(EutxoTransactionSummary::decode)
+                                .ifPresent(summaries::add);
+                        cursor--;
+                    }
+                    yield EutxoTransactionSummary.encodeList(summaries);
                 }
                 case EutxoQueryCodec.ATTEMPT_PATH -> {
                     byte[] appMessageId = EutxoQueryCodec.decodeAttemptRequest(params);
@@ -397,6 +451,56 @@ public final class EutxoStateMachine implements AppStateMachine {
             throw new IllegalArgumentException("invalid " + label);
         }
         return value;
+    }
+
+    private static EutxoTransactionSummary summary(
+            UtxoTransitionEngine.TransitionResult result,
+            List<EutxoRecord> resolvedInputs,
+            AppMessage message,
+            long sequence,
+            long appHeight,
+            int ordinal,
+            long l1Slot
+    ) {
+        String authorization = result.l2Transaction() == null
+                ? "cardano-vkey"
+                : result.l2Transaction().domain().authorizationProfile();
+        return new EutxoTransactionSummary(
+                result.transactionId(),
+                HexFormat.of().formatHex(message.getMessageId()),
+                sequence,
+                appHeight,
+                ordinal,
+                l1Slot,
+                result.accepted()
+                        ? EutxoTransactionSummary.Status.ACCEPTED
+                        : EutxoTransactionSummary.Status.REJECTED,
+                authorization,
+                resolvedInputs.stream()
+                        .map(EutxoStateMachine::summaryEntry)
+                        .toList(),
+                result.created().stream()
+                        .map(EutxoStateMachine::summaryEntry)
+                        .toList(),
+                result.code());
+    }
+
+    private static EutxoTransactionSummary.Entry summaryEntry(
+            EutxoRecord record
+    ) {
+        try {
+            TransactionOutput output = TransactionOutput.deserialize(
+                    com.bloxbean.cardano.client.common.cbor.CborSerializationUtil
+                            .deserialize(record.outputCbor()));
+            BigInteger lovelace = output.getValue() == null
+                    || output.getValue().getCoin() == null
+                    ? BigInteger.ZERO : output.getValue().getCoin();
+            return new EutxoTransactionSummary.Entry(
+                    record.outpoint(), record.address(), lovelace);
+        } catch (Exception failure) {
+            throw new IllegalStateException(
+                    "validated EUTxO output cannot be projected", failure);
+        }
     }
 
     private void applyAccepted(
@@ -615,9 +719,62 @@ public final class EutxoStateMachine implements AppStateMachine {
                 .map(EutxoReserve::decode)
                 .orElseGet(() -> EutxoReserve.empty(EutxoReserve.LOVELACE))
                 .credit(lovelace);
+        importL2KeyBinding(claim, writer);
         putRecord(writer, mirrored);
         writer.put(depositKey, expected.encode());
         writer.put(reserveKey, reserve.encode());
+    }
+
+    private void importL2KeyBinding(
+            EutxoDepositClaim claim,
+            AppStateWriter writer
+    ) {
+        if (!claim.l2KeyBinding().present()) {
+            return;
+        }
+        if (validityEngine == null
+                || !validityEngine.authorizationProfile().equals(
+                claim.l2KeyBinding().authorizationProfile())) {
+            throw new IllegalStateException(
+                    "deposit L2 key binding differs from the selected authorization profile");
+        }
+        Address address;
+        try {
+            address = new Address(claim.l2Address());
+        } catch (RuntimeException failure) {
+            throw new IllegalStateException(
+                    "deposit L2 key binding has an invalid address", failure);
+        }
+        if (!AddressProvider.isPubKeyHashInPaymentPart(address)) {
+            throw new IllegalStateException(
+                    "deposit L2 key binding requires a key-controlled address");
+        }
+        byte[] paymentCredential = address.getPaymentCredentialHash()
+                .orElseThrow(() -> new IllegalStateException(
+                        "deposit L2 key binding has no payment credential"));
+        if (!java.util.Arrays.equals(
+                paymentCredential, claim.depositorKeyHash())) {
+            throw new IllegalStateException(
+                    "deposit L2 key binding is not authorized by its depositor");
+        }
+        String credential = HexFormat.of().formatHex(paymentCredential);
+        EutxoL2KeyRegistration registration =
+                new EutxoL2KeyRegistration(
+                        credential,
+                        claim.l2KeyBinding().authorizationProfile(),
+                        claim.l2KeyBinding().keyEpoch(),
+                        claim.l2KeyBinding().publicKey(),
+                        EutxoL2KeyRegistration.Status.ACTIVE);
+        byte[] key = EutxoStateKeys.l2Key(credential);
+        EutxoL2KeyRegistration existing = writer.get(key)
+                .map(EutxoL2KeyRegistration::decode)
+                .orElse(null);
+        if (existing == null) {
+            writer.put(key, registration.encode());
+        } else if (!existing.equals(registration)) {
+            throw new IllegalStateException(
+                    "deposit conflicts with the active L2 key registration");
+        }
     }
 
     private static BigInteger mirroredLovelace(EutxoDepositClaim claim) {

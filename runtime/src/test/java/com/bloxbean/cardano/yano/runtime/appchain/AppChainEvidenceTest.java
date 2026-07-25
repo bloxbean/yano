@@ -227,6 +227,19 @@ class AppChainEvidenceTest {
         assertThat(bundle.blocks()).hasSize(1);
         assertThat(bundle.blocks().get(0).height()).isEqualTo(targetHeight);
         assertThat(bundle.anchor()).isNull();
+
+        var commitment = node.latestAnchorCommitment().orElseThrow();
+        assertThat(commitment.chainId()).isEqualTo(config.chainId());
+        assertThat(commitment.mode()).isEqualTo(AppChainConfig.AnchorConfig.MODE_METADATA);
+        assertThat(commitment.anchoredHeight()).isEqualTo(anchoredHeight);
+        assertThat(commitment.stateRoot())
+                .containsExactly(node.block(anchoredHeight).orElseThrow().stateRoot());
+        assertThat(commitment.blockHash()).containsExactly(anchoredBlockHash);
+        assertThat(commitment.transactionHash()).isEqualTo("de".repeat(32));
+        assertThat(commitment.l1Slot()).isEqualTo(12_345L);
+
+        ledger.metaPutBytes("anchor_last_block_hash", new byte[32]);
+        assertThat(node.latestAnchorCommitment()).isEmpty();
     }
 
     private static AppLedgerStore ledgerOf(AppChainSubsystem subsystem)

@@ -31,7 +31,10 @@ public final class DepositStagingValidator {
             byte[] l2Owner,
             byte[] nonce,
             byte[] depositorKeyHash,
-            BigInteger refundDeadline
+            BigInteger refundDeadline,
+            byte[] authorizationProfile,
+            BigInteger l2KeyEpoch,
+            byte[] l2PublicKey
     ) {
     }
 
@@ -95,12 +98,20 @@ public final class DepositStagingValidator {
     }
 
     static boolean shapeValid(StagingDatum datum) {
-        return datum.version().equals(BigInteger.ONE)
+        boolean noBinding = datum.authorizationProfile().length == 0
+                && datum.l2KeyEpoch().signum() == 0
+                && datum.l2PublicKey().length == 0;
+        boolean binding = datum.authorizationProfile().length >= 1
+                && datum.authorizationProfile().length <= 63
+                && datum.l2KeyEpoch().signum() > 0
+                && datum.l2PublicKey().length == 32;
+        return datum.version().equals(BigInteger.TWO)
                 && datum.chainId().length >= 1 && datum.chainId().length <= 128
                 && datum.l2Owner().length >= 1 && datum.l2Owner().length <= 256
                 && datum.nonce().length == 32
                 && datum.depositorKeyHash().length == 28
-                && datum.refundDeadline().signum() >= 0;
+                && datum.refundDeadline().signum() >= 0
+                && (noBinding || binding);
     }
 
     /**
@@ -143,7 +154,17 @@ public final class DepositStagingValidator {
         BigInteger outputIndex = Builtins.unIData(Builtins.headList(f5));
         PlutusData f6 = Builtins.tailList(f5);
         BigInteger deadline = Builtins.unIData(Builtins.headList(f6));
-        PlutusData trailing = Builtins.tailList(f6);
+        PlutusData f7 = Builtins.tailList(f6);
+        byte[] depositor = Builtins.unBData(Builtins.headList(f7));
+        PlutusData f8 = Builtins.tailList(f7);
+        byte[] authorizationProfile =
+                Builtins.unBData(Builtins.headList(f8));
+        PlutusData f9 = Builtins.tailList(f8);
+        BigInteger l2KeyEpoch =
+                Builtins.unIData(Builtins.headList(f9));
+        PlutusData f10 = Builtins.tailList(f9);
+        byte[] l2PublicKey = Builtins.unBData(Builtins.headList(f10));
+        PlutusData trailing = Builtins.tailList(f10);
 
         return Builtins.constrTag(datum) == 0
                 && Builtins.nullList(trailing)
@@ -154,6 +175,13 @@ public final class DepositStagingValidator {
                 && Builtins.equalsByteString(
                 transactionId, stagingTransactionId)
                 && outputIndex.equals(stagingIndex)
-                && deadline.equals(staging.refundDeadline());
+                && deadline.equals(staging.refundDeadline())
+                && Builtins.equalsByteString(
+                depositor, staging.depositorKeyHash())
+                && Builtins.equalsByteString(
+                authorizationProfile, staging.authorizationProfile())
+                && l2KeyEpoch.equals(staging.l2KeyEpoch())
+                && Builtins.equalsByteString(
+                l2PublicKey, staging.l2PublicKey());
     }
 }

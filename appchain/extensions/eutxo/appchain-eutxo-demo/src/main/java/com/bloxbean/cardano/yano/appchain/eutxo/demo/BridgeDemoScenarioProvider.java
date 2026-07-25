@@ -16,7 +16,8 @@ public final class BridgeDemoScenarioProvider implements EutxoDemoScenarioProvid
     @Override public Set<String> operations() {
         return Set.of("setup", "start", "up", "status", "stop", "reset",
                 "fund", "deposit", "transfer", "settle", "withdraw",
-                "reconcile", "verify", "round-trip");
+                "reconcile", "verify", "round-trip",
+                "deposit-build", "deposit-submit");
     }
 
     @Override
@@ -51,7 +52,14 @@ public final class BridgeDemoScenarioProvider implements EutxoDemoScenarioProvid
             case "status" -> status("EUTXO_BRIDGE_DEMO_STATUS", workspace, cluster);
             case "fund", "deposit", "transfer", "settle", "withdraw",
                     "reconcile", "verify", "round-trip" ->
-                    new EutxoBridgeDemoWorkflow(workspace, cluster).execute(operation);
+                    new EutxoBridgeDemoWorkflow(workspace, cluster)
+                            .execute(operation, options.count());
+            case "deposit-build" ->
+                    new EutxoExternalDepositWorkflow(workspace, cluster)
+                            .build(options);
+            case "deposit-submit" ->
+                    new EutxoExternalDepositWorkflow(workspace, cluster)
+                            .submit(options);
             default -> throw new UnsupportedOperationException(
                     operation + " is not supported by scenario bridge");
         };

@@ -147,7 +147,7 @@ class EutxoContractCodecTest {
                 .isEqualTo(staging);
 
         EutxoDepositClaim claim = new EutxoDepositClaim(
-                1,
+                EutxoDepositClaim.ABI_VERSION,
                 "payments",
                 new EutxoOutpoint("11".repeat(32), 2),
                 50,
@@ -175,6 +175,35 @@ class EutxoContractCodecTest {
                 java.math.BigInteger.ZERO,
                 java.math.BigInteger.ZERO))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void finalizedTransactionSummariesRoundTripWithBoundedPages() {
+        EutxoTransactionSummary summary =
+                new EutxoTransactionSummary(
+                        "11".repeat(32),
+                        "22".repeat(32),
+                        1,
+                        7,
+                        1,
+                        99,
+                        EutxoTransactionSummary.Status.ACCEPTED,
+                        "cardano-vkey",
+                        List.of(new EutxoTransactionSummary.Entry(
+                                new EutxoOutpoint("33".repeat(32), 0),
+                                DESTINATION,
+                                BigInteger.valueOf(10))),
+                        List.of(new EutxoTransactionSummary.Entry(
+                                new EutxoOutpoint("11".repeat(32), 0),
+                                DESTINATION,
+                                BigInteger.valueOf(10))),
+                        "");
+
+        assertThat(EutxoTransactionSummary.decode(summary.encode()))
+                .isEqualTo(summary);
+        assertThat(EutxoTransactionSummary.decodeList(
+                EutxoTransactionSummary.encodeList(List.of(summary))))
+                .containsExactly(summary);
     }
 
     @Test

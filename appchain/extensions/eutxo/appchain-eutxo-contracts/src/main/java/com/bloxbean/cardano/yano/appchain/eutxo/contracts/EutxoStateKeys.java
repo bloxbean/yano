@@ -62,6 +62,31 @@ public final class EutxoStateKeys {
         return bytes(PREFIX + "t/" + transactionId(transactionId));
     }
 
+    public static byte[] transactionSummary(String transactionId) {
+        return bytes(PREFIX + "summary/tx/" + transactionId(transactionId));
+    }
+
+    public static byte[] messageSummary(byte[] appMessageId) {
+        Objects.requireNonNull(appMessageId, "appMessageId");
+        if (appMessageId.length != 32) {
+            throw new IllegalArgumentException("app message id must contain 32 bytes");
+        }
+        return bytes(PREFIX + "summary/message/"
+                + HexFormat.of().formatHex(appMessageId));
+    }
+
+    public static byte[] summaryIndex(long sequence) {
+        if (sequence < 1) {
+            throw new IllegalArgumentException("summary sequence must be positive");
+        }
+        return bytes(PREFIX + "summary/index/"
+                + String.format(java.util.Locale.ROOT, "%020d", sequence));
+    }
+
+    public static byte[] summaryCount() {
+        return bytes(PREFIX + "summary/count");
+    }
+
     public static byte[] deposit(EutxoOutpoint acceptedOutpoint) {
         return bytes(PREFIX + "d/" + Objects.requireNonNull(
                 acceptedOutpoint, "acceptedOutpoint"));

@@ -11,6 +11,7 @@ for a quick comparison.
 | `approvals` | [Member decisions, REST/Java usage, proofs, and effects](approvals.md) |
 | `balances` | [Member-authorized minting, transfers, Java/Spring usage, and proofs](balances.md) |
 | `doc-trail` | [Per-entity document hashes, REST/Java usage, and proofs](doc-trail.md) |
+| `role-approvals` | [Governed business actors, role policies, signed decisions, and proofs](role-approvals.md) |
 
 Exact wire formats and deterministic state layouts are also described in the
 [consensus guide](../../APP_CHAIN_CONSENSUS_GUIDE.md).

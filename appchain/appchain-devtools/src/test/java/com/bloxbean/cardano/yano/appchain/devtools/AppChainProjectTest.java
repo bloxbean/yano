@@ -204,6 +204,17 @@ class AppChainProjectTest {
                 blueprint("eutxo-zeroj-validity", "fixed", List.of()), malformedKey)))
                 .hasMessageContaining("eutxoL2PublicKey")
                 .hasMessageContaining("64 lowercase hexadecimal");
+
+        Map<String, String> malformedGenesis = Map.of(
+                "eutxoGenesisAddress",
+                "addr_test1vr8nlm7example",
+                "eutxoGenesisLovelace",
+                "not-a-number");
+        assertThatThrownBy(() -> resolver.resolve(withAnswers(
+                blueprint("eutxo-ledger", "fixed", List.of()), malformedGenesis)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("eutxoGenesisLovelace")
+                .hasMessageContaining("bounded decimal integer");
     }
 
     @Test
@@ -810,7 +821,7 @@ class AppChainProjectTest {
         AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
         AppChainProjectResolver resolver = new AppChainProjectResolver(properties, catalog);
 
-        assertThat(catalog.capabilities()).hasSize(39)
+        assertThat(catalog.capabilities()).hasSize(40)
                 .allSatisfy(capability -> {
                     assertThat(capability.availability()).isIn(
                             "BUNDLED", "FIRST_PARTY_OPTIONAL", "REFERENCE", "EXPERIMENTAL");
@@ -833,9 +844,16 @@ class AppChainProjectTest {
                 .hasMessageContaining("ui:console");
         assertThatThrownBy(() -> resolver.resolve(withCapabilities(
                 blueprint("audit-log", "fixed", List.of()),
-                List.of("rollup:zeroj-cardano"))))
+                        List.of("rollup:zeroj-cardano"))))
                 .hasMessageContaining("not selectable")
                 .hasMessageContaining("rollup:zeroj-cardano");
+        assertThat(catalog.capabilities())
+                .filteredOn(capability -> "observability:prometheus".equals(capability.id()))
+                .singleElement()
+                .satisfies(capability -> {
+                    assertThat(capability.effectiveScope()).isEqualTo("distribution");
+                    assertThat(capability.effectiveSelectable()).isFalse();
+                });
 
         AppChainProjectModel.Resolution governed = resolver.resolve(withMembership(
                 blueprint("audit-log", "fixed", List.of()), "governed"));

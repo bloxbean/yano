@@ -103,11 +103,15 @@ final class EutxoCbor {
         array.add(new ByteString(claim.depositNonce()));
         outpoint(array, claim.stagingOutpoint());
         array.add(uint(claim.refundDeadline()));
+        array.add(new ByteString(claim.depositorKeyHash()));
+        array.add(text(claim.l2KeyBinding().authorizationProfile()));
+        array.add(uint(claim.l2KeyBinding().keyEpoch()));
+        array.add(new ByteString(claim.l2KeyBinding().publicKey()));
         return encode(array);
     }
 
     static EutxoDepositClaim decodeDepositClaim(byte[] bytes) {
-        List<DataItem> fields = array(item(bytes), 15, "deposit claim");
+        List<DataItem> fields = array(item(bytes), 19, "deposit claim");
         return new EutxoDepositClaim(
                 integer(fields.get(0), "ABI version"),
                 string(fields.get(1), "chain id"),
@@ -121,7 +125,12 @@ final class EutxoCbor {
                 bytes(fields.get(10), "mirrored output CBOR"),
                 bytes(fields.get(11), "deposit nonce"),
                 outpoint(fields.get(12), fields.get(13)),
-                longInteger(fields.get(14), "refund deadline"));
+                longInteger(fields.get(14), "refund deadline"),
+                bytes(fields.get(15), "depositor key hash"),
+                new EutxoL2KeyBinding(
+                        string(fields.get(16), "authorization profile"),
+                        longInteger(fields.get(17), "L2 key epoch"),
+                        bytes(fields.get(18), "L2 public key")));
     }
 
     static byte[] encodeDepositRecord(EutxoDepositRecord record) {
