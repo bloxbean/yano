@@ -55,6 +55,7 @@ import com.bloxbean.cardano.yano.api.model.SnapshotInfo;
 import com.bloxbean.cardano.yano.api.model.TimeAdvanceResult;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.runtime.StartupEvent;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
@@ -155,6 +156,15 @@ public class YanoProducer {
 
     @ConfigProperty(name = "quarkus.http.port", defaultValue = "8080")
     int httpPort;
+
+    @ConfigProperty(
+            name = "yano.app-chain.eutxo-indexer.enabled",
+            defaultValue = "true")
+    boolean eutxoIndexerEnabled;
+
+    @ConfigProperty(
+            name = "yano.app-chain.eutxo-indexer.store.jdbc.url")
+    Optional<String> eutxoIndexerJdbcUrl;
 
     @ConfigProperty(name = YanoPropertyKeys.API_PREFIX, defaultValue = "/api/v1")
     String apiPrefix;
@@ -515,11 +525,16 @@ public class YanoProducer {
 
     private final PluginLoaderHandle pluginLoader;
     private Yano yano;
+    private EutxoLifecycleIndexers eutxoIndexers =
+            EutxoLifecycleIndexers.disabled();
 
     @jakarta.inject.Inject
     public YanoProducer(@Named("pluginClassLoader") PluginLoaderHandle pluginLoader) {
         this.pluginLoader = pluginLoader;
     }
+
+    @Inject
+    MeterRegistry meterRegistry;
 
     /** Source-compatible test/embedder constructor using a non-owned loader. */
     public YanoProducer(ClassLoader pluginClassLoader) {
@@ -978,6 +993,16 @@ public class YanoProducer {
 
         try {
             Yano assembledYano = ensureYano();
+            if (eutxoIndexerEnabled) {
+                eutxoIndexers = EutxoLifecycleIndexers.start(
+                        assembledYano.appChains(),
+                        assembledYano.localReadModels().orElseThrow(() ->
+                                unavailableRole("LocalReadModelHost")),
+                        network,
+                        java.nio.file.Path.of(storagePath),
+                        eutxoIndexerJdbcUrl.orElse("").trim(),
+                        meterRegistry);
+            }
             if (autoSyncStart) {
                 log.info("Auto-starting Yano synchronization...");
                 assembledYano.start();
@@ -988,6 +1013,8 @@ public class YanoProducer {
                 log.info("REST API available at {}/", nodeApiBaseUrl());
             }
         } catch (Throwable e) {
+            eutxoIndexers.close();
+            eutxoIndexers = EutxoLifecycleIndexers.disabled();
             // Do not inspect or allocate diagnostics around a process-fatal
             // root. Runtime layers preserve the same terminal distinction.
             LifecycleFailures.rethrowIfProcessFatal(e);
@@ -1345,6 +1372,8 @@ public class YanoProducer {
 
     void onStop(@Observes ShutdownEvent event) {
         log.info("Yano application shutting down...");
+        eutxoIndexers.close();
+        eutxoIndexers = EutxoLifecycleIndexers.disabled();
         if (yano != null) {
             log.info("Stopping Yano...");
             yano.close();

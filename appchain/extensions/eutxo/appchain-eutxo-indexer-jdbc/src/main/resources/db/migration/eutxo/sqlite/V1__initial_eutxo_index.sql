@@ -33,7 +33,7 @@ CREATE TABLE projection_event_journal (
         ON DELETE CASCADE
 );
 
-CREATE UNIQUE INDEX projection_event_identity_idx
+CREATE INDEX projection_event_identity_idx
     ON projection_event_journal(event_type, event_sequence, record_id);
 
 CREATE INDEX projection_event_record_idx

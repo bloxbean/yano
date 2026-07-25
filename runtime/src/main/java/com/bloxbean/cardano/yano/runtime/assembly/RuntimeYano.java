@@ -206,6 +206,14 @@ final class RuntimeYano implements Yano, DevnetRuntimeProvider {
     }
 
     @Override
+    public Optional<com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelHost>
+            localReadModels() {
+        return nodeLifecycle instanceof RuntimeNode runtimeNode
+                ? Optional.of(runtimeNode.localReadModels())
+                : Optional.empty();
+    }
+
+    @Override
     public Optional<RuntimeMaintenanceGate> maintenanceGate() {
         return Optional.of(maintenanceGate);
     }
