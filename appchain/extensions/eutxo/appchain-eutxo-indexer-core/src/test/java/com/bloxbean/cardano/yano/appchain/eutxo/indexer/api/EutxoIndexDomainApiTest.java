@@ -10,6 +10,7 @@ import com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelResult;
 import com.bloxbean.cardano.yano.appchain.eutxo.indexer.EutxoIndexEvent;
 import com.bloxbean.cardano.yano.appchain.eutxo.indexer.EutxoLocalReadModel;
 import com.bloxbean.cardano.yano.appchain.eutxo.indexer.EutxoProjector;
+import com.bloxbean.cardano.yano.appchain.eutxo.indexer.EutxoValidityBatchRecord;
 import com.bloxbean.cardano.yano.appchain.eutxo.indexer.IndexCoverage;
 import com.bloxbean.cardano.yano.appchain.eutxo.indexer.IndexHealth;
 import com.bloxbean.cardano.yano.appchain.eutxo.indexer.memory.InMemoryEutxoIndexStore;
@@ -108,7 +109,60 @@ class EutxoIndexDomainApiTest {
         assertThat(provider.id()).isEqualTo(EutxoLocalReadModel.MODEL_ID);
     }
 
+    @Test
+    void validitySourceUsesNeutralBoundedRecordsAndOrderedMembership() {
+        try (InMemoryEutxoIndexStore store =
+                     new InMemoryEutxoIndexStore(EutxoIndexFixtures.identity())) {
+            applyFixture(store);
+            String transaction = EutxoIndexFixtures.hex(3);
+            EutxoValidityBatchRecord batch = new EutxoValidityBatchRecord(
+                    EutxoIndexFixtures.hex(21),
+                    "fixture",
+                    "groth16",
+                    "payment-b16",
+                    EutxoIndexFixtures.hex(22),
+                    List.of(transaction, EutxoIndexFixtures.hex(4)),
+                    EutxoIndexFixtures.hex(23),
+                    EutxoIndexFixtures.hex(24),
+                    EutxoIndexFixtures.hex(25),
+                    "AVAILABLE",
+                    EutxoIndexFixtures.hex(26),
+                    EutxoIndexFixtures.hex(27),
+                    "VERIFIED",
+                    "STABLE",
+                    EutxoIndexFixtures.hex(28),
+                    100,
+                    EutxoIndexFixtures.hex(29));
+            EutxoIndexDomainApi api = api(store, () -> List.of(batch));
+
+            String page = body(api.handle(request(
+                    "index-validity-batches",
+                    "index/v1/validity/batches",
+                    Map.of(), Map.of("chain", List.of("payments")))));
+            assertThat(page)
+                    .contains("\"provider\":\"fixture\"")
+                    .contains("\"proofStatus\":\"VERIFIED\"")
+                    .contains("\"transactionIds\":[\"" + transaction);
+            String detail = body(api.handle(request(
+                    "index-validity-batch",
+                    "index/v1/validity/batches/" + batch.batchId(),
+                    Map.of("batch_id", batch.batchId()),
+                    Map.of("chain", List.of("payments")))));
+            assertThat(detail)
+                    .contains("\"settlementStatus\":\"STABLE\"")
+                    .contains("\"settlementSlot\":100");
+        }
+    }
+
     private static EutxoIndexDomainApi api(InMemoryEutxoIndexStore store) {
+        return api(store, null);
+    }
+
+    private static EutxoIndexDomainApi api(
+            InMemoryEutxoIndexStore store,
+            com.bloxbean.cardano.yano.appchain.eutxo.indexer
+                    .EutxoValidityIndexSource validity
+    ) {
         EutxoLocalReadModel model = new EutxoLocalReadModel(
                 "payments", store,
                 () -> new IndexHealth(
@@ -116,7 +170,10 @@ class EutxoIndexDomainApiTest {
                         store.checkpoint(),
                         store.checkpoint().source().appHeight(),
                         0,
-                        ""));
+                        ""),
+                new com.bloxbean.cardano.yano.appchain.eutxo.indexer
+                        .EutxoIndexMetrics(),
+                validity);
         DomainQueryService chains = new DomainQueryService() {
             @Override
             public List<String> chainIds() {

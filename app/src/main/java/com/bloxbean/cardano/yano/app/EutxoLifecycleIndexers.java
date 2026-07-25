@@ -11,6 +11,8 @@ import com.bloxbean.cardano.yano.appchain.eutxo.indexer.EutxoIndexMetrics;
 import com.bloxbean.cardano.yano.appchain.eutxo.indexer.EutxoIndexStore;
 import com.bloxbean.cardano.yano.appchain.eutxo.indexer.EutxoIndexStoreContext;
 import com.bloxbean.cardano.yano.appchain.eutxo.indexer.EutxoLocalReadModel;
+import com.bloxbean.cardano.yano.appchain.eutxo.indexer.EutxoValidityIndexSource;
+import com.bloxbean.cardano.yano.appchain.eutxo.indexer.EutxoValidityIndexSourceProvider;
 import com.bloxbean.cardano.yano.appchain.eutxo.indexer.IndexHealth;
 import com.bloxbean.cardano.yano.appchain.eutxo.indexer.IndexIdentity;
 import com.bloxbean.cardano.yano.appchain.eutxo.indexer.jdbc.SqliteEutxoIndexStoreProvider;
@@ -27,6 +29,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.ServiceLoader;
 
 /** Application composition for optional per-chain EUTxO index coordinators. */
 final class EutxoLifecycleIndexers implements AutoCloseable {
@@ -42,6 +45,7 @@ final class EutxoLifecycleIndexers implements AutoCloseable {
             String network,
             Path nodeData,
             String configuredJdbcUrl,
+            String configuredValidityPath,
             MeterRegistry meterRegistry
     ) {
         Objects.requireNonNull(gateways, "gateways");
@@ -69,6 +73,8 @@ final class EutxoLifecycleIndexers implements AutoCloseable {
                                 new EutxoIndexStoreContext(
                                         identity, data, settings));
                 EutxoIndexMetrics metrics = new EutxoIndexMetrics();
+                EutxoValidityIndexSource validity = validitySource(
+                        configuredValidityPath, gateway.chainId(), network);
                 EutxoIndexCoordinator coordinator =
                         new EutxoIndexCoordinator(gateway, store, metrics);
                 AutoCloseable registration = host.register(
@@ -76,7 +82,7 @@ final class EutxoLifecycleIndexers implements AutoCloseable {
                         gateway.chainId(),
                         new EutxoLocalReadModel(
                                 gateway.chainId(), store,
-                                coordinator::health, metrics));
+                                coordinator::health, metrics, validity));
                 coordinator.start();
                 ActiveIndex index = new ActiveIndex(
                         gateway.chainId(), coordinator, registration,
@@ -95,6 +101,30 @@ final class EutxoLifecycleIndexers implements AutoCloseable {
 
     static EutxoLifecycleIndexers disabled() {
         return new EutxoLifecycleIndexers(List.of());
+    }
+
+    private static EutxoValidityIndexSource validitySource(
+            String configuredPath,
+            String chainId,
+            String network
+    ) {
+        if (configuredPath == null || configuredPath.isBlank()) {
+            return null;
+        }
+        Path path = Path.of(configuredPath).toAbsolutePath().normalize();
+        List<EutxoValidityIndexSource> sources =
+                ServiceLoader.load(EutxoValidityIndexSourceProvider.class)
+                        .stream()
+                        .map(ServiceLoader.Provider::get)
+                        .map(provider -> provider.open(
+                                path, chainId, network))
+                        .flatMap(java.util.Optional::stream)
+                        .toList();
+        if (sources.size() != 1) {
+            throw new IllegalStateException(
+                    "configured validity lifecycle requires exactly one provider");
+        }
+        return sources.getFirst();
     }
 
     Map<String, IndexHealth> healthByChain() {

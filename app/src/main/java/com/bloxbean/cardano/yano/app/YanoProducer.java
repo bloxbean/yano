@@ -171,6 +171,10 @@ public class YanoProducer {
             name = YanoPropertyKeys.AppChain.EUTXO_INDEXER_JDBC_URL)
     Optional<String> eutxoIndexerJdbcUrl;
 
+    @ConfigProperty(
+            name = YanoPropertyKeys.AppChain.EUTXO_INDEXER_VALIDITY_PATH)
+    Optional<String> eutxoIndexerValidityPath;
+
     @ConfigProperty(name = YanoPropertyKeys.API_PREFIX, defaultValue = "/api/v1")
     String apiPrefix;
 
@@ -1394,6 +1398,7 @@ public class YanoProducer {
                 network,
                 java.nio.file.Path.of(storagePath),
                 eutxoIndexerJdbcUrl.orElse("").trim(),
+                eutxoIndexerValidityPath.orElse("").trim(),
                 meterRegistry);
     }
 

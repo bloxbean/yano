@@ -334,6 +334,9 @@ public final class AppChainPropertyRegistry {
         definitions.add(runtimeDefined(YanoPropertyKeys.AppChain.EUTXO_INDEXER_JDBC_URL,
                 PropertyType.STRING, null, PropertyScope.NODE_LOCAL,
                 "Optional explicit single-chain EUTxO index JDBC URL"));
+        definitions.add(runtimeDefined(YanoPropertyKeys.AppChain.EUTXO_INDEXER_VALIDITY_PATH,
+                PropertyType.STRING, null, PropertyScope.NODE_LOCAL,
+                "Optional canonical validity-lifecycle artifact directory"));
         definitions.add(runtimeParsed("effects.enabled", PropertyType.BOOLEAN, "false",
                 null, null, Set.of(), PropertyScope.CONSENSUS_SHARED,
                 "Enable deterministic effect intents and results"));

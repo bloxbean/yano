@@ -1,0 +1,32 @@
+plugins {
+    id 'java-library'
+}
+
+dependencies {
+    api project(':appchain-eutxo-indexer-core')
+    implementation project(':appchain-eutxo-zk-contracts')
+    implementation project(':appchain-eutxo-zk-zeroj')
+    implementation libs.jackson.databind
+
+    testImplementation project(':appchain-eutxo-zk-lifecycle')
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano EUTxO ZK Index Adapter'
+                description = 'ZeroJ lifecycle artifacts translated into provider-neutral EUTxO index records'
+            }
+        }
+    }
+}
