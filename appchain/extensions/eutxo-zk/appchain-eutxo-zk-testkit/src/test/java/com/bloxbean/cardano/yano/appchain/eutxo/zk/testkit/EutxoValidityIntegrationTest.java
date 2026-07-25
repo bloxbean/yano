@@ -108,7 +108,7 @@ class EutxoValidityIntegrationTest {
                 mirrored.serialize());
         var accepted = new EutxoOutpoint("22".repeat(32), 0);
         EutxoDepositClaim claim = new EutxoDepositClaim(
-                1,
+                EutxoDepositClaim.ABI_VERSION,
                 "eutxo-zk-test",
                 accepted,
                 10,

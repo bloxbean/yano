@@ -10,6 +10,7 @@ import com.bloxbean.cardano.client.transaction.spec.Value;
 import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
 import com.bloxbean.cardano.yano.appchain.eutxo.client.EutxoClient;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2Domain;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2KeyBinding;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoOutpoint;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReceipt;
@@ -26,6 +27,7 @@ import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkAuthorizatio
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.lifecycle.EutxoValidityLifecycle;
 
+import java.io.IOException;
 import java.math.BigInteger;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -56,29 +58,36 @@ final class EutxoZkDemoWorkflow {
                 .chainId(workspace.manifest().chainId()).build());
     }
 
-    EutxoDemoResult execute(String operation) throws Exception {
+    EutxoDemoResult execute(String operation, int count) throws Exception {
         requireReady();
+        if (count < 1 || count > 16) {
+            throw new IllegalArgumentException("round-trip count must be between 1 and 16");
+        }
         EutxoBridgeDemoWorkflow bridge =
-                new EutxoBridgeDemoWorkflow(workspace, cluster);
+                new EutxoBridgeDemoWorkflow(workspace, cluster, keyBindings());
         if (List.of("fund", "deposit", "transfer", "prove", "settle",
                 "withdraw", "reconcile", "verify", "round-trip")
                 .contains(operation)) {
-            bridge.execute("deposit");
+            bridge.execute("deposit", count);
         }
         if (List.of("transfer", "prove", "settle", "withdraw",
                 "reconcile", "verify", "round-trip").contains(operation)) {
-            transfer();
+            for (int round = 1; round <= count; round++) {
+                transfer(round);
+            }
         }
         if (List.of("prove", "settle", "withdraw",
                 "reconcile", "verify", "round-trip").contains(operation)) {
-            prove();
+            for (int round = 1; round <= count; round++) {
+                prove(round);
+            }
         }
         if (List.of("settle", "withdraw", "reconcile",
                 "verify", "round-trip").contains(operation)) {
-            bridge.execute("settle");
+            bridge.execute("settle", count);
         }
         if (List.of("reconcile", "verify", "round-trip").contains(operation)) {
-            bridge.execute("verify");
+            bridge.execute("verify", count);
         }
         Map<String, Object> fields = new LinkedHashMap<>();
         fields.put("scenario", "zk");
@@ -86,6 +95,8 @@ final class EutxoZkDemoWorkflow {
         fields.put("chainId", workspace.manifest().chainId());
         fields.put("batchProfile", "cardano-payment-b16");
         fields.put("proofSystem", "groth16");
+        fields.put("targetRounds", count);
+        fields.put("completedRounds", count);
         fields.put("trustBoundary",
                 "trusted-prover disposable-devnet; demo-native vault payout");
         fields.put("operations", workspace.journal().read());
@@ -96,27 +107,61 @@ final class EutxoZkDemoWorkflow {
                 fields);
     }
 
-    private void transfer() throws Exception {
+    private void transfer(int round) throws Exception {
         EutxoDemoJournal journal = workspace.journal();
-        EutxoDemoJournal.Entry current = entry("zk-transfer-v1");
+        String operationId = id("zk-transfer-v1", round);
+        EutxoDemoJournal.Entry current = entry(operationId);
         if (current.state().ordinal() >= EutxoDemoJournal.State.STABLE.ordinal()) {
             return;
         }
         EutxoOutpoint input = EutxoOutpoint.parse(required(
-                entry("bridge-deposit-v1"), "mirroredOutpoint"));
-        String operator = identity("operatorAddress");
+                entry(id("bridge-deposit-v1", round)), "mirroredOutpoint"));
+        String alice = identity("aliceAddress");
+        String bob = identity("bobAddress");
         String payout = identity("payoutAddress");
-        EutxoWithdrawalDatum withdrawal = new EutxoWithdrawalDatum(
-                EutxoWithdrawalDatum.ABI_VERSION,
-                workspace.manifest().chainId(), 1, payout,
-                HexFormat.of().parseHex("cd".repeat(32)));
-        TransactionBody body = TransactionBody.builder()
+        TransactionBody paymentBody = TransactionBody.builder()
                 .inputs(List.of(new TransactionInput(
                         input.transactionId(), input.index())))
                 .outputs(List.of(
-                        TransactionOutput.builder().address(operator)
+                        TransactionOutput.builder().address(alice)
                                 .value(Value.fromCoin(
-                                        DEPOSIT.subtract(WITHDRAWAL))).build(),
+                                        DEPOSIT.subtract(BigInteger.valueOf(
+                                                10_000_000)))).build(),
+                        TransactionOutput.builder().address(bob)
+                                .value(Value.fromCoin(
+                                        BigInteger.valueOf(10_000_000))).build()))
+                .fee(BigInteger.ZERO)
+                .ttl(10_000_000L)
+                .networkId(NetworkId.TESTNET)
+                .build();
+        SignedL2 payment = sign("alice", paymentBody,
+                nonce("payment-domain", round));
+        Path paymentArtifact = workspace.root().resolve(
+                artifact("artifacts/l2/zk-payment", round, ".l2tx"));
+        writeArtifact(paymentArtifact, payment.bytes());
+        var paymentSubmitted = client.submit(payment.bytes());
+        EutxoReceipt paymentReceipt = awaitReceipt(payment.transactionId());
+        EutxoValidityTransition paymentTransition =
+                awaitTransition(paymentReceipt);
+        Path paymentTransitionFile = workspace.root().resolve(
+                artifact("artifacts/proofs/payment-transition",
+                        round, ".cbor"));
+        writeArtifact(paymentTransitionFile,
+                paymentTransition.canonicalBytes());
+        EutxoOutpoint bobPayment = new EutxoOutpoint(
+                payment.transactionId(), 1);
+        EutxoWithdrawalDatum withdrawal = new EutxoWithdrawalDatum(
+                EutxoWithdrawalDatum.ABI_VERSION,
+                workspace.manifest().chainId(), 1, payout,
+                nonce("withdrawal", round));
+        TransactionBody body = TransactionBody.builder()
+                .inputs(List.of(new TransactionInput(
+                        bobPayment.transactionId(), bobPayment.index())))
+                .outputs(List.of(
+                        TransactionOutput.builder().address(bob)
+                                .value(Value.fromCoin(
+                                        BigInteger.valueOf(10_000_000)
+                                                .subtract(WITHDRAWAL))).build(),
                         TransactionOutput.builder().address(payout)
                                 .value(Value.fromCoin(WITHDRAWAL))
                                 .inlineDatum(PlutusData.deserialize(
@@ -125,70 +170,58 @@ final class EutxoZkDemoWorkflow {
                 .ttl(10_000_000L)
                 .networkId(NetworkId.TESTNET)
                 .build();
-        EutxoZkAuthorizationProfile authorization =
-                EutxoZkAuthorizationProfile.JUBJUB_DEVELOPMENT_V1;
-        EutxoL2Domain domain = new EutxoL2Domain(
-                workspace.manifest().chainId(), "devnet",
-                EutxoProfile.V1.digestHex(),
-                EutxoZkProfile.Z3_VALIDITY_SETTLEMENT.digestHex(),
-                authorization.id(), authorization.digestHex(),
-                new byte[32], 10_000_000L);
-        byte[] envelope = Files.readAllBytes(workspace.root().resolve(
-                "secrets/l2/session-key.enc"));
-        char[] password = Files.readString(workspace.root().resolve(
-                "secrets/l2/session-key.password")).trim().toCharArray();
-        byte[] transaction;
-        String l2TransactionId;
-        try (EutxoL2SessionKey key =
-                     EutxoL2SessionKey.decrypt(envelope, password)) {
-            String credential = HexFormat.of().formatHex(
-                    new Address(operator).getPaymentCredentialHash()
-                            .orElseThrow());
-            var l2Transaction = EutxoL2TransactionBuilder.sign(
-                    domain, body, List.of(
-                            new EutxoL2TransactionBuilder.Signer(
-                                    credential, 1, List.of(0), key)));
-            transaction = l2Transaction.canonicalBytes();
-            l2TransactionId = l2Transaction.transactionId();
-        } finally {
-            java.util.Arrays.fill(password, '\0');
-            java.util.Arrays.fill(envelope, (byte) 0);
-        }
+        SignedL2 withdrawalTransaction = sign(
+                "bob", body, nonce("withdrawal-domain", round));
+        byte[] transaction = withdrawalTransaction.bytes();
+        String l2TransactionId = withdrawalTransaction.transactionId();
         Path artifact = workspace.root().resolve(
-                "artifacts/l2/zk-withdrawal.l2tx");
-        Files.write(artifact, transaction,
-                StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+                artifact("artifacts/l2/zk-withdrawal", round, ".l2tx"));
+        writeArtifact(artifact, transaction);
         var submitted = client.submit(transaction);
         EutxoReceipt receipt = awaitReceipt(l2TransactionId);
         EutxoValidityTransition transition = awaitTransition(receipt);
         Path transitionFile = workspace.root().resolve(
-                "artifacts/proofs/finalized-transition.cbor");
-        Files.write(transitionFile, transition.canonicalBytes(),
-                StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+                artifact("artifacts/proofs/finalized-transition",
+                        round, ".cbor"));
+        writeArtifact(transitionFile, transition.canonicalBytes());
         var claim = transition.withdrawals().getFirst();
-        journal.advance("zk-transfer-v1", "zk-transfer-v1",
+        journal.advance(operationId, operationId,
                 current.requestDigest(), EutxoDemoJournal.State.STABLE,
                 Map.of("messageId", submitted.messageId(),
+                        "paymentMessageId", paymentSubmitted.messageId(),
+                        "paymentTransactionId", payment.transactionId(),
+                        "paymentArtifact", artifact(
+                                "artifacts/l2/zk-payment",
+                                round, ".l2tx"),
+                        "paymentTransition", artifact(
+                                "artifacts/proofs/payment-transition",
+                                round, ".cbor"),
                         "transactionId", receipt.transactionId(),
                         "claimId", claim.claimId(),
-                        "transition", "artifacts/proofs/finalized-transition.cbor",
+                        "transition", artifact(
+                                "artifacts/proofs/finalized-transition",
+                                round, ".cbor"),
                         "previousRoot", HexFormat.of().formatHex(
                                 transition.previousRoot())), null);
-        EutxoDemoJournal.Entry bridgeEntry = entry("bridge-transfer-v1");
-        journal.advance("bridge-transfer-v1", "bridge-transfer-v1",
+        String bridgeOperationId = id("bridge-transfer-v1", round);
+        EutxoDemoJournal.Entry bridgeEntry = entry(bridgeOperationId);
+        journal.advance(bridgeOperationId, bridgeOperationId,
                 bridgeEntry.requestDigest(), EutxoDemoJournal.State.STABLE,
                 Map.of("messageId", submitted.messageId(),
                         "transactionId", receipt.transactionId(),
                         "claimId", claim.claimId(),
-                        "artifact", "artifacts/l2/zk-withdrawal.l2tx"), null);
+                        "artifact", artifact(
+                                "artifacts/l2/zk-withdrawal",
+                                round, ".l2tx")), null);
     }
 
-    private void prove() throws Exception {
-        EutxoDemoJournal.Entry current = entry("zk-proof-v1");
+    private void prove(int round) throws Exception {
+        String operationId = id("zk-proof-v1", round);
+        EutxoDemoJournal.Entry current = entry(operationId);
         if (current.state().ordinal() >= EutxoDemoJournal.State.VERIFIED.ordinal()) {
             return;
         }
-        EutxoDemoJournal.Entry transfer = entry("zk-transfer-v1");
+        EutxoDemoJournal.Entry transfer = entry(id("zk-transfer-v1", round));
         EutxoValidityLifecycle lifecycle =
                 new EutxoValidityLifecycle(workspace.project());
         if (!"VALIDITY_DOCTOR_PASSED".equals(lifecycle.doctor().status())) {
@@ -196,11 +229,17 @@ final class EutxoZkDemoWorkflow {
                     "EUTXO_ZK_DEMO_CEREMONY_REQUIRED");
         }
         var result = lifecycle.prove(
-                List.of(workspace.root().resolve(required(
-                        transfer, "transition"))),
-                required(transfer, "previousRoot"));
+                List.of(
+                        workspace.root().resolve(required(
+                                transfer, "paymentTransition")),
+                        workspace.root().resolve(required(
+                                transfer, "transition"))),
+                HexFormat.of().formatHex(EutxoValidityTransition.decode(
+                        Files.readAllBytes(workspace.root().resolve(required(
+                                transfer, "paymentTransition"))))
+                        .previousRoot()));
         String proofId = String.valueOf(result.details().get("proofId"));
-        workspace.journal().advance("zk-proof-v1", "zk-proof-v1",
+        workspace.journal().advance(operationId, operationId,
                 current.requestDigest(), EutxoDemoJournal.State.VERIFIED,
                 Map.of("proofId", proofId,
                         "batchProfile", "cardano-payment-b16",
@@ -270,9 +309,109 @@ final class EutxoZkDemoWorkflow {
         return value;
     }
 
+    private String id(String base, int round) {
+        return round == 1 ? base : base + "-r" + round;
+    }
+
+    private String artifact(String base, int round, String suffix) {
+        return round == 1 ? base + suffix : base + "-r" + round + suffix;
+    }
+
+    private byte[] nonce(String purpose, int round) {
+        try {
+            return java.security.MessageDigest.getInstance("SHA-256").digest(
+                    ("yano-eutxo-zk-demo\n" + workspace.manifest().chainId()
+                            + "\n" + purpose + "\n" + round)
+                            .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
+    }
+
+    private void writeArtifact(Path path, byte[] bytes) throws IOException {
+        if (Files.exists(path)) {
+            if (!java.util.Arrays.equals(Files.readAllBytes(path), bytes)) {
+                throw new IllegalStateException(
+                        "retained demo artifact differs from the planned operation: "
+                                + workspace.root().relativize(path));
+            }
+            return;
+        }
+        Files.write(path, bytes, StandardOpenOption.CREATE_NEW,
+                StandardOpenOption.WRITE);
+    }
+
     private void requireReady() {
         if (!cluster.status().ready()) {
             throw new IllegalStateException("DEMO_CLUSTER_NOT_READY");
+        }
+    }
+
+    private Map<String, EutxoL2KeyBinding> keyBindings()
+            throws Exception {
+        Map<String, EutxoL2KeyBinding> result = new LinkedHashMap<>();
+        for (String user : List.of("alice", "bob")) {
+            byte[] envelope = Files.readAllBytes(workspace.root().resolve(
+                    "secrets/l2/" + user + "-session-key.enc"));
+            char[] password = Files.readString(workspace.root().resolve(
+                    "secrets/l2/" + user + "-session-key.password"))
+                    .trim().toCharArray();
+            try (EutxoL2SessionKey key =
+                         EutxoL2SessionKey.decrypt(envelope, password)) {
+                result.put(user, new EutxoL2KeyBinding(
+                        EutxoZkAuthorizationProfile.JUBJUB_DEVELOPMENT_V1.id(),
+                        1, key.publicKey()));
+            } finally {
+                java.util.Arrays.fill(password, '\0');
+                java.util.Arrays.fill(envelope, (byte) 0);
+            }
+        }
+        return Map.copyOf(result);
+    }
+
+    private SignedL2 sign(
+            String user,
+            TransactionBody body,
+            byte[] nonce) throws Exception {
+        EutxoZkAuthorizationProfile authorization =
+                EutxoZkAuthorizationProfile.JUBJUB_DEVELOPMENT_V1;
+        EutxoL2Domain domain = new EutxoL2Domain(
+                workspace.manifest().chainId(), "devnet",
+                EutxoProfile.V1.digestHex(),
+                EutxoZkProfile.Z3_VALIDITY_SETTLEMENT.digestHex(),
+                authorization.id(), authorization.digestHex(),
+                nonce, 10_000_000L);
+        byte[] envelope = Files.readAllBytes(workspace.root().resolve(
+                "secrets/l2/" + user + "-session-key.enc"));
+        char[] password = Files.readString(workspace.root().resolve(
+                "secrets/l2/" + user + "-session-key.password"))
+                .trim().toCharArray();
+        try (EutxoL2SessionKey key =
+                     EutxoL2SessionKey.decrypt(envelope, password)) {
+            String credential = HexFormat.of().formatHex(
+                    new Address(identity(user + "Address"))
+                            .getPaymentCredentialHash().orElseThrow());
+            var transaction = EutxoL2TransactionBuilder.sign(
+                    domain, body, List.of(
+                            new EutxoL2TransactionBuilder.Signer(
+                                    credential, 1, List.of(0), key)));
+            return new SignedL2(
+                    transaction.transactionId(),
+                    transaction.canonicalBytes());
+        } finally {
+            java.util.Arrays.fill(password, '\0');
+            java.util.Arrays.fill(envelope, (byte) 0);
+        }
+    }
+
+    private record SignedL2(String transactionId, byte[] bytes) {
+        private SignedL2 {
+            bytes = bytes.clone();
+        }
+
+        @Override
+        public byte[] bytes() {
+            return bytes.clone();
         }
     }
 }

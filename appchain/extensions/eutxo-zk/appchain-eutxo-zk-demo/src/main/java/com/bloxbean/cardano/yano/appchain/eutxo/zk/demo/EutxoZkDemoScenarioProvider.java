@@ -5,6 +5,7 @@ import com.bloxbean.cardano.yano.appchain.eutxo.demo.EutxoDemoOptions;
 import com.bloxbean.cardano.yano.appchain.eutxo.demo.EutxoDemoResult;
 import com.bloxbean.cardano.yano.appchain.eutxo.demo.EutxoDemoScenarioProvider;
 import com.bloxbean.cardano.yano.appchain.eutxo.demo.EutxoDemoWorkspace;
+import com.bloxbean.cardano.yano.appchain.eutxo.demo.EutxoExternalDepositWorkflow;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.client.EutxoL2SessionKey;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.lifecycle.EutxoValidityLifecycle;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -34,34 +35,19 @@ public final class EutxoZkDemoScenarioProvider
     @Override public Set<String> operations() {
         return Set.of("setup", "start", "up", "status", "stop", "reset",
                 "fund", "deposit", "transfer", "ceremony", "prove",
-                "settle", "withdraw", "reconcile", "verify", "round-trip");
+                "settle", "withdraw", "reconcile", "verify", "round-trip",
+                "deposit-build", "deposit-submit");
     }
 
     @Override
     public void setup(EutxoDemoWorkspace workspace, EutxoDemoOptions options)
             throws Exception {
-        Path passwordFile = workspace.root().resolve(
-                "secrets/l2/session-key.password");
-        Path keyFile = workspace.root().resolve(
-                "secrets/l2/session-key.enc");
-        byte[] entropy = new byte[24];
-        RANDOM.nextBytes(entropy);
-        char[] password = HexFormat.of().formatHex(entropy).toCharArray();
-        String publicKey;
-        try (EutxoL2SessionKey key = EutxoL2SessionKey.random()) {
-            Files.write(keyFile, key.encrypt(password),
-                    StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
-            Files.writeString(passwordFile, new String(password) + "\n",
-                    StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
-            publicKey = HexFormat.of().formatHex(key.publicKey());
-        } finally {
-            java.util.Arrays.fill(password, '\0');
-            java.util.Arrays.fill(entropy, (byte) 0);
-        }
+        String alicePublicKey = createSessionKey(workspace, "alice");
+        String bobPublicKey = createSessionKey(workspace, "bob");
         Map<String, String> identity = workspace.manifest().publicIdentities();
         Map<String, String> answers = new LinkedHashMap<>();
-        answers.put("eutxoL2Address", identity.get("operatorAddress"));
-        answers.put("eutxoL2PublicKey", publicKey);
+        answers.put("eutxoL2Address", identity.get("aliceAddress"));
+        answers.put("eutxoL2PublicKey", alicePublicKey);
         answers.put("bridgeVaultAddress", identity.get("vaultAddress"));
         answers.put("bridgeVaultScriptHash", identity.get("vaultScriptHash"));
         answers.put("bridgeMaxDepositLovelace", "100000000");
@@ -74,9 +60,37 @@ public final class EutxoZkDemoScenarioProvider
                         "artifacts/proofs/l2-public-identity.json"),
                 JSON.writerWithDefaultPrettyPrinter().writeValueAsString(Map.of(
                         "authorizationProfile", "zeroj-jubjub-dev-v1",
-                        "publicKey", publicKey,
-                        "encryptedKey", "secrets/l2/session-key.enc")),
+                        "alice", Map.of(
+                                "address", identity.get("aliceAddress"),
+                                "publicKey", alicePublicKey,
+                                "encryptedKey", "secrets/l2/alice-session-key.enc"),
+                        "bob", Map.of(
+                                "address", identity.get("bobAddress"),
+                                "publicKey", bobPublicKey,
+                                "encryptedKey", "secrets/l2/bob-session-key.enc"))),
                 StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+    }
+
+    private static String createSessionKey(
+            EutxoDemoWorkspace workspace,
+            String user) throws Exception {
+        Path passwordFile = workspace.root().resolve(
+                "secrets/l2/" + user + "-session-key.password");
+        Path keyFile = workspace.root().resolve(
+                "secrets/l2/" + user + "-session-key.enc");
+        byte[] entropy = new byte[24];
+        RANDOM.nextBytes(entropy);
+        char[] password = HexFormat.of().formatHex(entropy).toCharArray();
+        try (EutxoL2SessionKey key = EutxoL2SessionKey.random()) {
+            Files.write(keyFile, key.encrypt(password),
+                    StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+            Files.writeString(passwordFile, new String(password) + "\n",
+                    StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+            return HexFormat.of().formatHex(key.publicKey());
+        } finally {
+            java.util.Arrays.fill(password, '\0');
+            java.util.Arrays.fill(entropy, (byte) 0);
+        }
     }
 
     @Override
@@ -110,7 +124,13 @@ public final class EutxoZkDemoScenarioProvider
             case "fund", "deposit", "transfer", "prove", "settle",
                     "withdraw", "reconcile", "verify", "round-trip" ->
                     new EutxoZkDemoWorkflow(workspace, cluster)
-                            .execute(operation);
+                            .execute(operation, options.count());
+            case "deposit-build" ->
+                    new EutxoExternalDepositWorkflow(workspace, cluster)
+                            .build(options);
+            case "deposit-submit" ->
+                    new EutxoExternalDepositWorkflow(workspace, cluster)
+                            .submit(options);
             default -> throw new UnsupportedOperationException(
                     operation + " is not supported by scenario zk");
         };

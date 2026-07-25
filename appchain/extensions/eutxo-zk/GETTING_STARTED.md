@@ -44,6 +44,54 @@ available now. The only supported authorization profile,
 `zeroj-jubjub-dev-v1`, requires a trusted sequencer/prover and disposable test
 funds. Mainnet is rejected unconditionally.
 
+## Fast multi-user devnet walkthrough
+
+For the shortest executable path from a distribution:
+
+```bash
+./yano.sh appchain eutxo demo setup --scenario zk \
+  --workspace ./eutxo-zk-demo
+./yano.sh appchain eutxo demo ceremony \
+  --workspace ./eutxo-zk-demo --yes
+./yano.sh appchain eutxo demo start \
+  --workspace ./eutxo-zk-demo
+./yano.sh appchain eutxo demo round-trip \
+  --workspace ./eutxo-zk-demo --count 2
+```
+
+Setup creates disposable Alice, Bob, and operator Cardano wallets plus
+separate encrypted Alice/Bob Jubjub keys. Every round performs independent L1
+deposits, an Alice-to-Bob L2 payment, a Bob-authorized withdrawal, a proof over
+both finalized transitions, and an operator L1 payout to Bob's separate payout
+account. Bob's L2 address and configured L1 payout address are deliberately
+different, because an output to the configured payout address is the
+deterministic withdrawal marker. Re-running the same count reuses the journal;
+increasing it adds only missing rounds.
+
+An externally owned user can use the same bridge without placing a secret in
+Yano:
+
+```bash
+./yano.sh appchain eutxo demo deposit-build \
+  --workspace ./eutxo-zk-demo \
+  --address addr_test1... \
+  --l2-public-key <32-byte-lowercase-Jubjub-public-key> \
+  --amount 20000000 \
+  --output external-deposit.unsigned.cbor
+
+# Sign externally with CIP-30, cardano-cli, or Cardano Client Lib.
+
+./yano.sh appchain eutxo demo deposit-submit \
+  --workspace ./eutxo-zk-demo \
+  --signed-transaction external-deposit.signed.cbor
+```
+
+The wallet signs ordinary Cardano L1 CBOR. The supplied Jubjub key is public
+and becomes the committed L2 authorization for the same Cardano payment
+credential. High-frequency L2 spends are then signed by the user's SDK-held
+Jubjub session key. Open `/ui/app-chain/`, select the chain, and choose
+**EUTxO Explorer** to inspect the decoded finalized transactions.
+
 ## Current executable developer flow
 
 ### Prerequisites
