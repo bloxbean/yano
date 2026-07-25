@@ -10,6 +10,12 @@ effective configuration, property explanation, and project lifecycle checks.
 # See the release-pinned recipes.
 ./yano.sh appchain recipes
 
+# Inspect support tier, scope and selection in a wrapped terminal table.
+./yano.sh appchain capabilities
+
+# Get the canonical structured catalog for scripts and user interfaces.
+./yano.sh appchain capabilities --format json
+
 # Reproducible non-interactive project generation.
 ./yano.sh appchain init --non-interactive \
   --recipe owned-registry --network preprod --members 3 \

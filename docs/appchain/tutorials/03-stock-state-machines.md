@@ -20,6 +20,7 @@ activation or a new chain.
 | [`approvals`](../state-machines/approvals.md) | Validator members are the approvers | Distinct member keys | Status and decision trail |
 | [`balances`](../state-machines/balances.md) | You need internal credits/netting | A member spends its own account | Balance per account |
 | [`doc-trail`](../state-machines/doc-trail.md) | You need ordered history per product/case | Admitted member appends | Count and chained trail head |
+| [`role-approvals`](../state-machines/role-approvals.md) | Business actors differ from validator members | Governed actors, organizations and roles | Payload hash and signed decision trail |
 | `evidence-v1-gated` | Approval coordinates S3/IPFS/Kafka publication | Stock composite workflow | One root across components/effects |
 | `role-evidence` | Business actors differ from validator members | Governed actors, organizations, roles | Registry, policy, decisions, evidence |
 
@@ -121,7 +122,8 @@ Use:
 - The dedicated [`kv-registry`](../state-machines/kv-registry.md),
   [`approvals`](../state-machines/approvals.md),
   [`balances`](../state-machines/balances.md), and
-  [`doc-trail`](../state-machines/doc-trail.md) references provide complete
+  [`doc-trail`](../state-machines/doc-trail.md), and
+  [`role-approvals`](../state-machines/role-approvals.md) references provide complete
   REST, Java, state, proof, and customization examples.
 - Exact state layouts and Java helper methods are documented in the
   [consensus guide](../../APP_CHAIN_CONSENSUS_GUIDE.md).

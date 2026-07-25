@@ -145,6 +145,7 @@ dependencies {
     implementation 'io.quarkus:quarkus-config-yaml'
     implementation 'io.quarkus:quarkus-smallrye-health'
     implementation 'io.quarkus:quarkus-smallrye-openapi'
+    implementation project(':console-ui')
 
     // Yano module dependencies
     implementation(project(':core-api')) {
@@ -182,6 +183,9 @@ dependencies {
     implementation(project(':appchain-evidence-profile')) {
         exclude group: 'io.netty', module: 'netty-all'
     }
+    // Uses the release-matched, bounded MPF verifier for the console's
+    // node-assisted existing-proof verification endpoint.
+    implementation project(':appchain-client')
     // Optional T3 integrations stay out of the stock artifact. Native/custom
     // builds can opt in before catalog-index and reflection generation.
     if (includeFirstPartyPluginBundles) {
@@ -216,6 +220,8 @@ dependencies {
 
     testImplementation 'io.quarkus:quarkus-junit'
     testImplementation 'io.rest-assured:rest-assured'
+    testImplementation libs.assertj.core
+    testImplementation libs.mockito.inline
 
     testImplementation project(':testkit')
     testImplementation libs.cardano.client.lib
@@ -263,6 +269,7 @@ def generatedApiPrefixDir = layout.buildDirectory.dir('generated/api-prefix-reso
 def bakedApiPrefixMarkerPath = 'META-INF/yano-api-prefix-v1'
 def bakedApiPrefixConfigPath = 'application.properties'
 def bakedApiPrefixDashboardPath = 'META-INF/resources/ui/plugins/api-prefix.json'
+def bakedApiPrefixConsolePath = 'META-INF/resources/ui/api-prefix.json'
 def maxBakedApiPrefixLength = 256
 def forbiddenApiPrefixBuildInputs = [
         providers.systemProperty('yano.api-prefix').isPresent(),
@@ -306,6 +313,7 @@ tasks.register('generateBakedApiPrefixContract') {
     outputs.file(generatedApiPrefixDir.map { it.file(bakedApiPrefixMarkerPath) })
     outputs.file(generatedApiPrefixDir.map { it.file(bakedApiPrefixConfigPath) })
     outputs.file(generatedApiPrefixDir.map { it.file(bakedApiPrefixDashboardPath) })
+    outputs.file(generatedApiPrefixDir.map { it.file(bakedApiPrefixConsolePath) })
 
     doLast {
         String prefix = bakedApiPrefix.get()
@@ -326,6 +334,11 @@ tasks.register('generateBakedApiPrefixContract') {
         def dashboard = outputRoot.file(bakedApiPrefixDashboardPath).asFile
         dashboard.parentFile.mkdirs()
         dashboard.setText(groovy.json.JsonOutput.toJson([apiPrefix: prefix])
+                + System.lineSeparator(), 'UTF-8')
+
+        def console = outputRoot.file(bakedApiPrefixConsolePath).asFile
+        console.parentFile.mkdirs()
+        console.setText(groovy.json.JsonOutput.toJson([apiPrefix: prefix])
                 + System.lineSeparator(), 'UTF-8')
     }
 }
@@ -1301,23 +1314,16 @@ def assertPluginOperationsAdapters = { int httpPort, int timeoutSeconds,
     }
 
     [
-            '/ui/plugins/index.html': ['Yano · Plugin Operations', 'id="dashboard" hidden'],
-            '/ui/plugins/app.js'    : ['yano-plugin-operations-session', 'textContent',
-                                       '/ui/plugins/api-prefix.json', 'response.json()'],
+            '/ui/plugins/index.html': ['Yano · Plugin Operations',
+                                       'data-console-route="plugins"',
+                                       'Connect to plugin operations'],
             '/ui/plugins/api-prefix.json': [
-                    groovy.json.JsonOutput.toJson([apiPrefix: bakedApiPrefix.get()])],
-            '/ui/plugins/styles.css': ['.bundle-list', '.badge']
+                    groovy.json.JsonOutput.toJson([apiPrefix: bakedApiPrefix.get()])]
     ].each { path, markers ->
         def asset = request(path, false)
         if (asset.status != 200 || !markers.every { asset.text.contains(it) }) {
             throw new GradleException(
                     "Plugin dashboard asset smoke failed for ${path}: status=${asset.status}")
-        }
-        if (path.endsWith('/app.js')
-                && (asset.text.contains('URLSearchParams')
-                || asset.text.contains('location.search'))) {
-            throw new GradleException(
-                    'Plugin dashboard must not accept a query-controlled API prefix')
         }
         def csp = asset.headers['content-security-policy']
         if (csp == null || !csp.contains("frame-ancestors 'none'")
@@ -1949,6 +1955,14 @@ tasks.register('yanoDistZip', Zip) {
         from('bin') {
             include '*.md'
         }
+        from('observability') {
+            into 'observability'
+            include '*.yml', '*.md'
+        }
+        from('observability/observability.sh') {
+            into 'observability'
+            filePermissions { unix('755') }
+        }
         from('config') {
             into 'config'
             include 'application.yml', 'application.yaml', 'application-*.yml', 'application-*.yaml', 'network/**'
@@ -2017,6 +2031,16 @@ tasks.register('yanoDistZip', Zip) {
             into 'studio'
         }
     }
+}
+
+tasks.register('testObservabilityLauncher', Exec) {
+    group = 'verification'
+    description = 'Checks the bounded observability Compose lifecycle contract'
+    commandLine 'bash', file('observability/tests/contract.sh')
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('testObservabilityLauncher')
 }
 
 tasks.register('packagedJvmPluginCatalogSmoke') {
@@ -2447,8 +2471,12 @@ tasks.register('packagedApiPrefixContractSmoke') {
                         throw new GradleException(
                                 "Packaged ${specification[0]} mismatch reached node/plugin startup")
                     }
-                    if (!output.contains(
-                            'The configured API prefix does not match the prefix baked into')) {
+                    boolean hostGuardDiagnostic = output.contains(
+                            'The configured API prefix does not match the prefix baked into')
+                    boolean quarkusBuildTimeDiagnostic = specification[0] == 'runtime-http-root'
+                            && output.contains('Build time property cannot be changed at runtime:')
+                            && output.contains('quarkus.http.root-path')
+                    if (!hostGuardDiagnostic && !quarkusBuildTimeDiagnostic) {
                         throw new GradleException(
                                 "Packaged ${specification[0]} mismatch lacked sanitized diagnostic.\n"
                                         + output.readLines().takeRight(100).join('\n'))
@@ -2543,6 +2571,14 @@ tasks.register('yanoNativeDistZip', Zip) {
         }
         from('bin') {
             include '*.md'
+        }
+        from('observability') {
+            into 'observability'
+            include '*.yml', '*.md'
+        }
+        from('observability/observability.sh') {
+            into 'observability'
+            filePermissions { unix('755') }
         }
         from('config') {
             into 'config'

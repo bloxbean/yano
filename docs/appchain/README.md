@@ -23,8 +23,9 @@ credentials unless a guide explicitly says otherwise.
 | Collect member approvals and optionally trigger an action | [`approvals` reference](state-machines/approvals.md) | Configuration + typed commands |
 | Maintain a document-hash trail per product or case | [`doc-trail` reference](state-machines/doc-trail.md) | Configuration + typed commands |
 | Select a stock ledger/workflow capability | [Stock state-machine cookbook](tutorials/03-stock-state-machines.md) | Configuration + typed commands |
-| Publish immutable evidence to object storage/IPFS and notify Kafka | [Evidence publication](tutorials/04-evidence-publication.md) | No |
-| Require manufacturers, auditors, and regulators to sign by domain role | [Domain-role approvals](tutorials/05-domain-role-approvals.md) | No for the stock scenario |
+| Publish immutable evidence to object storage/IPFS and notify Kafka | [Evidence publication](tutorials/04-evidence-publication.md) | No for the demo; optional connector plugins in deployments |
+| Approve arbitrary payload hashes using application-defined roles | [`role-approvals` reference](state-machines/role-approvals.md) | Configuration + actor integration |
+| Require manufacturers, auditors, and regulators to sign evidence by role | [Domain-role approvals](tutorials/05-domain-role-approvals.md) | No for the stock scenario |
 | Call an ERP/API after a finalized decision | [Webhook effects](tutorials/06-webhook-effects.md) | Configuration; emission is stock or plugin logic |
 | Understand and verify Cardano settlement | [Anchors and independent verification](tutorials/07-anchors-and-verification.md) | No |
 | Implement new business rules without forking Yano | [Plugins and composites](tutorials/08-plugins-and-composites.md) | Small Java plugin |
@@ -36,23 +37,25 @@ business-role authorization.
 
 ## What ships out of the box
 
-```text
-Deterministic state                    External action
-───────────────────────────────────    ───────────────────────────────
-ordered-log                            webhook.post
-kv-registry                            kafka.publish
-approvals                              object.put
-balances                               ipfs.pin
-doc-trail                              cardano.payment (preview executor)
-evidence-v1-gated composite
-role-evidence composite
-```
+| Availability | Capabilities |
+|---|---|
+| Bundled deterministic state | `ordered-log`, `kv-registry`, `approvals`, `balances`, `doc-trail`, `role-approvals`, evidence registry/profile |
+| Bundled external delivery | `webhook.post` effect executor and finalized webhook sink |
+| First-party optional | Kafka effect/sink, S3-compatible `object.put`, `ipfs.pin`, `cardano.payment` |
+| Experimental optional | ZK gate, anonymous membership and credential registry |
+| Reference | Custom JVM plugin workflow and the complete evidence demo environment |
 
-The left side runs identically on every member and contributes to the state
-root. The right side runs after the relevant finality gate and reports an
-outcome through the effect system. External execution is at-least-once; effect
-outcome incorporation is exactly once. Receivers must honor the supplied
+Deterministic state runs identically on every member and contributes to the
+state root. External executors run after the relevant finality gate and report
+an outcome through the effect system. External execution is at-least-once;
+effect outcome incorporation is exactly once. Receivers must honor the supplied
 idempotency identity.
+
+“First-party optional” means maintained and tested by Yano, but not present in
+the stock distribution. Install the release-matched JVM bundle or include it
+before native-image generation. See the exact
+[capability catalog](CAPABILITIES.md) and
+[connector installation guide](OPTIONAL_CONNECTORS.md).
 
 ## The mental model
 
@@ -131,10 +134,13 @@ need full detail:
 
 - [10–15 minute overview](../APP_CHAIN_OVERVIEW.md)
 - [State-machine references](state-machines/README.md)
+- [Release capability and recipe catalog](CAPABILITIES.md)
+- [Optional first-party connector installation](OPTIONAL_CONNECTORS.md)
 - [`ordered-log` state-machine reference](state-machines/ordered-log.md)
 - [`kv-registry` state-machine reference](state-machines/kv-registry.md)
 - [`approvals` state-machine reference](state-machines/approvals.md)
 - [`doc-trail` state-machine reference](state-machines/doc-trail.md)
+- [`role-approvals` state-machine reference](state-machines/role-approvals.md)
 - [Complete user and configuration guide](../APP_CHAIN_USER_GUIDE.md)
 - [Use-case catalogue](../APP_CHAIN_USE_CASES.md)
 - [Consensus and state-machine internals](../APP_CHAIN_CONSENSUS_GUIDE.md)

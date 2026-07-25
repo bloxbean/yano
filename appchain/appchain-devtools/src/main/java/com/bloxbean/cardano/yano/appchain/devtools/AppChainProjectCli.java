@@ -23,6 +23,14 @@ import java.util.Set;
 
 /** Guided and non-interactive project initialization/render commands. */
 final class AppChainProjectCli {
+    private static final List<ConsoleColumn> CAPABILITY_COLUMNS = List.of(
+            new ConsoleColumn("CAPABILITY", 25),
+            new ConsoleColumn("CATEGORY", 16),
+            new ConsoleColumn("AVAILABILITY", 20),
+            new ConsoleColumn("MATURITY", 12),
+            new ConsoleColumn("SCOPE", 12),
+            new ConsoleColumn("SELECTION", 10));
+
     static final String USAGE = """
             Usage: ./yano.sh appchain init [options]
                or: ./yano.sh appchain render [project-directory] [--format text|json]
@@ -406,15 +414,83 @@ final class AppChainProjectCli {
             result.put("capabilities", catalog.capabilities());
             out.println(json.writeValueAsString(result));
         } else {
-            for (AppChainProjectModel.Capability capability : catalog.capabilities()) {
-                out.printf(Locale.ROOT, "%s\t%s\t%s\t%s\t%s\t%s\t%s%n",
-                        capability.id(), capability.category(), capability.availability(),
-                        capability.maturity(), capability.effectiveScope(),
-                        capability.effectiveSelectable() ? "selectable" : "derived",
-                        capability.description());
-            }
+            printCapabilityTable(catalog.capabilities());
         }
         return AppChainDevtoolsCli.EXIT_OK;
+    }
+
+    private void printCapabilityTable(List<AppChainProjectModel.Capability> capabilities) {
+        String border = consoleBorder(CAPABILITY_COLUMNS);
+        out.println(border);
+        printConsoleRow(CAPABILITY_COLUMNS.stream().map(ConsoleColumn::heading).toList());
+        out.println(border);
+        for (AppChainProjectModel.Capability capability : capabilities) {
+            printConsoleRow(List.of(
+                    capability.id(),
+                    capability.category(),
+                    capability.availability(),
+                    capability.maturity(),
+                    capability.effectiveScope(),
+                    capability.effectiveSelectable() ? "selectable" : "derived"));
+            printConsoleDetail("Description", capability.description(), border.length());
+            out.println(border);
+        }
+    }
+
+    private void printConsoleRow(List<String> values) {
+        List<List<String>> wrapped = new ArrayList<>(CAPABILITY_COLUMNS.size());
+        int height = 1;
+        for (int index = 0; index < CAPABILITY_COLUMNS.size(); index++) {
+            List<String> lines = wrapConsoleValue(values.get(index),
+                    CAPABILITY_COLUMNS.get(index).width());
+            wrapped.add(lines);
+            height = Math.max(height, lines.size());
+        }
+        for (int line = 0; line < height; line++) {
+            StringBuilder row = new StringBuilder("| ");
+            for (int column = 0; column < CAPABILITY_COLUMNS.size(); column++) {
+                if (column > 0) row.append(" | ");
+                List<String> lines = wrapped.get(column);
+                String value = line < lines.size() ? lines.get(line) : "";
+                row.append(padConsoleValue(value, CAPABILITY_COLUMNS.get(column).width()));
+            }
+            out.println(row.append(" |").toString());
+        }
+    }
+
+    private void printConsoleDetail(String label, String value, int tableWidth) {
+        String prefix = label + ": ";
+        int contentWidth = tableWidth - 4;
+        int valueWidth = contentWidth - prefix.length();
+        List<String> lines = wrapConsoleValue(value, valueWidth);
+        for (int index = 0; index < lines.size(); index++) {
+            String start = index == 0 ? prefix : " ".repeat(prefix.length());
+            out.println("| " + padConsoleValue(start + lines.get(index), contentWidth) + " |");
+        }
+    }
+
+    private static String consoleBorder(List<ConsoleColumn> columns) {
+        return "+-" + columns.stream()
+                .map(column -> "-".repeat(column.width()))
+                .collect(java.util.stream.Collectors.joining("-+-")) + "-+";
+    }
+
+    private static List<String> wrapConsoleValue(String value, int width) {
+        String remaining = value == null ? "" : value.strip().replaceAll("\\s+", " ");
+        if (remaining.isEmpty()) return List.of("");
+        List<String> lines = new ArrayList<>();
+        while (remaining.length() > width) {
+            int split = remaining.lastIndexOf(' ', width);
+            if (split <= 0) split = width;
+            lines.add(remaining.substring(0, split));
+            remaining = remaining.substring(split).stripLeading();
+        }
+        lines.add(remaining);
+        return List.copyOf(lines);
+    }
+
+    private static String padConsoleValue(String value, int width) {
+        return value + " ".repeat(Math.max(0, width - value.length()));
     }
 
     private void writeResult(
@@ -1181,6 +1257,14 @@ final class AppChainProjectCli {
             List<AppChainComponentCatalogLoader.Loaded> loaded,
             List<AppChainProjectModel.ComponentCatalogRef> references,
             Map<String, byte[]> snapshotInputs) {
+    }
+
+    private record ConsoleColumn(String heading, int width) {
+        private ConsoleColumn {
+            if (heading == null || heading.isBlank() || width < heading.length()) {
+                throw new IllegalArgumentException("console column is invalid");
+            }
+        }
     }
 
     static final class Usage extends IllegalArgumentException {

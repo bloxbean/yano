@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — version 2
+Accepted and implemented — version 3
 
 Version 1 recorded a repository-wide assessment of the app-chain
 runtime, standard library, composite and role frameworks, evidence product,
@@ -17,14 +17,24 @@ decisions — including Studio's pre-deployment wizard behavior (§11) — while
 the runtime console's design, delivery, and capability-aware panels are
 ADR-028's. The catalog remains the single source of truth for what a
 distribution contains, including recording the console's availability. The
-review questions in §20 remain open.
+review questions in §20 were left open for the implementation round.
+
+Version 3 (2026-07-22) records completion of M1 through M6. The generic
+composite and role boundaries, generic `role-approvals` product, expanded
+release catalog and Studio selection, portable stock contracts, bootstrap
+plans, signed custom component catalogs, and release-candidate gates now ship
+in this branch. The schemas remain `v1alpha1` pending independently maintained
+third-party catalog usage. Section 1 is retained as the verified
+pre-implementation baseline; §15 records the delivered milestones and §20
+records the implementation resolutions.
 
 The number is local to the `adr/app-layer` series. Root-level ADR-022, if one
 exists, is unrelated.
 
 ## Date
 
-2026-07-21 (version 1), 2026-07-22 (version 2 scope amendment)
+2026-07-21 (version 1), 2026-07-22 (version 2 scope amendment),
+2026-07-22 (version 3 implementation record)
 
 ## Parent and related decisions
 
@@ -111,7 +121,11 @@ This does **not** create a YAML workflow language. Consensus-visible component
 order, routes, state layouts, transitions, quotas, and effect emission remain
 implemented and reviewed in a stock profile or plugin JAR.
 
-## 1. Context and verified current state
+## 1. Context and verified pre-implementation state
+
+This section records the repository state that motivated the decision. The
+version 3 implementation outcome is recorded in §15; it intentionally does
+not rewrite the historical baseline as though the gaps never existed.
 
 ### 1.1 Runtime and extension surface
 
@@ -965,6 +979,22 @@ must always fail closed on identity mismatch.
 
 ## 15. Delivery plan
 
+Version 3 implementation status:
+
+| Milestone | Status | Delivered outcome |
+|---|---|---|
+| M0 | Complete | Availability vocabulary, recipe correction, catalog truth gates, and `v1alpha1` posture |
+| M1 | Complete | Evidence-free generic composite/role boundaries and explicit evidence product artifacts |
+| M2 | Complete | Bundled `role-approvals` provider, generic domain API, signing support, and bootstrap plan |
+| M3 | Complete | Complete first-party capability graph, scoped selection, Studio parity, and staged readiness |
+| M4 | Complete | No-SPI stock contracts, typed clients, bootstrap outputs, and packaged outcome acceptance |
+| M5 | Complete | Signed data-only custom catalogs, four scaffold modes, digest pinning, and Studio local import |
+| M6 | Complete | Static, packaged JVM, host/Compose/GitOps, and GraalVM native release-candidate gates |
+
+M6 deliberately does not stabilize the schemas. The remaining stabilization
+condition is external field usage, not unfinished implementation; see
+[`docs/appchain/RELEASE_ACCEPTANCE.md`](../../docs/appchain/RELEASE_ACCEPTANCE.md).
+
 ### M0 — Product truth and correction
 
 - Add availability/support fields to the release catalog.
@@ -1235,21 +1265,28 @@ The application uses REST, the generic Java client, typed stock contracts, or
 the Spring starter. New deterministic business transitions still require a
 small, explicit, tested plugin rather than hidden configuration behavior.
 
-## 20. Open review questions
+## 20. Implementation resolutions
 
-1. Should the supported evidence profile remain bundled in the default JVM
-   application, or ship as a first-party optional domain bundle while the
-   complete distribution includes it as an inactive artifact?
-2. Should the generic provider ID be `role-approvals` or `role-workflow`?
-3. Should the stock generic role profile expose a payload-domain/hash secondary
-   index in v1, or require proposal-ID lookup only?
-4. Should custom component catalogs extend the existing v1 trust envelope or
-   introduce one envelope version that binds runtime, config, and product
-   descriptors together?
-5. Which anchor, observer, security, and operations options are mature enough
-   for the first capability-selection screen rather than advanced blueprint
-   editing?
-6. Should one-chain-per-project remain the stable v1 contract, with a separate
-   higher-level fleet manifest later?
-7. Which recipes must be supported in JVM and native distributions at the
-   first public app-chain release?
+1. The evidence registry and evidence profile are bundled preview products in
+   the named JVM and native distributions. Kafka, object store, IPFS, and
+   Cardano executors remain first-party optional bundles.
+2. The generic provider ID is `role-approvals`; `role-workflow` remains the
+   module and plugin-bundle identity.
+3. The generic v1 product requires proposal-ID lookup. The
+   `(payloadDomain, payloadHash)` convenience index remains evidence-owned and
+   does not leak into generic state.
+4. The component-catalog trust envelope binds the product catalog, runtime
+   manifest, and optional configuration metadata as one explicit data-only
+   product trust contract. It does not replace runtime loading policy or grant
+   support-tier escalation.
+5. Implemented anchors, observers, sequencing, membership, effects, sinks, and
+   executors appear only where the release catalog has an exact validated
+   mapping. Experimental and non-selectable distribution capabilities remain
+   visibly labelled and cannot be selected accidentally.
+6. One chain per generated project remains the `v1alpha1` contract. The runtime
+   can host multiple independently generated chains; a fleet manifest is a
+   separate future decision.
+7. All bundled recipes advertise and pass JVM and native generation. The three
+   stable recipes have packaged outcome acceptance; the two preview recipes
+   have module outcome plus packaged-provider acceptance. The custom-plugin
+   recipe is JVM-only, reference, and experimental.

@@ -66,8 +66,26 @@ Run the static and packaged JVM gates with:
 On a supported GraalVM host, also run:
 
 ```bash
-./gradlew :appchain-devtools:appChainReleaseCandidateNativeAcceptance
+source "$HOME/.sdkman/bin/sdkman-init.sh"
+sdk use java 25.0.2-graal
+
+./gradlew :app:quarkusBuild \
+  -PincludeFirstPartyPluginBundles=true \
+  -PincludeNativePluginConformanceFixture=true \
+  -Dquarkus.native.enabled=true \
+  -Dquarkus.package.jar.enabled=false \
+  -PskipSigning=true --no-daemon
+
+./gradlew :appchain-devtools:appChainReleaseCandidateNativeAcceptance \
+  -PincludeFirstPartyPluginBundles=true \
+  -PincludeNativePluginConformanceFixture=true \
+  -PskipSigning=true --no-daemon
 ```
+
+The acceptance task exercises `app/build/yano`; it does not create that
+platform executable. Build it first with the same provider-selection flags so
+the JVM provenance expectation and native catalog describe the same release
+flavor. A missing or stale binary must fail the smoke test.
 
 The M6 live devnet regressions additionally verified two-node finality,
 state-root parity, proofs, L1 anchoring, multi-chain behavior, query/SSE

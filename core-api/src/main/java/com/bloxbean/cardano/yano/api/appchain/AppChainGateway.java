@@ -89,6 +89,27 @@ public interface AppChainGateway {
     }
 
     /**
+     * Build an inclusion or exclusion proof against the exact post-state root
+     * of a retained finalized height.
+     *
+     * @throws UnsupportedOperationException when historical proof snapshots
+     *                                       are unavailable
+     */
+    default java.util.Optional<AppStateProofSnapshot> stateProofSnapshotAtHeight(
+            long height, byte[] key) {
+        throw new UnsupportedOperationException(
+                "Historical app-chain state proof snapshots are unavailable");
+    }
+
+    /**
+     * Newest anchor this node has confirmed on L1, bound back to the exact
+     * finalized app block and state root held in its ledger.
+     */
+    default java.util.Optional<AppAnchorCommitment> latestAnchorCommitment() {
+        return java.util.Optional.empty();
+    }
+
+    /**
      * Run the configured state machine's bounded read hook against one
      * root-fixed committed-state snapshot (ADR app-layer/011.3 gate A).
      * Implementations execute plugin code away from the consensus executor.
