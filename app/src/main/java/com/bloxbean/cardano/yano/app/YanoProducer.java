@@ -158,12 +158,17 @@ public class YanoProducer {
     int httpPort;
 
     @ConfigProperty(
-            name = "yano.app-chain.eutxo-indexer.enabled",
+            name = YanoPropertyKeys.AppChain.EUTXO_INDEXER_ENABLED,
             defaultValue = "true")
     boolean eutxoIndexerEnabled;
 
     @ConfigProperty(
-            name = "yano.app-chain.eutxo-indexer.store.jdbc.url")
+            name = YanoPropertyKeys.AppChain.EUTXO_INDEXER_STORE_TYPE,
+            defaultValue = "jdbc")
+    String eutxoIndexerStoreType;
+
+    @ConfigProperty(
+            name = YanoPropertyKeys.AppChain.EUTXO_INDEXER_JDBC_URL)
     Optional<String> eutxoIndexerJdbcUrl;
 
     @ConfigProperty(name = YanoPropertyKeys.API_PREFIX, defaultValue = "/api/v1")
@@ -993,16 +998,6 @@ public class YanoProducer {
 
         try {
             Yano assembledYano = ensureYano();
-            if (eutxoIndexerEnabled) {
-                eutxoIndexers = EutxoLifecycleIndexers.start(
-                        assembledYano.appChains(),
-                        assembledYano.localReadModels().orElseThrow(() ->
-                                unavailableRole("LocalReadModelHost")),
-                        network,
-                        java.nio.file.Path.of(storagePath),
-                        eutxoIndexerJdbcUrl.orElse("").trim(),
-                        meterRegistry);
-            }
             if (autoSyncStart) {
                 log.info("Auto-starting Yano synchronization...");
                 assembledYano.start();
@@ -1011,6 +1006,9 @@ public class YanoProducer {
             } else {
                 log.info("Auto-sync is disabled. Start manually via: curl -X POST {}/start", nodeApiBaseUrl());
                 log.info("REST API available at {}/", nodeApiBaseUrl());
+            }
+            if (autoSyncStart) {
+                startEutxoIndexers();
             }
         } catch (Throwable e) {
             eutxoIndexers.close();
@@ -1372,13 +1370,36 @@ public class YanoProducer {
 
     void onStop(@Observes ShutdownEvent event) {
         log.info("Yano application shutting down...");
-        eutxoIndexers.close();
-        eutxoIndexers = EutxoLifecycleIndexers.disabled();
+        stopEutxoIndexers();
         if (yano != null) {
             log.info("Stopping Yano...");
             yano.close();
             log.info("Yano stopped");
         }
+    }
+
+    synchronized void startEutxoIndexers() {
+        if (!eutxoIndexerEnabled || !eutxoIndexers.healthByChain().isEmpty()) {
+            return;
+        }
+        if (!"jdbc".equals(eutxoIndexerStoreType)) {
+            throw new IllegalArgumentException(
+                    "EUTxO indexer store type must be jdbc");
+        }
+        Yano assembledYano = ensureYano();
+        eutxoIndexers = EutxoLifecycleIndexers.start(
+                assembledYano.appChains(),
+                assembledYano.localReadModels().orElseThrow(() ->
+                        unavailableRole("LocalReadModelHost")),
+                network,
+                java.nio.file.Path.of(storagePath),
+                eutxoIndexerJdbcUrl.orElse("").trim(),
+                meterRegistry);
+    }
+
+    synchronized void stopEutxoIndexers() {
+        eutxoIndexers.close();
+        eutxoIndexers = EutxoLifecycleIndexers.disabled();
     }
 
     /**

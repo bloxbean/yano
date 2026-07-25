@@ -325,6 +325,15 @@ public final class AppChainPropertyRegistry {
         definitions.add(runtimeDefined(YanoPropertyKeys.AppChain.DX_RELEASE_CATALOG_DIGEST,
                 PropertyType.STRING, null, PropertyScope.NODE_LOCAL,
                 "Generated project release-catalog identity"));
+        definitions.add(runtimeDefined(YanoPropertyKeys.AppChain.EUTXO_INDEXER_ENABLED,
+                PropertyType.BOOLEAN, "true", PropertyScope.NODE_LOCAL,
+                "Enable the rebuildable node-local EUTxO lifecycle index"));
+        definitions.add(runtimeDefined(YanoPropertyKeys.AppChain.EUTXO_INDEXER_STORE_TYPE,
+                PropertyType.STRING, "jdbc", PropertyScope.NODE_LOCAL,
+                "Node-local EUTxO lifecycle index storage provider"));
+        definitions.add(runtimeDefined(YanoPropertyKeys.AppChain.EUTXO_INDEXER_JDBC_URL,
+                PropertyType.STRING, null, PropertyScope.NODE_LOCAL,
+                "Optional explicit single-chain EUTxO index JDBC URL"));
         definitions.add(runtimeParsed("effects.enabled", PropertyType.BOOLEAN, "false",
                 null, null, Set.of(), PropertyScope.CONSENSUS_SHARED,
                 "Enable deterministic effect intents and results"));

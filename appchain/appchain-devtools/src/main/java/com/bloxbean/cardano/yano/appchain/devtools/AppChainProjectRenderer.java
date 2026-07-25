@@ -345,6 +345,10 @@ final class AppChainProjectRenderer {
         values.put("yano.app-chain.validation.strict", "true");
         values.put("yano.app-chain.dx.resolved-config-digest", resolvedConfigDigest);
         values.put("yano.app-chain.dx.release-catalog-digest", releaseCatalogDigest);
+        if (resolution.selectedCapabilities().contains("state:eutxo-ledger")) {
+            values.put("yano.app-chain.eutxo-indexer.enabled", "true");
+            values.put("yano.app-chain.eutxo-indexer.store.type", "jdbc");
+        }
         if ("devnet".equals(resolution.blueprint().spec().network()) && node > 0) {
             values.put("yano.block-producer.enabled", "false");
             values.put("yano.dev-mode", "false");
