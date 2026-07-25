@@ -55,6 +55,7 @@ include 'appchain-eutxo-testkit'
 include 'appchain-eutxo-demo'
 include 'appchain-eutxo-bridge-cardano'
 include 'appchain-eutxo-bridge-onchain'
+include 'appchain-eutxo-indexer-core'
 include 'appchain-eutxo-zk-contracts'
 include 'appchain-eutxo-zk-zeroj'
 include 'appchain-eutxo-zk-prover'
@@ -115,6 +116,8 @@ project(':appchain-eutxo-bridge-cardano').projectDir =
         file('appchain/extensions/eutxo/appchain-eutxo-bridge-cardano')
 project(':appchain-eutxo-bridge-onchain').projectDir =
         file('appchain/extensions/eutxo/appchain-eutxo-bridge-onchain')
+project(':appchain-eutxo-indexer-core').projectDir =
+        file('appchain/extensions/eutxo/appchain-eutxo-indexer-core')
 project(':appchain-eutxo-zk-contracts').projectDir =
         file('appchain/extensions/eutxo-zk/appchain-eutxo-zk-contracts')
 project(':appchain-eutxo-zk-zeroj').projectDir =

@@ -1,0 +1,39 @@
+plugins {
+    id 'java-test-fixtures'
+}
+
+dependencies {
+    api project(':appchain-eutxo-contracts')
+    implementation libs.cardano.client.core
+
+    testFixturesApi project(':appchain-eutxo-contracts')
+    testFixturesApi libs.junit.jupiter.api
+    testFixturesApi libs.assertj.core
+
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+tasks.named('compileJava') {
+    options.compilerArgs.removeAll { it.startsWith('-Aproject=') }
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            suppressPomMetadataWarningsFor('testFixturesApiElements')
+            suppressPomMetadataWarningsFor('testFixturesRuntimeElements')
+            pom {
+                name = 'Yano App-Chain EUTxO Indexer Core'
+                description = 'Storage-neutral projection and query contracts for the EUTxO lifecycle index'
+            }
+        }
+    }
+}
