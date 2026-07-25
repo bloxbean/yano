@@ -252,7 +252,7 @@ if (commit_id && project.version.endsWith("-SNAPSHOT")) {
     version = "${project.version}".replace("-SNAPSHOT", "-${commit_id}-SNAPSHOT")
 }
 
-def nonLibraryModules = ['app'] as Set
+def nonLibraryModules = ['app', 'console-ui'] as Set
 
 subprojects {
     // Skip most configuration for application modules (Quarkus/Scala handle their own builds)

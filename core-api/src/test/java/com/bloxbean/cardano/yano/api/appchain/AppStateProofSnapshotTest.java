@@ -30,6 +30,10 @@ class AppStateProofSnapshotTest {
         assertThatThrownBy(() -> gateway.stateProofSnapshot(new byte[]{1}))
                 .isInstanceOf(UnsupportedOperationException.class)
                 .hasMessageContaining("unavailable");
+        assertThatThrownBy(() -> gateway.stateProofSnapshotAtHeight(1, new byte[]{1}))
+                .isInstanceOf(UnsupportedOperationException.class)
+                .hasMessageContaining("unavailable");
+        assertThat(gateway.latestAnchorCommitment()).isEmpty();
     }
 
     @Test

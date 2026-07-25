@@ -1,0 +1,4 @@
+.gradle/
+build/
+frontend/.svelte-kit/
+frontend/node_modules/

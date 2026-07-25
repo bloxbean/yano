@@ -26,7 +26,9 @@ public class YanoResourceTest {
             .when().get("/api/v1/node/config")
             .then()
                 .statusCode(200)
-                .body("protocolMagic", notNullValue());
+                .body("protocolMagic", notNullValue())
+                .body("network", not(isEmptyOrNullString()))
+                .body("version", not(isEmptyOrNullString()));
     }
 
     @Test

@@ -522,7 +522,7 @@ class AppChainProjectTest {
         AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
         AppChainProjectResolver resolver = new AppChainProjectResolver(properties, catalog);
 
-        assertThat(catalog.capabilities()).hasSize(32)
+        assertThat(catalog.capabilities()).hasSize(33)
                 .allSatisfy(capability -> {
                     assertThat(capability.availability()).isIn(
                             "BUNDLED", "FIRST_PARTY_OPTIONAL", "REFERENCE", "EXPERIMENTAL");
@@ -543,6 +543,13 @@ class AppChainProjectTest {
                 blueprint("audit-log", "fixed", List.of()), List.of("ui:console"))))
                 .hasMessageContaining("not selectable")
                 .hasMessageContaining("ui:console");
+        assertThat(catalog.capabilities())
+                .filteredOn(capability -> "observability:prometheus".equals(capability.id()))
+                .singleElement()
+                .satisfies(capability -> {
+                    assertThat(capability.effectiveScope()).isEqualTo("distribution");
+                    assertThat(capability.effectiveSelectable()).isFalse();
+                });
 
         AppChainProjectModel.Resolution governed = resolver.resolve(withMembership(
                 blueprint("audit-log", "fixed", List.of()), "governed"));

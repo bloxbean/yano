@@ -1544,6 +1544,54 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     @Override
+    public Optional<AppStateProofSnapshot> stateProofSnapshotAtHeight(long height, byte[] key) {
+        byte[] keySnapshot = Objects.requireNonNull(key, "key").clone();
+        return generationUseOr(Optional.empty(), () -> {
+            AppLedgerStore currentLedger = ledger;
+            return currentLedger != null
+                    ? currentLedger.stateProofSnapshotAtHeight(height, keySnapshot) : Optional.empty();
+        });
+    }
+
+    @Override
+    public Optional<com.bloxbean.cardano.yano.api.appchain.AppAnchorCommitment>
+            latestAnchorCommitment() {
+        return generationUseOr(Optional.empty(), this::latestAnchorCommitmentWithinGeneration);
+    }
+
+    private Optional<com.bloxbean.cardano.yano.api.appchain.AppAnchorCommitment>
+            latestAnchorCommitmentWithinGeneration() {
+        AppLedgerStore currentLedger = ledger;
+        if (currentLedger == null) {
+            return Optional.empty();
+        }
+        Optional<AppLedgerStore.ConfirmedAnchorSnapshot> snapshot =
+                currentLedger.confirmedAnchorSnapshot();
+        if (snapshot.isEmpty()) {
+            return Optional.empty();
+        }
+        AppLedgerStore.ConfirmedAnchorSnapshot confirmed = snapshot.orElseThrow();
+        AppBlock anchoredBlock = confirmed.block();
+        if (!config.chainId().equals(anchoredBlock.chainId())
+                || anchoredBlock.height() != confirmed.height()) {
+            return Optional.empty();
+        }
+        byte[] calculatedHash =
+                com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec.blockHash(anchoredBlock);
+        if (!java.util.Arrays.equals(confirmed.blockHash(), calculatedHash)) {
+            log.warn("Ignoring inconsistent confirmed anchor record for app-chain '{}' at height {}",
+                    config.chainId(), confirmed.height());
+            return Optional.empty();
+        }
+        String mode = config.anchor() != null && config.anchor().scriptMode()
+                ? AppChainConfig.AnchorConfig.MODE_SCRIPT
+                : AppChainConfig.AnchorConfig.MODE_METADATA;
+        return Optional.of(new com.bloxbean.cardano.yano.api.appchain.AppAnchorCommitment(
+                config.chainId(), mode, confirmed.height(), anchoredBlock.stateRoot(), calculatedHash,
+                confirmed.transactionHash(), confirmed.l1Slot()));
+    }
+
+    @Override
     public AppQueryResult query(String path, byte[] request) {
         long deadline = System.nanoTime()
                 + TimeUnit.SECONDS.toNanos(QUERY_TIMEOUT_SECONDS);
@@ -2577,6 +2625,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         status.put("memberActiveForNextBlock", group.containsAt(signer.publicKeyHex(), nextHeight));
         status.put("running", running.get());
         status.put("sequencing", config.sequencingEnabled());
+        status.put("configuredBlockIntervalMs", config.blockIntervalMs());
         if (config.sequencingEnabled()) {
             AppChainEngine currentEngine = engine;
             Map<String, Object> sequencer = currentEngine != null
@@ -2736,6 +2785,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         status.put("threshold", group.threshold());
         status.put("running", false);
         status.put("sequencing", config.sequencingEnabled());
+        status.put("configuredBlockIntervalMs", config.blockIntervalMs());
         status.put("tipHeight", 0L);
         status.put("stateRoot", HexUtil.encodeHexString(new byte[32]));
         status.put("stateMachine", stateMachine.id());
