@@ -623,7 +623,9 @@ tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
         def eutxoContributions = eutxoBundle?.manifest?.contributions?.collect {
             "${it.kind}:${it.name}"
         }?.toSet()
-        if (eutxoContributions != Set.of('app-state-machine:eutxo-ledger')) {
+        if (eutxoContributions != Set.of(
+                'app-state-machine:eutxo-ledger',
+                'domain-api:com.bloxbean.cardano.yano.appchain.eutxo')) {
             throw new GradleException(
                     "EUTxO bundle contribution inventory is incomplete: ${eutxoContributions}")
         }

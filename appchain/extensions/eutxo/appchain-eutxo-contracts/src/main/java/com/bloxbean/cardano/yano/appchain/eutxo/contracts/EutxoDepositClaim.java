@@ -23,9 +23,33 @@ public record EutxoDepositClaim(
         byte[] mirroredOutputCbor,
         byte[] depositNonce,
         EutxoOutpoint stagingOutpoint,
-        long refundDeadline
+        long refundDeadline,
+        byte[] depositorKeyHash,
+        EutxoL2KeyBinding l2KeyBinding
 ) {
-    public static final int ABI_VERSION = 1;
+    public static final int ABI_VERSION = 2;
+
+    public EutxoDepositClaim(
+            int abiVersion,
+            String chainId,
+            EutxoOutpoint acceptedOutpoint,
+            long l1Slot,
+            byte[] l1BlockHash,
+            String vaultAddress,
+            String vaultScriptHash,
+            byte[] acceptedOutputCbor,
+            String l2Address,
+            byte[] mirroredOutputCbor,
+            byte[] depositNonce,
+            EutxoOutpoint stagingOutpoint,
+            long refundDeadline
+    ) {
+        this(abiVersion, chainId, acceptedOutpoint, l1Slot, l1BlockHash,
+                vaultAddress, vaultScriptHash, acceptedOutputCbor, l2Address,
+                mirroredOutputCbor, depositNonce, stagingOutpoint,
+                refundDeadline, new byte[28],
+                EutxoL2KeyBinding.none());
+    }
 
     public EutxoDepositClaim {
         if (abiVersion != ABI_VERSION) {
@@ -45,6 +69,10 @@ public record EutxoDepositClaim(
         mirroredOutputCbor = boundedBytes(
                 mirroredOutputCbor, "mirroredOutputCbor", EutxoProfile.V1.maxOutputCborBytes());
         depositNonce = fixedBytes(depositNonce, "depositNonce", 32);
+        depositorKeyHash = fixedBytes(
+                depositorKeyHash, "depositorKeyHash", 28);
+        l2KeyBinding = Objects.requireNonNull(
+                l2KeyBinding, "l2KeyBinding");
         Objects.requireNonNull(stagingOutpoint, "stagingOutpoint");
         if (refundDeadline < 0) {
             throw new IllegalArgumentException("refund deadline cannot be negative");
@@ -69,6 +97,11 @@ public record EutxoDepositClaim(
     @Override
     public byte[] depositNonce() {
         return depositNonce.clone();
+    }
+
+    @Override
+    public byte[] depositorKeyHash() {
+        return depositorKeyHash.clone();
     }
 
     public byte[] encode() {
@@ -105,18 +138,23 @@ public record EutxoDepositClaim(
                 && java.util.Arrays.equals(mirroredOutputCbor, claim.mirroredOutputCbor)
                 && java.util.Arrays.equals(depositNonce, claim.depositNonce)
                 && stagingOutpoint.equals(claim.stagingOutpoint)
-                && refundDeadline == claim.refundDeadline;
+                && refundDeadline == claim.refundDeadline
+                && java.util.Arrays.equals(
+                depositorKeyHash, claim.depositorKeyHash)
+                && l2KeyBinding.equals(claim.l2KeyBinding);
     }
 
     @Override
     public int hashCode() {
         int result = Objects.hash(
                 abiVersion, chainId, acceptedOutpoint, l1Slot, vaultAddress,
-                vaultScriptHash, l2Address, stagingOutpoint, refundDeadline);
+                vaultScriptHash, l2Address, stagingOutpoint, refundDeadline,
+                l2KeyBinding);
         result = 31 * result + java.util.Arrays.hashCode(l1BlockHash);
         result = 31 * result + java.util.Arrays.hashCode(acceptedOutputCbor);
         result = 31 * result + java.util.Arrays.hashCode(mirroredOutputCbor);
-        return 31 * result + java.util.Arrays.hashCode(depositNonce);
+        result = 31 * result + java.util.Arrays.hashCode(depositNonce);
+        return 31 * result + java.util.Arrays.hashCode(depositorKeyHash);
     }
 
     private static String boundedText(String value, String field, int maxLength) {
@@ -157,4 +195,5 @@ public record EutxoDepositClaim(
         }
         return copy;
     }
+
 }

@@ -27,7 +27,14 @@ class EutxoDemoWorkspaceTest {
         assertThat(created.manifest().memberPublicKeys()).hasSize(3)
                 .allMatch(key -> key.matches("[0-9a-f]{64}"));
         assertThat(created.manifest().secretReferences())
-                .containsEntry("member0", "secrets/members/node0.env");
+                .containsEntry("member0", "secrets/members/node0.env")
+                .containsEntry("bobPayoutWallet", "secrets/cardano/payout.seed");
+        assertThat(created.manifest().publicIdentities().get("bobAddress"))
+                .isNotEqualTo(created.manifest().publicIdentities()
+                        .get("bobPayoutAddress"));
+        assertThat(created.manifest().publicIdentities().get("payoutAddress"))
+                .isEqualTo(created.manifest().publicIdentities()
+                        .get("bobPayoutAddress"));
         assertThat(created.root().resolve("secrets/members/node0.env")).isRegularFile();
         String manifest = Files.readString(root.resolve("demo.yaml"));
         String secret = Files.readString(root.resolve("secrets/members/node0.env"))
@@ -101,7 +108,8 @@ class EutxoDemoWorkspaceTest {
 
     private static EutxoDemoOptions options(Path root) {
         return new EutxoDemoOptions("setup", "ledger", root,
-                "payments-eutxo", "payments-eutxo", 3, 7070, 13337,
+                "payments-eutxo", "payments-eutxo", 3, 1, 7070, 13337,
+                null, null, null, 20_000_000L, null, null,
                 EutxoDemoOptions.Format.TEXT, false, false);
     }
 }

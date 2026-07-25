@@ -177,7 +177,7 @@ class AcceptedVaultDepositObserverTest {
 
     private static EutxoVaultDatum datum() {
         return new EutxoVaultDatum(
-                1,
+                EutxoVaultDatum.ABI_VERSION,
                 "payments-eutxo",
                 OWNER,
                 fill(32, 3),

@@ -67,10 +67,14 @@ public final class EutxoDemoWorkspace {
         List<String> memberKeys = new EutxoDemoIdentityService()
                 .generateMembers(root.resolve("secrets/members"), options.members());
         EutxoDemoIdentityService identities = new EutxoDemoIdentityService();
-        EutxoDemoIdentityService.WalletIdentity ledgerWallet =
+        EutxoDemoIdentityService.WalletIdentity aliceWallet =
                 identities.generateWallet(root.resolve("secrets/cardano/ledger.seed"));
-        EutxoDemoIdentityService.WalletIdentity recipientWallet =
+        EutxoDemoIdentityService.WalletIdentity bobWallet =
                 identities.generateWallet(root.resolve("secrets/cardano/recipient.seed"));
+        EutxoDemoIdentityService.WalletIdentity bobPayoutWallet =
+                identities.generateWallet(root.resolve("secrets/cardano/payout.seed"));
+        EutxoDemoIdentityService.WalletIdentity operatorWallet =
+                identities.generateWallet(root.resolve("secrets/cardano/operator.seed"));
         Map<String, String> secretReferences = new LinkedHashMap<>();
         for (int index = 0; index < options.members(); index++) {
             secretReferences.put("member" + index,
@@ -78,25 +82,35 @@ public final class EutxoDemoWorkspace {
         }
         secretReferences.put("ledgerWallet", "secrets/cardano/ledger.seed");
         secretReferences.put("recipientWallet", "secrets/cardano/recipient.seed");
+        secretReferences.put("aliceWallet", "secrets/cardano/ledger.seed");
+        secretReferences.put("bobWallet", "secrets/cardano/recipient.seed");
+        secretReferences.put("bobPayoutWallet", "secrets/cardano/payout.seed");
+        secretReferences.put("operatorWallet", "secrets/cardano/operator.seed");
         Map<String, String> publicIdentities = new LinkedHashMap<>();
         publicIdentities.put("trustBoundary", provider.trustBoundary());
-        publicIdentities.put("ledgerAddress", ledgerWallet.address());
-        publicIdentities.put("ledgerPublicKey", ledgerWallet.publicKey());
-        publicIdentities.put("recipientAddress", recipientWallet.address());
-        publicIdentities.put("recipientPublicKey", recipientWallet.publicKey());
+        publicIdentities.put("ledgerAddress", aliceWallet.address());
+        publicIdentities.put("ledgerPublicKey", aliceWallet.publicKey());
+        publicIdentities.put("recipientAddress", bobWallet.address());
+        publicIdentities.put("recipientPublicKey", bobWallet.publicKey());
+        publicIdentities.put("aliceAddress", aliceWallet.address());
+        publicIdentities.put("alicePublicKey", aliceWallet.publicKey());
+        publicIdentities.put("bobAddress", bobWallet.address());
+        publicIdentities.put("bobPublicKey", bobWallet.publicKey());
+        publicIdentities.put("bobPayoutAddress", bobPayoutWallet.address());
+        publicIdentities.put("bobPayoutPublicKey", bobPayoutWallet.publicKey());
         ScriptPubkey vaultScript;
         String vaultScriptHash;
         try {
             vaultScript = ScriptPubkey.create(
                     VerificationKey.create(HexFormat.of().parseHex(
-                            ledgerWallet.publicKey())));
+                            operatorWallet.publicKey())));
             vaultScriptHash = vaultScript.getPolicyId();
         } catch (Exception failure) {
             throw new IOException("cannot create disposable demo vault identity", failure);
         }
-        publicIdentities.put("operatorAddress", ledgerWallet.address());
-        publicIdentities.put("operatorPublicKey", ledgerWallet.publicKey());
-        publicIdentities.put("payoutAddress", recipientWallet.address());
+        publicIdentities.put("operatorAddress", operatorWallet.address());
+        publicIdentities.put("operatorPublicKey", operatorWallet.publicKey());
+        publicIdentities.put("payoutAddress", bobPayoutWallet.address());
         publicIdentities.put("vaultAddress", AddressProvider.getEntAddress(
                 vaultScript, Networks.testnet()).toBech32());
         publicIdentities.put("vaultScriptHash", vaultScriptHash);

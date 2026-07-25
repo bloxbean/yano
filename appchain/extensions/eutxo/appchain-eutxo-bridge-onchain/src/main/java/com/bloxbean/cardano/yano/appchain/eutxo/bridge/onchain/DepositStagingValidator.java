@@ -30,10 +30,11 @@ public final class DepositStagingValidator {
             byte[] chainId,
             byte[] l2Owner,
             byte[] nonce,
-            byte[] stagingTransactionId,
-            BigInteger stagingIndex,
             byte[] depositorKeyHash,
-            BigInteger refundDeadline
+            BigInteger refundDeadline,
+            byte[] authorizationProfile,
+            BigInteger l2KeyEpoch,
+            byte[] l2PublicKey
     ) {
     }
 
@@ -43,12 +44,13 @@ public final class DepositStagingValidator {
     @Entrypoint
     public static boolean validate(
             StagingDatum datum,
-            BigInteger action,
+            PlutusData redeemer,
             ScriptContext context
     ) {
         if (!shapeValid(datum)) {
             return false;
         }
+        BigInteger action = decodeAction(redeemer);
         if (action.equals(ACCEPT)) {
             return acceptsToVaultBeforeDeadline(datum, context);
         }
@@ -56,6 +58,10 @@ public final class DepositStagingValidator {
             return refundsToDepositorAfterDeadline(datum, context);
         }
         return false;
+    }
+
+    static BigInteger decodeAction(PlutusData redeemer) {
+        return Builtins.unIData(redeemer);
     }
 
     private static boolean acceptsToVaultBeforeDeadline(
@@ -70,7 +76,11 @@ public final class DepositStagingValidator {
         TxOut accepted = outputs.head();
         return ValuesLib.lovelaceOf(accepted.value())
                 .compareTo(ownInputLovelace(context)) >= 0
-                && acceptedDatumMatches(accepted.datum(), datum);
+                && acceptedDatumMatches(
+                accepted.datum(),
+                datum,
+                ContextsLib.findOwnInput(context).get().outRef().txId().hash(),
+                ContextsLib.findOwnInput(context).get().outRef().index());
     }
 
     private static boolean refundsToDepositorAfterDeadline(
@@ -88,30 +98,47 @@ public final class DepositStagingValidator {
     }
 
     static boolean shapeValid(StagingDatum datum) {
-        return datum.version().equals(BigInteger.ONE)
+        boolean noBinding = datum.authorizationProfile().length == 0
+                && datum.l2KeyEpoch().signum() == 0
+                && datum.l2PublicKey().length == 0;
+        boolean binding = datum.authorizationProfile().length >= 1
+                && datum.authorizationProfile().length <= 63
+                && datum.l2KeyEpoch().signum() > 0
+                && datum.l2PublicKey().length == 32;
+        return datum.version().equals(BigInteger.TWO)
                 && datum.chainId().length >= 1 && datum.chainId().length <= 128
                 && datum.l2Owner().length >= 1 && datum.l2Owner().length <= 256
                 && datum.nonce().length == 32
-                && datum.stagingTransactionId().length == 32
-                && datum.stagingIndex().signum() >= 0
                 && datum.depositorKeyHash().length == 28
-                && datum.refundDeadline().signum() >= 0;
+                && datum.refundDeadline().signum() >= 0
+                && (noBinding || binding);
     }
 
     /**
      * The federation cannot change the intended L2 owner or replay another
      * staging output's datum while moving value into the accepted vault.
      */
-    static boolean acceptedDatumMatches(OutputDatum outputDatum, StagingDatum staging) {
+    static boolean acceptedDatumMatches(
+            OutputDatum outputDatum,
+            StagingDatum staging,
+            byte[] stagingTransactionId,
+            BigInteger stagingIndex
+    ) {
         if (outputDatum instanceof OutputDatum.OutputDatumInline inlineDatum) {
-            return acceptedInlineDatumMatches(inlineDatum.datum(), staging);
+            return acceptedInlineDatumMatches(
+                    inlineDatum.datum(),
+                    staging,
+                    stagingTransactionId,
+                    stagingIndex);
         }
         return false;
     }
 
     private static boolean acceptedInlineDatumMatches(
             PlutusData datum,
-            StagingDatum staging
+            StagingDatum staging,
+            byte[] stagingTransactionId,
+            BigInteger stagingIndex
     ) {
         PlutusData fields = Builtins.constrFields(datum);
         BigInteger version = Builtins.unIData(Builtins.headList(fields));
@@ -127,7 +154,17 @@ public final class DepositStagingValidator {
         BigInteger outputIndex = Builtins.unIData(Builtins.headList(f5));
         PlutusData f6 = Builtins.tailList(f5);
         BigInteger deadline = Builtins.unIData(Builtins.headList(f6));
-        PlutusData trailing = Builtins.tailList(f6);
+        PlutusData f7 = Builtins.tailList(f6);
+        byte[] depositor = Builtins.unBData(Builtins.headList(f7));
+        PlutusData f8 = Builtins.tailList(f7);
+        byte[] authorizationProfile =
+                Builtins.unBData(Builtins.headList(f8));
+        PlutusData f9 = Builtins.tailList(f8);
+        BigInteger l2KeyEpoch =
+                Builtins.unIData(Builtins.headList(f9));
+        PlutusData f10 = Builtins.tailList(f9);
+        byte[] l2PublicKey = Builtins.unBData(Builtins.headList(f10));
+        PlutusData trailing = Builtins.tailList(f10);
 
         return Builtins.constrTag(datum) == 0
                 && Builtins.nullList(trailing)
@@ -135,8 +172,16 @@ public final class DepositStagingValidator {
                 && Builtins.equalsByteString(chainId, staging.chainId())
                 && Builtins.equalsByteString(owner, staging.l2Owner())
                 && Builtins.equalsByteString(nonce, staging.nonce())
-                && Builtins.equalsByteString(transactionId, staging.stagingTransactionId())
-                && outputIndex.equals(staging.stagingIndex())
-                && deadline.equals(staging.refundDeadline());
+                && Builtins.equalsByteString(
+                transactionId, stagingTransactionId)
+                && outputIndex.equals(stagingIndex)
+                && deadline.equals(staging.refundDeadline())
+                && Builtins.equalsByteString(
+                depositor, staging.depositorKeyHash())
+                && Builtins.equalsByteString(
+                authorizationProfile, staging.authorizationProfile())
+                && l2KeyEpoch.equals(staging.l2KeyEpoch())
+                && Builtins.equalsByteString(
+                l2PublicKey, staging.l2PublicKey());
     }
 }

@@ -17,6 +17,7 @@ import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReceipt;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoRecord;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReserve;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoStateKeys;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoTransactionSummary;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoContract;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalClaim;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalCommitment;
@@ -29,6 +30,7 @@ import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 
@@ -109,6 +111,9 @@ public final class EutxoStateMachine implements AppStateMachine {
     public void apply(AppBlock block, AppStateWriter writer) {
         ensureGenesis(writer);
         int ordinal = 0;
+        long summarySequence = writer.get(EutxoStateKeys.summaryCount())
+                .map(EutxoStateMachine::longValue)
+                .orElse(0L);
         for (AppMessage message : block.messages()) {
             if (bridge.enabled() && bridge.topic().equals(message.getTopic())) {
                 importDeposit(acceptedDeposit(message), block.height(), writer);
@@ -133,6 +138,8 @@ public final class EutxoStateMachine implements AppStateMachine {
                             result.transactionId(), failure.code(), failure.getMessage());
                 }
             }
+            List<EutxoRecord> resolvedInputs = result.accepted()
+                    ? resolvedInputs(result, writer) : List.of();
             EutxoReceipt receipt = new EutxoReceipt(
                     result.accepted() ? EutxoReceipt.Status.ACCEPTED : EutxoReceipt.Status.REJECTED,
                     result.transactionId(),
@@ -147,8 +154,22 @@ public final class EutxoStateMachine implements AppStateMachine {
                 writer.put(EutxoStateKeys.transaction(result.transactionId()), receipt.encode());
             }
             writer.put(EutxoStateKeys.attempt(message.getMessageId()), receipt.encode());
+            EutxoTransactionSummary summary = summary(
+                    result, resolvedInputs, message,
+                    Math.addExact(summarySequence, 1),
+                    block.height(), ordinal, block.l1Slot());
+            summarySequence = summary.sequence();
+            byte[] summaryBytes = summary.encode();
+            writer.put(EutxoStateKeys.messageSummary(
+                    message.getMessageId()), summaryBytes);
+            if (!result.transactionId().isBlank()) {
+                writer.put(EutxoStateKeys.transactionSummary(
+                        result.transactionId()), summaryBytes);
+            }
+            writer.put(EutxoStateKeys.summaryIndex(summarySequence), summaryBytes);
             ordinal++;
         }
+        writer.put(EutxoStateKeys.summaryCount(), longBytes(summarySequence));
     }
 
     @Override
@@ -169,6 +190,37 @@ public final class EutxoStateMachine implements AppStateMachine {
                     yield EutxoQueryCodec.optionalReceipt(
                             state.get(EutxoStateKeys.transaction(transactionId))
                                     .map(EutxoReceipt::decode).orElse(null));
+                }
+                case EutxoQueryCodec.TRANSACTION_SUMMARY_PATH -> {
+                    String transactionId =
+                            EutxoQueryCodec.decodeTransactionRequest(params);
+                    yield state.get(EutxoStateKeys.transactionSummary(
+                            transactionId)).orElse(new byte[0]);
+                }
+                case EutxoQueryCodec.MESSAGE_SUMMARY_PATH -> {
+                    byte[] appMessageId =
+                            EutxoQueryCodec.decodeAttemptRequest(params);
+                    yield state.get(EutxoStateKeys.messageSummary(
+                            appMessageId)).orElse(new byte[0]);
+                }
+                case EutxoQueryCodec.TRANSACTION_SUMMARIES_PATH -> {
+                    EutxoQueryCodec.SummaryPage page =
+                            EutxoQueryCodec.decodeSummaryPageRequest(params);
+                    long count = state.get(EutxoStateKeys.summaryCount())
+                            .map(EutxoStateMachine::longValue)
+                            .orElse(0L);
+                    long cursor = page.before() == 0
+                            ? count : Math.min(count, page.before() - 1);
+                    List<EutxoTransactionSummary> summaries =
+                            new ArrayList<>();
+                    while (cursor > 0
+                            && summaries.size() < page.limit()) {
+                        state.get(EutxoStateKeys.summaryIndex(cursor))
+                                .map(EutxoTransactionSummary::decode)
+                                .ifPresent(summaries::add);
+                        cursor--;
+                    }
+                    yield EutxoTransactionSummary.encodeList(summaries);
                 }
                 case EutxoQueryCodec.ATTEMPT_PATH -> {
                     byte[] appMessageId = EutxoQueryCodec.decodeAttemptRequest(params);
@@ -224,6 +276,65 @@ public final class EutxoStateMachine implements AppStateMachine {
         }
         writer.put(EutxoStateKeys.genesis(),
                 genesis.transactionId().getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static List<EutxoRecord> resolvedInputs(
+            UtxoTransitionEngine.TransitionResult result,
+            AppStateReader state
+    ) {
+        return result.consumed().stream()
+                .map(outpoint -> state.get(EutxoStateKeys.utxo(outpoint))
+                        .map(EutxoRecord::decode)
+                        .orElseThrow(() -> new IllegalStateException(
+                                "validated EUTxO input disappeared before projection")))
+                .toList();
+    }
+
+    private static EutxoTransactionSummary summary(
+            UtxoTransitionEngine.TransitionResult result,
+            List<EutxoRecord> resolvedInputs,
+            AppMessage message,
+            long sequence,
+            long appHeight,
+            int ordinal,
+            long l1Slot
+    ) {
+        return new EutxoTransactionSummary(
+                result.transactionId(),
+                HexFormat.of().formatHex(message.getMessageId()),
+                sequence,
+                appHeight,
+                ordinal,
+                l1Slot,
+                result.accepted()
+                        ? EutxoTransactionSummary.Status.ACCEPTED
+                        : EutxoTransactionSummary.Status.REJECTED,
+                "cardano-vkey",
+                resolvedInputs.stream()
+                        .map(EutxoStateMachine::summaryEntry)
+                        .toList(),
+                result.created().stream()
+                        .map(EutxoStateMachine::summaryEntry)
+                        .toList(),
+                result.code());
+    }
+
+    private static EutxoTransactionSummary.Entry summaryEntry(
+            EutxoRecord record
+    ) {
+        try {
+            TransactionOutput output = TransactionOutput.deserialize(
+                    com.bloxbean.cardano.client.common.cbor.CborSerializationUtil
+                            .deserialize(record.outputCbor()));
+            BigInteger lovelace = output.getValue() == null
+                    || output.getValue().getCoin() == null
+                    ? BigInteger.ZERO : output.getValue().getCoin();
+            return new EutxoTransactionSummary.Entry(
+                    record.outpoint(), record.address(), lovelace);
+        } catch (Exception failure) {
+            throw new IllegalStateException(
+                    "validated EUTxO output cannot be projected", failure);
+        }
     }
 
     private void applyAccepted(
@@ -442,6 +553,10 @@ public final class EutxoStateMachine implements AppStateMachine {
                 .map(EutxoReserve::decode)
                 .orElseGet(() -> EutxoReserve.empty(EutxoReserve.LOVELACE))
                 .credit(lovelace);
+        if (claim.l2KeyBinding().present()) {
+            throw new IllegalStateException(
+                    "deposit L2 key binding requires a configured authorization profile");
+        }
         putRecord(writer, mirrored);
         writer.put(depositKey, expected.encode());
         writer.put(reserveKey, reserve.encode());

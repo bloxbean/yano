@@ -46,4 +46,18 @@ class AppChainStatusPageTest {
                 .body(Matchers.containsString("browser session · up to 1 hour"));
     }
 
+    @Test
+    void eutxoExplorerIsARealPackagedStaticPage() {
+        String page = given()
+                .when().get("/ui/app-chain/eutxo/index.html")
+                .then()
+                .statusCode(200)
+                .extract().asString();
+
+        assertTrue(page.contains("Yano · EUTxO Explorer"));
+        assertTrue(page.contains("data-console-route=\"eutxo\""));
+        assertTrue(page.contains("Finalized transactions"));
+        assertTrue(page.contains("Transaction or message ID"));
+    }
+
 }

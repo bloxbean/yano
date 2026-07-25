@@ -150,7 +150,9 @@ final class AcceptedVaultDepositObserver implements L1Observer {
                         CborSerializationUtil.serialize(mirrored.serialize()),
                         datum.depositNonce(),
                         datum.stagingOutpoint(),
-                        datum.refundDeadline());
+                        datum.refundDeadline(),
+                        datum.depositorKeyHash(),
+                        datum.l2KeyBinding());
             } catch (Exception failure) {
                 throw new IllegalArgumentException(
                         "accepted bridge deposit cannot be canonically encoded", failure);

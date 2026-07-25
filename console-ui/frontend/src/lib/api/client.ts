@@ -176,10 +176,12 @@ export class YanoApi {
   chainAnchorCommitment(chainId: string, signal?: AbortSignal) {
     return this.json<AnchorCommitment>(`${chainPath(chainId)}/anchor/commitment`, signal);
   }
-  domain(bundleId: string, path: string, parameters: Record<string, string>, signal?: AbortSignal) {
+  domain<T = Record<string, unknown>>(
+    bundleId: string, path: string, parameters: Record<string, string>, signal?: AbortSignal
+  ) {
     const query = new URLSearchParams(parameters).toString();
     const safePath = path.split('/').map(encodeURIComponent).join('/');
-    return this.json<Record<string, unknown>>(
+    return this.json<T>(
       `/plugins/${encodeURIComponent(bundleId)}/${safePath}${query ? `?${query}` : ''}`, signal);
   }
   chainStream(chainId: string, fromHeight: number, signal?: AbortSignal) {

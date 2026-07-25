@@ -9,6 +9,11 @@
       "kind": "app-state-machine",
       "name": "eutxo-ledger",
       "provider": "com.bloxbean.cardano.yano.appchain.eutxo.ledger.EutxoStateMachineProvider"
+    },
+    {
+      "kind": "domain-api",
+      "name": "com.bloxbean.cardano.yano.appchain.eutxo",
+      "provider": "com.bloxbean.cardano.yano.appchain.eutxo.ledger.EutxoDomainApiProvider"
     }
   ]
 }

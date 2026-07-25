@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.appchain.eutxo.contracts;
 
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Objects;
@@ -9,6 +10,12 @@ public final class EutxoQueryCodec {
     public static final String OUTPOINT_PATH = "utxos/outpoint";
     public static final String ADDRESS_PATH = "utxos/address";
     public static final String TRANSACTION_PATH = "transactions/receipt";
+    public static final String TRANSACTION_SUMMARY_PATH =
+            "transactions/summary";
+    public static final String MESSAGE_SUMMARY_PATH =
+            "transactions/summary-by-message";
+    public static final String TRANSACTION_SUMMARIES_PATH =
+            "transactions/summaries";
     public static final String ATTEMPT_PATH = "attempts/receipt";
     public static final String DEPOSIT_PATH = "bridge/deposits/record";
     public static final String RESERVE_PATH = "bridge/reserve";
@@ -55,6 +62,29 @@ public final class EutxoQueryCodec {
             throw new IllegalArgumentException("app message id must contain 32 bytes");
         }
         return appMessageId.clone();
+    }
+
+    public static byte[] summaryPageRequest(long before, int limit) {
+        if (before < 0 || limit < 1 || limit > 50) {
+            throw new IllegalArgumentException("invalid summary page request");
+        }
+        return ByteBuffer.allocate(Long.BYTES + Integer.BYTES)
+                .putLong(before).putInt(limit).array();
+    }
+
+    public static SummaryPage decodeSummaryPageRequest(byte[] bytes) {
+        Objects.requireNonNull(bytes, "bytes");
+        if (bytes.length != Long.BYTES + Integer.BYTES) {
+            throw new IllegalArgumentException("invalid summary page request");
+        }
+        ByteBuffer input = ByteBuffer.wrap(bytes);
+        long before = input.getLong();
+        int limit = input.getInt();
+        summaryPageRequest(before, limit);
+        return new SummaryPage(before, limit);
+    }
+
+    public record SummaryPage(long before, int limit) {
     }
 
     public static byte[] decodeAttemptRequest(byte[] bytes) {

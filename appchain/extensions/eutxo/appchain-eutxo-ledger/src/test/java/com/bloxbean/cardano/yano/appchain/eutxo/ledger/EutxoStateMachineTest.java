@@ -32,6 +32,7 @@ import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoRecord;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReserve;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoStateKeys;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoTransactionSummary;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalClaim;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalConfirmation;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalDatum;
@@ -105,6 +106,26 @@ class EutxoStateMachineTest {
                 .isEqualTo(EutxoReceipt.Status.REJECTED);
         assertThat(receipt(machine, state, conflictMessage).code())
                 .isEqualTo("INPUT_NOT_FOUND");
+        List<EutxoTransactionSummary> summaries =
+                EutxoTransactionSummary.decodeList(machine.query(
+                        EutxoQueryCodec.TRANSACTION_SUMMARIES_PATH,
+                        EutxoQueryCodec.summaryPageRequest(0, 10),
+                        state));
+        assertThat(summaries).hasSize(3);
+        assertThat(summaries.getFirst().messageId())
+                .isEqualTo(java.util.HexFormat.of().formatHex(
+                        conflictMessage.getMessageId()));
+        EutxoTransactionSummary accepted =
+                EutxoTransactionSummary.decode(machine.query(
+                        EutxoQueryCodec.TRANSACTION_SUMMARY_PATH,
+                        EutxoQueryCodec.transactionRequest(firstId),
+                        state));
+        assertThat(accepted.status())
+                .isEqualTo(EutxoTransactionSummary.Status.ACCEPTED);
+        assertThat(accepted.inputs()).hasSize(1);
+        assertThat(accepted.outputs()).extracting(
+                        entry -> entry.lovelace().longValueExact())
+                .containsExactly(60L, 40L);
     }
 
     @Test
@@ -324,7 +345,7 @@ class EutxoStateMachineTest {
                 com.bloxbean.cardano.client.common.cbor.CborSerializationUtil.serialize(
                         mirroredOutput.serialize());
         EutxoDepositClaim claim = new EutxoDepositClaim(
-                1,
+                EutxoDepositClaim.ABI_VERSION,
                 "eutxo-test",
                 new EutxoOutpoint("22".repeat(32), 1),
                 100,
@@ -545,7 +566,7 @@ class EutxoStateMachineTest {
                 com.bloxbean.cardano.client.common.cbor.CborSerializationUtil.serialize(
                         mirroredOutput.serialize());
         return new EutxoDepositClaim(
-                1,
+                EutxoDepositClaim.ABI_VERSION,
                 "eutxo-test",
                 new EutxoOutpoint("22".repeat(32), 1),
                 100,

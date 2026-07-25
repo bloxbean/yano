@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.eutxo.demo;
 
 import com.bloxbean.cardano.client.api.UtxoSupplier;
+import com.bloxbean.cardano.client.address.Address;
 import com.bloxbean.cardano.client.api.model.Amount;
 import com.bloxbean.cardano.client.api.model.Result;
 import com.bloxbean.cardano.client.api.model.Utxo;
@@ -24,6 +25,7 @@ import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
 import com.bloxbean.cardano.yano.appchain.eutxo.client.EutxoClient;
 import com.bloxbean.cardano.yano.appchain.eutxo.client.EutxoKeyWallet;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoDepositRecord;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2KeyBinding;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoOutpoint;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReceipt;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoSettlementDatum;
@@ -33,6 +35,7 @@ import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalDatum;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalRecord;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.io.IOException;
 import java.math.BigInteger;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -54,6 +57,8 @@ import java.util.Map;
 public final class EutxoBridgeDemoWorkflow {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final BigInteger DEPOSIT = BigInteger.valueOf(20_000_000);
+    private static final BigInteger BOB_DEPOSIT = BigInteger.valueOf(10_000_000);
+    private static final BigInteger PAYMENT = BigInteger.valueOf(10_000_000);
     private static final BigInteger WITHDRAWAL = BigInteger.valueOf(3_000_000);
     private static final long BRIDGE_EPOCH = 1;
     private final EutxoDemoWorkspace workspace;
@@ -62,12 +67,21 @@ public final class EutxoBridgeDemoWorkflow {
     private final QuickTxBuilder quickTx;
     private final UtxoSupplier utxos;
     private final EutxoClient eutxo;
+    private final Map<String, EutxoL2KeyBinding> keyBindings;
 
     public EutxoBridgeDemoWorkflow(
             EutxoDemoWorkspace workspace,
             EutxoDemoCluster cluster) {
+        this(workspace, cluster, Map.of());
+    }
+
+    public EutxoBridgeDemoWorkflow(
+            EutxoDemoWorkspace workspace,
+            EutxoDemoCluster cluster,
+            Map<String, EutxoL2KeyBinding> keyBindings) {
         this.workspace = workspace;
         this.cluster = cluster;
+        this.keyBindings = Map.copyOf(keyBindings);
         String api = cluster.apiBase() + "/";
         backend = new BFBackendService(api, "demo");
         quickTx = new QuickTxBuilder(backend);
@@ -77,30 +91,41 @@ public final class EutxoBridgeDemoWorkflow {
     }
 
     public EutxoDemoResult execute(String requested) throws Exception {
+        return execute(requested, 1);
+    }
+
+    public EutxoDemoResult execute(String requested, int count) throws Exception {
         requireReady();
-        if (List.of("fund", "deposit", "transfer", "settle", "withdraw",
-                "reconcile", "verify", "round-trip").contains(requested)) {
-            fund();
+        if (count < 1 || count > 16) {
+            throw new IllegalArgumentException("round-trip count must be between 1 and 16");
         }
-        if (List.of("deposit", "transfer", "settle", "withdraw",
-                "reconcile", "verify", "round-trip").contains(requested)) {
-            deposit();
-        }
-        if (List.of("transfer", "settle", "withdraw",
-                "reconcile", "verify", "round-trip").contains(requested)) {
-            transfer();
-        }
-        if (List.of("settle", "withdraw",
-                "reconcile", "verify", "round-trip").contains(requested)) {
-            settle();
-        }
-        if (List.of("reconcile", "verify", "round-trip").contains(requested)) {
-            verify();
+        for (int round = 1; round <= count; round++) {
+            if (List.of("fund", "deposit", "transfer", "settle", "withdraw",
+                    "reconcile", "verify", "round-trip").contains(requested)) {
+                fund(round);
+            }
+            if (List.of("deposit", "transfer", "settle", "withdraw",
+                    "reconcile", "verify", "round-trip").contains(requested)) {
+                deposit(round);
+            }
+            if (List.of("transfer", "settle", "withdraw",
+                    "reconcile", "verify", "round-trip").contains(requested)) {
+                transfer(round);
+            }
+            if (List.of("settle", "withdraw",
+                    "reconcile", "verify", "round-trip").contains(requested)) {
+                settle(round);
+            }
+            if (List.of("reconcile", "verify", "round-trip").contains(requested)) {
+                verify(round);
+            }
         }
         Map<String, Object> fields = reportFields();
         fields.put("trustBoundary",
                 "federated disposable-devnet native-script custody; no validity proof");
         fields.put("requestedOperation", requested);
+        fields.put("targetRounds", count);
+        fields.put("completedRounds", count);
         return EutxoDemoResult.of(
                 "round-trip".equals(requested)
                         ? "EUTXO_BRIDGE_DEMO_ROUND_TRIP_PASS"
@@ -108,78 +133,136 @@ public final class EutxoBridgeDemoWorkflow {
                 fields);
     }
 
-    private void fund() throws Exception {
-        EutxoDemoJournal.Entry entry = entry("bridge-fund-v1");
+    private void fund(int round) throws Exception {
+        String operationId = id("bridge-fund-v1", round);
+        EutxoDemoJournal.Entry entry = entry(operationId);
         if (atLeast(entry, EutxoDemoJournal.State.STABLE)) return;
-        String address = identity("operatorAddress");
-        HttpResponse<String> response = HttpClient.newHttpClient().send(
-                HttpRequest.newBuilder(URI.create(cluster.apiBase() + "/devnet/fund"))
-                        .header("Content-Type", "application/json")
-                        .POST(HttpRequest.BodyPublishers.ofString(
-                                JSON.writeValueAsString(Map.of(
-                                        "address", address, "ada", 100))))
-                        .build(), HttpResponse.BodyHandlers.ofString());
-        if (response.statusCode() != 200) {
-            throw new IllegalStateException("DEVNET_FUND_FAILED");
+        Map<String, String> transactions = new LinkedHashMap<>();
+        for (String user : List.of("alice", "bob", "operator")) {
+            String address = identity(user + "Address");
+            HttpResponse<String> response = HttpClient.newHttpClient().send(
+                    HttpRequest.newBuilder(URI.create(cluster.apiBase() + "/devnet/fund"))
+                            .header("Content-Type", "application/json")
+                            .POST(HttpRequest.BodyPublishers.ofString(
+                                    JSON.writeValueAsString(Map.of(
+                                            "address", address, "ada", 100))))
+                            .build(), HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 200) {
+                throw new IllegalStateException("DEVNET_FUND_FAILED");
+            }
+            String tx = JSON.readTree(response.body()).path("tx_hash").asText();
+            awaitUtxo(tx, address);
+            transactions.put(user + "TransactionId", tx);
         }
-        String tx = JSON.readTree(response.body()).path("tx_hash").asText();
-        awaitUtxo(tx, address);
-        advance("bridge-fund-v1", EutxoDemoJournal.State.STABLE,
-                Map.of("transactionId", tx));
+        advance(operationId, EutxoDemoJournal.State.STABLE,
+                transactions);
     }
 
-    private void deposit() throws Exception {
-        EutxoDemoJournal.Entry entry = entry("bridge-deposit-v1");
+    private void deposit(int round) throws Exception {
+        String operationId = id("bridge-deposit-v1", round);
+        EutxoDemoJournal.Entry entry = entry(operationId);
         if (atLeast(entry, EutxoDemoJournal.State.STABLE)) return;
-        EutxoKeyWallet operator = wallet("ledgerWallet");
-        ScriptPubkey vault = vaultScript(operator);
+        EutxoDepositRecord alice = depositUser(
+                "alice", DEPOSIT, round);
+        EutxoDepositRecord bob = depositUser(
+                "bob", BOB_DEPOSIT, round);
+        advance(operationId, EutxoDemoJournal.State.STABLE, Map.of(
+                "mirroredOutpoint", alice.mirroredOutpoint().toString(),
+                "aliceMirroredOutpoint", alice.mirroredOutpoint().toString(),
+                "bobMirroredOutpoint", bob.mirroredOutpoint().toString()));
+    }
+
+    private EutxoDepositRecord depositUser(
+            String user,
+            BigInteger lovelace,
+            int round) throws Exception {
+        String operationId = id("bridge-deposit-" + user + "-v2", round);
+        EutxoDemoJournal.Entry entry = entry(operationId);
+        if (atLeast(entry, EutxoDemoJournal.State.STABLE)) {
+            return eutxo.depositSnapshot(EutxoOutpoint.parse(
+                            required(entry, "acceptedOutpoint")))
+                    .value().orElseThrow(() -> new IllegalStateException(
+                            "DEPOSIT_RECORD_UNAVAILABLE"));
+        }
+        EutxoKeyWallet depositor = wallet(user + "Wallet");
         String vaultAddress = identity("vaultAddress");
         String stagingTx = submit(new Tx()
-                .payToAddress(operator.address(), Amount.lovelace(DEPOSIT))
-                .from(operator.address()), operator);
-        Utxo staged = awaitUtxo(stagingTx, operator.address());
+                .payToAddress(depositor.address(), Amount.lovelace(lovelace))
+                .from(depositor.address()), depositor);
+        Utxo staged = awaitUtxo(stagingTx, depositor.address());
         EutxoOutpoint staging = outpoint(staged);
         EutxoVaultDatum datum = new EutxoVaultDatum(
                 EutxoVaultDatum.ABI_VERSION,
                 workspace.manifest().chainId(),
-                operator.address(),
-                HexFormat.of().parseHex("ab".repeat(32)),
+                depositor.address(),
+                nonce("deposit-" + user, round),
                 staging,
-                10_000_000L);
+                10_000_000L,
+                paymentCredential(depositor.address()),
+                keyBindings.getOrDefault(user, EutxoL2KeyBinding.none()));
         String acceptedTx = submit(new Tx()
                 .collectFrom(List.of(staged))
-                .payToContract(vaultAddress, Amount.lovelace(DEPOSIT),
+                .payToContract(vaultAddress, Amount.lovelace(lovelace),
                         PlutusData.deserialize(datum.encode()))
-                .from(operator.address()), operator);
+                .from(depositor.address()), depositor);
         Utxo accepted = awaitUtxo(acceptedTx, vaultAddress);
         EutxoOutpoint acceptedOutpoint = outpoint(accepted);
         EutxoDepositRecord mirrored = awaitDeposit(acceptedOutpoint);
-        advance("bridge-deposit-v1", EutxoDemoJournal.State.STABLE, Map.of(
+        advance(operationId, EutxoDemoJournal.State.STABLE, Map.of(
                 "stagingTransactionId", stagingTx,
                 "acceptedTransactionId", acceptedTx,
                 "acceptedOutpoint", acceptedOutpoint.toString(),
                 "mirroredOutpoint", mirrored.mirroredOutpoint().toString()));
+        return mirrored;
     }
 
-    private void transfer() throws Exception {
-        EutxoDemoJournal.Entry entry = entry("bridge-transfer-v1");
+    private void transfer(int round) throws Exception {
+        String operationId = id("bridge-transfer-v1", round);
+        EutxoDemoJournal.Entry entry = entry(operationId);
         if (atLeast(entry, EutxoDemoJournal.State.STABLE)) return;
         EutxoOutpoint input = EutxoOutpoint.parse(
-                required(entry("bridge-deposit-v1"), "mirroredOutpoint"));
-        EutxoKeyWallet operator = wallet("ledgerWallet");
+                required(entry(id("bridge-deposit-v1", round)), "mirroredOutpoint"));
+        EutxoKeyWallet alice = wallet("aliceWallet");
+        EutxoKeyWallet bob = wallet("bobWallet");
+        TransactionBody paymentBody = TransactionBody.builder()
+                .inputs(List.of(new TransactionInput(
+                        input.transactionId(), input.index())))
+                .outputs(List.of(
+                        TransactionOutput.builder()
+                                .address(alice.address())
+                                .value(Value.fromCoin(
+                                        DEPOSIT.subtract(PAYMENT))).build(),
+                        TransactionOutput.builder()
+                                .address(bob.address())
+                                .value(Value.fromCoin(PAYMENT)).build()))
+                .fee(BigInteger.ZERO)
+                .ttl(10_000_000L)
+                .networkId(com.bloxbean.cardano.client.spec.NetworkId.TESTNET)
+                .build();
+        Transaction paymentUnsigned = Transaction.builder()
+                .body(paymentBody).witnessSet(new TransactionWitnessSet())
+                .isValid(true).build();
+        byte[] paymentCbor = TransactionSigner.INSTANCE.sign(
+                paymentUnsigned, alice.signingKey()).serialize();
+        var paymentSubmission = eutxo.submit(paymentCbor);
+        String paymentTransactionId =
+                com.bloxbean.cardano.client.transaction.util.TransactionUtil
+                        .getTxHash(paymentCbor);
+        awaitReceipt(paymentTransactionId);
+        EutxoOutpoint bobPayment = new EutxoOutpoint(paymentTransactionId, 1);
         EutxoWithdrawalDatum datum = new EutxoWithdrawalDatum(
                 EutxoWithdrawalDatum.ABI_VERSION,
                 workspace.manifest().chainId(),
                 BRIDGE_EPOCH,
                 identity("payoutAddress"),
-                HexFormat.of().parseHex("cd".repeat(32)));
+                nonce("withdrawal", round));
         TransactionBody body = TransactionBody.builder()
                 .inputs(List.of(new TransactionInput(
-                        input.transactionId(), input.index())))
+                        bobPayment.transactionId(), bobPayment.index())))
                 .outputs(List.of(
                         TransactionOutput.builder()
-                                .address(operator.address())
-                                .value(Value.fromCoin(DEPOSIT.subtract(WITHDRAWAL)))
+                                .address(bob.address())
+                                .value(Value.fromCoin(PAYMENT.subtract(WITHDRAWAL)))
                                 .build(),
                         TransactionOutput.builder()
                                 .address(identity("payoutAddress"))
@@ -195,31 +278,35 @@ public final class EutxoBridgeDemoWorkflow {
                 .witnessSet(new TransactionWitnessSet())
                 .isValid(true).build();
         Transaction signed = TransactionSigner.INSTANCE.sign(
-                unsigned, operator.signingKey());
+                unsigned, bob.signingKey());
         byte[] cbor = signed.serialize();
         Path artifact = workspace.root().resolve(
-                "artifacts/l2/bridge-withdrawal.cbor");
-        Files.write(artifact, cbor, StandardOpenOption.CREATE_NEW);
+                artifact("artifacts/l2/bridge-withdrawal", round, ".cbor"));
+        writeArtifact(artifact, cbor);
         var submitted = eutxo.submit(cbor);
         EutxoReceipt receipt = awaitReceipt(
                 com.bloxbean.cardano.client.transaction.util.TransactionUtil
                         .getTxHash(cbor));
-        EutxoWithdrawalClaim claim = awaitClaim(receipt);
-        advance("bridge-transfer-v1", EutxoDemoJournal.State.STABLE, Map.of(
+        EutxoWithdrawalClaim claim = awaitClaim(receipt, round);
+        advance(operationId, EutxoDemoJournal.State.STABLE, Map.of(
+                "paymentMessageId", paymentSubmission.messageId(),
+                "paymentTransactionId", paymentTransactionId,
                 "messageId", submitted.messageId(),
                 "transactionId", claim.withdrawalOutpoint().transactionId(),
                 "claimId", claim.claimId(),
-                "artifact", "artifacts/l2/bridge-withdrawal.cbor"));
+                "artifact", artifact("artifacts/l2/bridge-withdrawal",
+                        round, ".cbor")));
     }
 
-    private void settle() throws Exception {
-        EutxoDemoJournal.Entry entry = entry("bridge-settle-v1");
+    private void settle(int round) throws Exception {
+        String operationId = id("bridge-settle-v1", round);
+        EutxoDemoJournal.Entry entry = entry(operationId);
         if (atLeast(entry, EutxoDemoJournal.State.STABLE)) return;
-        String claimId = required(entry("bridge-transfer-v1"), "claimId");
+        String claimId = required(entry(id("bridge-transfer-v1", round)), "claimId");
         EutxoWithdrawalClaim claim = eutxo.withdrawalSnapshot(claimId).value()
                 .orElseThrow(() -> new IllegalStateException(
                         "WITHDRAWAL_CLAIM_UNAVAILABLE")).claim();
-        EutxoKeyWallet operator = wallet("ledgerWallet");
+        EutxoKeyWallet operator = wallet("operatorWallet");
         ScriptPubkey vault = vaultScript(operator);
         Utxo vaultInput = utxos.getAll(identity("vaultAddress")).stream()
                 .filter(value -> lovelace(value).compareTo(WITHDRAWAL) > 0)
@@ -244,14 +331,18 @@ public final class EutxoBridgeDemoWorkflow {
                 .from(operator.address()), operator);
         awaitUtxo(tx, identity("payoutAddress"));
         EutxoWithdrawalRecord confirmed = awaitWithdrawal(claimId);
-        advance("bridge-settle-v1", EutxoDemoJournal.State.STABLE, Map.of(
+        advance(operationId, EutxoDemoJournal.State.STABLE, Map.of(
                 "transactionId", tx,
                 "claimId", confirmed.claim().claimId(),
                 "status", confirmed.status().name()));
     }
 
-    private void verify() throws Exception {
-        EutxoDemoJournal.Entry settled = entry("bridge-settle-v1");
+    private void verify(int round) throws Exception {
+        String operationId = id("bridge-verify-v1", round);
+        if (atLeast(entry(operationId), EutxoDemoJournal.State.VERIFIED)) {
+            return;
+        }
+        EutxoDemoJournal.Entry settled = entry(id("bridge-settle-v1", round));
         if (!atLeast(settled, EutxoDemoJournal.State.STABLE)) {
             throw new IllegalStateException("BRIDGE_ROUND_TRIP_INCOMPLETE");
         }
@@ -262,12 +353,12 @@ public final class EutxoBridgeDemoWorkflow {
         if (record.status() != EutxoWithdrawalRecord.Status.CONFIRMED) {
             throw new IllegalStateException("WITHDRAWAL_NOT_CONFIRMED");
         }
-        advance("bridge-verify-v1", EutxoDemoJournal.State.VERIFIED, Map.of(
+        advance(operationId, EutxoDemoJournal.State.VERIFIED, Map.of(
                 "claimId", record.claim().claimId(),
                 "status", record.status().name()));
     }
 
-    private EutxoWithdrawalClaim awaitClaim(EutxoReceipt receipt)
+    private EutxoWithdrawalClaim awaitClaim(EutxoReceipt receipt, int round)
             throws InterruptedException {
         EutxoWithdrawalClaim expected = new EutxoWithdrawalClaim(
                 EutxoWithdrawalClaim.ABI_VERSION,
@@ -276,8 +367,8 @@ public final class EutxoBridgeDemoWorkflow {
                 new EutxoOutpoint(receipt.transactionId(), 1),
                 identity("payoutAddress"),
                 WITHDRAWAL,
-                HexFormat.of().parseHex("cd".repeat(32)),
-                0,
+                nonce("withdrawal", round),
+                round - 1L,
                 receipt.appHeight());
         for (int i = 0; i < 120; i++) {
             try {
@@ -458,6 +549,37 @@ public final class EutxoBridgeDemoWorkflow {
         return value;
     }
 
+    private String id(String base, int round) {
+        return round == 1 ? base : base + "-r" + round;
+    }
+
+    private String artifact(String base, int round, String suffix) {
+        return round == 1 ? base + suffix : base + "-r" + round + suffix;
+    }
+
+    private byte[] nonce(String purpose, int round) {
+        try {
+            return java.security.MessageDigest.getInstance("SHA-256").digest(
+                    ("yano-eutxo-demo\n" + workspace.manifest().chainId()
+                            + "\n" + purpose + "\n" + round)
+                            .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
+    }
+
+    private void writeArtifact(Path path, byte[] bytes) throws IOException {
+        if (Files.exists(path)) {
+            if (!java.util.Arrays.equals(Files.readAllBytes(path), bytes)) {
+                throw new IllegalStateException(
+                        "retained demo artifact differs from the planned operation: "
+                                + workspace.root().relativize(path));
+            }
+            return;
+        }
+        Files.write(path, bytes, StandardOpenOption.CREATE_NEW);
+    }
+
     private Map<String, Object> reportFields() throws Exception {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("scenario", "bridge");
@@ -476,5 +598,11 @@ public final class EutxoBridgeDemoWorkflow {
                 .filter(amount -> "lovelace".equals(amount.getUnit()))
                 .map(Amount::getQuantity)
                 .findFirst().orElse(BigInteger.ZERO);
+    }
+
+    private static byte[] paymentCredential(String address) {
+        return new Address(address).getPaymentCredentialHash()
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "demo user address has no payment credential"));
     }
 }

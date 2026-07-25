@@ -89,6 +89,17 @@ class EutxoDemoCliTest {
         assertThat(duplicate.err()).contains("must not already contain files");
     }
 
+    @Test
+    void countIsBoundedBeforeWorkspaceOrNetworkAccess() {
+        Invocation zero = invoke("round-trip", "--count", "0");
+        assertThat(zero.exit()).isEqualTo(EutxoDemoCli.EXIT_USAGE);
+        assertThat(zero.err()).contains("--count is outside its supported range");
+
+        Invocation excessive = invoke("round-trip", "--count", "17");
+        assertThat(excessive.exit()).isEqualTo(EutxoDemoCli.EXIT_USAGE);
+        assertThat(excessive.err()).contains("--count is outside its supported range");
+    }
+
     private Invocation invoke(String... arguments) {
         StringWriter out = new StringWriter();
         StringWriter err = new StringWriter();

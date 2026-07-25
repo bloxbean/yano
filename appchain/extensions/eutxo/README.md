@@ -68,6 +68,12 @@ together with the exact committed height and state root:
 - `attempts/receipt`; and
 - the exact profile digest.
 
+The bundled plugin also commits a bounded typed summary for every finalized
+transaction attempt and exposes a read-only domain API for recent
+transactions, transaction-ID lookup, and app-message-ID lookup. When an
+`eutxo-ledger` chain is selected, the stock console displays an **EUTxO
+Explorer** link; other state machines keep the unchanged generic console.
+
 Within one app block, transactions execute in message order against a
 read-your-writes view. A child can spend an earlier transaction's output. If
 transactions conflict, the first valid spend wins and later attempts receive
@@ -133,16 +139,22 @@ yano:
 The deposit flow is deliberately conservative:
 
 1. The depositor locks lovelace at the refundable staging contract with the
-   target chain, L2 address, nonce, staging outpoint, and refund deadline.
+   target chain, L2 address, nonce, depositor credential, and refund deadline.
 2. Before the deadline, the federation moves that exact intent into the
-   configured vault. The staging validator requires the vault inline datum to
-   preserve every credited field; it cannot redirect the L2 owner.
+   configured vault. The staging validator derives its own input outpoint and
+   requires the vault inline datum to preserve it together with every credited
+   field; it cannot redirect the L2 owner.
 3. Yano's stable L1 observer accepts only the configured vault address and
    script hash, inline canonical datum, ADA-only value, and one accepted vault
    output per transaction.
 4. The state machine binds the observation envelope to the exact accepted
    Cardano outpoint, deduplicates it, creates one mirrored EUTxO, and updates
    the committed reserve atomically.
+
+Datum ABI v2 can additionally bind the depositor's Cardano payment credential
+to a bounded L2 authorization profile, epoch, and public key. Direct EUTxO
+leaves this binding absent. The ZeroJ demo uses it to register Alice and Bob's
+Jubjub keys from their independently signed L1 deposits.
 
 Staging outputs are never observed or credited, so a still-refundable output
 cannot inflate L2 supply. A duplicate accepted outpoint is idempotent; the

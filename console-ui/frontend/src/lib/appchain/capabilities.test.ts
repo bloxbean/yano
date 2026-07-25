@@ -5,6 +5,7 @@ describe('app-chain capability discovery', () => {
   it('does not render optional panels from deployment assumptions', () => {
     const capabilities = discoverChainCapabilities({ chainId: 'orders', stateMachine: 'ordered-log' });
     expect(capabilities.effects).toBe(false);
+    expect(capabilities.eutxoExplorer).toBe(false);
     expect(capabilities.roleApprovals).toBe(false);
     expect(capabilities.evidenceBundles).toBe(true);
   });
@@ -16,5 +17,14 @@ describe('app-chain capability discovery', () => {
     expect(capabilities.effects).toBe(true);
     expect(capabilities.roleDomainBundle).toContain('role-workflow');
     expect(capabilities.sources).toContain('plugin-catalog:com.bloxbean.cardano.yano.appchain.role-workflow');
+  });
+
+  it('gates the stock EUTxO explorer on the state-machine identity', () => {
+    expect(discoverChainCapabilities({
+      chainId: 'payments', stateMachine: 'eutxo-ledger'
+    }).eutxoExplorer).toBe(true);
+    expect(discoverChainCapabilities({
+      chainId: 'payments', stateMachine: 'custom-eutxo'
+    }).eutxoExplorer).toBe(false);
   });
 });
