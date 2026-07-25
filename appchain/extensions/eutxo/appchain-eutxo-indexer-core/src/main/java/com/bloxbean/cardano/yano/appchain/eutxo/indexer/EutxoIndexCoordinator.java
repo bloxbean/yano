@@ -34,6 +34,7 @@ public final class EutxoIndexCoordinator implements AutoCloseable {
     private final AtomicBoolean scheduled = new AtomicBoolean();
     private volatile AutoCloseable subscription;
     private volatile Throwable failure;
+    private volatile String bridgeDiagnostic = "";
     private volatile boolean closed;
 
     public EutxoIndexCoordinator(
@@ -98,7 +99,8 @@ public final class EutxoIndexCoordinator implements AutoCloseable {
                 ? IndexHealth.Status.READY
                 : IndexHealth.Status.CATCHING_UP;
         return new IndexHealth(
-                status, checkpoint, finalized, lag, "");
+                status, checkpoint, finalized, lag,
+                bridgeDiagnostic);
     }
 
     public void catchUpNow() {
@@ -172,6 +174,8 @@ public final class EutxoIndexCoordinator implements AutoCloseable {
     }
 
     private CanonicalRecords canonicalRecords() {
+        bridgeDiagnostic = EutxoQueryCodec.decodeBridgeHalt(query(
+                EutxoQueryCodec.BRIDGE_HALT_PATH, new byte[0]));
         List<SequencedDeposit> deposits = deposits();
         List<EutxoWithdrawalRecord> withdrawals = withdrawals();
         return new CanonicalRecords(deposits, withdrawals);

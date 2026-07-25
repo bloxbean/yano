@@ -11,8 +11,10 @@ import java.math.BigInteger;
 import java.util.List;
 
 public final class EutxoIndexFixtures {
-    public static final String ALICE = "addr_test1_alice";
-    public static final String BOB = "addr_test1_bob";
+    public static final String ALICE =
+            "addr_test1wzn5ee2qaqvly3hx7e0nk3vhm240n5muq3plhjcnvx9ppjgf62u6a";
+    public static final String BOB =
+            "addr_test1wzn5ee2qaqvly3hx7e0nk3vhm240n5muq3plhjcnvx9ppjgf62u6b";
 
     private EutxoIndexFixtures() {
     }

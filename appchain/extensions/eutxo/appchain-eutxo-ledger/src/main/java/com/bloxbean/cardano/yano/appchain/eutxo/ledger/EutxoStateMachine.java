@@ -316,6 +316,15 @@ public final class EutxoStateMachine implements AppStateMachine {
                             state.get(EutxoStateKeys.reserve(assetId))
                                     .map(EutxoReserve::decode).orElse(null));
                 }
+                case EutxoQueryCodec.BRIDGE_HALT_PATH -> {
+                    requireEmptyQuery(params);
+                    yield EutxoQueryCodec.bridgeHalt(
+                            state.get(EutxoStateKeys.bridgeHalt())
+                                    .map(bytes -> new String(
+                                            bytes,
+                                            StandardCharsets.US_ASCII))
+                                    .orElse(""));
+                }
                 case EutxoQueryCodec.WITHDRAWAL_PATH -> {
                     String claimId = EutxoQueryCodec.decodeWithdrawalRequest(params);
                     yield EutxoQueryCodec.optionalWithdrawalRecord(

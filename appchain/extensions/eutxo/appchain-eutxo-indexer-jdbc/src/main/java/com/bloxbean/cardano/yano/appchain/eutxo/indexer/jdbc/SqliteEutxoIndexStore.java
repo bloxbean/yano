@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.eutxo.indexer.jdbc;
 
+import com.bloxbean.cardano.client.common.cbor.CborSerializationUtil;
+import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoDepositRecord;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoTransactionSummary;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalRecord;
@@ -12,11 +14,11 @@ import com.bloxbean.cardano.yano.appchain.eutxo.indexer.IndexCheckpoint;
 import com.bloxbean.cardano.yano.appchain.eutxo.indexer.IndexCoverage;
 import com.bloxbean.cardano.yano.appchain.eutxo.indexer.IndexIdentity;
 import com.bloxbean.cardano.yano.appchain.eutxo.indexer.SourcePoint;
-import com.bloxbean.cardano.yano.appchain.eutxo.indexer.memory.InMemoryEutxoIndexStore;
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.output.MigrateResult;
 
 import java.io.IOException;
+import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -28,12 +30,17 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /**
- * Single-writer SQLite projection journal. Public reads use the same
- * storage-neutral model as every future backend.
+ * Single-writer SQLite event journal and relational read projection.
+ *
+ * <p>The journal is the disposable database's rebuild source. Bounded public
+ * reads execute against rollback-safe relational tables rather than replaying
+ * the complete history into heap.</p>
  */
 public final class SqliteEutxoIndexStore implements EutxoIndexStore {
     public static final String DEFAULT_FILE = "eutxo-lifecycle.db";
@@ -44,24 +51,22 @@ public final class SqliteEutxoIndexStore implements EutxoIndexStore {
     private final EutxoIndexStoreContext context;
     private final String url;
     private final Connection connection;
-    private InMemoryEutxoIndexStore projection;
     private boolean closed;
 
     private SqliteEutxoIndexStore(
             EutxoIndexStoreContext context,
             String url,
-            Connection connection,
-            InMemoryEutxoIndexStore projection
+            Connection connection
     ) {
         this.context = context;
         this.url = url;
         this.connection = connection;
-        this.projection = projection;
     }
 
     public static SqliteEutxoIndexStore open(EutxoIndexStoreContext context) {
         Objects.requireNonNull(context, "context");
         String url = resolveUrl(context);
+        Connection connection = null;
         try {
             Class.forName("org.sqlite.JDBC");
             Files.createDirectories(context.dataDirectory());
@@ -73,17 +78,21 @@ public final class SqliteEutxoIndexStore implements EutxoIndexStore {
                 throw new IllegalStateException("Flyway migration did not succeed");
             }
             flyway.validate();
-            Connection connection = DriverManager.getConnection(url);
+            connection = DriverManager.getConnection(url);
             configure(connection);
+            verifyIntegrity(connection);
             bindIdentity(connection, context.identity());
+            recoverProjection(connection);
             writeMarker(context);
-            InMemoryEutxoIndexStore projection = replay(
-                    connection, context.identity());
             return new SqliteEutxoIndexStore(
-                    context, url, connection, projection);
+                    context, url, connection);
         } catch (SQLException | IOException | ClassNotFoundException failure) {
+            closeQuietly(connection);
             throw new IllegalStateException(
                     "cannot open EUTxO SQLite index", failure);
+        } catch (RuntimeException failure) {
+            closeQuietly(connection);
+            throw failure;
         }
     }
 
@@ -111,14 +120,27 @@ public final class SqliteEutxoIndexStore implements EutxoIndexStore {
     @Override
     public synchronized EutxoIndexWrite begin(SourcePoint source) {
         requireOpen();
-        EutxoIndexWrite projectionWrite = projection.begin(source);
+        Objects.requireNonNull(source, "source");
+        IndexCheckpoint current = readCheckpoint(
+                connection, context.identity());
         boolean duplicate = source.appHeight()
-                <= projection.checkpoint().source().appHeight();
+                <= current.source().appHeight();
+        if (duplicate) {
+            requireExactSource(source);
+        } else {
+            long expected = Math.addExact(
+                    current.source().appHeight(), 1);
+            if (source.appHeight() != expected) {
+                throw new IllegalStateException(
+                        "source block gap: expected " + expected
+                                + " but received "
+                                + source.appHeight());
+            }
+        }
         try {
             connection.setAutoCommit(false);
-            return new Write(source, projectionWrite, duplicate);
+            return new Write(source, duplicate);
         } catch (SQLException failure) {
-            projectionWrite.abort();
             throw sql("cannot begin index block", failure);
         }
     }
@@ -126,7 +148,7 @@ public final class SqliteEutxoIndexStore implements EutxoIndexStore {
     @Override
     public synchronized IndexCheckpoint checkpoint() {
         requireOpen();
-        return projection.checkpoint();
+        return readCheckpoint(connection, context.identity());
     }
 
     @Override
@@ -140,10 +162,9 @@ public final class SqliteEutxoIndexStore implements EutxoIndexStore {
                 statement.setLong(1, source.appHeight());
                 statement.executeUpdate();
             }
+            updateProjectedHeight(source.appHeight());
             connection.commit();
             connection.setAutoCommit(true);
-            projection.close();
-            projection = replay(connection, identity());
         } catch (SQLException failure) {
             rollbackQuietly();
             throw sql("cannot rollback index", failure);
@@ -153,7 +174,8 @@ public final class SqliteEutxoIndexStore implements EutxoIndexStore {
     @Override
     public synchronized EutxoIndexReader reader() {
         requireOpen();
-        return projection.reader();
+        return new SqliteEutxoIndexReader(
+                this, connection, this::checkpoint);
     }
 
     @Override
@@ -162,7 +184,6 @@ public final class SqliteEutxoIndexStore implements EutxoIndexStore {
             return;
         }
         closed = true;
-        projection.close();
         try {
             connection.close();
         } catch (SQLException failure) {
@@ -176,62 +197,70 @@ public final class SqliteEutxoIndexStore implements EutxoIndexStore {
 
     private final class Write implements EutxoIndexWrite {
         private final SourcePoint source;
-        private final EutxoIndexWrite projectionWrite;
         private final boolean duplicate;
         private final List<EutxoIndexEvent> events = new ArrayList<>();
         private boolean finished;
 
         private Write(
                 SourcePoint source,
-                EutxoIndexWrite projectionWrite,
                 boolean duplicate
         ) {
             this.source = source;
-            this.projectionWrite = projectionWrite;
             this.duplicate = duplicate;
         }
 
         @Override
         public void apply(EutxoIndexEvent event) {
             requireActive();
-            projectionWrite.apply(event);
             if (!duplicate) {
-                events.add(event);
+                events.add(Objects.requireNonNull(event, "event"));
             }
         }
 
         @Override
         public void commit(IndexCheckpoint checkpoint) {
             requireActive();
-            try {
-                if (!duplicate) {
-                    insertBlock(checkpoint);
-                    for (int ordinal = 0; ordinal < events.size(); ordinal++) {
-                        insertEvent(source.appHeight(), ordinal, events.get(ordinal));
+            synchronized (SqliteEutxoIndexStore.this) {
+                try {
+                    if (duplicate) {
+                        if (!checkpoint.equals(
+                                SqliteEutxoIndexStore.this.checkpoint())) {
+                            throw new IllegalStateException(
+                                    "duplicate replay checkpoint differs");
+                        }
+                    } else {
+                        insertBlock(checkpoint);
+                        for (int ordinal = 0;
+                             ordinal < events.size();
+                             ordinal++) {
+                            insertEvent(
+                                    source.appHeight(), ordinal,
+                                    events.get(ordinal));
+                        }
+                        updateProjectedHeight(source.appHeight());
                     }
+                    connection.commit();
+                    connection.setAutoCommit(true);
+                    finished = true;
+                } catch (SQLException | RuntimeException failure) {
+                    rollbackQuietly();
+                    finished = true;
+                    throw failure instanceof SQLException sqlFailure
+                            ? sql("cannot commit index block", sqlFailure)
+                            : (RuntimeException) failure;
                 }
-                connection.commit();
-                connection.setAutoCommit(true);
-                projectionWrite.commit(checkpoint);
-                finished = true;
-            } catch (SQLException | RuntimeException failure) {
-                rollbackQuietly();
-                projectionWrite.abort();
-                finished = true;
-                throw failure instanceof SQLException sqlFailure
-                        ? sql("cannot commit index block", sqlFailure)
-                        : (RuntimeException) failure;
             }
         }
 
         @Override
         public void abort() {
-            if (finished) {
-                return;
+            synchronized (SqliteEutxoIndexStore.this) {
+                if (finished) {
+                    return;
+                }
+                rollbackQuietly();
+                finished = true;
             }
-            rollbackQuietly();
-            projectionWrite.abort();
-            finished = true;
         }
 
         private void insertBlock(IndexCheckpoint checkpoint)
@@ -278,6 +307,9 @@ public final class SqliteEutxoIndexStore implements EutxoIndexStore {
                 statement.setBytes(6, encoded.payload());
                 statement.executeUpdate();
             }
+            projectEvent(
+                    connection, appHeight, ordinal,
+                    event, encoded.payload());
         }
 
         private void requireActive() {
@@ -287,56 +319,267 @@ public final class SqliteEutxoIndexStore implements EutxoIndexStore {
         }
     }
 
-    private static InMemoryEutxoIndexStore replay(
-            Connection connection,
-            IndexIdentity identity
-    ) throws SQLException {
-        InMemoryEutxoIndexStore store = new InMemoryEutxoIndexStore(identity);
-        try (PreparedStatement blocks = connection.prepareStatement(
-                "SELECT app_height, app_block_hash, l1_slot, l1_block_hash,"
-                        + " transaction_sequence, deposit_sequence,"
-                        + " withdrawal_sequence, coverage"
-                        + " FROM source_block ORDER BY app_height");
-             ResultSet rows = blocks.executeQuery()) {
+    private static void recoverProjection(Connection connection)
+            throws SQLException {
+        long sourceHeight = maximumHeight(
+                connection, "source_block");
+        long projectedHeight;
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT projected_height FROM projection_state"
+                        + " WHERE singleton_id = 1");
+             ResultSet rows = statement.executeQuery()) {
+            projectedHeight = rows.next() ? rows.getLong(1) : -1;
+        }
+        if (sourceHeight == projectedHeight) {
+            return;
+        }
+        connection.setAutoCommit(false);
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate(
+                    "DELETE FROM indexed_withdrawal_version");
+            statement.executeUpdate(
+                    "DELETE FROM indexed_address_activity");
+            statement.executeUpdate(
+                    "DELETE FROM indexed_transaction_input");
+            statement.executeUpdate(
+                    "DELETE FROM indexed_transaction_output");
+            statement.executeUpdate("DELETE FROM indexed_deposit");
+            statement.executeUpdate("DELETE FROM indexed_transaction");
+        }
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT app_height, event_ordinal, event_type,"
+                        + " event_sequence, canonical_payload"
+                        + " FROM projection_event_journal"
+                        + " ORDER BY app_height, event_ordinal");
+             ResultSet rows = statement.executeQuery()) {
             while (rows.next()) {
-                SourcePoint source = new SourcePoint(
-                        rows.getLong(1), rows.getString(2),
-                        rows.getLong(3), rows.getString(4));
-                IndexCheckpoint checkpoint = new IndexCheckpoint(
-                        identity.digest(), source,
-                        rows.getLong(5), rows.getLong(6), rows.getLong(7),
-                        IndexCoverage.valueOf(rows.getString(8)));
-                try (EutxoIndexWrite write = store.begin(source)) {
-                    for (EutxoIndexEvent event : events(connection, source.appHeight())) {
-                        write.apply(event);
-                    }
-                    write.commit(checkpoint);
-                }
+                EutxoIndexEvent event = decode(
+                        rows.getString(3),
+                        rows.getLong(4),
+                        rows.getBytes(5));
+                projectEvent(
+                        connection, rows.getLong(1),
+                        rows.getInt(2), event, rows.getBytes(5));
             }
         }
-        return store;
+        updateProjectedHeight(connection, sourceHeight);
+        connection.commit();
+        connection.setAutoCommit(true);
     }
 
-    private static List<EutxoIndexEvent> events(
+    private static long maximumHeight(
             Connection connection,
-            long appHeight
+            String table
     ) throws SQLException {
-        List<EutxoIndexEvent> events = new ArrayList<>();
         try (PreparedStatement statement = connection.prepareStatement(
-                "SELECT event_type, event_sequence, canonical_payload"
-                        + " FROM projection_event_journal"
-                        + " WHERE app_height = ? ORDER BY event_ordinal")) {
-            statement.setLong(1, appHeight);
-            try (ResultSet rows = statement.executeQuery()) {
-                while (rows.next()) {
-                    events.add(decode(
-                            rows.getString(1),
-                            rows.getLong(2),
-                            rows.getBytes(3)));
+                "SELECT COALESCE(MAX(app_height), 0) FROM " + table);
+             ResultSet rows = statement.executeQuery()) {
+            return rows.next() ? rows.getLong(1) : 0;
+        }
+    }
+
+    private static void projectEvent(
+            Connection connection,
+            long appHeight,
+            int ordinal,
+            EutxoIndexEvent event,
+            byte[] payload
+    ) throws SQLException {
+        if (event instanceof EutxoIndexEvent.Transaction transaction) {
+            projectTransaction(
+                    connection, appHeight, transaction, payload);
+        } else if (event instanceof EutxoIndexEvent.Deposit deposit) {
+            projectDeposit(
+                    connection, appHeight, deposit, payload);
+        } else if (event instanceof EutxoIndexEvent.Withdrawal withdrawal) {
+            projectWithdrawal(
+                    connection, appHeight, ordinal,
+                    withdrawal, payload);
+        }
+    }
+
+    private static void projectTransaction(
+            Connection connection,
+            long appHeight,
+            EutxoIndexEvent.Transaction event,
+            byte[] payload
+    ) throws SQLException {
+        EutxoTransactionSummary value = event.summary();
+        try (PreparedStatement statement = connection.prepareStatement(
+                "INSERT INTO indexed_transaction("
+                        + "event_sequence, transaction_id, message_id,"
+                        + " status, canonical_payload, app_height)"
+                        + " VALUES (?, ?, ?, ?, ?, ?)")) {
+            statement.setLong(1, event.sequence());
+            statement.setString(2, value.transactionId());
+            statement.setString(3, value.messageId());
+            statement.setString(4, value.status().name());
+            statement.setBytes(5, payload);
+            statement.setLong(6, appHeight);
+            statement.executeUpdate();
+        }
+        Set<String> addresses = new LinkedHashSet<>();
+        for (var input : value.inputs()) {
+            addresses.add(input.address());
+            if (value.status()
+                    == EutxoTransactionSummary.Status.ACCEPTED) {
+                try (PreparedStatement statement =
+                             connection.prepareStatement(
+                                     "INSERT INTO"
+                                             + " indexed_transaction_input("
+                                             + "transaction_id,"
+                                             + " input_outpoint,"
+                                             + " parent_transaction_id,"
+                                             + " address, lovelace,"
+                                             + " app_height)"
+                                             + " VALUES (?, ?, ?, ?, ?, ?)")) {
+                    statement.setString(1, value.transactionId());
+                    statement.setString(
+                            2, input.outpoint().toString());
+                    statement.setString(
+                            3, input.outpoint().transactionId());
+                    statement.setString(4, input.address());
+                    statement.setString(
+                            5, input.lovelace().toString());
+                    statement.setLong(6, appHeight);
+                    statement.executeUpdate();
                 }
             }
         }
-        return events;
+        for (var output : value.outputs()) {
+            addresses.add(output.address());
+            if (value.status()
+                    == EutxoTransactionSummary.Status.ACCEPTED) {
+                try (PreparedStatement statement =
+                             connection.prepareStatement(
+                                     "INSERT INTO"
+                                             + " indexed_transaction_output("
+                                             + "outpoint, transaction_id,"
+                                             + " address, lovelace,"
+                                             + " app_height)"
+                                             + " VALUES (?, ?, ?, ?, ?)")) {
+                    statement.setString(
+                            1, output.outpoint().toString());
+                    statement.setString(2, value.transactionId());
+                    statement.setString(3, output.address());
+                    statement.setString(
+                            4, output.lovelace().toString());
+                    statement.setLong(5, appHeight);
+                    statement.executeUpdate();
+                }
+            }
+        }
+        for (String address : addresses) {
+            try (PreparedStatement statement =
+                         connection.prepareStatement(
+                                 "INSERT INTO indexed_address_activity("
+                                         + "address, event_sequence,"
+                                         + " transaction_id, app_height)"
+                                         + " VALUES (?, ?, ?, ?)")) {
+                statement.setString(1, address);
+                statement.setLong(2, event.sequence());
+                statement.setString(3, value.transactionId());
+                statement.setLong(4, appHeight);
+                statement.executeUpdate();
+            }
+        }
+    }
+
+    private static void projectDeposit(
+            Connection connection,
+            long appHeight,
+            EutxoIndexEvent.Deposit event,
+            byte[] payload
+    ) throws SQLException {
+        EutxoDepositRecord value = event.record();
+        BigInteger lovelace = outputLovelace(
+                value.claim().mirroredOutputCbor());
+        try (PreparedStatement statement = connection.prepareStatement(
+                "INSERT INTO indexed_deposit("
+                        + "event_sequence, accepted_outpoint,"
+                        + " mirrored_outpoint, mirrored_transaction_id,"
+                        + " address, lovelace, canonical_payload,"
+                        + " app_height)"
+                        + " VALUES (?, ?, ?, ?, ?, ?, ?, ?)")) {
+            statement.setLong(1, event.sequence());
+            statement.setString(
+                    2, value.claim().acceptedOutpoint().toString());
+            statement.setString(
+                    3, value.mirroredOutpoint().toString());
+            statement.setString(
+                    4, value.mirroredOutpoint().transactionId());
+            statement.setString(5, value.claim().l2Address());
+            statement.setString(6, lovelace.toString());
+            statement.setBytes(7, payload);
+            statement.setLong(8, appHeight);
+            statement.executeUpdate();
+        }
+    }
+
+    private static void projectWithdrawal(
+            Connection connection,
+            long appHeight,
+            int ordinal,
+            EutxoIndexEvent.Withdrawal event,
+            byte[] payload
+    ) throws SQLException {
+        EutxoWithdrawalRecord value = event.record();
+        requireWithdrawalIdentity(connection, event.sequence(), value);
+        try (PreparedStatement statement = connection.prepareStatement(
+                "INSERT INTO indexed_withdrawal_version("
+                        + "app_height, event_ordinal, event_sequence,"
+                        + " claim_id, status, withdrawal_outpoint,"
+                        + " canonical_payload)"
+                        + " VALUES (?, ?, ?, ?, ?, ?, ?)")) {
+            statement.setLong(1, appHeight);
+            statement.setInt(2, ordinal);
+            statement.setLong(3, event.sequence());
+            statement.setString(4, value.claim().claimId());
+            statement.setString(5, value.status().name());
+            statement.setString(
+                    6, value.claim().withdrawalOutpoint().toString());
+            statement.setBytes(7, payload);
+            statement.executeUpdate();
+        }
+    }
+
+    private static void requireWithdrawalIdentity(
+            Connection connection,
+            long sequence,
+            EutxoWithdrawalRecord incoming
+    ) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT event_sequence, canonical_payload"
+                        + " FROM indexed_withdrawal_version"
+                        + " WHERE event_sequence = ? OR claim_id = ?"
+                        + " ORDER BY app_height DESC LIMIT 1")) {
+            statement.setLong(1, sequence);
+            statement.setString(2, incoming.claim().claimId());
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) {
+                    return;
+                }
+                EutxoWithdrawalRecord existing =
+                        EutxoWithdrawalRecord.decode(rows.getBytes(2));
+                if (rows.getLong(1) != sequence
+                        || !existing.claim().equals(incoming.claim())) {
+                    throw new IllegalStateException(
+                            "withdrawal identity maps to another claim");
+                }
+            }
+        }
+    }
+
+    private static BigInteger outputLovelace(byte[] outputCbor) {
+        try {
+            TransactionOutput output = TransactionOutput.deserialize(
+                    CborSerializationUtil.deserialize(outputCbor));
+            return output.getValue().getCoin();
+        } catch (Exception failure) {
+            throw new IllegalArgumentException(
+                    "committed deposit output cannot be decoded",
+                    failure);
+        }
     }
 
     private static EncodedEvent encode(EutxoIndexEvent event) {
@@ -375,12 +618,71 @@ public final class SqliteEutxoIndexStore implements EutxoIndexStore {
         };
     }
 
+    private static IndexCheckpoint readCheckpoint(
+            Connection connection,
+            IndexIdentity identity
+    ) {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT app_height, app_block_hash, l1_slot,"
+                        + " l1_block_hash, transaction_sequence,"
+                        + " deposit_sequence, withdrawal_sequence,"
+                        + " coverage FROM source_block"
+                        + " ORDER BY app_height DESC LIMIT 1");
+             ResultSet rows = statement.executeQuery()) {
+            if (!rows.next()) {
+                return IndexCheckpoint.origin(identity);
+            }
+            SourcePoint source = new SourcePoint(
+                    rows.getLong(1), rows.getString(2),
+                    rows.getLong(3), rows.getString(4));
+            return new IndexCheckpoint(
+                    identity.digest(), source,
+                    rows.getLong(5), rows.getLong(6),
+                    rows.getLong(7),
+                    IndexCoverage.valueOf(rows.getString(8)));
+        } catch (SQLException failure) {
+            throw sql("cannot read index checkpoint", failure);
+        }
+    }
+
+    private void updateProjectedHeight(long appHeight)
+            throws SQLException {
+        updateProjectedHeight(connection, appHeight);
+    }
+
+    private static void updateProjectedHeight(
+            Connection connection,
+            long appHeight
+    ) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "UPDATE projection_state SET projected_height = ?"
+                        + " WHERE singleton_id = 1")) {
+            statement.setLong(1, appHeight);
+            if (statement.executeUpdate() != 1) {
+                throw new IllegalStateException(
+                        "projection state row is unavailable");
+            }
+        }
+    }
+
     private static void configure(Connection connection) throws SQLException {
         try (Statement statement = connection.createStatement()) {
             statement.execute("PRAGMA journal_mode = WAL");
             statement.execute("PRAGMA synchronous = NORMAL");
             statement.execute("PRAGMA foreign_keys = ON");
             statement.execute("PRAGMA busy_timeout = 5000");
+        }
+    }
+
+    private static void verifyIntegrity(Connection connection)
+            throws SQLException {
+        try (Statement statement = connection.createStatement();
+             ResultSet rows = statement.executeQuery(
+                     "PRAGMA quick_check")) {
+            if (!rows.next() || !"ok".equals(rows.getString(1))) {
+                throw new IllegalStateException(
+                        "EUTxO index database failed SQLite integrity check");
+            }
         }
     }
 
@@ -480,7 +782,8 @@ public final class SqliteEutxoIndexStore implements EutxoIndexStore {
                         || source.l1Slot() != rows.getLong(2)
                         || !source.l1BlockHash().equals(rows.getString(3))) {
                     throw new IllegalStateException(
-                            "rollback source is not retained exactly");
+                            "source identity differs; rollback source"
+                                    + " is not retained exactly");
                 }
             }
         } catch (SQLException failure) {
@@ -494,6 +797,17 @@ public final class SqliteEutxoIndexStore implements EutxoIndexStore {
             connection.setAutoCommit(true);
         } catch (SQLException ignored) {
             // The original database failure remains the useful diagnostic.
+        }
+    }
+
+    private static void closeQuietly(Connection connection) {
+        if (connection == null) {
+            return;
+        }
+        try {
+            connection.close();
+        } catch (SQLException ignored) {
+            // Preserve the original startup failure.
         }
     }
 

@@ -30,3 +30,17 @@ publishing {
         }
     }
 }
+
+tasks.register('benchmarkEutxoIndexer', JavaExec) {
+    group = 'verification'
+    description = 'Runs the reproducible bounded SQLite EUTxO index benchmark'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.appchain.eutxo.indexer.jdbc.EutxoIndexBenchmark'
+    dependsOn testClasses
+    def report = layout.buildDirectory.file(
+            'reports/eutxo-indexer/benchmark.json')
+    args report.get().asFile.absolutePath,
+            providers.gradleProperty('eutxoBenchmarkOperations')
+                    .getOrElse('20000')
+    outputs.file(report)
+}

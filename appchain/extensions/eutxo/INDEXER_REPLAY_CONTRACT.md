@@ -14,7 +14,8 @@ stability.
 | Withdrawal claims and confirmations | `bridge/withdrawals/records` query | bridge epoch and settlement sequence | FULL |
 | Current UTxOs by address | `utxos/address` query | derived from committed state | FULL for point queries |
 | Validity transitions | transaction summary position plus `validity/transitions/finalized` | app height and ordinal | FULL when the selected profile emits validity transitions |
-| ZK proof and L1 publication lifecycle | prover/relay durable source and stable L1 records | provider-defined canonical position | PARTIAL until IX-M6 |
+| ZK proof and L1 publication lifecycle | provider-neutral prover/relay durable records and stable L1 records | provider-defined canonical position | FULL when the configured validity source is present and retained |
+| Bridge halt/reconciliation diagnostic | committed `bridge/halt` state | latest committed app height | FULL |
 
 The page cursors are exclusive. `before=0` starts at the newest committed
 record. Consumers read the matching count query first, derive the absolute

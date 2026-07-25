@@ -75,11 +75,21 @@ public final class EutxoIndexDomainApi implements DomainApi {
                 route.routeId().equals(request.routeId()))) {
             throw invalid();
         }
-        String chain = chain(request.queryParameters());
-        String operation = operation(request.routeId());
-        validateParameters(request.routeId(), request.queryParameters());
-        EutxoIndexRequest localRequest = localRequest(
-                request, chain, operation);
+        String chain;
+        String operation;
+        EutxoIndexRequest localRequest;
+        try {
+            chain = chain(request.queryParameters());
+            operation = operation(request.routeId());
+            validateParameters(
+                    request.routeId(), request.queryParameters());
+            localRequest = localRequest(
+                    request, chain, operation);
+        } catch (DomainApiException typed) {
+            throw typed;
+        } catch (IllegalArgumentException failure) {
+            throw invalid();
+        }
         LocalReadModelResult result = context.localReadModels().query(
                 EutxoLocalReadModel.MODEL_ID,
                 chain,
@@ -128,8 +138,11 @@ public final class EutxoIndexDomainApi implements DomainApi {
         int depth = integer(query, "depth", 2, 0, 6);
         long before = EutxoCursorCodec.decode(
                 chain, operation, single(query, "cursor", ""));
-        String address = request.pathParameters().getOrDefault(
-                "address", single(query, "address", ""));
+        String address = request.pathParameters().containsKey("address")
+                ? canonicalAddress(
+                request.pathParameters().get("address"), true)
+                : canonicalAddress(
+                single(query, "address", ""), false);
         String id = switch (request.routeId()) {
             case TRANSACTION -> canonicalHash(
                     request.pathParameters().get("transaction_id"));
@@ -286,6 +299,26 @@ public final class EutxoIndexDomainApi implements DomainApi {
             throw invalid();
         }
         return value;
+    }
+
+    private static String canonicalAddress(
+            String value,
+            boolean required
+    ) {
+        String normalized = Objects.requireNonNullElse(
+                value, "").trim();
+        if (normalized.isEmpty()) {
+            if (required) {
+                throw invalid();
+            }
+            return "";
+        }
+        if (normalized.length() > 256
+                || !normalized.matches(
+                "addr(_test)?1[0-9a-z]{8,240}")) {
+            throw invalid();
+        }
+        return normalized;
     }
 
     private static DomainApiRoute route(String id, String template) {

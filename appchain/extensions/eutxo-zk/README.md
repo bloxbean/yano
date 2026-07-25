@@ -17,6 +17,9 @@ verification. Use
 [DEVNET_WALKTHROUGH.md](DEVNET_WALKTHROUGH.md) for the step-by-step
 Cardano L1 deposit, appchain L2 transaction, proof, root settlement, and L1
 withdrawal flow.
+The optional provider-neutral validity lifecycle is projected by the common
+[EUTxO indexer](../eutxo/INDEXER_OPERATIONS.md); the indexer core has no ZeroJ
+dependency.
 
 Milestone notes:
 

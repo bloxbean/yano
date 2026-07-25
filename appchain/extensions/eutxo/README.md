@@ -3,6 +3,8 @@
 For the disposable three-scenario quick start, see
 [EUTxO demos](DEMO.md). It covers the virtual ledger, Cardano bridge, and
 optional ZeroJ b16 proof experience without JShell or manual YAML editing.
+For lifecycle API, SQLite, recovery, metrics, and support guidance, see the
+[EUTxO indexer runbook](INDEXER_OPERATIONS.md).
 
 This optional extension provides a deterministic, Cardano-shaped EUTxO state
 machine. Its first milestone is a **no-real-funds experimental ledger**. It is
@@ -69,10 +71,12 @@ together with the exact committed height and state root:
 - the exact profile digest.
 
 The bundled plugin also commits a bounded typed summary for every finalized
-transaction attempt and exposes a read-only domain API for recent
-transactions, transaction-ID lookup, and app-message-ID lookup. When an
-`eutxo-ledger` chain is selected, the stock console displays an **EUTxO
-Explorer** link; other state machines keep the unchanged generic console.
+transaction attempt. The optional node-local lifecycle indexer projects those
+summaries together with accounts, bridge records, and optional validity
+batches into bounded read APIs. When an `eutxo-ledger` chain is selected, the
+stock console displays an **EUTxO Explorer** link; other state machines keep
+the unchanged generic console. The index is derived and disposable. A stale,
+disabled, or failed index never changes app-chain execution.
 
 Within one app block, transactions execute in message order against a
 read-your-writes view. A child can spend an earlier transaction's output. If
@@ -88,6 +92,10 @@ transactions conflict, the first valid spend wins and later attempts receive
 - `appchain-eutxo-client` — typed wrapper over generic submit/query/proof APIs.
 - `appchain-eutxo-testkit` — deterministic wallets, transactions, and replay
   state for extension authors.
+- `appchain-eutxo-indexer-core` — storage-neutral projection, reader,
+  checkpoint, health, lineage, and store-conformance contracts.
+- `appchain-eutxo-indexer-jdbc` — Flyway-managed SQLite journal and relational
+  query projection.
 
 The ledger-only graph has no bridge, custody, ZeroJ, or Julc dependency.
 Scalus is supplied by Yano's version-pinned host runtime rather than copied

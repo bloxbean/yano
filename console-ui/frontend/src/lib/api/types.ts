@@ -310,6 +310,7 @@ export interface EutxoIndexStatus {
   coverage: 'NONE' | 'PARTIAL' | 'FULL';
   normalizedDigest: string;
   validityAvailable?: boolean;
+  diagnosticCode?: string;
 }
 
 export interface EutxoValidityBatch {

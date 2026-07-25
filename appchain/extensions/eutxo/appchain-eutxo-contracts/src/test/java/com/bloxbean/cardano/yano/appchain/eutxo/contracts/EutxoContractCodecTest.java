@@ -42,6 +42,13 @@ class EutxoContractCodecTest {
                 EutxoQueryCodec.optionalReceipt(null))).isNull();
         assertThat(EutxoQueryCodec.decodeCount(
                 EutxoQueryCodec.count(17))).isEqualTo(17);
+        assertThat(EutxoQueryCodec.decodeBridgeHalt(
+                EutxoQueryCodec.bridgeHalt(
+                        "DEEP_ROLLBACK_BELOW_CREDITED_DEPOSIT")))
+                .isEqualTo("DEEP_ROLLBACK_BELOW_CREDITED_DEPOSIT");
+        assertThatThrownBy(() -> EutxoQueryCodec.bridgeHalt(
+                "not canonical"))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
