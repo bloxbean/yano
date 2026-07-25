@@ -40,6 +40,8 @@ class EutxoContractCodecTest {
                 EutxoQueryCodec.optionalRecord(null))).isNull();
         assertThat(EutxoQueryCodec.decodeOptionalReceipt(
                 EutxoQueryCodec.optionalReceipt(null))).isNull();
+        assertThat(EutxoQueryCodec.decodeCount(
+                EutxoQueryCodec.count(17))).isEqualTo(17);
     }
 
     @Test
@@ -54,6 +56,13 @@ class EutxoContractCodecTest {
         assertThat(EutxoStateKeys.addressIndex("addr_test1x")).hasSizeLessThan(100);
         assertThat(EutxoStateKeys.totalWithdrawalCount(7))
                 .isNotEqualTo(EutxoStateKeys.totalWithdrawalCount(8));
+        assertThat(EutxoStateKeys.depositIndex(12))
+                .asString()
+                .endsWith("/00000000000000000012");
+        assertThat(EutxoStateKeys.withdrawalIndex(7, 12))
+                .asString()
+                .isEqualTo("eutxo/v1/bridge/7/withdrawal/index/"
+                        + "00000000000000000012");
         assertThatThrownBy(() -> EutxoOutpoint.parse("not-an-outpoint"))
                 .isInstanceOf(IllegalArgumentException.class);
     }
@@ -164,6 +173,9 @@ class EutxoContractCodecTest {
         EutxoDepositRecord record =
                 new EutxoDepositRecord(claim, claim.mirroredOutpoint(), 7);
         assertThat(EutxoDepositRecord.decode(record.encode())).isEqualTo(record);
+        assertThat(EutxoQueryCodec.decodeDepositRecords(
+                EutxoQueryCodec.depositRecords(List.of(record))))
+                .containsExactly(record);
 
         EutxoReserve reserve = EutxoReserve.empty(EutxoReserve.LOVELACE)
                 .credit(java.math.BigInteger.TEN);
@@ -226,6 +238,9 @@ class EutxoContractCodecTest {
         assertThat(EutxoWithdrawalClaim.decode(claim.encode())).isEqualTo(claim);
         EutxoWithdrawalRecord pending = EutxoWithdrawalRecord.pending(claim, 9);
         assertThat(EutxoWithdrawalRecord.decode(pending.encode())).isEqualTo(pending);
+        assertThat(EutxoQueryCodec.decodeWithdrawalRecords(
+                EutxoQueryCodec.withdrawalRecords(List.of(pending))))
+                .containsExactly(pending);
 
         EutxoWithdrawalConfirmation confirmation =
                 new EutxoWithdrawalConfirmation(

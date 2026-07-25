@@ -286,6 +286,30 @@ public final class EutxoStateMachine implements AppStateMachine {
                             state.get(EutxoStateKeys.deposit(outpoint))
                                     .map(EutxoDepositRecord::decode).orElse(null));
                 }
+                case EutxoQueryCodec.DEPOSITS_PATH -> {
+                    EutxoQueryCodec.LifecyclePage page =
+                            EutxoQueryCodec.decodeLifecyclePageRequest(params);
+                    long count = state.get(EutxoStateKeys.depositCount())
+                            .map(EutxoStateMachine::longValue)
+                            .orElse(0L);
+                    long cursor = page.before() == 0
+                            ? count : Math.min(count, page.before() - 1);
+                    List<EutxoDepositRecord> deposits = new ArrayList<>();
+                    while (cursor > 0 && deposits.size() < page.limit()) {
+                        state.get(EutxoStateKeys.depositIndex(cursor))
+                                .map(EutxoDepositRecord::decode)
+                                .ifPresent(deposits::add);
+                        cursor--;
+                    }
+                    yield EutxoQueryCodec.depositRecords(deposits);
+                }
+                case EutxoQueryCodec.DEPOSIT_COUNT_PATH -> {
+                    requireEmptyQuery(params);
+                    yield EutxoQueryCodec.count(
+                            state.get(EutxoStateKeys.depositCount())
+                                    .map(EutxoStateMachine::longValue)
+                                    .orElse(0L));
+                }
                 case EutxoQueryCodec.RESERVE_PATH -> {
                     String assetId = EutxoQueryCodec.decodeReserveRequest(params);
                     yield EutxoQueryCodec.optionalReserve(
@@ -297,6 +321,38 @@ public final class EutxoStateMachine implements AppStateMachine {
                     yield EutxoQueryCodec.optionalWithdrawalRecord(
                             state.get(EutxoStateKeys.withdrawal(claimId))
                                     .map(EutxoWithdrawalRecord::decode).orElse(null));
+                }
+                case EutxoQueryCodec.WITHDRAWALS_PATH -> {
+                    EutxoQueryCodec.LifecyclePage page =
+                            EutxoQueryCodec.decodeLifecyclePageRequest(params);
+                    long count = state.get(EutxoStateKeys.totalWithdrawalCount(
+                                    bridge.bridgeEpoch()))
+                            .map(EutxoStateMachine::longValue)
+                            .orElse(0L);
+                    long cursor = page.before() == 0
+                            ? count : Math.min(count, page.before() - 1);
+                    List<EutxoWithdrawalRecord> withdrawals =
+                            new ArrayList<>();
+                    while (cursor > 0 && withdrawals.size() < page.limit()) {
+                        state.get(EutxoStateKeys.withdrawalIndex(
+                                        bridge.bridgeEpoch(), cursor))
+                                .map(bytes -> new String(
+                                        bytes, StandardCharsets.US_ASCII))
+                                .flatMap(claimId -> state.get(
+                                        EutxoStateKeys.withdrawal(claimId)))
+                                .map(EutxoWithdrawalRecord::decode)
+                                .ifPresent(withdrawals::add);
+                        cursor--;
+                    }
+                    yield EutxoQueryCodec.withdrawalRecords(withdrawals);
+                }
+                case EutxoQueryCodec.WITHDRAWAL_COUNT_PATH -> {
+                    requireEmptyQuery(params);
+                    yield EutxoQueryCodec.count(
+                            state.get(EutxoStateKeys.totalWithdrawalCount(
+                                            bridge.bridgeEpoch()))
+                                    .map(EutxoStateMachine::longValue)
+                                    .orElse(0L));
                 }
                 case EutxoQueryCodec.VALIDITY_TRANSITION_PATH -> {
                     EutxoQueryCodec.Position position =
@@ -330,6 +386,13 @@ public final class EutxoStateMachine implements AppStateMachine {
             throw new AppQueryException(
                     AppQueryException.Code.INVALID_REQUEST,
                     "invalid EUTxO query parameters");
+        }
+    }
+
+    private static void requireEmptyQuery(byte[] params) {
+        if (params.length != 0) {
+            throw new IllegalArgumentException(
+                    "count query does not accept parameters");
         }
     }
 
@@ -527,10 +590,17 @@ public final class EutxoStateMachine implements AppStateMachine {
             putRecord(writer, record);
         }
         if (!withdrawalPlan.claims().isEmpty()) {
-            withdrawalPlan.claims().forEach(claim -> writer.put(
-                    EutxoStateKeys.withdrawal(claim.claimId()),
-                    EutxoWithdrawalRecord.pending(
-                            claim, claim.requestedHeight()).encode()));
+            withdrawalPlan.claims().forEach(claim -> {
+                writer.put(
+                        EutxoStateKeys.withdrawal(claim.claimId()),
+                        EutxoWithdrawalRecord.pending(
+                                claim, claim.requestedHeight()).encode());
+                writer.put(
+                        EutxoStateKeys.withdrawalIndex(
+                                claim.bridgeEpoch(),
+                                Math.addExact(claim.settlementSequence(), 1)),
+                        claim.claimId().getBytes(StandardCharsets.US_ASCII));
+            });
             withdrawalPlan.claims().forEach(claim -> writer.put(
                     EutxoStateKeys.withdrawalCommitment(claim.claimId()),
                     EutxoWithdrawalCommitment.fromClaim(claim).encode()));
@@ -722,6 +792,13 @@ public final class EutxoStateMachine implements AppStateMachine {
         importL2KeyBinding(claim, writer);
         putRecord(writer, mirrored);
         writer.put(depositKey, expected.encode());
+        long depositSequence = Math.addExact(
+                writer.get(EutxoStateKeys.depositCount())
+                        .map(EutxoStateMachine::longValue)
+                        .orElse(0L),
+                1);
+        writer.put(EutxoStateKeys.depositIndex(depositSequence), expected.encode());
+        writer.put(EutxoStateKeys.depositCount(), longBytes(depositSequence));
         writer.put(reserveKey, reserve.encode());
     }
 
