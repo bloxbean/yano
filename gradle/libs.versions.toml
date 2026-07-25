@@ -12,6 +12,8 @@ aws-crt = "0.47.3"
 # rule because its enforced platform otherwise selects 2.21.2.
 jackson = "2.21.4"
 smallrye-config = "3.16.0"
+flyway = "13.0.0"
+sqlite-jdbc = "3.53.2.1"
 
 [libraries]
 yaci-core = { module = "com.bloxbean.cardano:yaci-core", version.ref = "yaci" }
@@ -68,6 +70,8 @@ jackson-dataformat-cbor = { module = "com.fasterxml.jackson.dataformat:jackson-d
 jackson-dataformat-yaml = { module = "com.fasterxml.jackson.dataformat:jackson-dataformat-yaml", version.ref = "jackson" }
 smallrye-config-core = { module = "io.smallrye.config:smallrye-config-core", version.ref = "smallrye-config" }
 smallrye-config-yaml = { module = "io.smallrye.config:smallrye-config-source-yaml", version.ref = "smallrye-config" }
+flyway-core = { module = "org.flywaydb:flyway-core", version.ref = "flyway" }
+sqlite-jdbc = { module = "org.xerial:sqlite-jdbc", version.ref = "sqlite-jdbc" }
 kafka-clients = "org.apache.kafka:kafka-clients:4.3.1"
 snappy-java = "org.xerial.snappy:snappy-java:1.1.10.8"
 lz4-java = "at.yawk.lz4:lz4-java:1.10.2"
