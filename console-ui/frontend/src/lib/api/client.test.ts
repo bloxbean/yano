@@ -96,6 +96,26 @@ describe('Yano API client', () => {
     expect((fetchMock.mock.calls[0][1].headers as Headers).get('X-API-Key')).toBe('reader-key');
   });
 
+  it('routes lifecycle-index and lazy L1 enrichment through the reviewed client', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true, json: async () => ({ apiVersion: 'eutxo-index/v1' })
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const api = new YanoApi('/api/v1', 'reader-key');
+    await api.eutxoIndex('transactions', {
+      chain: 'payments/east', limit: '25', cursor: 'c1_safe'
+    });
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      '/api/v1/plugins/com.bloxbean.cardano.yano.appchain.eutxo.indexer/index/v1/transactions'
+      + '?chain=payments%2Feast&limit=25&cursor=c1_safe');
+    const id = 'ab'.repeat(32);
+    await api.l1Transaction(id);
+    await api.l1TransactionUtxos(id);
+    expect(fetchMock.mock.calls[1][0]).toBe(`/api/v1/txs/${id}`);
+    expect(fetchMock.mock.calls[2][0]).toBe(`/api/v1/txs/${id}/utxos`);
+    expect((fetchMock.mock.calls[2][1].headers as Headers).get('X-API-Key')).toBe('reader-key');
+  });
+
   it('turns browser network failures into an actionable standalone diagnostic', () => {
     expect(apiFailureMessage(new TypeError('Failed to fetch'), 'fallback')).toContain('CORS origin');
   });

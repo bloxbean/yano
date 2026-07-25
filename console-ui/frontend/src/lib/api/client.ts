@@ -1,7 +1,8 @@
 import type { AnchorCommitment, AppChainBlocks, AppChainMessage, AppChainStatus, ChainSummary,
   CommittedQueryResult,
   EffectPage, EffectStats, NodeConfig, NodePeers, NodeStatus, PluginBundleDetail, PluginBundlePage,
-  PluginOperationsSummary, ProofVerificationRequest, ProofVerificationResult, StateProofEnvelope,
+  L1Transaction, L1TransactionUtxos, PluginOperationsSummary, ProofVerificationRequest,
+  ProofVerificationResult, StateProofEnvelope,
   StorageStatus } from './types';
 
 const API_STORAGE_KEY = 'yano.console.api-base.v1';
@@ -183,6 +184,20 @@ export class YanoApi {
     const safePath = path.split('/').map(encodeURIComponent).join('/');
     return this.json<T>(
       `/plugins/${encodeURIComponent(bundleId)}/${safePath}${query ? `?${query}` : ''}`, signal);
+  }
+  eutxoIndex<T>(
+    path: string, parameters: Record<string, string>, signal?: AbortSignal
+  ) {
+    return this.domain<T>(
+      'com.bloxbean.cardano.yano.appchain.eutxo.indexer',
+      `index/v1/${path}`, parameters, signal);
+  }
+  l1Transaction(transactionId: string, signal?: AbortSignal) {
+    return this.json<L1Transaction>(`/txs/${encodeURIComponent(transactionId)}`, signal);
+  }
+  l1TransactionUtxos(transactionId: string, signal?: AbortSignal) {
+    return this.json<L1TransactionUtxos>(
+      `/txs/${encodeURIComponent(transactionId)}/utxos`, signal);
   }
   chainStream(chainId: string, fromHeight: number, signal?: AbortSignal) {
     return this.response(`${chainPath(chainId)}/stream?fromHeight=${Math.max(1, fromHeight)}`,
