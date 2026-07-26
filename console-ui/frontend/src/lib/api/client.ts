@@ -1,4 +1,4 @@
-import type { AnchorCommitment, AppChainBlocks, AppChainMessage, AppChainStatus, ChainSummary,
+import type { AnchorCommitment, AppChainBlockDetail, AppChainBlocks, AppChainMessage, AppChainStatus, ChainSummary,
   CommittedQueryResult,
   EffectPage, EffectStats, NodeConfig, NodePeers, NodeStatus, PluginBundleDetail, PluginBundlePage,
   L1Transaction, L1TransactionUtxos, PluginOperationsSummary, ProofVerificationRequest,
@@ -134,8 +134,13 @@ export class YanoApi {
   chainStatus(chainId: string, signal?: AbortSignal) {
     return this.json<AppChainStatus>(`${chainPath(chainId)}/status`, signal);
   }
-  chainBlocks(chainId: string, signal?: AbortSignal) {
-    return this.json<AppChainBlocks>(`${chainPath(chainId)}/blocks?limit=12`, signal);
+  chainBlocks(chainId: string, signal?: AbortSignal, from?: number, limit = 25) {
+    const start = from == null ? '' : `&from=${encodeURIComponent(String(from))}`;
+    return this.json<AppChainBlocks>(`${chainPath(chainId)}/blocks?limit=${limit}${start}`, signal);
+  }
+  chainBlock(chainId: string, height: number, signal?: AbortSignal) {
+    return this.json<AppChainBlockDetail>(
+      `${chainPath(chainId)}/blocks/${encodeURIComponent(String(height))}`, signal);
   }
   chainMessage(chainId: string, messageId: string, signal?: AbortSignal) {
     return this.json<AppChainMessage>(`${chainPath(chainId)}/messages/${encodeURIComponent(messageId)}`, signal);

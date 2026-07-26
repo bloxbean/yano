@@ -137,6 +137,18 @@ export interface AppChainMessage {
   bodyHex?: string;
 }
 
+export interface AppChainBlockDetail {
+  chainId: string;
+  height: number;
+  prevHash: string;
+  timestamp: number;
+  messagesRoot: string;
+  stateRoot: string;
+  proposer: string;
+  certSignatures: number;
+  messages: AppChainMessage[];
+}
+
 export interface AppChainStatus {
   chainId?: string;
   running?: boolean;

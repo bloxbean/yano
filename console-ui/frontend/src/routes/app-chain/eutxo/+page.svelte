@@ -9,6 +9,7 @@
     L1TransactionUtxos
   } from '$lib/api/types';
   import CopyValue from '$lib/components/CopyValue.svelte';
+  import Pager from '$lib/components/Pager.svelte';
   import {
     canonicalEutxoIdentifier, canonicalEutxoOutpoint, EUTXO_BUNDLE_ID, formatLovelace,
     indexStatusLabel, isCompleteProjection, isEutxoChain, transactionIdFromOutpoint,
@@ -20,6 +21,10 @@
     id: string; state: 'loading' | 'ready' | 'unavailable' | 'not-found' | 'failed';
     transaction?: L1Transaction; utxos?: L1TransactionUtxos; message?: string
   };
+  type TransactionPageState = {
+    items: EutxoTransactionSummary[];
+    nextCursor: string;
+  };
 
   let api: YanoApi | null = null;
   let chains: ChainSummary[] = [];
@@ -30,6 +35,8 @@
   let indexAvailable: boolean | null = null;
   let transactions: EutxoTransactionSummary[] = [];
   let transactionCursor = '';
+  let transactionPages: TransactionPageState[] = [];
+  let transactionPageIndex = 0;
   let selectedTransaction: EutxoTransactionSummary | null = null;
   let deposits: EutxoDeposit[] = [];
   let withdrawals: EutxoWithdrawal[] = [];
@@ -59,6 +66,8 @@
     }
   };
   const query = () => ({ chain: selectedChain });
+  $: transactionHasPrevious = transactionPageIndex > 0;
+  $: transactionHasNext = transactionCursor !== '';
 
   onMount(() => {
     let disposed = false;
@@ -105,6 +114,8 @@
     indexAvailable = null;
     transactions = [];
     transactionCursor = '';
+    transactionPages = [];
+    transactionPageIndex = 0;
     deposits = [];
     withdrawals = [];
     selectedTransaction = null;
@@ -161,6 +172,14 @@
 
   async function loadTransactions(append: boolean, signal?: AbortSignal): Promise<void> {
     if (!api || indexAvailable === false) return;
+    if (append && transactionPages[transactionPageIndex + 1]) {
+      transactionPageIndex++;
+      const cached = transactionPages[transactionPageIndex];
+      transactions = cached.items;
+      transactionCursor = cached.nextCursor;
+      return;
+    }
+    if (append && !transactionCursor) return;
     if (append) loadingMore = true;
     try {
       const parameters: Record<string, string> = { ...query(), limit: '25' };
@@ -168,7 +187,15 @@
       const envelope = await api.eutxoIndex<EutxoIndexEnvelope<EutxoIndexPage<EutxoTransactionSummary>>>(
         'transactions', parameters, signal);
       assertEnvelope(envelope);
-      transactions = append ? [...transactions, ...envelope.data.items] : envelope.data.items;
+      const page = { items: envelope.data.items, nextCursor: envelope.data.cursor };
+      if (append) {
+        transactionPageIndex++;
+        transactionPages = [...transactionPages.slice(0, transactionPageIndex), page];
+      } else {
+        transactionPageIndex = 0;
+        transactionPages = [page];
+      }
+      transactions = page.items;
       transactionCursor = envelope.data.cursor;
       indexEnvelope = { ...envelope, data: indexEnvelope?.data ?? {
         storeType: '', checkpointHeight: envelope.projection.indexedHeight,
@@ -179,6 +206,14 @@
     } finally {
       loadingMore = false;
     }
+  }
+
+  function loadPreviousTransactionPage(): void {
+    if (transactionPageIndex === 0) return;
+    transactionPageIndex--;
+    const page = transactionPages[transactionPageIndex];
+    transactions = page.items;
+    transactionCursor = page.nextCursor;
   }
 
   async function loadBridge(signal?: AbortSignal): Promise<void> {
@@ -218,6 +253,9 @@
       throw new Error('Committed EUTxO response identity does not match the selected chain');
     }
     transactions = page.data;
+    transactionPages = [{ items: page.data, nextCursor: '' }];
+    transactionPageIndex = 0;
+    transactionCursor = '';
   }
 
   async function selectTransaction(id: string, byMessage = false): Promise<void> {
@@ -499,11 +537,21 @@
               <tr class="border-t border-slate-800/60 hover:bg-slate-800/35">
                 <td class="p-3 font-mono">{transaction.appHeight}:{transaction.ordinal}</td>
                 <td><span class="badge {transaction.status === 'ACCEPTED' ? 'badge-ok' : 'badge-bad'}">{transaction.status}</span></td>
-                <td><button class="font-mono text-cyan-300 hover:text-cyan-200" title={transactionTitle(transaction)}
+                <td>
+                  <span class="inline-flex items-center gap-1.5">
+                    <button class="font-mono text-cyan-300 hover:text-cyan-200"
+                            title={transactionTitle(transaction)}
                             onclick={() => void selectTransaction(
                               transaction.transactionId || transaction.messageId,
                               !transaction.transactionId)}>
-                  {short(transaction.transactionId || '-', 22)}</button></td>
+                      {short(transaction.transactionId || '-', 22)}
+                    </button>
+                    {#if transaction.transactionId}
+                      <CopyValue value={transaction.transactionId} iconOnly
+                                 label="L2 transaction ID" />
+                    {/if}
+                  </span>
+                </td>
                 <td><CopyValue value={transaction.messageId} width={20} label="app-message ID" /></td>
                 <td>{transaction.inputs.length}</td><td>{transaction.outputs.length}</td>
                 <td class="font-mono">{total(transaction.outputs)}</td>
@@ -517,11 +565,14 @@
           </tbody>
         </table>
       </div>
-      {#if transactionCursor}
-        <div class="border-t border-slate-800 p-3 text-center">
-          <button disabled={loadingMore} class="rounded-lg border border-slate-700 px-4 py-2 text-xs disabled:opacity-50"
-                  onclick={() => void loadTransactions(true)}>{loadingMore ? 'Loading…' : 'Load older transactions'}</button>
-        </div>
+      {#if transactions.length || transactionHasPrevious}
+        <Pager page={transactionPageIndex + 1}
+               hasPrevious={transactionHasPrevious}
+               hasNext={transactionHasNext}
+               busy={loadingMore}
+               label="L2 transactions"
+               onPrevious={loadPreviousTransactionPage}
+               onNext={() => void loadTransactions(true)} />
       {/if}
     </section>
     {#if selectedTransaction}
@@ -541,11 +592,19 @@
           <div class="grid gap-3 text-xs sm:grid-cols-2">
             <div><h3 class="m-0 text-xs uppercase text-slate-500">Inputs</h3>
               {#each selectedTransaction.inputs as entry}<div class="mt-2 rounded-lg bg-slate-950/60 p-2">
-                <CopyValue value={entry.outpoint} width={28} label="input outpoint" /><div class="mt-1">{formatLovelace(entry.lovelace)}</div>
+                <div class="text-slate-500">Outpoint</div>
+                <CopyValue value={entry.outpoint} width={28} label="input outpoint" />
+                <div class="mt-2 text-slate-500">Owner address</div>
+                <CopyValue value={entry.address} width={32} label="input owner address" />
+                <div class="mt-2">{formatLovelace(entry.lovelace)}</div>
               </div>{/each}</div>
             <div><h3 class="m-0 text-xs uppercase text-slate-500">Outputs</h3>
               {#each selectedTransaction.outputs as entry}<div class="mt-2 rounded-lg bg-slate-950/60 p-2">
-                <CopyValue value={entry.outpoint} width={28} label="output outpoint" /><div class="mt-1">{formatLovelace(entry.lovelace)}</div>
+                <div class="text-slate-500">Outpoint</div>
+                <CopyValue value={entry.outpoint} width={28} label="output outpoint" />
+                <div class="mt-2 text-slate-500">Owner address</div>
+                <CopyValue value={entry.address} width={32} label="output owner address" />
+                <div class="mt-2">{formatLovelace(entry.lovelace)}</div>
               </div>{/each}</div>
           </div>
         </div>
@@ -584,11 +643,16 @@
           <div><h3 class="text-xs uppercase text-slate-500">Current UTxOs</h3>
             {#each account.utxos as entry}<div class="mt-2 rounded-lg bg-slate-950/60 p-3 text-xs">
               <CopyValue value={entry.outpoint} width={42} label="account outpoint" />
-              <div class="mt-1 font-mono">{formatLovelace(entry.lovelace)}</div></div>
+              <div class="mt-2 text-slate-500">Owner address</div>
+              <CopyValue value={entry.address} width={34} label="UTxO owner address" />
+              <div class="mt-2 font-mono">{formatLovelace(entry.lovelace)}</div></div>
             {:else}<p class="text-sm text-slate-500">No current UTxOs.</p>{/each}</div>
           <div><h3 class="text-xs uppercase text-slate-500">Bounded activity</h3>
-            {#each account.activityTransactionIds as id}<button class="mt-2 block font-mono text-xs text-cyan-300"
-                    onclick={() => void selectTransaction(id)}>{short(id, 36)}</button>
+            {#each account.activityTransactionIds as id}<div class="mt-2 flex items-center gap-1.5">
+              <button class="font-mono text-xs text-cyan-300"
+                      onclick={() => void selectTransaction(id)}>{short(id, 36)}</button>
+              <CopyValue value={id} iconOnly label="L2 transaction ID" />
+            </div>
             {:else}<p class="text-sm text-slate-500">No activity in indexed history.</p>{/each}</div>
         </div>
       {/if}
@@ -598,20 +662,30 @@
   {#if activeView === 'bridge' && indexAvailable}
     <div class="mt-4 grid gap-4 lg:grid-cols-2">
       <section class="card p-4"><h2 class="m-0 text-base font-semibold">Stable deposits</h2>
-        {#each deposits as deposit}<button class="mt-3 block w-full rounded-lg border border-slate-800 p-3 text-left hover:border-cyan-700"
-                onclick={() => void showDeposit(deposit)}>
+        {#each deposits as deposit}<div class="mt-3 rounded-lg border border-slate-800 p-3">
           <div class="flex justify-between gap-2 text-xs"><span class="badge badge-ok">L1 accepted</span><span>credited #{deposit.creditedHeight}</span></div>
-          <div class="mt-2 font-mono text-xs text-cyan-300">{short(deposit.acceptedOutpoint, 40)}</div>
-          <div class="mt-1 truncate text-xs text-slate-500">{deposit.l2Address}</div>
-        </button>{:else}<p class="text-sm text-slate-500">No stable deposits in this page.</p>{/each}
+          <div class="mt-3 text-xs text-slate-500">Accepted outpoint</div>
+          <div class="text-xs text-cyan-300"><CopyValue value={deposit.acceptedOutpoint}
+              width={40} label="accepted deposit outpoint" /></div>
+          <div class="mt-2 text-xs text-slate-500">L2 owner address</div>
+          <div class="text-xs"><CopyValue value={deposit.l2Address} width={40}
+              label="deposit L2 owner address" /></div>
+          <button class="mt-3 rounded-lg border border-slate-700 px-3 py-2 text-xs hover:border-cyan-700"
+                  onclick={() => void showDeposit(deposit)}>Open lifecycle</button>
+        </div>{:else}<p class="text-sm text-slate-500">No stable deposits in this page.</p>{/each}
       </section>
       <section class="card p-4"><h2 class="m-0 text-base font-semibold">Withdrawal claims</h2>
-        {#each withdrawals as withdrawal}<button class="mt-3 block w-full rounded-lg border border-slate-800 p-3 text-left hover:border-cyan-700"
-                onclick={() => showWithdrawal(withdrawal)}>
+        {#each withdrawals as withdrawal}<div class="mt-3 rounded-lg border border-slate-800 p-3">
           <div class="flex justify-between gap-2 text-xs"><span class="badge">{withdrawal.status}</span><span>{formatLovelace(withdrawal.lovelace)}</span></div>
-          <div class="mt-2 font-mono text-xs text-cyan-300">{short(withdrawal.claimId, 40)}</div>
-          <div class="mt-1 truncate text-xs text-slate-500">{withdrawal.destinationAddress}</div>
-        </button>{:else}<p class="text-sm text-slate-500">No withdrawal claims in this page.</p>{/each}
+          <div class="mt-3 text-xs text-slate-500">Claim ID</div>
+          <div class="text-xs text-cyan-300"><CopyValue value={withdrawal.claimId}
+              width={40} label="withdrawal claim ID" /></div>
+          <div class="mt-2 text-xs text-slate-500">L1 destination address</div>
+          <div class="text-xs"><CopyValue value={withdrawal.destinationAddress} width={40}
+              label="withdrawal L1 destination address" /></div>
+          <button class="mt-3 rounded-lg border border-slate-700 px-3 py-2 text-xs hover:border-cyan-700"
+                  onclick={() => showWithdrawal(withdrawal)}>Open lifecycle</button>
+        </div>{:else}<p class="text-sm text-slate-500">No withdrawal claims in this page.</p>{/each}
       </section>
     </div>
 
@@ -625,6 +699,9 @@
               <div class="mt-1 text-slate-500">slot {selectedDeposit.l1Slot}</div></li>
             <li class="rounded-lg border border-emerald-700/50 p-3"><span class="badge badge-ok">2 · L2 credited</span>
               <div class="mt-2"><CopyValue value={selectedDeposit.mirroredOutpoint} width={28} label="mirrored L2 outpoint" /></div>
+              <div class="mt-2 text-slate-500">Owner address</div>
+              <div class="mt-1"><CopyValue value={selectedDeposit.l2Address} width={28}
+                  label="deposit L2 owner address" /></div>
               <div class="mt-1 text-slate-500">app height {selectedDeposit.creditedHeight}</div></li>
             <li class="rounded-lg border border-slate-700 p-3"><span class="badge">3 · L2 activity</span>
               <div class="mt-2 text-slate-400">{lineage?.nodes.length ?? 0} bounded lineage nodes</div></li>
@@ -635,6 +712,9 @@
             <li class="rounded-lg border border-slate-800 p-3 text-slate-500">2 · L2 activity</li>
             <li class="rounded-lg border border-emerald-700/50 p-3"><span class="badge badge-ok">3 · Withdrawal requested</span>
               <div class="mt-2"><CopyValue value={selectedWithdrawal.claimId} width={28} label="withdrawal claim ID" /></div>
+              <div class="mt-2 text-slate-500">L1 destination</div>
+              <div class="mt-1"><CopyValue value={selectedWithdrawal.destinationAddress} width={28}
+                  label="withdrawal L1 destination address" /></div>
               <div class="mt-1">{formatLovelace(selectedWithdrawal.lovelace)}</div></li>
             <li class="rounded-lg border border-slate-700 p-3"><span class="badge">4 · {selectedWithdrawal.status}</span>
               <div class="mt-2 text-slate-500">updated app height {selectedWithdrawal.updatedHeight}</div></li>
@@ -672,9 +752,13 @@
           </dl>
           <div class="mt-4 grid gap-4 lg:grid-cols-2">
             <div><h3 class="text-xs uppercase text-slate-500">Inputs</h3>
-              {#each l1Detail.utxos?.inputs ?? [] as item}<div class="mt-2 truncate rounded bg-slate-950/60 p-2 font-mono text-xs" title={item.address}>{item.address}</div>{/each}</div>
+              {#each l1Detail.utxos?.inputs ?? [] as item}<div class="mt-2 rounded bg-slate-950/60 p-2 text-xs">
+                <CopyValue value={item.address ?? ''} width={48} label="L1 input address" />
+              </div>{/each}</div>
             <div><h3 class="text-xs uppercase text-slate-500">Outputs</h3>
-              {#each l1Detail.utxos?.outputs ?? [] as item}<div class="mt-2 truncate rounded bg-slate-950/60 p-2 font-mono text-xs" title={item.address}>{item.address}</div>{/each}</div>
+              {#each l1Detail.utxos?.outputs ?? [] as item}<div class="mt-2 rounded bg-slate-950/60 p-2 text-xs">
+                <CopyValue value={item.address ?? ''} width={48} label="L1 output address" />
+              </div>{/each}</div>
           </div>
         {/if}
       </section>
@@ -694,8 +778,11 @@
           <tbody>
             {#each validityBatches as batch}
               <tr class="border-t border-slate-800/60">
-                <td class="p-3"><button class="font-mono text-cyan-300"
-                    onclick={() => selectedValidity = batch}>{short(batch.batchId, 24)}</button></td>
+                <td class="p-3"><span class="inline-flex items-center gap-1.5">
+                  <button class="font-mono text-cyan-300"
+                          onclick={() => selectedValidity = batch}>{short(batch.batchId, 24)}</button>
+                  <CopyValue value={batch.batchId} iconOnly label="validity batch ID" />
+                </span></td>
                 <td>{batch.profileId}</td><td>{batch.transactionIds.length}</td>
                 <td><span class="badge badge-ok">{batch.proofStatus}</span></td>
                 <td><span class="badge">{batch.dataStatus}</span></td>
@@ -730,8 +817,11 @@
         </dl>
         <div class="mt-5"><h3 class="text-xs uppercase text-slate-500">Ordered L2 transactions</h3>
           {#each selectedValidity.transactionIds as id, index}
-            <button class="mt-2 mr-2 rounded-lg border border-slate-800 px-3 py-2 font-mono text-xs text-cyan-300"
-                    onclick={() => void selectTransaction(id)}>{index + 1}. {short(id, 28)}</button>
+            <span class="mt-2 mr-2 inline-flex items-center gap-1.5 rounded-lg border border-slate-800 px-3 py-2">
+              <button class="font-mono text-xs text-cyan-300"
+                      onclick={() => void selectTransaction(id)}>{index + 1}. {short(id, 28)}</button>
+              <CopyValue value={id} iconOnly label="L2 transaction ID" />
+            </span>
           {/each}
         </div>
         {#if selectedValidity.settlementTransactionId}

@@ -5,9 +5,13 @@
   import MetricCard from '$lib/components/MetricCard.svelte';
   import MetricRow from '$lib/components/MetricRow.svelte';
   import CopyValue from '$lib/components/CopyValue.svelte';
+  import Pager from '$lib/components/Pager.svelte';
   import AppChainCapabilityPanels from '$lib/components/AppChainCapabilityPanels.svelte';
   import { apiFailureMessage, resolveApiBase, YanoApi } from '$lib/api/client';
-  import type { AppChainBlocks, AppChainMessage, AppChainStatus, ChainSummary, NodeConfig } from '$lib/api/types';
+  import type {
+    AppChainBlock, AppChainBlockDetail, AppChainBlocks, AppChainMessage, AppChainStatus,
+    ChainSummary, NodeConfig
+  } from '$lib/api/types';
   import { SessionHistory, type CompactSample } from '$lib/telemetry/history';
   import { columnSamples, mergeSamples } from '$lib/telemetry/durable-history';
   import { PrometheusHistoryProvider, resolveMetricsBase } from '$lib/telemetry/prometheus';
@@ -19,6 +23,8 @@
   import { isEutxoChain } from '$lib/eutxo/model';
 
   const CHAIN_KEY = 'yano.console.app-chain.selected.v1';
+  const PAGE_SIZE = 25;
+  const MESSAGE_WINDOW = 50;
   let api: YanoApi | null = null;
   let apiBase = '/api/v1';
   let config: NodeConfig | null = null;
@@ -26,7 +32,12 @@
   let selectedChain = '';
   let status: AppChainStatus | null = null;
   let blocks: AppChainBlocks | null = null;
+  let latestBlocks: AppChainBlocks | null = null;
+  let blockPages: AppChainBlocks[] = [];
+  let blockPageIndex = 0;
+  let blocksLoading = false;
   let messages: AppChainMessage[] = [];
+  let messagePageIndex = 0;
   let samples: CompactSample[] = [];
   let history: SessionHistory | null = null;
   let historyState: AppChainHistoryState | null = null;
@@ -41,9 +52,14 @@
   let lastUpdated = '';
   let requestMs = 0;
   let dialog: HTMLDialogElement;
+  let blockDialog: HTMLDialogElement;
   let inspected: AppChainMessage | null = null;
   let inspectedPreview: MessagePreview | null = null;
   let inspectedDigest: string | null = null;
+  let inspectedBlock: AppChainBlockDetail | null = null;
+  let inspectedBlockHeight: number | null = null;
+  let inspectedBlockError = '';
+  let inspectedBlockLoading = false;
   let pluginBundleIds: string[] = [];
   const cursor = new StreamCursor();
 
@@ -65,7 +81,13 @@
   $: executors = objectList(effectRuntime.executorOperations);
   $: sinks = recordEntries(status?.sinks);
   $: peers = entries(status?.peers);
-  $: latestBlock = blocks?.blocks.at(-1);
+  $: latestBlock = latestBlocks?.blocks.at(-1);
+  $: messagePageCount = Math.max(1, Math.ceil(messages.length / PAGE_SIZE));
+  $: if (messagePageIndex >= messagePageCount) messagePageIndex = messagePageCount - 1;
+  $: visibleMessages = messages.slice(
+    messagePageIndex * PAGE_SIZE, (messagePageIndex + 1) * PAGE_SIZE);
+  $: blockHasPrevious = blockPageIndex > 0;
+  $: blockHasNext = (blocks?.from ?? 1) > 1;
   $: chartTip = [samples.map((sample) => sample[1] ?? null)];
   $: chartPool = [samples.map((sample) => sample[2] ?? null)];
   $: chartInterval = [samples.map((sample) => sample[3] ?? null)];
@@ -118,7 +140,11 @@
     historyState = null;
     status = null;
     blocks = null;
+    latestBlocks = null;
+    blockPages = [];
+    blockPageIndex = 0;
     messages = [];
+    messagePageIndex = 0;
     cursor.reset();
     poller = createPoller(refresh);
     poller.start();
@@ -138,7 +164,13 @@
       historyState = result.state;
       samples = mergeSamples(durableSamples, history?.values() ?? []);
       status = nextStatus;
-      blocks = nextBlocks;
+      latestBlocks = nextBlocks;
+      if (blockPageIndex === 0) {
+        // Keep one coherent tip snapshot while the operator pages backward.
+        // Once they return to page one, polling starts a fresh snapshot.
+        blockPages = [nextBlocks];
+        blocks = nextBlocks;
+      }
       requestMs = Math.round(performance.now() - started);
       lastUpdated = new Date().toLocaleTimeString();
       pageError = '';
@@ -204,7 +236,7 @@
           while ((boundary = buffer.indexOf('\n\n')) >= 0) {
             const message = cursor.accept(buffer.slice(0, boundary), selectedChain);
             buffer = buffer.slice(boundary + 2);
-            if (message) messages = [message, ...messages].slice(0, 50);
+            if (message) messages = [message, ...messages].slice(0, MESSAGE_WINDOW);
           }
         }
         if (!signal.aborted) throw new Error('Stream ended');
@@ -229,6 +261,76 @@
     if (typeof message.bodyHex === 'string') {
       try { inspectedDigest = await completePayloadDigest(message.bodyHex); } catch { inspectedDigest = null; }
     }
+  }
+
+  function previousMessagePage(): void {
+    if (messagePageIndex > 0) messagePageIndex--;
+  }
+
+  function nextMessagePage(): void {
+    if (messagePageIndex + 1 < messagePageCount) messagePageIndex++;
+  }
+
+  function previousBlockPage(): void {
+    if (blockPageIndex === 0) return;
+    blockPageIndex--;
+    blocks = blockPages[blockPageIndex];
+  }
+
+  async function nextBlockPage(): Promise<void> {
+    if (!api || !blocks || blocks.from <= 1 || blocksLoading) return;
+    const cached = blockPages[blockPageIndex + 1];
+    if (cached) {
+      blockPageIndex++;
+      blocks = cached;
+      return;
+    }
+    const from = Math.max(1, blocks.from - PAGE_SIZE);
+    const limit = blocks.from - from;
+    if (limit < 1) return;
+    blocksLoading = true;
+    try {
+      const page = await api.chainBlocks(selectedChain, undefined, from, limit);
+      blockPageIndex++;
+      blockPages = [...blockPages.slice(0, blockPageIndex), page];
+      blocks = page;
+    } catch (cause) {
+      pageError = apiFailureMessage(cause, 'Unable to load older app-chain blocks');
+    } finally {
+      blocksLoading = false;
+    }
+  }
+
+  async function inspectBlock(block: AppChainBlock): Promise<void> {
+    if (!api) return;
+    const chainId = selectedChain;
+    inspectedBlockHeight = block.height;
+    inspectedBlock = null;
+    inspectedBlockError = '';
+    inspectedBlockLoading = true;
+    await tick();
+    blockDialog.showModal();
+    try {
+      const detail = await api.chainBlock(chainId, block.height);
+      if (chainId === selectedChain && inspectedBlockHeight === block.height) {
+        inspectedBlock = detail;
+      }
+    } catch (cause) {
+      inspectedBlockError = apiFailureMessage(cause, 'Unable to load app-chain block details');
+    } finally {
+      inspectedBlockLoading = false;
+    }
+  }
+
+  function inspectBlockMessage(message: AppChainMessage, index: number): void {
+    if (!inspectedBlock) return;
+    blockDialog.close();
+    void inspect({
+      ...message,
+      chainId: inspectedBlock.chainId,
+      height: inspectedBlock.height,
+      index
+    });
   }
 </script>
 
@@ -387,9 +489,9 @@
   <div class="section-title">Finalized data</div>
   <div class="grid items-stretch gap-4 xl:grid-cols-2">
   <section class="card flex h-[37rem] min-h-0 flex-col overflow-hidden">
-    <div class="border-b border-slate-800 px-4 py-3"><h2 class="m-0 text-sm font-semibold">Live messages</h2><p class="m-0 text-xs text-slate-500">Authenticated fetch SSE · latest 50</p></div>
+    <div class="border-b border-slate-800 px-4 py-3"><h2 class="m-0 text-sm font-semibold">Live messages</h2><p class="m-0 text-xs text-slate-500">Authenticated fetch SSE · latest 50 · 25 per page</p></div>
     <div class="min-h-0 flex-1 overflow-auto text-[0.75rem] leading-4">
-      {#each messages as message}
+      {#each visibleMessages as message}
         <button type="button" class="grid w-full grid-cols-[70px_1fr_110px_80px] gap-2 border-b border-slate-800/60 px-4 py-2 text-left text-[0.75rem] leading-4 hover:bg-slate-800/50"
                 aria-label={`Inspect finalized message at ${message.height}:${message.index}`} onclick={() => inspect(message)}>
           <span class="font-mono text-violet-300">{message.height}:{message.index}</span>
@@ -401,16 +503,41 @@
         </button>
       {:else}<p class="p-5 text-sm text-slate-500">Waiting for finalized messages…</p>{/each}
     </div>
+    {#if messages.length}
+      <Pager page={messagePageIndex + 1}
+             hasPrevious={messagePageIndex > 0}
+             hasNext={messagePageIndex + 1 < messagePageCount}
+             label="live messages"
+             onPrevious={previousMessagePage}
+             onNext={nextMessagePage} />
+    {/if}
   </section>
   <section class="card flex h-[37rem] min-h-0 flex-col overflow-hidden">
-    <div class="border-b border-slate-800 px-4 py-3"><h2 class="m-0 text-sm font-semibold">Recent blocks</h2><p class="m-0 text-xs text-slate-500">Latest finalized application blocks</p></div>
+    <div class="border-b border-slate-800 px-4 py-3"><h2 class="m-0 text-sm font-semibold">Recent blocks</h2><p class="m-0 text-xs text-slate-500">Finalized application blocks · 25 per page</p></div>
     <div class="min-h-0 flex-1 overflow-auto">
       <table class="w-full text-left text-[0.75rem] leading-4"><thead class="text-slate-500"><tr><th class="p-3">Height</th><th>Age</th><th>Messages</th><th>Signatures</th><th>State root</th></tr></thead>
         <tbody>{#each [...(blocks?.blocks ?? [])].reverse() as block}
-          <tr class="border-t border-slate-800/60"><td class="p-3 font-mono">{fmt(block.height)}</td><td>{age(block.timestamp)}</td><td>{fmt(block.messageCount)}</td><td>{fmt(block.certSignatures)}</td><td class="font-mono text-slate-500"><CopyValue value={block.stateRoot} label="block state root" /></td></tr>
+          <tr class="border-t border-slate-800/60 hover:bg-slate-800/35">
+            <td class="p-3 font-mono">
+              <button type="button" class="text-violet-300 hover:text-violet-200"
+                      aria-label={`Inspect finalized block ${block.height}`}
+                      onclick={() => void inspectBlock(block)}>{fmt(block.height)}</button>
+            </td>
+            <td>{age(block.timestamp)}</td><td>{fmt(block.messageCount)}</td><td>{fmt(block.certSignatures)}</td>
+            <td class="font-mono text-slate-500"><CopyValue value={block.stateRoot} label="block state root" /></td>
+          </tr>
         {:else}<tr><td colspan="5" class="p-5 text-slate-500">No finalized blocks yet.</td></tr>{/each}</tbody>
       </table>
     </div>
+    {#if blocks?.blocks.length}
+      <Pager page={blockPageIndex + 1}
+             hasPrevious={blockHasPrevious}
+             hasNext={blockHasNext}
+             busy={blocksLoading}
+             label="app-chain blocks"
+             onPrevious={previousBlockPage}
+             onNext={() => void nextBlockPage()} />
+    {/if}
   </section>
   </div>
 </div>
@@ -459,5 +586,51 @@
       </div>
     {/if}
     <div class="border-t border-slate-700 p-4"><div class="mb-1 text-xs text-slate-500">Raw hex preview</div><pre class="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-slate-950 p-3 text-xs">{inspectedPreview.rawHex}</pre></div>
+  {/if}
+</dialog>
+
+<dialog bind:this={blockDialog} class="m-auto max-h-[calc(100%-2rem)] w-[min(900px,calc(100%-2rem))] overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 p-0 text-slate-100 backdrop:bg-slate-950/80">
+  <div class="flex items-center justify-between border-b border-slate-700 p-4">
+    <div>
+      <h2 class="m-0 text-lg font-semibold">Finalized app-chain block</h2>
+      <p class="m-0 text-xs text-slate-500">Height {inspectedBlockHeight ?? '-'}</p>
+    </div>
+    <button type="button" class="rounded-lg border border-slate-700 px-3 py-2 text-sm"
+            onclick={() => blockDialog.close()}>Close</button>
+  </div>
+  {#if inspectedBlockLoading}
+    <p class="p-5 text-sm text-slate-400">Loading certified block details…</p>
+  {:else if inspectedBlockError}
+    <p class="p-5 text-sm text-rose-300">{inspectedBlockError}</p>
+  {:else if inspectedBlock}
+    <div class="max-h-[calc(100vh-9rem)] overflow-auto">
+      <dl class="grid gap-4 p-4 text-xs sm:grid-cols-2">
+        <div><dt class="text-slate-500">Chain</dt><dd class="mt-1">{inspectedBlock.chainId}</dd></div>
+        <div><dt class="text-slate-500">Timestamp</dt><dd class="mt-1">{new Date(inspectedBlock.timestamp).toLocaleString()}</dd></div>
+        <div><dt class="text-slate-500">State root</dt><dd class="mt-1"><CopyValue value={inspectedBlock.stateRoot} width={56} label="block state root" /></dd></div>
+        <div><dt class="text-slate-500">Messages root</dt><dd class="mt-1"><CopyValue value={inspectedBlock.messagesRoot} width={56} label="block messages root" /></dd></div>
+        <div><dt class="text-slate-500">Previous block hash</dt><dd class="mt-1"><CopyValue value={inspectedBlock.prevHash} width={56} label="previous block hash" /></dd></div>
+        <div><dt class="text-slate-500">Proposer</dt><dd class="mt-1"><CopyValue value={inspectedBlock.proposer} width={56} label="block proposer" /></dd></div>
+        <div><dt class="text-slate-500">Certificate signatures</dt><dd class="mt-1">{fmt(inspectedBlock.certSignatures)}</dd></div>
+        <div><dt class="text-slate-500">Messages</dt><dd class="mt-1">{fmt(inspectedBlock.messages.length)}</dd></div>
+      </dl>
+      <div class="border-t border-slate-700 p-4">
+        <h3 class="m-0 text-sm font-semibold">Finalized messages</h3>
+        <p class="mb-3 mt-1 text-xs text-slate-500">Select a message to inspect its decoded payload.</p>
+        <div class="overflow-hidden rounded-xl border border-slate-800">
+          {#each inspectedBlock.messages as message, index}
+            <button type="button"
+                    class="grid w-full grid-cols-[70px_1fr_130px] gap-3 border-b border-slate-800/60 px-3 py-2 text-left text-xs last:border-b-0 hover:bg-slate-800/50"
+                    onclick={() => inspectBlockMessage(message, index)}>
+              <span class="font-mono text-violet-300">{inspectedBlock.height}:{index}</span>
+              <span class="truncate">{message.topic ?? 'default'}</span>
+              <span class="truncate text-right font-mono text-slate-500">{shortHash(message.messageId, 18)}</span>
+            </button>
+          {:else}
+            <p class="m-0 p-4 text-xs text-slate-500">This block contains no application messages.</p>
+          {/each}
+        </div>
+      </div>
+    </div>
   {/if}
 </dialog>
