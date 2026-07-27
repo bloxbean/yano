@@ -2,16 +2,21 @@
 # App-chain cluster demo config  (external — lives in app/config, NOT bundled
 # in the jar). Activated with the `appchain` Quarkus profile, e.g.
 #   -Dquarkus.profile=devnet,appchain
-# The cluster launcher (app/appchain-cluster/cluster.sh) adds this profile for
-# you and injects the per-node/topology values.
+# Direct use via `./yano.sh start:devnet,appchain` starts a standalone,
+# single-member demo using the deterministic identity below. The cluster
+# launcher overrides that identity and injects the per-node/topology values.
 #
 # WHAT THIS FILE DEFINES (shared, identical on every node): the per-chain
 # "flavor" — chain-id, state machine, block cadence, and sequencer intent.
 #
-# WHAT THE LAUNCHER INJECTS (differs per node / per cluster size): members,
+# STANDALONE DEFAULT IDENTITY (TESTING ONLY — NEVER USE IN PRODUCTION):
+# seed  = 0101010101010101010101010101010101010101010101010101010101010101
+# pub   = 8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c
+#
+# WHAT THE LAUNCHER OVERRIDES (differs per node / per cluster size): members,
 # threshold, this node's signing-key, peers, and — for fixed-proposer chains —
-# the proposer. So the SAME file runs unchanged on a 3-node or a 9-node
-# cluster; you never hand-edit member lists here.
+# the proposer. So the SAME file runs standalone or as a 3-node/9-node cluster;
+# you never hand-edit member lists here.
 #
 # ADD / REMOVE CHAINS FREELY: any chains[i] with a chain-id is hosted. The
 # launcher auto-discovers however many you define (indices must start at 0 and
@@ -23,21 +28,28 @@ yano:
     # --- Chain 0: an append-only ordered log, fixed proposer (node 0) --------
     chains[0]:
       chain-id: "orders-chain"
+      signing-key: "0101010101010101010101010101010101010101010101010101010101010101"
+      members: "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+      threshold: 1
       state-machine: ordered-log        # built-in: append-only log (default)
       block:
         interval-ms: 1000               # propose a block every ~1s
         # block.max-bytes (default 4 MiB) is the primary size cap; the proposer
         # trims each block to fit it. max-messages (default 5000) is a safety
         # backstop against tiny-message floods. Tune either for throughput.
-      # No sequencer.mode → fixed proposer; the launcher injects
-      # sequencer.proposer = node 0's member key. To rotate instead, add:
-      #   sequencer:
-      #     mode: rotating
-      #     window-slots: 10
+      # No sequencer.mode → fixed proposer. The cluster launcher overrides this
+      # with node 0's member key. To rotate instead, replace proposer with:
+      sequencer:
+        proposer: "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+        # mode: rotating
+        # window-slots: 10
 
     # --- Chain 1: a key/value registry, rotating sequencer -------------------
     chains[1]:
       chain-id: "registry-chain"
+      signing-key: "0101010101010101010101010101010101010101010101010101010101010101"
+      members: "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+      threshold: 1
       state-machine: kv-registry        # built-in: owner-guarded K/V registry
       block:
         interval-ms: 2000
