@@ -53,6 +53,25 @@ Run a standalone local blockchain with automatic block production.
 - Time advance: `POST http://localhost:8080/api/v1/devnet/time/advance`
 - Rollback: `POST http://localhost:8080/api/v1/devnet/rollback`
 
+### Standalone App-Chain Demo
+
+Add the `appchain` profile to start the bundled `orders-chain` and
+`registry-chain` demos as single-member chains:
+
+```bash
+# Local devnet block producer + standalone app chains
+./yano.sh start:devnet,appchain
+
+# Public-network sync + standalone app chains
+./yano.sh start:preprod,appchain
+```
+
+Both chains use threshold `1` and a deterministic demo identity from
+`config/application-appchain.yml`. That identity is for testing only and must
+not be used in production. For a multi-node demo, use
+`./appchain-cluster/cluster.sh start 3`; the cluster launcher overrides the
+standalone identity with per-node keys, membership, peers, and threshold.
+
 ## Key Features
 
 - **REST API** (port 8080) — blocks, transactions, UTXOs, epochs, protocol params
