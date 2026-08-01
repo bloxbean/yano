@@ -1,0 +1,284 @@
+plugins {
+    id 'com.gradleup.shadow'
+    id 'distribution'
+}
+
+description = 'Demo-only unified Yano app-chain showcase and plugin bundle'
+
+dependencies {
+    // These APIs and generic products are supplied by the Yano JVM host. The
+    // drop-in bundle contains only showcase-owned implementation classes.
+    compileOnly project(':core-api')
+    compileOnly project(':appchain-composite')
+    compileOnly project(':appchain-composite-contracts')
+    compileOnly project(':appchain-stdlib')
+    compileOnly project(':appchain-stdlib-contracts')
+    compileOnly project(':appchain-config')
+    compileOnly project(':appchain-eutxo-contracts')
+    compileOnly libs.cbor
+    compileOnly libs.cardano.client.core
+    compileOnly libs.cardano.client.crypto
+    compileOnly libs.slf4j.api
+
+    testImplementation project(':core-api')
+    testImplementation project(':appchain-composite')
+    testImplementation project(':appchain-composite-contracts')
+    testImplementation project(':appchain-stdlib')
+    testImplementation project(':appchain-stdlib-contracts')
+    testImplementation project(':appchain-config')
+    testImplementation project(':appchain-eutxo-contracts')
+    testImplementation project(':appchain-testkit')
+    testImplementation libs.cbor
+    testImplementation libs.cardano.client.core
+    testImplementation libs.cardano.client.crypto
+    testImplementation libs.slf4j.api
+    testImplementation libs.assertj.core
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+tasks.named('compileJava') {
+    options.compilerArgs.removeAll { it.startsWith('-Aproject=') }
+}
+
+tasks.named('processResources') {
+    filesMatching('META-INF/yano/plugins/*.json') {
+        expand(showcaseVersion: project.version.toString())
+    }
+}
+
+tasks.named('shadowJar') {
+    archiveBaseName.set("yano-${project.name}")
+    archiveClassifier.set('bundle')
+    reproducibleFileOrder = true
+    preserveFileTimestamps = false
+    mergeServiceFiles()
+    exclude 'com/bloxbean/cardano/yano/api/**'
+    exclude 'META-INF/*.SF', 'META-INF/*.RSA', 'META-INF/*.DSA', 'module-info.class'
+}
+
+def appDistribution = project(':app').tasks.named('yanoDistZip', Zip)
+def evidenceRunner = project(':appchain-evidence-demo-runner').tasks.named('shadowJar')
+def evidenceBundles = [
+        project(':appchain-kafka').tasks.named('shadowJar'),
+        project(':appchain-objectstore-s3').tasks.named('shadowJar'),
+        project(':appchain-ipfs').tasks.named('shadowJar')
+]
+def generatedVersionFile = layout.buildDirectory.file('generated/showcase/VERSION')
+tasks.register('generateShowcaseVersion') {
+    outputs.file(generatedVersionFile)
+    doLast {
+        def target = generatedVersionFile.get().asFile
+        target.parentFile.mkdirs()
+        target.text = project.version.toString() + '\n'
+    }
+}
+
+def embeddedYanoRoot = "yano-${project.version}"
+def stripEmbeddedYanoRoot = { details ->
+    def segments = details.relativePath.segments.toList()
+    def rootIndex = segments.findIndexOf { it == embeddedYanoRoot }
+    if (rootIndex < 0) {
+        throw new GradleException("Unexpected Yano distribution path: ${segments.join('/')}")
+    }
+    if (rootIndex == segments.size() - 1) {
+        details.exclude()
+        return
+    }
+    // Keep any CopySpec destination prefixes (for example "yano") and
+    // remove only the root directory that belongs to the embedded ZIP.
+    def rewritten = segments.take(rootIndex) + segments.drop(rootIndex + 1)
+    details.relativePath = org.gradle.api.file.RelativePath.parse(
+            details.relativePath.file,
+            rewritten.join('/'))
+}
+
+distributions {
+    main {
+        distributionBaseName = 'yano-showcase'
+        contents {
+            from('README.md')
+            from('docs') {
+                into 'docs'
+            }
+            from(generatedVersionFile)
+            from('src/main/showcase/showcase.sh') {
+                filePermissions { unix('755') }
+            }
+            from('src/main/showcase/tools') {
+                into 'tools'
+                include '*.py', '*.sh'
+                filePermissions { unix('755') }
+            }
+            from('src/main/showcase/demos') {
+                into 'demos'
+                include '*.sh'
+                filePermissions { unix('755') }
+            }
+            from({ zipTree(appDistribution.get().archiveFile.get().asFile) }) {
+                into 'yano'
+                eachFile stripEmbeddedYanoRoot
+                exclude '**/config/application-appchain.yml'
+                includeEmptyDirs = false
+                filesMatching(['**/*.sh', '**/*.py', '**/bin/*']) {
+                    permissions { unix('755') }
+                }
+            }
+            from('src/main/showcase/config/application-appchain.yml') {
+                into 'yano/config'
+            }
+            from(project(':app').file('config/application-appchain.yml')) {
+                into 'yano/config'
+                rename { 'application-appchain-standard.yml' }
+            }
+            from(tasks.named('shadowJar').flatMap { it.archiveFile }) {
+                into 'yano/plugins'
+            }
+            from(tasks.named('shadowJar').flatMap { it.archiveFile }) {
+                into 'plugins'
+            }
+
+            // Maintained evidence harness plus immutable, already-built
+            // artifacts. The harness stages these through
+            // DEMO_PREBUILT_ARTIFACT_ROOT instead of reaching into a checkout.
+            from(project(':app').file('appchain-effects-demo')) {
+                into 'profiles/evidence/demo'
+                exclude '.demo-data/**', '.demo-runtime/**', '.demo-secrets/**',
+                        '**/__pycache__/**', '**/*.pyc'
+                filesMatching(['**/*.sh', '**/*.py']) {
+                    permissions { unix('755') }
+                }
+            }
+            // The maintained harness resolves public-network genesis files
+            // relative to its owning app directory. Preserve that layout in
+            // the copied showcase instead of making it reach into a checkout.
+            from(project(':app').file('config/network')) {
+                into 'profiles/evidence/config/network'
+            }
+            evidenceBundles.each { bundleTask ->
+                from(bundleTask.flatMap { it.archiveFile }) {
+                    into 'profiles/evidence/artifacts/plugins'
+                }
+            }
+            from(evidenceRunner.flatMap { it.archiveFile }) {
+                into 'profiles/evidence/artifacts'
+                rename { 'runner.jar' }
+            }
+            from({ zipTree(appDistribution.get().archiveFile.get().asFile) }) {
+                into 'profiles/evidence/artifacts/yano-context/yano'
+                eachFile stripEmbeddedYanoRoot
+                includeEmptyDirs = false
+                filesMatching(['**/*.sh', '**/*.py', '**/bin/*']) {
+                    permissions { unix('755') }
+                }
+            }
+            from(rootProject.file('docker/jvm/entrypoint.sh')) {
+                into 'profiles/evidence/artifacts/yano-context'
+                filePermissions { unix('755') }
+            }
+        }
+    }
+}
+
+tasks.named('distZip') {
+    dependsOn appDistribution, tasks.named('shadowJar'), evidenceRunner,
+            tasks.named('generateShowcaseVersion')
+    dependsOn evidenceBundles
+    archiveFileName = "yano-showcase-${project.version}.zip"
+    reproducibleFileOrder = true
+    preserveFileTimestamps = false
+}
+
+tasks.named('distTar') {
+    dependsOn appDistribution, tasks.named('shadowJar'), evidenceRunner,
+            tasks.named('generateShowcaseVersion')
+    dependsOn evidenceBundles
+    reproducibleFileOrder = true
+    preserveFileTimestamps = false
+}
+
+def stateMachineService =
+        'META-INF/services/com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider'
+def effectExecutorService =
+        'META-INF/services/com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory'
+def pluginManifest =
+        'META-INF/yano/plugins/com.bloxbean.cardano.yano.appchain.showcase.json'
+
+tasks.register('verifyShowcasePluginArtifact') {
+    group = 'verification'
+    description = 'Verifies the demo-only showcase bundle boundary and manifested contributions'
+    dependsOn tasks.named('jar'), tasks.named('shadowJar')
+    inputs.files(tasks.named('jar').flatMap { it.archiveFile },
+            tasks.named('shadowJar').flatMap { it.archiveFile })
+
+    doLast {
+        [tasks.named('jar').get().archiveFile.get().asFile,
+         tasks.named('shadowJar').get().archiveFile.get().asFile].each { archive ->
+            new java.util.zip.ZipFile(archive).withCloseable { zip ->
+                def names = zip.entries().collect { it.name }.toSet()
+                def required = [
+                        stateMachineService,
+                        effectExecutorService,
+                        pluginManifest,
+                        'com/bloxbean/cardano/yano/appchain/showcase/ShowcaseCompositeStateMachineProvider.class',
+                        'com/bloxbean/cardano/yano/appchain/showcase/ShowcaseOutboxExecutorFactory.class',
+                        'com/bloxbean/cardano/yano/appchain/showcase/ShowcaseEutxoTransactions.class'
+                ]
+                if (!names.containsAll(required)) {
+                    throw new GradleException(
+                            "Showcase plugin artifact is missing: ${(required - names).sort()}")
+                }
+                if (names.any { it.startsWith('com/bloxbean/cardano/yano/api/') }) {
+                    throw new GradleException('Showcase bundle embeds host Yano API classes')
+                }
+                def manifestEntry = zip.getEntry(pluginManifest)
+                def manifest = new groovy.json.JsonSlurper().parseText(
+                        zip.getInputStream(manifestEntry).getText('UTF-8'))
+                def contributions = manifest.contributions.collect {
+                    "${it.kind}:${it.name}"
+                }.toSet()
+                if (manifest.id != 'com.bloxbean.cardano.yano.appchain.showcase'
+                        || manifest.version != project.version.toString()
+                        || contributions != Set.of(
+                        'app-state-machine:showcase-composite',
+                        'effect-executor:showcase-outbox')) {
+                    throw new GradleException('Unexpected showcase plugin manifest')
+                }
+            }
+        }
+    }
+}
+
+tasks.register('showcaseScriptContract', Exec) {
+    group = 'verification'
+    description = 'Checks showcase command parsing, node scaling, markers, and safe delegation'
+    commandLine 'bash', file('src/test/scripts/showcase-contract.sh')
+}
+
+tasks.register('showcaseDistributionContract', Exec) {
+    group = 'verification'
+    description = 'Checks the final copied/extracted showcase archive and documentation inventory'
+    dependsOn tasks.named('distZip')
+    commandLine 'bash', file('src/test/scripts/distribution-contract.sh'),
+            tasks.named('distZip').flatMap { it.archiveFile }.get().asFile
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyShowcasePluginArtifact'),
+            tasks.named('showcaseScriptContract'),
+            tasks.named('showcaseDistributionContract')
+}
+
+// The showcase is a demo artifact, not a published production library.
+def showcasePublication = publishing.publications.findByName('mavenJava')
+if (showcasePublication != null) {
+    publishing.publications.remove(showcasePublication)
+}
+tasks.withType(PublishToMavenRepository).configureEach { enabled = false }
+tasks.withType(PublishToMavenLocal).configureEach { enabled = false }

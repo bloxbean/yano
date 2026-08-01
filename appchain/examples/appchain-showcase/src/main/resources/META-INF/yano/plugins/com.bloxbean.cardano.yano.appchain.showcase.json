@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "com.bloxbean.cardano.yano.appchain.showcase",
+  "version": "${showcaseVersion}",
+  "yanoApi": { "min": 1, "max": 1, "minLevel": 1 },
+  "dependencies": [
+    {
+      "id": "com.bloxbean.cardano.yano.appchain.stdlib",
+      "minVersion": "${showcaseVersion}",
+      "maxVersionExclusive": "0.2.0"
+    }
+  ],
+  "contributions": [
+    {
+      "kind": "app-state-machine",
+      "name": "showcase-composite",
+      "provider": "com.bloxbean.cardano.yano.appchain.showcase.ShowcaseCompositeStateMachineProvider"
+    },
+    {
+      "kind": "effect-executor",
+      "name": "showcase-outbox",
+      "provider": "com.bloxbean.cardano.yano.appchain.showcase.ShowcaseOutboxExecutorFactory"
+    }
+  ]
+}

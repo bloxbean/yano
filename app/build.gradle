@@ -951,6 +951,8 @@ def pluginConformanceRuntimeArguments = { int httpPort, int nodePort,
                                           java.nio.file.Path connectorSecretConfig ->
     def genesisDirectory = project.file('config/network/preprod').toPath()
             .toAbsolutePath().normalize()
+    def appChainStateDirectory = stateDirectory.resolveSibling(
+            stateDirectory.fileName.toString() + '-appchain-state')
     def arguments = [
             '-Dquarkus.http.host=127.0.0.1',
             "-Dquarkus.http.port=${httpPort}",
@@ -961,6 +963,7 @@ def pluginConformanceRuntimeArguments = { int httpPort, int nodePort,
             "-Dyano.server.port=${nodePort}",
             '-Dyano.storage.rocksdb=false',
             "-Dyano.storage.path=${stateDirectory.toAbsolutePath()}",
+            "-Dyano.app-chain.storage.path=${appChainStateDirectory.toAbsolutePath()}",
             "-Dyano.genesis.shelley-genesis-file=${genesisDirectory.resolve('shelley-genesis.json')}",
             "-Dyano.genesis.byron-genesis-file=${genesisDirectory.resolve('byron-genesis.json')}",
             "-Dyano.genesis.alonzo-genesis-file=${genesisDirectory.resolve('alonzo-genesis.json')}",

@@ -1,0 +1,98 @@
+# yaml-language-server: $schema=./schema/appchain-runtime.schema.json
+# Curated light showcase. Membership, signing keys, peers, proposer, threshold,
+# and the optional workflow-chain anchor are injected by appchain-cluster.
+yano:
+  app-chain:
+    chains[0]:
+      chain-id: "orders-chain"
+      state-machine: ordered-log
+      membership:
+        mode: governed
+      block:
+        interval-ms: 1000
+
+    chains[1]:
+      chain-id: "registry-chain"
+      state-machine: kv-registry
+      membership:
+        mode: governed
+      block:
+        interval-ms: 1000
+      machines:
+        kv-registry:
+          value-format: utf8
+
+    chains[2]:
+      chain-id: "approvals-chain"
+      state-machine: approvals
+      membership:
+        mode: governed
+      block:
+        interval-ms: 1000
+
+    chains[3]:
+      chain-id: "balances-chain"
+      state-machine: balances
+      membership:
+        mode: governed
+      block:
+        interval-ms: 1000
+
+    chains[4]:
+      chain-id: "documents-chain"
+      state-machine: doc-trail
+      membership:
+        mode: governed
+      block:
+        interval-ms: 1000
+
+    chains[5]:
+      chain-id: "workflow-chain"
+      state-machine: showcase-composite
+      membership:
+        mode: governed
+      block:
+        interval-ms: 1000
+        max-messages: 1000
+      effects:
+        enabled: true
+        default-gate: app-final
+        max-per-block: 2
+        max-payload-bytes: 65536
+        result-window-blocks: 1000
+        max-expiry-blocks: 1000
+        executor:
+          enabled: true
+          tick-ms: 250
+        executors:
+          showcase-outbox:
+            enabled: false
+      machines:
+        composite:
+          preset: order-approval-outbox-v1
+
+    chains[6]:
+      chain-id: "roles-chain"
+      state-machine: role-approvals
+      membership:
+        mode: governed
+      block:
+        interval-ms: 1000
+
+    # Experimental, no-real-funds virtual ledger. The richer ledger, bridge,
+    # and ZK flows are delegated to the dedicated `eutxo` showcase profile.
+    chains[7]:
+      chain-id: "payments-chain"
+      state-machine: eutxo-ledger
+      membership:
+        mode: governed
+      block:
+        interval-ms: 1000
+      machines:
+        eutxo:
+          profile: yano-eutxo-v1
+          expected-profile-digest: 2499d01ee7cb0d09d0d498040c6351accd9da83df31666cd4463d0b1722d1212
+          genesis:
+            # Public deterministic demo key; virtual funds only, never fund on L1.
+            address: addr_test1vrld3msldls64ax7c06vu85nvhk70260q970cssxzjh0hlchc79qg
+            lovelace: 100000000

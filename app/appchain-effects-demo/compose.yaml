@@ -290,7 +290,7 @@ services:
         target: /app/chainstate
       - type: bind
         source: ${DEMO_YANO0_APP_DATA_DIR:?}
-        target: /app/chainstate/app-chain
+        target: /app/appchain-state
       - type: bind
         source: ${DEMO_YANO0_LOG_DIR:?}
         target: /app/logs
@@ -326,7 +326,7 @@ services:
         target: /app/chainstate
       - type: bind
         source: ${DEMO_YANO1_APP_DATA_DIR:?}
-        target: /app/chainstate/app-chain
+        target: /app/appchain-state
       - type: bind
         source: ${DEMO_YANO1_LOG_DIR:?}
         target: /app/logs
@@ -375,7 +375,7 @@ services:
         target: /app/chainstate
       - type: bind
         source: ${DEMO_YANO2_APP_DATA_DIR:?}
-        target: /app/chainstate/app-chain
+        target: /app/appchain-state
       - type: bind
         source: ${DEMO_YANO2_LOG_DIR:?}
         target: /app/logs

@@ -19,6 +19,7 @@ import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectView;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerModeProvider;
 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory;
+import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.events.AppBlockFinalizedEvent;
 import com.bloxbean.cardano.yano.api.events.AppMessageReceivedEvent;
 import com.bloxbean.cardano.yano.api.plugin.PluginActivationException;
@@ -396,7 +397,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     /**
      * @param stateMachine custom state machine (library mode); null = resolve
      *                     from config.stateMachineId() (built-ins)
-     * @param ledgerPath   base dir for the app ledger; null = "./app-chain"
+     * @param ledgerPath   base dir for the app ledger; null = "appchain-state"
      */
     public AppChainSubsystem(AppChainConfig config, long protocolMagic, EventBus eventBus,
                              AppStateMachine stateMachine, String ledgerPath, Logger log) {
@@ -483,7 +484,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                                     });
                                 }
                             }, log);
-            this.ledgerPath = (ledgerPath != null ? ledgerPath : "./app-chain")
+            this.ledgerPath = (ledgerPath != null
+                    ? ledgerPath : YanoConfig.DEFAULT_APP_CHAIN_STORAGE_PATH)
                     + "/" + config.chainId();
 
             if (!group.contains(signer.publicKeyHex())) {

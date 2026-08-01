@@ -26,8 +26,7 @@ import java.util.Set;
  * @param stateMachineId    built-in state machine id ("ordered-log") — custom
  *                          state machines are supplied programmatically or via
  *                          plugins (AppStateMachineProvider)
- * @param ledgerPath        RocksDB directory for the app ledger; null = derive
- *                          from the node storage path
+ * @param ledgerPath        optional programmatic RocksDB directory for the app ledger
  * @param anchor            L1 anchoring policy; null = anchoring disabled
  * @param l1StabilityDepth  minimum depth (blocks) of the L1 reference carried in
  *                          app blocks; 0 = no L1 reference

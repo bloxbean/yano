@@ -5,3 +5,4 @@ services:
       YANO_NETWORK: ${YANO_NETWORK:-devnet}
     volumes:
       - ${YANO_CHAINSTATE_PATH:-../chainstate-devnet}:/app/chainstate
+      - ${YANO_APPCHAIN_STATE_PATH:-../appchain-state-devnet}:/app/appchain-state

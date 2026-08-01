@@ -2198,7 +2198,7 @@ def _target_specs(
         for index in range(3):
             links.append(
                 ManagedHostLink(
-                    l1_root / "host-cluster" / f"node{index}" / "chainstate" / "app-chain",
+                    l1_root / "host-cluster" / f"node{index}" / "appchain-state",
                     data_root / "app-chain" / f"node{index}",
                 )
             )
@@ -2350,7 +2350,7 @@ def _prevalidate_cleanup_targets(
 
 def _prevalidate_host_links(links: Sequence[ManagedHostLink]) -> None:
     for link in links:
-        l1_root = link.path.parents[3]
+        l1_root = link.path.parents[2]
         _reject_symlink_components(
             l1_root,
             link.path.relative_to(l1_root).parts[:-1],

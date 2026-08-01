@@ -278,7 +278,7 @@ with the block that finalizes them.
 ## 7. State, the MPF trie, and proofs
 
 Each chain's ledger is one RocksDB instance
-(`<yano.storage.path>/app-chain/<chain-id>/`) holding column families for
+(`<resolved yano.app-chain.storage.path>/<chain-id>/`) holding column families for
 blocks, framework metadata, the message index, query indexes, and the **MPF
 trie nodes** (Merkle Patricia Forestry — the same construction as Aiken's
 `merkle-patricia-forestry`, so proofs are on-chain-verifiable).

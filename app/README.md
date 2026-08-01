@@ -117,6 +117,7 @@ java -Dquarkus.profile=devnet -jar build/yano.jar
 | `yano.remote.port` | 30000 | Upstream relay port |
 | `yano.remote.protocol-magic` | 1 | Network protocol magic |
 | `yano.storage.path` | ./chainstate | RocksDB storage directory |
+| `yano.app-chain.storage.path` | appchain-state | Process-relative app-chain RocksDB root |
 | `yano.block-producer.block-time-millis` | 0 | Block production interval in ms; `0` means derive from genesis (`shelley-genesis.slotLength`). |
 | `yano.block-producer.script-evaluator` | `aiken` | Plutus script evaluator (`aiken` or `scalus`) |
 

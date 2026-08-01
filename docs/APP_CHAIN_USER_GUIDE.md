@@ -842,6 +842,20 @@ Extension settings are documented next to the capability they configure:
 `chains[i].*` (§8), `webhooks` and `sinks.*` (§10), `api.auth.enabled` and
 `api.keys` (§12), `retention.*` (§13), `zk.*` (§17), `effects.*` (§18).
 
+App-chain state has its own node-local storage root:
+
+```yaml
+yano:
+  app-chain:
+    storage:
+      path: appchain-state  # default
+```
+
+An absolute value is used as-is. A relative value uses the process working
+directory, like `yano.storage.path`. With the usual working directory and L1
+state at `./chainstate`, the default produces `./appchain-state`. Multi-node
+launchers must assign a distinct app-chain storage path to every node.
+
 Current v1 `effects.*` consensus settings—including `result.signers`, caps,
 commitment mode and root/record algorithms—are immutable after chain launch.
 Machine activation is implemented, but framework-level effect-setting epochs
@@ -849,8 +863,9 @@ from ADR-010.1 D5 are still pending; changing these values on an existing
 history can make replay diverge.
 
 Storage: each app ledger is a separate RocksDB at
-`<yano.storage.path>/app-chain/<chain-id>/` — blocks, state trie, indexes and
-anchor markers commit atomically and are independent of the L1 chain state.
+`<resolved yano.app-chain.storage.path>/<chain-id>/` — blocks, state trie,
+indexes and anchor markers commit atomically and are independent of the L1
+chain state.
 Back it up like any RocksDB directory (node stopped), or use snapshots (§14).
 The app chain is append-only after finality; there is no rollback path.
 
@@ -898,7 +913,8 @@ yano:
 - REST: `GET /app-chain/chains` lists hosted chains; address one with
   `/app-chain/chains/{chainId}/...`. The chain-less paths keep working when
   exactly one chain is configured; with several they return `400`.
-- Each chain stores its ledger under `<yano.storage.path>/app-chain/<chain-id>/`.
+- Each chain stores its ledger under
+  `<resolved yano.app-chain.storage.path>/<chain-id>/`.
 
 ---
 
@@ -1211,7 +1227,7 @@ An atomic ledger snapshot lets a new member start without replaying history:
 curl -XPOST localhost:8080/api/v1/app-chain/snapshot \
      -H 'content-type: application/json' -d '{"path":"/backups/snap-1"}'
 # copy the directory to the new node's app-chain ledger path
-# (<yano.storage.path>/app-chain/<chain-id>/), then start it
+# (<resolved yano.app-chain.storage.path>/<chain-id>/), then start it
 ```
 
 Every snapshot carries a **signed manifest** (`snapshot-manifest.json` +

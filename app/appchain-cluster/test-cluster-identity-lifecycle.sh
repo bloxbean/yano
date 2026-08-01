@@ -107,9 +107,9 @@ PY
 attach_appchain_state() {
   local instance="$1" chain="$2" i root target link
   for i in 0 1; do
-    root="$CLUSTER_DIR/node$i/chainstate"
+    root="$CLUSTER_DIR/node$i"
     target="$WORK/instances/$instance/node$i"
-    link="$root/app-chain"
+    link="$root/appchain-state"
     mkdir -p "$root" "$target/$chain"
     touch "$target/$chain/CURRENT"
     if [ -e "$link" ] && [ ! -L "$link" ]; then
@@ -346,7 +346,10 @@ grep -q 'bounded launcher-owned 0400/0600 regular file' "$WORK/external-mode.log
   || die_test "executable external marker produced the wrong diagnostic"
 chmod 600 "$MARKER_A"
 
-for i in 0 1; do touch "$CLUSTER_DIR/node$i/chainstate/CURRENT"; done
+for i in 0 1; do
+  mkdir -p "$CLUSTER_DIR/node$i/chainstate"
+  touch "$CLUSTER_DIR/node$i/chainstate/CURRENT"
+done
 
 SELECTED_CHAIN="evidence-chain-b"
 select_member_profile "$KEYS_B"
@@ -377,9 +380,10 @@ ensure_cluster_identity 2
 STANDALONE_MARKER="$(cluster_app_identity_file)"
 [ -f "$STANDALONE_MARKER" ] || die_test "standalone app-chain marker was not installed"
 STANDALONE_DIGEST="$(file_digest "$STANDALONE_MARKER")"
-mkdir -p "$CLUSTER_DIR/node0/chainstate/app-chain/$SELECTED_CHAIN"
+mkdir -p "$CLUSTER_DIR/node0/chainstate" \
+  "$CLUSTER_DIR/node0/appchain-state/$SELECTED_CHAIN"
 touch "$CLUSTER_DIR/node0/chainstate/CURRENT"
-touch "$CLUSTER_DIR/node0/chainstate/app-chain/$SELECTED_CHAIN/CURRENT"
+touch "$CLUSTER_DIR/node0/appchain-state/$SELECTED_CHAIN/CURRENT"
 
 select_member_profile "$KEYS_B"
 select_anchor_profile "$ANCHOR_A"

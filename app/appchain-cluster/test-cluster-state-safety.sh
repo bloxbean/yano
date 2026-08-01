@@ -164,7 +164,7 @@ if command -v jq >/dev/null 2>&1; then
     || die_test "unset genesis input changed the standalone epochLength behavior"
 fi
 
-# A fake long-running node exposes the exact three launcher-owned signature
+# A fake long-running node exposes the exact four launcher-owned signature
 # properties without opening sockets or running Yano.
 FAKE_NODE="$WORK/fake-node"
 printf '%s\n' '#!/bin/sh' \
@@ -186,7 +186,8 @@ start_fake_node() {
     "-Dquarkus.profile=pid-test" \
     "-Dquarkus.http.port=$(http_port "$i")" \
     "-Dyano.server.port=$(server_port "$i")" \
-    "-Dyano.storage.path=$(node_dir "$i")/chainstate" &
+    "-Dyano.storage.path=$(node_dir "$i")/chainstate" \
+    "-Dyano.app-chain.storage.path=$(node_dir "$i")/appchain-state" &
   STARTED_PID=$!
 }
 
@@ -230,7 +231,8 @@ start_term_ignoring_node() {
     "-Dquarkus.profile=pid-test" \
     "-Dquarkus.http.port=$(http_port "$i")" \
     "-Dyano.server.port=$(server_port "$i")" \
-    "-Dyano.storage.path=$(node_dir "$i")/chainstate" &
+    "-Dyano.storage.path=$(node_dir "$i")/chainstate" \
+    "-Dyano.app-chain.storage.path=$(node_dir "$i")/appchain-state" &
   STARTED_PID=$!
   for attempt in {1..100}; do
     [ -f "$WORK/ignore-term-ready.$STARTED_PID" ] && return 0

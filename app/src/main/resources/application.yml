@@ -123,6 +123,10 @@ yano:
   # App chain (parallel application ledger over the appmsg protocol).
   # See adr/app-layer/005-yano-app-chain-framework.md. Disabled by default.
   app-chain:
+    # Node-local app-chain RocksDB root. Relative paths use the process working
+    # directory, so the default is separate from ./chainstate.
+    storage:
+      path: ${YANO_APP_CHAIN_STORAGE_PATH:appchain-state}
     # enabled: false        # absent = disabled; an EXPLICIT false also suppresses
     #                       # chains[i] auto-enable (operator override)
     # chain-id: "my-app-chain"

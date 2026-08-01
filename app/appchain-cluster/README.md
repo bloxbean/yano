@@ -189,7 +189,11 @@ For a new node on this host, use the high-level command:
 threshold of approvals on every configured chain, records the new membership
 epoch, starts node 3 from the immutable bootstrap configuration, catches up the
 governed history, and verifies that its tip and state root match an existing
-node on all chains. Join indices are sequential. The built-in identity table
+node on all chains. It then refreshes the existing local processes one at a
+time with the expanded peer endpoint set. This is a transport-topology
+refresh only: retained state is reused and no governance command is
+resubmitted. It ensures the new member can receive proposal and script-anchor
+co-sign requests. Join indices are sequential. The built-in identity table
 supports nodes 0 through 15; indices 16 through 31 require python's
 `cryptography` package unless operator key files are supplied. With
 `YANO_CLUSTER_MEMBER_KEY_DIR`, supply the matching `node3.seed` and
@@ -209,6 +213,26 @@ node with the same immutable bootstrap members, chain definitions, threshold,
 and network identity; its verified catch-up derives the later governed epoch.
 The immutable `cluster-appchain-identity.json` marker intentionally remains a
 bootstrap/genesis identity and is not rewritten after governance changes.
+
+After a clean stop, restart an already governed joiner without submitting a
+second membership command:
+
+```bash
+./cluster.sh start 3
+./cluster.sh node resume 3
+```
+
+`resume` requires retained node state and only starts/catches up that identity;
+it never changes membership history. The showcase facade performs this step
+automatically for every joiner recorded by its `restart` command.
+
+Do not schedule a second membership or threshold epoch while the first is
+still delayed. The launcher now rejects that overlap because the later epoch
+could otherwise replace the pending member set. Advance ordinary application
+traffic to the printed activation height first. The showcase distribution
+provides `showcase.sh governance activate` to do this with clearly labeled,
+valid state-machine-specific traffic on every curated chain, followed by a
+proof block under the activated profile.
 
 ## Default effects demonstration
 
@@ -400,9 +424,10 @@ commands read that file automatically. Explicit `--http-base` /
 `--server-base` values (and their `YANO_CLUSTER_*` environment equivalents)
 are strict and fail early when busy or overlapping.
 
-The data directory defaults to `/tmp/yano-appchain-cluster`. When using a
-custom `--data-dir`, pass it to later commands so they can locate that
-cluster's saved ports.
+The data directory defaults to `/tmp/yano-appchain-cluster`. Each node stores
+L1 state in `nodeN/chainstate` and app-chain state independently in
+`nodeN/appchain-state`. When using a custom `--data-dir`, pass it to later
+commands so they can locate that cluster's saved ports.
 
 `cluster.env` and PID metadata are strictly parsed data files; they are never
 sourced as shell code. `status` and `stop` accept a PID only when its record is
@@ -499,6 +524,7 @@ a distinct script address.
 ./cluster.sh status                health + per-chain tips/roots + consistency
 ./cluster.sh node join <index>     govern, start, catch up, and verify one node
 ./cluster.sh member add <pubkey>   governance-only add across all chains
+./cluster.sh threshold set <n>     govern a threshold after prior epochs activate
 ./cluster.sh effect demo           run the dependency-free effects lifecycle
 ./cluster.sh submit ...            submit a payload to an ordered-log chain
 ./cluster.sh kv ...                set/del on a kv-registry chain
@@ -548,6 +574,7 @@ activate an unpackaged target.
   If retained state is missing that file, a supplied source differs, or a
   follower's copy differs from node 0, the launcher refuses to overwrite it:
   restore the original file or use `clean` for disposable state.
-- Everything lives under `--data-dir` (logs, per-node chainstate, genesis
-  copies); `./cluster.sh clean` wipes it. Stop the cluster before manually
-  removing its directory so live processes do not become orphaned.
+- Everything lives under `--data-dir` (logs, per-node `chainstate`, per-node
+  `appchain-state`, genesis copies); `./cluster.sh clean` wipes it. Stop the
+  cluster before manually removing its directory so live processes do not
+  become orphaned.
