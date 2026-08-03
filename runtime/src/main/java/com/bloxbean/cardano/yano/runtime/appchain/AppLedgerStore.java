@@ -1,6 +1,5 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
-import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.vds.mpf.rocksdb.RocksDbNodeStore;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppStateProofSnapshot;
@@ -67,8 +66,9 @@ final class AppLedgerStore implements AutoCloseable {
     private final ColumnFamilyHandle fxRecordsCf;
     private final ColumnFamilyHandle fxRuntimeCf;
     private final RocksDbNodeStore mpfNodeStore;
+    private final SharedRocksDbJmtStore jmtStore;
     private final StateCommitmentIdentity stateCommitmentIdentity;
-    private final MpfAuthenticatedStateBackend stateBackend;
+    private final AuthenticatedStateBackend stateBackend;
     private final StateCommitFaultInjector stateCommitFaults;
     private final Logger log;
 
@@ -85,18 +85,21 @@ final class AppLedgerStore implements AutoCloseable {
         this.log = Objects.requireNonNull(log, "log");
         this.stateCommitmentIdentity = Objects.requireNonNull(identity, "identity");
         this.stateCommitFaults = Objects.requireNonNull(stateCommitFaults, "stateCommitFaults");
-        if (!StateCommitmentProfiles.MPF.id().equals(stateCommitmentIdentity.profile().id())) {
+        String profileId = stateCommitmentIdentity.profile().id();
+        if (!StateCommitmentProfiles.MPF.id().equals(profileId)
+                && !StateCommitmentProfiles.CLASSIC_JMT.id().equals(profileId)) {
             throw new IllegalArgumentException(
-                    "Phase-2 runtime supports only mpf-blake2b256-v1");
+                    "Runtime state commitment profile is not released: " + profileId);
         }
-        try {
-            RocksDB.loadLibrary();
-            new File(path).mkdirs();
-
-            ColumnFamilyOptions defaultCfOptions = new ColumnFamilyOptions();
-            ColumnFamilyOptions mpfCfOptions = new ColumnFamilyOptions()
-                    .useFixedLengthPrefixExtractor(1); // namespace prefix used by RocksDbNodeStore
-
+        RocksDB.loadLibrary();
+        new File(path).mkdirs();
+        DBOptions openedOptions = new DBOptions()
+                .setCreateIfMissing(true)
+                .setCreateMissingColumnFamilies(true);
+        RocksDB openedDb;
+        try (ColumnFamilyOptions defaultCfOptions = new ColumnFamilyOptions();
+             ColumnFamilyOptions mpfCfOptions = new ColumnFamilyOptions()
+                     .useFixedLengthPrefixExtractor(1)) {
             List<ColumnFamilyDescriptor> descriptors = List.of(
                     new ColumnFamilyDescriptor(RocksDB.DEFAULT_COLUMN_FAMILY, defaultCfOptions),
                     new ColumnFamilyDescriptor(CF_BLOCKS, defaultCfOptions),
@@ -105,12 +108,22 @@ final class AppLedgerStore implements AutoCloseable {
                     new ColumnFamilyDescriptor(CF_MPF_NODES, mpfCfOptions),
                     new ColumnFamilyDescriptor(CF_QUERY_INDEX, defaultCfOptions),
                     new ColumnFamilyDescriptor(CF_FX_RECORDS, defaultCfOptions),
-                    new ColumnFamilyDescriptor(CF_FX_RUNTIME, defaultCfOptions));
-
-            this.dbOptions = new DBOptions()
-                    .setCreateIfMissing(true)
-                    .setCreateMissingColumnFamilies(true);
-            this.db = RocksDB.open(dbOptions, path, descriptors, cfHandles);
+                    new ColumnFamilyDescriptor(CF_FX_RUNTIME, defaultCfOptions),
+                    new ColumnFamilyDescriptor(SharedRocksDbJmtStore.CF_NODES, defaultCfOptions),
+                    new ColumnFamilyDescriptor(SharedRocksDbJmtStore.CF_VALUES, defaultCfOptions),
+                    new ColumnFamilyDescriptor(SharedRocksDbJmtStore.CF_ROOTS, defaultCfOptions),
+                    new ColumnFamilyDescriptor(SharedRocksDbJmtStore.CF_STALE, defaultCfOptions),
+                    new ColumnFamilyDescriptor(SharedRocksDbJmtStore.CF_METADATA, defaultCfOptions));
+            try {
+                openedDb = RocksDB.open(openedOptions, path, descriptors, cfHandles);
+            } catch (RocksDBException failure) {
+                closeHandlesAfterFailedOpen(failure, cfHandles, openedOptions);
+                throw new RuntimeException("Failed to open app ledger at " + path, failure);
+            }
+        }
+        this.dbOptions = openedOptions;
+        this.db = openedDb;
+        try {
             this.blocksCf = cfHandles.get(1);
             this.metaCf = cfHandles.get(2);
             this.msgsCf = cfHandles.get(3);
@@ -118,25 +131,23 @@ final class AppLedgerStore implements AutoCloseable {
             this.queryIndexCf = cfHandles.get(5);
             this.fxRecordsCf = cfHandles.get(6);
             this.fxRuntimeCf = cfHandles.get(7);
-            this.stateBackend = new MpfAuthenticatedStateBackend(
-                    this, mpfNodeStore, stateCommitmentIdentity, stateCommitFaults);
-            try {
-                stateCommitFaults.at(
-                        StateCommitFaultInjector.FaultPoint.BEFORE_RESTART_VERIFICATION);
-                verifyRetainedStateIdentity();
-                stateCommitFaults.at(
-                        StateCommitFaultInjector.FaultPoint.AFTER_RESTART_VERIFICATION);
-            } catch (RuntimeException incompatible) {
-                try {
-                    close();
-                } catch (Throwable closeFailure) {
-                    incompatible.addSuppressed(closeFailure);
-                }
-                throw incompatible;
-            }
+            this.jmtStore = new SharedRocksDbJmtStore(db,
+                    cfHandles.get(8), cfHandles.get(9), cfHandles.get(10),
+                    cfHandles.get(11), cfHandles.get(12));
+            this.stateBackend = StateCommitmentProfiles.MPF.id().equals(profileId)
+                    ? new MpfAuthenticatedStateBackend(
+                    this, mpfNodeStore, stateCommitmentIdentity, stateCommitFaults)
+                    : new ClassicJmtAuthenticatedStateBackend(
+                    this, jmtStore, stateCommitmentIdentity, stateCommitFaults);
+            stateCommitFaults.at(
+                    StateCommitFaultInjector.FaultPoint.BEFORE_RESTART_VERIFICATION);
+            verifyRetainedStateIdentity();
+            stateCommitFaults.at(
+                    StateCommitFaultInjector.FaultPoint.AFTER_RESTART_VERIFICATION);
             log.info("App ledger opened at {} (tip height: {})", path, tipHeight());
-        } catch (RocksDBException e) {
-            throw new RuntimeException("Failed to open app ledger at " + path, e);
+        } catch (RuntimeException failure) {
+            closeDatabaseAfterFailedInitialization(failure);
+            throw failure;
         }
     }
 
@@ -146,6 +157,10 @@ final class AppLedgerStore implements AutoCloseable {
 
     AuthenticatedStateBackend stateBackend() {
         return stateBackend;
+    }
+
+    int pruneStateProofsBefore(long retainFromHeight) {
+        return stateBackend.pruneBefore(retainFromHeight);
     }
 
     StateCommitmentIdentity stateCommitmentIdentity() {
@@ -420,39 +435,47 @@ final class AppLedgerStore implements AutoCloseable {
         }
     }
 
-    /** Read a key from the committed state trie. */
+    /** Read a key from the committed authenticated-state backend. */
     Optional<byte[]> stateGet(byte[] key) {
-        byte[] root = stateRoot();
-        if (root == null) {
+        long height = tipHeight();
+        if (height == 0) {
             return Optional.empty();
         }
-        MpfTrie trie = new MpfTrie(mpfNodeStore, root);
-        return Optional.ofNullable(trie.get(key));
+        return stateBackend.get(height, key);
     }
 
-    /** MPF inclusion or exclusion proof for a key against the committed root. */
+    /** Native inclusion/exclusion proof for a key against the committed root. */
     Optional<byte[]> stateProofWire(byte[] key) {
-        byte[] root = stateRoot();
-        if (root == null) {
+        long height = tipHeight();
+        if (height == 0) {
             return Optional.empty();
         }
-        return new MpfTrie(mpfNodeStore, root).getProofWire(key);
+        return stateBackend.prove(height, key).map(proof -> proof.nativeProof());
     }
 
-    /** Read a key against a retained historical MPF root. */
+    /** Read a key against a retained historical root (legacy compatibility helper). */
     Optional<byte[]> stateGetAtRoot(byte[] root, byte[] key) {
-        if (root == null || root.length != 32) {
-            return Optional.empty();
-        }
-        return Optional.ofNullable(new MpfTrie(mpfNodeStore, root).get(key));
+        return heightForStateRoot(root).flatMap(height -> stateGetAtHeight(height, root, key));
     }
 
-    /** Build an inclusion or exclusion proof against a retained historical root. */
+    /** Build a proof against a retained historical root (legacy compatibility helper). */
     Optional<byte[]> stateProofWireAtRoot(byte[] root, byte[] key) {
-        if (root == null || root.length != 32) {
+        return heightForStateRoot(root)
+                .flatMap(height -> stateProofWireAtHeight(height, root, key));
+    }
+
+    Optional<byte[]> stateGetAtHeight(long height, byte[] root, byte[] key) {
+        if (!rootMatchesHeight(height, root)) {
             return Optional.empty();
         }
-        return new MpfTrie(mpfNodeStore, root).getProofWire(key);
+        return stateBackend.get(height, key);
+    }
+
+    Optional<byte[]> stateProofWireAtHeight(long height, byte[] root, byte[] key) {
+        if (!rootMatchesHeight(height, root)) {
+            return Optional.empty();
+        }
+        return stateBackend.prove(height, key).map(proof -> proof.nativeProof());
     }
 
     /**
@@ -467,13 +490,15 @@ final class AppLedgerStore implements AutoCloseable {
             return Optional.empty();
         }
         byte[] root = committed.stateRoot();
-        Optional<byte[]> proof = stateProofWireAtRoot(root, keySnapshot);
+        Optional<com.bloxbean.cardano.yano.api.appchain.state.StateProof> proof =
+                stateBackend.prove(committed.height(), keySnapshot);
         if (proof.isEmpty()) {
             return Optional.empty();
         }
-        byte[] value = stateGetAtRoot(root, keySnapshot).orElse(null);
+        var retainedProof = proof.orElseThrow();
         return Optional.of(new AppStateProofSnapshot(
-                keySnapshot, value, proof.orElseThrow(), root, committed.height()));
+                keySnapshot, retainedProof.value(), retainedProof.nativeProof(), root,
+                committed.height()));
     }
 
     /** Build a proof against the exact post-state root of a retained block. */
@@ -487,13 +512,34 @@ final class AppLedgerStore implements AutoCloseable {
             return Optional.empty();
         }
         byte[] root = block.orElseThrow().stateRoot();
-        Optional<byte[]> proof = stateProofWireAtRoot(root, keySnapshot);
+        Optional<com.bloxbean.cardano.yano.api.appchain.state.StateProof> proof =
+                stateBackend.prove(height, keySnapshot);
         if (proof.isEmpty()) {
             return Optional.empty();
         }
-        byte[] value = stateGetAtRoot(root, keySnapshot).orElse(null);
+        var retainedProof = proof.orElseThrow();
         return Optional.of(new AppStateProofSnapshot(
-                keySnapshot, value, proof.orElseThrow(), root, height));
+                keySnapshot, retainedProof.value(), retainedProof.nativeProof(), root, height));
+    }
+
+    private Optional<Long> heightForStateRoot(byte[] root) {
+        if (root == null || root.length != stateCommitmentIdentity.profile().rootLength()) {
+            return Optional.empty();
+        }
+        for (long height = tipHeight(); height > 0; height--) {
+            Optional<AppBlock> candidate = block(height);
+            if (candidate.isPresent()
+                    && Arrays.equals(candidate.orElseThrow().stateRoot(), root)) {
+                return Optional.of(height);
+            }
+        }
+        return Optional.empty();
+    }
+
+    private boolean rootMatchesHeight(long height, byte[] root) {
+        return height > 0 && root != null
+                && block(height).map(AppBlock::stateRoot)
+                .filter(blockRoot -> Arrays.equals(blockRoot, root)).isPresent();
     }
 
     Optional<StateProofEnvelope> stateProofEnvelope(String chainId, byte[] key) {
@@ -757,7 +803,10 @@ final class AppLedgerStore implements AutoCloseable {
         if (tipHeight() != block.height()
                 || !Arrays.equals(tipHash(), blockHash)
                 || !Arrays.equals(stateRoot(), stateRoot)
-                || !blockMatches) {
+                || !blockMatches
+                || stateBackend.snapshot(block.height())
+                .filter(snapshot -> Arrays.equals(snapshot.stateRoot(), stateRoot))
+                .isEmpty()) {
             throw new IllegalStateException(
                     "Atomic app block/state commit verification failed at height " + block.height());
         }
@@ -936,7 +985,8 @@ final class AppLedgerStore implements AutoCloseable {
             // A retained authenticated leaf without its local lookup metadata
             // is corruption, not an ordinary 404.
             block(height).ifPresent(emissionBlock -> {
-                if (stateGetAtRoot(emissionBlock.stateRoot(), FxKeys.effectsRootKey(height))
+                if (stateGetAtHeight(height, emissionBlock.stateRoot(),
+                        FxKeys.effectsRootKey(height))
                         .isPresent()) {
                     throw new IllegalStateException(
                             "Historical effect root exists without metadata at height " + height);
@@ -969,7 +1019,7 @@ final class AppLedgerStore implements AutoCloseable {
         }
         byte[] historicalStateRoot = emissionBlock.stateRoot();
         byte[] stateKey = FxKeys.effectsRootKey(height);
-        byte[] trieValue = stateGetAtRoot(historicalStateRoot, stateKey)
+        byte[] trieValue = stateGetAtHeight(height, historicalStateRoot, stateKey)
                 .orElseThrow(() -> new IllegalStateException(
                         "Historical state omits effect root at height " + height));
         if (!java.util.Arrays.equals(trieValue, committedEffectsRoot)) {
@@ -999,7 +1049,7 @@ final class AppLedgerStore implements AutoCloseable {
             throw new IllegalStateException("Effect records do not match metadata root at height " + height);
         }
 
-        byte[] stateProof = stateProofWireAtRoot(historicalStateRoot, stateKey)
+        byte[] stateProof = stateProofWireAtHeight(height, historicalStateRoot, stateKey)
                 .orElseThrow(() -> new IllegalStateException(
                         "Historical effect-root proof unavailable at height " + height));
         EffectProof proof = new EffectProof(EffectProof.PROOF_VERSION,
@@ -1716,9 +1766,53 @@ final class AppLedgerStore implements AutoCloseable {
         return ByteBuffer.allocate(8).putLong(value).array();
     }
 
+    private static void closeHandlesAfterFailedOpen(
+            Throwable primary,
+            List<ColumnFamilyHandle> handles,
+            DBOptions options
+    ) {
+        for (ColumnFamilyHandle handle : handles) {
+            try {
+                handle.close();
+            } catch (Throwable closeFailure) {
+                primary.addSuppressed(closeFailure);
+            }
+        }
+        try {
+            options.close();
+        } catch (Throwable closeFailure) {
+            primary.addSuppressed(closeFailure);
+        }
+    }
+
+    private void closeDatabaseAfterFailedInitialization(Throwable primary) {
+        for (ColumnFamilyHandle handle : cfHandles) {
+            try {
+                handle.close();
+            } catch (Throwable closeFailure) {
+                primary.addSuppressed(closeFailure);
+            }
+        }
+        try {
+            db.close();
+        } catch (Throwable closeFailure) {
+            primary.addSuppressed(closeFailure);
+        }
+        try {
+            dbOptions.close();
+        } catch (Throwable closeFailure) {
+            primary.addSuppressed(closeFailure);
+        }
+    }
+
     @Override
     public void close() {
         Throwable closeFailure = null;
+        try {
+            stateBackend.close();
+        } catch (Throwable failure) {
+            closeFailure = mergeCloseFailure(closeFailure, failure);
+        }
         for (ColumnFamilyHandle handle : cfHandles) {
             try {
                 handle.close();

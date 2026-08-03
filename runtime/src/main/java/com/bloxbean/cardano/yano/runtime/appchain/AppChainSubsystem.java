@@ -1594,6 +1594,37 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     @Override
+    public Optional<com.bloxbean.cardano.yano.api.appchain.state.StateIntegrityReport>
+    stateIntegrity() {
+        return generationUseOr(Optional.empty(), () -> {
+            AppLedgerStore currentLedger = ledger;
+            return currentLedger != null
+                    ? Optional.of(currentLedger.stateBackend().verifyIntegrity())
+                    : Optional.empty();
+        });
+    }
+
+    @Override
+    public long oldestProvableHeight() {
+        return generationUseOr(0L, () -> {
+            AppLedgerStore currentLedger = ledger;
+            return currentLedger != null
+                    ? currentLedger.stateBackend().oldestProvableHeight() : 0L;
+        });
+    }
+
+    @Override
+    public int pruneStateProofsBefore(long retainFromHeight) {
+        return requireGenerationUse(() -> {
+            AppLedgerStore currentLedger = ledger;
+            if (currentLedger == null) {
+                throw new IllegalStateException("App-chain ledger is unavailable");
+            }
+            return currentLedger.pruneStateProofsBefore(retainFromHeight);
+        });
+    }
+
+    @Override
     public Optional<com.bloxbean.cardano.yano.api.appchain.AppAnchorCommitment>
             latestAnchorCommitment() {
         return generationUseOr(Optional.empty(), this::latestAnchorCommitmentWithinGeneration);
@@ -1987,7 +2018,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             beginRead();
             try {
                 byte[] keyCopy = Objects.requireNonNull(key, "key").clone();
-                return ledger.stateGetAtRoot(stateRoot, keyCopy)
+                return ledger.stateGetAtHeight(committedHeight, stateRoot, keyCopy)
                         .map(byte[]::clone);
             } finally {
                 endRead();
@@ -2888,12 +2919,19 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         status.put("profile", stateCommitmentIdentity.profile().id());
         status.put("backend", stateCommitmentIdentity.profile().backendFamily().name().toLowerCase(
                 Locale.ROOT));
+        status.put("dependencyDescriptor",
+                stateCommitmentIdentity.profile().dependencyDescriptor());
+        status.put("nativeProofEncoding",
+                stateCommitmentIdentity.profile().nativeProofEncoding());
+        status.put("nativeVersioning", stateCommitmentIdentity.profile().nativeVersioning());
+        status.put("physicalDelete", stateCommitmentIdentity.profile().physicalDelete());
         status.put("formatFingerprint", HexUtil.encodeHexString(
                 stateCommitmentIdentity.profile().formatFingerprint()));
         status.put("genesisId", HexUtil.encodeHexString(stateCommitmentIdentity.genesisId()));
         status.put("legacy", stateCommitmentIdentity.legacy());
         AppLedgerStore currentLedger = ledger;
         if (currentLedger != null) {
+            status.put("latestVersion", currentLedger.tipHeight());
             status.put("oldestProvableHeight", currentLedger.stateBackend().oldestProvableHeight());
         }
         return Map.copyOf(status);

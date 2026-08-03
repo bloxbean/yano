@@ -34,6 +34,19 @@ public final class AuthenticatedMapGenesisFactory {
                 maxBatchItems, maxBatchBytes, collections, initialEntries);
     }
 
+    /** Construct a Phase-3 classic Blake2b-256 JMT genesis identity. */
+    public static AuthenticatedMapContract.Genesis classicJmt(
+            AppChainConfig config,
+            byte[] anchorPolicyCommitment,
+            int maxBatchItems,
+            int maxBatchBytes,
+            List<AuthenticatedMapContract.CollectionDescriptor> collections,
+            List<AuthenticatedMapContract.GenesisEntry> initialEntries
+    ) {
+        return create(config, StateCommitmentProfiles.CLASSIC_JMT, anchorPolicyCommitment,
+                maxBatchItems, maxBatchBytes, collections, initialEntries);
+    }
+
     /** Encode one genesis as the exact plugin setting consumed by the provider. */
     public static Map<String, String> settings(AuthenticatedMapContract.Genesis genesis) {
         String encoded = HexFormat.of().formatHex(

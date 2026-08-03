@@ -243,14 +243,14 @@ class PreparedStateCommitRuntimeTest {
     }
 
     @Test
-    void phaseTwoRejectsAnUnavailableBackendBeforeOpeningRocksDb(@TempDir Path directory) {
-        Path ledgerPath = directory.resolve("jmt-ledger");
+    void runtimeRejectsAnUnavailableBackendBeforeOpeningRocksDb(@TempDir Path directory) {
+        Path ledgerPath = directory.resolve("poseidon-jmt-ledger");
         StateCommitmentIdentity jmt = StateCommitmentIdentity.explicit(
-                StateCommitmentProfiles.CLASSIC_JMT, repeated(5, 32));
+                StateCommitmentProfiles.POSEIDON_JMT, repeated(5, 32));
         assertThatThrownBy(() -> new AppLedgerStore(
                 ledgerPath.toString(), LoggerFactory.getLogger("prepared-state-jmt"), jmt))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("supports only mpf-blake2b256-v1");
+                .hasMessageContaining("not released");
         assertThat(ledgerPath).doesNotExist();
     }
 

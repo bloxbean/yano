@@ -22,6 +22,9 @@ dependencies {
     // App-chain state commitment (Merkle Patricia Forestry, Aiken-compatible)
     implementation libs.cardano.client.mpf
     implementation libs.cardano.client.mpf.rocksdb
+    // ADR-025 Phase 3: pinned classic radix-16 Blake2b-256 JMT core. Its
+    // persistence SPI is implemented against this runtime's shared WriteBatch.
+    implementation libs.cardano.client.jmt
     api project(':ledger-rules')
     api project(':ledger-state')
     implementation libs.jackson.databind
@@ -42,6 +45,20 @@ dependencies {
 
     // Generate @DomainEventListener bindings at build time
     annotationProcessor libs.yaci.events.processor
+}
+
+tasks.register('benchmarkAdr025ClassicJmtRuntime', JavaExec) {
+    group = 'verification'
+    description = 'Runs the ADR-025 Phase 3 durable classic-JMT runtime benchmark'
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.runtime.appchain.ClassicJmtRuntimeBenchmark'
+    def report = layout.buildDirectory.file('reports/adr025/phase3-classic-jmt-runtime.json')
+    args report.get().asFile.absolutePath,
+            providers.gradleProperty('adr025RuntimeKeys').getOrElse('100000'),
+            providers.gradleProperty('adr025RuntimeBatch').getOrElse('100'),
+            providers.gradleProperty('adr025RuntimeProofs').getOrElse('128')
+    outputs.file(report)
 }
 
 java {

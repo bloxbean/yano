@@ -19,7 +19,7 @@ public record StateProof(
         }
         value = value != null ? value.clone() : null;
         presence = Objects.requireNonNull(presence, "presence");
-        if (presence == Presence.PRESENT ? value == null : value != null) {
+        if (presence == Presence.ABSENT ? value != null : value == null) {
             throw new IllegalArgumentException("state proof presence/value differ");
         }
         nativeProofEncoding = Objects.requireNonNull(
@@ -39,6 +39,8 @@ public record StateProof(
 
     public enum Presence {
         PRESENT,
-        ABSENT
+        ABSENT,
+        /** Native inclusion of the profile's reserved logical-deletion value. */
+        TOMBSTONED
     }
 }

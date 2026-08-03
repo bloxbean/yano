@@ -7,8 +7,10 @@ import java.util.Objects;
  * state snapshot.
  *
  * @param key             original state key proved by {@code proofWire}
- * @param value           committed value, or {@code null} for an exclusion proof
- * @param proofWire       MPF wire proof for {@code key} at {@code stateRoot}
+ * @param value           committed value, or {@code null} for a native exclusion
+ *                        proof; a logical-deletion inclusion carries its profile's
+ *                        reserved tombstone value
+ * @param proofWire       profile-native wire proof for {@code key} at {@code stateRoot}
  * @param stateRoot       committed state root against which the proof verifies
  * @param committedHeight finalized height whose post-state has {@code stateRoot}
  */
