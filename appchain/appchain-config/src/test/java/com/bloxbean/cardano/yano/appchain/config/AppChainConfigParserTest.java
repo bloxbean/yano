@@ -1,6 +1,8 @@
 package com.bloxbean.cardano.yano.appchain.config;
 
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;
@@ -23,6 +25,7 @@ class AppChainConfigParserTest {
         values.put("block.max-messages", "12");
         values.put("effects.enabled", "true");
         values.put("effects.max-per-block", "42");
+        values.put("state.commitment-profile", "mpf-blake2b256-v1");
         values.put("unowned.value", "ignored");
 
         AppChainConfig config = AppChainConfigParser.parse(values);
@@ -33,7 +36,8 @@ class AppChainConfigParserTest {
         assertThat(config.pluginSettings()).containsExactlyInAnyOrderEntriesOf(Map.of(
                 "sequencer.proposer", MEMBER,
                 "effects.enabled", "true",
-                "effects.max-per-block", "42"));
+                "effects.max-per-block", "42",
+                "state.commitment-profile", "mpf-blake2b256-v1"));
         assertThat(AppChainConfigSemantics.validate(config)).containsExactly(MEMBER);
     }
 
@@ -82,7 +86,31 @@ class AppChainConfigParserTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("effects.result.signerz");
         assertThat(AppChainConfigParser.strictOwnershipDomains())
-                .containsExactly("effects.result.");
+                .containsExactlyInAnyOrder("effects.result.", "state.");
+
+        settings.remove("effects.result.signerz");
+        settings.put("state.genesis-idd", "ab".repeat(32));
+        assertThatThrownBy(() -> AppChainConfigParser.parse(settings))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("state.genesis-idd");
+    }
+
+    @Test
+    void forwardsAndValidatesTheCompleteConsensusStateIdentity() {
+        Map<String, Object> values = base();
+        values.put(StateCommitmentIdentity.PROFILE_SETTING, "mpf-blake2b256-v1");
+        values.put(StateCommitmentIdentity.FINGERPRINT_SETTING,
+                java.util.HexFormat.of().formatHex(
+                        StateCommitmentProfiles.MPF.formatFingerprint()));
+        values.put(StateCommitmentIdentity.GENESIS_ID_SETTING, "ab".repeat(32));
+
+        AppChainConfig config = AppChainConfigParser.parse(values);
+        StateCommitmentIdentity identity = StateCommitmentIdentity.fromSettings(
+                config.pluginSettings());
+
+        assertThat(identity.profile().id()).isEqualTo("mpf-blake2b256-v1");
+        assertThat(identity.genesisId()).isEqualTo(java.util.HexFormat.of()
+                .parseHex("ab".repeat(32)));
     }
 
     private static Map<String, Object> base() {

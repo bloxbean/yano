@@ -13,9 +13,12 @@ import java.io.IOException;
 import java.math.BigInteger;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @Timeout(30)
 class StdlibAppChainClientTest {
@@ -111,6 +114,35 @@ class StdlibAppChainClientTest {
                         Hex.decode(queried.path("paramsHex").asText()));
         assertThat(decodedQuery.collectionId()).isEqualTo("products");
         assertThat(decodedQuery.applicationKey()).isEqualTo(key);
+    }
+
+    @Test
+    void authenticatedMapPreflightFailureNeverReachesHttpSubmission() throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
+        server.createContext("/api/v1/app-chain/chains/c1/messages", exchange -> {
+            requests.incrementAndGet();
+            respond(exchange, 500, "{}");
+        });
+        server.start();
+        StdlibAppChainClient client = new StdlibAppChainClient(AppChainClient.builder(
+                        "http://localhost:" + server.getAddress().getPort() + "/api/v1")
+                .chainId("c1").build());
+        AuthenticatedMapContract.Genesis genesis = new AuthenticatedMapContract.Genesis(
+                "c1", AuthenticatedMapContract.PROFILE_MPF_BLAKE2B256_V1,
+                new byte[32], new byte[32], new byte[32], new byte[32],
+                16, 1024,
+                List.of(new AuthenticatedMapContract.CollectionDescriptor(
+                        "records", AuthenticatedMapContract.AUTH_OPEN, false,
+                        1, 1)),
+                List.of());
+        AuthenticatedMapPreflight preflight = AuthenticatedMapPreflight.fromGenesis(genesis);
+
+        assertThatThrownBy(() -> client.authenticatedMapMutate(
+                AuthenticatedMapContract.Mutation.put(
+                        "records", new byte[]{1}, new byte[]{1, 2}), preflight))
+                .isInstanceOf(AuthenticatedMapPreflight.PreflightException.class);
+        assertThat(requests).hasValue(0);
     }
 
     private static void respond(HttpExchange exchange, int status, String body) throws IOException {

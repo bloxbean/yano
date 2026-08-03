@@ -252,9 +252,11 @@ class YanoProducerTest {
         producer.appConfig = new PresentConfig(Map.of(
                 "yano.app-chain.effects.enabled", "true",
                 "yano.app-chain.effects.metrics.types", "cardano.payment,webhook",
+                "yano.app-chain.state.commitment-profile", "mpf-blake2b256-v1",
                 "yano.app-chain.chains[0].chain-id", "payments",
                 "yano.app-chain.chains[0].effects.enabled", "true",
                 "yano.app-chain.chains[0].effects.executor.enabled", "true",
+                "yano.app-chain.chains[0].state.genesis-id", "ab".repeat(32),
                 "yano.app-chain.chains[0].unrelated.value", "ignored"));
 
         Map<String, Object> globals = new java.util.LinkedHashMap<>();
@@ -262,11 +264,14 @@ class YanoProducerTest {
         assertEquals("true", globals.get("yano.app-chain.effects.enabled"));
         assertEquals("cardano.payment,webhook",
                 globals.get("yano.app-chain.effects.metrics.types"));
+        assertEquals("mpf-blake2b256-v1",
+                globals.get("yano.app-chain.state.commitment-profile"));
 
         var chain = producer.parseAppChainChains().getFirst();
         assertEquals("payments", chain.get("chain-id"));
         assertEquals("true", chain.get("effects.enabled"));
         assertEquals("true", chain.get("effects.executor.enabled"));
+        assertEquals("ab".repeat(32), chain.get("state.genesis-id"));
         assertFalse(chain.containsKey("unrelated.value"));
     }
 

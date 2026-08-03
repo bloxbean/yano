@@ -20,6 +20,7 @@ credentials unless a guide explicitly says otherwise.
 | See three members finalize the same events | [Your first app chain](tutorials/01-first-app-chain.md) | No |
 | Use or customize the built-in append-only event log | [`ordered-log` reference](state-machines/ordered-log.md) | No, unless adding business rules |
 | Maintain a provable owner-controlled registry | [`kv-registry` reference](state-machines/kv-registry.md) | No |
+| Maintain multiple proof-oriented collections with optional value validation | [Authenticated-map validation guide](state-machines/authenticated-map-validation.md) | Configuration; plugin only for custom rules |
 | Collect member approvals and optionally trigger an action | [`approvals` reference](state-machines/approvals.md) | Configuration + typed commands |
 | Maintain a document-hash trail per product or case | [`doc-trail` reference](state-machines/doc-trail.md) | Configuration + typed commands |
 | Select a stock ledger/workflow capability | [Stock state-machine cookbook](tutorials/03-stock-state-machines.md) | Configuration + typed commands |
@@ -40,7 +41,7 @@ business-role authorization.
 
 | Availability | Capabilities |
 |---|---|
-| Bundled deterministic state | `ordered-log`, `kv-registry`, `approvals`, `balances`, `doc-trail`, `role-approvals`, evidence registry/profile |
+| Bundled deterministic state | `ordered-log`, `kv-registry`, `authenticated-map`, `approvals`, `balances`, `doc-trail`, `role-approvals`, evidence registry/profile |
 | Bundled external delivery | `webhook.post` effect executor and finalized webhook sink |
 | First-party optional | Kafka effect/sink, S3-compatible `object.put`, `ipfs.pin`, `cardano.payment` |
 | Experimental optional | ZK gate, anonymous membership and credential registry |
@@ -139,6 +140,7 @@ need full detail:
 - [Optional first-party connector installation](OPTIONAL_CONNECTORS.md)
 - [`ordered-log` state-machine reference](state-machines/ordered-log.md)
 - [`kv-registry` state-machine reference](state-machines/kv-registry.md)
+- [Authenticated-map value-validation guide](state-machines/authenticated-map-validation.md)
 - [`approvals` state-machine reference](state-machines/approvals.md)
 - [`doc-trail` state-machine reference](state-machines/doc-trail.md)
 - [`role-approvals` state-machine reference](state-machines/role-approvals.md)

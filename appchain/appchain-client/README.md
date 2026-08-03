@@ -13,6 +13,8 @@ Yaci networking stack. It provides:
 - profile-aware MPF/classic-JMT and composed effect-proof verification
 - typed stock-machine commands and verified state decoding through
   `StdlibAppChainClient`
+- advisory authenticated-map encoding/schema/plugin preflight through
+  `AuthenticatedMapPreflight`
 
 See also:
 
@@ -170,6 +172,19 @@ var balance = stock.balance("customer-42");
 The convenience topics are versioned (`*.command.v1`), but topics are routing
 labels rather than state-machine identities. A successful submit proves
 acceptance only; read the verified state after finalization for the outcome.
+
+Authenticated-map applications can decode the chain's canonical genesis and
+fail locally before HTTP submission:
+
+```java
+var preflight = AuthenticatedMapPreflight.fromEncodedGenesis(genesisBytes);
+var mutation = AuthenticatedMapContract.Mutation.put("products", key, value);
+stock.authenticatedMapMutate(mutation, preflight);
+```
+
+This is advisory. `REJECTED` and plugin `UNAVAILABLE` results stop the client
+call, while authoritative validation still occurs during state application.
+See the [authenticated-map validation guide](../../docs/appchain/state-machines/authenticated-map-validation.md).
 
 ## Test
 

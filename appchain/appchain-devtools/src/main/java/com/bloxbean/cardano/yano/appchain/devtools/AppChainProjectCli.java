@@ -68,6 +68,8 @@ final class AppChainProjectCli {
               --component-catalog <path>    exported signed catalog snapshot (repeatable)
               --trust-key <id=public-key>   trusted Ed25519 publisher key (repeatable)
               --acknowledge <id>            persist an explicit product acknowledgement
+              authenticated-map recipe      requires one --member-key per member; edit the
+                                            generated authenticatedMap section for schemas
             Drift options:
               --peer <http(s)-base-url>     repeat for every node to compare
               --api-key-env <variable>      read the privileged API key from this environment variable
@@ -360,8 +362,12 @@ final class AppChainProjectCli {
                 options.members(), options.memberKeys(), options.nodeHosts(),
                 options.finality(), options.sequencing(), options.membership(),
                 options.httpPortBase(), options.serverPortBase());
+        AppChainProjectModel.AuthenticatedMapIntent authenticatedMap =
+                "authenticated-map".equals(options.recipe())
+                        ? defaultAuthenticatedMapIntent() : null;
         AppChainProjectModel.ChainIntent chain = new AppChainProjectModel.ChainIntent(
-                chainId, options.recipe(), options.capabilities(), options.answers(), topology);
+                chainId, options.recipe(), options.capabilities(), options.answers(), topology,
+                authenticatedMap);
         AppChainProjectModel.Spec spec = new AppChainProjectModel.Spec(
                 valueOr(options.yanoVersion(), toolVersion()),
                 options.network(),
@@ -379,6 +385,18 @@ final class AppChainProjectCli {
                 output, blueprint, external.snapshotInputs());
         writeResult(options.format(), "PROJECT_INITIALIZED", output, lock);
         return AppChainDevtoolsCli.EXIT_OK;
+    }
+
+    private static AppChainProjectModel.AuthenticatedMapIntent defaultAuthenticatedMapIntent() {
+        return new AppChainProjectModel.AuthenticatedMapIntent(
+                "mpf-blake2b256-v1",
+                "00".repeat(32),
+                128,
+                65_536,
+                List.of(new AppChainProjectModel.AuthenticatedMapCollectionIntent(
+                        "records", "open", false, 128, 65_536,
+                        "opaque", null)),
+                List.of());
     }
 
     private int render(RenderOptions options) throws IOException {

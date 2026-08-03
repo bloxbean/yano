@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.appchain.config;
 
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 
 import java.util.ArrayList;
@@ -140,6 +141,7 @@ public final class AppChainResolvedValidator {
             AppChainConfig config = AppChainConfigParser.parse(settings);
             AppChainConfigSemantics.validate(config);
             AppChainEffectsConfig.from(config).consensusProfile(config);
+            StateCommitmentIdentity.fromSettings(config.pluginSettings());
             AppChainApprovalsConfig.fromSettings(settings);
             AppChainValidationContext context = new AppChainValidationContext(path, config, settings);
             for (AppChainSemanticValidator extension : extensions) {

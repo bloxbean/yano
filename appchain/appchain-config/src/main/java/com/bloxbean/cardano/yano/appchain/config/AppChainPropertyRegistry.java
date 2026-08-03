@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.config;
 
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 
@@ -37,6 +38,8 @@ public final class AppChainPropertyRegistry {
             dynamic("sinks.", "extension/sinks", "External finalized-data sinks"),
             dynamic("zk.", "extension/zk", "Zero-knowledge circuits and verification"),
             dynamic("machines.", "extension/state-machines", "State-machine configuration"),
+            dynamicFull("state.", OWNER_CORE,
+                    "Consensus-bound authenticated-state generation identity"),
             dynamic("sequencer.", "extension/sequencer", "Sequencer strategies"),
             dynamic("membership.", "extension/membership", "Membership strategies"),
             dynamic("observers.", "extension/observers", "L1/external observers"),
@@ -256,6 +259,20 @@ public final class AppChainPropertyRegistry {
                 AppChainConfig.DEFAULT_STATE_MACHINE,
                 PropertyScope.CONSENSUS_SHARED, ChangePolicy.NEW_CHAIN_REQUIRED, true,
                 "State-machine or committed composite-profile identifier"));
+        definitions.add(plain(APP_CHAIN_PREFIX + StateCommitmentIdentity.PROFILE_SETTING,
+                PropertyType.STRING, null, PropertyScope.CONSENSUS_SHARED,
+                ChangePolicy.NEW_CHAIN_REQUIRED, true,
+                "Genesis-selected authenticated-state commitment profile"));
+        definitions.add(boundedText(
+                APP_CHAIN_PREFIX + StateCommitmentIdentity.FINGERPRINT_SETTING,
+                null, 64, 64, PropertyScope.CONSENSUS_SHARED,
+                ChangePolicy.NEW_CHAIN_REQUIRED, true,
+                "Canonical commitment-format fingerprint"));
+        definitions.add(boundedText(
+                APP_CHAIN_PREFIX + StateCommitmentIdentity.GENESIS_ID_SETTING,
+                null, 64, 64, PropertyScope.CONSENSUS_SHARED,
+                ChangePolicy.NEW_CHAIN_REQUIRED, true,
+                "Canonical authenticated-map chain-generation identity"));
         definitions.add(plain(YanoPropertyKeys.AppChain.ANCHOR_ENABLED, PropertyType.BOOLEAN,
                 "false", PropertyScope.CONSENSUS_SHARED, ChangePolicy.GOVERNED_ACTIVATION, true,
                 "Enable Cardano L1 anchoring"));

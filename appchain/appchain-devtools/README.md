@@ -10,7 +10,8 @@ effective configuration, property explanation, and project lifecycle checks.
 `cddl-yano-subset-v1` language. It resolves bounded, non-recursive named rules
 and emits canonical `yano-cbor-schema-ir-v1` bytes; source CDDL is never parsed
 by consensus nodes. The public CLI and blueprint workflow for this API are
-described below in the authenticated-map validation guide once enabled.
+described in the
+[authenticated-map validation guide](../../docs/appchain/state-machines/authenticated-map-validation.md).
 
 ```bash
 # See the release-pinned recipes.
@@ -77,6 +78,21 @@ anchor view is useful discovery data, but it becomes a trust source only after
 the referenced Cardano transaction and anchor payload/datum are independently
 verified. Use `--genesis-id legacy` only for a retained pre-ADR legacy-MPF
 generation.
+
+Offline value-validation commands use the exact generated genesis:
+
+```bash
+./yano.sh appchain state validators \
+  --genesis-file product-registry/config/authenticated-map-genesis.hex
+./yano.sh appchain state validate \
+  --genesis-file product-registry/config/authenticated-map-genesis.hex \
+  --collection products --key 736b752d31 --value-file product.cbor
+./yano.sh appchain state explain --code 11
+```
+
+Candidate validation is advisory and cannot replace the authoritative apply
+check. Plugin-backed preflight reports `UNAVAILABLE` unless an exact trusted
+application adapter is supplied through the Java client API.
 
 ## Signed custom component catalogs
 

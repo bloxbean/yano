@@ -1,6 +1,8 @@
 package com.bloxbean.cardano.yano.appchain.devtools;
 
 import com.bloxbean.cardano.yano.appchain.config.AppChainPropertyRegistry;
+import com.bloxbean.cardano.yano.appchain.client.Hex;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
@@ -39,7 +41,8 @@ class AppChainProjectTest {
                 blueprint("evidence-ledger", "rotating", List.of()));
 
         assertThat(catalog.recipes()).extracting(AppChainProjectModel.Recipe::id)
-                .containsExactly("audit-log", "owned-registry", "approval-workflow",
+                .containsExactly("audit-log", "owned-registry", "authenticated-map",
+                        "approval-workflow",
                         "role-approval", "evidence-ledger", "eutxo-ledger",
                         "eutxo-cardano-bridge", "eutxo-zeroj-validity",
                         "eutxo-zeroj-preview", "custom-plugin");
@@ -106,6 +109,73 @@ class AppChainProjectTest {
         assertThatThrownBy(() -> resolver.resolve(conflicting))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("both provide exclusive contract state-machine");
+    }
+
+    @Test
+    void authenticatedMapBlueprintCompilesSchemaAndPinsGenesis() throws Exception {
+        AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
+        AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
+        AppChainProjectResolver resolver = new AppChainProjectResolver(properties, catalog);
+        AppChainProjectModel.Blueprint blueprint = authenticatedMapBlueprint(
+                "canonical-cbor", List.of("a".repeat(64), "b".repeat(64), "c".repeat(64)));
+
+        AppChainProjectModel.Resolution resolution = resolver.resolve(blueprint);
+
+        String prefix = "yano.app-chain.chains[0].";
+        assertThat(resolution.selectedCapabilities()).contains("state:authenticated-map");
+        assertThat(resolution.consensusProperties())
+                .containsEntry(prefix + "state-machine", "authenticated-map")
+                .containsEntry(prefix + "state.commitment-profile", "mpf-blake2b256-v1")
+                .containsKeys(prefix + "state.format-fingerprint",
+                        prefix + "state.genesis-id",
+                        prefix + "machines.authenticated-map.genesis-cbor-hex");
+        AuthenticatedMapContract.Genesis genesis = AuthenticatedMapContract.decodeGenesis(
+                Hex.decode(resolution.consensusProperties().get(
+                        prefix + "machines.authenticated-map.genesis-cbor-hex")));
+        assertThat(genesis.collections()).singleElement().satisfies(collection -> {
+            assertThat(collection.id()).isEqualTo("products");
+            assertThat(collection.valueEncoding())
+                    .isEqualTo(AuthenticatedMapContract.VALUE_ENCODING_CANONICAL_CBOR);
+            assertThat(collection.validatorId()).isEqualTo("product-v1");
+        });
+        assertThat(genesis.validators()).singleElement()
+                .satisfies(validator -> assertThat(validator.contractVersion())
+                        .isEqualTo("yano-cbor-schema-ir-v1"));
+
+        Path project = temporary.resolve("authenticated-map-project");
+        new AppChainProjectRenderer(catalog, resolver).initialize(project, blueprint);
+        assertThat(project.resolve("config/authenticated-map-genesis.hex")).isRegularFile();
+        assertThat(project.resolve("docs/VALUE_VALIDATION.md")).isRegularFile();
+        assertThat(new AppChainProjectLifecycle(properties).doctor(project, null).checks())
+                .anySatisfy(check -> {
+                    assertThat(check.id()).isEqualTo("authenticated-map-schema-encoding");
+                    assertThat(check.status()).isEqualTo("PASS");
+                });
+
+        assertThatThrownBy(() -> resolver.resolve(authenticatedMapBlueprint(
+                "canonical-cbor", List.of())))
+                .hasMessageContaining("requires every topology.memberKeys");
+    }
+
+    @Test
+    void doctorNamesSchemaWithOpaqueEncodingInsteadOfOnlyReportingGenericFailure()
+            throws Exception {
+        AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
+        Path project = Files.createDirectory(temporary.resolve("invalid-authenticated-map"));
+        new ObjectMapper(new YAMLFactory()).writeValue(
+                project.resolve("appchain.yaml").toFile(),
+                authenticatedMapBlueprint(
+                        "opaque", List.of("a".repeat(64), "b".repeat(64), "c".repeat(64))));
+
+        AppChainProjectModel.DoctorReport report =
+                new AppChainProjectLifecycle(properties).doctor(project, null);
+
+        assertThat(report.status()).isEqualTo("DOCTOR_FAILED");
+        assertThat(report.checks()).anySatisfy(check -> {
+            assertThat(check.id()).isEqualTo("authenticated-map-schema-encoding");
+            assertThat(check.status()).isEqualTo("FAIL");
+            assertThat(check.detail()).contains("products", "canonical-cbor");
+        });
     }
 
     @Test
@@ -572,15 +642,20 @@ class AppChainProjectTest {
         AppChainProjectRenderer renderer = new AppChainProjectRenderer(
                 catalog, new AppChainProjectResolver(properties, catalog));
         int sequence = 0;
-        for (String recipe : List.of("audit-log", "owned-registry", "approval-workflow",
-                "role-approval", "evidence-ledger", "eutxo-ledger", "custom-plugin")) {
+        for (String recipe : List.of("audit-log", "owned-registry", "authenticated-map",
+                "approval-workflow", "role-approval", "evidence-ledger", "eutxo-ledger",
+                "custom-plugin")) {
             List<String> runtimes = "custom-plugin".equals(recipe)
                     || "eutxo-ledger".equals(recipe)
                     ? List.of("jvm") : List.of("jvm", "native");
             for (String runtime : runtimes) {
                 for (String deployment : List.of("host", "docker-compose")) {
+                    AppChainProjectModel.Blueprint source = "authenticated-map".equals(recipe)
+                            ? authenticatedMapBlueprint("canonical-cbor",
+                            List.of("a".repeat(64), "b".repeat(64), "c".repeat(64)))
+                            : blueprint(recipe, "fixed", List.of());
                     AppChainProjectModel.Blueprint blueprint = withTarget(
-                            blueprint(recipe, "fixed", List.of()), runtime, deployment);
+                            source, runtime, deployment);
                     if ("custom-plugin".equals(recipe)) {
                         blueprint = withAnswers(blueprint,
                                 Map.of("stateMachine", "com.example.custom-machine"));
@@ -645,6 +720,32 @@ class AppChainProjectTest {
                 }
             }
         }
+    }
+
+    @Test
+    void authenticatedMapRecipeInitializationEmitsEditableIntentAndCanonicalGenesis()
+            throws Exception {
+        Path project = temporary.resolve("authenticated-map-init");
+        StringWriter output = new StringWriter();
+        StringWriter error = new StringWriter();
+        int exit = new AppChainDevtoolsCli().run(new String[]{
+                "appchain", "init", "--non-interactive",
+                "--recipe", "authenticated-map", "--network", "preprod",
+                "--members", "3",
+                "--member-key", "a".repeat(64),
+                "--member-key", "b".repeat(64),
+                "--member-key", "c".repeat(64),
+                "--output", project.toString()
+        }, new PrintWriter(output), new PrintWriter(error));
+
+        assertThat(exit).isZero();
+        assertThat(error.toString()).isEmpty();
+        assertThat(Files.readString(project.resolve("appchain.yaml")))
+                .contains("authenticatedMap:", "profile: \"mpf-blake2b256-v1\"",
+                        "valueEncoding: \"opaque\"")
+                .doesNotContain("validator: null", "httpPortBase: null",
+                        "serverPortBase: null");
+        assertThat(project.resolve("config/authenticated-map-genesis.hex")).isRegularFile();
     }
 
     private static void assertShellSyntax(Path script) throws Exception {
@@ -824,7 +925,7 @@ class AppChainProjectTest {
         AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
         AppChainProjectResolver resolver = new AppChainProjectResolver(properties, catalog);
 
-        assertThat(catalog.capabilities()).hasSize(41)
+        assertThat(catalog.capabilities()).hasSize(42)
                 .allSatisfy(capability -> {
                     assertThat(capability.availability()).isIn(
                             "BUNDLED", "FIRST_PARTY_OPTIONAL", "REFERENCE", "EXPERIMENTAL");
@@ -1009,6 +1110,30 @@ class AppChainProjectTest {
                                 new AppChainProjectModel.Topology(
                                         3, memberKeys, List.of(),
                                         "two-thirds", sequencing, "static", null, null)))));
+    }
+
+    private static AppChainProjectModel.Blueprint authenticatedMapBlueprint(
+            String valueEncoding,
+            List<String> memberKeys
+    ) {
+        AppChainProjectModel.Blueprint base = blueprint(
+                "authenticated-map", "fixed", memberKeys);
+        AppChainProjectModel.ChainIntent chain = base.spec().chains().getFirst();
+        AppChainProjectModel.AuthenticatedMapIntent authenticatedMap =
+                new AppChainProjectModel.AuthenticatedMapIntent(
+                        "mpf-blake2b256-v1",
+                        "00".repeat(32),
+                        16,
+                        65_536,
+                        List.of(new AppChainProjectModel.AuthenticatedMapCollectionIntent(
+                                "products", "owner", false, 64, 1024,
+                                valueEncoding, "product-v1")),
+                        List.of(new AppChainProjectModel.AuthenticatedMapSchemaIntent(
+                                "product-v1", "product",
+                                "product = { sku: tstr .size (1..32), qty: uint .le 1000 }")));
+        return replaceChain(base, new AppChainProjectModel.ChainIntent(
+                chain.chainId(), chain.recipe(), chain.capabilities(), chain.answers(),
+                chain.topology(), authenticatedMap));
     }
 
     private static AppChainProjectModel.Blueprint withMembership(

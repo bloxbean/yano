@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.appchain.devtools;
 import com.bloxbean.cardano.vds.core.api.NodeStore;
 import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.yano.appchain.client.Hex;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -14,6 +15,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -86,7 +88,83 @@ class AppChainStateCliTest {
                 .contains("state entry|proof")
                 .contains("[--height <n>]")
                 .contains("state verify")
+                .contains("state validate")
+                .contains("state validators")
+                .contains("state explain")
+                .contains("authoritative validation occurs during apply")
                 .contains("never defaults to the root carried by the proof envelope");
+    }
+
+    @Test
+    void validatesSchemaCandidatesAndInspectsConsensusValidatorDigestsOffline()
+            throws Exception {
+        Path genesis = writeGenesis();
+
+        Result valid = run("state", "validate",
+                "--genesis-file", genesis.toString(),
+                "--collection", "records", "--key", "01",
+                "--value-hex", "a16371747905");
+        Result invalid = run("state", "validate",
+                "--genesis-file", genesis.toString(),
+                "--collection", "records", "--key", "01",
+                "--value-hex", "a1637174790b");
+        Result pluginUnavailable = run("state", "validate",
+                "--genesis-file", genesis.toString(),
+                "--collection", "identifiers", "--key", "01",
+                "--value-hex", "07");
+        Result validators = run("state", "validators",
+                "--genesis-file", genesis.toString());
+        Result explanation = run("state", "explain", "--code", "11");
+
+        assertThat(valid.exit()).isZero();
+        JsonNode validResult = json.readTree(valid.out());
+        assertThat(validResult.path("status").asText()).isEqualTo("ACCEPTED");
+        assertThat(validResult.path("authoritative").asBoolean()).isFalse();
+        assertThat(validResult.path("trustBoundary").asText()).contains("advisory");
+        assertThat(invalid.exit()).isEqualTo(AppChainDevtoolsCli.EXIT_INVALID_CONFIG);
+        assertThat(json.readTree(invalid.out()).path("codeName").asText())
+                .isEqualTo("VALUE_SCHEMA");
+        assertThat(pluginUnavailable.exit())
+                .isEqualTo(AppChainDevtoolsCli.EXIT_INVALID_CONFIG);
+        assertThat(json.readTree(pluginUnavailable.out()).path("status").asText())
+                .isEqualTo("UNAVAILABLE");
+        JsonNode validatorSet = json.readTree(validators.out());
+        assertThat(validatorSet.path("consensusBound").asBoolean()).isTrue();
+        assertThat(validatorSet.path("validators").size()).isEqualTo(2);
+        assertThat(validatorSet.toString())
+                .contains("definitionSha256", "artifactClosureSha256", "parametersSha256");
+        assertThat(json.readTree(explanation.out()).path("name").asText())
+                .isEqualTo("VALUE_SCHEMA");
+    }
+
+    private Path writeGenesis() throws Exception {
+        byte[] schema = AuthenticatedMapCddlCompiler.compile(
+                "root = { qty: uint .le 10 }").definition();
+        AuthenticatedMapContract.ValidatorDescriptor recordValidator =
+                AuthenticatedMapContract.ValidatorDescriptor.schema("record-v1", schema);
+        AuthenticatedMapContract.ValidatorDescriptor pluginValidator =
+                AuthenticatedMapContract.ValidatorDescriptor.plugin(
+                        "identifier-v1", "test-provider", new byte[32],
+                        new byte[]{(byte) 0xa0});
+        AuthenticatedMapContract.Genesis value = new AuthenticatedMapContract.Genesis(
+                "cli-chain", AuthenticatedMapContract.PROFILE_MPF_BLAKE2B256_V1,
+                new byte[32], new byte[32], new byte[32], new byte[32],
+                16, 65_536,
+                List.of(
+                        new AuthenticatedMapContract.CollectionDescriptor(
+                                "records", AuthenticatedMapContract.AUTH_OPEN, false,
+                                64, 1024,
+                                AuthenticatedMapContract.VALUE_ENCODING_CANONICAL_CBOR,
+                                recordValidator.id()),
+                        new AuthenticatedMapContract.CollectionDescriptor(
+                                "identifiers", AuthenticatedMapContract.AUTH_OPEN, false,
+                                64, 1024, AuthenticatedMapContract.VALUE_ENCODING_OPAQUE,
+                                pluginValidator.id())),
+                List.of(recordValidator, pluginValidator),
+                List.of());
+        Path file = temporary.resolve("authenticated-map-genesis.hex");
+        Files.writeString(file, Hex.encode(AuthenticatedMapContract.encodeGenesis(value)) + "\n");
+        return file;
     }
 
     private Result run(String... args) {

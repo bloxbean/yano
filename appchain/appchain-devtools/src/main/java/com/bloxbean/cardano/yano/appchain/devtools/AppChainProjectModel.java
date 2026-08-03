@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.devtools;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+
 import java.util.List;
 import java.util.Map;
 
@@ -55,14 +57,55 @@ final class AppChainProjectModel {
     record DeploymentSelection(String target) {
     }
 
+    @JsonInclude(JsonInclude.Include.NON_NULL)
     record ChainIntent(
             String chainId,
             String recipe,
             List<String> capabilities,
             Map<String, String> answers,
-            Topology topology) {
+            Topology topology,
+            AuthenticatedMapIntent authenticatedMap) {
+
+        ChainIntent(
+                String chainId,
+                String recipe,
+                List<String> capabilities,
+                Map<String, String> answers,
+                Topology topology
+        ) {
+            this(chainId, recipe, capabilities, answers, topology, null);
+        }
     }
 
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record AuthenticatedMapIntent(
+            String profile,
+            String anchorPolicyCommitment,
+            Integer maxBatchItems,
+            Integer maxBatchBytes,
+            List<AuthenticatedMapCollectionIntent> collections,
+            List<AuthenticatedMapSchemaIntent> schemas) {
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record AuthenticatedMapCollectionIntent(
+            String id,
+            String authorization,
+            Boolean restoreAllowed,
+            Integer maxKeyBytes,
+            Integer maxValueBytes,
+            String valueEncoding,
+            String validator) {
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record AuthenticatedMapSchemaIntent(
+            String id,
+            String root,
+            String source) {
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
     record Topology(
             int members,
             List<String> memberKeys,

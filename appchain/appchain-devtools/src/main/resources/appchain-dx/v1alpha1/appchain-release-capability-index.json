@@ -9,6 +9,7 @@
   "recipes": [
     "audit-log",
     "owned-registry",
+    "authenticated-map",
     "approval-workflow",
     "role-approval",
     "evidence-ledger",
