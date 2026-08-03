@@ -1379,57 +1379,26 @@ this ADR to be amended before implementation or a focused follow-up ADR.
 
 ## 19. Market landscape and product positioning
 
-### 19.1 Survey boundary
+### 19.1 Positioning boundary
 
-Market review date: 2026-08-03.
-
-No single reviewed offering has the exact combination proposed here:
+The proposed scope combines:
 
 - deterministic multi-party app-chain execution;
 - configurable threshold finality;
-- one logical authenticated-map contract with a genesis-selected MPF, classic
-  JMT, or ZeroJ Poseidon JMT commitment;
+- one logical authenticated-map contract with a genesis-selected MPF,
+  Blake2b-256 JMT, or BLS12-381 Poseidon JMT commitment;
 - profile-tagged current and historical point proofs;
 - native Cardano checkpoint anchoring; and
-- an optional Java-to-ZeroJ-to-Plutus V3 private proof path.
+- an optional Java-to-Groth16-to-Plutus V3 private proof path.
 
-That is an inference from the reviewed products, not a claim that no private or
-unreviewed implementation exists. The components are individually established
-patterns. The differentiation is their Cardano/Java integration and product
+This is an architectural positioning statement, not a market-exclusivity
+claim. Authenticated databases, consortium ledgers, enterprise DLT frameworks,
+transparency systems, and general rollup or sovereign-chain frameworks each
+cover parts of the problem and may be stronger in their established domains.
+The proposed differentiation is the Cardano/Java integration and product
 packaging, not invention of authenticated maps or replicated ledgers.
 
-### 19.2 Closest alternatives
-
-| Product/framework | Material overlap | Where it is stronger today | Where this proposal differs |
-|---|---|---|---|
-| [immudb](https://docs.immudb.io/master/immudb.html) | Verifiable append-only KV and SQL database, signed states, temporal queries, client/auditor verification | Database ergonomics, SQL, SDKs, embedding, claimed high throughput, simpler deployment, and existing operational adoption | A server/replication-oriented ledger database rather than application-chain threshold finality; no native Cardano anchor/validator or genesis-selectable MPF/JMT/ZeroJ commitment contract |
-| [Microsoft Confidential Consortium Framework (CCF)](https://microsoft.github.io/CCF/main/) and Azure Confidential Ledger | Replicated transactional KV maps, consortium governance, majority/global commit, immutable ledger, historical receipts | Mature consortium governance, atomic multi-map transactions, receipts, dynamic operations, formal-methods investment, managed Azure service, and TEE-backed confidentiality/integrity | CCF is TEE/CCF-ledger centric; Yano would emphasize independently selected authenticated-state roots, Cardano finality checkpoints, Cardano-consumable MPF/ZeroJ proofs, and Java app-chain integration |
-| [Cosmos SDK + CometBFT](https://docs.cosmos.network/sdk/latest/learn/concepts/store) | Deterministic state-machine replication, namespaced KV stores, versioned IAVL Merkle state, app hash per block, cached candidate writes, light-client proofs | Mature validator consensus, broad chain/module ecosystem, operational experience, and interoperability tooling | A general sovereign-chain framework using its own stack; Yano targets smaller Cardano-connected permissioned appchains, Java plugins, configurable commitment profiles, and Cardano anchoring rather than a new independent ecosystem |
-| [Hyperledger Fabric](https://hyperledger-fabric.readthedocs.io/en/latest/) | Permissioned multi-organization ledger, key-value world state, endorsement policies, chaincode, collections, optimistic read/write-set validation | Mature enterprise identity/governance, flexible endorsement, private-data collections, LevelDB/CouchDB choice, JSON/range queries, and a large ecosystem | Fabric does not center its application contract on portable per-key proofs against a genesis-selected authenticated state root or Cardano/ZeroJ settlement; Yano is narrower but more proof- and Cardano-oriented |
-| [Trillian/transparency.dev](https://github.com/google/trillian) | Verifiable logs/maps, signed/checkpointed tree heads, inclusion/non-inclusion concepts, log-backed map pattern | Battle-tested transparency concepts and large-scale Certificate Transparency lineage | A toolkit requiring an application “personality,” not a governed appchain product; map mode is described as experimental and Trillian itself is in maintenance mode |
-| [Sovereign SDK](https://docs.sovereign.xyz/) | Custom rollup application state, sequencer, full-node generation, ZK/optimistic proving and settlement | More general rollup/prover architecture, data-availability integration, generated APIs, and a Rust rollup ecosystem | Proves general rollup execution rather than providing a focused Cardano-native authenticated registry with three commitment profiles and Java application semantics |
-| [Polygon CDK](https://docs.polygon.technology/chain-development/cdk/get-started/overview) | Custom L2 chains, sequencer/rollup modes, validity/pessimistic proofs, managed deployment providers and interoperability | EVM compatibility, Agglayer interoperability/liquidity, production providers, zk/validium roadmap and broader ecosystem | Much heavier EVM/Ethereum-oriented chain infrastructure; Yano would be a focused Cardano-connected application-state product rather than general EVM blockspace |
-| Amazon QLDB (discontinued) | Historical managed ledger database with journal digest and document revision verification | Formerly a fully managed AWS experience, PartiQL, IAM, exports and streams | AWS ended QLDB support on 2025-07-31; it is a market warning that “immutable ledger database” alone may be insufficient positioning, not a current competitor |
-
-The Fabric comparison is intentionally qualified. Fabric has a blockchain log,
-endorsement evidence, and state databases; the inference is that portable
-point proofs against a chain-wide application-state commitment are not its
-primary product/API contract. Fabric is materially stronger for rich CouchDB
-queries and private collection distribution.
-
-CCF is the closest functional competitor for multi-party authenticated state.
-Its key-value maps are transactionally replicated, globally committed by the
-network, and can return historical receipts. It also brings a capability this
-ADR explicitly does not: confidential state and code protected by trusted
-execution environments.
-
-Cosmos SDK is the clearest architectural precedent. Its application modules
-write namespaced KV state, cached writes are committed or discarded, all
-validators deterministically produce an app hash, and the hash enters the
-block header. The main differentiation cannot be “we have a Merkle state root”;
-it must be the Cardano-native product and proof experience.
-
-### 19.3 Proposed market position
+### 19.2 Proposed market position
 
 Do not position this as another database or another general-purpose blockchain.
 Both descriptions invite comparisons where mature products are stronger.
@@ -1455,20 +1424,20 @@ canonical profile, for example:
 |---|---|---|
 | `cardano-verifiable` | `mpf-blake2b256-v1` | Direct Cardano-oriented state proofs and current compatibility |
 | `versioned-audit` | `jmt-blake2b256-v1` | Native versioned JMT storage and off-chain historical proofs |
-| `zk-cardano-verifiable` | `jmt-poseidon-bls12381-v1` | Private facts/transitions proved through ZeroJ and verified by Plutus V3 |
+| `zk-cardano-verifiable` | `jmt-poseidon-bls12381-v1` | Private facts/transitions proved with Groth16 and verified by Plutus V3 |
 
 These names are illustrative UX, not additional genesis aliases unless a later
 configuration contract freezes their resolution.
 
-### 19.4 Potential advantages
+### 19.3 Potential advantages
 
 #### Cardano-native vertical integration
 
 Yano can combine Cardano L1 observation, appchain sequencing/finality,
 authenticated state, anchoring, proof retrieval, and Cardano transaction
-submission in one Java stack. Competing databases usually need an independently
-built blockchain anchor service; general rollup stacks target Ethereum or a
-separate DA/settlement ecosystem.
+submission in one Java stack. Authenticated databases generally need an
+independently built blockchain anchor service, while general rollup stacks may
+target a different execution, data-availability, or settlement ecosystem.
 
 #### One application contract, three verifiability profiles
 
@@ -1480,42 +1449,43 @@ forcing application messages to encode a tree implementation.
 #### Threshold finality plus independently consumable state proofs
 
 The proposed proof bundle combines application state, quorum finality, and an
-L1 checkpoint. immudb supplies database-state verification, and CCF supplies
-receipts, but Yano can make Cardano the independently visible checkpoint and
-consumption layer.
+L1 checkpoint. Verifiable databases can supply database-state verification and
+consortium ledgers can supply transaction receipts; Yano can make Cardano the
+independently visible checkpoint and consumption layer.
 
-#### ZeroJ/Plutus privacy path
+#### Poseidon/Plutus privacy path
 
 Poseidon JMT can support a Cardano validator learning a policy result rather
 than the private key/value/path. The host JMT, witness conversion, Java circuit,
-Groth16 proof, and Plutus V3 verifier can live in the same broader BloxBean
-ecosystem. That end-to-end Java/Cardano path is a meaningful differentiator if
-it becomes independently reviewed and operationally packaged.
+Groth16 proof, and Plutus V3 verifier can live in one integrated Java/Cardano
+stack. That end-to-end path is a meaningful differentiator if it becomes
+independently reviewed and operationally packaged.
 
 #### Focused and potentially lighter than a general chain
 
 For a consortium that needs a governed registry and Cardano checkpoint rather
 than EVM compatibility, gas economics, a new public token, or general smart
 contracts, a packaged Yano appchain can be smaller in conceptual and operating
-scope than Cosmos, Fabric, or Polygon CDK. This advantage must be demonstrated
-with deployment, upgrade, monitoring, and recovery experience; it is not true
-merely because the codebase is smaller.
+scope than a general sovereign-chain, enterprise DLT, or EVM-rollup framework.
+This advantage must be demonstrated with deployment, upgrade, monitoring, and
+recovery experience; it is not true merely because the codebase is smaller.
 
 #### Java and existing BloxBean/Cardano ecosystem
 
 Java APIs, CCL transaction construction, Yaci protocols, Yano node integration,
-and ZeroJ can be attractive to enterprise Java/Cardano teams that would
-otherwise combine Go/Rust chain infrastructure with separate JVM services.
+and the Poseidon/Groth16 proof path can be attractive to enterprise
+Java/Cardano teams that would otherwise combine non-JVM chain infrastructure
+with separate JVM services.
 
-### 19.5 Disadvantages and competitive risks
+### 19.4 Disadvantages and competitive risks
 
 #### Maturity and assurance gap
 
-Fabric, Cosmos, CCF, immudb, and major rollup stacks have broader production
-history, communities, integrations, security review, and operator knowledge.
-Yano's appchain and ZeroJ paths are comparatively young. Value-bearing claims
-must remain gated by audit, formal/adversarial testing, public-network evidence,
-and durable operational experience.
+Established enterprise DLT, consortium-ledger, verifiable-database, and rollup
+stacks have broader production history, communities, integrations, security
+review, and operator knowledge. Yano's appchain and ZK paths are comparatively
+young. Value-bearing claims must remain gated by audit, formal/adversarial
+testing, public-network evidence, and durable operational experience.
 
 #### Consensus liveness and fault-model gap
 
@@ -1529,17 +1499,18 @@ equivalent to every mature BFT implementation.
 #### No replicated-state confidentiality by default
 
 Authenticated state is not confidential state. Members can normally read the
-replicated map. CCF offers TEE-protected private maps/code, and Fabric offers
-private-data collections distributed only to selected organizations. Yano
-needs a separate encryption/selective-replication design if that buyer need is
-central; ZeroJ only hides the proof witness from the eventual verifier.
+replicated map. Some consortium frameworks provide TEE-protected state or code,
+and some enterprise DLT frameworks provide selectively distributed private
+collections. Yano needs a separate encryption/selective-replication design if
+that buyer need is central; a ZK proof only hides its witness from the eventual
+verifier.
 
 #### Query and database ergonomics
 
-immudb offers SQL/KV and common clients; Fabric with CouchDB offers rich JSON
-and indexed queries. A hashed authenticated map offers point proofs, not rich
-search. Yano must package a reliable projection/index story and clearly label
-derived queries, or users will experience it as an inferior database.
+Mature database products can offer SQL/KV access, common clients, rich document
+queries, and secondary indexes. A hashed authenticated map offers point proofs,
+not rich search. Yano must package a reliable projection/index story and clearly
+label derived queries, or users will experience it as an inferior database.
 
 #### ZK operational cost and specialization
 
@@ -1552,11 +1523,11 @@ work.
 
 #### Interoperability and ecosystem gap
 
-Cosmos has a large module and IBC ecosystem, Polygon CDK has EVM/Agglayer
-integration and managed providers, Fabric has enterprise identity/integration
-patterns, and CCF has Azure Confidential Ledger. Yano currently lacks
-comparable managed deployment, marketplace, interoperability, SLA, and broad
-client ecosystem.
+Established sovereign-chain ecosystems may provide cross-chain protocols and
+module catalogs; EVM rollup ecosystems may provide shared liquidity and managed
+providers; enterprise and consortium platforms may provide mature identity,
+integration, and hosted-ledger options. Yano currently lacks comparable managed
+deployment, marketplace, interoperability, SLA, and broad client ecosystems.
 
 #### Three profiles increase product and support complexity
 
@@ -1574,13 +1545,14 @@ application governance remain product requirements.
 
 #### Generic ledger-database positioning has uncertain demand
 
-AWS ended QLDB support in 2025. That does not prove authenticated state lacks a
-market, but it is evidence against leading with a generic “immutable database”
-pitch. The product should solve a regulated multi-party verification problem
-where quorum ownership, portable proofs, Cardano settlement, or privacy proofs
-are essential—not merely add hashes to ordinary CRUD.
+The discontinuation of past managed ledger-database offerings does not prove
+authenticated state lacks a market, but it cautions against leading with a
+generic “immutable database” pitch. The product should solve a regulated
+multi-party verification problem where quorum ownership, portable proofs,
+Cardano settlement, or privacy proofs are essential—not merely add hashes to
+ordinary CRUD.
 
-### 19.6 Competitive conclusion
+### 19.5 Competitive conclusion
 
 The defensible advantage is not JMT itself. JMT, MPF, IAVL, sparse Merkle maps,
 and transparency logs are available elsewhere.
@@ -1598,24 +1570,17 @@ domain-specific governed update
 ```
 
 The largest disadvantage is that every arrow must be production-grade before
-the combined promise is stronger than adopting a mature database, CCF/Fabric,
-or a general rollup SDK. The first product release should therefore choose one
-vertical use case, one opinionated profile, and one complete verification flow,
-while retaining the three-profile architecture for later deployments.
+the combined promise is stronger than adopting a mature database, consortium
+or enterprise DLT framework, or general rollup SDK. The first product release
+should therefore choose one vertical use case, one opinionated profile, and one
+complete verification flow while retaining the three-profile architecture for
+later deployments.
 
 ## 20. References
 
-- Diem, *Jellyfish Merkle Tree*: versioned sparse authenticated state optimized
-  for LSM storage:
+- Foundational *Jellyfish Merkle Tree* paper: versioned sparse authenticated
+  state optimized for LSM storage:
   <https://developers.diem.com/papers/jellyfish-merkle-tree/2021-01-14.pdf>
-- Aptos JMT implementation: separates tree update calculation from the storage
-  layer that commits the resulting update batch:
-  <https://github.com/aptos-labs/aptos-core/tree/main/storage/jellyfish-merkle>
-- Cosmos SDK storage model and ADR-040: useful precedent and caution for
-  module trees, cached candidate state, aggregate roots, and atomic storage:
-  <https://docs.cosmos.network/sdk/latest/learn/concepts/store>
-  and
-  <https://docs.cosmos.network/sdk/latest/reference/architecture/adr-040-storage-and-smt-state-commitments>
 - CCL `v0.8.0-pre5-dev1` development release, used only as the temporary
   implementation baseline:
   <https://github.com/bloxbean/cardano-client-lib/releases/tag/v0.8.0-pre5-dev1>
@@ -1624,21 +1589,3 @@ while retaining the three-profile architecture for later deployments.
   <https://github.com/bloxbean/cardano-client-lib/tree/v0.8.0-pre5-dev1/verified-structures/jellyfish-merkle>
 - ZeroJ Poseidon authenticated-state modules and Cardano verification path:
   <https://github.com/bloxbean/zeroj>
-- Transparency.dev, verifiable maps and the distinction between map state and
-  an auditable log of evolution:
-  <https://transparency.dev/verifiable-data-structures/>
-  and <https://transparency.dev/articles/logs-vs-maps/>
-- immudb product and architecture documentation:
-  <https://immudb.io/> and <https://docs.immudb.io/master/immudb.html>
-- Microsoft CCF key-value, governance, receipt, and research material:
-  <https://microsoft.github.io/CCF/main/build_apps/kv/kv_how_to.html>,
-  <https://microsoft.github.io/CCF/main/build_apps/example_cpp.html>, and
-  <https://microsoft.github.io/CCF/main/research/>
-- Hyperledger Fabric world-state, endorsement, and private-collection material:
-  <https://hyperledger-fabric.readthedocs.io/en/latest/couchdb_as_state_database.html>,
-  <https://hyperledger-fabric.readthedocs.io/en/release-2.5/endorsement-policies.html>,
-  and <https://hyperledger-fabric.readthedocs.io/en/latest/private-data-arch.html>
-- Sovereign SDK rollup architecture: <https://docs.sovereign.xyz/>
-- Polygon CDK: <https://docs.polygon.technology/chain-development/cdk/get-started/overview>
-- Amazon QLDB end-of-support notice:
-  <https://docs.aws.amazon.com/qldb/latest/developerguide/getting-started-step-7.html>
