@@ -27,6 +27,14 @@ tasks.register('verifyAuthenticatedMapGoldenVectors', Exec) {
             file('src/main/resources/META-INF/yano/contracts/authenticated-map/v1/golden-vectors.properties')
 }
 
+tasks.register('verifyAuthenticatedMapSchemaGoldenVectors', Exec) {
+    group = 'verification'
+    description = 'Independently compiles and evaluates ADR-025.1 schema vectors'
+    commandLine 'python3',
+            file('scripts/verify-authenticated-map-schema-vectors.py'),
+            file('src/main/resources/META-INF/yano/contracts/authenticated-map/v1/schema-vectors.properties')
+}
+
 tasks.register('benchmarkAuthenticatedMapContracts', JavaExec) {
     group = 'verification'
     description = 'Runs the comparable ADR-025 MPF/classic-JMT contract baseline benchmark'
@@ -37,6 +45,18 @@ tasks.register('benchmarkAuthenticatedMapContracts', JavaExec) {
     args report.get().asFile.absolutePath,
             providers.gradleProperty('adr025BenchmarkKeys').getOrElse('100000'),
             providers.gradleProperty('adr025BenchmarkBatch').getOrElse('100')
+    outputs.file(report)
+}
+
+tasks.register('benchmarkAuthenticatedMapSchema', JavaExec) {
+    group = 'verification'
+    description = 'Measures ADR-025.1 canonical encoding and representative schema evaluation'
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapSchemaBenchmark'
+    def report = layout.buildDirectory.file('reports/adr025/phase-b-schema.json')
+    args report.get().asFile.absolutePath,
+            providers.gradleProperty('adr025SchemaBenchmarkIterations').getOrElse('500000')
     outputs.file(report)
 }
 
@@ -103,6 +123,7 @@ tasks.register('verifyStdlibContractArtifact') {
 tasks.named('check') {
     dependsOn tasks.named('verifyStdlibContractArtifact')
     dependsOn tasks.named('verifyAuthenticatedMapGoldenVectors')
+    dependsOn tasks.named('verifyAuthenticatedMapSchemaGoldenVectors')
     dependsOn tasks.named('verifyAdr025DependencyBaseline')
 }
 

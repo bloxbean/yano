@@ -31,7 +31,21 @@ public final class AuthenticatedMapGenesisFactory {
             List<AuthenticatedMapContract.GenesisEntry> initialEntries
     ) {
         return create(config, StateCommitmentProfiles.MPF, anchorPolicyCommitment,
-                maxBatchItems, maxBatchBytes, collections, initialEntries);
+                maxBatchItems, maxBatchBytes, collections, List.of(), initialEntries);
+    }
+
+    /** Construct MPF genesis with optional genesis-bound value validators. */
+    public static AuthenticatedMapContract.Genesis mpf(
+            AppChainConfig config,
+            byte[] anchorPolicyCommitment,
+            int maxBatchItems,
+            int maxBatchBytes,
+            List<AuthenticatedMapContract.CollectionDescriptor> collections,
+            List<AuthenticatedMapContract.ValidatorDescriptor> validators,
+            List<AuthenticatedMapContract.GenesisEntry> initialEntries
+    ) {
+        return create(config, StateCommitmentProfiles.MPF, anchorPolicyCommitment,
+                maxBatchItems, maxBatchBytes, collections, validators, initialEntries);
     }
 
     /** Construct a Phase-3 classic Blake2b-256 JMT genesis identity. */
@@ -44,7 +58,21 @@ public final class AuthenticatedMapGenesisFactory {
             List<AuthenticatedMapContract.GenesisEntry> initialEntries
     ) {
         return create(config, StateCommitmentProfiles.CLASSIC_JMT, anchorPolicyCommitment,
-                maxBatchItems, maxBatchBytes, collections, initialEntries);
+                maxBatchItems, maxBatchBytes, collections, List.of(), initialEntries);
+    }
+
+    /** Construct classic-JMT genesis with optional genesis-bound validators. */
+    public static AuthenticatedMapContract.Genesis classicJmt(
+            AppChainConfig config,
+            byte[] anchorPolicyCommitment,
+            int maxBatchItems,
+            int maxBatchBytes,
+            List<AuthenticatedMapContract.CollectionDescriptor> collections,
+            List<AuthenticatedMapContract.ValidatorDescriptor> validators,
+            List<AuthenticatedMapContract.GenesisEntry> initialEntries
+    ) {
+        return create(config, StateCommitmentProfiles.CLASSIC_JMT, anchorPolicyCommitment,
+                maxBatchItems, maxBatchBytes, collections, validators, initialEntries);
     }
 
     /** Encode one genesis as the exact plugin setting consumed by the provider. */
@@ -67,6 +95,7 @@ public final class AuthenticatedMapGenesisFactory {
             int maxBatchItems,
             int maxBatchBytes,
             List<AuthenticatedMapContract.CollectionDescriptor> collections,
+            List<AuthenticatedMapContract.ValidatorDescriptor> validators,
             List<AuthenticatedMapContract.GenesisEntry> initialEntries
     ) {
         Objects.requireNonNull(config, "config");
@@ -92,6 +121,7 @@ public final class AuthenticatedMapGenesisFactory {
                 maxBatchItems,
                 maxBatchBytes,
                 collections,
+                validators,
                 initialEntries);
     }
 }

@@ -6,6 +6,12 @@ project initialization and deterministic
 rendering, template validation, SmallRye-backed resolved validation, redacted
 effective configuration, property explanation, and project lifecycle checks.
 
+`AuthenticatedMapCddlCompiler` is the compile-before-genesis API for the closed
+`cddl-yano-subset-v1` language. It resolves bounded, non-recursive named rules
+and emits canonical `yano-cbor-schema-ir-v1` bytes; source CDDL is never parsed
+by consensus nodes. The public CLI and blueprint workflow for this API are
+described below in the authenticated-map validation guide once enabled.
+
 ```bash
 # See the release-pinned recipes.
 ./yano.sh appchain recipes

@@ -4,6 +4,7 @@ import com.bloxbean.cardano.vds.jmt.JmtProfile;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
@@ -69,10 +70,11 @@ class AuthenticatedMapContractTest {
         assertThat(genesis.collections())
                 .extracting(AuthenticatedMapContract.CollectionDescriptor::valueEncoding)
                 .containsOnly(AuthenticatedMapContract.VALUE_ENCODING_OPAQUE);
+        assertThat(genesis.validators()).isEmpty();
         assertThat(AuthenticatedMapContract.genesisId(genesis)).hasSize(32);
 
         byte[] oldCodec = encoded.clone();
-        oldCodec[1] = 1;
+        oldCodec[1] = 2;
         assertThatThrownBy(() -> AuthenticatedMapContract.decodeGenesis(oldCodec))
                 .isInstanceOf(IllegalArgumentException.class);
     }
@@ -169,6 +171,85 @@ class AuthenticatedMapContractTest {
     }
 
     @Test
+    void schemaDescriptorsAreCanonicalReferencedAndAppliedToGenesisEntries() {
+        AuthenticatedMapSchema.Schema schema = quantitySchema(10);
+        AuthenticatedMapContract.ValidatorDescriptor validator =
+                AuthenticatedMapContract.ValidatorDescriptor.schema(
+                        "product-schema", schema.definition());
+        AuthenticatedMapContract.CollectionDescriptor collection =
+                new AuthenticatedMapContract.CollectionDescriptor(
+                        "records", AuthenticatedMapContract.AUTH_OPEN, false, 64, 1024,
+                        AuthenticatedMapContract.VALUE_ENCODING_CANONICAL_CBOR,
+                        validator.id());
+        AuthenticatedMapContract.Genesis genesis = new AuthenticatedMapContract.Genesis(
+                "schema-genesis", StateCommitmentProfiles.JMT_BLAKE2B256_V1,
+                StateCommitmentProfiles.CLASSIC_JMT.formatFingerprint(),
+                repeated(1), repeated(2), repeated(3), 16, 4096,
+                List.of(collection), List.of(validator),
+                List.of(new AuthenticatedMapContract.GenesisEntry(
+                        "records", bytes("one"), new byte[0],
+                        java.util.HexFormat.of().parseHex("a1637174790a"))));
+
+        AuthenticatedMapContract.Genesis decoded = AuthenticatedMapContract.decodeGenesis(
+                AuthenticatedMapContract.encodeGenesis(genesis));
+        assertThat(decoded.validators()).extracting(
+                        AuthenticatedMapContract.ValidatorDescriptor::id)
+                .containsExactly("product-schema");
+        assertThat(decoded.collections().getFirst().validatorId())
+                .isEqualTo("product-schema");
+
+        assertThatThrownBy(() -> new AuthenticatedMapContract.Genesis(
+                "schema-genesis", StateCommitmentProfiles.JMT_BLAKE2B256_V1,
+                StateCommitmentProfiles.CLASSIC_JMT.formatFingerprint(),
+                repeated(1), repeated(2), repeated(3), 16, 4096,
+                List.of(new AuthenticatedMapContract.CollectionDescriptor(
+                        "records", AuthenticatedMapContract.AUTH_OPEN, false, 64, 1024)),
+                List.of(validator), List.of()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("unreferenced");
+        assertThatThrownBy(() -> new AuthenticatedMapContract.Genesis(
+                "schema-genesis", StateCommitmentProfiles.JMT_BLAKE2B256_V1,
+                StateCommitmentProfiles.CLASSIC_JMT.formatFingerprint(),
+                repeated(1), repeated(2), repeated(3), 16, 4096,
+                List.of(new AuthenticatedMapContract.CollectionDescriptor(
+                        "records", AuthenticatedMapContract.AUTH_OPEN, false, 64, 1024,
+                        AuthenticatedMapContract.VALUE_ENCODING_OPAQUE, validator.id())),
+                List.of(validator), List.of()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("canonical CBOR");
+        assertThatThrownBy(() -> new AuthenticatedMapContract.Genesis(
+                "schema-genesis", StateCommitmentProfiles.JMT_BLAKE2B256_V1,
+                StateCommitmentProfiles.CLASSIC_JMT.formatFingerprint(),
+                repeated(1), repeated(2), repeated(3), 16, 4096,
+                List.of(collection), List.of(validator),
+                List.of(new AuthenticatedMapContract.GenesisEntry(
+                        "records", bytes("bad"), new byte[0],
+                        java.util.HexFormat.of().parseHex("a1637174790b")))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("value schema");
+    }
+
+    @Test
+    void validatorDescriptorKindsAndParametersFailClosed() {
+        assertThatThrownBy(() -> AuthenticatedMapContract.ValidatorDescriptor.schema(
+                "schema", java.util.HexFormat.of().parseHex("820180")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("schema descriptor");
+        assertThatThrownBy(() -> new AuthenticatedMapContract.ValidatorDescriptor(
+                "schema", AuthenticatedMapContract.VALIDATOR_KIND_SCHEMA, "",
+                AuthenticatedMapSchema.IR_CATALOG_ID, quantitySchema(10).definition(),
+                java.util.HexFormat.of().parseHex("a1617801")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("schema descriptor");
+        assertThatThrownBy(() -> new AuthenticatedMapContract.ValidatorDescriptor(
+                "plugin", AuthenticatedMapContract.VALIDATOR_KIND_PLUGIN,
+                "identifier-validator", AuthenticatedMapContract.VALIDATOR_SPI_CONTRACT_VERSION,
+                new byte[31], new byte[]{(byte) 0xa0}))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("plugin validator");
+    }
+
+    @Test
     void pointAndReceiptDtosAreCanonicalAndProfileNeutral() {
         AuthenticatedMapContract.PointQuery query =
                 AuthenticatedMapContract.PointQuery.atHeight(
@@ -240,6 +321,14 @@ class AuthenticatedMapContractTest {
                 List.of(products, issuers),
                 List.of(new AuthenticatedMapContract.GenesisEntry(
                         "products", bytes("sku-1"), OWNER, new byte[]{1, 2})));
+    }
+
+    private static AuthenticatedMapSchema.Schema quantitySchema(int maximum) {
+        return AuthenticatedMapSchema.of(new AuthenticatedMapSchema.MapNode(List.of(
+                new AuthenticatedMapSchema.MapField("qty", true,
+                        new AuthenticatedMapSchema.IntegerNode(
+                                AuthenticatedMapSchema.INTEGER_UINT,
+                                BigInteger.ZERO, BigInteger.valueOf(maximum))))));
     }
 
     private static byte[] repeated(int value) {

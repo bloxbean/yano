@@ -22,6 +22,7 @@ import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContr
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract.Receipt;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract.ReceiptQuery;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract.ReceiptResult;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapSchema;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -45,6 +46,7 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
     private final Genesis genesis;
     private final byte[] genesisId;
     private final Map<String, CollectionDescriptor> collections;
+    private final Map<String, AuthenticatedMapSchema.Schema> schemas;
     private final AppChainMembershipView membershipView;
 
     public AuthenticatedMapStateMachine(Genesis genesis) {
@@ -57,6 +59,16 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
         Map<String, CollectionDescriptor> declared = new LinkedHashMap<>();
         genesis.collections().forEach(descriptor -> declared.put(descriptor.id(), descriptor));
         this.collections = Map.copyOf(declared);
+        Map<String, AuthenticatedMapSchema.Schema> declaredSchemas = new LinkedHashMap<>();
+        genesis.validators().forEach(descriptor -> {
+            if (descriptor.kind() != AuthenticatedMapContract.VALIDATOR_KIND_SCHEMA) {
+                throw new IllegalArgumentException(
+                        "authenticated-map plugin validators are not available in this runtime");
+            }
+            declaredSchemas.put(descriptor.id(),
+                    AuthenticatedMapSchema.decode(descriptor.definition()));
+        });
+        this.schemas = Map.copyOf(declaredSchemas);
         this.membershipView = membershipView;
         if (membershipView == null && genesis.collections().stream()
                 .anyMatch(descriptor -> descriptor.authorization()
@@ -109,7 +121,7 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
             }
             Command command = AuthenticatedMapContract.decodeCommand(message.getBody());
             validateCommandBounds(command);
-            validateCommandValueEncodings(command);
+            validateCommandValues(command);
             return AdmissionResult.accept();
         } catch (IllegalArgumentException malformed) {
             return AdmissionResult.reject("Malformed authenticated-map v1 command");
@@ -256,7 +268,7 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
         }
     }
 
-    private void validateCommandValueEncodings(Command command) {
+    private void validateCommandValues(Command command) {
         for (Mutation mutation : command.mutations()) {
             if (!valueBearing(mutation.operation())) {
                 continue;
@@ -265,6 +277,10 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
             if (!AuthenticatedMapContract.valueEncodingAccepts(
                     descriptor.valueEncoding(), mutation.value(), descriptor.maxValueBytes())) {
                 throw new IllegalArgumentException("mutation violates collection value encoding");
+            }
+            AuthenticatedMapSchema.Schema schema = schemas.get(descriptor.validatorId());
+            if (schema != null && !schema.accepts(mutation.value())) {
+                throw new IllegalArgumentException("mutation violates collection value schema");
             }
         }
     }
@@ -323,21 +339,21 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
             if (!descriptor.restoreAllowed()) {
                 throw failure(AuthenticatedMapContract.ERROR_RESTORE_FORBIDDEN);
             }
-            requireValueEncoding(descriptor, mutation.value());
+            requireValueValidation(descriptor, mutation.value());
             return Entry.active(Math.addExact(current.revision(), 1),
                     current.controller(), mutation.value(), current.createdHeight(), height);
         }
 
         return switch (mutation.operation()) {
             case AuthenticatedMapContract.OP_PUT -> {
-                requireValueEncoding(descriptor, mutation.value());
+                requireValueValidation(descriptor, mutation.value());
                 yield updated(height, current, mutation.value());
             }
             case AuthenticatedMapContract.OP_PUT_IF_ABSENT ->
                     throw failure(AuthenticatedMapContract.ERROR_ALREADY_EXISTS);
             case AuthenticatedMapContract.OP_COMPARE_AND_SET -> {
                 requirePreconditions(current, mutation);
-                requireValueEncoding(descriptor, mutation.value());
+                requireValueValidation(descriptor, mutation.value());
                 yield updated(height, current, mutation.value());
             }
             case AuthenticatedMapContract.OP_TRANSFER_CONTROLLER -> {
@@ -368,16 +384,20 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
                 && !isMember(sender, height)) {
             throw failure(AuthenticatedMapContract.ERROR_UNAUTHORIZED);
         }
-        requireValueEncoding(descriptor, mutation.value());
+        requireValueValidation(descriptor, mutation.value());
         byte[] controller = descriptor.authorization() == AuthenticatedMapContract.AUTH_OWNER
                 ? sender : new byte[0];
         return Entry.active(1, controller, mutation.value(), height, height);
     }
 
-    private void requireValueEncoding(CollectionDescriptor descriptor, byte[] value) {
+    private void requireValueValidation(CollectionDescriptor descriptor, byte[] value) {
         if (!AuthenticatedMapContract.valueEncodingAccepts(
                 descriptor.valueEncoding(), value, descriptor.maxValueBytes())) {
             throw failure(AuthenticatedMapContract.ERROR_VALUE_ENCODING);
+        }
+        AuthenticatedMapSchema.Schema schema = schemas.get(descriptor.validatorId());
+        if (schema != null && !schema.accepts(value)) {
+            throw failure(AuthenticatedMapContract.ERROR_VALUE_SCHEMA);
         }
     }
 
