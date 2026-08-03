@@ -1,6 +1,6 @@
 [versions]
 yaci = "0.5.0-pre12"
-cardano-client-lib = "0.8.0-pre4"
+cardano-client-lib = "0.8.0-pre5-dev1"
 julc="0.1.0-pre14"
 zeroj = "0.1.0-pre10"
 bouncycastle = "1.84"
@@ -35,6 +35,8 @@ cardano-client-cip20 = { module = "com.bloxbean.cardano:cardano-client-cip20", v
 
 cardano-client-mpf = { module = "com.bloxbean.cardano:cardano-client-merkle-patricia-forestry", version.ref = "cardano-client-lib" }
 cardano-client-mpf-rocksdb = { module = "com.bloxbean.cardano:cardano-client-merkle-patricia-forestry-rocksdb", version.ref = "cardano-client-lib" }
+cardano-client-jmt = { module = "com.bloxbean.cardano:cardano-client-jellyfish-merkle", version.ref = "cardano-client-lib" }
+cardano-client-jmt-rocksdb = { module = "com.bloxbean.cardano:cardano-client-jellyfish-merkle-rocksdb", version.ref = "cardano-client-lib" }
 
 julc-vm-java={ module = "com.bloxbean.cardano:julc-vm-java", version.ref = "julc" }
 julc-cardano-client-lib={ module = "com.bloxbean.cardano:julc-cardano-client-lib", version.ref = "julc" }

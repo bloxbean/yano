@@ -19,8 +19,8 @@ import java.util.List;
 public final class StdlibContractCbor {
     public static final int MAX_WIRE_BYTES = 1_048_576;
     public static final int MAX_STATE_KEY_BYTES = 256;
-    private static final int MAX_ITEMS = 256;
-    private static final int MAX_DEPTH = 8;
+    private static final int MAX_ITEMS = 2_048;
+    private static final int MAX_DEPTH = 12;
 
     private StdlibContractCbor() {
     }
