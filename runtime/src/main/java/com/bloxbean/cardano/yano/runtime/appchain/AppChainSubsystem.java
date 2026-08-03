@@ -13,6 +13,7 @@ import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yaci.events.api.EventMetadata;
 import com.bloxbean.cardano.yaci.events.api.PublishOptions;
 import com.bloxbean.cardano.yano.api.appchain.*;
+import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValidatorResolver;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundle;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
@@ -28,6 +29,7 @@ import com.bloxbean.cardano.yano.api.plugin.PluginActivationException;
 import com.bloxbean.cardano.yano.appchain.config.AppChainConfigSemantics;
 import com.bloxbean.cardano.yano.runtime.kernel.Subsystem;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
+import com.bloxbean.cardano.yano.runtime.plugins.CatalogAuthenticatedMapValidatorResolver;
 import com.bloxbean.cardano.yano.runtime.plugins.LegacyServiceLoaderProviderRegistry;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginProviderRegistry;
 import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
@@ -481,6 +483,13 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                                 @Override
                                 public Optional<StateCommitmentIdentity> stateCommitmentIdentity() {
                                     return Optional.of(AppChainSubsystem.this.stateCommitmentIdentity);
+                                }
+                                @Override
+                                public Optional<AuthenticatedMapValidatorResolver>
+                                authenticatedMapValidatorResolver() {
+                                    return Optional.of(
+                                            new CatalogAuthenticatedMapValidatorResolver(
+                                                    pluginProviders));
                                 }
                                 @Override
                                 public Optional<com.bloxbean.cardano.yano.api.appchain.AppChainMembershipView>

@@ -1,12 +1,15 @@
 package com.bloxbean.cardano.yano.runtime.plugins;
 
+import com.bloxbean.cardano.yano.api.plugin.PluginDigestMode;
+
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * Immutable selector registry for the nine typed contribution SPIs. The
- * catalog's tenth contribution kind, {@code NodePlugin}, remains under the
+ * Immutable selector registry for the ten typed contribution SPIs. The
+ * catalog's eleventh contribution kind, {@code NodePlugin}, remains under the
  * lifecycle manager's exclusive ownership rather than public selector lookup.
  *
  * <p>The manifested catalog implements this contract with lazy, cached
@@ -27,6 +30,18 @@ public interface PluginProviderRegistry {
      * registries may return empty; callers use a bounded compatibility label.
      */
     default <P> Optional<String> contributionOwner(
+            Class<P> providerType,
+            String selector
+    ) {
+        return Optional.empty();
+    }
+
+    /**
+     * Immutable byte provenance for a selected manifested contribution.
+     * Legacy/direct registries return empty because they cannot satisfy
+     * consensus artifact-closure pinning.
+     */
+    default <P> Optional<ContributionProvenance> contributionProvenance(
             Class<P> providerType,
             String selector
     ) {
@@ -98,5 +113,18 @@ public interface PluginProviderRegistry {
 
     static PluginProviderRegistry empty() {
         return EmptyPluginProviderRegistry.INSTANCE;
+    }
+
+    record ContributionProvenance(
+            String bundleId,
+            String digest,
+            PluginDigestMode digestMode,
+            boolean explicitlyAllowListed
+    ) {
+        public ContributionProvenance {
+            bundleId = Objects.requireNonNull(bundleId, "bundleId");
+            digest = Objects.requireNonNull(digest, "digest");
+            digestMode = Objects.requireNonNull(digestMode, "digestMode");
+        }
     }
 }

@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.catalog;
 
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
+import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValueValidatorFactory;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerModeProvider;
@@ -19,6 +20,9 @@ public enum ContributionKind {
     NODE_PLUGIN("node-plugin", NodePlugin.class, false),
     /** Deterministic app-chain state-machine provider. */
     APP_STATE_MACHINE("app-state-machine", AppStateMachineProvider.class, false),
+    /** Genesis-pinned authenticated-map consensus value validator. */
+    AUTHENTICATED_MAP_VALIDATOR(
+            "authenticated-map-validator", AuthenticatedMapValueValidatorFactory.class, true),
     /** App-chain sequencer-mode provider. */
     SEQUENCER_MODE("sequencer-mode", SequencerModeProvider.class, false),
     /** App-chain L1 observation provider. */

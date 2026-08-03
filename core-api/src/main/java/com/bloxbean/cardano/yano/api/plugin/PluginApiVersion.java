@@ -13,7 +13,7 @@ public final class PluginApiVersion {
      * symbol or contribution kind. It is monotonic across major-version
      * changes and therefore never resets when {@link #CURRENT_MAJOR} changes.</p>
      */
-    public static final int CURRENT_LEVEL = 1;
+    public static final int CURRENT_LEVEL = 2;
 
     private PluginApiVersion() {
     }

@@ -52,7 +52,7 @@ class PluginCatalogCliTest {
         assertThat(firstTable.err()).isEmpty();
         assertThat(firstTable.out()).isEqualTo(secondTable.out())
                 .contains("PLUGIN_API_MAJOR\t1")
-                .contains("PLUGIN_API_LEVEL\t1")
+                .contains("PLUGIN_API_LEVEL\t2")
                 .contains("ID\tVERSION\tSTATUS")
                 .contains(BUNDLE_ID)
                 .contains("health/" + BUNDLE_ID)
@@ -63,7 +63,7 @@ class PluginCatalogCliTest {
                 .doesNotContain(temporary.toString());
         JsonNode json = new ObjectMapper().readTree(firstJson.out());
         assertThat(json.path("pluginApiMajor").asInt()).isEqualTo(1);
-        assertThat(json.path("pluginApiLevel").asInt()).isEqualTo(1);
+        assertThat(json.path("pluginApiLevel").asInt()).isEqualTo(2);
         assertThat(json.path("bundles").get(0).path("id").asText()).isEqualTo(BUNDLE_ID);
         assertThat(json.path("bundles").get(0).path("source").asText())
                 .isEqualTo("DIRECTORY");
@@ -81,7 +81,7 @@ class PluginCatalogCliTest {
 
         assertThat(result.exit()).isZero();
         assertThat(result.out())
-                .startsWith("VALID apiMajor=1 apiLevel=1 bundles=1 selected=1")
+                .startsWith("VALID apiMajor=1 apiLevel=2 bundles=1 selected=1")
                 .contains("fingerprint=sha256:");
         assertThat(System.getProperty(INITIALIZED)).isNull();
         assertThat(System.getProperty(CONSTRUCTED)).isNull();
@@ -123,15 +123,15 @@ class PluginCatalogCliTest {
         assertThat(incompatible.err())
                 .contains("does not support Yano plugin API major 2");
 
-        Path newLevel = healthArtifact("new-level", 2);
+        Path newLevel = healthArtifact("new-level", 3);
         Result oldHost = run("validate", newLevel.toString());
         assertThat(oldHost.exit()).isEqualTo(PluginCatalogCli.EXIT_INVALID_CATALOG);
-        assertThat(oldHost.err()).contains("API major 1 level 1");
+        assertThat(oldHost.err()).contains("API major 1 level 2");
 
         Result currentEnough = run(
-                "validate", "--api-level", "2", newLevel.toString());
+                "validate", "--api-level", "3", newLevel.toString());
         assertThat(currentEnough.exit()).isZero();
-        assertThat(currentEnough.out()).startsWith("VALID apiMajor=1 apiLevel=2");
+        assertThat(currentEnough.out()).startsWith("VALID apiMajor=1 apiLevel=3");
 
         Result invalidLevel = run(
                 "inspect", "--api-level", "0", valid.toString());

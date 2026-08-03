@@ -10,6 +10,8 @@ import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
+import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValidatorResolver;
+import com.bloxbean.cardano.yano.api.appchain.authmap.ValidatorVerdict;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import com.bloxbean.cardano.yano.appchain.config.AppChainEffectsConfig;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
@@ -260,6 +262,89 @@ class AuthenticatedMapStateMachineTest {
     }
 
     @Test
+    void pluginValidatorRejectsWithTypedReceiptAndKeepsBatchesAtomic() {
+        AuthenticatedMapContract.ValidatorDescriptor validator = pluginDescriptor();
+        AuthenticatedMapStateMachine machine = pluginMachine(validator,
+                (collection, key, value) -> Arrays.equals(value, bytes("valid"))
+                        ? ValidatorVerdict.ACCEPT : ValidatorVerdict.REJECT,
+                List.of());
+        TestState state = new TestState();
+        machine.init(state, new AppChainInfo(CHAIN_ID, "", 1));
+
+        AppMessage invalid = message(OWNER, 1, single(
+                AuthenticatedMapContract.Mutation.put(
+                        "records", bytes("bad"), bytes("invalid"))));
+        assertThat(machine.validate(invalid).isAccepted()).isFalse();
+        apply(machine, state, 1, invalid);
+        assertRejected(state, invalid, AuthenticatedMapContract.ERROR_VALUE_VALIDATOR);
+
+        AppMessage valid = message(OWNER, 2, single(
+                AuthenticatedMapContract.Mutation.put(
+                        "records", bytes("good"), bytes("valid"))));
+        assertThat(machine.validate(valid).isAccepted()).isTrue();
+        apply(machine, state, 2, valid);
+        assertApplied(state, valid, 2);
+
+        AppMessage invalidBatch = message(OWNER, 3,
+                AuthenticatedMapContract.Command.batch(List.of(
+                        AuthenticatedMapContract.Mutation.put(
+                                "records", bytes("would-write"), bytes("valid")),
+                        AuthenticatedMapContract.Mutation.put(
+                                "records", bytes("bad-again"), bytes("invalid")))));
+        apply(machine, state, 3, invalidBatch);
+        assertThat(state.get(AuthenticatedMapContract.canonicalKey(
+                "records", bytes("would-write")))).isEmpty();
+        assertRejected(state, invalidBatch,
+                AuthenticatedMapContract.ERROR_VALUE_VALIDATOR);
+    }
+
+    @Test
+    void unexpectedPluginFailureStopsValidationAndApplyWithoutAReceipt() {
+        AuthenticatedMapContract.ValidatorDescriptor validator = pluginDescriptor();
+        AuthenticatedMapStateMachine machine = pluginMachine(validator,
+                (collection, key, value) -> {
+                    throw new IllegalArgumentException("plugin-controlled detail");
+                }, List.of());
+        TestState state = new TestState();
+        machine.init(state, new AppChainInfo(CHAIN_ID, "", 1));
+        AppMessage message = message(OWNER, 1, single(
+                AuthenticatedMapContract.Mutation.put(
+                        "records", bytes("key"), bytes("value"))));
+
+        assertThatThrownBy(() -> machine.validate(message))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("authenticated-map validator execution failed")
+                .hasMessageNotContaining("plugin-controlled detail");
+        assertThatThrownBy(() -> apply(machine, state, 1, message))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("authenticated-map validator execution failed");
+        assertThat(state.get(AuthenticatedMapContract.receiptKey(
+                message.getMessageId()))).isEmpty();
+    }
+
+    @Test
+    void pluginInitialEntriesAndResolverAvailabilityFailClosedAtStartup() {
+        AuthenticatedMapContract.ValidatorDescriptor validator = pluginDescriptor();
+        AuthenticatedMapContract.Genesis genesis = new AuthenticatedMapContract.Genesis(
+                CHAIN_ID, StateCommitmentProfiles.MPF_BLAKE2B256_V1,
+                StateCommitmentProfiles.MPF.formatFingerprint(),
+                repeated(1), repeated(2), repeated(3), 16, 32_768,
+                List.of(pluginCollection("records", validator.id())),
+                List.of(validator),
+                List.of(new AuthenticatedMapContract.GenesisEntry(
+                        "records", bytes("initial"), new byte[0], bytes("invalid"))));
+
+        assertThatThrownBy(() -> new AuthenticatedMapStateMachine(genesis))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("requires a catalog resolver");
+        assertThatThrownBy(() -> new AuthenticatedMapStateMachine(
+                genesis, null, resolver(validator,
+                (collection, key, value) -> ValidatorVerdict.REJECT)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("initial entry violates");
+    }
+
+    @Test
     void memberPolicyUsesHeightVersionedMembership() {
         AppChainMembershipEpoch first = new AppChainMembershipEpoch(
                 0, List.of(hex(OWNER)), 1);
@@ -454,6 +539,35 @@ class AuthenticatedMapStateMachineTest {
                 height -> new AppChainMembershipEpoch(0, List.of(hex(OWNER)), 1));
     }
 
+    private static AuthenticatedMapStateMachine pluginMachine(
+            AuthenticatedMapContract.ValidatorDescriptor descriptor,
+            com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValueValidator validator,
+            List<AuthenticatedMapContract.GenesisEntry> initialEntries
+    ) {
+        AuthenticatedMapContract.Genesis genesis = new AuthenticatedMapContract.Genesis(
+                CHAIN_ID, StateCommitmentProfiles.MPF_BLAKE2B256_V1,
+                StateCommitmentProfiles.MPF.formatFingerprint(),
+                repeated(1), repeated(2), repeated(3), 16, 32_768,
+                List.of(pluginCollection("records", descriptor.id())),
+                List.of(descriptor), initialEntries);
+        return new AuthenticatedMapStateMachine(genesis,
+                height -> new AppChainMembershipEpoch(0, List.of(hex(OWNER)), 1),
+                resolver(descriptor, validator));
+    }
+
+    private static AuthenticatedMapValidatorResolver resolver(
+            AuthenticatedMapContract.ValidatorDescriptor descriptor,
+            com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValueValidator validator
+    ) {
+        return (digest, context) -> {
+            assertThat(digest).isEqualTo(descriptor.definition());
+            assertThat(context.descriptorId()).isEqualTo(descriptor.id());
+            assertThat(context.providerId()).isEqualTo(descriptor.providerId());
+            assertThat(context.collectionIds()).containsExactly("records");
+            return validator;
+        };
+    }
+
     private static AuthenticatedMapStateMachine machine(
             List<AuthenticatedMapContract.CollectionDescriptor> collections,
             List<AuthenticatedMapContract.ValidatorDescriptor> validators) {
@@ -518,6 +632,21 @@ class AuthenticatedMapStateMachineTest {
         return new AuthenticatedMapContract.CollectionDescriptor(
                 id, AuthenticatedMapContract.AUTH_OPEN, false, 64, 1024,
                 AuthenticatedMapContract.VALUE_ENCODING_CANONICAL_CBOR, validatorId);
+    }
+
+    private static AuthenticatedMapContract.CollectionDescriptor pluginCollection(
+            String id,
+            String validatorId
+    ) {
+        return new AuthenticatedMapContract.CollectionDescriptor(
+                id, AuthenticatedMapContract.AUTH_OPEN, false, 64, 1024,
+                AuthenticatedMapContract.VALUE_ENCODING_OPAQUE, validatorId);
+    }
+
+    private static AuthenticatedMapContract.ValidatorDescriptor pluginDescriptor() {
+        return AuthenticatedMapContract.ValidatorDescriptor.plugin(
+                "product-validator", "example-validator-v1", repeated(9),
+                new byte[]{(byte) 0xa0});
     }
 
     private static AuthenticatedMapSchema.Schema quantitySchema(int maximum) {

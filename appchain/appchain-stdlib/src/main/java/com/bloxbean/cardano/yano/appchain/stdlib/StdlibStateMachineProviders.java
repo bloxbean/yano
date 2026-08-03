@@ -100,7 +100,8 @@ public final class StdlibStateMachineProviders {
                 throw new IllegalArgumentException(
                         "authenticated-map genesis membership commitment is incompatible");
             }
-            return new AuthenticatedMapStateMachine(genesis, membership);
+            return new AuthenticatedMapStateMachine(genesis, membership,
+                    context.authenticatedMapValidatorResolver().orElse(null));
         }
 
         private static boolean isCanonicalLowerHex(String value) {

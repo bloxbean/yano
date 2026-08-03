@@ -107,6 +107,7 @@ public final class AuthenticatedMapContract {
     public static final int ERROR_RESTORE_FORBIDDEN = 9;
     public static final int ERROR_VALUE_ENCODING = 10;
     public static final int ERROR_VALUE_SCHEMA = 11;
+    public static final int ERROR_VALUE_VALIDATOR = 12;
 
     private static final String INTERNAL_GENESIS_COLLECTION =
             "yano-authenticated-map-internal-v1";
@@ -877,7 +878,7 @@ public final class AuthenticatedMapContract {
         public Receipt {
             messageId = require32(messageId, "messageId");
             if (height <= 0 || status < RECEIPT_APPLIED || status > RECEIPT_REJECTED
-                    || errorCode < ERROR_NONE || errorCode > ERROR_VALUE_SCHEMA) {
+                    || errorCode < ERROR_NONE || errorCode > ERROR_VALUE_VALIDATOR) {
                 throw new IllegalArgumentException("receipt status/height/error is invalid");
             }
             batchCommitment = require32(batchCommitment, "batchCommitment");
@@ -1037,6 +1038,16 @@ public final class AuthenticatedMapContract {
             return new ValidatorDescriptor(id, VALIDATOR_KIND_SCHEMA, "",
                     AuthenticatedMapSchema.IR_CATALOG_ID, definition,
                     new byte[]{(byte) 0xa0});
+        }
+
+        public static ValidatorDescriptor plugin(
+                String id,
+                String providerId,
+                byte[] artifactClosureDigest,
+                byte[] parameters
+        ) {
+            return new ValidatorDescriptor(id, VALIDATOR_KIND_PLUGIN, providerId,
+                    VALIDATOR_SPI_CONTRACT_VERSION, artifactClosureDigest, parameters);
         }
 
         @Override public byte[] definition() { return definition.clone(); }

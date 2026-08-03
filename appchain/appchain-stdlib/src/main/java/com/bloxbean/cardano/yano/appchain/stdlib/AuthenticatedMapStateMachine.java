@@ -10,6 +10,10 @@ import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
+import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValidatorResolver;
+import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValueValidator;
+import com.bloxbean.cardano.yano.api.appchain.authmap.ValidatorInitContext;
+import com.bloxbean.cardano.yano.api.appchain.authmap.ValidatorVerdict;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract.CollectionDescriptor;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract.Command;
@@ -47,28 +51,53 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
     private final byte[] genesisId;
     private final Map<String, CollectionDescriptor> collections;
     private final Map<String, AuthenticatedMapSchema.Schema> schemas;
+    private final Map<String, AuthenticatedMapValueValidator> pluginValidators;
     private final AppChainMembershipView membershipView;
 
     public AuthenticatedMapStateMachine(Genesis genesis) {
-        this(genesis, null);
+        this(genesis, null, null);
     }
 
     public AuthenticatedMapStateMachine(Genesis genesis, AppChainMembershipView membershipView) {
+        this(genesis, membershipView, null);
+    }
+
+    public AuthenticatedMapStateMachine(
+            Genesis genesis,
+            AppChainMembershipView membershipView,
+            AuthenticatedMapValidatorResolver validatorResolver
+    ) {
         this.genesis = Objects.requireNonNull(genesis, "genesis");
         this.genesisId = AuthenticatedMapContract.genesisId(genesis);
         Map<String, CollectionDescriptor> declared = new LinkedHashMap<>();
         genesis.collections().forEach(descriptor -> declared.put(descriptor.id(), descriptor));
         this.collections = Map.copyOf(declared);
         Map<String, AuthenticatedMapSchema.Schema> declaredSchemas = new LinkedHashMap<>();
+        Map<String, AuthenticatedMapValueValidator> declaredPlugins = new LinkedHashMap<>();
         genesis.validators().forEach(descriptor -> {
-            if (descriptor.kind() != AuthenticatedMapContract.VALIDATOR_KIND_SCHEMA) {
-                throw new IllegalArgumentException(
-                        "authenticated-map plugin validators are not available in this runtime");
+            if (descriptor.kind() == AuthenticatedMapContract.VALIDATOR_KIND_SCHEMA) {
+                declaredSchemas.put(descriptor.id(),
+                        AuthenticatedMapSchema.decode(descriptor.definition()));
+            } else {
+                if (validatorResolver == null) {
+                    throw new IllegalArgumentException(
+                            "authenticated-map plugin validator requires a catalog resolver");
+                }
+                List<String> collectionIds = genesis.collections().stream()
+                        .filter(collection -> descriptor.id().equals(collection.validatorId()))
+                        .map(CollectionDescriptor::id)
+                        .sorted()
+                        .toList();
+                ValidatorInitContext context = new ValidatorInitContext(
+                        descriptor.id(), descriptor.providerId(), descriptor.contractVersion(),
+                        descriptor.parameters(), collectionIds);
+                declaredPlugins.put(descriptor.id(), Objects.requireNonNull(
+                        validatorResolver.resolve(descriptor.definition(), context),
+                        "authenticated-map validator resolver returned null"));
             }
-            declaredSchemas.put(descriptor.id(),
-                    AuthenticatedMapSchema.decode(descriptor.definition()));
         });
         this.schemas = Map.copyOf(declaredSchemas);
+        this.pluginValidators = Map.copyOf(declaredPlugins);
         this.membershipView = membershipView;
         if (membershipView == null && genesis.collections().stream()
                 .anyMatch(descriptor -> descriptor.authorization()
@@ -76,6 +105,7 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
             throw new IllegalArgumentException(
                     "authenticated-map member authorization requires a membership view");
         }
+        validateInitialPluginValues();
     }
 
     @Override
@@ -282,6 +312,13 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
             if (schema != null && !schema.accepts(mutation.value())) {
                 throw new IllegalArgumentException("mutation violates collection value schema");
             }
+            AuthenticatedMapValueValidator plugin = pluginValidators.get(
+                    descriptor.validatorId());
+            if (plugin != null && invokePlugin(plugin, mutation.collectionId(),
+                    mutation.applicationKey(), mutation.value()) == ValidatorVerdict.REJECT) {
+                throw new IllegalArgumentException(
+                        "mutation violates collection value validator");
+            }
         }
     }
 
@@ -339,21 +376,21 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
             if (!descriptor.restoreAllowed()) {
                 throw failure(AuthenticatedMapContract.ERROR_RESTORE_FORBIDDEN);
             }
-            requireValueValidation(descriptor, mutation.value());
+            requireValueValidation(descriptor, mutation.applicationKey(), mutation.value());
             return Entry.active(Math.addExact(current.revision(), 1),
                     current.controller(), mutation.value(), current.createdHeight(), height);
         }
 
         return switch (mutation.operation()) {
             case AuthenticatedMapContract.OP_PUT -> {
-                requireValueValidation(descriptor, mutation.value());
+                requireValueValidation(descriptor, mutation.applicationKey(), mutation.value());
                 yield updated(height, current, mutation.value());
             }
             case AuthenticatedMapContract.OP_PUT_IF_ABSENT ->
                     throw failure(AuthenticatedMapContract.ERROR_ALREADY_EXISTS);
             case AuthenticatedMapContract.OP_COMPARE_AND_SET -> {
                 requirePreconditions(current, mutation);
-                requireValueValidation(descriptor, mutation.value());
+                requireValueValidation(descriptor, mutation.applicationKey(), mutation.value());
                 yield updated(height, current, mutation.value());
             }
             case AuthenticatedMapContract.OP_TRANSFER_CONTROLLER -> {
@@ -384,13 +421,17 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
                 && !isMember(sender, height)) {
             throw failure(AuthenticatedMapContract.ERROR_UNAUTHORIZED);
         }
-        requireValueValidation(descriptor, mutation.value());
+        requireValueValidation(descriptor, mutation.applicationKey(), mutation.value());
         byte[] controller = descriptor.authorization() == AuthenticatedMapContract.AUTH_OWNER
                 ? sender : new byte[0];
         return Entry.active(1, controller, mutation.value(), height, height);
     }
 
-    private void requireValueValidation(CollectionDescriptor descriptor, byte[] value) {
+    private void requireValueValidation(
+            CollectionDescriptor descriptor,
+            byte[] applicationKey,
+            byte[] value
+    ) {
         if (!AuthenticatedMapContract.valueEncodingAccepts(
                 descriptor.valueEncoding(), value, descriptor.maxValueBytes())) {
             throw failure(AuthenticatedMapContract.ERROR_VALUE_ENCODING);
@@ -398,6 +439,42 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
         AuthenticatedMapSchema.Schema schema = schemas.get(descriptor.validatorId());
         if (schema != null && !schema.accepts(value)) {
             throw failure(AuthenticatedMapContract.ERROR_VALUE_SCHEMA);
+        }
+        AuthenticatedMapValueValidator plugin = pluginValidators.get(descriptor.validatorId());
+        if (plugin != null && invokePlugin(plugin, descriptor.id(), applicationKey, value)
+                == ValidatorVerdict.REJECT) {
+            throw failure(AuthenticatedMapContract.ERROR_VALUE_VALIDATOR);
+        }
+    }
+
+    private void validateInitialPluginValues() {
+        for (AuthenticatedMapContract.GenesisEntry initial : genesis.initialEntries()) {
+            CollectionDescriptor descriptor = collections.get(initial.collectionId());
+            AuthenticatedMapValueValidator plugin = pluginValidators.get(
+                    descriptor.validatorId());
+            if (plugin != null && invokePlugin(plugin, initial.collectionId(),
+                    initial.applicationKey(), initial.value()) == ValidatorVerdict.REJECT) {
+                throw new IllegalArgumentException(
+                        "initial entry violates collection value validator");
+            }
+        }
+    }
+
+    private static ValidatorVerdict invokePlugin(
+            AuthenticatedMapValueValidator validator,
+            String collectionId,
+            byte[] applicationKey,
+            byte[] value
+    ) {
+        try {
+            ValidatorVerdict verdict = validator.validate(
+                    collectionId, applicationKey.clone(), value.clone());
+            if (verdict == null) {
+                throw new IllegalStateException("validator returned a null verdict");
+            }
+            return verdict;
+        } catch (RuntimeException failure) {
+            throw new ValidatorExecutionFailure(failure);
         }
     }
 
@@ -473,6 +550,12 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
 
         private int errorCode() {
             return errorCode;
+        }
+    }
+
+    private static final class ValidatorExecutionFailure extends IllegalStateException {
+        private ValidatorExecutionFailure(RuntimeException cause) {
+            super("authenticated-map validator execution failed", cause);
         }
     }
 }

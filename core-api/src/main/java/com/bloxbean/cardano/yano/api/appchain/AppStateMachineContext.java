@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.api.appchain;
 
+import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValidatorResolver;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 
 import java.util.Map;
@@ -43,6 +44,15 @@ public interface AppStateMachineContext {
 
     /** Immutable authenticated-state profile and chain-generation identity. */
     default Optional<StateCommitmentIdentity> stateCommitmentIdentity() {
+        return Optional.empty();
+    }
+
+    /**
+     * Narrow host bridge for genesis-pinned authenticated-map validator
+     * plugins. The normal runtime supplies it; older embedding contexts retain
+     * source compatibility and simply cannot activate plugin validators.
+     */
+    default Optional<AuthenticatedMapValidatorResolver> authenticatedMapValidatorResolver() {
         return Optional.empty();
     }
 }

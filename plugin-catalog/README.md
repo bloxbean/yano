@@ -24,6 +24,13 @@ incremented for every additive public plugin API symbol or contribution kind
 and never resets on a major bump. The bundle `version` remains an independent
 artifact/product SemVer.
 
+Published API-level ledger:
+
+| Level | Additive surface |
+|---:|---|
+| `1` | Initial manifested typed plugin SPIs and contribution catalog. |
+| `2` | ADR-025.1 authenticated-map validator SPI, resolver context bridge, and `authenticated-map-validator` contribution. |
+
 Build the standalone distribution with JDK 25:
 
 ```bash
@@ -63,8 +70,9 @@ Policy options must precede artifact paths:
 ```
 
 The API options default to this Yano build's
-`PluginApiVersion.CURRENT_MAJOR` and `CURRENT_LEVEL` (`1` and `1` for the
-initial contract). Supply both when validating for a different target host.
+`PluginApiVersion.CURRENT_MAJOR` and `CURRENT_LEVEL` (`1` and `2` after the
+authenticated-map validator SPI addition). Supply both when validating for a
+different target host.
 Inspection output includes the target major, level and a fingerprint that binds
 both host values plus every selected manifest's `minLevel`.
 

@@ -85,6 +85,8 @@ def buildTimePluginBundles = [
                  expectedManifestVersion: '1.0.0'],
         'com.bloxbean.cardano.yano.appchain.stdlib':
                 [projectPath: ':appchain-stdlib', includeProvided: false],
+        'com.bloxbean.cardano.yano.appchain.authenticated-map-validators':
+                [projectPath: ':appchain-authenticated-map-validators', includeProvided: true],
         'com.bloxbean.cardano.yano.appchain.evidence-registry':
                 [projectPath: ':appchain-evidence-registry', includeProvided: true],
         'com.bloxbean.cardano.yano.appchain.role-workflow':
@@ -171,6 +173,7 @@ dependencies {
     implementation(project(':appchain-stdlib')) {
         exclude group: 'io.netty', module: 'netty-all'
     }
+    runtimeOnly project(':appchain-authenticated-map-validators')
     // Generic deterministic composition framework (ADR-013.2/ADR-022).
     implementation(project(':appchain-composite')) {
         exclude group: 'io.netty', module: 'netty-all'

@@ -10,6 +10,10 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
 import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
+import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValueValidator;
+import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValueValidatorFactory;
+import com.bloxbean.cardano.yano.api.appchain.authmap.ValidatorInitContext;
+import com.bloxbean.cardano.yano.api.appchain.authmap.ValidatorVerdict;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
@@ -358,6 +362,9 @@ final class PluginSpiFacades {
             case APP_STATE_MACHINE -> new StateMachineProviderFacade(
                     (AppStateMachineProvider) delegate, effectiveLoader, activation,
                     products, callbacks);
+            case AUTHENTICATED_MAP_VALIDATOR -> new AuthenticatedMapValidatorFactoryFacade(
+                    (AuthenticatedMapValueValidatorFactory) delegate, effectiveLoader,
+                    activation, products, callbacks);
             case SEQUENCER_MODE -> new SequencerProviderFacade(
                     (SequencerModeProvider) delegate, effectiveLoader, activation,
                     products, callbacks);
@@ -1145,6 +1152,70 @@ final class PluginSpiFacades {
                         value, machine -> new StateMachineFacade(
                                 machine, loader, activation, callbacks));
             }));
+        }
+    }
+
+    private record AuthenticatedMapValidatorFactoryFacade(
+            AuthenticatedMapValueValidatorFactory delegate,
+            ClassLoader loader,
+            ActivationContext activation,
+            ProductReservations products,
+            CallbackTracker callbacks
+    ) implements AuthenticatedMapValueValidatorFactory {
+        private AuthenticatedMapValidatorFactoryFacade {
+            Objects.requireNonNull(delegate, "delegate");
+        }
+
+        @Override
+        public String id() {
+            return activation.call("read authenticated-map validator provider identity",
+                    () -> pluginCall(callbacks, loader, delegate::id));
+        }
+
+        @Override
+        public String contractVersion() {
+            return activation.call("read authenticated-map validator contract version",
+                    () -> pluginCall(callbacks, loader, delegate::contractVersion));
+        }
+
+        @Override
+        public AuthenticatedMapValueValidator create(ValidatorInitContext context) {
+            Objects.requireNonNull(context, "context");
+            ValidatorInitContext input = new ValidatorInitContext(
+                    context.descriptorId(), context.providerId(), context.contractVersion(),
+                    context.parameters(), context.collectionIds());
+            return activation.call("create authenticated-map validator product",
+                    () -> callbacks.call(() -> {
+                        AuthenticatedMapValueValidator value = PluginThreadContext.call(
+                                loader, () -> delegate.create(input));
+                        return products.facadeForNewInvocation(
+                                value, validator -> new AuthenticatedMapValidatorFacade(
+                                        validator, loader, callbacks));
+                    }));
+        }
+    }
+
+    private record AuthenticatedMapValidatorFacade(
+            AuthenticatedMapValueValidator delegate,
+            ClassLoader loader,
+            CallbackTracker callbacks
+    ) implements AuthenticatedMapValueValidator {
+        private AuthenticatedMapValidatorFacade {
+            Objects.requireNonNull(delegate, "delegate");
+        }
+
+        @Override
+        public ValidatorVerdict validate(
+                String collectionId,
+                byte[] applicationKey,
+                byte[] value
+        ) {
+            Objects.requireNonNull(collectionId, "collectionId");
+            byte[] keyInput = Objects.requireNonNull(applicationKey, "applicationKey").clone();
+            byte[] valueInput = Objects.requireNonNull(value, "value").clone();
+            return Objects.requireNonNull(pluginCall(callbacks, loader,
+                    () -> delegate.validate(collectionId, keyInput, valueInput)),
+                    "AuthenticatedMapValueValidator.validate() must not return null");
         }
     }
 
