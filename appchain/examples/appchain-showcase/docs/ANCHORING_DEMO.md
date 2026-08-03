@@ -1,13 +1,27 @@
 # L1 Anchoring Demo
 
-The showcase enables anchoring at cluster start; it does not require an edit to
-`application-appchain.yml`. The launcher injects anchor settings only for
-`workflow-chain`, records the mode/key reference in the immutable instance
-marker, and keeps all other out-of-box chains available.
+The showcase does not require an edit to `application-appchain.yml`. New
+anchored instances default to `workflow-chain`, while the explicit
+`anchor enable` migration can add one chain or every configured chain later.
+The migration is additive: it cannot remove an anchored chain or change the
+retained mode/key. Do not delete or hand-edit retained identity files.
 
-Use a new instance when turning anchoring on or changing its mode/key. An
-already prepared non-anchor instance intentionally rejects that identity drift.
-Do not delete or hand-edit retained anchor state to bypass the check.
+### Upgrade an extracted pre-migration showcase
+
+Copying only `showcase.sh` is not sufficient. The command, identity migration,
+and multi-chain launch support are implemented by three matched files:
+
+```text
+showcase.sh
+tools/showcase_identity.py
+yano/appchain-cluster/cluster.sh
+```
+
+Use the three files from one newly built showcase ZIP (preferred), or from the
+same source revision. Stop the old facade first, replace all three files, and
+restore executable permissions. Keep the existing `data/`, `yano.jar`, config,
+plugin bundle, and private key in place. The migration verifies the retained
+config/plugin digests before changing an identity marker.
 
 ## Fast devnet script-anchor demo
 
@@ -55,6 +69,48 @@ Bootstrap mints the thread NFT and establishes the script/datum identity. Run
 it exactly once for a new script-anchor instance. Ordinary anchors occur
 automatically after finalized `workflow-chain` activity; restart reuses the
 identity and must not bootstrap again.
+
+## Add anchoring to an existing chain
+
+An app chain may already contain finalized history when anchoring is enabled.
+The command stops the local nodes, expands only the retained anchor scope, and
+restarts every node from the same L1 and app-chain RocksDB directories:
+
+```bash
+# Add one chain while retaining an existing workflow-chain anchor.
+./showcase.sh anchor enable registry-chain --instance anchor-demo
+
+# Or enable every out-of-box chain in one migration.
+./showcase.sh anchor enable all --instance anchor-demo
+```
+
+For preprod, repeat the public-network acknowledgement. The retained key is
+reused; do not supply a different one:
+
+```bash
+./showcase.sh anchor enable registry-chain --instance preprod-anchor \
+  --confirm-public-anchor preprod
+
+./showcase.sh anchor enable all --instance preprod-anchor \
+  --confirm-public-anchor preprod
+```
+
+Enabling does not submit a Cardano transaction. In script mode, bootstrap each
+new chain after node 0 can see enough clean pure-ADA wallet UTxOs:
+
+```bash
+./showcase.sh anchor bootstrap registry-chain --instance preprod-anchor
+
+# This waits for each L1 confirmation before starting the next bootstrap.
+./showcase.sh anchor bootstrap all --instance preprod-anchor
+```
+
+Each chain receives its own thread NFT, policy ID, validator address, and
+bootstrap transaction, even though the wallet key may be shared. Bootstrap
+first establishes identity at height zero; the first threshold-co-signed
+advance commits the chain's then-current tip. Earlier history remains verified
+by the app-chain ledger but is not retroactively emitted as one L1 transaction
+per old height. Metadata mode needs no bootstrap.
 
 A one-node demonstration is also supported:
 

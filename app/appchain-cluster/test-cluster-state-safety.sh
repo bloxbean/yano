@@ -24,16 +24,19 @@ mkdir -m 700 "$CLUSTER_DIR"
 NETWORK="preprod"
 ENABLE_ANCHOR=1
 ANCHOR_MODE="metadata"
+ANCHOR_CHAIN="orders-chain,registry-chain"
 HTTP_BASE=18070
 SERVER_BASE=18337
 save_cluster_env
 [ "$(posix_mode "$(env_file)")" = 600 ] || die_test "cluster.env was not chmod 600"
 
-NETWORK="devnet"; ENABLE_ANCHOR=0; ANCHOR_MODE="script"; HTTP_BASE=1; SERVER_BASE=2
+NETWORK="devnet"; ENABLE_ANCHOR=0; ANCHOR_MODE="script"; ANCHOR_CHAIN=""; HTTP_BASE=1; SERVER_BASE=2
 NETWORK_EXPLICIT=0; HTTP_BASE_EXPLICIT=0; SERVER_BASE_EXPLICIT=0
 load_cluster_env
 [ "$NETWORK" = preprod ] && [ "$ENABLE_ANCHOR" = 1 ] && [ "$ANCHOR_MODE" = metadata ] \
   || die_test "strict cluster.env parser did not restore network/anchor values"
+[ "$ANCHOR_CHAIN" = "orders-chain,registry-chain" ] \
+  || die_test "strict cluster.env parser did not restore the multi-chain anchor scope"
 [ "$HTTP_BASE" = 18070 ] && [ "$SERVER_BASE" = 18337 ] \
   || die_test "strict cluster.env parser did not restore ports"
 
@@ -43,6 +46,7 @@ load_cluster_env
 [ "$NETWORK" = mainnet ] && [ "$HTTP_BASE" = 28070 ] && [ "$SERVER_BASE" = 28337 ] \
   || die_test "explicit invocation values did not override cluster.env"
 NETWORK_EXPLICIT=0; HTTP_BASE_EXPLICIT=0; SERVER_BASE_EXPLICIT=0
+ANCHOR_CHAIN=""
 
 VALID_ENV="$WORK/cluster.env.valid"
 cp "$(env_file)" "$VALID_ENV"

@@ -50,9 +50,10 @@ script-anchor co-sign requests; it does not resubmit governance.
 ## Data, restart, and configuration
 
 State stays below `data/showcase/<instance>/` by default. `stop` preserves it;
-`restart` validates the immutable deployment marker and reuses it. Identity
-drift fails closed. `reset --instance <name> --yes` is the only showcase
-command that deletes the named instance.
+`restart` validates the retained deployment marker and reuses it. Identity
+drift fails closed; the only supported marker evolution is an explicit,
+additive `anchor enable` migration. `reset --instance <name> --yes` is the only
+showcase command that deletes the named instance.
 
 ```bash
 ./showcase.sh config show  --instance demo
@@ -65,6 +66,20 @@ identities when the cluster is running, including active and scheduled
 governance values and activation heights. It never prints signing seeds, API
 keys, or anchor-key contents. `paths` points to the shared YAML, node overlays,
 plugin, state, logs, and outbox. `export` writes a redacted shareable snapshot.
+
+Configuration safety has two layers. Launcher-owned identity files bind the
+L1 network/genesis, configured chain IDs, bootstrap members/threshold,
+proposer, config/plugin digests, and anchor signer/scope. Per-chain RocksDB
+stores finalized blocks and MPF state, the committed consensus-profile marker,
+and every governed membership epoch. A normal restart therefore rejects YAML
+or bootstrap identity drift before starting, while governed member/threshold
+changes survive restart and win over the original static values.
+
+Do not bypass the launcher with a one-node system-property or YAML edit. A
+consensus-profile mismatch fails that node's startup; other ungoverned drift
+can split votes or stall availability even though a lone node cannot create a
+threshold finality certificate. Use `member`, `threshold`, or the additive
+`anchor enable <chain-id|all>` migration instead.
 
 The HTTP API is bound to loopback. The launcher uses its documented local-demo
 admin key internally. Do not expose these defaults on a public interface.

@@ -23,12 +23,33 @@ Start:
   --confirm-public-anchor preprod
 ```
 
-Only `workflow-chain` is anchor-enabled. Node 0 is the transaction builder;
+New instances default to anchoring only `workflow-chain`. Node 0 is the transaction builder;
 members co-sign script-anchor rounds at the current app-chain threshold. Use
 `config show` and status/UI to obtain and verify the anchor address. Fund that
 address externally. Prefer multiple clean pure-ADA UTxOs with sufficient fee
 and collateral headroom. A mnemonic or CIP-1852 account is not the raw seed this
 option expects; use the displayed address as the transfer destination.
+
+To add registry anchoring later without resetting its history:
+
+```bash
+./showcase.sh anchor enable registry-chain --instance preprod-demo \
+  --confirm-public-anchor preprod
+./showcase.sh anchor bootstrap registry-chain --instance preprod-demo
+```
+
+To expand the retained scope to every configured chain:
+
+```bash
+./showcase.sh anchor enable all --instance preprod-demo \
+  --confirm-public-anchor preprod
+./showcase.sh anchor bootstrap all --instance preprod-demo
+```
+
+The enable operation restarts the nodes on their existing state and spends no
+tADA. Script bootstrap is separate and fee-paying. Supply enough independent
+pure-ADA UTxOs for the desired chains; `bootstrap all` waits for each chain's
+L1 confirmation before proceeding to avoid reusing an input prematurely.
 
 Wait until the preprod node has synchronized far enough to observe the funding
 transaction and until the configured L1 stability view accepts it. Then, once

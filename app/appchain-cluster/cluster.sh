@@ -49,7 +49,8 @@ THRESHOLD=""                                      # default: majority
 TRANSPORT=""                                      # ""=node default (shared) | shared | dedicated
 ENABLE_ANCHOR=0
 ANCHOR_MODE="script"                              # metadata | script (--anchor-mode)
-ANCHOR_CHAIN="${YANO_CLUSTER_ANCHOR_CHAIN:-}"      # empty = every configured chain
+ANCHOR_CHAIN="${YANO_CLUSTER_ANCHOR_CHAINS:-${YANO_CLUSTER_ANCHOR_CHAIN:-}}" # CSV; empty = every chain
+ANCHOR_CHAIN_EXPLICIT=0                            # repeated CLI flags replace env selection
 ANCHOR_KEY=""                                     # --anchor-key: funded wallet seed (hex, 32 bytes)
 ANCHOR_EVERY=""                                   # --anchor-every: default 2 devnet / 30 public
 CLUSTER_API_KEY="${YANO_CLUSTER_API_KEY:-}"
@@ -997,10 +998,11 @@ IDENTITY_PROPOSER=""
 IDENTITY_MEMBERS=""
 IDENTITY_CHAINS=""
 
-# Read the immutable standalone bootstrap identity without sourcing shell data.
+# Read the retained standalone bootstrap identity without sourcing shell data.
 # Governed epochs live in app-chain history and deliberately do not rewrite
-# this marker; a joining node always starts from these genesis members and then
-# derives later epochs through verified catch-up.
+# this marker; the showcase's explicit additive anchor-scope migration is the
+# sole supported evolution. A joining node always starts from these genesis
+# members and then derives later epochs through verified catch-up.
 load_cluster_app_identity() {
   local marker output line key value seen=""
   marker="$(cluster_app_identity_file)"
@@ -1058,7 +1060,7 @@ try:
         "threshold", "proposer", "chainIds", "anchor",
     }
     if (raw != canonical or set(document) != expected_fields
-            or document.get("schemaVersion") != 1
+            or document.get("schemaVersion") not in (1, 2)
             or document.get("kind") != "yano.cluster.appchain-identity"
             or network not in {"devnet", "preprod", "preview", "mainnet", "sanchonet"}
             or type(count) is not int or not 1 <= count <= 32
@@ -1073,7 +1075,8 @@ try:
                    or not re.fullmatch(r"[A-Za-z0-9._~-]{1,128}", item) for item in chains)
             or not isinstance(anchor, dict)
             or set(anchor) not in ({"enabled", "mode", "signerFingerprint"},
-                                   {"enabled", "mode", "signerFingerprint", "chainId"})
+                                   {"enabled", "mode", "signerFingerprint", "chainId"},
+                                   {"enabled", "mode", "signerFingerprint", "chainIds"})
             or type(anchor.get("enabled")) is not bool):
         raise ValueError("invalid marker")
     if anchor["enabled"]:
@@ -1081,10 +1084,18 @@ try:
                 or not isinstance(anchor.get("signerFingerprint"), str)
                 or not re.fullmatch(r"[0-9a-f]{64}", anchor["signerFingerprint"])
                 or ("chainId" in anchor and anchor["chainId"] is not None
-                    and anchor["chainId"] not in chains)):
+                    and anchor["chainId"] not in chains)
+                or (document.get("schemaVersion") == 2 and "chainIds" not in anchor)
+                or ("chainIds" in anchor and
+                    (document.get("schemaVersion") != 2
+                     or not isinstance(anchor["chainIds"], list)
+                     or not anchor["chainIds"]
+                     or len(anchor["chainIds"]) != len(set(anchor["chainIds"]))
+                     or any(chain not in chains for chain in anchor["chainIds"])))):
             raise ValueError("invalid anchor identity")
-    elif (anchor.get("mode") is not None or anchor.get("signerFingerprint") is not None
-          or anchor.get("chainId") is not None):
+    elif (document.get("schemaVersion") != 1
+          or anchor.get("mode") is not None or anchor.get("signerFingerprint") is not None
+          or anchor.get("chainId") is not None or anchor.get("chainIds") is not None):
         raise ValueError("invalid disabled anchor identity")
     print("NETWORK=" + network)
     print("MEMBER_COUNT=" + str(count))
@@ -1466,7 +1477,7 @@ expected_enabled = anchor_enabled == "1"
 if (raw != canonical or not isinstance(membership, dict) or not isinstance(anchor, dict)):
     raise SystemExit(1)
 if (type(document.get("schemaVersion")) is not int
-        or document.get("schemaVersion") != 1
+        or document.get("schemaVersion") not in (1, 2)
         or document.get("kind") != "yano.demo.appchain-identity"
         or document.get("networkName") != network
         or document.get("chainIds") != chains
@@ -1477,12 +1488,15 @@ if (type(document.get("schemaVersion")) is not int
         or anchor.get("enabled") is not expected_enabled):
     raise SystemExit(1)
 if expected_enabled:
+    selected = anchor_chain.split(",") if anchor_chain else []
+    retained = anchor.get("chainIds") if "chainIds" in anchor else (
+        [anchor["chainId"]] if anchor.get("chainId") else [])
     if (anchor.get("mode") != anchor_mode
             or anchor.get("signerFingerprint") != anchor_fingerprint
-            or anchor.get("chainId", "") != anchor_chain):
+            or retained != selected):
         raise SystemExit(1)
 elif (anchor.get("mode") != "none" or anchor.get("signerFingerprint") is not None
-      or anchor.get("chainId", "") != ""):
+      or anchor.get("chainId", "") != "" or anchor.get("chainIds") not in (None, [])):
     raise SystemExit(1)
 PY
   result=$?
@@ -1575,10 +1589,16 @@ anchor = {
     "mode": anchor_mode if anchor_enabled == "1" else None,
     "signerFingerprint": anchor_fingerprint if anchor_enabled == "1" else None,
 }
+schema_version = 1
 if anchor_chain:
-    anchor["chainId"] = anchor_chain
+    selected = anchor_chain.split(",")
+    if len(selected) == 1:
+        anchor["chainId"] = selected[0]
+    else:
+        schema_version = 2
+        anchor["chainIds"] = selected
 document = {
-    "schemaVersion": 1,
+    "schemaVersion": schema_version,
     "kind": "yano.cluster.appchain-identity",
     "network": network,
     "memberCount": int(count),
@@ -2321,7 +2341,7 @@ save_cluster_env() {
     { printf 'NETWORK=%s\n' "$NETWORK"
       printf 'ENABLE_ANCHOR=%s\n' "$ENABLE_ANCHOR"
       printf 'ANCHOR_MODE=%s\n' "$ANCHOR_MODE"
-      [ -z "$ANCHOR_CHAIN" ] || printf 'ANCHOR_CHAIN=%s\n' "$ANCHOR_CHAIN"
+      [ -z "$ANCHOR_CHAIN" ] || printf 'ANCHOR_CHAINS=%s\n' "$ANCHOR_CHAIN"
       printf 'HTTP_BASE=%s\n' "$HTTP_BASE"
       printf 'SERVER_BASE=%s\n' "$SERVER_BASE"; } > "$tmp"
   ); then
@@ -2349,7 +2369,7 @@ load_cluster_env() {
   [ "$size" -ge 1 ] && [ "$size" -le 1024 ] || die "cluster environment record is not bounded"
 
   while IFS= read -r line || [ -n "$line" ]; do
-    [[ "$line" =~ ^([A-Z_]+)=([A-Za-z0-9_-]+)$ ]] \
+    [[ "$line" =~ ^([A-Z_]+)=([A-Za-z0-9._~,-]+)$ ]] \
       || die "cluster environment record contains an invalid line"
     key="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
     case "$key" in
@@ -2365,9 +2385,10 @@ load_cluster_env() {
         [ "$seen_anchor_mode" -eq 0 ] || die "cluster environment record contains duplicate ANCHOR_MODE"
         case "$value" in metadata|script) ;; *) die "invalid saved anchor mode";; esac
         parsed_anchor_mode="$value"; seen_anchor_mode=1;;
-      ANCHOR_CHAIN)
-        [ "$seen_anchor_chain" -eq 0 ] || die "cluster environment record contains duplicate ANCHOR_CHAIN"
-        [[ "$value" =~ ^[A-Za-z0-9._~-]{1,128}$ ]] || die "invalid saved anchor chain"
+      ANCHOR_CHAIN|ANCHOR_CHAINS)
+        [ "$seen_anchor_chain" -eq 0 ] || die "cluster environment record contains duplicate anchor chain scope"
+        [[ "$value" =~ ^[A-Za-z0-9._~-]{1,128}(,[A-Za-z0-9._~-]{1,128})*$ ]] \
+          || die "invalid saved anchor chain scope"
         parsed_anchor_chain="$value"; seen_anchor_chain=1;;
       HTTP_BASE)
         [ "$seen_http" -eq 0 ] || die "cluster environment record contains duplicate HTTP_BASE"
@@ -2427,6 +2448,47 @@ peers_csv() {
   echo "$out"
 }
 
+anchor_chain_selected() {
+  local cid="$1"
+  [ -z "$ANCHOR_CHAIN" ] && return 0
+  case ",$ANCHOR_CHAIN," in *",$cid,"*) return 0;; *) return 1;; esac
+}
+
+append_anchor_chain_selection() {
+  local value="$1"
+  if [ "$ANCHOR_CHAIN_EXPLICIT" -eq 0 ]; then
+    ANCHOR_CHAIN=""
+    ANCHOR_CHAIN_EXPLICIT=1
+  fi
+  ANCHOR_CHAIN+="${ANCHOR_CHAIN:+,}$value"
+  ENABLE_ANCHOR=1
+}
+
+# Validate a comma-separated/repeated selection and normalize it into config
+# order. An empty value deliberately retains the historical "all chains"
+# representation used by standalone `--anchor` clusters.
+canonicalize_anchor_chain_selection() {
+  [ -n "$ANCHOR_CHAIN" ] || return 0
+  local raw="$ANCHOR_CHAIN" item cid seen="" normalized="" found
+  local -a requested=() configured=()
+  while IFS= read -r cid; do configured+=("$cid"); done < <(chain_ids)
+  [ "$raw" != all ] || raw="$(IFS=,; printf '%s' "${configured[*]}")"
+  IFS=',' read -r -a requested <<< "$raw"
+  for item in "${requested[@]}"; do
+    [[ "$item" =~ ^[A-Za-z0-9._~-]{1,128}$ ]] \
+      || die "--anchor-chain contains an invalid chain id: '$item'"
+    case ",$seen," in *",$item,"*) die "--anchor-chain contains a duplicate: '$item'";; esac
+    seen+="${seen:+,}$item"
+    found=0
+    for cid in "${configured[@]}"; do [ "$cid" != "$item" ] || found=1; done
+    [ "$found" -eq 1 ] || die "--anchor-chain '$item' is not defined in $CONFIG_FILE"
+  done
+  for cid in "${configured[@]}"; do
+    case ",$seen," in *",$cid,"*) normalized+="${normalized:+,}$cid";; esac
+  done
+  ANCHOR_CHAIN="$normalized"
+}
+
 # -D system properties wiring the multi-chain config for node i.
 chain_props() {
   local n="$1" i="$2" peer_count="${3:-$1}" members threshold peers proposer idx cid
@@ -2453,7 +2515,7 @@ chain_props() {
     # Injected for every chain; rotating chains ignore it (sequencer.mode wins).
     props+=("-Dyano.app-chain.chains[$idx].sequencer.proposer=$proposer")
     if [ "$ENABLE_ANCHOR" = "1" ] && [ "$i" -eq 0 ] \
-        && { [ -z "$ANCHOR_CHAIN" ] || [ "$ANCHOR_CHAIN" = "$cid" ]; }; then
+        && anchor_chain_selected "$cid"; then
       props+=("-Dyano.app-chain.chains[$idx].anchor.enabled=true")
       props+=("-Dyano.app-chain.chains[$idx].anchor.mode=$ANCHOR_MODE")
       if [ -z "$ANCHOR_KEY_FILE_VALUE" ]; then
@@ -2594,16 +2656,7 @@ cmd_start() {
   [ -f "$CONFIG_FILE" ] || die "config not found: $CONFIG_FILE (set YANO_HOME to a tree containing config/application-appchain.yml)"
   local -a cids=(); while IFS= read -r c; do cids+=("$c"); done < <(chain_ids)
   [ "${#cids[@]}" -ge 1 ] || die "no chains defined in $CONFIG_FILE"
-  if [ -n "$ANCHOR_CHAIN" ]; then
-    [[ "$ANCHOR_CHAIN" =~ ^[A-Za-z0-9._~-]{1,128}$ ]] \
-      || die "--anchor-chain must be a valid configured chain id"
-    local found_anchor_chain=0 candidate
-    for candidate in "${cids[@]}"; do
-      [ "$candidate" = "$ANCHOR_CHAIN" ] && found_anchor_chain=1
-    done
-    [ "$found_anchor_chain" -eq 1 ] \
-      || die "--anchor-chain '$ANCHOR_CHAIN' is not defined in $CONFIG_FILE"
-  fi
+  canonicalize_anchor_chain_selection
 
   PROFILE="appchain"
   [ "$NETWORK" = "devnet" ] && PROFILE="devnet,appchain" || PROFILE="${NETWORK},appchain"
@@ -2657,7 +2710,7 @@ cmd_start() {
   echo  "  chains  : ${cids[*]}"
   echo  "  members : $n   threshold: ${THRESHOLD:-$(default_threshold "$n")}"
   if [ "$ENABLE_ANCHOR" = "1" ]; then
-    echo "  anchor  : $ANCHOR_MODE mode (leader: node 0, chain: ${ANCHOR_CHAIN:-all})"
+    echo "  anchor  : $ANCHOR_MODE mode (leader: node 0, chains: ${ANCHOR_CHAIN:-all})"
   fi
   echo  "  data    : $CLUSTER_DIR"
   echo  "  ports   : http $HTTP_BASE-$(range_end "$HTTP_BASE" "$n")   n2n $SERVER_BASE-$(range_end "$SERVER_BASE" "$n")"
@@ -3313,8 +3366,8 @@ cmd_effect() {
 cmd_anchor_bootstrap() {
   local cid="${1:-}"; [ -n "$cid" ] || die "usage: $0 anchor-bootstrap <chain-id>"
   load_cluster_env
-  [ -z "$ANCHOR_CHAIN" ] || [ "$ANCHOR_CHAIN" = "$cid" ] \
-    || die "anchoring is enabled only for '$ANCHOR_CHAIN', not '$cid'"
+  anchor_chain_selected "$cid" \
+    || die "anchoring is enabled only for '${ANCHOR_CHAIN:-all}', not '$cid'"
   [ "$ANCHOR_MODE" = "script" ] || die "cluster runs anchor mode '$ANCHOR_MODE' — bootstrap only applies to script anchors (metadata mode needs none: fund the wallet and anchors start automatically)"
   local port; port="$(http_port 0)"
   # Learn the wallet address; on devnet fund it from the faucet first — on a
@@ -3434,8 +3487,9 @@ start options:
                        fund the wallet, no bootstrap, works on any network.
                      script: Plutus V3 thread-NFT + threshold co-signed
                      advances — one-time 'anchor-bootstrap <chain>' per chain.
-  --anchor-chain <id> enable anchoring only for the named configured chain
-                     (implies --anchor; omitted means every chain).
+  --anchor-chain <id> enable anchoring for a configured chain; repeat the
+                     option or pass a comma-separated list for multiple
+                     chains. Pass 'all' (or omit with --anchor) for every chain.
   --anchor-key <hex> anchor wallet key (32-byte Ed25519 seed, 64 hex chars).
                      Default: a deterministic demo seed. On a public network
                      pass your own (or use YANO_CLUSTER_ANCHOR_KEY_FILE) and
@@ -3479,6 +3533,11 @@ Environment (run a RELEASED build with no local compile):
                 When unset, the deterministic demo identities are unchanged.
                 The 'keys' command always prints those demo identities; it
                 never reads this production-key directory.
+  YANO_CLUSTER_ANCHOR_CHAINS
+                optional comma-separated configured chain IDs to anchor.
+                The singular YANO_CLUSTER_ANCHOR_CHAIN remains accepted for
+                compatibility. Command-line --anchor-chain values take
+                precedence and may be repeated.
   YANO_CLUSTER_ANCHOR_KEY_FILE
                 optional launcher-owned, regular, non-symlink chmod 400/600
                 file containing one 64-hex anchor seed. Its parent directory
@@ -3533,7 +3592,7 @@ while [ $# -gt 0 ]; do
     --anchor)       ENABLE_ANCHOR=1; shift;;
     --anchor-mode)  ANCHOR_MODE="$2"; ENABLE_ANCHOR=1; shift 2
                     case "$ANCHOR_MODE" in metadata|script) ;; *) die "--anchor-mode must be metadata or script";; esac;;
-    --anchor-chain) ANCHOR_CHAIN="$2"; ENABLE_ANCHOR=1; shift 2;;
+    --anchor-chain) append_anchor_chain_selection "$2"; shift 2;;
     --anchor-key)   ANCHOR_KEY="$2"; ENABLE_ANCHOR=1; shift 2;;
     --anchor-every) ANCHOR_EVERY="$2"; shift 2;;
     --data-dir)     CLUSTER_DIR="$2"; shift 2;;

@@ -306,6 +306,20 @@ Public-network cadence defaults to one anchor per 30 `workflow-chain` blocks;
 use the complete steps in [ANCHORING_DEMO.md](ANCHORING_DEMO.md) when rehearsing
 an ordinary post-bootstrap anchor.
 
+To demonstrate late anchoring without resetting an existing chain, expand the
+retained scope, restart automatically on the same data, and then perform the
+new chain's one-time bootstrap:
+
+```bash
+./showcase.sh anchor enable registry-chain --instance preprod-demo \
+  --confirm-public-anchor preprod
+./showcase.sh anchor bootstrap registry-chain --instance preprod-demo
+```
+
+Use `anchor enable all` and `anchor bootstrap all` to cover every configured
+chain. The latter waits for each L1 bootstrap confirmation before submitting
+the next transaction.
+
 ## 16. Stop or explicitly reset
 
 ```bash

@@ -38,6 +38,9 @@ SH
 cat > "$WORK/bin/curl" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${SHOWCASE_CURL_LOG:?}"
+case "$*" in
+  */status*) printf '%s\n' '{"anchor":{"bootstrapped":true}}'; exit 0;;
+esac
 printf '{"messageId":"%064d","chainId":"orders-chain","topic":"orders.command.v1"}' 1
 SH
 printf 'DEMO_EVIDENCE_ID=showcase-contract\n' > \
@@ -87,6 +90,59 @@ if "$ROOT/showcase.sh" prepare --instance three --nodes 5 --http-base 19770 --se
   echo "identity drift was accepted" >&2; exit 1
 fi
 grep -q 'differs from retained showcase identity' "$WORK/drift.log"
+
+# Anchoring is an additive retained-identity migration. Start with the default
+# workflow scope, add one existing chain, then expand to all chains without
+# replacing app-chain data or changing the signer.
+"$ROOT/showcase.sh" prepare --instance anchor-expand --anchor \
+  --http-base 19670 --server-base 19270
+ANCHOR_ROOT="$ROOT/data/showcase/anchor-expand"
+mkdir -m 700 "$ANCHOR_ROOT/cluster"
+python3 - "$ANCHOR_ROOT/cluster/cluster-appchain-identity.json" <<'PY'
+import hashlib,json,pathlib,sys
+members = ["01" * 32, "02" * 32, "03" * 32]
+fingerprint = hashlib.sha256(
+    b"yano-cluster-anchor-signer-v1\0" + ("30" * 32).encode("ascii")
+).hexdigest()
+document = {
+    "schemaVersion": 1,
+    "kind": "yano.cluster.appchain-identity",
+    "network": "devnet",
+    "memberCount": 3,
+    "members": members,
+    "threshold": 2,
+    "proposer": members[0],
+    "chainIds": ["orders-chain", "registry-chain", "approvals-chain", "balances-chain",
+                 "documents-chain", "workflow-chain", "roles-chain", "payments-chain"],
+    "anchor": {"enabled": True, "mode": "script", "signerFingerprint": fingerprint,
+               "chainId": "workflow-chain"},
+}
+path = pathlib.Path(sys.argv[1])
+path.write_text(json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n")
+path.chmod(0o600)
+PY
+printf '%s\n' 'NETWORK=devnet' 'ENABLE_ANCHOR=1' 'ANCHOR_MODE=script' \
+  'ANCHOR_CHAIN=workflow-chain' 'HTTP_BASE=19670' 'SERVER_BASE=19270' \
+  > "$ANCHOR_ROOT/cluster/cluster.env"
+chmod 600 "$ANCHOR_ROOT/cluster/cluster.env"
+
+"$ROOT/showcase.sh" anchor enable registry-chain --instance anchor-expand
+jq -e '.schemaVersion == 2 and
+  .anchor.chainIds == ["registry-chain", "workflow-chain"]' \
+  "$ANCHOR_ROOT/showcase-identity.json" >/dev/null
+jq -e '.schemaVersion == 2 and
+  .anchor.chainIds == ["registry-chain", "workflow-chain"]' \
+  "$ANCHOR_ROOT/cluster/cluster-appchain-identity.json" >/dev/null
+grep -q '^ANCHOR_CHAINS=registry-chain,workflow-chain$' \
+  "$ANCHOR_ROOT/cluster/cluster.env"
+grep -q -- '--anchor-chain registry-chain --anchor-chain workflow-chain' "$WORK/cluster.log"
+
+"$ROOT/showcase.sh" anchor enable all --instance anchor-expand
+jq -e '.anchor.chainIds | length == 8' "$ANCHOR_ROOT/showcase-identity.json" >/dev/null
+jq -e '.anchor.chainIds | length == 8' \
+  "$ANCHOR_ROOT/cluster/cluster-appchain-identity.json" >/dev/null
+PATH="$WORK/bin:$PATH" "$ROOT/showcase.sh" anchor bootstrap all --instance anchor-expand
+[ "$(grep -c '^anchor-bootstrap .*chain$' "$WORK/cluster.log")" = 8 ]
 
 "$ROOT/showcase.sh" prepare --instance five --nodes 5 --http-base 19870 --server-base 19470
 [ "$(find "$ROOT/data/showcase/five/node-config" -type f -name 'node*.properties' | wc -l | tr -d ' ')" = 5 ]

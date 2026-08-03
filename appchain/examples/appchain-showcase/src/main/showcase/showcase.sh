@@ -27,6 +27,9 @@ SERVER_BASE=13337
 ANCHOR=false
 ANCHOR_MODE="script"
 ANCHOR_KEY_FILE=""
+ANCHOR_CHAINS="workflow-chain"
+ANCHOR_MODE_EXPLICIT=false
+ANCHOR_KEY_EXPLICIT=false
 PUBLIC_CONFIRM=""
 DATA_ROOT=""
 NODE=0
@@ -55,8 +58,9 @@ parse() {
       --http-base) HTTP_BASE="${2:-}"; shift 2;;
       --server-base) SERVER_BASE="${2:-}"; shift 2;;
       --anchor) ANCHOR=true; shift;;
-      --anchor-mode) ANCHOR=true; ANCHOR_MODE="${2:-}"; shift 2;;
-      --anchor-key-file) ANCHOR=true; ANCHOR_KEY_FILE="${2:-}"; shift 2;;
+      --anchor-mode) ANCHOR=true; ANCHOR_MODE="${2:-}"; ANCHOR_MODE_EXPLICIT=true; shift 2;;
+      --anchor-key-file) ANCHOR=true; ANCHOR_KEY_FILE="${2:-}"; ANCHOR_KEY_EXPLICIT=true; shift 2;;
+      --anchor-chain|--anchor-chains) ANCHOR=true; ANCHOR_CHAINS="${2:-}"; shift 2;;
       --confirm-public-anchor) PUBLIC_CONFIRM="${2:-}"; shift 2;;
       --data-dir) DATA_ROOT="${2:-}"; shift 2;;
       --node) NODE="${2:-}"; shift 2;;
@@ -75,6 +79,30 @@ parse() {
       *) POSITIONAL+=("$1"); shift;;
     esac
   done
+}
+
+chain_in_csv() {
+  case ",${1}," in *",$2,"*) return 0;; *) return 1;; esac
+}
+
+canonical_anchor_chains() {
+  local requested="$1" item cid seen="" result=""
+  local -a values=()
+  [ "$requested" != all ] || requested="$(IFS=,; printf '%s' "${LIGHT_CHAINS[*]}")"
+  [ -n "$requested" ] || die "anchor chain scope cannot be empty"
+  IFS=',' read -r -a values <<< "$requested"
+  for item in "${values[@]}"; do
+    [[ "$item" =~ ^[A-Za-z0-9._~-]{1,128}$ ]] || die "invalid anchor chain id: $item"
+    chain_in_csv "$seen" "$item" && die "duplicate anchor chain: $item"
+    seen+="${seen:+,}$item"
+    local found=false
+    for cid in "${LIGHT_CHAINS[@]}"; do [ "$cid" != "$item" ] || found=true; done
+    [ "$found" = true ] || die "unknown showcase anchor chain: $item"
+  done
+  for cid in "${LIGHT_CHAINS[@]}"; do
+    chain_in_csv "$seen" "$cid" && result+="${result:+,}$cid"
+  done
+  printf '%s' "$result"
 }
 
 validate_common() {
@@ -133,6 +161,21 @@ print("true" if value is True else "false" if value is False else value)
 PY
 }
 
+marker_anchor_chains() {
+  python3 - "$(marker)" <<'PY'
+import json,sys
+anchor=json.load(open(sys.argv[1], encoding="utf-8")).get("anchor", {})
+if not anchor.get("enabled"):
+    print("")
+elif isinstance(anchor.get("chainIds"), list):
+    print(",".join(anchor["chainIds"]))
+elif anchor.get("chainId"):
+    print(anchor["chainId"])
+else:
+    print("all")
+PY
+}
+
 adopt_marker() {
   [ -f "$(marker)" ] || return 0
   PROFILE="$(marker_value profile)"
@@ -145,6 +188,10 @@ adopt_marker() {
   ANCHOR="$(marker_value anchor.enabled)"
   ANCHOR_MODE="$(marker_value anchor.mode)"
   [ "$ANCHOR_MODE" = none ] && ANCHOR_MODE=script
+  if [ "$ANCHOR" = true ]; then
+    ANCHOR_CHAINS="$(marker_anchor_chains)"
+    ANCHOR_CHAINS="$(canonical_anchor_chains "$ANCHOR_CHAINS")"
+  fi
   local retained_key
   retained_key="$(marker_value anchor.keyReference)"
   if [ "$retained_key" != None ] && [ "$retained_key" != null ] && [ -n "$retained_key" ]; then
@@ -185,6 +232,12 @@ prepare_light() {
     --http-base "$HTTP_BASE" --server-base "$SERVER_BASE"
     --config "$YANO_HOME/config/application-appchain.yml" --plugin "$plugin")
   if [ "$ANCHOR" = true ]; then args+=(--anchor --anchor-mode "$ANCHOR_MODE"); fi
+  if [ "$ANCHOR" = true ]; then
+    local -a anchor_chains=()
+    IFS=',' read -r -a anchor_chains <<< "$ANCHOR_CHAINS"
+    local anchor_chain
+    for anchor_chain in "${anchor_chains[@]}"; do args+=(--anchor-chain "$anchor_chain"); done
+  fi
   if [ -n "$ANCHOR_KEY_FILE" ]; then args+=(--anchor-key-file "$ANCHOR_KEY_FILE"); fi
   python3 "$IDENTITY" "${args[@]}"
   write_node_configs "$NODES"
@@ -201,6 +254,8 @@ cluster_env() {
   export YANO_CLUSTER_NODE_CONFIG_DIR="$(node_config_dir)"
   export YANO_CLUSTER_PRIVATE_CONFIG_DIR="$(instance_root)/private-config"
   export YANO_CLUSTER_API_KEY="$API_KEY"
+  unset YANO_CLUSTER_ANCHOR_CHAIN YANO_CLUSTER_ANCHOR_CHAINS
+  [ "$ANCHOR" != true ] || export YANO_CLUSTER_ANCHOR_CHAINS="$ANCHOR_CHAINS"
   if [ -n "$ANCHOR_KEY_FILE" ]; then export YANO_CLUSTER_ANCHOR_KEY_FILE="$ANCHOR_KEY_FILE"; fi
 }
 
@@ -210,7 +265,11 @@ up_light() {
   local args=(start "$NODES" --network "$NETWORK" --threshold "$THRESHOLD"
     --http-base "$HTTP_BASE" --server-base "$SERVER_BASE")
   if [ "$ANCHOR" = true ]; then
-    args+=(--anchor-mode "$ANCHOR_MODE" --anchor-chain workflow-chain)
+    args+=(--anchor-mode "$ANCHOR_MODE")
+    local -a anchor_chains=()
+    IFS=',' read -r -a anchor_chains <<< "$ANCHOR_CHAINS"
+    local anchor_chain
+    for anchor_chain in "${anchor_chains[@]}"; do args+=(--anchor-chain "$anchor_chain"); done
   fi
   "$CLUSTER" "${args[@]}"
 }
@@ -788,6 +847,120 @@ config_export() {
   note "wrote redacted deployment snapshot: $output"
 }
 
+resume_joined_nodes() {
+  local joined
+  if [ -f "$(joined_file)" ]; then
+    while IFS= read -r joined; do
+      [ -z "$joined" ] || {
+        write_node_configs "$((joined + 1))"
+        cluster_env
+        "$CLUSTER" node resume "$joined"
+      }
+    done < "$(joined_file)"
+  fi
+}
+
+anchor_enable() {
+  local requested="${1:-}" requested_mode="$ANCHOR_MODE" requested_key="$ANCHOR_KEY_FILE"
+  local mode_explicit="$ANCHOR_MODE_EXPLICIT" key_explicit="$ANCHOR_KEY_EXPLICIT"
+  [ -n "$requested" ] || die "usage: anchor enable <chain-id|all>"
+  adopt_marker
+  [ "$PROFILE" = light ] || die "anchor enable applies only to the light profile"
+
+  local current="" desired target combined cid
+  [ "$ANCHOR" != true ] || current="$ANCHOR_CHAINS"
+  target="$(canonical_anchor_chains "$requested")"
+  combined="$current"
+  local -a target_chains=()
+  IFS=',' read -r -a target_chains <<< "$target"
+  for cid in "${target_chains[@]}"; do
+    chain_in_csv "$combined" "$cid" || combined+="${combined:+,}$cid"
+  done
+  desired="$(canonical_anchor_chains "$combined")"
+
+  if [ "$ANCHOR" = true ]; then
+    [ "$mode_explicit" != true ] || [ "$requested_mode" = "$ANCHOR_MODE" ] \
+      || die "retained anchor mode is '$ANCHOR_MODE' and cannot be changed"
+    [ "$key_explicit" != true ] || [ "$requested_key" = "$ANCHOR_KEY_FILE" ] \
+      || die "retained anchor key reference cannot be changed"
+  else
+    ANCHOR_MODE="$requested_mode"
+    ANCHOR_KEY_FILE="$requested_key"
+  fi
+
+  if [ "$NETWORK" = preprod ] && [ "$desired" != "$current" ]; then
+    [ "$PUBLIC_CONFIRM" = preprod ] \
+      || die "adding a preprod anchor requires --confirm-public-anchor preprod"
+    [ -n "$ANCHOR_KEY_FILE" ] \
+      || die "adding a preprod anchor requires --anchor-key-file (or a retained anchor key)"
+  fi
+  [ -f "$(cluster_dir)/cluster-appchain-identity.json" ] \
+    || die "cluster app-chain identity marker is missing"
+  [ -f "$(cluster_dir)/cluster.env" ] || die "cluster environment record is missing"
+
+  cluster_env
+  "$CLUSTER" stop
+
+  local -a migrate=(anchor-enable --marker "$(marker)"
+    --cluster-marker "$(cluster_dir)/cluster-appchain-identity.json"
+    --cluster-env "$(cluster_dir)/cluster.env"
+    --config "$YANO_HOME/config/application-appchain.yml" --plugin "$(plugin_file)"
+    --anchor-mode "$ANCHOR_MODE")
+  local -a desired_chains=()
+  IFS=',' read -r -a desired_chains <<< "$desired"
+  for target in "${desired_chains[@]}"; do migrate+=(--anchor-chain "$target"); done
+  [ -z "$ANCHOR_KEY_FILE" ] || migrate+=(--anchor-key-file "$ANCHOR_KEY_FILE")
+  python3 "$IDENTITY" "${migrate[@]}" >/dev/null
+
+  adopt_marker
+  up_light
+  resume_joined_nodes
+  note "Anchor scope now includes: $ANCHOR_CHAINS"
+  if [ "$ANCHOR_MODE" = script ]; then
+    note "Newly enabled chains require a one-time bootstrap transaction."
+    note "Run: ./showcase.sh anchor bootstrap all --instance $INSTANCE"
+  else
+    note "Metadata anchors need no bootstrap; funded chains begin anchoring automatically."
+  fi
+}
+
+anchor_bootstrap() {
+  local requested="${1:-workflow-chain}" cid
+  [ "$ANCHOR" = true ] || die "anchoring is not enabled for this instance"
+  cluster_env
+  if [ "$requested" = all ]; then
+    local -a selected=()
+    IFS=',' read -r -a selected <<< "$ANCHOR_CHAINS"
+    for cid in "${selected[@]}"; do
+      "$CLUSTER" anchor-bootstrap "$cid"
+      wait_anchor_bootstrapped "$cid"
+    done
+    return
+  fi
+  cid="$(canonical_anchor_chains "$requested")"
+  [ "$cid" = "$requested" ] || die "anchor bootstrap accepts one chain id or all"
+  chain_in_csv "$ANCHOR_CHAINS" "$cid" \
+    || die "anchoring is not enabled for '$cid' (enabled: $ANCHOR_CHAINS)"
+  "$CLUSTER" anchor-bootstrap "$cid"
+  wait_anchor_bootstrapped "$cid"
+}
+
+wait_anchor_bootstrapped() {
+  local cid="$1" deadline=$(( $(date +%s) + 900 )) status
+  while :; do
+    status="$(curl -fsS --connect-timeout 2 --max-time 5 \
+      "http://127.0.0.1:$HTTP_BASE/api/v1/app-chain/chains/$cid/status" 2>/dev/null || true)"
+    if [ -n "$status" ] && printf '%s' "$status" | jq -e '.anchor.bootstrapped == true' \
+        >/dev/null 2>&1; then
+      note "Script anchor confirmed for $cid"
+      return
+    fi
+    [ "$(date +%s)" -le "$deadline" ] \
+      || die "timed out waiting for the $cid bootstrap to become L1-visible"
+    sleep 5
+  done
+}
+
 usage() {
   cat <<'EOF'
 Yano unified app-chain showcase
@@ -812,10 +985,11 @@ Yano unified app-chain showcase
   ./showcase.sh member join <next-index>
   ./showcase.sh threshold set <n>
   ./showcase.sh governance activate
-  ./showcase.sh anchor bootstrap [workflow-chain]
+  ./showcase.sh anchor enable <chain-id|all>
+  ./showcase.sh anchor bootstrap [chain-id|all]
 
 Common options: --instance, --network devnet|preprod, --nodes, --threshold,
---http-base, --server-base, --data-dir, --variant, --anchor-mode,
+--http-base, --server-base, --data-dir, --variant, --anchor-mode, --anchor-chain,
 --anchor-key-file, --confirm-public-anchor preprod. Load options:
 --concurrency, --payload-bytes, --duration, --rate, --sample, --spread,
 --node, and --report-dir.
@@ -886,11 +1060,7 @@ PY
   restart)
     adopt_marker; [ "$PROFILE" = light ] || die "restart currently applies to the light profile"
     cluster_env; "$CLUSTER" stop; write_node_configs "$NODES"; up_light
-    if [ -f "$(joined_file)" ]; then
-      while IFS= read -r joined; do
-        [ -z "$joined" ] || { write_node_configs "$((joined + 1))"; cluster_env; "$CLUSTER" node resume "$joined"; }
-      done < "$(joined_file)"
-    fi;;
+    resume_joined_nodes;;
   reset)
     [ "$YES" = true ] || die "reset requires --yes and preserves nothing in the named instance"
     local_root="$(instance_root)"; [ -n "$INSTANCE" ] || die "instance is required"
@@ -968,8 +1138,11 @@ PY
     [ "$PROFILE" = light ] || die "governance activate applies to the light profile"
     governance_activate;;
   anchor)
-    adopt_marker; [ "${POSITIONAL[0]:-}" = bootstrap ] || die "usage: anchor bootstrap [chain]"
-    cluster_env; "$CLUSTER" anchor-bootstrap "${POSITIONAL[1]:-workflow-chain}";;
+    case "${POSITIONAL[0]:-}" in
+      enable) anchor_enable "${POSITIONAL[1]:-}";;
+      bootstrap) adopt_marker; anchor_bootstrap "${POSITIONAL[1]:-workflow-chain}";;
+      *) die "usage: anchor enable <chain-id|all> | anchor bootstrap [chain-id|all]";;
+    esac;;
   help|-h|--help) usage;;
   *) usage; exit 1;;
 esac

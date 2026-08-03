@@ -392,10 +392,12 @@ The launcher treats L1 and app-chain state as separate identities:
   host L1 state.
 - Standalone use also writes
   `<data-dir>/cluster-appchain-identity.json`, binding chain IDs, bootstrap
-  membership, bootstrap threshold, proposer, and anchor signer. A restart with
-  a different bootstrap identity is rejected before a node starts. Governed
-  member epochs live in finalized app-chain history and do not rewrite this
-  immutable marker.
+  membership, bootstrap threshold, proposer, anchor signer, and anchor scope.
+  A restart with a different bootstrap identity is rejected before a node
+  starts. Governed member epochs live in finalized app-chain history and do
+  not rewrite this marker. The showcase orchestrator may perform one narrowly
+  validated evolution: add chains to the retained anchor scope while stopped;
+  it cannot remove a chain or change the mode/signer.
 - An orchestrator that stores app-chain state outside the L1 tree may set
   `YANO_CLUSTER_APPCHAIN_IDENTITY_MARKER` to its canonical
   `yano.demo.appchain-identity` JSON marker. The file must be launcher-owned,
@@ -471,6 +473,8 @@ Two modes (`--anchor-mode metadata|script`):
 ```bash
 ./cluster.sh start 3 --anchor                  # script mode (default)
 ./cluster.sh anchor-bootstrap orders-chain     # funds via faucet + mints the thread NFT
+# select a subset by repeating --anchor-chain (comma-separated also works)
+./cluster.sh start 3 --anchor-chain orders-chain --anchor-chain registry-chain
 # or, simplest possible anchoring:
 ./cluster.sh start 3 --anchor-mode metadata    # fund via faucet, anchors just start
 ```
