@@ -3,6 +3,8 @@ plugins {
 }
 
 dependencies {
+    implementation project(':appchain-eutxo-client')
+    implementation project(':appchain-eutxo-demo')
     implementation(project(':appchain-config')) {
         transitive = false
     }
@@ -291,6 +293,12 @@ def appChainReleaseCheckProjects = [
         ':appchain-evidence-profile',
         ':appchain-integration-contracts',
         ':appchain-client',
+        ':appchain-eutxo-contracts',
+        ':appchain-eutxo-ledger',
+        ':appchain-eutxo-client',
+        ':appchain-eutxo-testkit',
+        ':appchain-eutxo-bridge-cardano',
+        ':appchain-eutxo-bridge-onchain',
         ':appchain-spring-boot-starter',
         ':appchain-testkit',
         ':appchain-studio',

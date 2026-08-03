@@ -73,7 +73,9 @@ class PluginCatalogPackagingTest {
             "com.bloxbean.cardano.yano.appchain.objectstore.s3",
             "com.bloxbean.cardano.yano.appchain.ipfs",
             "com.bloxbean.cardano.yano.appchain.effects.cardano",
-            "com.bloxbean.cardano.yano.appchain.zk");
+            "com.bloxbean.cardano.yano.appchain.zk",
+            "com.bloxbean.cardano.yano.appchain.eutxo",
+            "com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano");
     private static final String CONFORMANCE_BUNDLE =
             "com.bloxbean.cardano.yano.fixture.plugin-conformance";
     private static final String EXPECT_FIRST_PARTY =
@@ -161,6 +163,8 @@ class PluginCatalogPackagingTest {
                     environment.providers().names(AppStateMachineProvider.class).stream()
                             .filter(Set.of("credential-registry", "zk-gate", "zk-membership")::contains)
                             .collect(Collectors.toSet()));
+            assertEquals(optionalIncluded, environment.providers().find(
+                    AppStateMachineProvider.class, "eutxo-ledger").isPresent());
             assertTrue(environment.providers().find(
                     AppStateMachineProvider.class, "evidence-registry").isPresent());
             Set<String> expectedSinks = new java.util.HashSet<>();
@@ -182,7 +186,16 @@ class PluginCatalogPackagingTest {
             }
             assertEquals(conformanceIncluded ? Set.of("conformance-mode") : Set.of(), Set.copyOf(
                     environment.providers().names(SequencerModeProvider.class)));
-            assertEquals(conformanceIncluded ? Set.of("conformance-observer") : Set.of(), Set.copyOf(
+            Set<String> expectedObservers = new java.util.HashSet<>();
+            if (optionalIncluded) {
+                expectedObservers.addAll(Set.of(
+                        "eutxo-vault-deposit-v1",
+                        "eutxo-withdrawal-confirmation-v1"));
+            }
+            if (conformanceIncluded) {
+                expectedObservers.add("conformance-observer");
+            }
+            assertEquals(expectedObservers, Set.copyOf(
                     environment.providers().names(L1ObserverProvider.class)));
             assertEquals(conformanceIncluded ? Set.of("conformance-signer") : Set.of(), Set.copyOf(
                     environment.providers().names(SignerProviderFactory.class)));

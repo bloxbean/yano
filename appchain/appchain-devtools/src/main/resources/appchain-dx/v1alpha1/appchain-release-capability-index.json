@@ -12,6 +12,8 @@
     "approval-workflow",
     "role-approval",
     "evidence-ledger",
+    "eutxo-ledger",
+    "eutxo-cardano-bridge",
     "custom-plugin"
   ],
   "artifacts": [

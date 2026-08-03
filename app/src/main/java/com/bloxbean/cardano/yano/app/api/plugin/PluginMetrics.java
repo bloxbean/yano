@@ -18,9 +18,11 @@ import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.runtime.StartupEvent;
+import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
+import jakarta.interceptor.Interceptor;
 import org.jboss.logging.Logger;
 
 import java.util.HashSet;
@@ -70,7 +72,8 @@ public class PluginMetrics {
     private final AtomicBoolean refreshFailureLogged = new AtomicBoolean();
     private volatile ScheduledExecutorService refresher;
 
-    void onStart(@Observes StartupEvent event) {
+    void onStart(
+            @Observes @Priority(Interceptor.Priority.APPLICATION + 100) StartupEvent event) {
         if (!started.compareAndSet(false, true)) {
             return;
         }

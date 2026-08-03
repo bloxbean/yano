@@ -11,7 +11,9 @@
     {"id":"appchain-objectstore-s3","availability":"FIRST_PARTY_OPTIONAL","bundleId":"com.bloxbean.cardano.yano.appchain.objectstore.s3","nativePosture":"build-time-only","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
     {"id":"appchain-ipfs","availability":"FIRST_PARTY_OPTIONAL","bundleId":"com.bloxbean.cardano.yano.appchain.ipfs","nativePosture":"build-time-only","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
     {"id":"appchain-effects-cardano","availability":"FIRST_PARTY_OPTIONAL","bundleId":"com.bloxbean.cardano.yano.appchain.effects.cardano","nativePosture":"build-time-only","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
-    {"id":"appchain-zk","availability":"EXPERIMENTAL","bundleId":"com.bloxbean.cardano.yano.appchain.zk","nativePosture":"build-time-only","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]}
+    {"id":"appchain-zk","availability":"EXPERIMENTAL","bundleId":"com.bloxbean.cardano.yano.appchain.zk","nativePosture":"build-time-only","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
+    {"id":"appchain-eutxo-ledger","availability":"FIRST_PARTY_OPTIONAL","bundleId":"com.bloxbean.cardano.yano.appchain.eutxo","nativePosture":"unsupported","runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"]},
+    {"id":"appchain-eutxo-bridge-cardano","availability":"EXPERIMENTAL","bundleId":"com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano","nativePosture":"unsupported","runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"]}
   ],
   "capabilities": [
     {
@@ -102,6 +104,33 @@
       "externalPrerequisites":[],"bootstrapRequirements":["reviewed-bbs-issuer-public-key"],"nonSecretAnswers":["issuerId","issuerPublicKey"],"secretReferences":{},
       "properties":{"state-machine":"credential-registry","zk.bbs.issuers[0].id":"${issuerId}","zk.bbs.issuers[0].public-key":"${issuerPublicKey}"},
       "documentation":"appchain/extensions/appchain-zk/README.md","acceptanceScenario":"experimental-credential-registry"
+    },
+    {
+      "id":"state:eutxo-ledger","name":"Scalus-backed EUTxO ledger","category":"state","availability":"FIRST_PARTY_OPTIONAL","maturity":"experimental","scope":"chain","selectable":true,
+      "trustStatement":"Experimental no-real-funds ledger. Profile v2 admits key-controlled ADA transfers and bounded witnessed Plutus V3 spending through Scalus 0.18.2; it is not a Cardano bridge, custody product, or rollup.",
+      "description":"Deterministic Cardano-shaped EUTxO transactions with bounded Plutus V3 execution, root-fixed receipts, address indexes, and MPF-proven outputs.",
+      "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-eutxo-ledger"],"nativePosture":"unsupported",
+      "externalPrerequisites":[],"bootstrapRequirements":["install-appchain-eutxo-ledger-bundle"],"nonSecretAnswers":[],"secretReferences":{},
+      "properties":{"state-machine":"eutxo-ledger","machines.eutxo.profile":"yano-eutxo-v2-plutus-v3","machines.eutxo.expected-profile-digest":"8cd4adb72def2c31dc8551a02f67429ea468bb2024dbe85a1dc7300590c9d1bf"},
+      "documentation":"appchain/extensions/eutxo/README.md","acceptanceScenario":"experimental-eutxo-ledger"
+    },
+    {
+      "id":"funding:eutxo-genesis","name":"Virtual EUTxO genesis allocation","category":"funding","availability":"FIRST_PARTY_OPTIONAL","maturity":"experimental","scope":"chain","selectable":true,
+      "trustStatement":"Creates virtual test value inside the app-chain only. It represents no Cardano funds and cannot be combined with the federated bridge.",
+      "description":"Bootstraps one explicit ADA-only virtual allocation for no-real-funds testing.",
+      "provides":["eutxo-genesis-funding"],"requires":["state:eutxo-ledger"],"implies":[],"conflicts":["bridge:cardano-federated"],"runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-eutxo-ledger"],"nativePosture":"unsupported",
+      "externalPrerequisites":[],"bootstrapRequirements":["use-test-keys-and-no-real-funds"],"nonSecretAnswers":["eutxoGenesisAddress","eutxoGenesisLovelace"],"secretReferences":{},
+      "properties":{"machines.eutxo.genesis.address":"${eutxoGenesisAddress}","machines.eutxo.genesis.lovelace":"${eutxoGenesisLovelace}"},
+      "documentation":"appchain/extensions/eutxo/README.md","acceptanceScenario":"experimental-eutxo-genesis"
+    },
+    {
+      "id":"bridge:cardano-federated","name":"Federated Cardano EUTxO bridge","category":"bridge","availability":"EXPERIMENTAL","maturity":"experimental","scope":"chain","selectable":true,
+      "trustStatement":"Experimental federated custody path. Stable deposits and withdrawals depend either on the configured external threshold/HSM signer or on a threshold-accepted MPF root plus reviewed proof/nullifier contracts. The root threshold can fabricate a root. It is not production-funds ready and has no ZeroJ dependency.",
+      "description":"Observes exact accepted vault deposits and settles irrevocable bounded claims through either exact external signing or permissionless current-root MPF proofs with an on-chain replay nullifier.",
+      "provides":["cardano-federated-bridge"],"requires":["state:eutxo-ledger","l1:slot-feed"],"implies":[],"conflicts":["funding:eutxo-genesis"],"runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-eutxo-ledger","appchain-eutxo-bridge-cardano"],"nativePosture":"unsupported",
+      "externalPrerequisites":["reviewed-staging-vault-root-nullifier-and-proof-contract-identities","stable-cardano-l1-feed","federated-vault-and-root-operators","external-threshold-or-hsm-settlement-signer-for-signer-mode"],"bootstrapRequirements":["install-appchain-eutxo-bridge-cardano-bundle","configure-durable-settlement-journal-for-signer-mode","pin-current-root-nullifier-and-proof-contract-identities-for-proof-mode","complete-real-funds-custody-review"],"nonSecretAnswers":["bridgeVaultAddress","bridgeVaultScriptHash","bridgeMaxDepositLovelace","bridgeWithdrawalAddress","bridgeEpoch","bridgeMaxWithdrawalLovelace","bridgeMaxPendingWithdrawals"],"secretReferences":{},
+      "properties":{"machines.eutxo.bridge.observer-id":"bridge-deposits","machines.eutxo.bridge.vault-address":"${bridgeVaultAddress}","machines.eutxo.bridge.vault-script-hash":"${bridgeVaultScriptHash}","machines.eutxo.bridge.confirmation-observer-id":"bridge-withdrawals","machines.eutxo.bridge.withdrawal-address":"${bridgeWithdrawalAddress}","machines.eutxo.bridge.epoch":"${bridgeEpoch}","machines.eutxo.bridge.max-withdrawal-lovelace":"${bridgeMaxWithdrawalLovelace}","machines.eutxo.bridge.max-pending-withdrawals":"${bridgeMaxPendingWithdrawals}","machines.eutxo.bridge.withdrawals-paused":"false","observers.bridge-deposits.type":"eutxo-vault-deposit-v1","observers.bridge-deposits.chain-id":"${chainId}","observers.bridge-deposits.vault-address":"${bridgeVaultAddress}","observers.bridge-deposits.vault-script-hash":"${bridgeVaultScriptHash}","observers.bridge-deposits.max-lovelace":"${bridgeMaxDepositLovelace}","observers.bridge-withdrawals.type":"eutxo-withdrawal-confirmation-v1","observers.bridge-withdrawals.chain-id":"${chainId}","observers.bridge-withdrawals.bridge-epoch":"${bridgeEpoch}","observers.bridge-withdrawals.vault-address":"${bridgeVaultAddress}"},
+      "documentation":"appchain/extensions/eutxo/README.md","acceptanceScenario":"experimental-eutxo-federated-bridge"
     },
     {
       "id":"sequencer:fixed","name":"Fixed sequencer","category":"sequencer","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,

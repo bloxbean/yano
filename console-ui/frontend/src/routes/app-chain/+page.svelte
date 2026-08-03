@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { base } from '$app/paths';
   import { onMount, tick } from 'svelte';
   import LineChart from '$lib/components/LineChart.svelte';
   import MetricCard from '$lib/components/MetricCard.svelte';
@@ -15,6 +16,7 @@
   import { completePayloadDigest, messagePreview, type MessagePreview } from '$lib/appchain/message-preview';
   import { StreamCursor } from '$lib/appchain/sse';
   import { boolValue, numberValue, objectList, objectValue, recordEntries, shortHash, stringValue } from '$lib/appchain/value';
+  import { isEutxoChain } from '$lib/eutxo/model';
 
   const CHAIN_KEY = 'yano.console.app-chain.selected.v1';
   let api: YanoApi | null = null;
@@ -247,6 +249,10 @@
     <span class="badge {streamState === 'LIVE' ? 'badge-ok' : streamState === 'RETRYING' ? 'badge-bad' : 'badge-warn'}">
       STREAM {streamState}
     </span>
+    {#if isEutxoChain(status)}
+      <a class="rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-300 no-underline hover:border-cyan-400"
+         href={`${base}/app-chain/eutxo/?chain=${encodeURIComponent(selectedChain)}`}>EUTxO Explorer</a>
+    {/if}
     <span class="rounded-md border border-slate-700 px-2 py-1 text-xs font-mono text-slate-400">{requestMs || '-'} ms</span>
   </div>
 </div>
@@ -444,6 +450,14 @@
       </div>
       <div><div class="mb-1 text-xs text-slate-500">Decoded payload</div><pre class="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-slate-950 p-3 text-xs">{inspectedPreview.bodyText}</pre></div>
     </div>
+    {#if isEutxoChain(status) && inspected.messageId}
+      <div class="border-t border-slate-700 px-4 py-3">
+        <a class="text-sm font-semibold text-cyan-300 no-underline hover:text-cyan-200"
+           href={`${base}/app-chain/eutxo/?chain=${encodeURIComponent(selectedChain)}&message=${encodeURIComponent(inspected.messageId)}`}>
+          Open decoded EUTxO transaction
+        </a>
+      </div>
+    {/if}
     <div class="border-t border-slate-700 p-4"><div class="mb-1 text-xs text-slate-500">Raw hex preview</div><pre class="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-slate-950 p-3 text-xs">{inspectedPreview.rawHex}</pre></div>
   {/if}
 </dialog>

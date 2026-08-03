@@ -201,5 +201,195 @@
         "description": "Versioned evidence-registry feature activation heights"
       }
     ]
+  },
+  {
+    "schemaVersion": 1,
+    "id": "yano-first-party/appchain-eutxo-ledger",
+    "properties": [
+      {
+        "key": "yano.app-chain.machines.eutxo.profile",
+        "owner": "yano-first-party/appchain-eutxo-ledger", "type": "STRING",
+        "defaultValue": "yano-eutxo-v2-plutus-v3", "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": null, "maximumUtf8Bytes": null, "maximumItems": null,
+        "allowedValues": ["yano-eutxo-v1", "yano-eutxo-v2-plutus-v3"], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Pinned deterministic EUTxO ledger profile"
+      },
+      {
+        "key": "yano.app-chain.machines.eutxo.expected-profile-digest",
+        "owner": "yano-first-party/appchain-eutxo-ledger", "type": "STRING",
+        "defaultValue": null, "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": 64, "maximumUtf8Bytes": 64, "maximumItems": null,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Expected digest of every consensus-relevant EUTxO profile field"
+      },
+      {
+        "key": "yano.app-chain.machines.eutxo.genesis.address",
+        "owner": "yano-first-party/appchain-eutxo-ledger", "type": "STRING",
+        "defaultValue": null, "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": 1, "maximumUtf8Bytes": 256, "maximumItems": null,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Testnet address receiving the first no-real-funds genesis allocation"
+      },
+      {
+        "key": "yano.app-chain.machines.eutxo.genesis.lovelace",
+        "owner": "yano-first-party/appchain-eutxo-ledger", "type": "LONG",
+        "defaultValue": null, "minimum": 1, "maximum": null,
+        "minimumUtf8Bytes": null, "maximumUtf8Bytes": null, "maximumItems": null,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Positive no-real-funds lovelace allocated to genesis output zero"
+      },
+      {
+        "key": "yano.app-chain.machines.eutxo.genesis.inline-datum-hex",
+        "owner": "yano-first-party/appchain-eutxo-ledger", "type": "STRING",
+        "defaultValue": null, "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": 2, "maximumUtf8Bytes": 32768, "maximumItems": null,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Optional canonical lowercase Plutus datum CBOR for genesis output zero"
+      }
+    ],
+    "dynamicNamespaces": []
+  },
+  {
+    "schemaVersion": 1,
+    "id": "yano-first-party/appchain-eutxo-bridge-cardano",
+    "properties": [
+      {
+        "key": "yano.app-chain.machines.eutxo.bridge.observer-id",
+        "owner": "yano-first-party/appchain-eutxo-bridge-cardano", "type": "STRING",
+        "defaultValue": null, "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": 1, "maximumUtf8Bytes": 64, "maximumItems": null,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Configured exact vault-deposit observer instance"
+      },
+      {
+        "key": "yano.app-chain.machines.eutxo.bridge.vault-address",
+        "owner": "yano-first-party/appchain-eutxo-bridge-cardano", "type": "STRING",
+        "defaultValue": null, "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": 1, "maximumUtf8Bytes": 256, "maximumItems": null,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Exact Cardano vault address accepted by the EUTxO ledger"
+      },
+      {
+        "key": "yano.app-chain.machines.eutxo.bridge.vault-script-hash",
+        "owner": "yano-first-party/appchain-eutxo-bridge-cardano", "type": "STRING",
+        "defaultValue": null, "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": 56, "maximumUtf8Bytes": 56, "maximumItems": null,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Pinned 28-byte bridge vault script hash"
+      },
+      {
+        "key": "yano.app-chain.machines.eutxo.bridge.confirmation-observer-id",
+        "owner": "yano-first-party/appchain-eutxo-bridge-cardano", "type": "STRING",
+        "defaultValue": null, "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": 1, "maximumUtf8Bytes": 64, "maximumItems": null,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Configured exact stable withdrawal-confirmation observer instance"
+      },
+      {
+        "key": "yano.app-chain.machines.eutxo.bridge.withdrawal-address",
+        "owner": "yano-first-party/appchain-eutxo-bridge-cardano", "type": "STRING",
+        "defaultValue": null, "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": 1, "maximumUtf8Bytes": 256, "maximumItems": null,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "L2 sink address whose signed outputs become irrevocable withdrawal claims"
+      },
+      {
+        "key": "yano.app-chain.machines.eutxo.bridge.epoch",
+        "owner": "yano-first-party/appchain-eutxo-bridge-cardano", "type": "LONG",
+        "defaultValue": "0", "minimum": "0", "maximum": "9223372036854775807",
+        "minimumUtf8Bytes": null, "maximumUtf8Bytes": null, "maximumItems": null,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Bridge migration epoch bound into every withdrawal claim"
+      },
+      {
+        "key": "yano.app-chain.machines.eutxo.bridge.max-withdrawal-lovelace",
+        "owner": "yano-first-party/appchain-eutxo-bridge-cardano", "type": "LONG",
+        "defaultValue": "45000000000000000", "minimum": "1",
+        "maximum": "45000000000000000",
+        "minimumUtf8Bytes": null, "maximumUtf8Bytes": null, "maximumItems": null,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Hard per-claim lovelace withdrawal limit"
+      },
+      {
+        "key": "yano.app-chain.machines.eutxo.bridge.max-pending-withdrawals",
+        "owner": "yano-first-party/appchain-eutxo-bridge-cardano", "type": "INTEGER",
+        "defaultValue": "1024", "minimum": "1", "maximum": "100000",
+        "minimumUtf8Bytes": null, "maximumUtf8Bytes": null, "maximumItems": null,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Maximum committed pending withdrawal claims"
+      },
+      {
+        "key": "yano.app-chain.machines.eutxo.bridge.withdrawals-paused",
+        "owner": "yano-first-party/appchain-eutxo-bridge-cardano", "type": "BOOLEAN",
+        "defaultValue": "false", "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": null, "maximumUtf8Bytes": null, "maximumItems": null,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Fail-closed consensus switch for new withdrawal claims"
+      },
+      {
+        "key": "yano.app-chain.observers.bridge-deposits.type",
+        "owner": "yano-first-party/appchain-eutxo-bridge-cardano", "type": "STRING",
+        "defaultValue": "eutxo-vault-deposit-v1", "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": null, "maximumUtf8Bytes": null, "maximumItems": null,
+        "allowedValues": ["eutxo-vault-deposit-v1"], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Exact accepted-vault deposit observer type"
+      },
+      {
+        "key": "yano.app-chain.observers.bridge-withdrawals.type",
+        "owner": "yano-first-party/appchain-eutxo-bridge-cardano", "type": "STRING",
+        "defaultValue": "eutxo-withdrawal-confirmation-v1",
+        "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": null, "maximumUtf8Bytes": null, "maximumItems": null,
+        "allowedValues": ["eutxo-withdrawal-confirmation-v1"],
+        "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Exact stable Cardano withdrawal-confirmation observer type"
+      }
+    ],
+    "dynamicNamespaces": [
+      {
+        "prefix": "observers.bridge-deposits.",
+        "owner": "yano-first-party/appchain-eutxo-bridge-cardano",
+        "coverage": "PARTIAL",
+        "description": "Bounded exact Cardano vault observer settings"
+      },
+      {
+        "prefix": "observers.bridge-withdrawals.",
+        "owner": "yano-first-party/appchain-eutxo-bridge-cardano",
+        "coverage": "PARTIAL",
+        "description": "Bounded exact Cardano settlement observer settings"
+      }
+    ]
   }
 ]

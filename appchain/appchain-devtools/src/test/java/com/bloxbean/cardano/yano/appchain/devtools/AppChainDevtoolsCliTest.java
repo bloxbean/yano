@@ -86,13 +86,13 @@ class AppChainDevtoolsCliTest {
         assertThat(text.out().lines().toList())
                 .allMatch(line -> line.length() == 114);
         assertThat(text.out().lines()
-                .filter(line -> line.startsWith("| Description: ")).count()).isEqualTo(33);
+                .filter(line -> line.startsWith("| Description: ")).count()).isEqualTo(36);
 
         assertThat(structured.exit()).isZero();
         assertThat(structured.err()).isEmpty();
         JsonNode output = json.readTree(structured.out());
         assertThat(output.path("status").asText()).isEqualTo("CAPABILITY_CATALOG");
-        assertThat(output.path("capabilities")).hasSize(33);
+        assertThat(output.path("capabilities")).hasSize(36);
     }
 
     @Test

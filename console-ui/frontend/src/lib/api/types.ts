@@ -240,3 +240,40 @@ export interface AnchorCommitment {
   l1Slot: number;
   provenance: string;
 }
+
+export interface EutxoTransactionEntry {
+  outpoint: string;
+  address: string;
+  lovelace: string;
+}
+
+export interface EutxoTransactionSummary {
+  transactionId: string;
+  messageId: string;
+  sequence: number;
+  appHeight: number;
+  ordinal: number;
+  l1Slot: number;
+  status: 'ACCEPTED' | 'REJECTED';
+  authorizationProfile: string;
+  inputs: EutxoTransactionEntry[];
+  outputs: EutxoTransactionEntry[];
+  code: string;
+}
+
+export interface EutxoTransactionPage {
+  chainId: string;
+  stateMachineId: string;
+  committedHeight: number;
+  stateRoot: string;
+  data: EutxoTransactionSummary[];
+  nextBefore: number;
+}
+
+export interface EutxoTransactionDetail {
+  chainId: string;
+  stateMachineId: string;
+  committedHeight: number;
+  stateRoot: string;
+  data: EutxoTransactionSummary;
+}

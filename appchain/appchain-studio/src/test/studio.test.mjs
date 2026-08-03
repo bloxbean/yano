@@ -13,14 +13,29 @@ const metadata=path.join(repo,'appchain/appchain-devtools/src/main/resources/app
 const recipes=JSON.parse(fs.readFileSync(path.join(metadata,'appchain-recipe-catalog.json'))).recipes;
 const capabilities=JSON.parse(fs.readFileSync(path.join(metadata,'appchain-capability-catalog.json'))).capabilities;
 const release=JSON.parse(fs.readFileSync(path.join(metadata,'appchain-release-capability-index.json')));
+const releaseRecipeAnswers={
+  'custom-plugin':{stateMachine:'com.example.test-machine'},
+  'eutxo-ledger':{
+    eutxoGenesisAddress:'addr_test1vqexample',
+    eutxoGenesisLovelace:'100000000'
+  },
+  'eutxo-cardano-bridge':{
+    bridgeVaultAddress:'addr_test1wqexample',
+    bridgeVaultScriptHash:'0123456789abcdef0123456789abcdef0123456789abcdef01234567',
+    bridgeMaxDepositLovelace:'100000000',
+    bridgeWithdrawalAddress:'addr_test1wqwithdrawal',
+    bridgeEpoch:'1',
+    bridgeMaxWithdrawalLovelace:'50000000',
+    bridgeMaxPendingWithdrawals:'100'
+  }
+};
 
 test('every release recipe produces safe release-pinned intent',()=>{
   for(const recipe of recipes){
     const raw={recipe:recipe.id,network:'devnet',members:3,finality:'two-thirds',
       sequencing:'fixed',runtime:recipe.runtimeTypes[0],deployment:recipe.deploymentTargets[0],
       name:`test-${recipe.id}`,chainId:`test-${recipe.id}`,
-      membership:'static',answers:recipe.id==='custom-plugin'
-        ? {stateMachine:'com.example.test-machine'}:{}};
+      membership:'static',answers:releaseRecipeAnswers[recipe.id] || {}};
     const result=normalizeIntent(raw,recipes,release,capabilities);
     assert.deepEqual(result.errors,[],recipe.id);
     const yaml=blueprintYaml(result.intent,release.yanoVersion);

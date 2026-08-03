@@ -2,6 +2,7 @@ import type { AppChainStatus } from '$lib/api/types';
 
 export interface ChainCapabilities {
   effects: boolean;
+  eutxoExplorer: boolean;
   roleApprovals: boolean;
   roleDomainBundle: string | null;
   evidenceBundles: boolean;
@@ -25,6 +26,7 @@ export function discoverChainCapabilities(status: AppChainStatus | null,
   if (catalogConfirmed) sources.push(`plugin-catalog:${roleDomainBundle}`);
   return {
     effects,
+    eutxoExplorer: machine === 'eutxo-ledger',
     roleApprovals: roleDomainBundle !== null,
     roleDomainBundle,
     evidenceBundles: !!status?.chainId,

@@ -48,6 +48,13 @@ include 'appchain-objectstore-s3'
 include 'appchain-ipfs'
 include 'appchain-effects-cardano'
 include 'appchain-zk'
+include 'appchain-eutxo-contracts'
+include 'appchain-eutxo-ledger'
+include 'appchain-eutxo-client'
+include 'appchain-eutxo-testkit'
+include 'appchain-eutxo-demo'
+include 'appchain-eutxo-bridge-cardano'
+include 'appchain-eutxo-bridge-onchain'
 include 'appchain-spring-boot-starter'
 include 'appchain-anchor-onchain'
 include 'appchain-plugin-conformance'
@@ -85,6 +92,20 @@ project(':appchain-objectstore-s3').projectDir =
 project(':appchain-ipfs').projectDir = file('appchain/extensions/appchain-ipfs')
 project(':appchain-effects-cardano').projectDir = file('appchain/extensions/appchain-effects-cardano')
 project(':appchain-zk').projectDir = file('appchain/extensions/appchain-zk')
+project(':appchain-eutxo-contracts').projectDir =
+        file('appchain/extensions/eutxo/appchain-eutxo-contracts')
+project(':appchain-eutxo-ledger').projectDir =
+        file('appchain/extensions/eutxo/appchain-eutxo-ledger')
+project(':appchain-eutxo-client').projectDir =
+        file('appchain/extensions/eutxo/appchain-eutxo-client')
+project(':appchain-eutxo-testkit').projectDir =
+        file('appchain/extensions/eutxo/appchain-eutxo-testkit')
+project(':appchain-eutxo-demo').projectDir =
+        file('appchain/extensions/eutxo/appchain-eutxo-demo')
+project(':appchain-eutxo-bridge-cardano').projectDir =
+        file('appchain/extensions/eutxo/appchain-eutxo-bridge-cardano')
+project(':appchain-eutxo-bridge-onchain').projectDir =
+        file('appchain/extensions/eutxo/appchain-eutxo-bridge-onchain')
 project(':appchain-plugin-conformance').projectDir =
         file('appchain/fixtures/appchain-plugin-conformance')
 project(':appchain-spring-boot-starter').projectDir = file('spring-starters/appchain-spring-boot-starter')

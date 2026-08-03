@@ -871,9 +871,11 @@ final class AppChainProjectRenderer {
                 root="$(cd "$(dirname "$0")/.." && pwd)"
                 : "${YANO_HOME:?Set YANO_HOME to the extracted Yano distribution}"
                 mkdir -p "$root/run" "$root/logs"
+                "$root/scripts/validate"
                 %s
                 for node in $(seq 0 %d); do
-                  "$root/scripts/start-node" "$node" >"$root/logs/node${node}.log" 2>&1 &
+                  nohup "$root/scripts/start-node" "$node" \
+                    </dev/null >"$root/logs/node${node}.log" 2>&1 &
                   echo $! >"$root/run/node${node}.pid"
                   port=$((%d + node))
                   ready=0
@@ -887,6 +889,11 @@ final class AppChainProjectRenderer {
                   done
                   if [ "$ready" -ne 1 ]; then
                     echo "node${node} failed readiness; see logs/node${node}.log" >&2
+                    diagnostic="$(grep -Eo 'YANO_STARTUP_FAILURE code=[A-Z0-9_]+' \
+                      "$root/logs/node${node}.log" | head -1 || true)"
+                    if [ -n "$diagnostic" ]; then
+                      echo "$diagnostic" >&2
+                    fi
                     "$root/scripts/stop" || true
                     exit 1
                   fi

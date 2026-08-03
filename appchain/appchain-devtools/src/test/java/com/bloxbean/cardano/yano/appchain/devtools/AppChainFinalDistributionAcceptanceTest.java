@@ -86,6 +86,26 @@ class AppChainFinalDistributionAcceptanceTest {
                     if ("custom-plugin".equals(recipe.id())) {
                         init.add("--answer");
                         init.add("stateMachine=com.example.acceptance");
+                    } else if ("eutxo-ledger".equals(recipe.id())) {
+                        init.add("--answer");
+                        init.add("eutxoGenesisAddress=addr_test1vr8nlm7example");
+                        init.add("--answer");
+                        init.add("eutxoGenesisLovelace=100000000");
+                    } else if ("eutxo-cardano-bridge".equals(recipe.id())) {
+                        init.add("--answer");
+                        init.add("bridgeVaultAddress=addr_test1wzvault");
+                        init.add("--answer");
+                        init.add("bridgeVaultScriptHash=" + "1".repeat(56));
+                        init.add("--answer");
+                        init.add("bridgeMaxDepositLovelace=100000000");
+                        init.add("--answer");
+                        init.add("bridgeWithdrawalAddress=addr_test1vwithdrawals");
+                        init.add("--answer");
+                        init.add("bridgeEpoch=1");
+                        init.add("--answer");
+                        init.add("bridgeMaxWithdrawalLovelace=50000000");
+                        init.add("--answer");
+                        init.add("bridgeMaxPendingWithdrawals=100");
                     }
 
                     Result initialized = run(launcher, init);

@@ -83,6 +83,19 @@ describe('Yano API client', () => {
     expect((fetchMock.mock.calls[1][1].headers as Headers).get('X-API-Key')).toBe('operator-key');
   });
 
+  it('uses the same authenticated client for bounded plugin domain routes', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: [] }) });
+    vi.stubGlobal('fetch', fetchMock);
+    await new YanoApi('/api/v1', 'reader-key').domain(
+      'com.bloxbean.cardano.yano.appchain.eutxo',
+      `transactions/${'ab'.repeat(32)}`,
+      { chain: 'payments/east', limit: '20' }
+    );
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      `/api/v1/plugins/com.bloxbean.cardano.yano.appchain.eutxo/transactions/${'ab'.repeat(32)}?chain=payments%2Feast&limit=20`);
+    expect((fetchMock.mock.calls[0][1].headers as Headers).get('X-API-Key')).toBe('reader-key');
+  });
+
   it('turns browser network failures into an actionable standalone diagnostic', () => {
     expect(apiFailureMessage(new TypeError('Failed to fetch'), 'fallback')).toContain('CORS origin');
   });

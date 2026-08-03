@@ -40,7 +40,8 @@ class AppChainProjectTest {
 
         assertThat(catalog.recipes()).extracting(AppChainProjectModel.Recipe::id)
                 .containsExactly("audit-log", "owned-registry", "approval-workflow",
-                        "role-approval", "evidence-ledger", "custom-plugin");
+                        "role-approval", "evidence-ledger", "eutxo-ledger",
+                        "eutxo-cardano-bridge", "custom-plugin");
         assertThat(catalog.recipes()).allSatisfy(recipe -> {
             assertThat(recipe.primaryOutcome()).isNotBlank();
             assertThat(recipe.firstCommand()).isNotBlank();
@@ -135,6 +136,123 @@ class AppChainProjectTest {
                 List.of("effects:on-approved"))))
                 .hasMessageContaining("require non-secret answers")
                 .hasMessageContaining("effectType");
+    }
+
+    @Test
+    void eutxoCapabilityPinsProfileAndRendersGenesisYaml() throws Exception {
+        AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
+        AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
+        AppChainProjectResolver resolver = new AppChainProjectResolver(properties, catalog);
+        AppChainProjectModel.Blueprint blueprint = withAnswers(withCapabilities(
+                        blueprint("eutxo-ledger", "fixed",
+                                List.of("a".repeat(64), "b".repeat(64), "c".repeat(64))),
+                        List.of()),
+                Map.of(
+                        "eutxoGenesisAddress", "addr_test1vr8nlm7example",
+                        "eutxoGenesisLovelace", "100000000"));
+
+        AppChainProjectModel.Resolution resolution = resolver.resolve(blueprint);
+
+        assertThat(resolution.selectedCapabilities())
+                .contains("state:eutxo-ledger", "funding:eutxo-genesis");
+        assertThat(resolution.artifacts()).contains("appchain-eutxo-ledger");
+        assertThat(resolution.consensusProperties())
+                .containsEntry("yano.app-chain.chains[0].state-machine", "eutxo-ledger")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.profile",
+                        "yano-eutxo-v2-plutus-v3")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.expected-profile-digest",
+                        "8cd4adb72def2c31dc8551a02f67429ea468bb2024dbe85a1dc7300590c9d1bf")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.genesis.address",
+                        "addr_test1vr8nlm7example")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.genesis.lovelace",
+                        "100000000");
+
+        Path project = temporary.resolve("eutxo-project");
+        new AppChainProjectRenderer(catalog, resolver).initialize(project, blueprint);
+        assertThat(yamlValues(project.resolve("config/shared-consensus.yaml")))
+                .containsAllEntriesOf(resolution.consensusProperties());
+    }
+
+    @Test
+    void eutxoAnswersRejectLabeledAndMalformedPublicValuesBeforeRendering()
+            throws IOException {
+        AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
+        AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
+        AppChainProjectResolver resolver = new AppChainProjectResolver(properties, catalog);
+        Map<String, String> labeled = Map.of(
+                "eutxoGenesisAddress",
+                "L2_ADDRESS=addr_test1vr8nlm7example",
+                "eutxoGenesisLovelace",
+                "100000000");
+
+        assertThatThrownBy(() -> resolver.resolve(withAnswers(
+                blueprint("eutxo-ledger", "fixed", List.of()), labeled)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("eutxoGenesisAddress")
+                .hasMessageContaining("not NAME=value")
+                .hasMessageNotContaining("L2_ADDRESS=");
+
+        Map<String, String> malformed = Map.of(
+                "eutxoGenesisAddress",
+                "addr_test1vr8nlm7example",
+                "eutxoGenesisLovelace",
+                "not-a-number");
+        assertThatThrownBy(() -> resolver.resolve(withAnswers(
+                blueprint("eutxo-ledger", "fixed", List.of()), malformed)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("eutxoGenesisLovelace")
+                .hasMessageContaining("bounded decimal integer");
+    }
+
+    @Test
+    void eutxoBridgeRecipeUsesProjectChainIdAndExcludesVirtualGenesis() throws Exception {
+        AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
+        AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
+        AppChainProjectResolver resolver = new AppChainProjectResolver(properties, catalog);
+        AppChainProjectModel.Blueprint blueprint = withAnswers(
+                blueprint("eutxo-cardano-bridge", "fixed",
+                        List.of("a".repeat(64), "b".repeat(64), "c".repeat(64))),
+                bridgeAnswers());
+
+        AppChainProjectModel.Resolution resolution = resolver.resolve(blueprint);
+
+        assertThat(resolution.selectedCapabilities())
+                .contains("state:eutxo-ledger", "bridge:cardano-federated", "l1:slot-feed")
+                .doesNotContain("funding:eutxo-genesis");
+        assertThat(resolution.consensusProperties())
+                .containsEntry(
+                        "yano.app-chain.chains[0].observers.bridge-deposits.chain-id",
+                        "product-evidence")
+                .doesNotContainKeys(
+                        "yano.app-chain.chains[0].machines.eutxo.genesis.address",
+                        "yano.app-chain.chains[0].machines.eutxo.genesis.lovelace");
+
+        Map<String, String> unsafeAnswers =
+                new java.util.LinkedHashMap<>(bridgeAnswers());
+        unsafeAnswers.put("eutxoGenesisAddress", "addr_test1vr8nlm7example");
+        unsafeAnswers.put("eutxoGenesisLovelace", "100000000");
+        AppChainProjectModel.Blueprint unsafe = withAnswers(withCapabilities(
+                        blueprint("eutxo-ledger", "fixed", List.of()),
+                        List.of("bridge:cardano-federated")),
+                unsafeAnswers);
+        assertThatThrownBy(() -> resolver.resolve(unsafe))
+                .hasMessageContaining("Conflicting capabilities")
+                .hasMessageContaining("funding:eutxo-genesis");
+    }
+
+    private static Map<String, String> bridgeAnswers() {
+        return Map.of(
+                "bridgeVaultAddress", "addr_test1wzvault",
+                "bridgeVaultScriptHash", "1".repeat(56),
+                "bridgeMaxDepositLovelace", "100000000",
+                "bridgeWithdrawalAddress", "addr_test1vwithdrawals",
+                "bridgeEpoch", "1",
+                "bridgeMaxWithdrawalLovelace", "50000000",
+                "bridgeMaxPendingWithdrawals", "100");
     }
 
     @Test
@@ -290,8 +408,9 @@ class AppChainProjectTest {
                 catalog, new AppChainProjectResolver(properties, catalog));
         int sequence = 0;
         for (String recipe : List.of("audit-log", "owned-registry", "approval-workflow",
-                "role-approval", "evidence-ledger", "custom-plugin")) {
+                "role-approval", "evidence-ledger", "eutxo-ledger", "custom-plugin")) {
             List<String> runtimes = "custom-plugin".equals(recipe)
+                    || "eutxo-ledger".equals(recipe)
                     ? List.of("jvm") : List.of("jvm", "native");
             for (String runtime : runtimes) {
                 for (String deployment : List.of("host", "docker-compose")) {
@@ -300,6 +419,10 @@ class AppChainProjectTest {
                     if ("custom-plugin".equals(recipe)) {
                         blueprint = withAnswers(blueprint,
                                 Map.of("stateMachine", "com.example.custom-machine"));
+                    } else if ("eutxo-ledger".equals(recipe)) {
+                        blueprint = withAnswers(blueprint, Map.of(
+                                "eutxoGenesisAddress", "addr_test1vr8nlm7example",
+                                "eutxoGenesisLovelace", "100000000"));
                     }
                     Path project = temporary.resolve("matrix-" + sequence++);
 
@@ -522,7 +645,7 @@ class AppChainProjectTest {
         AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
         AppChainProjectResolver resolver = new AppChainProjectResolver(properties, catalog);
 
-        assertThat(catalog.capabilities()).hasSize(33)
+        assertThat(catalog.capabilities()).hasSize(36)
                 .allSatisfy(capability -> {
                     assertThat(capability.availability()).isIn(
                             "BUNDLED", "FIRST_PARTY_OPTIONAL", "REFERENCE", "EXPERIMENTAL");

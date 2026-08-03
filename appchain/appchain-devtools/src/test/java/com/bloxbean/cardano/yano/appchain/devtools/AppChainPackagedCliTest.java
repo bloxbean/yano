@@ -62,6 +62,7 @@ class AppChainPackagedCliTest {
         Result migrate = run(launcher, "migrate", project.toString(), "--dry-run",
                 "--format", "json");
         Result capabilities = run(launcher, "capabilities", "--format", "json");
+        Result eutxoDemo = run(launcher, "eutxo", "demo", "scenarios", "--format", "json");
         Path actorSeed = temporary.resolve("packaged-actor.seed");
         Files.writeString(actorSeed, "11".repeat(32), StandardCharsets.US_ASCII);
         Result actorPublicKey = run(launcher, "appchain", "role", "public-key",
@@ -93,7 +94,13 @@ class AppChainPackagedCliTest {
         assertThat(migrate.output()).contains("NO_MIGRATION_REQUIRED_DRY_RUN");
         assertThat(capabilities.exitCode()).isZero();
         assertThat(capabilities.output()).contains(
-                "state:role-approvals", "state:role-evidence", "state:custom-plugin");
+                "state:role-approvals", "state:role-evidence", "state:eutxo-ledger",
+                "state:custom-plugin");
+        assertThat(eutxoDemo.exitCode()).isZero();
+        assertThat(eutxoDemo.output())
+                .contains("\"status\":\"EUTXO_DEMO_SCENARIOS\"")
+                .contains("\"id\":\"ledger\"", "\"id\":\"bridge\"");
+        assertThat(eutxoDemo.error()).isEmpty();
         assertThat(actorPublicKey.exitCode()).isZero();
         assertThat(actorPublicKey.output().trim()).matches("[0-9a-f]{64}")
                 .doesNotContain("11".repeat(32));

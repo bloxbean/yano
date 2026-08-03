@@ -80,6 +80,7 @@ tasks.register('verifyStaticConsoleContract') {
                 'index.html',
                 'status/index.html',
                 'app-chain/index.html',
+                'app-chain/eutxo/index.html',
                 'plugins/index.html',
                 'observability/index.html'
         ]
@@ -120,6 +121,9 @@ tasks.register('verifyStaticConsoleContract') {
         }
         if (!textAssets.any { it.contains('@media (width>=48rem)') }) {
             throw new GradleException('Embedded console lacks the maintained responsive breakpoint')
+        }
+        if (!textAssets.any { it.contains('data-console-route="eutxo"') }) {
+            throw new GradleException('Embedded console lacks the capability-gated EUTxO explorer')
         }
 
         def appChainSource = file('frontend/src/routes/app-chain/+page.svelte').getText('UTF-8')
