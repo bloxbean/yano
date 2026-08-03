@@ -260,7 +260,7 @@ def decode_key(encoded, namespace=1):
 
 def verify_vectors(values):
     require(values["schema.version"] == "1", "schema version")
-    require(values["genesis.codec.version"] == "2", "genesis codec version")
+    require(values["genesis.codec.version"] == "3", "genesis codec version")
     require(values["value.encoding.opaque"] == "0", "opaque value encoding")
     require(values["value.encoding.canonical-cbor"] == "1",
             "canonical CBOR value encoding")
@@ -305,11 +305,12 @@ def verify_vectors(values):
             "batch commitment")
     genesis_bytes = bytes.fromhex(values["genesis.cbor"])
     genesis = decode_exact(genesis_bytes)
-    require(genesis[0:4] == [2, "product-registry", "authenticated-map", 1]
-            and len(genesis) == 13, "genesis codec/machine version")
-    require(all(isinstance(collection, list) and len(collection) == 7
-                and collection[0] == 2 and collection[6] == 0
+    require(genesis[0:4] == [3, "product-registry", "authenticated-map", 1]
+            and len(genesis) == 14, "genesis codec/machine version")
+    require(all(isinstance(collection, list) and len(collection) == 8
+                and collection[0] == 3 and collection[6:] == [0, ""]
                 for collection in genesis[11]), "collection value encoding")
+    require(genesis[12] == [], "golden genesis validator catalog")
     require(digest(GENESIS_DOMAIN + genesis_bytes).hex() == values["genesis.id"],
             "genesis id")
 

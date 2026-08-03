@@ -35,6 +35,14 @@ application {
     applicationDefaultJvmArgs = ['-Xmx4g']
 }
 
+tasks.register('printAuthenticatedMapSchemaGoldenVectors', JavaExec) {
+    group = 'verification'
+    description = 'Prints deterministic ADR-025.1 schema compiler/evaluator vectors'
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.appchain.devtools.AuthenticatedMapSchemaGoldenVectorGenerator'
+}
+
 def generatedMetadataDirectory = layout.buildDirectory.dir('generated/appchain-metadata')
 
 distributions {

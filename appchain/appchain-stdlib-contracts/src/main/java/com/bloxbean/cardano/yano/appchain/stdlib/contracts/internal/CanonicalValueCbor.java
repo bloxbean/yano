@@ -10,7 +10,7 @@ import java.nio.charset.StandardCharsets;
  *
  * <p>The parser operates directly on the encoded bytes. It accepts exactly one
  * definite-length item, checks preferred integer/length and float encodings,
- * validates UTF-8, and enforces length-first map-key ordering without building
+ * validates UTF-8, and enforces bytewise-lexical map-key ordering without building
  * an attacker-controlled object graph.</p>
  */
 public final class CanonicalValueCbor {
@@ -208,18 +208,15 @@ public final class CanonicalValueCbor {
         private int compareEncoded(int leftStart, int leftEnd, int rightStart, int rightEnd) {
             int leftLength = leftEnd - leftStart;
             int rightLength = rightEnd - rightStart;
-            int lengthComparison = Integer.compare(leftLength, rightLength);
-            if (lengthComparison != 0) {
-                return lengthComparison;
-            }
-            for (int index = 0; index < leftLength; index++) {
+            int sharedLength = Math.min(leftLength, rightLength);
+            for (int index = 0; index < sharedLength; index++) {
                 int comparison = Integer.compare(
                         unsigned(leftStart + index), unsigned(rightStart + index));
                 if (comparison != 0) {
                     return comparison;
                 }
             }
-            return 0;
+            return Integer.compare(leftLength, rightLength);
         }
 
         private long readUnsigned(int offset, int width) {

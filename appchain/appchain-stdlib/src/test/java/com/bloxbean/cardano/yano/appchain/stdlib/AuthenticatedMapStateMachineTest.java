@@ -13,10 +13,12 @@ import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import com.bloxbean.cardano.yano.appchain.config.AppChainEffectsConfig;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapSchema;
 import com.bloxbean.cardano.yano.runtime.appchain.StateMachineConformance;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
+import java.math.BigInteger;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -218,6 +220,46 @@ class AuthenticatedMapStateMachineTest {
     }
 
     @Test
+    void declarativeSchemaRejectsWithTypedReceiptAndKeepsBatchesAtomic() {
+        AuthenticatedMapSchema.Schema schema = quantitySchema(10);
+        AuthenticatedMapContract.ValidatorDescriptor validator =
+                AuthenticatedMapContract.ValidatorDescriptor.schema(
+                        "product-schema", schema.definition());
+        AuthenticatedMapStateMachine machine = machine(
+                List.of(schemaCollection("records", validator.id())),
+                List.of(validator));
+        TestState state = new TestState();
+        machine.init(state, new AppChainInfo(CHAIN_ID, "", 1));
+
+        AppMessage invalid = message(OWNER, 1, single(
+                AuthenticatedMapContract.Mutation.put(
+                        "records", bytes("bad"), hexBytes("a1637174790b"))));
+        assertThat(machine.validate(invalid).isAccepted()).isFalse();
+        apply(machine, state, 1, invalid);
+        assertRejected(state, invalid, AuthenticatedMapContract.ERROR_VALUE_SCHEMA);
+
+        AppMessage valid = message(OWNER, 2, single(
+                AuthenticatedMapContract.Mutation.put(
+                        "records", bytes("good"), hexBytes("a1637174790a"))));
+        assertThat(machine.validate(valid).isAccepted()).isTrue();
+        apply(machine, state, 2, valid);
+        assertApplied(state, valid, 2);
+
+        AppMessage invalidBatch = message(OWNER, 3,
+                AuthenticatedMapContract.Command.batch(List.of(
+                        AuthenticatedMapContract.Mutation.put(
+                                "records", bytes("would-write"),
+                                hexBytes("a16371747901")),
+                        AuthenticatedMapContract.Mutation.put(
+                                "records", bytes("bad-again"),
+                                hexBytes("a1637174790b")))));
+        apply(machine, state, 3, invalidBatch);
+        assertThat(state.get(AuthenticatedMapContract.canonicalKey(
+                "records", bytes("would-write")))).isEmpty();
+        assertRejected(state, invalidBatch, AuthenticatedMapContract.ERROR_VALUE_SCHEMA);
+    }
+
+    @Test
     void memberPolicyUsesHeightVersionedMembership() {
         AppChainMembershipEpoch first = new AppChainMembershipEpoch(
                 0, List.of(hex(OWNER)), 1);
@@ -251,7 +293,7 @@ class AuthenticatedMapStateMachineTest {
     }
 
     @Test
-    void realMpfCanonicalValueReplayIsIdenticalAcrossMembersRestartSnapshotAndCatchUp() {
+    void realMpfSchemaReplayIsIdenticalAcrossMembersRestartSnapshotAndCatchUp() {
         String chainId = "conformance-chain";
         String member = "11".repeat(32);
         AppChainConfig config = AppChainConfig.builder(chainId)
@@ -261,9 +303,19 @@ class AuthenticatedMapStateMachineTest {
                 .maxBlockMessages(2)
                 .stateMachineId(AuthenticatedMapStateMachine.ID)
                 .build();
+        AuthenticatedMapSchema.Schema replaySchema = AuthenticatedMapSchema.of(
+                new AuthenticatedMapSchema.ArrayNode(List.of(
+                        AuthenticatedMapSchema.Occurrence.required(
+                                AuthenticatedMapSchema.IntegerNode.uint()),
+                        AuthenticatedMapSchema.Occurrence.required(
+                                AuthenticatedMapSchema.IntegerNode.uint()))));
+        AuthenticatedMapContract.ValidatorDescriptor replayValidator =
+                AuthenticatedMapContract.ValidatorDescriptor.schema(
+                        "replay-schema", replaySchema.definition());
         AuthenticatedMapContract.Genesis genesis = AuthenticatedMapGenesisFactory.mpf(
                 config, repeated(7), 16, 32_768,
-                List.of(canonicalCollection("records")),
+                List.of(schemaCollection("records", replayValidator.id())),
+                List.of(replayValidator),
                 List.of());
 
         StateMachineConformance.builder(
@@ -369,11 +421,43 @@ class AuthenticatedMapStateMachineTest {
         assertThatThrownBy(() -> provider.create(context(
                 config, differentMembership, AuthenticatedMapGenesisFactory.settings(genesis))))
                 .hasMessageContaining("membership");
+
+        AuthenticatedMapContract.ValidatorDescriptor schema10 =
+                AuthenticatedMapContract.ValidatorDescriptor.schema(
+                        "records-schema", quantitySchema(10).definition());
+        AuthenticatedMapContract.ValidatorDescriptor schema11 =
+                AuthenticatedMapContract.ValidatorDescriptor.schema(
+                        "records-schema", quantitySchema(11).definition());
+        AuthenticatedMapContract.Genesis firstSchemaGenesis =
+                AuthenticatedMapGenesisFactory.mpf(
+                        config, repeated(7), 16, 32_768,
+                        List.of(schemaCollection("records", schema10.id())),
+                        List.of(schema10), List.of());
+        AuthenticatedMapContract.Genesis differentSchemaGenesis =
+                AuthenticatedMapGenesisFactory.mpf(
+                        config, repeated(7), 16, 32_768,
+                        List.of(schemaCollection("records", schema11.id())),
+                        List.of(schema11), List.of());
+        Map<String, String> mismatchedSchemaSettings = new LinkedHashMap<>(
+                AuthenticatedMapGenesisFactory.settings(firstSchemaGenesis));
+        mismatchedSchemaSettings.put(
+                StdlibStateMachineProviders.AUTHENTICATED_MAP_GENESIS_SETTING,
+                hex(AuthenticatedMapContract.encodeGenesis(differentSchemaGenesis)));
+        assertThatThrownBy(() -> provider.create(context(
+                config, epoch, Map.copyOf(mismatchedSchemaSettings))))
+                .hasMessageContaining("state commitment identity");
     }
 
     private static AuthenticatedMapStateMachine machine(
             List<AuthenticatedMapContract.CollectionDescriptor> collections) {
         return new AuthenticatedMapStateMachine(genesis(collections),
+                height -> new AppChainMembershipEpoch(0, List.of(hex(OWNER)), 1));
+    }
+
+    private static AuthenticatedMapStateMachine machine(
+            List<AuthenticatedMapContract.CollectionDescriptor> collections,
+            List<AuthenticatedMapContract.ValidatorDescriptor> validators) {
+        return new AuthenticatedMapStateMachine(genesis(collections, validators),
                 height -> new AppChainMembershipEpoch(0, List.of(hex(OWNER)), 1));
     }
 
@@ -401,12 +485,18 @@ class AuthenticatedMapStateMachineTest {
 
     private static AuthenticatedMapContract.Genesis genesis(
             List<AuthenticatedMapContract.CollectionDescriptor> collections) {
+        return genesis(collections, List.of());
+    }
+
+    private static AuthenticatedMapContract.Genesis genesis(
+            List<AuthenticatedMapContract.CollectionDescriptor> collections,
+            List<AuthenticatedMapContract.ValidatorDescriptor> validators) {
         return new AuthenticatedMapContract.Genesis(
                 CHAIN_ID,
                 StateCommitmentProfiles.MPF_BLAKE2B256_V1,
                 StateCommitmentProfiles.MPF.formatFingerprint(),
                 repeated(1), repeated(2), repeated(3),
-                16, 32_768, collections, List.of());
+                16, 32_768, collections, validators, List.of());
     }
 
     private static AuthenticatedMapContract.CollectionDescriptor collection(
@@ -419,6 +509,23 @@ class AuthenticatedMapStateMachineTest {
         return new AuthenticatedMapContract.CollectionDescriptor(
                 id, AuthenticatedMapContract.AUTH_OPEN, false, 64, 1024,
                 AuthenticatedMapContract.VALUE_ENCODING_CANONICAL_CBOR);
+    }
+
+    private static AuthenticatedMapContract.CollectionDescriptor schemaCollection(
+            String id,
+            String validatorId
+    ) {
+        return new AuthenticatedMapContract.CollectionDescriptor(
+                id, AuthenticatedMapContract.AUTH_OPEN, false, 64, 1024,
+                AuthenticatedMapContract.VALUE_ENCODING_CANONICAL_CBOR, validatorId);
+    }
+
+    private static AuthenticatedMapSchema.Schema quantitySchema(int maximum) {
+        return AuthenticatedMapSchema.of(new AuthenticatedMapSchema.MapNode(List.of(
+                new AuthenticatedMapSchema.MapField("qty", true,
+                        new AuthenticatedMapSchema.IntegerNode(
+                                AuthenticatedMapSchema.INTEGER_UINT,
+                                BigInteger.ZERO, BigInteger.valueOf(maximum))))));
     }
 
     private static AuthenticatedMapContract.Command single(

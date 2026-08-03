@@ -33,7 +33,7 @@ import java.util.regex.Pattern;
 public final class AuthenticatedMapContract {
     public static final String STATE_MACHINE_ID = "authenticated-map";
     public static final int STATE_MACHINE_VERSION = 1;
-    public static final int GENESIS_CODEC_VERSION = 2;
+    public static final int GENESIS_CODEC_VERSION = 3;
     public static final String DEFAULT_TOPIC = "authenticated-map.command.v1";
 
     public static final String PROFILE_MPF_BLAKE2B256_V1 = "mpf-blake2b256-v1";
@@ -54,6 +54,8 @@ public final class AuthenticatedMapContract {
     public static final int MAX_VALUE_BYTES = 1_048_576;
     public static final int MAX_BATCH_ITEMS = 128;
     public static final int MAX_BATCH_BYTES = 1_048_576;
+    public static final int MAX_VALIDATORS = 32;
+    public static final int MAX_VALIDATOR_PARAMETERS_BYTES = 16_384;
 
     public static final int AUTH_OPEN = 0;
     public static final int AUTH_OWNER = 1;
@@ -65,6 +67,11 @@ public final class AuthenticatedMapContract {
     public static final int MAX_VALUE_CBOR_ITEMS = CanonicalValueCbor.MAX_ITEMS;
     public static final int MAX_VALUE_CBOR_CONTAINER_ITEMS =
             CanonicalValueCbor.MAX_CONTAINER_ITEMS;
+
+    public static final int VALIDATOR_KIND_SCHEMA = 0;
+    public static final int VALIDATOR_KIND_PLUGIN = 1;
+    public static final String VALIDATOR_SPI_CONTRACT_VERSION =
+            "authenticated-map-validator-v1";
 
     public static final int STATUS_ACTIVE = 0;
     public static final int STATUS_REVOKED = 1;
@@ -99,6 +106,7 @@ public final class AuthenticatedMapContract {
     public static final int ERROR_PRECONDITION = 8;
     public static final int ERROR_RESTORE_FORBIDDEN = 9;
     public static final int ERROR_VALUE_ENCODING = 10;
+    public static final int ERROR_VALUE_SCHEMA = 11;
 
     private static final String INTERNAL_GENESIS_COLLECTION =
             "yano-authenticated-map-internal-v1";
@@ -110,6 +118,8 @@ public final class AuthenticatedMapContract {
     private static final int COMMAND_SINGLE = 0;
     private static final int COMMAND_BATCH = 1;
     private static final Pattern COLLECTION_ID =
+            Pattern.compile("[a-z0-9][a-z0-9._-]{0,63}");
+    private static final Pattern VALIDATOR_ID =
             Pattern.compile("[a-z0-9][a-z0-9._-]{0,63}");
     private static final byte[] VALUE_HASH_DOMAIN =
             "yano-authenticated-map-value-v1\0".getBytes(StandardCharsets.US_ASCII);
@@ -324,6 +334,10 @@ public final class AuthenticatedMapContract {
         for (CollectionDescriptor descriptor : genesis.collections()) {
             collections.add(encodeCollection(descriptor));
         }
+        Array validators = new Array();
+        for (ValidatorDescriptor descriptor : genesis.validators()) {
+            validators.add(encodeValidator(descriptor));
+        }
         Array initialEntries = new Array();
         for (GenesisEntry entry : genesis.initialEntries()) {
             Array item = new Array();
@@ -346,13 +360,14 @@ public final class AuthenticatedMapContract {
         root.add(new UnsignedInteger(genesis.maxBatchItems()));
         root.add(new UnsignedInteger(genesis.maxBatchBytes()));
         root.add(collections);
+        root.add(validators);
         root.add(initialEntries);
         return StdlibContractCbor.encode(root);
     }
 
     public static Genesis decodeGenesis(byte[] encoded) {
         List<co.nstant.in.cbor.model.DataItem> values =
-                StdlibContractCbor.decodeArray(encoded, 13).getDataItems();
+                StdlibContractCbor.decodeArray(encoded, 14).getDataItems();
         if (StdlibContractCbor.uintInt(values.get(0)) != GENESIS_CODEC_VERSION
                 || !STATE_MACHINE_ID.equals(StdlibContractCbor.text(values.get(2)))
                 || StdlibContractCbor.uintInt(values.get(3)) != STATE_MACHINE_VERSION) {
@@ -361,9 +376,15 @@ public final class AuthenticatedMapContract {
         Array collectionItems = StdlibContractCbor.array(values.get(11), MAX_COLLECTIONS);
         List<CollectionDescriptor> collections = new ArrayList<>(collectionItems.getDataItems().size());
         for (co.nstant.in.cbor.model.DataItem item : collectionItems.getDataItems()) {
-            collections.add(decodeCollection(StdlibContractCbor.array(item, 7)));
+            collections.add(decodeCollection(StdlibContractCbor.array(item, 8)));
         }
-        Array entryItems = StdlibContractCbor.array(values.get(12), MAX_BATCH_ITEMS);
+        Array validatorItems = StdlibContractCbor.array(values.get(12), MAX_VALIDATORS);
+        List<ValidatorDescriptor> validators = new ArrayList<>(
+                validatorItems.getDataItems().size());
+        for (co.nstant.in.cbor.model.DataItem item : validatorItems.getDataItems()) {
+            validators.add(decodeValidator(StdlibContractCbor.array(item, 7)));
+        }
+        Array entryItems = StdlibContractCbor.array(values.get(13), MAX_BATCH_ITEMS);
         List<GenesisEntry> entries = new ArrayList<>(entryItems.getDataItems().size());
         for (co.nstant.in.cbor.model.DataItem item : entryItems.getDataItems()) {
             Array entry = StdlibContractCbor.array(item, 4);
@@ -387,6 +408,7 @@ public final class AuthenticatedMapContract {
                 StdlibContractCbor.uintInt(values.get(9)),
                 StdlibContractCbor.uintInt(values.get(10)),
                 collections,
+                validators,
                 entries);
         if (!Arrays.equals(encoded, encodeGenesis(decoded))) {
             throw malformed();
@@ -626,11 +648,12 @@ public final class AuthenticatedMapContract {
         item.add(new UnsignedInteger(descriptor.maxKeyBytes()));
         item.add(new UnsignedInteger(descriptor.maxValueBytes()));
         item.add(new UnsignedInteger(descriptor.valueEncoding()));
+        item.add(new UnicodeString(descriptor.validatorId()));
         return item;
     }
 
     private static CollectionDescriptor decodeCollection(Array item) {
-        if (item.getDataItems().size() != 7) {
+        if (item.getDataItems().size() != 8) {
             throw malformed();
         }
         List<co.nstant.in.cbor.model.DataItem> values = item.getDataItems();
@@ -647,7 +670,37 @@ public final class AuthenticatedMapContract {
                 restore == 1,
                 StdlibContractCbor.uintInt(values.get(4)),
                 StdlibContractCbor.uintInt(values.get(5)),
-                StdlibContractCbor.uintInt(values.get(6)));
+                StdlibContractCbor.uintInt(values.get(6)),
+                StdlibContractCbor.text(values.get(7)));
+    }
+
+    private static Array encodeValidator(ValidatorDescriptor descriptor) {
+        Array item = new Array();
+        item.add(new UnsignedInteger(GENESIS_CODEC_VERSION));
+        item.add(new UnicodeString(descriptor.id()));
+        item.add(new UnsignedInteger(descriptor.kind()));
+        item.add(new UnicodeString(descriptor.providerId()));
+        item.add(new UnicodeString(descriptor.contractVersion()));
+        item.add(new ByteString(descriptor.definition()));
+        item.add(new ByteString(descriptor.parameters()));
+        return item;
+    }
+
+    private static ValidatorDescriptor decodeValidator(Array item) {
+        if (item.getDataItems().size() != 7) {
+            throw malformed();
+        }
+        List<co.nstant.in.cbor.model.DataItem> values = item.getDataItems();
+        if (StdlibContractCbor.uintInt(values.get(0)) != GENESIS_CODEC_VERSION) {
+            throw malformed();
+        }
+        return new ValidatorDescriptor(
+                StdlibContractCbor.text(values.get(1)),
+                StdlibContractCbor.uintInt(values.get(2)),
+                StdlibContractCbor.text(values.get(3)),
+                StdlibContractCbor.text(values.get(4)),
+                StdlibContractCbor.bytes(values.get(5)),
+                StdlibContractCbor.bytes(values.get(6)));
     }
 
     private static String requireCollectionId(String id) {
@@ -657,6 +710,24 @@ public final class AuthenticatedMapContract {
             throw new IllegalArgumentException("collectionId must be canonical lowercase ASCII");
         }
         return value;
+    }
+
+    private static String requireValidatorId(String id, boolean emptyAllowed) {
+        String value = Objects.requireNonNull(id, "validatorId");
+        if (emptyAllowed && value.isEmpty()) return value;
+        if (!VALIDATOR_ID.matcher(value).matches()
+                || value.getBytes(StandardCharsets.US_ASCII).length > 64) {
+            throw new IllegalArgumentException(
+                    "validatorId must be canonical lowercase ASCII");
+        }
+        return value;
+    }
+
+    private static boolean canonicalParameterMap(byte[] parameters) {
+        return parameters != null && parameters.length > 0
+                && parameters.length <= MAX_VALIDATOR_PARAMETERS_BYTES
+                && (parameters[0] & 0xe0) == 0xa0
+                && CanonicalValueCbor.accepts(parameters, MAX_VALIDATOR_PARAMETERS_BYTES);
     }
 
     private static byte[] requireApplicationKey(byte[] key, int maximum) {
@@ -806,7 +877,7 @@ public final class AuthenticatedMapContract {
         public Receipt {
             messageId = require32(messageId, "messageId");
             if (height <= 0 || status < RECEIPT_APPLIED || status > RECEIPT_REJECTED
-                    || errorCode < ERROR_NONE || errorCode > ERROR_VALUE_ENCODING) {
+                    || errorCode < ERROR_NONE || errorCode > ERROR_VALUE_SCHEMA) {
                 throw new IllegalArgumentException("receipt status/height/error is invalid");
             }
             batchCommitment = require32(batchCommitment, "batchCommitment");
@@ -878,10 +949,12 @@ public final class AuthenticatedMapContract {
             boolean restoreAllowed,
             int maxKeyBytes,
             int maxValueBytes,
-            int valueEncoding
+            int valueEncoding,
+            String validatorId
     ) {
         public CollectionDescriptor {
             id = requireCollectionId(id);
+            validatorId = requireValidatorId(validatorId, true);
             if (authorization < AUTH_OPEN || authorization > AUTH_MEMBER) {
                 throw new IllegalArgumentException("unsupported authenticated-map authorization policy");
             }
@@ -906,8 +979,68 @@ public final class AuthenticatedMapContract {
                 int maxValueBytes
         ) {
             this(id, authorization, restoreAllowed, maxKeyBytes, maxValueBytes,
-                    VALUE_ENCODING_OPAQUE);
+                    VALUE_ENCODING_OPAQUE, "");
         }
+
+        /** Phase-A source-compatible constructor with no consensus validator. */
+        public CollectionDescriptor(
+                String id,
+                int authorization,
+                boolean restoreAllowed,
+                int maxKeyBytes,
+                int maxValueBytes,
+                int valueEncoding
+        ) {
+            this(id, authorization, restoreAllowed, maxKeyBytes, maxValueBytes,
+                    valueEncoding, "");
+        }
+    }
+
+    /** Genesis-bound schema or plugin validator descriptor. */
+    public record ValidatorDescriptor(
+            String id,
+            int kind,
+            String providerId,
+            String contractVersion,
+            byte[] definition,
+            byte[] parameters
+    ) {
+        public ValidatorDescriptor {
+            id = requireValidatorId(id, false);
+            providerId = Objects.requireNonNull(providerId, "providerId");
+            contractVersion = Objects.requireNonNull(contractVersion, "contractVersion");
+            definition = Objects.requireNonNull(definition, "definition").clone();
+            parameters = Objects.requireNonNull(parameters, "parameters").clone();
+            if (!canonicalParameterMap(parameters)) {
+                throw new IllegalArgumentException(
+                        "validator parameters must be a bounded canonical CBOR map");
+            }
+            if (kind == VALIDATOR_KIND_SCHEMA) {
+                if (!providerId.isEmpty()
+                        || !AuthenticatedMapSchema.IR_CATALOG_ID.equals(contractVersion)
+                        || !AuthenticatedMapSchema.isCanonicalDefinition(definition)
+                        || !Arrays.equals(parameters, new byte[]{(byte) 0xa0})) {
+                    throw new IllegalArgumentException("invalid declarative schema descriptor");
+                }
+            } else if (kind == VALIDATOR_KIND_PLUGIN) {
+                requireValidatorId(providerId, false);
+                if (!VALIDATOR_SPI_CONTRACT_VERSION.equals(contractVersion)
+                        || definition.length != 32) {
+                    throw new IllegalArgumentException("invalid plugin validator descriptor");
+                }
+            } else {
+                throw new IllegalArgumentException("unsupported validator kind");
+            }
+        }
+
+        public static ValidatorDescriptor schema(String id, byte[] definition) {
+            return new ValidatorDescriptor(id, VALIDATOR_KIND_SCHEMA, "",
+                    AuthenticatedMapSchema.IR_CATALOG_ID, definition,
+                    new byte[]{(byte) 0xa0});
+        }
+
+        @Override public byte[] definition() { return definition.clone(); }
+        @Override public byte[] parameters() { return parameters.clone(); }
     }
 
     public record Mutation(
@@ -1093,6 +1226,7 @@ public final class AuthenticatedMapContract {
             int maxBatchItems,
             int maxBatchBytes,
             List<CollectionDescriptor> collections,
+            List<ValidatorDescriptor> validators,
             List<GenesisEntry> initialEntries
     ) {
         public Genesis {
@@ -1128,6 +1262,49 @@ public final class AuthenticatedMapContract {
                 }
             }
 
+            List<ValidatorDescriptor> validatorCopy = new ArrayList<>(
+                    Objects.requireNonNull(validators, "validators"));
+            if (validatorCopy.size() > MAX_VALIDATORS) {
+                throw new IllegalArgumentException(
+                        "genesis exceeds " + MAX_VALIDATORS + " validators");
+            }
+            validatorCopy.sort(Comparator.comparing(ValidatorDescriptor::id));
+            Map<String, ValidatorDescriptor> validatorDescriptors = new HashMap<>();
+            for (ValidatorDescriptor validator : validatorCopy) {
+                if (validatorDescriptors.put(validator.id(), validator) != null) {
+                    throw new IllegalArgumentException(
+                            "duplicate validator id: " + validator.id());
+                }
+            }
+            Set<String> referencedValidators = new HashSet<>();
+            for (CollectionDescriptor descriptor : collectionCopy) {
+                if (descriptor.validatorId().isEmpty()) continue;
+                ValidatorDescriptor validator = validatorDescriptors.get(
+                        descriptor.validatorId());
+                if (validator == null) {
+                    throw new IllegalArgumentException("collection " + descriptor.id()
+                            + " references unknown validator " + descriptor.validatorId());
+                }
+                if (validator.kind() == VALIDATOR_KIND_SCHEMA
+                        && descriptor.valueEncoding() != VALUE_ENCODING_CANONICAL_CBOR) {
+                    throw new IllegalArgumentException("schema collection " + descriptor.id()
+                            + " must use canonical CBOR value encoding");
+                }
+                referencedValidators.add(validator.id());
+            }
+            if (referencedValidators.size() != validatorCopy.size()) {
+                throw new IllegalArgumentException(
+                        "genesis contains an unreferenced validator descriptor");
+            }
+
+            Map<String, AuthenticatedMapSchema.Schema> schemas = new HashMap<>();
+            for (ValidatorDescriptor validator : validatorCopy) {
+                if (validator.kind() == VALIDATOR_KIND_SCHEMA) {
+                    schemas.put(validator.id(),
+                            AuthenticatedMapSchema.decode(validator.definition()));
+                }
+            }
+
             List<GenesisEntry> entryCopy = new ArrayList<>(
                     Objects.requireNonNull(initialEntries, "initialEntries"));
             entryCopy.sort(Comparator.comparing(GenesisEntry::collectionId)
@@ -1148,6 +1325,11 @@ public final class AuthenticatedMapContract {
                     throw new IllegalArgumentException(
                             "initial entry violates collection value encoding");
                 }
+                AuthenticatedMapSchema.Schema schema = schemas.get(descriptor.validatorId());
+                if (schema != null && !schema.accepts(entry.value())) {
+                    throw new IllegalArgumentException(
+                            "initial entry violates collection value schema");
+                }
                 if (descriptor.authorization() == AUTH_OWNER
                         ? entry.controller().length != 32 : entry.controller().length != 0) {
                     throw new IllegalArgumentException("initial entry controller does not match policy");
@@ -1159,7 +1341,27 @@ public final class AuthenticatedMapContract {
                 }
             }
             collections = List.copyOf(collectionCopy);
+            validators = List.copyOf(validatorCopy);
             initialEntries = List.copyOf(entryCopy);
+        }
+
+        /** Source-compatible constructor for genesis without value validators. */
+        public Genesis(
+                String chainId,
+                String commitmentProfileId,
+                byte[] formatFingerprint,
+                byte[] frameworkConsensusProfileDigest,
+                byte[] membershipCommitment,
+                byte[] anchorPolicyCommitment,
+                int maxBatchItems,
+                int maxBatchBytes,
+                List<CollectionDescriptor> collections,
+                List<GenesisEntry> initialEntries
+        ) {
+            this(chainId, commitmentProfileId, formatFingerprint,
+                    frameworkConsensusProfileDigest, membershipCommitment,
+                    anchorPolicyCommitment, maxBatchItems, maxBatchBytes,
+                    collections, List.of(), initialEntries);
         }
 
         @Override public byte[] formatFingerprint() { return formatFingerprint.clone(); }
