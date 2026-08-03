@@ -332,6 +332,10 @@ final class AppChainProjectRenderer {
         values.put("yano.storage.path", kubernetes ? "/var/lib/yano/chainstate"
                 : compose ? "/app/chainstate"
                 : "${YANO_APPCHAIN_DATA_ROOT}/node" + node + "/chainstate");
+        values.put("yano.app-chain.storage.path", kubernetes
+                ? "/var/lib/yano/appchain-state"
+                : compose ? "/app/appchain-state"
+                : "${YANO_APPCHAIN_DATA_ROOT}/node" + node + "/appchain-state");
         if ("devnet".equals(resolution.blueprint().spec().network())) {
             values.put("yano.genesis.shelley-genesis-file", "${YANO_APPCHAIN_GENESIS_FILE}");
             if (node == 0) {
@@ -1019,6 +1023,8 @@ final class AppChainProjectRenderer {
                     .append("    volumes:\n")
                     .append("      - ./:/project:ro\n")
                     .append("      - node").append(index).append("-data:/app/chainstate\n")
+                    .append("      - node").append(index)
+                    .append("-appchain-data:/app/appchain-state\n")
                     .append("    ports:\n")
                     .append("      - \"").append(httpBase + index).append(":8080\"\n")
                     .append("      - \"").append(serverBase + index).append(":13337\"\n")
@@ -1032,6 +1038,7 @@ final class AppChainProjectRenderer {
         output.append("volumes:\n");
         for (int index = 0; index < members; index++) {
             output.append("  node").append(index).append("-data: {}\n");
+            output.append("  node").append(index).append("-appchain-data: {}\n");
         }
         return output.toString();
     }

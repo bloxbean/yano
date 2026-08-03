@@ -634,9 +634,12 @@ class AppChainProjectTest {
                                 .doesNotContain("YANO_PROFILE: preprod,appchain")
                                 .doesNotContain("entrypoint:");
                         assertThat(yamlValues(project.resolve("config/nodes/node0.yaml")))
-                                .containsEntry("yano.storage.path", "/app/chainstate");
+                                .containsEntry("yano.storage.path", "/app/chainstate")
+                                .containsEntry("yano.app-chain.storage.path",
+                                        "/app/appchain-state");
                         assertThat(Files.readString(project.resolve("compose.yaml")))
                                 .contains("node0-data:/app/chainstate")
+                                .contains("node0-appchain-data:/app/appchain-state")
                                 .doesNotContain("node0-data:/project");
                     }
                 }
@@ -958,6 +961,8 @@ class AppChainProjectTest {
         assertThat(fileDigests(first)).isEqualTo(fileDigests(second));
         assertThat(yamlValues(first.resolve("files/node0.yaml")))
                 .containsEntry("yano.storage.path", "/var/lib/yano/chainstate")
+                .containsEntry("yano.app-chain.storage.path",
+                        "/var/lib/yano/appchain-state")
                 .containsEntry("yano.app-chain.chains[0].peers",
                         "node1:13337,node2:13337");
         assertThat(Files.readString(first.resolve("node0.yaml")))

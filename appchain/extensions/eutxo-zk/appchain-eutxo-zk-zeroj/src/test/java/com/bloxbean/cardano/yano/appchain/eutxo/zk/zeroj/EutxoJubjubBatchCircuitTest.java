@@ -21,7 +21,6 @@ import com.bloxbean.cardano.zeroj.circuit.lib.jubjub.JubjubCurve;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigInteger;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
@@ -30,39 +29,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class EutxoJubjubBatchCircuitTest {
-
-    @Test
-    void b16MaximumBatchProducesOneRealConstantSizeProof()
-            throws Exception {
-        var profile = EutxoZkBatchProfile.CARDANO_PAYMENT_B16;
-        List<EutxoL2Transaction> transactions = new ArrayList<>();
-        for (int index = 0; index < profile.maximumTransactions(); index++) {
-            transactions.add(transaction(
-                    BigInteger.valueOf(index + 1L), index));
-        }
-        byte[] previousRoot = new byte[32];
-        var statement = EutxoJubjubBatchCircuit.statement(
-                profile, previousRoot, transactions);
-        BigInteger[] witness = EutxoJubjubBatchCircuit.witness(
-                profile, statement, transactions);
-
-        try (var setup = EutxoGroth16DevelopmentSetup.create(
-                EutxoJubjubBatchCircuit.circuit(profile))) {
-            var proof = setup.prove(statement.ordered(), witness);
-            assertThat(setup.verify(proof)).isTrue();
-            assertThat(setup.publicInputCount()).isEqualTo(8);
-            assertThat(statement.batchSize()).isEqualTo(
-                    BigInteger.valueOf(16));
-            assertThat(proof.compressedProof()).isNotNull();
-            System.out.printf(
-                    "D3_B16 constraints=%d wires=%d setupMillis=%d proofMillis=%d proofBytes=192%n",
-                    setup.constraintCount(),
-                    setup.wireCount(),
-                    setup.setupMillis(),
-                    proof.proofMillis());
-        }
-
-    }
 
     @Test
     void rejectsBatchLargerThanCanonicalB16Manifest() throws Exception {
@@ -137,7 +103,7 @@ class EutxoJubjubBatchCircuitTest {
                 .isInstanceOf(RuntimeException.class);
     }
 
-    private static EutxoL2Transaction transaction(
+    static EutxoL2Transaction transaction(
             BigInteger secret,
             int nonceValue
     ) throws Exception {

@@ -162,8 +162,8 @@ jq -e '
   . as $root
   | all([0,1,2][]; . as $i
     | ($root.services["yano-" + ($i|tostring)].volumes
-      | any(.target == "/app/chainstate/app-chain")))
-' "$JSON" >/dev/null || fail "L1 and app-chain stores are not separate nested mounts"
+      | any(.target == "/app/appchain-state")))
+' "$JSON" >/dev/null || fail "L1 and app-chain stores are not separate mounts"
 
 EXPECTED_L1="$TMP/data/networks/devnet/l1/compose"
 EXPECTED_APP="$TMP/data/networks/devnet/instances/contract/compose/app-chain"
@@ -175,7 +175,7 @@ jq -e --arg l1 "$EXPECTED_L1" --arg app "$EXPECTED_APP" --arg genesis "$EXPECTED
       | ($root.services["yano-" + $n].volumes
           | any(.source == ($l1 + "/node" + $n) and .target == "/app/chainstate"))
         and ($root.services["yano-" + $n].volumes
-          | any(.source == ($app + "/node" + $n) and .target == "/app/chainstate/app-chain"))
+          | any(.source == ($app + "/node" + $n) and .target == "/app/appchain-state"))
         and ($root.services["yano-" + $n].volumes
           | any(.source == $genesis and .target == "/run/demo/shelley-genesis.json"
               and .read_only == true)))

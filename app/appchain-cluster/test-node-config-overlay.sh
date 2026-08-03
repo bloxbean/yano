@@ -29,6 +29,7 @@ for i in 0 1; do
     'config_ordinal=275' \
     'quarkus.http.port=1' \
     'yano.storage.path=/must-not-win' \
+    'yano.app-chain.storage.path=/must-not-win-appchain' \
     "connector.password=do-not-expose-$i" > "$VALID/node$i.properties"
   chmod 600 "$VALID/node$i.properties"
 done
@@ -87,6 +88,8 @@ assert_launcher_props_present() {
     || die_test "capture omitted the launcher HTTP property"
   grep -Fqx -- "-Dyano.storage.path=$CLUSTER_DIR/node0/chainstate" "$capture" \
     || die_test "capture omitted the launcher storage property"
+  grep -Fqx -- "-Dyano.app-chain.storage.path=$CLUSTER_DIR/node0/appchain-state" "$capture" \
+    || die_test "capture omitted the launcher app-chain storage property"
 }
 
 CAPTURE_FILE="$WORK/native.args"; CAPTURE_LOCATION_FILE="$WORK/native.location"
@@ -129,6 +132,7 @@ printf '%s\n' \
   '-Dquarkus.http.port=19071' \
   '-Dyano.server.port=19338' \
   "-Dyano.storage.path=$CLUSTER_DIR/node1/chainstate" \
+  "-Dyano.app-chain.storage.path=$CLUSTER_DIR/node1/appchain-state" \
   '-Dyano.relay.connection.source-port-reuse=false' \
   '-Dyano.relay.connection.max-connections-per-ip=500' \
   '-Doverlay-test=true' > "$EXPECTED_UNSET"

@@ -33,9 +33,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * chain-id; a non-member's messages are rejected.
  */
 @Timeout(90)
-class AppChainTwoNodeIntegrationTest {
+class AppChainTwoNodeSmokeTest {
 
-    private static final Logger log = LoggerFactory.getLogger(AppChainTwoNodeIntegrationTest.class);
+    private static final Logger log = LoggerFactory.getLogger(AppChainTwoNodeSmokeTest.class);
     private static final long MAGIC = 42;
     private static final String CHAIN_ID = "it-app-chain";
 

@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.config;
 
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import org.junit.jupiter.api.Test;
 
@@ -41,6 +42,13 @@ class AppChainPropertyRegistryTest {
                 .find(YanoPropertyKeys.AppChain.CHAIN_ID).orElseThrow().definition();
         assertThat(chainId.minimumUtf8Bytes()).isOne();
         assertThat(chainId.maximumUtf8Bytes()).isEqualTo(AppChainConfig.MAX_CHAIN_ID_BYTES);
+
+        AppChainPropertyDefinition storagePath = registry
+                .find(YanoPropertyKeys.AppChain.STORAGE_PATH).orElseThrow().definition();
+        assertThat(storagePath.defaultValue())
+                .isEqualTo(YanoConfig.DEFAULT_APP_CHAIN_STORAGE_PATH);
+        assertThat(storagePath.indexed()).isFalse();
+        assertThat(storagePath.scope()).isEqualTo(PropertyScope.NODE_LOCAL);
 
         assertThat(registry.dynamicNamespaces()).extracting(DynamicNamespaceDefinition::prefix)
                 .containsExactly("effects.", "effects.result.", "machines.", "membership.",

@@ -1713,10 +1713,22 @@ prepare_configuration() {
   prepare_network_identity
   prepare_secrets
   if [ "$DEMO_MACHINE_MODE" = role ]; then
-    COMPOSITE_PROFILE_DIGEST="$("$REPO_DIR/gradlew" -q -p "$REPO_DIR" --no-daemon \
-      :appchain-evidence-profile:roleEvidenceProfileDigest \
-      --args="--chain $DEMO_CHAIN_ID --members $MEMBER_KEYS --threshold 2 --storage-gate $STORAGE_GATE --continuation $DEMO_CONTINUATION_MODE --evidence-capacity $EVIDENCE_CAPACITY_PER_BLOCK" \
-      | tail -n 1)"
+    local -a digest_args=(--chain "$DEMO_CHAIN_ID" --members "$MEMBER_KEYS"
+      --threshold 2 --storage-gate "$STORAGE_GATE"
+      --continuation "$DEMO_CONTINUATION_MODE"
+      --evidence-capacity "$EVIDENCE_CAPACITY_PER_BLOCK")
+    if [ -n "${DEMO_PREBUILT_ARTIFACT_ROOT:-}" ]; then
+      local calculator="$DEMO_PREBUILT_ARTIFACT_ROOT/yano-context/yano/yano.jar"
+      require java
+      [ -f "$calculator" ] || die "prebuilt role-evidence profile calculator is missing"
+      COMPOSITE_PROFILE_DIGEST="$(java -cp "$calculator" \
+        com.bloxbean.cardano.yano.appchain.evidence.profile.RoleEvidenceProfileCli \
+        "${digest_args[@]}" | tail -n 1)"
+    else
+      COMPOSITE_PROFILE_DIGEST="$("$REPO_DIR/gradlew" -q -p "$REPO_DIR" --no-daemon \
+        :appchain-evidence-profile:roleEvidenceProfileDigest \
+        --args="${digest_args[*]}" | tail -n 1)"
+    fi
     [[ "$COMPOSITE_PROFILE_DIGEST" =~ ^[0-9a-f]{64}$ ]] \
       || die "role-evidence profile calculator returned an invalid trust root"
     COMPOSITE_PROFILE_DIGEST_SETTING="demo.composite-profile-digest=$COMPOSITE_PROFILE_DIGEST"
@@ -1804,6 +1816,27 @@ unique_artifact() {
 build_artifacts() {
   local gradle runner source name yano_context
   if [ "${DEMO_SKIP_BUILD:-false}" = true ]; then
+    return 0
+  fi
+  if [ -n "${DEMO_PREBUILT_ARTIFACT_ROOT:-}" ]; then
+    local prebuilt
+    prebuilt="$(cd "$DEMO_PREBUILT_ARTIFACT_ROOT" 2>/dev/null && pwd -P)" \
+      || die "DEMO_PREBUILT_ARTIFACT_ROOT is not a readable directory"
+    [ -f "$prebuilt/runner.jar" ] || die "prebuilt evidence runner is missing"
+    yano_context="$prebuilt/yano-context"
+    [ -f "$yano_context/yano/yano.jar" ] \
+      || die "prebuilt Yano Docker context has no yano.jar"
+    [ -x "$yano_context/entrypoint.sh" ] \
+      || die "prebuilt Yano Docker context has no executable entrypoint"
+    for name in appchain-kafka appchain-ipfs appchain-objectstore-s3; do
+      source="$(unique_artifact "$prebuilt/plugins" "*${name}*-bundle.jar" "$name bundle")"
+      install -m 0644 "$source" "$PLUGIN_DIR/$name-bundle.jar"
+    done
+    install -m 0644 "$prebuilt/runner.jar" "$RUNTIME_ROOT/runner.jar"
+    install -m 0644 "$yano_context/yano/yano.jar" "$RUNTIME_ROOT/yano.jar"
+    if [ "$MODE" = compose ]; then
+      build_compose_images "$yano_context"
+    fi
     return 0
   fi
   gradle="$REPO_DIR/gradlew"
@@ -2277,9 +2310,9 @@ host_cluster() {
 prepare_host_state_links() {
   local i root target link status
   for i in 0 1 2; do
-    root="$L1_ROOT/host-cluster/node$i/chainstate"
+    root="$L1_ROOT/host-cluster/node$i"
     target="$DATA_ROOT/app-chain/node$i"
-    link="$root/app-chain"
+    link="$root/appchain-state"
     mkdir -p "$root" "$target"
     if [ -e "$link" ] && [ ! -L "$link" ]; then
       die "host app-chain path is not the managed symlink: $link"

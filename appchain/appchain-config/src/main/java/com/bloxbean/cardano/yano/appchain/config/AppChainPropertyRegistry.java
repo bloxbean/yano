@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.config;
 
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 
 import java.lang.reflect.Field;
@@ -196,6 +197,10 @@ public final class AppChainPropertyRegistry {
         definitions.add(plain(YanoPropertyKeys.AppChain.ENABLED, PropertyType.BOOLEAN, "false",
                 PropertyScope.NODE_LOCAL, ChangePolicy.RESTART_REQUIRED, false,
                 "Enable app-chain participation on this node"));
+        definitions.add(runtimeDefined(YanoPropertyKeys.AppChain.STORAGE_PATH,
+                PropertyType.STRING, YanoConfig.DEFAULT_APP_CHAIN_STORAGE_PATH,
+                PropertyScope.NODE_LOCAL,
+                "Node-local root directory containing hosted app-chain ledgers"));
         definitions.add(plain(YanoPropertyKeys.AppChain.CHAINS, PropertyType.OBJECT, null,
                 PropertyScope.CLUSTER_SHARED, ChangePolicy.NEW_CHAIN_REQUIRED, false,
                 "Container for indexed multi-chain configuration"));

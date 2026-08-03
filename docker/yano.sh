@@ -125,6 +125,23 @@ chainstate_path_for_profile() {
   printf '../chainstate-%s\n' "$profile"
 }
 
+appchain_state_path_for_profile() {
+  profile="$1"
+
+  if [ -n "${YANO_APPCHAIN_STATE_PATH:-}" ]; then
+    printf '%s\n' "$YANO_APPCHAIN_STATE_PATH"
+    return
+  fi
+
+  configured_path="$(strip_optional_quotes "$(env_file_value YANO_APPCHAIN_STATE_PATH)")"
+  if [ -n "$configured_path" ]; then
+    printf '%s\n' "$configured_path"
+    return
+  fi
+
+  printf '../appchain-state-%s\n' "$profile"
+}
+
 ensure_chainstate_dir() {
   profile="$1"
   chainstate_path="$(chainstate_path_for_profile "$profile")"
@@ -141,10 +158,28 @@ ensure_chainstate_dir() {
   mkdir -p "$chainstate_dir"
 }
 
+ensure_appchain_state_dir() {
+  profile="$1"
+  appchain_state_path="$(appchain_state_path_for_profile "$profile")"
+
+  case "$appchain_state_path" in
+    /*)
+      appchain_state_dir="$appchain_state_path"
+      ;;
+    *)
+      appchain_state_dir="$COMPOSE_DIR/$appchain_state_path"
+      ;;
+  esac
+
+  mkdir -p "$appchain_state_dir"
+}
+
 prepare_chainstate_for_profiles() {
   profile_list="$1"
   validate_profile_list "$profile_list"
-  ensure_chainstate_dir "$(primary_profile "$profile_list")"
+  profile="$(primary_profile "$profile_list")"
+  ensure_chainstate_dir "$profile"
+  ensure_appchain_state_dir "$profile"
 }
 
 compose_network() {
@@ -156,6 +191,7 @@ compose_network() {
 
   if [ "${1:-}" = "up" ]; then
     ensure_chainstate_dir "$network"
+    ensure_appchain_state_dir "$network"
   fi
 
   case "$network" in
@@ -186,9 +222,11 @@ compose_network() {
       ;;
     *)
       custom_chainstate_path="$(chainstate_path_for_profile "$network")"
+      custom_appchain_state_path="$(appchain_state_path_for_profile "$network")"
       YANO_PROFILE="$profile_list" \
         YANO_NETWORK="$network" \
         YANO_CHAINSTATE_PATH="$custom_chainstate_path" \
+        YANO_APPCHAIN_STATE_PATH="$custom_appchain_state_path" \
         docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
       ;;
   esac

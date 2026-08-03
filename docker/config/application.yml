@@ -10,6 +10,9 @@ quarkus:
 yano:
   storage:
     path: /app/chainstate
+  app-chain:
+    storage:
+      path: /app/appchain-state
 
 yaci:
   plugins:

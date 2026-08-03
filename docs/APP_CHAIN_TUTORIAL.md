@@ -74,7 +74,8 @@ flavor), exposes REST on `7070` and N2N on `13337`, and mounts:
 |---|---|---|
 | `config/application.yml` | `/app/config/application.yml` | `yano.app-chain.*` settings |
 | `plugins/` | `/app/plugins` | JVM-image plugin bundles (`yaci.plugins.directory` is preset; native images ignore directory JARs) |
-| `chainstate-*/` | `/app/chainstate` | persistent chain + app-chain ledgers |
+| `chainstate-*/` | `/app/chainstate` | persistent L1 ledger |
+| `appchain-state-*/` | `/app/appchain-state` | persistent app-chain ledgers |
 
 For the two-node tutorial cluster below, run two copies of the compose bundle
 with distinct `INSTANCE_NAME`, `YANO_HTTP_PORT` and `YANO_N2N_PORT`, and point
@@ -138,6 +139,7 @@ cd app
 java -Dquarkus.profile=devnet -Dquarkus.http.port=7070 \
   -Dyano.genesis.shelley-genesis-file=/tmp/appchain-tutorial/genesis-a.json \
   -Dyano.storage.path=/tmp/appchain-tutorial/chainstate-a \
+  -Dyano.app-chain.storage.path=/tmp/appchain-tutorial/appchain-state-a \
   -Dyano.app-chain.enabled=true \
   -Dyano.app-chain.chain-id=tutorial-chain \
   -Dyano.app-chain.signing-key=0101010101010101010101010101010101010101010101010101010101010101 \
@@ -172,6 +174,7 @@ cp /tmp/appchain-tutorial/genesis-a.json /tmp/appchain-tutorial/genesis-b.json
 java -Dquarkus.profile=devnet -Dquarkus.http.port=7071 \
   -Dyano.genesis.shelley-genesis-file=/tmp/appchain-tutorial/genesis-b.json \
   -Dyano.storage.path=/tmp/appchain-tutorial/chainstate-b \
+  -Dyano.app-chain.storage.path=/tmp/appchain-tutorial/appchain-state-b \
   -Dyano.server.port=13338 \
   -Dyano.block-producer.enabled=false \
   -Dyano.dev-mode=false \

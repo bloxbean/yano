@@ -157,6 +157,7 @@ class AppChainClientTest {
 
     @Test
     void sseSubscribe_receivesMessages() throws Exception {
+        CountDownLatch releaseStream = new CountDownLatch(1);
         server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
         server.createContext("/api/v1/app-chain/stream", exchange -> {
             exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
@@ -173,8 +174,9 @@ class AppChainClientTest {
                     .getBytes(StandardCharsets.UTF_8));
             out.flush();
             try {
-                Thread.sleep(60_000); // keep the stream open until the client closes
+                releaseStream.await(15, TimeUnit.SECONDS);
             } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
             }
             exchange.close();
         });
@@ -190,8 +192,12 @@ class AppChainClientTest {
             latch.countDown();
         });
 
-        assertThat(latch.await(15, TimeUnit.SECONDS)).isTrue();
-        subscription.close();
+        try {
+            assertThat(latch.await(15, TimeUnit.SECONDS)).isTrue();
+        } finally {
+            subscription.close();
+            releaseStream.countDown();
+        }
 
         assertThat(received).hasSize(2);
         assertThat(received.get(0).messageId()).isEqualTo("m1");

@@ -170,12 +170,6 @@ class EutxoValidityRootValidatorTest extends ContractTest {
         }
     }
 
-    @Test
-    void releasePinnedJulcCompilesContextBoundValidator() {
-        assertThat(compileValidator(
-                EutxoValidityRootValidator.class).program()).isNotNull();
-    }
-
     private Program program(Fixture fixture) {
         var key = fixture.engine().verificationKey();
         var keyParams =

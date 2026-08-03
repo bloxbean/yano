@@ -107,9 +107,9 @@ PY
 attach_appchain_state() {
   local instance="$1" chain="$2" i root target link
   for i in 0 1; do
-    root="$CLUSTER_DIR/node$i/chainstate"
+    root="$CLUSTER_DIR/node$i"
     target="$WORK/instances/$instance/node$i"
-    link="$root/app-chain"
+    link="$root/appchain-state"
     mkdir -p "$root" "$target/$chain"
     touch "$target/$chain/CURRENT"
     if [ -e "$link" ] && [ ! -L "$link" ]; then
@@ -346,7 +346,10 @@ grep -q 'bounded launcher-owned 0400/0600 regular file' "$WORK/external-mode.log
   || die_test "executable external marker produced the wrong diagnostic"
 chmod 600 "$MARKER_A"
 
-for i in 0 1; do touch "$CLUSTER_DIR/node$i/chainstate/CURRENT"; done
+for i in 0 1; do
+  mkdir -p "$CLUSTER_DIR/node$i/chainstate"
+  touch "$CLUSTER_DIR/node$i/chainstate/CURRENT"
+done
 
 SELECTED_CHAIN="evidence-chain-b"
 select_member_profile "$KEYS_B"
@@ -377,9 +380,10 @@ ensure_cluster_identity 2
 STANDALONE_MARKER="$(cluster_app_identity_file)"
 [ -f "$STANDALONE_MARKER" ] || die_test "standalone app-chain marker was not installed"
 STANDALONE_DIGEST="$(file_digest "$STANDALONE_MARKER")"
-mkdir -p "$CLUSTER_DIR/node0/chainstate/app-chain/$SELECTED_CHAIN"
+mkdir -p "$CLUSTER_DIR/node0/chainstate" \
+  "$CLUSTER_DIR/node0/appchain-state/$SELECTED_CHAIN"
 touch "$CLUSTER_DIR/node0/chainstate/CURRENT"
-touch "$CLUSTER_DIR/node0/chainstate/app-chain/$SELECTED_CHAIN/CURRENT"
+touch "$CLUSTER_DIR/node0/appchain-state/$SELECTED_CHAIN/CURRENT"
 
 select_member_profile "$KEYS_B"
 select_anchor_profile "$ANCHOR_A"
@@ -403,5 +407,31 @@ grep -q 'cannot replace a standalone cluster identity' \
   || die_test "standalone external-marker override produced the wrong diagnostic"
 [ "$(file_digest "$STANDALONE_MARKER")" = "$STANDALONE_DIGEST" ] \
   || die_test "external override attempt changed the standalone identity marker"
+
+# A configured subset of more than one anchored chain has a canonical schema-2
+# identity and remains byte-stable across retained restarts.
+CLUSTER_DIR="$WORK/multi-anchor"
+mkdir -m 700 "$CLUSTER_DIR"
+APPCHAIN_IDENTITY_MARKER=""
+select_member_profile "$KEYS_A"
+select_anchor_profile "$ANCHOR_A"
+ANCHOR_CHAIN="evidence-chain-a,evidence-chain-b"
+chain_ids() { printf '%s\n' evidence-chain-a evidence-chain-b evidence-chain-c; }
+ensure_cluster_identity 2
+MULTI_MARKER="$(cluster_app_identity_file)"
+python3 - "$MULTI_MARKER" <<'PY' || die_test "multi-chain anchor marker is malformed"
+import json,sys
+value=json.load(open(sys.argv[1], encoding="utf-8"))
+assert value["schemaVersion"] == 2
+assert value["anchor"]["chainIds"] == ["evidence-chain-a", "evidence-chain-b"]
+assert "chainId" not in value["anchor"]
+PY
+MULTI_DIGEST="$(file_digest "$MULTI_MARKER")"
+ensure_cluster_identity 2
+[ "$(file_digest "$MULTI_MARKER")" = "$MULTI_DIGEST" ] \
+  || die_test "retained multi-chain anchor identity was rewritten"
+load_cluster_app_identity
+[ "$IDENTITY_CHAINS" = "evidence-chain-a,evidence-chain-b,evidence-chain-c" ] \
+  || die_test "schema-2 identity could not be loaded for governed operations"
 
 printf 'PASS: sequential external app-chain attachments preserve L1 identity; standalone changes fail closed\n'

@@ -151,6 +151,11 @@ public class YanoProducer {
     @ConfigProperty(name = YanoPropertyKeys.Storage.PATH, defaultValue = "./chainstate")
     String storagePath;
 
+    @ConfigProperty(
+            name = YanoPropertyKeys.AppChain.STORAGE_PATH,
+            defaultValue = YanoConfig.DEFAULT_APP_CHAIN_STORAGE_PATH)
+    String appChainStoragePath;
+
     @ConfigProperty(name = YanoPropertyKeys.AUTO_SYNC_START, defaultValue = "false")
     boolean autoSyncStart;
 
@@ -579,6 +584,7 @@ public class YanoProducer {
                 .protocolMagic(protocolMagic)
                 .useRocksDB(useRocksDB)
                 .rocksDBPath(storagePath)
+                .appChainStoragePath(appChainStoragePath)
                 .fullSyncThreshold(yaciConfig.getFullSyncThreshold())
                 .enablePipelinedSync(yaciConfig.isEnablePipelinedSync())
                 .headerPipelineDepth(yaciConfig.getHeaderPipelineDepth())

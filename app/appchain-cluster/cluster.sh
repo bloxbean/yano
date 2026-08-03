@@ -49,6 +49,8 @@ THRESHOLD=""                                      # default: majority
 TRANSPORT=""                                      # ""=node default (shared) | shared | dedicated
 ENABLE_ANCHOR=0
 ANCHOR_MODE="script"                              # metadata | script (--anchor-mode)
+ANCHOR_CHAIN="${YANO_CLUSTER_ANCHOR_CHAINS:-${YANO_CLUSTER_ANCHOR_CHAIN:-}}" # CSV; empty = every chain
+ANCHOR_CHAIN_EXPLICIT=0                            # repeated CLI flags replace env selection
 ANCHOR_KEY=""                                     # --anchor-key: funded wallet seed (hex, 32 bytes)
 ANCHOR_EVERY=""                                   # --anchor-every: default 2 devnet / 30 public
 CLUSTER_API_KEY="${YANO_CLUSTER_API_KEY:-}"
@@ -74,6 +76,7 @@ DEVNET_GENESIS_FILE_IDENTITY=""
 DEVNET_GENESIS_FILE_DIGEST=""
 DEVNET_GENESIS_TIMESTAMP_MILLIS=""
 APPCHAIN_IDENTITY_MARKER="${YANO_CLUSTER_APPCHAIN_IDENTITY_MARKER:-}"
+[ -z "$ANCHOR_CHAIN" ] || ENABLE_ANCHOR=1
 
 # Deterministic demo member identities: node i uses seed = byte(i+1) x32.
 # Precomputed Ed25519 public keys (standard Ed25519 == Yano app-chain keys).
@@ -995,10 +998,11 @@ IDENTITY_PROPOSER=""
 IDENTITY_MEMBERS=""
 IDENTITY_CHAINS=""
 
-# Read the immutable standalone bootstrap identity without sourcing shell data.
+# Read the retained standalone bootstrap identity without sourcing shell data.
 # Governed epochs live in app-chain history and deliberately do not rewrite
-# this marker; a joining node always starts from these genesis members and then
-# derives later epochs through verified catch-up.
+# this marker; the showcase's explicit additive anchor-scope migration is the
+# sole supported evolution. A joining node always starts from these genesis
+# members and then derives later epochs through verified catch-up.
 load_cluster_app_identity() {
   local marker output line key value seen=""
   marker="$(cluster_app_identity_file)"
@@ -1056,7 +1060,7 @@ try:
         "threshold", "proposer", "chainIds", "anchor",
     }
     if (raw != canonical or set(document) != expected_fields
-            or document.get("schemaVersion") != 1
+            or document.get("schemaVersion") not in (1, 2)
             or document.get("kind") != "yano.cluster.appchain-identity"
             or network not in {"devnet", "preprod", "preview", "mainnet", "sanchonet"}
             or type(count) is not int or not 1 <= count <= 32
@@ -1070,15 +1074,28 @@ try:
             or any(not isinstance(item, str)
                    or not re.fullmatch(r"[A-Za-z0-9._~-]{1,128}", item) for item in chains)
             or not isinstance(anchor, dict)
-            or set(anchor) != {"enabled", "mode", "signerFingerprint"}
+            or set(anchor) not in ({"enabled", "mode", "signerFingerprint"},
+                                   {"enabled", "mode", "signerFingerprint", "chainId"},
+                                   {"enabled", "mode", "signerFingerprint", "chainIds"})
             or type(anchor.get("enabled")) is not bool):
         raise ValueError("invalid marker")
     if anchor["enabled"]:
         if (anchor.get("mode") not in {"metadata", "script"}
                 or not isinstance(anchor.get("signerFingerprint"), str)
-                or not re.fullmatch(r"[0-9a-f]{64}", anchor["signerFingerprint"])):
+                or not re.fullmatch(r"[0-9a-f]{64}", anchor["signerFingerprint"])
+                or ("chainId" in anchor and anchor["chainId"] is not None
+                    and anchor["chainId"] not in chains)
+                or (document.get("schemaVersion") == 2 and "chainIds" not in anchor)
+                or ("chainIds" in anchor and
+                    (document.get("schemaVersion") != 2
+                     or not isinstance(anchor["chainIds"], list)
+                     or not anchor["chainIds"]
+                     or len(anchor["chainIds"]) != len(set(anchor["chainIds"]))
+                     or any(chain not in chains for chain in anchor["chainIds"])))):
             raise ValueError("invalid anchor identity")
-    elif anchor.get("mode") is not None or anchor.get("signerFingerprint") is not None:
+    elif (document.get("schemaVersion") != 1
+          or anchor.get("mode") is not None or anchor.get("signerFingerprint") is not None
+          or anchor.get("chainId") is not None or anchor.get("chainIds") is not None):
         raise ValueError("invalid disabled anchor identity")
     print("NETWORK=" + network)
     print("MEMBER_COUNT=" + str(count))
@@ -1127,7 +1144,7 @@ l1_state_present() {
 
 appchain_state_present() {
   local path
-  for path in "$CLUSTER_DIR"/node*/chainstate/app-chain/*/CURRENT; do
+  for path in "$CLUSTER_DIR"/node*/appchain-state/*/CURRENT; do
     [ -e "$path" ] && return 0
   done
   return 1
@@ -1391,17 +1408,17 @@ PY
 
 validate_external_appchain_identity() {
   local marker="$1" network="$2" members="$3" threshold="$4" proposer="$5"
-  local anchor_enabled="$6" anchor_mode="$7" anchor_fingerprint="$8" result
-  shift 8
+  local anchor_enabled="$6" anchor_mode="$7" anchor_fingerprint="$8" anchor_chain="$9" result
+  shift 9
   python3 - "$marker" "$network" "$members" "$threshold" "$proposer" \
-      "$anchor_enabled" "$anchor_mode" "$anchor_fingerprint" "$@" <<'PY' >/dev/null 2>&1
+      "$anchor_enabled" "$anchor_mode" "$anchor_fingerprint" "$anchor_chain" "$@" <<'PY' >/dev/null 2>&1
 import json
 import os
 import stat
 import sys
 
 (path, network, members, threshold, proposer, anchor_enabled,
- anchor_mode, anchor_fingerprint, *chains) = sys.argv[1:]
+ anchor_mode, anchor_fingerprint, anchor_chain, *chains) = sys.argv[1:]
 descriptor = -1
 try:
     flags = (os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
@@ -1460,7 +1477,7 @@ expected_enabled = anchor_enabled == "1"
 if (raw != canonical or not isinstance(membership, dict) or not isinstance(anchor, dict)):
     raise SystemExit(1)
 if (type(document.get("schemaVersion")) is not int
-        or document.get("schemaVersion") != 1
+        or document.get("schemaVersion") not in (1, 2)
         or document.get("kind") != "yano.demo.appchain-identity"
         or document.get("networkName") != network
         or document.get("chainIds") != chains
@@ -1471,9 +1488,15 @@ if (type(document.get("schemaVersion")) is not int
         or anchor.get("enabled") is not expected_enabled):
     raise SystemExit(1)
 if expected_enabled:
-    if anchor.get("mode") != anchor_mode or anchor.get("signerFingerprint") != anchor_fingerprint:
+    selected = anchor_chain.split(",") if anchor_chain else []
+    retained = anchor.get("chainIds") if "chainIds" in anchor else (
+        [anchor["chainId"]] if anchor.get("chainId") else [])
+    if (anchor.get("mode") != anchor_mode
+            or anchor.get("signerFingerprint") != anchor_fingerprint
+            or retained != selected):
         raise SystemExit(1)
-elif anchor.get("mode") != "none" or anchor.get("signerFingerprint") is not None:
+elif (anchor.get("mode") != "none" or anchor.get("signerFingerprint") is not None
+      or anchor.get("chainId", "") != "" or anchor.get("chainIds") not in (None, [])):
     raise SystemExit(1)
 PY
   result=$?
@@ -1545,7 +1568,7 @@ PY
     fi
     validate_external_appchain_identity "$APPCHAIN_IDENTITY_MARKER" "$NETWORK" \
       "$members" "$threshold" "$proposer" "$ENABLE_ANCHOR" "$ANCHOR_MODE" \
-      "$external_anchor_fingerprint" "${cids[@]}"
+      "$external_anchor_fingerprint" "$ANCHOR_CHAIN" "${cids[@]}"
     return 0
   fi
 
@@ -1554,15 +1577,28 @@ PY
     || die "stale app-chain identity temporary file"
   if ! (umask 077; python3 - "$app_candidate" "$NETWORK" "$n" "$members" \
       "$threshold" "$proposer" "$ENABLE_ANCHOR" "$ANCHOR_MODE" \
-      "$cluster_anchor_fingerprint" "${cids[@]}" <<'PY'
+      "$cluster_anchor_fingerprint" "$ANCHOR_CHAIN" "${cids[@]}" <<'PY'
 import json
 from pathlib import Path
 import sys
 
 (output, network, count, members, threshold, proposer, anchor_enabled,
- anchor_mode, anchor_fingerprint, *chains) = sys.argv[1:]
+ anchor_mode, anchor_fingerprint, anchor_chain, *chains) = sys.argv[1:]
+anchor = {
+    "enabled": anchor_enabled == "1",
+    "mode": anchor_mode if anchor_enabled == "1" else None,
+    "signerFingerprint": anchor_fingerprint if anchor_enabled == "1" else None,
+}
+schema_version = 1
+if anchor_chain:
+    selected = anchor_chain.split(",")
+    if len(selected) == 1:
+        anchor["chainId"] = selected[0]
+    else:
+        schema_version = 2
+        anchor["chainIds"] = selected
 document = {
-    "schemaVersion": 1,
+    "schemaVersion": schema_version,
     "kind": "yano.cluster.appchain-identity",
     "network": network,
     "memberCount": int(count),
@@ -1570,11 +1606,7 @@ document = {
     "threshold": int(threshold),
     "proposer": proposer,
     "chainIds": chains,
-    "anchor": {
-        "enabled": anchor_enabled == "1",
-        "mode": anchor_mode if anchor_enabled == "1" else None,
-        "signerFingerprint": anchor_fingerprint if anchor_enabled == "1" else None,
-    },
+    "anchor": anchor,
 }
 Path(output).write_text(json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n")
 PY
@@ -1627,6 +1659,11 @@ chain_indices() {
 chain_ids() {
   [ -f "$CONFIG_FILE" ] || die "config not found: $CONFIG_FILE"
   grep -vE '^[[:space:]]*#' "$CONFIG_FILE" | grep -oE 'chain-id:[[:space:]]*"[^"]+"' | sed -E 's/.*"([^"]+)".*/\1/'
+}
+
+chain_id_for_index() {
+  local index="$1"
+  chain_ids | sed -n "$((index + 1))p"
 }
 
 # --- CBOR helpers for the kv-registry state machine --------------------------
@@ -1795,6 +1832,7 @@ validate_managed_process() {
   local expected_server="${6:-$(server_port "$i")}"
   python3 - "$pid" "$(id -u)" "$start" \
     "-Dyano.storage.path=$(node_dir "$i")/chainstate" \
+    "-Dyano.app-chain.storage.path=$(node_dir "$i")/appchain-state" \
     "-Dquarkus.http.port=$expected_http" \
     "-Dyano.server.port=$expected_server" "$signal" <<'PY' >/dev/null 2>&1
 import hashlib
@@ -1806,8 +1844,8 @@ import sys
 pid = int(sys.argv[1])
 expected_uid = int(sys.argv[2])
 expected_start = sys.argv[3]
-expected_args = sys.argv[4:7]
-requested_signal = int(sys.argv[7])
+expected_args = sys.argv[4:8]
+requested_signal = int(sys.argv[8])
 
 def ps_value(column):
     result = subprocess.run(
@@ -2303,6 +2341,7 @@ save_cluster_env() {
     { printf 'NETWORK=%s\n' "$NETWORK"
       printf 'ENABLE_ANCHOR=%s\n' "$ENABLE_ANCHOR"
       printf 'ANCHOR_MODE=%s\n' "$ANCHOR_MODE"
+      [ -z "$ANCHOR_CHAIN" ] || printf 'ANCHOR_CHAINS=%s\n' "$ANCHOR_CHAIN"
       printf 'HTTP_BASE=%s\n' "$HTTP_BASE"
       printf 'SERVER_BASE=%s\n' "$SERVER_BASE"; } > "$tmp"
   ); then
@@ -2315,9 +2354,9 @@ save_cluster_env() {
 
 load_cluster_env() {
   local file mode size line key value
-  local parsed_network="" parsed_anchor="" parsed_anchor_mode=""
+  local parsed_network="" parsed_anchor="" parsed_anchor_mode="" parsed_anchor_chain=""
   local parsed_http="" parsed_server=""
-  local seen_network=0 seen_anchor=0 seen_anchor_mode=0 seen_http=0 seen_server=0
+  local seen_network=0 seen_anchor=0 seen_anchor_mode=0 seen_anchor_chain=0 seen_http=0 seen_server=0
   file="$(env_file)"
   [ -e "$file" ] || [ -L "$file" ] || return 0
   [ ! -L "$file" ] && [ -f "$file" ] && [ -r "$file" ] \
@@ -2330,7 +2369,7 @@ load_cluster_env() {
   [ "$size" -ge 1 ] && [ "$size" -le 1024 ] || die "cluster environment record is not bounded"
 
   while IFS= read -r line || [ -n "$line" ]; do
-    [[ "$line" =~ ^([A-Z_]+)=([A-Za-z0-9_-]+)$ ]] \
+    [[ "$line" =~ ^([A-Z_]+)=([A-Za-z0-9._~,-]+)$ ]] \
       || die "cluster environment record contains an invalid line"
     key="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
     case "$key" in
@@ -2346,6 +2385,11 @@ load_cluster_env() {
         [ "$seen_anchor_mode" -eq 0 ] || die "cluster environment record contains duplicate ANCHOR_MODE"
         case "$value" in metadata|script) ;; *) die "invalid saved anchor mode";; esac
         parsed_anchor_mode="$value"; seen_anchor_mode=1;;
+      ANCHOR_CHAIN|ANCHOR_CHAINS)
+        [ "$seen_anchor_chain" -eq 0 ] || die "cluster environment record contains duplicate anchor chain scope"
+        [[ "$value" =~ ^[A-Za-z0-9._~-]{1,128}(,[A-Za-z0-9._~-]{1,128})*$ ]] \
+          || die "invalid saved anchor chain scope"
+        parsed_anchor_chain="$value"; seen_anchor_chain=1;;
       HTTP_BASE)
         [ "$seen_http" -eq 0 ] || die "cluster environment record contains duplicate HTTP_BASE"
         [[ "$value" =~ ^[0-9]{1,5}$ ]] || die "invalid saved HTTP base"
@@ -2367,6 +2411,7 @@ load_cluster_env() {
   [ "$NETWORK_EXPLICIT" = "1" ] || NETWORK="$parsed_network"
   ENABLE_ANCHOR="$parsed_anchor"
   ANCHOR_MODE="$parsed_anchor_mode"
+  ANCHOR_CHAIN="$parsed_anchor_chain"
   [ "$HTTP_BASE_EXPLICIT" = "1" ] || HTTP_BASE="$parsed_http"
   [ "$SERVER_BASE_EXPLICIT" = "1" ] || SERVER_BASE="$parsed_server"
 }
@@ -2403,9 +2448,50 @@ peers_csv() {
   echo "$out"
 }
 
+anchor_chain_selected() {
+  local cid="$1"
+  [ -z "$ANCHOR_CHAIN" ] && return 0
+  case ",$ANCHOR_CHAIN," in *",$cid,"*) return 0;; *) return 1;; esac
+}
+
+append_anchor_chain_selection() {
+  local value="$1"
+  if [ "$ANCHOR_CHAIN_EXPLICIT" -eq 0 ]; then
+    ANCHOR_CHAIN=""
+    ANCHOR_CHAIN_EXPLICIT=1
+  fi
+  ANCHOR_CHAIN+="${ANCHOR_CHAIN:+,}$value"
+  ENABLE_ANCHOR=1
+}
+
+# Validate a comma-separated/repeated selection and normalize it into config
+# order. An empty value deliberately retains the historical "all chains"
+# representation used by standalone `--anchor` clusters.
+canonicalize_anchor_chain_selection() {
+  [ -n "$ANCHOR_CHAIN" ] || return 0
+  local raw="$ANCHOR_CHAIN" item cid seen="" normalized="" found
+  local -a requested=() configured=()
+  while IFS= read -r cid; do configured+=("$cid"); done < <(chain_ids)
+  [ "$raw" != all ] || raw="$(IFS=,; printf '%s' "${configured[*]}")"
+  IFS=',' read -r -a requested <<< "$raw"
+  for item in "${requested[@]}"; do
+    [[ "$item" =~ ^[A-Za-z0-9._~-]{1,128}$ ]] \
+      || die "--anchor-chain contains an invalid chain id: '$item'"
+    case ",$seen," in *",$item,"*) die "--anchor-chain contains a duplicate: '$item'";; esac
+    seen+="${seen:+,}$item"
+    found=0
+    for cid in "${configured[@]}"; do [ "$cid" != "$item" ] || found=1; done
+    [ "$found" -eq 1 ] || die "--anchor-chain '$item' is not defined in $CONFIG_FILE"
+  done
+  for cid in "${configured[@]}"; do
+    case ",$seen," in *",$cid,"*) normalized+="${normalized:+,}$cid";; esac
+  done
+  ANCHOR_CHAIN="$normalized"
+}
+
 # -D system properties wiring the multi-chain config for node i.
 chain_props() {
-  local n="$1" i="$2" peer_count="${3:-$1}" members threshold peers proposer idx
+  local n="$1" i="$2" peer_count="${3:-$1}" members threshold peers proposer idx cid
   members="$(members_csv "$n")"
   threshold="${THRESHOLD:-$(default_threshold "$n")}"
   peers="$(peers_csv "$peer_count" "$i")"
@@ -2417,6 +2503,7 @@ chain_props() {
   local anchor_every="${ANCHOR_EVERY:-$([ "$NETWORK" = devnet ] && echo 2 || echo 30)}"
   local -a props=()
   for idx in $(chain_indices); do
+    cid="$(chain_id_for_index "$idx")"
     # File-supplied private keys are selected through a generated owner-only
     # config overlay. Keep them out of ps-visible Java/native arguments.
     if [ -z "$MEMBER_KEY_DIR_CANON" ]; then
@@ -2427,7 +2514,8 @@ chain_props() {
     props+=("-Dyano.app-chain.chains[$idx].peers=$peers")
     # Injected for every chain; rotating chains ignore it (sequencer.mode wins).
     props+=("-Dyano.app-chain.chains[$idx].sequencer.proposer=$proposer")
-    if [ "$ENABLE_ANCHOR" = "1" ] && [ "$i" -eq 0 ]; then
+    if [ "$ENABLE_ANCHOR" = "1" ] && [ "$i" -eq 0 ] \
+        && anchor_chain_selected "$cid"; then
       props+=("-Dyano.app-chain.chains[$idx].anchor.enabled=true")
       props+=("-Dyano.app-chain.chains[$idx].anchor.mode=$ANCHOR_MODE")
       if [ -z "$ANCHOR_KEY_FILE_VALUE" ]; then
@@ -2455,6 +2543,7 @@ launch_node() {
     "-Dquarkus.http.port=$(http_port "$i")"
     "-Dyano.server.port=$(server_port "$i")"
     "-Dyano.storage.path=$dir/chainstate"
+    "-Dyano.app-chain.storage.path=$dir/appchain-state"
     # Relay source-port reuse binds every upstream dial to the node's own server
     # port — a NAT-traversal aid for real relays, but on a localhost cluster all
     # followers dialing node 0 (plus app-peers) collide on the 4-tuple and wedge
@@ -2567,6 +2656,7 @@ cmd_start() {
   [ -f "$CONFIG_FILE" ] || die "config not found: $CONFIG_FILE (set YANO_HOME to a tree containing config/application-appchain.yml)"
   local -a cids=(); while IFS= read -r c; do cids+=("$c"); done < <(chain_ids)
   [ "${#cids[@]}" -ge 1 ] || die "no chains defined in $CONFIG_FILE"
+  canonicalize_anchor_chain_selection
 
   PROFILE="appchain"
   [ "$NETWORK" = "devnet" ] && PROFILE="devnet,appchain" || PROFILE="${NETWORK},appchain"
@@ -2619,7 +2709,9 @@ cmd_start() {
   echo  "  network : $NETWORK"
   echo  "  chains  : ${cids[*]}"
   echo  "  members : $n   threshold: ${THRESHOLD:-$(default_threshold "$n")}"
-  [ "$ENABLE_ANCHOR" = "1" ] && echo "  anchor  : $ANCHOR_MODE mode (leader: node 0)"
+  if [ "$ENABLE_ANCHOR" = "1" ]; then
+    echo "  anchor  : $ANCHOR_MODE mode (leader: node 0, chains: ${ANCHOR_CHAIN:-all})"
+  fi
   echo  "  data    : $CLUSTER_DIR"
   echo  "  ports   : http $HTTP_BASE-$(range_end "$HTTP_BASE" "$n")   n2n $SERVER_BASE-$(range_end "$SERVER_BASE" "$n")"
   if [ -n "$CLUSTER_API_KEY" ]; then
@@ -2787,6 +2879,7 @@ ready_node_indices() {
 
 cmd_member_add() {
   local public_key view_node="" indices cid status members_json threshold
+  local scheduled_count active_count epoch_active
   local signer request accepted member_key deadline epoch_from active
   local -a identity_chains=()
   public_key="$(normalize_member_public_key "${1:-}")" || exit 1
@@ -2820,6 +2913,13 @@ cmd_member_add() {
         "(epoch from height $epoch_from, active-for-next-block=$active): $public_key"
       continue
     fi
+    scheduled_count="$(printf '%s' "$members_json" | jq -r '.members | length')"
+    active_count="$(printf '%s' "$status" | jq -r '.membershipActiveMembers // 0')"
+    epoch_active="$(printf '%s' "$status" | jq -r '.membershipEpochActive // false')"
+    [ "$epoch_active" = true ] && [ "$active_count" = "$scheduled_count" ] \
+      || die "chain '$cid' still has a pending membership epoch ($active_count active," \
+        "$scheduled_count scheduled); advance normal app-chain traffic to its activation" \
+        "height before adding another member"
 
     accepted=0
     local seen_signers="," node_status
@@ -2867,6 +2967,92 @@ cmd_member_add() {
   done
 }
 
+cmd_threshold_set() {
+  local requested="${1:-}" view_node="" indices cid status members_json current
+  local signer request accepted member_key deadline node_status
+  local member_count active_count epoch_active
+  local -a identity_chains=()
+  [[ "$requested" =~ ^[0-9]+$ ]] || die "threshold must be a positive integer"
+  requested=$((10#$requested))
+  [ "$requested" -ge 1 ] || die "threshold must be at least 1"
+  [ -d "$CLUSTER_DIR" ] || die "no cluster (start one first)"
+  validate_cluster_directory \
+    || die "cluster data directory must be launcher-owned, non-symlink, and not group/world writable"
+  load_cluster_app_identity
+  indices="$(ready_node_indices)" || die "cannot inspect running cluster nodes"
+  [ -n "$indices" ] || die "no cluster nodes are ready"
+  view_node="${indices%%$'\n'*}"
+  request="$(jq -nc --argjson threshold "$requested" '{threshold:$threshold}')"
+
+  IFS=',' read -r -a identity_chains <<< "$IDENTITY_CHAINS"
+  for cid in "${identity_chains[@]}"; do
+    status="$(curl -fsS --connect-timeout 3 --max-time 10 \
+      "http://localhost:$(http_port "$view_node")/api/v1/app-chain/chains/$cid/status")" \
+      || die "cannot read '$cid' status from node $view_node"
+    [ "$(printf '%s' "$status" | jq -r '.membershipMode // "static"')" = "governed" ] \
+      || die "chain '$cid' uses static membership; threshold governance is unavailable"
+    members_json="$(api_curl -fsS \
+      "http://localhost:$(http_port "$view_node")/api/v1/app-chain/chains/$cid/admin/members")" \
+      || die "cannot read '$cid' membership"
+    current="$(printf '%s' "$members_json" | jq -r '.threshold // 0')"
+    member_count="$(printf '%s' "$members_json" | jq -r '.members | length')"
+    if [ "$current" = "$requested" ]; then
+      c_ylw "threshold already $requested on $cid"
+      continue
+    fi
+    active_count="$(printf '%s' "$status" | jq -r '.membershipActiveMembers // 0')"
+    epoch_active="$(printf '%s' "$status" | jq -r '.membershipEpochActive // false')"
+    [ "$epoch_active" = true ] && [ "$active_count" = "$member_count" ] \
+      || die "chain '$cid' still has a pending membership epoch ($active_count active," \
+        "$member_count scheduled); advance normal app-chain traffic to its activation" \
+        "height before changing the threshold"
+    [ "$requested" -le "$active_count" ] \
+      || die "threshold $requested exceeds '$cid' active member count $active_count"
+
+    accepted=0
+    local seen_signers=","
+    for signer in $indices; do
+      node_status="$(curl -fsS --connect-timeout 3 --max-time 10 \
+        "http://localhost:$(http_port "$signer")/api/v1/app-chain/chains/$cid/status")" \
+        || continue
+      [ "$(printf '%s' "$node_status" | jq -r '.memberActiveForNextBlock // false')" = "true" ] \
+        || continue
+      member_key="$(printf '%s' "$node_status" | jq -r '.memberKey // empty')"
+      [[ "$member_key" =~ ^[0-9a-f]{64}$ ]] || continue
+      case "$seen_signers" in *",$member_key,"*) continue;; esac
+      api_curl -fsS -X POST \
+        "http://localhost:$(http_port "$signer")/api/v1/app-chain/chains/$cid/admin/threshold" \
+        -H 'Content-Type: application/json' -d "$request" >/dev/null \
+        || die "threshold approval failed on '$cid' through node $signer after $accepted/$current approvals"
+      seen_signers+="$member_key,"
+      accepted=$((accepted + 1))
+      printf 'threshold approval %d/%d for %s via node %d\n' \
+        "$accepted" "$current" "$cid" "$signer"
+      [ "$accepted" -ge "$current" ] && break
+    done
+    [ "$accepted" -ge "$current" ] \
+      || die "chain '$cid' needs $current ready current members; only $accepted approved"
+
+    deadline=$(( $(date +%s) + 120 ))
+    while :; do
+      members_json="$(api_curl -fsS \
+        "http://localhost:$(http_port "$view_node")/api/v1/app-chain/chains/$cid/admin/members")" \
+        || members_json=""
+      [ -n "$members_json" ] \
+        && [ "$(printf '%s' "$members_json" | jq -r '.threshold // 0')" = "$requested" ] \
+        && break
+      [ "$(date +%s)" -le "$deadline" ] \
+        || die "timed out waiting for governed threshold epoch on '$cid'"
+      sleep 1
+    done
+    status="$(curl -fsS --connect-timeout 3 --max-time 10 \
+      "http://localhost:$(http_port "$view_node")/api/v1/app-chain/chains/$cid/status")" \
+      || die "cannot read '$cid' threshold activation status"
+    c_grn "threshold $requested recorded on $cid (epoch from height $(printf '%s' "$status" \
+      | jq -r '.membershipEpochFromHeight // 0'))"
+  done
+}
+
 wait_joined_node_catchup() {
   local node="$1" reference="$2" deadline cid reference_view joined_view
   local reference_tip joined_tip reference_root joined_root caught
@@ -2898,9 +3084,35 @@ wait_joined_node_catchup() {
   done
 }
 
+# Governed membership changes are consensus-visible, but the single-host demo
+# peer addresses are launcher configuration.  A newly admitted node dials all
+# existing nodes, while processes that were started with the immutable
+# bootstrap membership do not yet know the new localhost endpoint.  Refresh
+# those existing processes one at a time so every active member can receive
+# proposal and script-anchor co-sign requests.  Their retained state and
+# governed epochs are reused; no governance command is resubmitted.
+refresh_governed_peer_topology() {
+  local peer_count="$1" newest="$2" i
+  [ "$peer_count" -ge 2 ] || return 0
+  prepare_private_configs "$peer_count"
+  for ((i=0;i<peer_count;i++)); do
+    [ "$i" -eq "$newest" ] && continue
+    managed_node_pid "$i" && health_ready "$i" \
+      || die "cannot refresh governed peers because node $i is not ready"
+    printf 'refreshing node %d peer topology ... ' "$i"
+    stop_managed_node_confirmed "$i" \
+      || die "cannot stop node $i for governed peer refresh"
+    launch_node "$IDENTITY_MEMBER_COUNT" "$i" "$peer_count"
+    wait_ready "$i"
+    c_grn "ready"
+  done
+}
+
 cmd_node_join() {
-  local index="${1:-}" first_ready existing_indices expected_members public_key j
+  local index="${1:-}" operation="${2:-join}"
+  local first_ready existing_indices expected_members public_key j
   [[ "$index" =~ ^[0-9]+$ ]] || die "node index must be a non-negative integer"
+  case "$operation" in join|resume) ;; *) die "node operation must be join or resume";; esac
   index=$((10#$index))
   [ "$index" -le 31 ] || die "app-chain membership supports node indices 0..31"
   [ -d "$CLUSTER_DIR" ] || die "no cluster (start one first)"
@@ -2918,6 +3130,10 @@ cmd_node_join() {
   fi
   node_record_artifacts_exist "$index" \
     && die "node $index has an incomplete or stale launcher record; inspect it before joining"
+  if [ "$operation" = "resume" ]; then
+    [ -d "$(node_dir "$index")/appchain-state" ] \
+      || die "node $index has no retained app-chain state; use 'node join $index' for first admission"
+  fi
   resolve_runtime
   [ -f "$CONFIG_FILE" ] || die "config not found: $CONFIG_FILE"
   validate_cluster_key_inputs "$((index + 1))"
@@ -2947,9 +3163,13 @@ cmd_node_join() {
   [ -n "$existing_indices" ] || die "no existing cluster node is ready"
   first_ready="${existing_indices%%$'\n'*}"
 
-  # Governance is recorded before the new signer starts. Existing members keep
-  # the old threshold, so liveness is unchanged while the new node catches up.
-  cmd_member_add "$public_key"
+  if [ "$operation" = "join" ]; then
+    # Governance is recorded before the new signer starts. Existing members keep
+    # the old threshold, so liveness is unchanged while the new node catches up.
+    cmd_member_add "$public_key"
+  else
+    c_ylw "resuming retained governed node $index without submitting membership governance"
+  fi
 
   PROFILE="appchain"
   [ "$NETWORK" = "devnet" ] && PROFILE="devnet,appchain" || PROFILE="${NETWORK},appchain"
@@ -2967,6 +3187,13 @@ cmd_node_join() {
   else
     stop_managed_node_confirmed "$index" >/dev/null 2>&1 || true
     die "node $index did not converge with node $first_ready within 180s"
+  fi
+  refresh_governed_peer_topology "$((index + 1))" "$index"
+  printf 'checking convergence after peer refresh ... '
+  if wait_joined_node_catchup "$index" 0; then
+    c_grn "agreed"
+  else
+    die "node $index did not converge after the governed peer refresh"
   fi
   c_grn "node $index joined and caught up with member key $public_key"
   echo "membership voting activates at the governed per-chain heights reported above"
@@ -3116,8 +3343,16 @@ cmd_member() {
 
 cmd_node() {
   case "${1:-}" in
-    join) cmd_node_join "${2:-}";;
-    *) die "usage: $0 node join <index>";;
+    join) cmd_node_join "${2:-}" join;;
+    resume) cmd_node_join "${2:-}" resume;;
+    *) die "usage: $0 node join|resume <index>";;
+  esac
+}
+
+cmd_threshold() {
+  case "${1:-}" in
+    set) cmd_threshold_set "${2:-}";;
+    *) die "usage: $0 threshold set <n>";;
   esac
 }
 
@@ -3131,6 +3366,8 @@ cmd_effect() {
 cmd_anchor_bootstrap() {
   local cid="${1:-}"; [ -n "$cid" ] || die "usage: $0 anchor-bootstrap <chain-id>"
   load_cluster_env
+  anchor_chain_selected "$cid" \
+    || die "anchoring is enabled only for '${ANCHOR_CHAIN:-all}', not '$cid'"
   [ "$ANCHOR_MODE" = "script" ] || die "cluster runs anchor mode '$ANCHOR_MODE' — bootstrap only applies to script anchors (metadata mode needs none: fund the wallet and anchors start automatically)"
   local port; port="$(http_port 0)"
   # Learn the wallet address; on devnet fund it from the faucet first — on a
@@ -3217,7 +3454,9 @@ Usage:
   $0 start [N] [options]        start an N-node cluster (default N=3)
   $0 status                     health + per-chain tips/roots + consistency
   $0 node join <index>          govern, start, and catch up one later member
+  $0 node resume <index>        restart retained joiner without another vote
   $0 member add <public-key>    governance-only add across configured chains
+  $0 threshold set <n>          govern a new finality threshold on every chain
   $0 effect demo ["message"]    emit, execute, and prove a demo effect
   $0 submit <chain> <topic> <payload> [--node i] [--count n]
   $0 kv <chain> set <key> <value> [--node i]   put into a kv-registry chain
@@ -3247,7 +3486,10 @@ start options:
                      metadata: plain tx with the anchor in tx metadata — just
                        fund the wallet, no bootstrap, works on any network.
                      script: Plutus V3 thread-NFT + threshold co-signed
-                       advances — one-time 'anchor-bootstrap <chain>' per chain.
+                     advances — one-time 'anchor-bootstrap <chain>' per chain.
+  --anchor-chain <id> enable anchoring for a configured chain; repeat the
+                     option or pass a comma-separated list for multiple
+                     chains. Pass 'all' (or omit with --anchor) for every chain.
   --anchor-key <hex> anchor wallet key (32-byte Ed25519 seed, 64 hex chars).
                      Default: a deterministic demo seed. On a public network
                      pass your own (or use YANO_CLUSTER_ANCHOR_KEY_FILE) and
@@ -3291,6 +3533,11 @@ Environment (run a RELEASED build with no local compile):
                 When unset, the deterministic demo identities are unchanged.
                 The 'keys' command always prints those demo identities; it
                 never reads this production-key directory.
+  YANO_CLUSTER_ANCHOR_CHAINS
+                optional comma-separated configured chain IDs to anchor.
+                The singular YANO_CLUSTER_ANCHOR_CHAIN remains accepted for
+                compatibility. Command-line --anchor-chain values take
+                precedence and may be repeated.
   YANO_CLUSTER_ANCHOR_KEY_FILE
                 optional launcher-owned, regular, non-symlink chmod 400/600
                 file containing one 64-hex anchor seed. Its parent directory
@@ -3345,6 +3592,7 @@ while [ $# -gt 0 ]; do
     --anchor)       ENABLE_ANCHOR=1; shift;;
     --anchor-mode)  ANCHOR_MODE="$2"; ENABLE_ANCHOR=1; shift 2
                     case "$ANCHOR_MODE" in metadata|script) ;; *) die "--anchor-mode must be metadata or script";; esac;;
+    --anchor-chain) append_anchor_chain_selection "$2"; shift 2;;
     --anchor-key)   ANCHOR_KEY="$2"; ENABLE_ANCHOR=1; shift 2;;
     --anchor-every) ANCHOR_EVERY="$2"; shift 2;;
     --data-dir)     CLUSTER_DIR="$2"; shift 2;;
@@ -3367,6 +3615,7 @@ case "$CMD" in
   status)            cmd_status;;
   node)              cmd_node "$@";;
   member)            cmd_member "$@";;
+  threshold)         cmd_threshold "$@";;
   effect)            cmd_effect "$@";;
   submit)            cmd_submit "$@";;
   kv)                cmd_kv "$@";;

@@ -658,6 +658,9 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         }
 
         String rocksPath = config.getRocksDBPath() != null ? config.getRocksDBPath() : "./chainstate";
+        Path appChainStoragePath = AppChainStoragePaths.resolve(
+                rocksPath, config.getAppChainStoragePath());
+        log.info("App-chain storage root: {}", appChainStoragePath);
         boolean strictValidation = resolveBoolean(
                 globals, YanoPropertyKeys.AppChain.VALIDATION_STRICT, false);
         List<com.bloxbean.cardano.yano.runtime.appchain.AppChainSubsystem> subsystems =
@@ -670,7 +673,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                     appChainConfig.peers().size(), appChainConfig.sequencingEnabled(),
                     appChainConfig.anchoringEnabled());
             var subsystem = new com.bloxbean.cardano.yano.runtime.appchain.AppChainSubsystem(
-                    appChainConfig, protocolMagic, eventBus, null, rocksPath + "/app-chain",
+                    appChainConfig, protocolMagic, eventBus, null, appChainStoragePath.toString(),
                     pluginEnvironment.classLoader(), pluginEnvironment.providers(), log);
             subsystem.wireL1(this::submitTransaction, this::getUtxoState);
             subsystem.wireAnchorFees(this::anchorFeeParams);
