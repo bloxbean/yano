@@ -16,9 +16,27 @@ import java.util.function.Function;
 /** Typed Java facade for the stock standard-library state machines. */
 public final class StdlibAppChainClient {
     private final AppChainClient client;
+    private final TrustedRootResolver trustedRootResolver;
 
+    /**
+     * Compatibility mode that checks only proof/root internal consistency.
+     * Prefer {@link #StdlibAppChainClient(AppChainClient, TrustedRootResolver)}
+     * at every trust boundary.
+     */
+    @Deprecated(forRemoval = false)
     public StdlibAppChainClient(AppChainClient client) {
         this.client = Objects.requireNonNull(client, "client");
+        this.trustedRootResolver = null;
+    }
+
+    /** Decode stock state only after binding each proof to independent trust. */
+    public StdlibAppChainClient(
+            AppChainClient client,
+            TrustedRootResolver trustedRootResolver
+    ) {
+        this.client = Objects.requireNonNull(client, "client");
+        this.trustedRootResolver = Objects.requireNonNull(
+                trustedRootResolver, "trustedRootResolver");
     }
 
     public AppChainClient client() {
@@ -154,9 +172,16 @@ public final class StdlibAppChainClient {
         Optional<AppChainClient.Proof> result = client.proof(key);
         if (result.isEmpty()) return Optional.empty();
         AppChainClient.Proof proof = result.orElseThrow();
-        if (!ProofVerifier.verify(proof)) {
+        boolean verified = trustedRootResolver != null
+                ? ProofVerifier.verify(proof,
+                Objects.requireNonNull(trustedRootResolver.resolve(proof),
+                        "trusted root resolver result"))
+                : ProofVerifier.verifyInternalConsistency(proof);
+        if (!verified) {
             throw new IllegalStateException(
-                    "MPF proof verification failed for a stock state-machine value");
+                    trustedRootResolver != null
+                            ? "Trusted state proof verification failed for a stock value"
+                            : "State proof internal-consistency check failed for a stock value");
         }
         if (proof.valueHex() == null) return Optional.empty();
         return Optional.of(new VerifiedState<>(decoder.apply(Hex.decode(proof.valueHex())), proof));
@@ -169,7 +194,13 @@ public final class StdlibAppChainClient {
         }
     }
 
-    /** A decoded state value bound to the locally verified proof envelope. */
+    /** Resolve the exact independently authenticated root for one proof version. */
+    @FunctionalInterface
+    public interface TrustedRootResolver {
+        ProofVerifier.TrustedStateRoot resolve(AppChainClient.Proof proof);
+    }
+
+    /** A decoded state value bound to a locally checked proof envelope. */
     public record VerifiedState<T>(T value, AppChainClient.Proof proof) {
         public VerifiedState {
             Objects.requireNonNull(value, "value");

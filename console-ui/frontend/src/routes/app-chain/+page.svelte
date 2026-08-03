@@ -75,6 +75,7 @@
   const entries = (value: unknown) => Object.entries(objectValue(value));
 
   $: anchor = objectValue(status?.anchor);
+  $: commitment = objectValue(status?.stateCommitment);
   $: profile = objectValue(status?.stateMachineStatus);
   $: effects = objectValue(status?.effects);
   $: effectRuntime = objectValue(effects.executor);
@@ -371,6 +372,9 @@
         <span>chain {status?.chainId ?? (selectedChain || '-')} · state root</span>
         <CopyValue value={status?.stateRoot} width={30} label="state root" />
       </p>
+      {#if commitment.profile}
+        <p class="mb-0 mt-1 font-mono text-xs text-cyan-300">{stringValue(commitment.profile)} · version {fmt(commitment.version)}</p>
+      {/if}
     </div>
     <div class="grid grid-cols-2 gap-5 text-right sm:grid-cols-4">
       <div><small class="text-slate-500">Role</small><div class="font-mono">{stringValue(status?.role, status?.sequencing ? 'member' : 'gossip')}</div></div>
@@ -417,6 +421,19 @@
 
 <div class="section-title">Anchoring & extensions</div>
 <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+  <MetricCard title="State commitment" subtitle="Genesis-selected authenticated state">
+    <MetricRow label="Profile" value={stringValue(commitment.profile, 'unavailable')} />
+    <MetricRow label="Backend" value={stringValue(commitment.backend, 'unavailable')} />
+    <MetricRow label="Version" value={fmt(commitment.version)} />
+    <MetricRow label="Oldest Proof" value={fmt(commitment.oldestProvableHeight)} />
+    <MetricRow label="Proof Encoding" value={stringValue(commitment.nativeProofEncoding, 'unavailable')} />
+    <MetricRow label="Format" value={shortHash(commitment.formatFingerprint, 24)}
+               copyValue={commitment.formatFingerprint} copyLabel="state format fingerprint" />
+    <MetricRow label="Genesis" value={commitment.legacy ? 'legacy generation' : shortHash(commitment.genesisId, 24)}
+               copyValue={commitment.genesisId} copyLabel="state genesis identity" />
+    <MetricRow label="State Root" value={shortHash(commitment.stateRoot, 24)}
+               copyValue={commitment.stateRoot} copyLabel="state commitment root" />
+  </MetricCard>
   <MetricCard title="L1 anchor" subtitle={boolValue(anchor.enabled) ? `${stringValue(anchor.mode, 'metadata')} mode` : 'Disabled'}>
     {#if boolValue(anchor.enabled)}
       <MetricRow label="Last Anchored Height" value={fmt(anchor.lastAnchoredHeight)} />

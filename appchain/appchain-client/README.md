@@ -10,7 +10,7 @@ Yaci networking stack. It provides:
 - SSE subscription with reconnect and duplicate suppression
 - typed submit/subscribe helpers using caller-provided encoders/decoders
 - AES-GCM group-body encryption helper
-- client-side MPF and composed effect-proof verification
+- profile-aware MPF/classic-JMT and composed effect-proof verification
 - typed stock-machine commands and verified state decoding through
   `StdlibAppChainClient`
 
@@ -38,7 +38,10 @@ var submitted = client.submitText("orders", "order-1");
 var tip = client.tip();
 
 var proof = client.proof(Hex.decode(submitted.messageId()));
-boolean verified = proof.isPresent() && ProofVerifier.verify(proof.get());
+ProofVerifier.TrustedStateRoot trustedRoot = loadFromIndependentlyVerifiedAnchor(
+        "orders-chain", proof.orElseThrow().committedHeight());
+boolean verified = proof.isPresent()
+        && ProofVerifier.verify(proof.orElseThrow(), trustedRoot);
 ```
 
 State-proof responses are transport-bounded and bind the key, optional value,
@@ -50,12 +53,25 @@ key was included; it is not the proof snapshot height. A missing `valueHex`
 with a proof is an exclusion proof and can be checked with
 `ProofVerifier.verifyExclusion(...)`.
 
-For stronger verification, compare the proof against a state root obtained from
-an L1 anchor transaction rather than the same node that served the proof:
+The trusted object binds chain id, exact profile, genesis id, height, root, and
+its acquisition source. Obtain those fields from a locally verified block
+chain, a threshold certificate under independently pinned membership, or a
+Cardano anchor transaction/datum verified independently of the proof-serving
+node:
 
 ```java
-boolean verified = ProofVerifier.verify(proof.get(), anchoredStateRootHex);
+var trusted = new ProofVerifier.TrustedStateRoot(
+        "orders-chain", verifiedAnchor.profile(), verifiedAnchor.genesisIdHex(),
+        verifiedAnchor.height(), verifiedAnchor.stateRootHex(),
+        ProofVerifier.TrustedRootSource.CARDANO_ANCHOR);
+boolean verified = ProofVerifier.verify(proof.orElseThrow(), trusted);
 ```
+
+When an envelope carries its finalized block header and certificate,
+`ProofVerifier.verifyCertified(...)` can authenticate the root directly under
+a caller-pinned membership set and threshold. The verifier recomputes the
+canonical block hash, verifies distinct Ed25519 signers, binds the exact
+commitment identity, and then dispatches the native proof by profile.
 
 Effect emissions have a composed proof from canonical record bytes through
 the block's ordered effects root into that block's historical state root:
@@ -135,11 +151,13 @@ client.subscribeTyped(1, "orders", codec::decode, (order, envelope) -> {
 ## Stock state-machine contracts
 
 `StdlibAppChainClient` uses the no-SPI `appchain-stdlib-contracts` artifact. It
-submits canonical bounded commands and decodes only state values whose MPF
-proof verifies locally:
+submits canonical bounded commands and can resolve an independently trusted
+root for every returned proof before decoding state:
 
 ```java
-StdlibAppChainClient stock = new StdlibAppChainClient(client);
+StdlibAppChainClient stock = new StdlibAppChainClient(client, proof ->
+        trustedRootArchive.require(proof.chainId(), proof.profile(),
+                proof.genesisIdHex(), proof.committedHeight()));
 
 stock.kvPut("supplier-42".getBytes(UTF_8), "active".getBytes(UTF_8));
 stock.propose("release-17", payload, 2, 0);
@@ -164,6 +182,11 @@ acceptance only; read the verified state after finalization for the outcome.
 - REST base URL must include the Yano API prefix, for example
   `http://localhost:7070/api/v1`.
 - Use `chainId(...)` when a node hosts multiple app chains.
-- `ProofVerifier.verify(proof)` only checks the proof against the state root in
-  the response. For audit-grade verification, use an independently obtained
-  root from the L1 anchor.
+- `ProofVerifier.verifyInternalConsistency(proof)` (and the deprecated
+  one-argument `verify`) checks only the proof against the root carried by that
+  same envelope. It makes no chain-authenticity claim.
+- The release-matched verifier accepts the exact `mpf-blake2b256-v1` and
+  `jmt-blake2b256-v1` metadata/codec contracts. The declared Poseidon profile
+  remains fail-closed until its Phase 4 dependency is released and pinned.
+- CCL `0.8.0-pre5-dev1` is the current development baseline, not a production
+  dependency approval.

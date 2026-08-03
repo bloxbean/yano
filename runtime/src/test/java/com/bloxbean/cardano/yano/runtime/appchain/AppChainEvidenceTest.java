@@ -8,6 +8,7 @@ import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundle;
 import com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundleCodec;
 import com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceVerifier;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -89,6 +90,13 @@ class AppChainEvidenceTest {
         assertThat(bundle.chainId()).isEqualTo("evidence-chain");
         assertThat(bundle.blocks()).hasSize(1);
         assertThat(bundle.anchor()).isNull();
+        assertThat(bundle.stateCommitment()).isNotNull();
+        assertThat(bundle.stateCommitment().identity().profile())
+                .isEqualTo(StateCommitmentProfiles.MPF);
+        assertThat(bundle.stateCommitment().height())
+                .isEqualTo(bundle.blocks().getLast().height());
+        assertThat(bundle.stateCommitment().stateRoot())
+                .isEqualTo(bundle.blocks().getLast().stateRoot());
 
         // Offline verification succeeds against pinned membership and proves
         // both signed message-id inclusion and retained envelope content.
@@ -98,6 +106,9 @@ class AppChainEvidenceTest {
         assertThat(result.messageContentVerified()).isTrue();
         assertThat(result.certSignatures()).isGreaterThanOrEqualTo(1);
         assertThat(result.anchoredToL1()).isFalse();
+        assertThat(EvidenceVerifier.verify(bundle, new EvidenceVerifier.TrustContext(
+                "evidence-chain", Set.of(pubA, pubB), 1,
+                StateCommitmentProfiles.MPF_BLAKE2B256_V1, "")).valid()).isTrue();
 
         // JSON round-trips and re-verifies signed header/message commitments.
         String json = EvidenceBundleCodec.toJson(bundle);

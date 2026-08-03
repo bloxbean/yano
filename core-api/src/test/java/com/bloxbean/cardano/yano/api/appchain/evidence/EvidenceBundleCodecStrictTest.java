@@ -5,6 +5,9 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
+import com.bloxbean.cardano.yano.api.appchain.state.StateSnapshot;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -19,6 +22,36 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class EvidenceBundleCodecStrictTest {
     private static final String MESSAGE = "aa".repeat(32);
     private static final String MEMBER = "bb".repeat(32);
+
+    @Test
+    void roundTripsAndBindsStateCommitmentIdentityToFinalSignedBlock() {
+        EvidenceBundle legacy = bundleWith(profileMessage("chain", "topic"));
+        AppBlock block = legacy.blocks().getFirst();
+        StateCommitmentIdentity identity = StateCommitmentIdentity.explicit(
+                StateCommitmentProfiles.CLASSIC_JMT, filled(8));
+        EvidenceBundle bundle = new EvidenceBundle(
+                legacy.chainId(), legacy.messageIdHex(), legacy.blocks(),
+                legacy.memberKeysHex(), legacy.threshold(), legacy.anchor(),
+                new StateSnapshot(identity, block.height(), block.stateRoot()));
+
+        String encoded = EvidenceBundleCodec.toJson(bundle);
+        EvidenceBundle decoded = EvidenceBundleCodec.fromJson(encoded);
+
+        assertThat(decoded.stateCommitment().identity().profile().id())
+                .isEqualTo("jmt-blake2b256-v1");
+        assertThat(decoded.stateCommitment().height()).isEqualTo(block.height());
+        assertThat(decoded.stateCommitment().stateRoot()).isEqualTo(block.stateRoot());
+        assertThatThrownBy(() -> EvidenceBundleCodec.fromJson(encoded.replace(
+                "\"backend\" : \"jmt\"", "\"backend\" : \"mpf\"")))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        EvidenceBundle wrongVersion = new EvidenceBundle(
+                legacy.chainId(), legacy.messageIdHex(), legacy.blocks(),
+                legacy.memberKeysHex(), legacy.threshold(), legacy.anchor(),
+                new StateSnapshot(identity, block.height() + 1, block.stateRoot()));
+        assertThatThrownBy(() -> EvidenceBundleCodec.toJson(wrongVersion))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 
     @Test
     void roundTripsCanonicalEnvelopeAndRejectsCoercionUnknownsAndDuplicates() {

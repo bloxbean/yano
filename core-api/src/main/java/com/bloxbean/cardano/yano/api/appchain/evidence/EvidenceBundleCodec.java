@@ -6,6 +6,10 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfile;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
+import com.bloxbean.cardano.yano.api.appchain.state.StateSnapshot;
 import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.StreamReadConstraints;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -20,8 +24,10 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -59,9 +65,14 @@ public final class EvidenceBundleCodec {
             .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
             .build();
     private static final Set<String> FIELDS = Set.of(
-            "chainId", "messageId", "blocksCbor", "members", "threshold", "anchor");
+            "chainId", "messageId", "blocksCbor", "members", "threshold", "anchor",
+            "stateCommitment");
     private static final Set<String> ANCHOR_FIELDS = Set.of(
             "anchoredHeight", "anchoredBlockHash", "txHash", "l1Slot");
+    private static final Set<String> STATE_COMMITMENT_FIELDS = Set.of(
+            "schemaVersion", "profile", "backend", "dependencyDescriptor",
+            "nativeProofEncoding", "nativeVersioning", "physicalDelete",
+            "formatFingerprint", "genesisId", "legacy", "version", "stateRoot");
     private EvidenceBundleCodec() {
     }
 
@@ -104,6 +115,30 @@ public final class EvidenceBundleCodec {
             anchor.put("anchoredBlockHash", bundle.anchor().anchoredBlockHashHex());
             anchor.put("txHash", bundle.anchor().txHash());
             anchor.put("l1Slot", bundle.anchor().l1Slot());
+        }
+        if (bundle.stateCommitment() != null) {
+            AppBlock last = bundle.blocks().getLast();
+            StateSnapshot snapshot = bundle.stateCommitment();
+            if (snapshot.height() != last.height()
+                    || !Arrays.equals(snapshot.stateRoot(), last.stateRoot())) {
+                throw invalid();
+            }
+            StateCommitmentIdentity identity = snapshot.identity();
+            ObjectNode state = root.putObject("stateCommitment");
+            state.put("schemaVersion", identity.schemaVersion());
+            state.put("profile", identity.profile().id());
+            state.put("backend", identity.profile().backendFamily().name()
+                    .toLowerCase(Locale.ROOT));
+            state.put("dependencyDescriptor", identity.profile().dependencyDescriptor());
+            state.put("nativeProofEncoding", identity.profile().nativeProofEncoding());
+            state.put("nativeVersioning", identity.profile().nativeVersioning());
+            state.put("physicalDelete", identity.profile().physicalDelete());
+            state.put("formatFingerprint", HexUtil.encodeHexString(
+                    identity.profile().formatFingerprint()));
+            state.put("genesisId", HexUtil.encodeHexString(identity.genesisId()));
+            state.put("legacy", identity.legacy());
+            state.put("version", snapshot.height());
+            state.put("stateRoot", HexUtil.encodeHexString(snapshot.stateRoot()));
         }
         try {
             return MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(root);
@@ -203,8 +238,65 @@ public final class EvidenceBundleCodec {
         } else if (root.has("anchor") && !root.get("anchor").isNull()) {
             throw invalid();
         }
+        StateSnapshot stateCommitment = null;
+        if (root.hasNonNull("stateCommitment")) {
+            stateCommitment = parseStateCommitment(
+                    root.get("stateCommitment"), blocks.getLast());
+        } else if (root.has("stateCommitment")) {
+            throw invalid();
+        }
         return new EvidenceBundle(root.get("chainId").textValue(),
-                root.get("messageId").textValue(), blocks, members, threshold, anchor);
+                root.get("messageId").textValue(), blocks, members, threshold, anchor,
+                stateCommitment);
+    }
+
+    private static StateSnapshot parseStateCommitment(JsonNode node, AppBlock last) {
+        if (node == null || !node.isObject()
+                || !exactFields(node, STATE_COMMITMENT_FIELDS, true)
+                || !positiveInt(node.get("schemaVersion"))
+                || node.get("schemaVersion").intValue() != StateCommitmentIdentity.SCHEMA_VERSION
+                || !node.get("profile").isTextual()
+                || !node.get("backend").isTextual()
+                || !node.get("dependencyDescriptor").isTextual()
+                || !node.get("nativeProofEncoding").isTextual()
+                || !node.get("nativeVersioning").isBoolean()
+                || !node.get("physicalDelete").isBoolean()
+                || !hex32(node.get("formatFingerprint"))
+                || !node.get("genesisId").isTextual()
+                || !node.get("legacy").isBoolean()
+                || !nonNegativeLong(node.get("version"))
+                || !hex32(node.get("stateRoot"))) {
+            throw invalid();
+        }
+        StateCommitmentProfile profile = StateCommitmentProfiles.find(
+                node.get("profile").textValue()).orElseThrow(EvidenceBundleCodec::invalid);
+        boolean legacy = node.get("legacy").booleanValue();
+        String genesisHex = node.get("genesisId").textValue();
+        if (!node.get("backend").textValue().equals(
+                profile.backendFamily().name().toLowerCase(Locale.ROOT))
+                || !node.get("dependencyDescriptor").textValue().equals(
+                profile.dependencyDescriptor())
+                || !node.get("nativeProofEncoding").textValue().equals(
+                profile.nativeProofEncoding())
+                || node.get("nativeVersioning").booleanValue() != profile.nativeVersioning()
+                || node.get("physicalDelete").booleanValue() != profile.physicalDelete()
+                || !node.get("formatFingerprint").textValue().equals(
+                HexUtil.encodeHexString(profile.formatFingerprint()))
+                || legacy && (!profile.equals(StateCommitmentProfiles.MPF)
+                || !genesisHex.isEmpty())
+                || !legacy && !genesisHex.matches("[0-9a-f]{64}")) {
+            throw invalid();
+        }
+        StateCommitmentIdentity identity = legacy
+                ? StateCommitmentIdentity.legacyMpf()
+                : StateCommitmentIdentity.explicit(
+                profile, HexUtil.decodeHexString(genesisHex));
+        long version = node.get("version").longValue();
+        byte[] root = HexUtil.decodeHexString(node.get("stateRoot").textValue());
+        if (version != last.height() || !Arrays.equals(root, last.stateRoot())) {
+            throw invalid();
+        }
+        return new StateSnapshot(identity, version, root);
     }
 
     static boolean exceedsTotalBlockBudget(long accumulated, long next) {
