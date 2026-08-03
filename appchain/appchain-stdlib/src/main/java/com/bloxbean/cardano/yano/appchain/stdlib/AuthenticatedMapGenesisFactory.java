@@ -5,12 +5,14 @@ import com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfile;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfileCommitment;
 import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipEpoch;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfile;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import com.bloxbean.cardano.yano.appchain.config.AppChainEffectsConfig;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
 
 import java.util.HexFormat;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 
@@ -36,7 +38,13 @@ public final class AuthenticatedMapGenesisFactory {
     public static Map<String, String> settings(AuthenticatedMapContract.Genesis genesis) {
         String encoded = HexFormat.of().formatHex(
                 AuthenticatedMapContract.encodeGenesis(genesis));
-        return Map.of(StdlibStateMachineProviders.AUTHENTICATED_MAP_GENESIS_SETTING, encoded);
+        StateCommitmentProfile profile = StateCommitmentProfiles.require(
+                genesis.commitmentProfileId());
+        StateCommitmentIdentity identity = StateCommitmentIdentity.explicit(
+                profile, AuthenticatedMapContract.genesisId(genesis));
+        Map<String, String> settings = new LinkedHashMap<>(identity.settings());
+        settings.put(StdlibStateMachineProviders.AUTHENTICATED_MAP_GENESIS_SETTING, encoded);
+        return Map.copyOf(settings);
     }
 
     private static AuthenticatedMapContract.Genesis create(

@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.api.appchain;
 
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
+
 import java.util.Map;
 import java.util.Optional;
 
@@ -36,6 +38,11 @@ public interface AppStateMachineContext {
      * governance must bind one finalized membership epoch.
      */
     default Optional<AppChainMembershipView> membershipView() {
+        return Optional.empty();
+    }
+
+    /** Immutable authenticated-state profile and chain-generation identity. */
+    default Optional<StateCommitmentIdentity> stateCommitmentIdentity() {
         return Optional.empty();
     }
 }

@@ -1,5 +1,8 @@
 package com.bloxbean.cardano.yano.api.appchain;
 
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
+import com.bloxbean.cardano.yano.api.appchain.state.StateProofEnvelope;
+
 import java.util.List;
 import java.util.Map;
 
@@ -99,6 +102,22 @@ public interface AppChainGateway {
             long height, byte[] key) {
         throw new UnsupportedOperationException(
                 "Historical app-chain state proof snapshots are unavailable");
+    }
+
+    /** Genesis-selected authenticated-state identity used by this chain generation. */
+    default java.util.Optional<StateCommitmentIdentity> stateCommitmentIdentity() {
+        return java.util.Optional.empty();
+    }
+
+    /** Profile-tagged proof bound to the exact finalized block and certificate. */
+    default java.util.Optional<StateProofEnvelope> stateProofEnvelope(byte[] key) {
+        return java.util.Optional.empty();
+    }
+
+    /** Historical profile-tagged proof while the backend retains the required state. */
+    default java.util.Optional<StateProofEnvelope> stateProofEnvelopeAtHeight(
+            long height, byte[] key) {
+        return java.util.Optional.empty();
     }
 
     /**

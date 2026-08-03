@@ -1,11 +1,12 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
-import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.*;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode;
+import com.bloxbean.cardano.yano.api.appchain.state.AuthenticatedStateBackend;
+import com.bloxbean.cardano.yano.api.appchain.state.CandidateState;
 import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 import org.rocksdb.WriteBatch;
 import org.slf4j.Logger;
@@ -68,6 +69,8 @@ final class AppChainEngine implements AutoCloseable {
     private final long proposalMaxBytes;
     private final EffectsSettings effectsSettings;
     private final ConsensusProfileGuard consensusProfileGuard;
+    private final StateCommitmentGuard stateCommitmentGuard;
+    private final AuthenticatedStateBackend stateBackend;
     private final FxKernel fxKernel;
     private final FxKernel.FxReader fxReader;
     private final Supplier<WriteBatch> writeBatchFactory;
@@ -253,6 +256,9 @@ final class AppChainEngine implements AutoCloseable {
         this.consensusProfileGuard = new ConsensusProfileGuard(
                 resolvedConsensus.profile());
         this.consensusProfileGuard.verifyRetained(ledger, config.chainId());
+        this.stateBackend = ledger.stateBackend();
+        this.stateCommitmentGuard = new StateCommitmentGuard(stateBackend.identity());
+        this.stateCommitmentGuard.verifyRetained(ledger, config.chainId());
         this.fxKernel = new FxKernel(effectsSettings, consensusProfileGuard);
         this.fxReader = ledger.fxReader();
         if (!effectsSettings.enabled() && ledger.fxOpenCount() > 0) {
@@ -442,7 +448,7 @@ final class AppChainEngine implements AutoCloseable {
                 return false;
             }
             ledger.stageFx(applied.batch, block.height(), applied.fx);
-            ledger.commitBlock(block, blockHash, block.stateRoot(), applied.batch,
+            ledger.commitBlock(block, blockHash, applied.stateCommit, applied.batch,
                     governanceWrites(block));
         }
         pool.remove(block.messages());
@@ -1096,7 +1102,7 @@ final class AppChainEngine implements AutoCloseable {
         deferredProposals.clear(); // height advances — held l1-ref deferrals are moot
         try (AppliedBlock applied = round.applied) {
             ledger.stageFx(applied.batch, finalBlock.height(), applied.fx);
-            ledger.commitBlock(finalBlock, round.blockHash, finalBlock.stateRoot(), applied.batch,
+            ledger.commitBlock(finalBlock, round.blockHash, applied.stateCommit, applied.batch,
                     governanceWrites(finalBlock));
         }
         pool.remove(finalBlock.messages());
@@ -1168,32 +1174,53 @@ final class AppChainEngine implements AutoCloseable {
     // ------------------------------------------------------------------
 
     /**
-     * Runs the state machine over the block, staging all writes (state trie
-     * nodes) into a WriteBatch, and returns the block with its post-state root
-     * filled in. Nothing touches the DB until {@code commitBlock} writes the
-     * batch — discarding the batch discards the round.
+     * Runs the state machine over a side-effect-free backend candidate and
+     * returns a frozen prepared commit plus the block's post-state root.
+     * Nothing enters the shared WriteBatch until finality; discarding the
+     * prepared commit leaves the database unchanged.
      */
     private AppliedBlock applyBlock(AppBlock block) {
         WriteBatch batch = Objects.requireNonNull(
                 writeBatchFactory.get(), "writeBatchFactory returned null");
+        CandidateState candidate = null;
+        StagedStateCommit stateCommit = null;
         try {
+            long committedHeight = ledger.tipHeight();
             byte[] committedRoot = ledger.stateRoot();
+            byte[] baseRoot = committedRoot != null ? committedRoot : new byte[32];
+            candidate = stateBackend.beginCandidate(
+                    committedHeight, baseRoot, block.height());
+            stateCommitmentGuard.apply(block.height(), candidate);
             FxKernel.Result[] fxResult = new FxKernel.Result[1];
-            byte[] newRoot = ledger.mpfNodeStore().withBatch(batch, () -> {
-                MpfTrie trie = committedRoot != null
-                        ? new MpfTrie(ledger.mpfNodeStore(), committedRoot)
-                        : new MpfTrie(ledger.mpfNodeStore());
-                fxResult[0] = fxKernel.apply(stateMachine, block, trie, fxReader);
-                return trie.getRootHash();
-            });
-            byte[] effectiveRoot = newRoot != null ? newRoot : new byte[32];
+            fxResult[0] = fxKernel.apply(stateMachine, block, candidate, fxReader);
+            var prepared = candidate.prepare();
+            if (!(prepared instanceof StagedStateCommit staged)) {
+                prepared.close();
+                throw new IllegalStateException(
+                        "authenticated-state backend cannot join the ledger WriteBatch");
+            }
+            stateCommit = staged;
+            byte[] effectiveRoot = stateCommit.stateRoot();
             AppBlock applied = new AppBlock(block.version(), block.chainId(), block.height(),
                     block.prevHash(), block.l1Slot(), block.l1BlockHash(), block.timestamp(),
                     block.messagesRoot(), effectiveRoot, block.messages(), block.proposer(),
                     block.cert());
-            return new AppliedBlock(applied, batch, fxResult[0]);
+            return new AppliedBlock(applied, stateCommit, batch, fxResult[0]);
         } catch (Throwable failure) {
             Throwable outcome = failure;
+            if (stateCommit != null) {
+                try {
+                    stateCommit.close();
+                } catch (Throwable cleanupFailure) {
+                    outcome = mergeCleanupFailure(outcome, cleanupFailure);
+                }
+            } else if (candidate != null) {
+                try {
+                    candidate.discard();
+                } catch (Throwable cleanupFailure) {
+                    outcome = mergeCleanupFailure(outcome, cleanupFailure);
+                }
+            }
             try {
                 batch.close();
             } catch (Throwable cleanupFailure) {
@@ -1697,12 +1724,15 @@ final class AppChainEngine implements AutoCloseable {
 
     private static final class AppliedBlock implements AutoCloseable {
         final AppBlock block;
+        final StagedStateCommit stateCommit;
         final WriteBatch batch;
         final FxKernel.Result fx;
         private boolean closed;
 
-        AppliedBlock(AppBlock block, WriteBatch batch, FxKernel.Result fx) {
+        AppliedBlock(AppBlock block, StagedStateCommit stateCommit,
+                     WriteBatch batch, FxKernel.Result fx) {
             this.block = block;
+            this.stateCommit = stateCommit;
             this.batch = batch;
             this.fx = fx;
         }
@@ -1711,7 +1741,26 @@ final class AppChainEngine implements AutoCloseable {
         public void close() {
             if (!closed) {
                 closed = true;
-                batch.close();
+                Throwable failure = null;
+                try {
+                    stateCommit.close();
+                } catch (Throwable closeFailure) {
+                    failure = closeFailure;
+                }
+                try {
+                    batch.close();
+                } catch (Throwable closeFailure) {
+                    failure = mergeCleanupFailure(failure, closeFailure);
+                }
+                if (failure instanceof Error error) {
+                    throw error;
+                }
+                if (failure instanceof RuntimeException runtime) {
+                    throw runtime;
+                }
+                if (failure != null) {
+                    throw new IllegalStateException("Failed to close applied app block", failure);
+                }
             }
         }
     }

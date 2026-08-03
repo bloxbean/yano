@@ -19,6 +19,7 @@ import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectView;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerModeProvider;
 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.events.AppBlockFinalizedEvent;
 import com.bloxbean.cardano.yano.api.events.AppMessageReceivedEvent;
@@ -51,7 +52,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * App-chain subsystem: authenticated diffusion (M1) + sequenced durable ledger
- * with MPF state commitment (M2) per ADR app-layer/005.
+ * with a genesis-selected authenticated-state commitment (M2) per ADR-005/025.
  * <p>
  * Message routing: verified inbound envelopes on system topics
  * ({@code ~consensus/...}) feed the sequencer engine; ordinary topics feed the
@@ -73,6 +74,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private final AppChainConfig config;
     private final EffectsSettings effectsSettings;
     private final AppChainConsensusProfile consensusProfile;
+    private final StateCommitmentIdentity stateCommitmentIdentity;
     private final long protocolMagic;
     private final EventBus eventBus;
     private final Logger log;
@@ -453,6 +455,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             Set<String> normalizedMembers = AppChainConfigSemantics.validate(config);
             this.effectsSettings = EffectsSettings.from(config);
             this.consensusProfile = effectsSettings.consensusProfile(config);
+            this.stateCommitmentIdentity = StateCommitmentIdentity.fromSettings(
+                    config.pluginSettings());
             this.protocolMagic = protocolMagic;
             this.eventBus = eventBus;
             this.log = Objects.requireNonNull(log, "log");
@@ -472,6 +476,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                                 @Override
                                 public Optional<AppChainConsensusProfile> consensusProfile() {
                                     return Optional.of(AppChainSubsystem.this.consensusProfile);
+                                }
+                                @Override
+                                public Optional<StateCommitmentIdentity> stateCommitmentIdentity() {
+                                    return Optional.of(AppChainSubsystem.this.stateCommitmentIdentity);
                                 }
                                 @Override
                                 public Optional<com.bloxbean.cardano.yano.api.appchain.AppChainMembershipView>
@@ -1556,6 +1564,36 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     @Override
+    public Optional<StateCommitmentIdentity> stateCommitmentIdentity() {
+        return Optional.of(stateCommitmentIdentity);
+    }
+
+    @Override
+    public Optional<com.bloxbean.cardano.yano.api.appchain.state.StateProofEnvelope>
+    stateProofEnvelope(byte[] key) {
+        byte[] keySnapshot = Objects.requireNonNull(key, "key").clone();
+        return generationUseOr(Optional.empty(), () -> {
+            AppLedgerStore currentLedger = ledger;
+            return currentLedger != null
+                    ? currentLedger.stateProofEnvelope(config.chainId(), keySnapshot)
+                    : Optional.empty();
+        });
+    }
+
+    @Override
+    public Optional<com.bloxbean.cardano.yano.api.appchain.state.StateProofEnvelope>
+    stateProofEnvelopeAtHeight(long height, byte[] key) {
+        byte[] keySnapshot = Objects.requireNonNull(key, "key").clone();
+        return generationUseOr(Optional.empty(), () -> {
+            AppLedgerStore currentLedger = ledger;
+            return currentLedger != null
+                    ? currentLedger.stateProofEnvelopeAtHeight(
+                    config.chainId(), height, keySnapshot)
+                    : Optional.empty();
+        });
+    }
+
+    @Override
     public Optional<com.bloxbean.cardano.yano.api.appchain.AppAnchorCommitment>
             latestAnchorCommitment() {
         return generationUseOr(Optional.empty(), this::latestAnchorCommitmentWithinGeneration);
@@ -2488,6 +2526,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 epochsEncoded != null ? epochsEncoded.getBytes(java.nio.charset.StandardCharsets.UTF_8) : null,
                 currentLedger.metaString("anchor_last_tx"),
                 currentLedger.metaLong("anchor_last_height", 0L),
+                stateCommitmentIdentity,
                 signer);
         return tip;
     }
@@ -2615,6 +2654,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         Map<String, Object> status = new LinkedHashMap<>();
         status.put("chainId", config.chainId());
         status.put("consensusProfile", consensusProfileStatus());
+        status.put("stateCommitment", stateCommitmentStatus());
         status.put("memberKey", signer.publicKeyHex());
         status.put("members", group.size());
         status.put("threshold", group.threshold());
@@ -2782,6 +2822,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         Map<String, Object> status = new LinkedHashMap<>();
         status.put("chainId", config.chainId());
         status.put("consensusProfile", consensusProfileStatus());
+        status.put("stateCommitment", stateCommitmentStatus());
         status.put("memberKey", signer.publicKeyHex());
         status.put("members", group.size());
         status.put("threshold", group.threshold());
@@ -2839,6 +2880,23 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         status.put("enforceSenderSeq", consensusProfile.enforceSenderSeq());
         status.put("effectsEnabled", consensusProfile.effectsEnabled());
         return status;
+    }
+
+    private Map<String, Object> stateCommitmentStatus() {
+        Map<String, Object> status = new LinkedHashMap<>();
+        status.put("schemaVersion", stateCommitmentIdentity.schemaVersion());
+        status.put("profile", stateCommitmentIdentity.profile().id());
+        status.put("backend", stateCommitmentIdentity.profile().backendFamily().name().toLowerCase(
+                Locale.ROOT));
+        status.put("formatFingerprint", HexUtil.encodeHexString(
+                stateCommitmentIdentity.profile().formatFingerprint()));
+        status.put("genesisId", HexUtil.encodeHexString(stateCommitmentIdentity.genesisId()));
+        status.put("legacy", stateCommitmentIdentity.legacy());
+        AppLedgerStore currentLedger = ledger;
+        if (currentLedger != null) {
+            status.put("oldestProvableHeight", currentLedger.stateBackend().oldestProvableHeight());
+        }
+        return Map.copyOf(status);
     }
 
     // ------------------------------------------------------------------
@@ -3066,12 +3124,13 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             com.fasterxml.jackson.databind.JsonNode restoredManifest =
                     SnapshotManifest.verifyPreOpen(java.nio.file.Path.of(ledgerPath),
                             group.members(), log);
-            AppLedgerStore ledgerStore = new AppLedgerStore(ledgerPath, log);
+            AppLedgerStore ledgerStore = new AppLedgerStore(
+                    ledgerPath, log, stateCommitmentIdentity);
             this.ledger = ledgerStore;
             // Integrity check catches a corrupt/partial restore (E5.3) at startup.
-            if (!ledgerStore.verifyIntegrity()) {
+            if (!ledgerStore.stateBackend().verifyIntegrity().valid()) {
                 throw new IllegalStateException("App-chain ledger integrity check failed for '"
-                        + config.chainId() + "' — tip state-root does not match the committed MPF root "
+                        + config.chainId() + "' — tip state-root does not match the committed backend root "
                         + "(corrupt or partial snapshot?)");
             }
             // Apply a persisted member-rotation override (E4.5) before wiring
@@ -3089,7 +3148,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 SnapshotManifest.verifyPostOpen(restoredManifest, tipH, tipHash,
                         ledgerStore.stateRoot(),
                         epochsEncoded != null
-                                ? epochsEncoded.getBytes(java.nio.charset.StandardCharsets.UTF_8) : null);
+                                ? epochsEncoded.getBytes(java.nio.charset.StandardCharsets.UTF_8) : null,
+                        stateCommitmentIdentity);
                 log.info("Restored snapshot bound to manifest: height {}, chain '{}'",
                         tipH, config.chainId());
             }
