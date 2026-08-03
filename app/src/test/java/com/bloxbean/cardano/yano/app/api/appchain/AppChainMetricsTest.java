@@ -2,6 +2,8 @@ package com.bloxbean.cardano.yano.app.api.appchain;
 
 import com.bloxbean.cardano.yano.api.appchain.AppChainGateway;
 import com.bloxbean.cardano.yano.api.appchain.AppChainGateways;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import io.micrometer.core.instrument.FunctionTimer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
@@ -23,6 +25,59 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AppChainMetricsTest {
+
+    @Test
+    void exposesBoundedProfileVersionRetentionAndLosslessRootWords() {
+        byte[] root = new byte[32];
+        root[0] = (byte) 0xff;
+        root[1] = (byte) 0xff;
+        root[2] = (byte) 0xff;
+        root[3] = (byte) 0xff;
+        root[31] = 7;
+        StateCommitmentIdentity identity = StateCommitmentIdentity.explicit(
+                StateCommitmentProfiles.CLASSIC_JMT, new byte[32]);
+        AppChainGateway gateway = (AppChainGateway) Proxy.newProxyInstance(
+                AppChainGateway.class.getClassLoader(),
+                new Class<?>[]{AppChainGateway.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "chainId" -> "chain-state";
+                    case "tipHeight" -> 12L;
+                    case "stateRoot" -> root;
+                    case "oldestProvableHeight" -> 5L;
+                    case "stateCommitmentIdentity" -> Optional.of(identity);
+                    case "status" -> Map.of("poolSize", 0, "peers", Map.of(),
+                            "drops", Map.of(), "stalled", false);
+                    case "effectStats" -> Map.of();
+                    case "subscribeFinalized" -> (AutoCloseable) () -> { };
+                    case "toString" -> "state-metrics-gateway";
+                    case "hashCode" -> System.identityHashCode(proxy);
+                    case "equals" -> proxy == args[0];
+                    default -> defaultValue(method.getReturnType());
+                });
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        AppChainMetrics metrics = metrics(registry, gateway);
+
+        metrics.onStart(null);
+
+        assertEquals(1d, registry.get("yano.appchain.state.commitment.info")
+                .tags("chain", "chain-state", "profile", "jmt-blake2b256-v1",
+                        "backend", "jmt").gauge().value(), 0.0001d);
+        assertEquals(12d, registry.get("yano.appchain.state.version")
+                .tags("chain", "chain-state", "profile", "jmt-blake2b256-v1",
+                        "backend", "jmt").gauge().value(), 0.0001d);
+        assertEquals(5d, registry.get("yano.appchain.state.oldest.provable.height")
+                .tags("chain", "chain-state", "profile", "jmt-blake2b256-v1",
+                        "backend", "jmt").gauge().value(), 0.0001d);
+        assertEquals(4_294_967_295d, registry.get("yano.appchain.state.root.word")
+                .tags("chain", "chain-state", "profile", "jmt-blake2b256-v1",
+                        "backend", "jmt", "word", "0").gauge().value(), 0.0001d);
+        assertEquals(7d, registry.get("yano.appchain.state.root.word")
+                .tags("chain", "chain-state", "profile", "jmt-blake2b256-v1",
+                        "backend", "jmt", "word", "7").gauge().value(), 0.0001d);
+        assertEquals(8, registry.find("yano.appchain.state.root.word")
+                .tag("chain", "chain-state").gauges().size());
+        metrics.onStop(null);
+    }
 
     @Test
     void registersEffectGaugesCountersAndBoundedTypeTimers() {

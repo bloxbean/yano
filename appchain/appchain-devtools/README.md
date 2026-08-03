@@ -38,6 +38,40 @@ effective configuration, property explanation, and project lifecycle checks.
 ./yano.sh appchain gitops product-registry --target kustomize --output deploy/kustomize
 ```
 
+## Authenticated-state inspection and proof verification
+
+ADR-025 adds profile-aware current/historical reads and offline verification:
+
+```bash
+# Inspect the genesis-selected profile and retention boundary.
+./yano.sh appchain state identity --url http://node:8080/api/v1 --chain registry
+./yano.sh appchain state oldest --url http://node:8080/api/v1 --chain registry
+
+# Current or exact retained-height entry/proof.
+./yano.sh appchain state entry --url http://node:8080/api/v1 \
+  --chain registry --key 0123
+./yano.sh appchain state proof --url http://node:8080/api/v1 \
+  --chain registry --key 0123 --height 42 > proof-42.json
+
+# Verify offline against identity/root data acquired independently of that node.
+./yano.sh appchain state verify --proof-file proof-42.json \
+  --trusted-root <64-hex-root-from-verified-anchor> \
+  --profile jmt-blake2b256-v1 --genesis-id <64-hex-genesis-id> \
+  --chain registry --height 42 --root-source cardano-anchor
+
+# Privileged maintenance/diagnostics.
+./yano.sh appchain state integrity --url http://node:8080/api/v1 \
+  --chain registry --api-key <operator-key>
+./yano.sh appchain state snapshot --url http://node:8080/api/v1 \
+  --chain registry --path /srv/yano/snapshots/registry-42 --api-key <operator-key>
+```
+
+`state verify` never defaults to the root in the proof file. A node-reported
+anchor view is useful discovery data, but it becomes a trust source only after
+the referenced Cardano transaction and anchor payload/datum are independently
+verified. Use `--genesis-id legacy` only for a retained pre-ADR legacy-MPF
+generation.
+
 ## Signed custom component catalogs
 
 Custom JVM plugins can extend project generation without extending CLI code.

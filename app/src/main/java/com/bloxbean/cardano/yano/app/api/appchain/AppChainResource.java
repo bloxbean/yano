@@ -6,8 +6,14 @@ import com.bloxbean.cardano.yano.api.appchain.AppChainGateways;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryPath;
 import com.bloxbean.cardano.yano.api.appchain.AppStateProofSnapshot;
 import com.bloxbean.cardano.yano.api.appchain.ReceivedAppMessage;
+import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
+import com.bloxbean.cardano.yano.api.appchain.state.StateIntegrityReport;
+import com.bloxbean.cardano.yano.api.appchain.state.StateProof;
+import com.bloxbean.cardano.yano.api.appchain.state.StateProofEnvelope;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.plugin.PluginCatalogView;
+import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
 import com.bloxbean.cardano.yano.appchain.client.ProofVerifier;
 import com.bloxbean.cardano.yano.appchain.composite.contracts.CompositeProfileGovernanceV1;
 import com.fasterxml.jackson.annotation.JsonAnySetter;
@@ -78,6 +84,10 @@ public class AppChainResource {
             entry.put("chainId", gateway.chainId());
             entry.put("tipHeight", gateway.tipHeight());
             entry.put("stateRoot", HexUtil.encodeHexString(gateway.stateRoot()));
+            optionalStateIdentity(gateway).ifPresent(identity -> entry.put(
+                    "stateCommitment", ChainScopedResource.commitmentView(
+                            identity, gateway.tipHeight(), gateway.stateRoot(),
+                            safeOldestProvableHeight(gateway))));
             result.add(entry);
         }
         return Response.ok(result).build();
@@ -141,6 +151,51 @@ public class AppChainResource {
     public Response proof(@Encoded @PathParam("keyHex") String keyHex,
                           @QueryParam("height") Long height) {
         return singleChain().proof(keyHex, height);
+    }
+
+    @GET
+    @Operation(hidden = true)
+    @Path("state/proof/{keyHex}")
+    public Response stateProof(@Encoded @PathParam("keyHex") String keyHex,
+                               @QueryParam("height") Long height) {
+        return singleChain().stateProof(keyHex, height);
+    }
+
+    @GET
+    @Operation(hidden = true)
+    @Path("state/entry/{keyHex}")
+    public Response stateEntry(@Encoded @PathParam("keyHex") String keyHex,
+                               @QueryParam("height") Long height) {
+        return singleChain().stateEntry(keyHex, height);
+    }
+
+    @GET
+    @Operation(hidden = true)
+    @Path("state/identity")
+    public Response stateIdentity() {
+        return singleChain().stateIdentity();
+    }
+
+    @GET
+    @Operation(hidden = true)
+    @Path("state/integrity")
+    @AppChainAccess(AppChainAccess.Level.PRIVILEGED)
+    public Response stateIntegrity() {
+        return singleChain().stateIntegrity();
+    }
+
+    @GET
+    @Operation(hidden = true)
+    @Path("state/oldest-provable")
+    public Response oldestProvableHeight() {
+        return singleChain().oldestProvableHeight();
+    }
+
+    @POST
+    @Operation(hidden = true)
+    @Path("snapshot")
+    public Response snapshot(ChainScopedResource.SnapshotRequest request) {
+        return singleChain().snapshot(request);
     }
 
     @POST
@@ -326,6 +381,24 @@ public class AppChainResource {
                         count + " app chains are hosted — use /app-chain/chains/{chainId}/..."));
     }
 
+    private static Optional<StateCommitmentIdentity> optionalStateIdentity(
+            AppChainGateway gateway) {
+        try {
+            Optional<StateCommitmentIdentity> identity = gateway.stateCommitmentIdentity();
+            return identity != null ? identity : Optional.empty();
+        } catch (UnsupportedOperationException unavailable) {
+            return Optional.empty();
+        }
+    }
+
+    private static long safeOldestProvableHeight(AppChainGateway gateway) {
+        try {
+            return gateway.oldestProvableHeight();
+        } catch (UnsupportedOperationException unavailable) {
+            return 0;
+        }
+    }
+
     /** WebApplicationException carrying the {@code {"error": ...}} JSON contract. */
     private static WebApplicationException jsonError(Response.Status status, String message) {
         return new WebApplicationException(Response.status(status)
@@ -367,6 +440,8 @@ public class AppChainResource {
         @JsonIgnoreProperties(ignoreUnknown = false)
         public record ProofVerificationRequest(
                 @JsonDeserialize(using = StrictStringDeserializer.class) String mode,
+                @JsonDeserialize(using = StrictStringDeserializer.class) String profile,
+                @JsonDeserialize(using = StrictStringDeserializer.class) String presence,
                 @JsonDeserialize(using = StrictStringDeserializer.class) String expectedRootHex,
                 @JsonDeserialize(using = StrictStringDeserializer.class) String keyHex,
                 @JsonDeserialize(using = StrictStringDeserializer.class) String valueHex,
@@ -376,6 +451,17 @@ public class AppChainResource {
             public void rejectUnknownField(String name, Object ignored) {
                 throw new IllegalArgumentException(
                         "Unknown app-chain proof verification field: " + name);
+            }
+
+            /** Source-compatible request constructor for the legacy MPF API. */
+            public ProofVerificationRequest(
+                    String mode,
+                    String expectedRootHex,
+                    String keyHex,
+                    String valueHex,
+                    String proofWireHex
+            ) {
+                this(mode, null, null, expectedRootHex, keyHex, valueHex, proofWireHex);
             }
         }
 
@@ -549,7 +635,11 @@ public class AppChainResource {
         @Path("status")
         public Response status() {
             try {
-                return Response.ok(gateway.status()).build();
+                Map<String, Object> status = new LinkedHashMap<>(gateway.status());
+                optionalStateIdentity(gateway).ifPresent(identity -> status.put(
+                        "stateCommitment", commitmentView(identity, gateway.tipHeight(),
+                                gateway.stateRoot(), safeOldestProvableHeight(gateway))));
+                return Response.ok(status).build();
             } catch (IllegalStateException e) {
                 return Response.status(Response.Status.SERVICE_UNAVAILABLE)
                         .entity(Map.of("error", e.getMessage())).build();
@@ -609,6 +699,67 @@ public class AppChainResource {
             result.put("chainId", gateway.chainId());
             result.put("height", height);
             result.put("stateRoot", HexUtil.encodeHexString(gateway.stateRoot()));
+            optionalStateIdentity(gateway).ifPresent(identity -> result.put(
+                    "stateCommitment", commitmentView(identity, height,
+                            gateway.stateRoot(), safeOldestProvableHeight(gateway))));
+            return Response.ok(result).build();
+        }
+
+        /** Genesis-selected commitment profile plus the current version/root. */
+        @GET
+        @Path("state/identity")
+        public Response stateIdentity() {
+            Optional<StateCommitmentIdentity> identity = optionalStateIdentity(gateway);
+            if (identity.isEmpty()) {
+                return Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                        .entity(Map.of("code", "STATE_IDENTITY_UNAVAILABLE",
+                                "error", "State commitment identity is unavailable"))
+                        .build();
+            }
+            return Response.ok(commitmentView(identity.orElseThrow(), gateway.tipHeight(),
+                    gateway.stateRoot(), safeOldestProvableHeight(gateway))).build();
+        }
+
+        /** Bounded integrity check for the selected authenticated-state backend. */
+        @GET
+        @Path("state/integrity")
+        @AppChainAccess(AppChainAccess.Level.PRIVILEGED)
+        public Response stateIntegrity() {
+            final Optional<StateIntegrityReport> report;
+            try {
+                report = gateway.stateIntegrity();
+            } catch (UnsupportedOperationException unavailable) {
+                return Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                        .entity(Map.of("code", "STATE_INTEGRITY_UNAVAILABLE",
+                                "error", "State integrity checking is unavailable"))
+                        .build();
+            }
+            if (report == null || report.isEmpty()) {
+                return Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                        .entity(Map.of("code", "STATE_INTEGRITY_UNAVAILABLE",
+                                "error", "State integrity checking is unavailable"))
+                        .build();
+            }
+            StateIntegrityReport integrity = report.orElseThrow();
+            Map<String, Object> result = commitmentView(integrity.identity(),
+                    integrity.height(), integrity.stateRoot(), safeOldestProvableHeight(gateway));
+            result.put("valid", integrity.valid());
+            result.put("detail", integrity.detail());
+            return Response.ok(result).build();
+        }
+
+        /** Oldest retained finalized version for which a point proof can be built. */
+        @GET
+        @Path("state/oldest-provable")
+        public Response oldestProvableHeight() {
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("chainId", gateway.chainId());
+            result.put("oldestProvableHeight", safeOldestProvableHeight(gateway));
+            optionalStateIdentity(gateway).ifPresent(identity -> {
+                result.put("profile", identity.profile().id());
+                result.put("backend", identity.profile().backendFamily().name()
+                        .toLowerCase(Locale.ROOT));
+            });
             return Response.ok(result).build();
         }
 
@@ -1115,8 +1266,21 @@ public class AppChainResource {
             }
             try {
                 long height = gateway.snapshot(request.path());
-                return Response.ok(Map.of("chainId", gateway.chainId(),
-                        "snapshotPath", request.path(), "height", height)).build();
+                byte[] snapshotRoot = height == 0
+                        ? new byte[32]
+                        : gateway.block(height)
+                        .orElseThrow(() -> new IllegalStateException(
+                                "Snapshot finalized block is unavailable"))
+                        .stateRoot();
+                Map<String, Object> result = new LinkedHashMap<>();
+                result.put("chainId", gateway.chainId());
+                result.put("snapshotPath", request.path());
+                result.put("height", height);
+                result.put("stateRoot", HexUtil.encodeHexString(snapshotRoot));
+                optionalStateIdentity(gateway).ifPresent(identity -> result.put(
+                        "stateCommitment", commitmentView(identity, height,
+                                snapshotRoot, safeOldestProvableHeight(gateway))));
+                return Response.ok(result).build();
             } catch (IllegalStateException e) {
                 return Response.status(Response.Status.SERVICE_UNAVAILABLE)
                         .entity(Map.of("error", e.getMessage())).build();
@@ -1149,15 +1313,31 @@ public class AppChainResource {
                             .entity(Map.of("error", "No finalized message with id " + messageIdHex)).build());
         }
 
-        /**
-         * MPF inclusion proof for a state key (hex). For the built-in ordered-log
-         * app the key is the message id; the proof verifies the message's finalized
-         * position against the (anchorable) state root.
-         */
+        /** Profile-tagged native proof for a canonical state key. */
         @GET
         @Path("proof/{keyHex}")
         public Response proof(@Encoded @PathParam("keyHex") String keyHex,
                               @QueryParam("height") Long height) {
+            return stateLookup(keyHex, height, true);
+        }
+
+        /** Canonical state namespace alias for the proof endpoint. */
+        @GET
+        @Path("state/proof/{keyHex}")
+        public Response stateProof(@Encoded @PathParam("keyHex") String keyHex,
+                                   @QueryParam("height") Long height) {
+            return stateLookup(keyHex, height, true);
+        }
+
+        /** Current or retained historical logical entry without native proof bytes. */
+        @GET
+        @Path("state/entry/{keyHex}")
+        public Response stateEntry(@Encoded @PathParam("keyHex") String keyHex,
+                                   @QueryParam("height") Long height) {
+            return stateLookup(keyHex, height, false);
+        }
+
+        private Response stateLookup(String keyHex, Long height, boolean includeProof) {
             if (keyHex != null && keyHex.length() > MAX_PROOF_KEY_BYTES * 2) {
                 return Response.status(413)
                         .entity(Map.of("error", "State proof key exceeds the size limit"))
@@ -1167,14 +1347,24 @@ public class AppChainResource {
                 return badRequest("State proof key must be canonical lowercase hex");
             }
             byte[] key = HexUtil.decodeHexString(keyHex);
-            final Optional<AppStateProofSnapshot> snapshot;
             try {
                 if (height != null && height <= 0) {
                     return badRequest("State proof height must be positive");
                 }
-                snapshot = height == null
+
+                Optional<StateProofEnvelope> envelope = height == null
+                        ? gateway.stateProofEnvelope(key)
+                        : gateway.stateProofEnvelopeAtHeight(height, key);
+                if (envelope != null && envelope.isPresent()) {
+                    return profileTaggedStateResult(
+                            key, height, envelope.orElseThrow(), includeProof);
+                }
+
+                Optional<AppStateProofSnapshot> snapshot = height == null
                         ? gateway.stateProofSnapshot(key)
                         : gateway.stateProofSnapshotAtHeight(height, key);
+                return legacyStateResult(key, height,
+                        snapshot != null ? snapshot : Optional.empty(), includeProof);
             } catch (UnsupportedOperationException unavailable) {
                 return Response.status(Response.Status.SERVICE_UNAVAILABLE)
                         .entity(Map.of(
@@ -1182,11 +1372,80 @@ public class AppChainResource {
                                 "error", "Atomic state proof snapshots are unavailable"))
                         .build();
             }
+        }
+
+        private Response profileTaggedStateResult(
+                byte[] requestedKey,
+                Long requestedHeight,
+                StateProofEnvelope envelope,
+                boolean includeProof
+        ) {
+            StateProof proof = envelope.proof();
+            long version = proof.snapshot().height();
+            if (!gateway.chainId().equals(envelope.chainId())
+                    || !java.util.Arrays.equals(requestedKey, proof.canonicalKey())
+                    || requestedHeight != null && requestedHeight != version) {
+                return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                        .entity(Map.of("error", "State proof snapshot identity mismatch"))
+                        .build();
+            }
+            byte[] proofWire = proof.nativeProof();
+            byte[] proofValue = proof.value();
+            if (proofWire.length > MAX_PROOF_WIRE_BYTES
+                    || (proofValue != null && proofValue.length > MAX_PROOF_VALUE_BYTES)) {
+                return Response.status(413)
+                        .entity(Map.of("error", "State proof response exceeds the size limit"))
+                        .build();
+            }
+            var block = gateway.block(version);
+            if (block.isEmpty()
+                    || !java.util.Arrays.equals(block.get().stateRoot(), proof.snapshot().stateRoot())
+                    || !java.util.Arrays.equals(
+                    AppBlockCodec.blockHash(block.get()), envelope.blockHash())
+                    || !java.util.Arrays.equals(
+                    AppBlockCodec.serializeCert(block.get().cert()),
+                    AppBlockCodec.serializeCert(envelope.finalityCertificate()))) {
+                return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                        .entity(Map.of("code", "STATE_PROOF_BLOCK_MISMATCH",
+                                "error", "State proof and finalized block differ"))
+                        .build();
+            }
+
+            Map<String, Object> result = commitmentView(proof.snapshot().identity(),
+                    version, proof.snapshot().stateRoot(), safeOldestProvableHeight(gateway));
+            result.put("proofSchemaVersion", envelope.proofSchemaVersion());
+            result.put("key", HexUtil.encodeHexString(proof.canonicalKey()));
+            result.put("chainId", gateway.chainId());
+            result.put("committedHeight", version);
+            result.put("presence", proof.presence().name());
+            if (proofValue != null) {
+                result.put("valueHex", HexUtil.encodeHexString(proofValue));
+            }
+            gateway.messageHeight(proof.canonicalKey())
+                    .filter(finalizedHeight -> finalizedHeight <= version)
+                    .ifPresent(h -> result.put("finalizedAtHeight", h));
+            result.put("blockHash", HexUtil.encodeHexString(envelope.blockHash()));
+            if (includeProof) {
+                result.put("proofWireHex", HexUtil.encodeHexString(proofWire));
+                result.put("block", certifiedBlockView(block.orElseThrow(), envelope.blockHash()));
+                result.put("finalityCertificate", finalityCertificateView(
+                        envelope.finalityCertificate()));
+            }
+            return Response.ok(result).build();
+        }
+
+        private Response legacyStateResult(
+                byte[] key,
+                Long height,
+                Optional<AppStateProofSnapshot> snapshot,
+                boolean includeProof
+        ) {
             if (snapshot.isEmpty()) {
                 return Response.status(Response.Status.NOT_FOUND)
-                        .entity(Map.of("error", height == null
-                                ? "No committed state proof available for key"
-                                : "No retained state proof available for key at height " + height))
+                        .entity(Map.of("code", "STATE_PROOF_UNAVAILABLE",
+                                "error", height == null
+                                        ? "No committed state proof available for key"
+                                        : "No retained state proof available for key at height " + height))
                         .build();
             }
             var proof = snapshot.orElseThrow();
@@ -1208,8 +1467,12 @@ public class AppChainResource {
             result.put("key", HexUtil.encodeHexString(proofKey));
             result.put("chainId", gateway.chainId());
             result.put("committedHeight", proof.committedHeight());
+            result.put("version", proof.committedHeight());
             result.put("stateRoot", HexUtil.encodeHexString(proof.stateRoot()));
-            result.put("proofWireHex", HexUtil.encodeHexString(proofWire));
+            result.put("presence", proofValue != null ? "PRESENT" : "ABSENT");
+            if (includeProof) {
+                result.put("proofWireHex", HexUtil.encodeHexString(proofWire));
+            }
             if (proofValue != null) {
                 result.put("valueHex", HexUtil.encodeHexString(proofValue));
             }
@@ -1273,16 +1536,37 @@ public class AppChainResource {
                 return badRequest("'valueHex' must be omitted for an exclusion proof");
             }
 
+            String profile = request.profile() != null
+                    ? request.profile() : ProofVerifier.MPF_BLAKE2B256_V1;
+            if (!profile.equals(ProofVerifier.MPF_BLAKE2B256_V1)
+                    && !profile.equals(ProofVerifier.JMT_BLAKE2B256_V1)
+                    && !profile.equals(ProofVerifier.JMT_POSEIDON_BLS12381_V1)) {
+                return badRequest("Unsupported state commitment profile");
+            }
+            AppChainClient.ProofPresence presence;
+            try {
+                presence = request.presence() != null
+                        ? AppChainClient.ProofPresence.valueOf(request.presence())
+                        : inclusion ? AppChainClient.ProofPresence.PRESENT
+                        : AppChainClient.ProofPresence.ABSENT;
+            } catch (IllegalArgumentException invalidPresence) {
+                return badRequest("'presence' must be PRESENT, ABSENT, or TOMBSTONED");
+            }
+            if (inclusion == (presence == AppChainClient.ProofPresence.ABSENT)) {
+                return badRequest("'mode' and 'presence' differ");
+            }
+
             byte[] root = HexUtil.decodeHexString(request.expectedRootHex());
             byte[] key = HexUtil.decodeHexString(request.keyHex());
             byte[] wire = HexUtil.decodeHexString(request.proofWireHex());
-            boolean valid = inclusion
-                    ? ProofVerifier.verifyInclusion(
-                            root, key, HexUtil.decodeHexString(request.valueHex()), wire)
-                    : ProofVerifier.verifyExclusion(root, key, wire);
+            byte[] value = inclusion ? HexUtil.decodeHexString(request.valueHex()) : null;
+            boolean valid = ProofVerifier.verifyNative(
+                    profile, presence, root, key, value, wire);
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("valid", valid);
             result.put("mode", request.mode());
+            result.put("profile", profile);
+            result.put("presence", presence.name());
             result.put("expectedRoot", request.expectedRootHex());
             result.put("key", request.keyHex());
             result.put("verifier", "release-matched-appchain-client");
@@ -1302,7 +1586,13 @@ public class AppChainResource {
                         result.put("blockHash", HexUtil.encodeHexString(commitment.blockHash()));
                         result.put("transactionHash", commitment.transactionHash());
                         result.put("l1Slot", commitment.l1Slot());
+                        optionalStateIdentity(gateway).ifPresent(identity -> result.put(
+                                "stateCommitment", commitmentView(identity,
+                                        commitment.anchoredHeight(), commitment.stateRoot(),
+                                        safeOldestProvableHeight(gateway))));
                         result.put("provenance", "L1-confirmed by this node");
+                        result.put("trustWarning", "Verify the Cardano transaction and anchor "
+                                + "payload/datum independently before trusting this root");
                         return Response.ok(result).build();
                     })
                     .orElse(Response.status(Response.Status.NOT_FOUND)
@@ -1310,6 +1600,64 @@ public class AppChainResource {
                                     "code", "CONFIRMED_ANCHOR_UNAVAILABLE",
                                     "error", "No L1-confirmed anchor is available for this chain"))
                             .build());
+        }
+
+        static Map<String, Object> commitmentView(
+                StateCommitmentIdentity identity,
+                long version,
+                byte[] stateRoot,
+                long oldestProvableHeight
+        ) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("schemaVersion", identity.schemaVersion());
+            result.put("profile", identity.profile().id());
+            result.put("backend", identity.profile().backendFamily().name()
+                    .toLowerCase(Locale.ROOT));
+            result.put("dependencyDescriptor", identity.profile().dependencyDescriptor());
+            result.put("nativeProofEncoding", identity.profile().nativeProofEncoding());
+            result.put("nativeVersioning", identity.profile().nativeVersioning());
+            result.put("physicalDelete", identity.profile().physicalDelete());
+            result.put("formatFingerprint", HexUtil.encodeHexString(
+                    identity.profile().formatFingerprint()));
+            result.put("genesisId", HexUtil.encodeHexString(identity.genesisId()));
+            result.put("legacy", identity.legacy());
+            result.put("version", version);
+            result.put("stateRoot", HexUtil.encodeHexString(stateRoot));
+            result.put("oldestProvableHeight", oldestProvableHeight);
+            return result;
+        }
+
+        private static Map<String, Object> certifiedBlockView(
+                com.bloxbean.cardano.yano.api.appchain.AppBlock block,
+                byte[] blockHash
+        ) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("version", block.version());
+            result.put("height", block.height());
+            result.put("prevHash", HexUtil.encodeHexString(block.prevHash()));
+            result.put("l1Slot", block.l1Slot());
+            result.put("l1BlockHash", HexUtil.encodeHexString(block.l1BlockHash()));
+            result.put("timestamp", block.timestamp());
+            result.put("messagesRoot", HexUtil.encodeHexString(block.messagesRoot()));
+            result.put("stateRoot", HexUtil.encodeHexString(block.stateRoot()));
+            result.put("blockHash", HexUtil.encodeHexString(blockHash));
+            return result;
+        }
+
+        private static Map<String, Object> finalityCertificateView(
+                com.bloxbean.cardano.yano.api.appchain.FinalityCert certificate
+        ) {
+            List<Map<String, String>> signatures = new ArrayList<>(
+                    certificate.signatures().size());
+            for (var signature : certificate.signatures()) {
+                signatures.add(Map.of(
+                        "signer", HexUtil.encodeHexString(signature.signer()),
+                        "signature", HexUtil.encodeHexString(signature.signature())));
+            }
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("scheme", certificate.scheme());
+            result.put("signatures", signatures);
+            return result;
         }
 
         private static boolean isCanonicalProofKey(String value) {

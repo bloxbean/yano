@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.api.appchain.evidence;
 
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.appchain.state.StateSnapshot;
 
 import java.util.List;
 
@@ -28,13 +29,17 @@ import java.util.List;
  *                      only valid if each block carries at least this many
  *                      distinct valid member signatures
  * @param anchor        the L1 anchor reference, or null when not yet anchored
+ * @param stateCommitment exact profile/genesis/version/root of the final block
+ *                        in the signed segment; null only for a decoded legacy
+ *                        bundle produced before ADR-025 Phase 5
  */
 public record EvidenceBundle(String chainId,
                              String messageIdHex,
                              List<AppBlock> blocks,
                              List<String> memberKeysHex,
                              int threshold,
-                             AnchorRef anchor) {
+                             AnchorRef anchor,
+                             StateSnapshot stateCommitment) {
     /** Maximum anchored block segment carried by the portable v1 envelope. */
     public static final int MAX_BLOCKS = 4_096;
     /**
@@ -48,6 +53,16 @@ public record EvidenceBundle(String chainId,
     public EvidenceBundle {
         blocks = blocks != null ? List.copyOf(blocks) : List.of();
         memberKeysHex = memberKeysHex != null ? List.copyOf(memberKeysHex) : List.of();
+    }
+
+    /** Source-compatible constructor for pre-ADR-025 evidence producers. */
+    public EvidenceBundle(String chainId,
+                          String messageIdHex,
+                          List<AppBlock> blocks,
+                          List<String> memberKeysHex,
+                          int threshold,
+                          AnchorRef anchor) {
+        this(chainId, messageIdHex, blocks, memberKeysHex, threshold, anchor, null);
     }
 
     /**

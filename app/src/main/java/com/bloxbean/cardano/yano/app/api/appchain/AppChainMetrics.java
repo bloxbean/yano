@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.app.api.appchain;
 
 import com.bloxbean.cardano.yano.api.appchain.AppChainGateway;
 import com.bloxbean.cardano.yano.api.appchain.AppChainGateways;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.FunctionCounter;
@@ -20,7 +21,9 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
@@ -34,6 +37,10 @@ import java.util.concurrent.TimeUnit;
  *
  * <pre>
  *   yano_appchain_tip_height{chain}          gauge
+ *   yano_appchain_state_commitment_info{chain,profile,backend,...} gauge
+ *   yano_appchain_state_version{chain,profile,backend} gauge
+ *   yano_appchain_state_root_word{chain,profile,backend,word} gauge (8 x u32)
+ *   yano_appchain_state_oldest_provable_height{chain,profile,backend} gauge
  *   yano_appchain_pool_size{chain}           gauge
  *   yano_appchain_peers_connected{chain}     gauge
  *   yano_appchain_stalled{chain}             gauge (0/1 — peer ahead, no progress)
@@ -86,6 +93,7 @@ public class AppChainMetrics {
     // devnet regression run, 008.1 I1.8)
     private final List<StatusSnapshot> snapshots = new CopyOnWriteArrayList<>();
     private final List<EffectStatsSnapshot> effectSnapshots = new CopyOnWriteArrayList<>();
+    private final List<StateMetricSnapshot> stateSnapshots = new CopyOnWriteArrayList<>();
     private volatile ScheduledExecutorService executorMeterRefresher;
 
     /** Fixed runtime states: tag cardinality cannot grow with workload data. */
@@ -169,6 +177,9 @@ public class AppChainMetrics {
         snapshots.add(snapshot); // strong ref — see field comment
         EffectStatsSnapshot effectSnapshot = new EffectStatsSnapshot(chain, gateway);
         effectSnapshots.add(effectSnapshot); // Micrometer also holds these weakly
+
+        stateIdentity(gateway).ifPresent(identity ->
+                registerStateCommitmentMetrics(chain, gateway, identity));
 
         Gauge.builder("yano.appchain.tip.height", gateway, g -> (double) g.tipHeight())
                 .tag("chain", chain)
@@ -272,6 +283,58 @@ public class AppChainMetrics {
             }
         });
         log.infof("App-chain metrics registered for chain '%s'", chain);
+    }
+
+    private void registerStateCommitmentMetrics(
+            String chain,
+            AppChainGateway gateway,
+            StateCommitmentIdentity identity
+    ) {
+        String profile = identity.profile().id();
+        String backend = identity.profile().backendFamily().name().toLowerCase(Locale.ROOT);
+        String formatFingerprint = java.util.HexFormat.of().formatHex(
+                identity.profile().formatFingerprint());
+        String genesisId = java.util.HexFormat.of().formatHex(identity.genesisId());
+        StateMetricSnapshot state = new StateMetricSnapshot(gateway);
+        stateSnapshots.add(state);
+
+        Gauge.builder("yano.appchain.state.commitment.info", state, ignored -> 1d)
+                .tags("chain", chain, "profile", profile, "backend", backend,
+                        "format_fingerprint", formatFingerprint,
+                        "genesis_id", genesisId.isEmpty() ? "legacy" : genesisId,
+                        "legacy", Boolean.toString(identity.legacy()))
+                .description("Static authenticated-state commitment identity")
+                .register(registry);
+        Gauge.builder("yano.appchain.state.version", state, StateMetricSnapshot::version)
+                .tags("chain", chain, "profile", profile, "backend", backend)
+                .description("Finalized authenticated-state version")
+                .register(registry);
+        Gauge.builder("yano.appchain.state.oldest.provable.height", state,
+                        StateMetricSnapshot::oldestProvableHeight)
+                .tags("chain", chain, "profile", profile, "backend", backend)
+                .description("Oldest finalized version with retained proof material")
+                .register(registry);
+        // A 256-bit root cannot be represented losslessly by one numeric gauge.
+        // Eight bounded unsigned-32-bit limbs preserve it without a changing
+        // root label (which would create an unbounded time-series cardinality).
+        for (int word = 0; word < 8; word++) {
+            int rootWord = word;
+            Gauge.builder("yano.appchain.state.root.word", state,
+                            snapshot -> snapshot.rootWord(rootWord))
+                    .tags("chain", chain, "profile", profile, "backend", backend,
+                            "word", Integer.toString(word))
+                    .description("Big-endian unsigned 32-bit word of the current state root")
+                    .register(registry);
+        }
+    }
+
+    private static Optional<StateCommitmentIdentity> stateIdentity(AppChainGateway gateway) {
+        try {
+            Optional<StateCommitmentIdentity> identity = gateway.stateCommitmentIdentity();
+            return identity != null ? identity : Optional.empty();
+        } catch (UnsupportedOperationException unavailable) {
+            return Optional.empty();
+        }
     }
 
     /**
@@ -407,6 +470,45 @@ public class AppChainMetrics {
                         .tag("slot", executor.slot())
                         .description("Cached lifecycle-owned executor counter")
                         .register(registry);
+            }
+        }
+    }
+
+    /** Bounded profile-tagged state gauges with no dynamic tag cardinality. */
+    private static final class StateMetricSnapshot {
+        private final AppChainGateway gateway;
+
+        private StateMetricSnapshot(AppChainGateway gateway) {
+            this.gateway = gateway;
+        }
+
+        double version() {
+            try {
+                return gateway.tipHeight();
+            } catch (RuntimeException unavailable) {
+                return 0d;
+            }
+        }
+
+        double oldestProvableHeight() {
+            try {
+                return gateway.oldestProvableHeight();
+            } catch (RuntimeException unavailable) {
+                return 0d;
+            }
+        }
+
+        double rootWord(int index) {
+            try {
+                byte[] root = gateway.stateRoot();
+                int offset = index * Integer.BYTES;
+                if (root == null || root.length != 32 || offset + Integer.BYTES > root.length) {
+                    return 0d;
+                }
+                int word = java.nio.ByteBuffer.wrap(root, offset, Integer.BYTES).getInt();
+                return Integer.toUnsignedLong(word);
+            } catch (RuntimeException unavailable) {
+                return 0d;
             }
         }
     }

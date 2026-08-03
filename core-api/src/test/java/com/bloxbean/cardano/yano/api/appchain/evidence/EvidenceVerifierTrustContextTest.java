@@ -8,6 +8,9 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
+import com.bloxbean.cardano.yano.api.appchain.state.StateSnapshot;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -40,6 +43,31 @@ class EvidenceVerifierTrustContextTest {
                     assertThat(result.valid()).isTrue();
                     assertThat(result.messageContentVerified()).isTrue();
                 });
+    }
+
+    @Test
+    void bindsOptionalPinnedCommitmentProfileAndGenesisToSignedFinalRoot() {
+        Fixture fixture = anchoredFixture(CHAIN, SEED_A, List.of(MEMBER_A), 1);
+        AppBlock last = fixture.bundle().blocks().getLast();
+        String genesis = "31".repeat(32);
+        EvidenceBundle profiled = new EvidenceBundle(
+                fixture.bundle().chainId(), fixture.bundle().messageIdHex(),
+                fixture.bundle().blocks(), fixture.bundle().memberKeysHex(),
+                fixture.bundle().threshold(), fixture.bundle().anchor(),
+                new StateSnapshot(StateCommitmentIdentity.explicit(
+                        StateCommitmentProfiles.CLASSIC_JMT,
+                        HexUtil.decodeHexString(genesis)),
+                        last.height(), last.stateRoot()));
+
+        assertThat(EvidenceVerifier.verify(profiled, new EvidenceVerifier.TrustContext(
+                CHAIN, Set.of(MEMBER_A), 1,
+                StateCommitmentProfiles.JMT_BLAKE2B256_V1, genesis)).valid()).isTrue();
+        assertThat(EvidenceVerifier.verify(profiled, new EvidenceVerifier.TrustContext(
+                CHAIN, Set.of(MEMBER_A), 1,
+                StateCommitmentProfiles.MPF_BLAKE2B256_V1, genesis)).valid()).isFalse();
+        assertThat(EvidenceVerifier.verify(fixture.bundle(), new EvidenceVerifier.TrustContext(
+                CHAIN, Set.of(MEMBER_A), 1,
+                StateCommitmentProfiles.JMT_BLAKE2B256_V1, genesis)).valid()).isFalse();
     }
 
     @Test

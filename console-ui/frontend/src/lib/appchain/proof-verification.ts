@@ -24,6 +24,13 @@ export function parseProofEnvelope(text: string): StateProofEnvelope {
   const committedHeight = numberField(parsed, 'committedHeight');
   const valueHex = optionalStringField(parsed, 'valueHex');
   const finalizedAtHeight = optionalNumberField(parsed, 'finalizedAtHeight');
+  const profile = optionalStringField(parsed, 'profile');
+  const backend = optionalStringField(parsed, 'backend');
+  const dependencyDescriptor = optionalStringField(parsed, 'dependencyDescriptor');
+  const formatFingerprint = optionalStringField(parsed, 'formatFingerprint');
+  const genesisId = optionalStringField(parsed, 'genesisId');
+  const nativeProofEncoding = optionalStringField(parsed, 'nativeProofEncoding');
+  const presence = optionalStringField(parsed, 'presence');
 
   if (!STATE_KEY.test(key)) throw new Error('Proof key must be 1–256 bytes of canonical lowercase hex.');
   if (!chainId || chainId.length > 128) throw new Error('Proof chain id is missing or too long.');
@@ -42,7 +49,33 @@ export function parseProofEnvelope(text: string): StateProofEnvelope {
     && (!Number.isSafeInteger(finalizedAtHeight) || finalizedAtHeight <= 0)) {
     throw new Error('Proof finalized height must be a positive safe integer.');
   }
-  return { key, chainId, committedHeight, stateRoot, proofWireHex, valueHex, finalizedAtHeight };
+  if (profile !== undefined && !/^[a-z0-9][a-z0-9._-]{0,127}$/.test(profile)) {
+    throw new Error('Proof commitment profile is invalid.');
+  }
+  if (presence !== undefined && !['PRESENT', 'ABSENT', 'TOMBSTONED'].includes(presence)) {
+    throw new Error('Proof presence is invalid.');
+  }
+  if (presence !== undefined && (presence === 'ABSENT') !== (valueHex === undefined)) {
+    throw new Error('Proof presence and value differ.');
+  }
+  if (formatFingerprint !== undefined && !SHA256.test(formatFingerprint)) {
+    throw new Error('Proof format fingerprint is invalid.');
+  }
+  if (genesisId !== undefined && genesisId !== '' && !SHA256.test(genesisId)) {
+    throw new Error('Proof genesis identity is invalid.');
+  }
+  return {
+    key, chainId, committedHeight, stateRoot, proofWireHex, valueHex, finalizedAtHeight,
+    proofSchemaVersion: optionalNumberField(parsed, 'proofSchemaVersion'),
+    profile, backend, dependencyDescriptor, formatFingerprint, genesisId,
+    legacy: typeof parsed.legacy === 'boolean' ? parsed.legacy : undefined,
+    nativeProofEncoding,
+    presence: presence as StateProofEnvelope['presence'],
+    version: optionalNumberField(parsed, 'version'),
+    blockHash: optionalStringField(parsed, 'blockHash'),
+    block: objectField(parsed, 'block'),
+    finalityCertificate: objectField(parsed, 'finalityCertificate')
+  };
 }
 
 export function assessProofBinding(
@@ -74,4 +107,12 @@ function numberField(value: Record<string, unknown>, name: string): number {
 function optionalNumberField(value: Record<string, unknown>, name: string): number | undefined {
   if (value[name] === undefined) return undefined;
   return numberField(value, name);
+}
+
+function objectField(value: Record<string, unknown>, name: string): Record<string, unknown> | undefined {
+  if (value[name] === undefined) return undefined;
+  if (typeof value[name] !== 'object' || value[name] === null || Array.isArray(value[name])) {
+    throw new Error(`Proof ${name} must be an object.`);
+  }
+  return value[name] as Record<string, unknown>;
 }

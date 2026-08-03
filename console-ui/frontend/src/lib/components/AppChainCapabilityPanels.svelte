@@ -143,7 +143,8 @@
     if (!STATE_KEY.test(stateKey)) { verificationError = 'State key must be 1–256 bytes of canonical lowercase hex.'; return; }
     try {
       const result = await api.chainProof(chainId, stateKey);
-      await applyProofEnvelope(result, result.stateRoot, 'Current proof envelope (self-reported)');
+      await applyProofEnvelope(result, '',
+        'No trusted root selected — the proof-serving node root is not used as trust');
     } catch (cause) { verificationError = apiFailureMessage(cause, 'State proof unavailable'); }
   }
 
@@ -159,7 +160,9 @@
       const result = await api.chainProof(chainId, stateKey, anchor.anchoredHeight);
       anchorCommitment = anchor;
       await applyProofEnvelope(
-        result, anchor.stateRoot, 'L1-confirmed by this node', anchor.anchoredHeight);
+        result, anchor.stateRoot,
+        'Node-reported L1 confirmation — verify the Cardano transaction independently',
+        anchor.anchoredHeight);
     } catch (cause) {
       verificationError = apiFailureMessage(
         cause, 'A retained proof for the latest confirmed anchor is unavailable');
@@ -174,8 +177,9 @@
         && rootProvenance === 'User-supplied external root';
       await applyProofEnvelope(
         result,
-        keepExternalRoot ? expectedProofRoot : result.stateRoot,
-        keepExternalRoot ? rootProvenance : 'Pasted proof envelope (self-reported)');
+        keepExternalRoot ? expectedProofRoot : '',
+        keepExternalRoot ? rootProvenance
+          : 'No trusted root selected — pasted proof roots are not trusted automatically');
     } catch (cause) {
       verificationError = cause instanceof Error ? cause.message : 'Invalid proof envelope';
     }
@@ -191,7 +195,11 @@
     }
     try {
       proofVerification = await api.verifyChainProof(chainId, {
-        mode: proofEnvelope.valueHex === undefined ? 'exclusion' : 'inclusion',
+        mode: proofEnvelope.presence === 'ABSENT' || proofEnvelope.valueHex === undefined
+          ? 'exclusion' : 'inclusion',
+        profile: proofEnvelope.profile ?? 'mpf-blake2b256-v1',
+        presence: proofEnvelope.presence
+          ?? (proofEnvelope.valueHex === undefined ? 'ABSENT' : 'PRESENT'),
         expectedRootHex: expectedProofRoot,
         keyHex: proofEnvelope.key,
         ...(proofEnvelope.valueHex === undefined ? {} : { valueHex: proofEnvelope.valueHex }),
@@ -405,8 +413,8 @@
     {#if evidence}<pre class="mt-4 max-h-96 overflow-auto rounded-lg bg-slate-950 p-3 text-xs">{evidence}</pre>{/if}
   </section>
   <section class="card p-5">
-    <h2 class="mt-0 text-sm font-semibold">MPF state proof</h2>
-    <p class="text-xs text-slate-500">Verify an inclusion or exclusion proof with this release's bounded MPF verifier. Root provenance and root/height binding are reported separately from mathematical validity.</p>
+    <h2 class="mt-0 text-sm font-semibold">Profile-aware state proof</h2>
+    <p class="text-xs text-slate-500">Dispatches to this release's bounded MPF or classic-JMT verifier. Mathematical validity is reported separately from chain/profile/root/height trust.</p>
     <input class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs"
            bind:value={stateKey} placeholder="state key hex (message id for ordered-log)" />
     <div class="mt-2 flex flex-wrap gap-2">
@@ -432,6 +440,9 @@
     <p class="mb-0 mt-1 text-xs text-slate-500">
       Root source: {rootProvenance || 'not selected'}
     </p>
+    {#if !SHA256.test(expectedProofRoot)}
+      <p class="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-200">Supply a root from a locally verified block, a threshold certificate under pinned membership, or an independently verified Cardano anchor. A root copied from this proof does not authenticate it.</p>
+    {/if}
     {#if anchorCommitment}
       <div class="mt-2 rounded-lg border border-slate-800 bg-slate-950/60 p-3 text-xs">
         <div class="flex justify-between gap-3"><span class="text-slate-500">Anchored height</span><span>{anchorCommitment.anchoredHeight}</span></div>
@@ -461,7 +472,7 @@
     {#if proofEnvelope && proofBinding}
       <div class="mt-4 grid gap-2 sm:grid-cols-3" aria-live="polite">
         <div class="rounded-lg border border-slate-800 p-3">
-          <div class="text-xs text-slate-500">MPF path</div>
+          <div class="text-xs text-slate-500">{proofEnvelope.profile ?? 'legacy MPF'} path</div>
           <div class="mt-1 font-semibold {proofVerification?.valid ? 'text-emerald-300' : proofVerification ? 'text-rose-300' : 'text-slate-400'}">
             {proofVerification ? (proofVerification.valid ? 'VALID' : 'INVALID') : 'NOT CHECKED'}
           </div>
@@ -486,6 +497,14 @@
           <CopyValue value={proofEnvelope.stateRoot} label="proof state root" /></div>
         <div class="flex justify-between gap-3"><span class="text-slate-500">Proof key</span>
           <CopyValue value={proofEnvelope.key} label="proof key" /></div>
+        <div class="flex justify-between gap-3"><span class="text-slate-500">Profile</span>
+          <span class="font-mono">{proofEnvelope.profile ?? 'mpf-blake2b256-v1 (legacy)'}</span></div>
+        <div class="flex justify-between gap-3"><span class="text-slate-500">Presence</span>
+          <span>{proofEnvelope.presence ?? (proofEnvelope.valueHex === undefined ? 'ABSENT' : 'PRESENT')}</span></div>
+        {#if proofEnvelope.genesisId}
+          <div class="flex justify-between gap-3"><span class="text-slate-500">Genesis</span>
+            <CopyValue value={proofEnvelope.genesisId} label="state genesis identity" /></div>
+        {/if}
       </div>
     {/if}
   </section>

@@ -7,6 +7,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
@@ -66,6 +67,14 @@ public final class EvidenceVerifier {
                     || !claimedMembers.equals(expected.memberKeysHex())) {
                 return Result.fail("bundle trust context mismatch");
             }
+            if (expected.stateCommitmentProfile() != null
+                    && (bundle.stateCommitment() == null
+                    || !expected.stateCommitmentProfile().equals(
+                    bundle.stateCommitment().identity().profile().id())
+                    || !expected.stateGenesisIdHex().equals(HexUtil.encodeHexString(
+                    bundle.stateCommitment().identity().genesisId())))) {
+                return Result.fail("bundle state commitment trust context mismatch");
+            }
             return verifyStrict(bundle);
         } catch (RuntimeException malformed) {
             return Result.fail("malformed bundle");
@@ -124,6 +133,11 @@ public final class EvidenceVerifier {
                 || bundle.anchor().txHash() == null
                 || !bundle.anchor().txHash().matches("[0-9a-f]{64}"))) {
             return Result.fail("anchor height relationship mismatch");
+        }
+        if (bundle.stateCommitment() != null
+                && (bundle.stateCommitment().height() != last.height()
+                || !Arrays.equals(bundle.stateCommitment().stateRoot(), last.stateRoot()))) {
+            return Result.fail("state commitment version/root mismatch");
         }
 
         // 1. The message is included in the first (its own) block, and that
@@ -372,8 +386,12 @@ public final class EvidenceVerifier {
                 <= AppChainConfig.MAX_CHAIN_ID_BYTES;
     }
 
-    /** Out-of-band trust anchor for one fixed app-chain membership epoch. */
-    public record TrustContext(String chainId, Set<String> memberKeysHex, int threshold) {
+    /** Out-of-band trust anchor for one fixed membership and commitment epoch. */
+    public record TrustContext(String chainId,
+                               Set<String> memberKeysHex,
+                               int threshold,
+                               String stateCommitmentProfile,
+                               String stateGenesisIdHex) {
         public TrustContext {
             if (!validChainId(chainId)) {
                 throw new IllegalArgumentException("chainId is required");
@@ -385,6 +403,26 @@ public final class EvidenceVerifier {
                 throw new IllegalArgumentException("invalid trusted membership");
             }
             memberKeysHex = canonical;
+            if ((stateCommitmentProfile == null) != (stateGenesisIdHex == null)) {
+                throw new IllegalArgumentException(
+                        "state commitment profile and genesis must be pinned together");
+            }
+            if (stateCommitmentProfile != null
+                    && (StateCommitmentProfiles.find(stateCommitmentProfile).isEmpty()
+                    || !(stateGenesisIdHex.isEmpty()
+                    || stateGenesisIdHex.matches("[0-9a-f]{64}")))) {
+                throw new IllegalArgumentException("invalid trusted state commitment identity");
+            }
+            if (stateGenesisIdHex != null && stateGenesisIdHex.isEmpty()
+                    && !StateCommitmentProfiles.MPF_BLAKE2B256_V1.equals(
+                    stateCommitmentProfile)) {
+                throw new IllegalArgumentException("only legacy MPF may use an empty genesis id");
+            }
+        }
+
+        /** Source-compatible trust context without ADR-025 identity pinning. */
+        public TrustContext(String chainId, Set<String> memberKeysHex, int threshold) {
+            this(chainId, memberKeysHex, threshold, null, null);
         }
     }
 

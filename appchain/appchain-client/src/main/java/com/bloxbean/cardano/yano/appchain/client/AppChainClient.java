@@ -41,9 +41,9 @@ import java.util.function.Consumer;
 /**
  * Java client SDK for a Yano app chain (ADR app-layer/006 E1.1): typed
  * submit/read/proof access over the node's REST surface, live consumption
- * over SSE, and client-side MPF proof verification via {@link ProofVerifier}
- * — records can be verified against an (anchored) state root without
- * trusting the node.
+ * over SSE, and profile-aware client-side proof verification via
+ * {@link ProofVerifier}. Authenticity requires a state root obtained or
+ * verified independently of the node serving the proof.
  *
  * <pre>
  * AppChainClient client = AppChainClient.builder("http://localhost:8080/api/v1")
@@ -52,8 +52,9 @@ import java.util.function.Consumer;
  *         .build();
  *
  * SubmitResult r = client.submitText("orders", "order #1");
- * Proof proof = client.proof(HexUtil.decode(r.messageId()));
- * boolean ok = ProofVerifier.verify(proof);   // don't trust — verify
+ * Proof proof = client.proof(HexUtil.decode(r.messageId())).orElseThrow();
+ * ProofVerifier.TrustedStateRoot trustedRoot = loadVerifiedCardanoAnchor();
+ * boolean ok = ProofVerifier.verify(proof, trustedRoot);
  * </pre>
  */
 public final class AppChainClient {
@@ -79,6 +80,7 @@ public final class AppChainClient {
     private static final int MAX_STATE_PROOF_RESPONSE_BYTES =
             2 * (MAX_STATE_PROOF_KEY_BYTES + MAX_STATE_PROOF_VALUE_BYTES
                     + MAX_STATE_PROOF_WIRE_BYTES) + 64 * 1024;
+    private static final int MAX_STATE_METADATA_RESPONSE_BYTES = 128 * 1024;
     private static final int MAX_QUERY_PATH_CHARACTERS = 256;
     private static final int MAX_QUERY_PATH_SEGMENTS = 128;
     private static final int MAX_QUERY_REQUEST_BYTES = 64 * 1024;
@@ -97,7 +99,29 @@ public final class AppChainClient {
             "messageId", "chainId", "topic");
     private static final Set<String> STATE_PROOF_RESPONSE_FIELDS = Set.of(
             "key", "chainId", "stateRoot", "proofWireHex", "valueHex",
-            "finalizedAtHeight", "committedHeight");
+            "finalizedAtHeight", "committedHeight", "proofSchemaVersion",
+            "profile", "backend", "dependencyDescriptor", "formatFingerprint",
+            "genesisId", "legacy", "nativeProofEncoding", "presence",
+            "nativeVersioning", "physicalDelete", "schemaVersion", "version",
+            "oldestProvableHeight", "blockHash", "block", "finalityCertificate");
+    private static final Set<String> STATE_ENTRY_RESPONSE_FIELDS = Set.of(
+            "key", "chainId", "stateRoot", "valueHex", "finalizedAtHeight",
+            "committedHeight", "proofSchemaVersion", "profile", "backend",
+            "dependencyDescriptor", "formatFingerprint", "genesisId", "legacy",
+            "nativeProofEncoding", "presence", "nativeVersioning", "physicalDelete",
+            "schemaVersion", "version", "oldestProvableHeight", "blockHash");
+    private static final Set<String> PROFILE_ENTRY_FIELDS = Set.of(
+            "proofSchemaVersion", "profile", "backend", "dependencyDescriptor",
+            "formatFingerprint", "genesisId", "legacy", "nativeProofEncoding",
+            "nativeVersioning", "physicalDelete", "schemaVersion",
+            "oldestProvableHeight", "blockHash");
+    private static final Set<String> CERTIFIED_BLOCK_FIELDS = Set.of(
+            "version", "height", "prevHash", "l1Slot", "l1BlockHash",
+            "timestamp", "messagesRoot", "stateRoot", "blockHash");
+    private static final Set<String> FINALITY_CERTIFICATE_FIELDS = Set.of(
+            "scheme", "signatures");
+    private static final Set<String> FINALITY_SIGNATURE_FIELDS = Set.of(
+            "signer", "signature");
     private static final ObjectMapper STRICT_RESPONSE_JSON = JsonMapper.builder()
             .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
             .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
@@ -257,18 +281,28 @@ public final class AppChainClient {
         return response == null ? Optional.empty() : Optional.of(Block.from(response));
     }
 
-    /**
-     * MPF inclusion or exclusion proof for a state key, or empty when the node
-     * cannot produce a committed proof snapshot (for example before block 1).
-     */
+    /** Profile-tagged proof at the current finalized state version. */
     public Optional<Proof> proof(byte[] stateKey) {
+        return proof(stateKey, null);
+    }
+
+    /** Profile-tagged proof at an exact retained finalized height. */
+    public Optional<Proof> proof(byte[] stateKey, long height) {
+        if (height <= 0) {
+            throw new IllegalArgumentException("state proof height must be positive");
+        }
+        return proof(stateKey, Long.valueOf(height));
+    }
+
+    private Optional<Proof> proof(byte[] stateKey, Long height) {
         Objects.requireNonNull(stateKey, "stateKey");
         if (stateKey.length == 0 || stateKey.length > MAX_STATE_PROOF_KEY_BYTES) {
             throw new IllegalArgumentException(
                     "state proof key must contain 1-256 bytes");
         }
         byte[] requestedKey = stateKey.clone();
-        String endpoint = chainPath("/proof/" + Hex.encode(requestedKey));
+        String endpoint = chainPath("/proof/" + Hex.encode(requestedKey))
+                + (height != null ? "?height=" + height : "");
         try {
             HttpRequest request = requestBuilder(endpoint)
                     .header("Accept", "application/json")
@@ -283,7 +317,7 @@ public final class AppChainClient {
                 throw boundedHttpFailure(
                         "App-chain state proof", response.statusCode(), response.body());
             }
-            return Optional.of(parseStateProof(requestedKey, response.body()));
+            return Optional.of(parseStateProof(requestedKey, response.body(), chainId));
         } catch (AppChainClientException failure) {
             throw failure;
         } catch (InterruptedException interrupted) {
@@ -294,7 +328,160 @@ public final class AppChainClient {
         }
     }
 
-    private Proof parseStateProof(byte[] requestedKey, byte[] responseBytes) {
+    /** Current logical entry and exact commitment identity, without proof bytes. */
+    public Optional<JsonNode> stateEntry(byte[] stateKey) {
+        return stateEntry(stateKey, null);
+    }
+
+    /** Retained historical logical entry and commitment identity, without proof bytes. */
+    public Optional<JsonNode> stateEntry(byte[] stateKey, long height) {
+        if (height <= 0) {
+            throw new IllegalArgumentException("state entry height must be positive");
+        }
+        return stateEntry(stateKey, Long.valueOf(height));
+    }
+
+    private Optional<JsonNode> stateEntry(byte[] stateKey, Long height) {
+        Objects.requireNonNull(stateKey, "stateKey");
+        if (stateKey.length == 0 || stateKey.length > MAX_STATE_PROOF_KEY_BYTES) {
+            throw new IllegalArgumentException("state entry key must contain 1-256 bytes");
+        }
+        byte[] requestedKey = stateKey.clone();
+        String endpoint = chainPath("/state/entry/" + Hex.encode(requestedKey))
+                + (height != null ? "?height=" + height : "");
+        try {
+            HttpRequest request = requestBuilder(endpoint)
+                    .header("Accept", "application/json")
+                    .GET()
+                    .build();
+            HttpResponse<byte[]> response = sendBounded(
+                    request, MAX_STATE_PROOF_RESPONSE_BYTES, "App-chain state entry");
+            if (response.statusCode() == 404) return Optional.empty();
+            if (response.statusCode() != 200) {
+                throw boundedHttpFailure(
+                        "App-chain state entry", response.statusCode(), response.body());
+            }
+            return Optional.of(parseStateEntry(requestedKey, response.body(), chainId));
+        } catch (AppChainClientException failure) {
+            throw failure;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AppChainClientException("App-chain state entry was interrupted", interrupted);
+        } catch (Exception failure) {
+            throw new AppChainClientException("App-chain state entry request failed", failure);
+        }
+    }
+
+    private static JsonNode parseStateEntry(
+            byte[] requestedKey,
+            byte[] responseBytes,
+            String expectedChainId
+    ) {
+        final JsonNode response;
+        try {
+            response = STRICT_RESPONSE_JSON.readTree(responseBytes);
+        } catch (Exception malformed) {
+            throw new AppChainClientException("Malformed app-chain state entry response");
+        }
+        if (response == null || !response.isObject()
+                || !hasOnlyFields(response, STATE_ENTRY_RESPONSE_FIELDS)
+                || !hasRequiredFields(response, Set.of(
+                "key", "chainId", "stateRoot", "committedHeight", "presence"))) {
+            throw new AppChainClientException("Malformed app-chain state entry envelope");
+        }
+        String keyHex = requiredCanonicalBoundedHex(
+                response, "key", 1, MAX_STATE_PROOF_KEY_BYTES);
+        String resultChainId = requiredQueryIdentifier(response, "chainId");
+        String rootHex = requiredCanonicalBoundedHex(response, "stateRoot", 32, 32);
+        String valueHex = optionalCanonicalBoundedHex(
+                response, "valueHex", MAX_STATE_PROOF_VALUE_BYTES);
+        Long finalizedAtHeight = optionalNonNegativeLong(response, "finalizedAtHeight");
+        Long committedHeight = optionalNonNegativeLong(response, "committedHeight");
+        if (!Arrays.equals(requestedKey, Hex.decode(keyHex))
+                || expectedChainId != null && !expectedChainId.equals(resultChainId)
+                || committedHeight == null || committedHeight <= 0
+                || finalizedAtHeight != null && finalizedAtHeight > committedHeight) {
+            throw new AppChainClientException("App-chain state entry identity mismatch");
+        }
+        ProofPresence presence;
+        try {
+            presence = ProofPresence.valueOf(requiredQueryIdentifier(response, "presence"));
+        } catch (RuntimeException invalidPresence) {
+            throw new AppChainClientException("Invalid app-chain state entry presence");
+        }
+        if ((presence == ProofPresence.ABSENT) != (valueHex == null)) {
+            throw new AppChainClientException("App-chain state entry presence/value mismatch");
+        }
+        boolean profileTagged = response.has("proofSchemaVersion");
+        if (!profileTagged) {
+            if (PROFILE_ENTRY_FIELDS.stream().anyMatch(response::has)) {
+                throw new AppChainClientException("Partial app-chain state entry identity");
+            }
+            return response.deepCopy();
+        }
+        Long version = optionalNonNegativeLong(response, "version");
+        Long oldestProvableHeight = optionalNonNegativeLong(response, "oldestProvableHeight");
+        if (requiredPositiveInt(response, "proofSchemaVersion") != 1
+                || requiredPositiveInt(response, "schemaVersion") != 1
+                || version == null || !version.equals(committedHeight)
+                || oldestProvableHeight == null || oldestProvableHeight > committedHeight
+                || !response.path("nativeVersioning").isBoolean()
+                || !response.path("physicalDelete").isBoolean()) {
+            throw new AppChainClientException("Invalid app-chain state entry identity");
+        }
+        JsonNode legacyNode = response.get("legacy");
+        if (legacyNode == null || !legacyNode.isBoolean()) {
+            throw new AppChainClientException("Invalid app-chain state entry identity");
+        }
+        boolean legacy = legacyNode.booleanValue();
+        String genesisId = requiredCanonicalBoundedHex(
+                response, "genesisId", legacy ? 0 : 32, 32);
+        Proof metadataProbe = new Proof(
+                keyHex, resultChainId, rootHex, "00", valueHex,
+                finalizedAtHeight, committedHeight, 1,
+                requiredProofIdentifier(response, "profile"),
+                requiredProofIdentifier(response, "backend"),
+                requiredProofIdentifier(response, "dependencyDescriptor"),
+                requiredCanonicalBoundedHex(response, "formatFingerprint", 32, 32),
+                genesisId, legacy,
+                requiredProofIdentifier(response, "nativeProofEncoding"),
+                response.get("nativeVersioning").booleanValue(),
+                response.get("physicalDelete").booleanValue(),
+                oldestProvableHeight, presence, null, null);
+        requiredCanonicalBoundedHex(response, "blockHash", 32, 32);
+        if (!ProofVerifier.hasCanonicalProfileMetadata(metadataProbe)) {
+            throw new AppChainClientException(
+                    "App-chain state entry profile metadata differs from this client release");
+        }
+        return response.deepCopy();
+    }
+
+    /** Strictly decode a persisted/pasted REST proof envelope without network access. */
+    public static Proof decodeProofEnvelope(String json) {
+        if (json == null || json.isEmpty()
+                || json.getBytes(StandardCharsets.UTF_8).length > MAX_STATE_PROOF_RESPONSE_BYTES) {
+            throw new AppChainClientException("Malformed app-chain state proof response");
+        }
+        byte[] encoded = json.getBytes(StandardCharsets.UTF_8);
+        final JsonNode response;
+        try {
+            response = STRICT_RESPONSE_JSON.readTree(encoded);
+        } catch (Exception malformed) {
+            throw new AppChainClientException("Malformed app-chain state proof response");
+        }
+        if (response == null || !response.isObject()) {
+            throw new AppChainClientException("Malformed app-chain state proof response");
+        }
+        String keyHex = requiredCanonicalBoundedHex(
+                response, "key", 1, MAX_STATE_PROOF_KEY_BYTES);
+        return parseStateProof(Hex.decode(keyHex), encoded, null);
+    }
+
+    private static Proof parseStateProof(
+            byte[] requestedKey,
+            byte[] responseBytes,
+            String expectedChainId
+    ) {
         final JsonNode response;
         try {
             response = STRICT_RESPONSE_JSON.readTree(responseBytes);
@@ -328,16 +515,200 @@ public final class AppChainClient {
         if (!Arrays.equals(requestedKey, Hex.decode(keyHex))) {
             throw new AppChainClientException("App-chain state proof key mismatch");
         }
-        if (chainId != null && !chainId.equals(resultChainId)) {
+        if (expectedChainId != null && !expectedChainId.equals(resultChainId)) {
             throw new AppChainClientException("App-chain state proof chain mismatch");
         }
-        return new Proof(keyHex, resultChainId, rootHex, proofWireHex,
-                valueHex, finalizedAtHeight, committedHeight);
+        boolean profileTagged = response.has("proofSchemaVersion");
+        if (!profileTagged) {
+            if (PROFILE_ENTRY_FIELDS.stream().anyMatch(response::has)) {
+                throw new AppChainClientException("Partial app-chain state proof identity");
+            }
+            Long legacyVersion = optionalNonNegativeLong(response, "version");
+            if (legacyVersion != null && !legacyVersion.equals(committedHeight)) {
+                throw new AppChainClientException(
+                        "App-chain state proof contains contradictory versions");
+            }
+            if (response.has("presence")) {
+                String expectedPresence = valueHex == null ? "ABSENT" : "PRESENT";
+                JsonNode legacyPresence = response.get("presence");
+                if (!legacyPresence.isTextual()
+                        || !expectedPresence.equals(legacyPresence.textValue())) {
+                    throw new AppChainClientException(
+                            "App-chain state proof presence/value mismatch");
+                }
+            }
+            return new Proof(keyHex, resultChainId, rootHex, proofWireHex,
+                    valueHex, finalizedAtHeight, committedHeight);
+        }
+
+        Integer proofSchemaVersion = requiredPositiveInt(response, "proofSchemaVersion");
+        if (proofSchemaVersion != 1) {
+            throw new AppChainClientException("Unsupported app-chain state proof schema");
+        }
+        Long version = optionalNonNegativeLong(response, "version");
+        Long oldestProvableHeight = optionalNonNegativeLong(response, "oldestProvableHeight");
+        if (requiredPositiveInt(response, "schemaVersion") != 1
+                || version == null || !version.equals(committedHeight)
+                || oldestProvableHeight == null || oldestProvableHeight > committedHeight
+                || !response.path("nativeVersioning").isBoolean()
+                || !response.path("physicalDelete").isBoolean()) {
+            throw new AppChainClientException("Invalid app-chain state proof identity");
+        }
+        String profile = requiredProofIdentifier(response, "profile");
+        String backend = requiredProofIdentifier(response, "backend");
+        String dependencyDescriptor = requiredProofIdentifier(response, "dependencyDescriptor");
+        String formatFingerprint = requiredCanonicalBoundedHex(
+                response, "formatFingerprint", 32, 32);
+        JsonNode legacyNode = response.get("legacy");
+        if (legacyNode == null || !legacyNode.isBoolean()) {
+            throw new AppChainClientException("Invalid app-chain state proof identity");
+        }
+        boolean legacy = legacyNode.booleanValue();
+        String genesisId = requiredCanonicalBoundedHex(
+                response, "genesisId", legacy ? 0 : 32, 32);
+        if (legacy && !genesisId.isEmpty()) {
+            throw new AppChainClientException("Invalid legacy state proof genesis identity");
+        }
+        String nativeProofEncoding = requiredProofIdentifier(response, "nativeProofEncoding");
+        boolean nativeVersioning = response.get("nativeVersioning").booleanValue();
+        boolean physicalDelete = response.get("physicalDelete").booleanValue();
+        ProofPresence presence;
+        try {
+            JsonNode presenceNode = response.get("presence");
+            if (presenceNode == null || !presenceNode.isTextual()) {
+                throw new IllegalArgumentException();
+            }
+            presence = ProofPresence.valueOf(presenceNode.textValue());
+        } catch (RuntimeException invalidPresence) {
+            throw new AppChainClientException("Invalid app-chain state proof presence");
+        }
+        if ((presence == ProofPresence.ABSENT) != (valueHex == null)) {
+            throw new AppChainClientException("App-chain state proof presence/value mismatch");
+        }
+        if (committedHeight == null || committedHeight <= 0) {
+            throw new AppChainClientException("Profile-tagged proof requires a finalized version");
+        }
+        CertifiedBlockHeader block = parseCertifiedBlock(response.get("block"));
+        FinalityCertificate finality = parseFinalityCertificate(response.get("finalityCertificate"));
+        String outerBlockHash = requiredCanonicalBoundedHex(
+                response, "blockHash", 32, 32);
+        if (block.height() != committedHeight || !rootHex.equals(block.stateRootHex())
+                || !outerBlockHash.equals(block.blockHashHex())) {
+            throw new AppChainClientException("App-chain proof and certified block differ");
+        }
+        Proof proof = new Proof(keyHex, resultChainId, rootHex, proofWireHex,
+                valueHex, finalizedAtHeight, committedHeight, proofSchemaVersion,
+                profile, backend, dependencyDescriptor, formatFingerprint,
+                genesisId, legacy, nativeProofEncoding, nativeVersioning,
+                physicalDelete, oldestProvableHeight, presence, block, finality);
+        if (!ProofVerifier.hasCanonicalProfileMetadata(proof)) {
+            throw new AppChainClientException(
+                    "App-chain state proof profile metadata differs from this client release");
+        }
+        return proof;
+    }
+
+    private static CertifiedBlockHeader parseCertifiedBlock(JsonNode block) {
+        if (block == null || !block.isObject() || !hasOnlyFields(block, CERTIFIED_BLOCK_FIELDS)
+                || !hasRequiredFields(block, CERTIFIED_BLOCK_FIELDS)) {
+            throw new AppChainClientException("Invalid certified app-chain block header");
+        }
+        int version = requiredPositiveInt(block, "version");
+        Long height = optionalNonNegativeLong(block, "height");
+        Long l1Slot = optionalNonNegativeLong(block, "l1Slot");
+        Long timestamp = optionalNonNegativeLong(block, "timestamp");
+        if (height == null || height <= 0 || l1Slot == null || timestamp == null) {
+            throw new AppChainClientException("Invalid certified app-chain block header");
+        }
+        return new CertifiedBlockHeader(version, height,
+                requiredCanonicalBoundedHex(block, "prevHash", 32, 32), l1Slot,
+                requiredCanonicalBoundedHex(block, "l1BlockHash", 0, 32), timestamp,
+                requiredCanonicalBoundedHex(block, "messagesRoot", 32, 32),
+                requiredCanonicalBoundedHex(block, "stateRoot", 32, 32),
+                requiredCanonicalBoundedHex(block, "blockHash", 32, 32));
+    }
+
+    private static FinalityCertificate parseFinalityCertificate(JsonNode certificate) {
+        if (certificate == null || !certificate.isObject()
+                || !hasOnlyFields(certificate, FINALITY_CERTIFICATE_FIELDS)
+                || !hasRequiredFields(certificate, FINALITY_CERTIFICATE_FIELDS)) {
+            throw new AppChainClientException("Invalid app-chain finality certificate");
+        }
+        JsonNode schemeNode = certificate.get("scheme");
+        JsonNode signaturesNode = certificate.get("signatures");
+        if (!schemeNode.isIntegralNumber() || !schemeNode.canConvertToInt()
+                || !signaturesNode.isArray() || signaturesNode.isEmpty()
+                || signaturesNode.size() > 64) {
+            throw new AppChainClientException("Invalid app-chain finality certificate");
+        }
+        List<FinalitySignature> signatures = new ArrayList<>(signaturesNode.size());
+        for (JsonNode signature : signaturesNode) {
+            if (!signature.isObject() || !hasOnlyFields(signature, FINALITY_SIGNATURE_FIELDS)
+                    || !hasRequiredFields(signature, FINALITY_SIGNATURE_FIELDS)) {
+                throw new AppChainClientException("Invalid app-chain finality certificate");
+            }
+            signatures.add(new FinalitySignature(
+                    requiredCanonicalBoundedHex(signature, "signer", 32, 32),
+                    requiredCanonicalBoundedHex(signature, "signature", 64, 64)));
+        }
+        return new FinalityCertificate(schemeNode.intValue(), signatures);
+    }
+
+    private static int requiredPositiveInt(JsonNode object, String field) {
+        JsonNode value = object.get(field);
+        if (value == null || !value.isIntegralNumber() || !value.canConvertToInt()
+                || value.intValue() <= 0) {
+            throw new AppChainClientException("Invalid app-chain state proof metadata");
+        }
+        return value.intValue();
+    }
+
+    private static String requiredProofIdentifier(JsonNode object, String field) {
+        String value = requiredQueryIdentifier(object, field);
+        if (!value.matches("[a-z0-9][a-z0-9._-]{0,127}")) {
+            throw new AppChainClientException("Invalid app-chain state proof identity");
+        }
+        return value;
     }
 
     /** Raw status map of the chain. */
     public JsonNode status() {
         return getJson(chainPath("/status"), 200);
+    }
+
+    /** Exact genesis-selected state commitment identity and current version/root. */
+    public JsonNode stateIdentity() {
+        return getJsonBounded(chainPath("/state/identity"), 200,
+                MAX_STATE_METADATA_RESPONSE_BYTES, "App-chain state identity");
+    }
+
+    /** Run the node's bounded authenticated-state integrity check. */
+    public JsonNode stateIntegrity() {
+        return getJsonBounded(chainPath("/state/integrity"), 200,
+                MAX_STATE_METADATA_RESPONSE_BYTES, "App-chain state integrity");
+    }
+
+    /** Oldest finalized height for which this node currently retains proof material. */
+    public long oldestProvableHeight() {
+        JsonNode response = getJsonBounded(chainPath("/state/oldest-provable"), 200,
+                MAX_STATE_METADATA_RESPONSE_BYTES, "App-chain state retention");
+        JsonNode height = response.get("oldestProvableHeight");
+        if (height == null || !height.isIntegralNumber() || !height.canConvertToLong()
+                || height.longValue() < 0) {
+            throw new AppChainClientException("Invalid oldest-provable-height response");
+        }
+        return height.longValue();
+    }
+
+    /** Create an authenticated-state-aware ledger snapshot in a fresh server-local path. */
+    public JsonNode snapshot(String path) {
+        if (path == null || path.isBlank()) {
+            throw new IllegalArgumentException("snapshot path must not be blank");
+        }
+        ObjectNode request = objectMapper.createObjectNode();
+        request.put("path", path);
+        return postJsonBounded(chainPath("/snapshot"), request.toString(), 200,
+                MAX_STATE_METADATA_RESPONSE_BYTES, "App-chain state snapshot");
     }
 
     /**
@@ -1044,6 +1415,68 @@ public final class AppChainClient {
         }
     }
 
+    private JsonNode postJsonBounded(
+            String url,
+            String body,
+            int expectedStatus,
+            int maximumBytes,
+            String operation
+    ) {
+        try {
+            HttpRequest request = requestBuilder(url)
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                    .build();
+            HttpResponse<byte[]> response = sendBounded(request, maximumBytes, operation);
+            if (response.statusCode() != expectedStatus) {
+                throw boundedHttpFailure(operation, response.statusCode(), response.body());
+            }
+            JsonNode parsed = STRICT_RESPONSE_JSON.readTree(response.body());
+            if (parsed == null || !parsed.isObject()) {
+                throw new AppChainClientException(operation + " returned malformed JSON");
+            }
+            return parsed;
+        } catch (AppChainClientException failure) {
+            throw failure;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AppChainClientException(operation + " was interrupted", interrupted);
+        } catch (Exception failure) {
+            throw new AppChainClientException(operation + " request failed", failure);
+        }
+    }
+
+    private JsonNode getJsonBounded(
+            String url,
+            int expectedStatus,
+            int maximumBytes,
+            String operation
+    ) {
+        try {
+            HttpRequest request = requestBuilder(url)
+                    .header("Accept", "application/json")
+                    .GET()
+                    .build();
+            HttpResponse<byte[]> response = sendBounded(request, maximumBytes, operation);
+            if (response.statusCode() != expectedStatus) {
+                throw boundedHttpFailure(operation, response.statusCode(), response.body());
+            }
+            JsonNode parsed = STRICT_RESPONSE_JSON.readTree(response.body());
+            if (parsed == null || !parsed.isObject()) {
+                throw new AppChainClientException(operation + " returned malformed JSON");
+            }
+            return parsed;
+        } catch (AppChainClientException failure) {
+            throw failure;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AppChainClientException(operation + " was interrupted", interrupted);
+        } catch (Exception failure) {
+            throw new AppChainClientException(operation + " request failed", failure);
+        }
+    }
+
     private JsonNode getJson(String url, int expectedStatus) {
         try {
             HttpResponse<String> response = httpClient.send(requestBuilder(url).GET().build(),
@@ -1179,16 +1612,30 @@ public final class AppChainClient {
         }
     }
 
-    /**
-     * An MPF inclusion or exclusion proof as served by the node. A null
-     * {@code valueHex} denotes exclusion. Verify inclusion locally with
-     * {@link ProofVerifier#verify(Proof)} or either form through the raw
-     * verifier methods, optionally against a state root obtained from an L1
-     * anchor instead of the node's own claim.
-     */
+    /** Profile-tagged native proof and the finalized block certificate binding its root. */
     public record Proof(String keyHex, String chainId, String stateRootHex,
                         String proofWireHex, String valueHex, Long finalizedAtHeight,
-                        Long committedHeight) {
+                        Long committedHeight, Integer proofSchemaVersion,
+                        String profile, String backend, String dependencyDescriptor,
+                        String formatFingerprintHex, String genesisIdHex, Boolean legacy,
+                        String nativeProofEncoding, Boolean nativeVersioning,
+                        Boolean physicalDelete, Long oldestProvableHeight,
+                        ProofPresence presence,
+                        CertifiedBlockHeader block,
+                        FinalityCertificate finalityCertificate) {
+        /** Source-compatible legacy MPF constructor. */
+        public Proof(String keyHex, String chainId, String stateRootHex,
+                     String proofWireHex, String valueHex, Long finalizedAtHeight,
+                     Long committedHeight) {
+            this(keyHex, chainId, stateRootHex, proofWireHex, valueHex,
+                    finalizedAtHeight, committedHeight, 0,
+                    "mpf-blake2b256-v1", "mpf",
+                    "ccl-mpf-legacy-blake2b256-v1", null, "", true,
+                    "ccl-mpf-proof-wire-v1", false, true, null,
+                    valueHex == null ? ProofPresence.ABSENT : ProofPresence.PRESENT,
+                    null, null);
+        }
+
         /**
          * Source-compatible constructor for proof envelopes produced before
          * the atomic committed-snapshot height was exposed.
@@ -1198,6 +1645,34 @@ public final class AppChainClient {
             this(keyHex, chainId, stateRootHex, proofWireHex, valueHex,
                     finalizedAtHeight, null);
         }
+    }
+
+    public enum ProofPresence {
+        PRESENT,
+        ABSENT,
+        TOMBSTONED
+    }
+
+    /** Canonical fields signed indirectly through {@code blockHashHex}. */
+    public record CertifiedBlockHeader(
+            int version,
+            long height,
+            String prevHashHex,
+            long l1Slot,
+            String l1BlockHashHex,
+            long timestamp,
+            String messagesRootHex,
+            String stateRootHex,
+            String blockHashHex) {
+    }
+
+    public record FinalityCertificate(int scheme, List<FinalitySignature> signatures) {
+        public FinalityCertificate {
+            signatures = signatures != null ? List.copyOf(signatures) : List.of();
+        }
+    }
+
+    public record FinalitySignature(String signerHex, String signatureHex) {
     }
 
     /** Result of looking up a composed effect proof. */

@@ -109,6 +109,23 @@ export interface ChainSummary {
   chainId: string;
   tipHeight: number;
   stateRoot: string;
+  stateCommitment?: StateCommitmentStatus;
+}
+
+export interface StateCommitmentStatus {
+  schemaVersion: number;
+  profile: string;
+  backend: string;
+  dependencyDescriptor: string;
+  nativeProofEncoding: string;
+  nativeVersioning: boolean;
+  physicalDelete: boolean;
+  formatFingerprint: string;
+  genesisId: string;
+  legacy: boolean;
+  version: number;
+  stateRoot: string;
+  oldestProvableHeight: number;
 }
 
 export interface AppChainBlock {
@@ -179,6 +196,7 @@ export interface AppChainStatus {
   sinks?: Record<string, Record<string, unknown>>;
   effects?: Record<string, unknown>;
   stateMachineStatus?: Record<string, unknown>;
+  stateCommitment?: StateCommitmentStatus;
 }
 
 export interface PluginOperationsSummary {
@@ -224,10 +242,25 @@ export interface StateProofEnvelope {
   proofWireHex: string;
   valueHex?: string;
   finalizedAtHeight?: number;
+  proofSchemaVersion?: number;
+  profile?: string;
+  backend?: string;
+  dependencyDescriptor?: string;
+  formatFingerprint?: string;
+  genesisId?: string;
+  legacy?: boolean;
+  nativeProofEncoding?: string;
+  presence?: 'PRESENT' | 'ABSENT' | 'TOMBSTONED';
+  version?: number;
+  blockHash?: string;
+  block?: Record<string, unknown>;
+  finalityCertificate?: Record<string, unknown>;
 }
 
 export interface ProofVerificationRequest {
   mode: 'inclusion' | 'exclusion';
+  profile?: string;
+  presence?: 'PRESENT' | 'ABSENT' | 'TOMBSTONED';
   expectedRootHex: string;
   keyHex: string;
   valueHex?: string;
@@ -237,6 +270,8 @@ export interface ProofVerificationRequest {
 export interface ProofVerificationResult {
   valid: boolean;
   mode: 'inclusion' | 'exclusion';
+  profile: string;
+  presence: 'PRESENT' | 'ABSENT' | 'TOMBSTONED';
   expectedRoot: string;
   key: string;
   verifier: string;
@@ -251,6 +286,8 @@ export interface AnchorCommitment {
   transactionHash: string;
   l1Slot: number;
   provenance: string;
+  trustWarning?: string;
+  stateCommitment?: StateCommitmentStatus;
 }
 
 export interface EutxoTransactionEntry {

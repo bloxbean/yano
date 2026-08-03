@@ -2,8 +2,10 @@
 
 ## Status
 
-Proposed — design and implementation plan only; no runtime behavior is changed by
-this ADR.
+Accepted for phased implementation. Phases 0, 1, 2, 3, and 5 are implemented;
+Phase 4 is deferred until the required ZeroJ library is released, and optional
+Phase 6 is deferred. CCL `0.8.0-pre5-dev1` remains a development baseline, so
+this status is not production qualification.
 
 If accepted and implemented, this ADR supersedes the state-commitment choice in
 [ADR-005 §D3](005-yano-app-chain-framework.md) for new app chains. Existing
@@ -33,6 +35,12 @@ chains remain bound to their original MPF state history.
 - [ADR-024](024-appchain-full-support-review-readiness-and-roadmap.md) identifies
   the remaining need to authenticate all consensus-affecting machine settings
   and to keep block, state, recovery, and proof identities aligned.
+- Phase qualification records:
+  [Phase 0](025-phase-0-contract-measurement-and-dependency-gates.md),
+  [Phase 1](025-phase-1-authenticated-map-over-mpf.md),
+  [Phase 2](025-phase-2-backend-neutral-prepared-commitment-runtime.md),
+  [Phase 3](025-phase-3-classic-jmt-runtime.md), and
+  [Phase 5](025-phase-5-proof-bundles-and-developer-experience.md).
 - Cardano Client Lib (CCL) development release
   [`v0.8.0-pre5-dev1`](https://github.com/bloxbean/cardano-client-lib/releases/tag/v0.8.0-pre5-dev1)
   is the temporary implementation baseline for current MPF and Blake2b-256 JMT

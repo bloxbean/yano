@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.appchain.client;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
@@ -63,6 +64,97 @@ class AppChainClientStateProofTest {
         assertThat(proof.valueHex()).isNull();
         assertThat(proof.finalizedAtHeight()).isNull();
         assertThat(proof.committedHeight()).isEqualTo(42);
+    }
+
+    @Test
+    void stateEntryUsesDedicatedCurrentOrHistoricalEndpointWithoutProofBytes() throws Exception {
+        AtomicReference<String> request = new AtomicReference<>();
+        start(exchange -> {
+            request.set(exchange.getRequestURI().toString());
+            respond(exchange, 200, """
+                    {"key":"01","chainId":"c1","stateRoot":"%s","valueHex":"ff",
+                     "committedHeight":42,"version":42,"presence":"PRESENT"}
+                    """.formatted(ROOT));
+        });
+
+        JsonNode entry = client().stateEntry(new byte[]{1}, 42).orElseThrow();
+
+        assertThat(request.get()).isEqualTo(
+                "/api/v1/app-chain/chains/c1/state/entry/01?height=42");
+        assertThat(entry.path("valueHex").asText()).isEqualTo("ff");
+        assertThat(entry.has("proofWireHex")).isFalse();
+    }
+
+    @Test
+    void stateEntryAcceptsTheReleaseMatchedProfileTaggedServerContract() throws Exception {
+        ProofVerifier.ProfileMetadata profile = ProofVerifier.profileMetadata(
+                ProofVerifier.JMT_BLAKE2B256_V1).orElseThrow();
+        start(exchange -> respond(exchange, 200, """
+                {"key":"01","chainId":"c1","stateRoot":"%s","valueHex":"ff",
+                 "committedHeight":42,"proofSchemaVersion":1,"schemaVersion":1,
+                 "profile":"%s","backend":"%s","dependencyDescriptor":"%s",
+                 "formatFingerprint":"%s","genesisId":"%s","legacy":false,
+                 "nativeProofEncoding":"%s","nativeVersioning":true,
+                 "physicalDelete":false,"version":42,"oldestProvableHeight":2,
+                 "presence":"PRESENT","blockHash":"%s"}
+                """.formatted(ROOT, profile.id(), profile.backend(),
+                profile.dependencyDescriptor(), profile.formatFingerprintHex(),
+                "11".repeat(32), profile.nativeProofEncoding(), "22".repeat(32))));
+
+        JsonNode entry = client().stateEntry(new byte[]{1}).orElseThrow();
+
+        assertThat(entry.path("profile").asText())
+                .isEqualTo(ProofVerifier.JMT_BLAKE2B256_V1);
+        assertThat(entry.path("formatFingerprint").asText())
+                .isEqualTo(profile.formatFingerprintHex());
+    }
+
+    @Test
+    void profileTaggedProofRequiresReleaseMatchedCommitmentMetadata() throws Exception {
+        ProofVerifier.ProfileMetadata profile = ProofVerifier.profileMetadata(
+                ProofVerifier.JMT_BLAKE2B256_V1).orElseThrow();
+        String blockHash = "22".repeat(32);
+        String tagged = """
+                {"key":"01","chainId":"c1","stateRoot":"%s","proofWireHex":"80",
+                 "valueHex":"ff","committedHeight":42,"proofSchemaVersion":1,
+                 "schemaVersion":1,"profile":"%s","backend":"%s",
+                 "dependencyDescriptor":"%s","formatFingerprint":"%s",
+                 "genesisId":"%s","legacy":false,"nativeProofEncoding":"%s",
+                 "nativeVersioning":true,"physicalDelete":false,"version":42,
+                 "oldestProvableHeight":2,"presence":"PRESENT","blockHash":"%s",
+                 "block":{"version":1,"height":42,"prevHash":"%s","l1Slot":0,
+                   "l1BlockHash":"","timestamp":1,"messagesRoot":"%s",
+                   "stateRoot":"%s","blockHash":"%s"},
+                 "finalityCertificate":{"scheme":0,"signatures":[
+                   {"signer":"%s","signature":"%s"}]}}
+                """.formatted(ROOT, profile.id(), profile.backend(),
+                profile.dependencyDescriptor(), profile.formatFingerprintHex(),
+                "11".repeat(32), profile.nativeProofEncoding(), blockHash,
+                "00".repeat(32), "33".repeat(32), ROOT, blockHash,
+                "44".repeat(32), "55".repeat(64));
+        AtomicReference<String> response = new AtomicReference<>(tagged);
+        start(exchange -> respond(exchange, 200, response.get()));
+
+        AppChainClient.Proof proof = client().proof(new byte[]{1}).orElseThrow();
+
+        assertThat(proof.profile()).isEqualTo(ProofVerifier.JMT_BLAKE2B256_V1);
+        assertThat(proof.backend()).isEqualTo("jmt");
+        assertThat(proof.oldestProvableHeight()).isEqualTo(2);
+        assertThat(proof.block().height()).isEqualTo(42);
+        response.set(tagged.replace("\"backend\":\"jmt\"", "\"backend\":\"mpf\""));
+        assertThatThrownBy(() -> client().proof(new byte[]{1}))
+                .isInstanceOf(AppChainClient.AppChainClientException.class)
+                .hasMessageContaining("differs from this client release");
+    }
+
+    @Test
+    void offlineProofDecoderRejectsNonObjectInputsWithoutLeakingParserFailures() {
+        for (String invalid : new String[]{"null", "[]", "true"}) {
+            assertThatThrownBy(() -> AppChainClient.decodeProofEnvelope(invalid))
+                    .isInstanceOf(AppChainClient.AppChainClientException.class)
+                    .hasMessage("Malformed app-chain state proof response")
+                    .hasNoCause();
+        }
     }
 
     @Test
@@ -176,7 +268,7 @@ class AppChainClientStateProofTest {
 
     private void start(Handler handler) throws IOException {
         server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
-        server.createContext("/api/v1/app-chain/chains/c1/proof", exchange -> {
+        server.createContext("/api/v1/app-chain/chains/c1", exchange -> {
             try {
                 handler.handle(exchange);
             } catch (Exception failure) {

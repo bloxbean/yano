@@ -20,6 +20,7 @@ import com.bloxbean.cardano.yano.api.appchain.effects.EffectView;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerModeProvider;
 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
+import com.bloxbean.cardano.yano.api.appchain.state.StateSnapshot;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.events.AppBlockFinalizedEvent;
 import com.bloxbean.cardano.yano.api.events.AppMessageReceivedEvent;
@@ -2660,7 +2661,9 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
         return Optional.of(new com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundle(
                 config.chainId(), HexUtil.encodeHexString(messageId), blocks, members,
-                epoch.threshold(), anchorRef));
+                epoch.threshold(), anchorRef,
+                new StateSnapshot(stateCommitmentIdentity,
+                        blocks.getLast().height(), blocks.getLast().stateRoot())));
     }
 
     private static final long MAX_EVIDENCE_CHAIN_BLOCKS = 4096;

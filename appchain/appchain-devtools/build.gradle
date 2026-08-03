@@ -3,6 +3,7 @@ plugins {
 }
 
 dependencies {
+    implementation project(':appchain-client')
     implementation project(':appchain-eutxo-client')
     implementation project(':appchain-eutxo-demo')
     runtimeOnly project(':appchain-eutxo-indexer-jdbc')

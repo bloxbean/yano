@@ -57,6 +57,7 @@ public final class AppChainDevtoolsCli {
                or: ./yano.sh appchain role public-key|key-proof|sign|govern-* [options]
                or: ./yano.sh appchain eutxo transaction|utxo|proof|doctor|demo [options]
                or: ./yano.sh appchain validity bootstrap|status|prove|proof|doctor|... [options]
+               or: ./yano.sh appchain state entry|proof|verify|identity|integrity|snapshot|oldest [options]
             Options:
               --config <yml|yaml>                        repeatable, later source wins
               --format text|json                         validate/explain
@@ -105,6 +106,10 @@ public final class AppChainDevtoolsCli {
         }
         if (args.length > 0 && "validity".equals(args[0])) {
             return EutxoValidityLifecycleCli.run(
+                    java.util.Arrays.copyOfRange(args, 1, args.length), out, err);
+        }
+        if (args.length > 0 && "state".equals(args[0])) {
+            return new AppChainStateCli().run(
                     java.util.Arrays.copyOfRange(args, 1, args.length), out, err);
         }
         if (roleCommand(args)) {
