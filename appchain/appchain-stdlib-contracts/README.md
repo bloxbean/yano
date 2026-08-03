@@ -15,3 +15,12 @@ contracts. Checked-in MPF/classic-JMT roots and proof vectors live at
 `META-INF/yano/contracts/authenticated-map/v1/golden-vectors.properties`.
 Run `./gradlew :appchain-stdlib-contracts:check` to verify them through both
 CCL and the independent Python verifier.
+
+Authenticated-map genesis codec version 2 adds a per-collection value-encoding
+catalog. `VALUE_ENCODING_OPAQUE` (the default, including the source-compatible
+five-argument collection constructor) preserves byte-transparent values.
+`VALUE_ENCODING_CANONICAL_CBOR` accepts exactly one RFC 8949 deterministic-CBOR
+item and rejects non-preferred encodings, indefinite items, tags, unsupported
+simple values, duplicate or incorrectly ordered map keys, invalid UTF-8,
+trailing bytes, and values outside the frozen nesting/item limits. Encoding is
+consensus-bound in genesis; it is not a node-local setting.

@@ -5,6 +5,7 @@ import co.nstant.in.cbor.model.ByteString;
 import co.nstant.in.cbor.model.UnicodeString;
 import co.nstant.in.cbor.model.UnsignedInteger;
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.internal.CanonicalValueCbor;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.internal.StdlibContractCbor;
 
 import java.nio.ByteBuffer;
@@ -25,14 +26,14 @@ import java.util.regex.Pattern;
  * Frozen version-1 wire, genesis, key and entry contract for
  * {@code authenticated-map} (ADR-025 Phase 0).
  *
- * <p>All CBOR values are definite-length preferred serialization using arrays,
- * unsigned integers, byte strings and text only. Application values remain
- * opaque bytes: an application that promises canonical CBOR must enforce that
- * promise before constructing a command.</p>
+ * <p>All contract CBOR values are definite-length preferred serialization.
+ * Application values remain opaque by default; a collection may instead bind
+ * canonical-CBOR enforcement into genesis.</p>
  */
 public final class AuthenticatedMapContract {
     public static final String STATE_MACHINE_ID = "authenticated-map";
     public static final int STATE_MACHINE_VERSION = 1;
+    public static final int GENESIS_CODEC_VERSION = 2;
     public static final String DEFAULT_TOPIC = "authenticated-map.command.v1";
 
     public static final String PROFILE_MPF_BLAKE2B256_V1 = "mpf-blake2b256-v1";
@@ -57,6 +58,13 @@ public final class AuthenticatedMapContract {
     public static final int AUTH_OPEN = 0;
     public static final int AUTH_OWNER = 1;
     public static final int AUTH_MEMBER = 2;
+
+    public static final int VALUE_ENCODING_OPAQUE = 0;
+    public static final int VALUE_ENCODING_CANONICAL_CBOR = 1;
+    public static final int MAX_VALUE_CBOR_DEPTH = CanonicalValueCbor.MAX_DEPTH;
+    public static final int MAX_VALUE_CBOR_ITEMS = CanonicalValueCbor.MAX_ITEMS;
+    public static final int MAX_VALUE_CBOR_CONTAINER_ITEMS =
+            CanonicalValueCbor.MAX_CONTAINER_ITEMS;
 
     public static final int STATUS_ACTIVE = 0;
     public static final int STATUS_REVOKED = 1;
@@ -90,6 +98,7 @@ public final class AuthenticatedMapContract {
     public static final int ERROR_ACTIVE = 7;
     public static final int ERROR_PRECONDITION = 8;
     public static final int ERROR_RESTORE_FORBIDDEN = 9;
+    public static final int ERROR_VALUE_ENCODING = 10;
 
     private static final String INTERNAL_GENESIS_COLLECTION =
             "yano-authenticated-map-internal-v1";
@@ -162,6 +171,23 @@ public final class AuthenticatedMapContract {
                 + bounded.length);
         input.put(VALUE_HASH_DOMAIN).putInt(bounded.length).put(bounded);
         return Blake2bUtil.blake2bHash256(input.array());
+    }
+
+    /** True when one bounded application value satisfies the selected encoding. */
+    public static boolean valueEncodingAccepts(
+            int valueEncoding,
+            byte[] value,
+            int maximumBytes
+    ) {
+        if (value == null || maximumBytes < 0 || value.length > maximumBytes) {
+            return false;
+        }
+        return switch (valueEncoding) {
+            case VALUE_ENCODING_OPAQUE -> true;
+            case VALUE_ENCODING_CANONICAL_CBOR ->
+                    CanonicalValueCbor.accepts(value, maximumBytes);
+            default -> false;
+        };
     }
 
     /** Consensus-state key holding the canonical genesis identity. */
@@ -308,7 +334,7 @@ public final class AuthenticatedMapContract {
             initialEntries.add(item);
         }
         Array root = new Array();
-        root.add(new UnsignedInteger(STATE_MACHINE_VERSION));
+        root.add(new UnsignedInteger(GENESIS_CODEC_VERSION));
         root.add(new UnicodeString(genesis.chainId()));
         root.add(new UnicodeString(STATE_MACHINE_ID));
         root.add(new UnsignedInteger(STATE_MACHINE_VERSION));
@@ -327,7 +353,7 @@ public final class AuthenticatedMapContract {
     public static Genesis decodeGenesis(byte[] encoded) {
         List<co.nstant.in.cbor.model.DataItem> values =
                 StdlibContractCbor.decodeArray(encoded, 13).getDataItems();
-        if (StdlibContractCbor.uintInt(values.get(0)) != STATE_MACHINE_VERSION
+        if (StdlibContractCbor.uintInt(values.get(0)) != GENESIS_CODEC_VERSION
                 || !STATE_MACHINE_ID.equals(StdlibContractCbor.text(values.get(2)))
                 || StdlibContractCbor.uintInt(values.get(3)) != STATE_MACHINE_VERSION) {
             throw malformed();
@@ -335,7 +361,7 @@ public final class AuthenticatedMapContract {
         Array collectionItems = StdlibContractCbor.array(values.get(11), MAX_COLLECTIONS);
         List<CollectionDescriptor> collections = new ArrayList<>(collectionItems.getDataItems().size());
         for (co.nstant.in.cbor.model.DataItem item : collectionItems.getDataItems()) {
-            collections.add(decodeCollection(StdlibContractCbor.array(item, 6)));
+            collections.add(decodeCollection(StdlibContractCbor.array(item, 7)));
         }
         Array entryItems = StdlibContractCbor.array(values.get(12), MAX_BATCH_ITEMS);
         List<GenesisEntry> entries = new ArrayList<>(entryItems.getDataItems().size());
@@ -593,21 +619,22 @@ public final class AuthenticatedMapContract {
 
     private static Array encodeCollection(CollectionDescriptor descriptor) {
         Array item = new Array();
-        item.add(new UnsignedInteger(STATE_MACHINE_VERSION));
+        item.add(new UnsignedInteger(GENESIS_CODEC_VERSION));
         item.add(new UnicodeString(descriptor.id()));
         item.add(new UnsignedInteger(descriptor.authorization()));
         item.add(new UnsignedInteger(descriptor.restoreAllowed() ? 1 : 0));
         item.add(new UnsignedInteger(descriptor.maxKeyBytes()));
         item.add(new UnsignedInteger(descriptor.maxValueBytes()));
+        item.add(new UnsignedInteger(descriptor.valueEncoding()));
         return item;
     }
 
     private static CollectionDescriptor decodeCollection(Array item) {
-        if (item.getDataItems().size() != 6) {
+        if (item.getDataItems().size() != 7) {
             throw malformed();
         }
         List<co.nstant.in.cbor.model.DataItem> values = item.getDataItems();
-        if (StdlibContractCbor.uintInt(values.get(0)) != STATE_MACHINE_VERSION) {
+        if (StdlibContractCbor.uintInt(values.get(0)) != GENESIS_CODEC_VERSION) {
             throw malformed();
         }
         int restore = StdlibContractCbor.uintInt(values.get(3));
@@ -619,7 +646,8 @@ public final class AuthenticatedMapContract {
                 StdlibContractCbor.uintInt(values.get(2)),
                 restore == 1,
                 StdlibContractCbor.uintInt(values.get(4)),
-                StdlibContractCbor.uintInt(values.get(5)));
+                StdlibContractCbor.uintInt(values.get(5)),
+                StdlibContractCbor.uintInt(values.get(6)));
     }
 
     private static String requireCollectionId(String id) {
@@ -778,7 +806,7 @@ public final class AuthenticatedMapContract {
         public Receipt {
             messageId = require32(messageId, "messageId");
             if (height <= 0 || status < RECEIPT_APPLIED || status > RECEIPT_REJECTED
-                    || errorCode < ERROR_NONE || errorCode > ERROR_RESTORE_FORBIDDEN) {
+                    || errorCode < ERROR_NONE || errorCode > ERROR_VALUE_ENCODING) {
                 throw new IllegalArgumentException("receipt status/height/error is invalid");
             }
             batchCommitment = require32(batchCommitment, "batchCommitment");
@@ -849,7 +877,8 @@ public final class AuthenticatedMapContract {
             int authorization,
             boolean restoreAllowed,
             int maxKeyBytes,
-            int maxValueBytes
+            int maxValueBytes,
+            int valueEncoding
     ) {
         public CollectionDescriptor {
             id = requireCollectionId(id);
@@ -862,6 +891,22 @@ public final class AuthenticatedMapContract {
             if (maxValueBytes < 0 || maxValueBytes > MAX_VALUE_BYTES) {
                 throw new IllegalArgumentException("maxValueBytes is outside the v1 contract");
             }
+            if (valueEncoding != VALUE_ENCODING_OPAQUE
+                    && valueEncoding != VALUE_ENCODING_CANONICAL_CBOR) {
+                throw new IllegalArgumentException("unsupported authenticated-map value encoding");
+            }
+        }
+
+        /** Source-compatible constructor retaining the explicit v1 opaque default. */
+        public CollectionDescriptor(
+                String id,
+                int authorization,
+                boolean restoreAllowed,
+                int maxKeyBytes,
+                int maxValueBytes
+        ) {
+            this(id, authorization, restoreAllowed, maxKeyBytes, maxValueBytes,
+                    VALUE_ENCODING_OPAQUE);
         }
     }
 
@@ -1097,6 +1142,11 @@ public final class AuthenticatedMapContract {
                 if (entry.applicationKey().length > descriptor.maxKeyBytes()
                         || entry.value().length > descriptor.maxValueBytes()) {
                     throw new IllegalArgumentException("initial entry exceeds collection bounds");
+                }
+                if (!valueEncodingAccepts(
+                        descriptor.valueEncoding(), entry.value(), descriptor.maxValueBytes())) {
+                    throw new IllegalArgumentException(
+                            "initial entry violates collection value encoding");
                 }
                 if (descriptor.authorization() == AUTH_OWNER
                         ? entry.controller().length != 32 : entry.controller().length != 0) {

@@ -169,6 +169,55 @@ class AuthenticatedMapStateMachineTest {
     }
 
     @Test
+    void canonicalValueEncodingRejectsDeterministicallyWhileOpaqueRemainsCompatible() {
+        AuthenticatedMapStateMachine canonicalMachine = machine(List.of(
+                canonicalCollection("records")));
+        TestState canonicalState = new TestState();
+        canonicalMachine.init(canonicalState, new AppChainInfo(CHAIN_ID, "", 1));
+
+        AppMessage nonMinimal = message(OWNER, 1, single(
+                AuthenticatedMapContract.Mutation.put(
+                        "records", bytes("bad"), hexBytes("1817"))));
+        assertThat(canonicalMachine.validate(nonMinimal).isAccepted()).isFalse();
+        apply(canonicalMachine, canonicalState, 1, nonMinimal);
+        assertThat(canonicalState.get(AuthenticatedMapContract.canonicalKey(
+                "records", bytes("bad")))).isEmpty();
+        assertRejected(canonicalState, nonMinimal,
+                AuthenticatedMapContract.ERROR_VALUE_ENCODING);
+
+        AppMessage canonical = message(OWNER, 2, single(
+                AuthenticatedMapContract.Mutation.put(
+                        "records", bytes("good"), hexBytes("a1616101"))));
+        assertThat(canonicalMachine.validate(canonical).isAccepted()).isTrue();
+        apply(canonicalMachine, canonicalState, 2, canonical);
+        assertApplied(canonicalState, canonical, 2);
+
+        AppMessage invalidBatch = message(OWNER, 3,
+                AuthenticatedMapContract.Command.batch(List.of(
+                        AuthenticatedMapContract.Mutation.put(
+                                "records", bytes("would-write"), hexBytes("01")),
+                        AuthenticatedMapContract.Mutation.put(
+                                "records", bytes("unsorted"),
+                                hexBytes("a2616202616101")))));
+        apply(canonicalMachine, canonicalState, 3, invalidBatch);
+        assertThat(canonicalState.get(AuthenticatedMapContract.canonicalKey(
+                "records", bytes("would-write")))).isEmpty();
+        assertRejected(canonicalState, invalidBatch,
+                AuthenticatedMapContract.ERROR_VALUE_ENCODING);
+
+        AuthenticatedMapStateMachine opaqueMachine = machine(List.of(
+                collection("records", AuthenticatedMapContract.AUTH_OPEN, false)));
+        TestState opaqueState = new TestState();
+        opaqueMachine.init(opaqueState, new AppChainInfo(CHAIN_ID, "", 1));
+        AppMessage opaque = message(OWNER, 1, single(
+                AuthenticatedMapContract.Mutation.put(
+                        "records", bytes("opaque"), hexBytes("1817"))));
+        assertThat(opaqueMachine.validate(opaque).isAccepted()).isTrue();
+        apply(opaqueMachine, opaqueState, 1, opaque);
+        assertApplied(opaqueState, opaque, 1);
+    }
+
+    @Test
     void memberPolicyUsesHeightVersionedMembership() {
         AppChainMembershipEpoch first = new AppChainMembershipEpoch(
                 0, List.of(hex(OWNER)), 1);
@@ -202,7 +251,7 @@ class AuthenticatedMapStateMachineTest {
     }
 
     @Test
-    void realMpfReplayIsIdenticalAcrossMembersRestartSnapshotAndCatchUp() {
+    void realMpfCanonicalValueReplayIsIdenticalAcrossMembersRestartSnapshotAndCatchUp() {
         String chainId = "conformance-chain";
         String member = "11".repeat(32);
         AppChainConfig config = AppChainConfig.builder(chainId)
@@ -214,7 +263,7 @@ class AuthenticatedMapStateMachineTest {
                 .build();
         AuthenticatedMapContract.Genesis genesis = AuthenticatedMapGenesisFactory.mpf(
                 config, repeated(7), 16, 32_768,
-                List.of(collection("records", AuthenticatedMapContract.AUTH_OPEN, true)),
+                List.of(canonicalCollection("records")),
                 List.of());
 
         StateMachineConformance.builder(
@@ -233,7 +282,8 @@ class AuthenticatedMapStateMachineTest {
                                         AuthenticatedMapContract.Mutation.put(
                                                 "records",
                                                 bytes("key-" + height + "-" + index),
-                                                bytes("value-" + random.nextInt(10_000)))))))
+                                                new byte[]{(byte) 0x82, (byte) height,
+                                                        (byte) index})))))
                 .stateProbe("first-record", AuthenticatedMapContract.canonicalKey(
                         "records", bytes("key-1-0")))
                 .assertDeterministic();
@@ -365,6 +415,12 @@ class AuthenticatedMapStateMachineTest {
                 id, authorization, restoreAllowed, 64, 1024);
     }
 
+    private static AuthenticatedMapContract.CollectionDescriptor canonicalCollection(String id) {
+        return new AuthenticatedMapContract.CollectionDescriptor(
+                id, AuthenticatedMapContract.AUTH_OPEN, false, 64, 1024,
+                AuthenticatedMapContract.VALUE_ENCODING_CANONICAL_CBOR);
+    }
+
     private static AuthenticatedMapContract.Command single(
             AuthenticatedMapContract.Mutation mutation) {
         return AuthenticatedMapContract.Command.single(mutation);
@@ -428,6 +484,10 @@ class AuthenticatedMapStateMachineTest {
 
     private static byte[] bytes(String value) {
         return value.getBytes(StandardCharsets.US_ASCII);
+    }
+
+    private static byte[] hexBytes(String value) {
+        return java.util.HexFormat.of().parseHex(value);
     }
 
     private static byte[] repeated(int value) {

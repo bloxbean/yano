@@ -109,6 +109,7 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
             }
             Command command = AuthenticatedMapContract.decodeCommand(message.getBody());
             validateCommandBounds(command);
+            validateCommandValueEncodings(command);
             return AdmissionResult.accept();
         } catch (IllegalArgumentException malformed) {
             return AdmissionResult.reject("Malformed authenticated-map v1 command");
@@ -255,6 +256,19 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
         }
     }
 
+    private void validateCommandValueEncodings(Command command) {
+        for (Mutation mutation : command.mutations()) {
+            if (!valueBearing(mutation.operation())) {
+                continue;
+            }
+            CollectionDescriptor descriptor = collections.get(mutation.collectionId());
+            if (!AuthenticatedMapContract.valueEncodingAccepts(
+                    descriptor.valueEncoding(), mutation.value(), descriptor.maxValueBytes())) {
+                throw new IllegalArgumentException("mutation violates collection value encoding");
+            }
+        }
+    }
+
     private void applyCommand(long height, AppMessage message, Command command,
                               byte[] receiptKey, AppStateWriter writer) {
         byte[] batchCommitment = AuthenticatedMapContract.batchCommitment(command);
@@ -309,16 +323,21 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
             if (!descriptor.restoreAllowed()) {
                 throw failure(AuthenticatedMapContract.ERROR_RESTORE_FORBIDDEN);
             }
+            requireValueEncoding(descriptor, mutation.value());
             return Entry.active(Math.addExact(current.revision(), 1),
                     current.controller(), mutation.value(), current.createdHeight(), height);
         }
 
         return switch (mutation.operation()) {
-            case AuthenticatedMapContract.OP_PUT -> updated(height, current, mutation.value());
+            case AuthenticatedMapContract.OP_PUT -> {
+                requireValueEncoding(descriptor, mutation.value());
+                yield updated(height, current, mutation.value());
+            }
             case AuthenticatedMapContract.OP_PUT_IF_ABSENT ->
                     throw failure(AuthenticatedMapContract.ERROR_ALREADY_EXISTS);
             case AuthenticatedMapContract.OP_COMPARE_AND_SET -> {
                 requirePreconditions(current, mutation);
+                requireValueEncoding(descriptor, mutation.value());
                 yield updated(height, current, mutation.value());
             }
             case AuthenticatedMapContract.OP_TRANSFER_CONTROLLER -> {
@@ -349,9 +368,24 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
                 && !isMember(sender, height)) {
             throw failure(AuthenticatedMapContract.ERROR_UNAUTHORIZED);
         }
+        requireValueEncoding(descriptor, mutation.value());
         byte[] controller = descriptor.authorization() == AuthenticatedMapContract.AUTH_OWNER
                 ? sender : new byte[0];
         return Entry.active(1, controller, mutation.value(), height, height);
+    }
+
+    private void requireValueEncoding(CollectionDescriptor descriptor, byte[] value) {
+        if (!AuthenticatedMapContract.valueEncodingAccepts(
+                descriptor.valueEncoding(), value, descriptor.maxValueBytes())) {
+            throw failure(AuthenticatedMapContract.ERROR_VALUE_ENCODING);
+        }
+    }
+
+    private static boolean valueBearing(int operation) {
+        return operation == AuthenticatedMapContract.OP_PUT
+                || operation == AuthenticatedMapContract.OP_PUT_IF_ABSENT
+                || operation == AuthenticatedMapContract.OP_COMPARE_AND_SET
+                || operation == AuthenticatedMapContract.OP_RESTORE;
     }
 
     private void authorize(long height, byte[] sender,

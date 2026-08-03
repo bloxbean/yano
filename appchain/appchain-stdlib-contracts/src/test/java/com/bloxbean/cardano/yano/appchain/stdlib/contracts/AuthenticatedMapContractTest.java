@@ -66,7 +66,15 @@ class AuthenticatedMapContractTest {
                 .containsExactly("issuer-keys", "products");
         assertThat(genesis.initialEntries()).extracting(AuthenticatedMapContract.GenesisEntry::collectionId)
                 .containsExactly("products");
+        assertThat(genesis.collections())
+                .extracting(AuthenticatedMapContract.CollectionDescriptor::valueEncoding)
+                .containsOnly(AuthenticatedMapContract.VALUE_ENCODING_OPAQUE);
         assertThat(AuthenticatedMapContract.genesisId(genesis)).hasSize(32);
+
+        byte[] oldCodec = encoded.clone();
+        oldCodec[1] = 1;
+        assertThatThrownBy(() -> AuthenticatedMapContract.decodeGenesis(oldCodec))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
@@ -99,6 +107,10 @@ class AuthenticatedMapContractTest {
         assertThatThrownBy(() -> new AuthenticatedMapContract.CollectionDescriptor(
                 "products", 3, false, 32, 128))
                 .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new AuthenticatedMapContract.CollectionDescriptor(
+                "products", AuthenticatedMapContract.AUTH_OPEN, false, 32, 128, 2))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("value encoding");
         assertThatThrownBy(() -> AuthenticatedMapContract.Mutation.compareAndSet(
                 "products", bytes("sku-1"), new byte[]{1}, 0, null))
                 .isInstanceOf(IllegalArgumentException.class);
@@ -109,6 +121,51 @@ class AuthenticatedMapContractTest {
                 .isEqualTo((byte) AuthenticatedMapContract.NAMESPACE_KIND_FRAMEWORK);
         assertThat(AuthenticatedMapContract.receiptKey(repeated(5))[1])
                 .isEqualTo((byte) AuthenticatedMapContract.NAMESPACE_KIND_FRAMEWORK);
+    }
+
+    @Test
+    void valueEncodingIsOpaqueByDefaultAndCanonicalCborIsExplicit() {
+        AuthenticatedMapContract.CollectionDescriptor opaque =
+                new AuthenticatedMapContract.CollectionDescriptor(
+                        "opaque", AuthenticatedMapContract.AUTH_OPEN, false, 32, 128);
+        AuthenticatedMapContract.CollectionDescriptor canonical =
+                new AuthenticatedMapContract.CollectionDescriptor(
+                        "canonical", AuthenticatedMapContract.AUTH_OPEN, false, 32, 128,
+                        AuthenticatedMapContract.VALUE_ENCODING_CANONICAL_CBOR);
+
+        assertThat(opaque.valueEncoding())
+                .isEqualTo(AuthenticatedMapContract.VALUE_ENCODING_OPAQUE);
+        assertThat(AuthenticatedMapContract.valueEncodingAccepts(
+                opaque.valueEncoding(), new byte[0], opaque.maxValueBytes())).isTrue();
+        assertThat(AuthenticatedMapContract.valueEncodingAccepts(
+                opaque.valueEncoding(), java.util.HexFormat.of().parseHex("1817"),
+                opaque.maxValueBytes())).isTrue();
+        assertThat(AuthenticatedMapContract.valueEncodingAccepts(
+                canonical.valueEncoding(), java.util.HexFormat.of().parseHex("a1616101"),
+                canonical.maxValueBytes())).isTrue();
+        assertThat(AuthenticatedMapContract.valueEncodingAccepts(
+                canonical.valueEncoding(), java.util.HexFormat.of().parseHex("1817"),
+                canonical.maxValueBytes())).isFalse();
+    }
+
+    @Test
+    void genesisRejectsInitialValueThatViolatesCollectionEncoding() {
+        AuthenticatedMapContract.CollectionDescriptor canonical =
+                new AuthenticatedMapContract.CollectionDescriptor(
+                        "records", AuthenticatedMapContract.AUTH_OPEN, false, 64, 1024,
+                        AuthenticatedMapContract.VALUE_ENCODING_CANONICAL_CBOR);
+
+        assertThatThrownBy(() -> new AuthenticatedMapContract.Genesis(
+                "canonical-genesis",
+                StateCommitmentProfiles.JMT_BLAKE2B256_V1,
+                StateCommitmentProfiles.CLASSIC_JMT.formatFingerprint(),
+                repeated(1), repeated(2), repeated(3),
+                16, 4096, List.of(canonical),
+                List.of(new AuthenticatedMapContract.GenesisEntry(
+                        "records", bytes("one"), new byte[0],
+                        java.util.HexFormat.of().parseHex("1817")))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("value encoding");
     }
 
     @Test
