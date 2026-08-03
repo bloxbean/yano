@@ -10,7 +10,6 @@ import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkStatement;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkVerificationKey;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.zeroj.EutxoKeyPaymentBatchCircuit;
 import com.bloxbean.cardano.yano.appchain.eutxo.zk.zeroj.EutxoKeyPaymentSettlementCircuit;
-import com.bloxbean.cardano.yano.appchain.eutxo.zk.zeroj.EutxoCeremonyManifest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -25,11 +24,9 @@ import java.time.ZoneOffset;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
-import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class EutxoProverServiceTest {
     private static final Clock CLOCK = Clock.fixed(
@@ -117,57 +114,6 @@ class EutxoProverServiceTest {
         }
     }
 
-    @Test
-    void twoIndependentProversUsingOneCeremonyBundleProveSameStatement() {
-        Path keys = temporary.resolve("ceremony");
-        EutxoZkProofArtifact first;
-        EutxoZkVerificationKey verificationKey;
-        EutxoCeremonyManifest manifest;
-        try (ZerojEutxoProofBackend setup =
-                     ZerojEutxoProofBackend.singleParticipantDevelopmentSetup(keys)) {
-            verificationKey = setup.verificationKey();
-            manifest = EutxoCeremonyManifest.development(
-                    "z6-test-ceremony", keys, verificationKey);
-            Fixtures fixtures = fixtures(verificationKey.digestHex());
-            first = setup.prove(
-                    fixtures.statement(), fixtures.witness(), "prover-a");
-            assertThat(setup.verify(first)).isTrue();
-        }
-
-        EutxoZkProofArtifact second;
-        Fixtures fixtures = fixtures(verificationKey.digestHex());
-        try (ZerojEutxoProofBackend independent =
-                     ZerojEutxoProofBackend.loadCeremonyBundle(
-                             keys, manifest)) {
-            assertThat(independent.verificationKey().digestHex())
-                    .isEqualTo(verificationKey.digestHex());
-            second = independent.prove(
-                    fixtures.statement(), fixtures.witness(), "prover-b");
-            assertThat(independent.verify(first)).isTrue();
-            assertThat(independent.verify(second)).isTrue();
-        }
-
-        TreeMap<String, String> corrupt = new TreeMap<>(
-                manifest.fileDigests());
-        corrupt.put(corrupt.firstKey(), "ff".repeat(32));
-        var corruptManifest = new EutxoCeremonyManifest(
-                manifest.ceremonyId(), manifest.kind(), manifest.method(),
-                manifest.participantCount(), manifest.transcriptDigest(),
-                manifest.profileDigest(), manifest.circuitId(),
-                manifest.verificationKeyDigest(), corrupt);
-        assertThatThrownBy(() ->
-                ZerojEutxoProofBackend.loadCeremonyBundle(
-                        keys, corruptManifest))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("inventory");
-
-        assertThat(first.statementDigest())
-                .isEqualTo(second.statementDigest());
-        assertThat(first.verificationKeyDigest())
-                .isEqualTo(second.verificationKeyDigest());
-        assertThat(first.proverId()).isNotEqualTo(second.proverId());
-    }
-
     private EutxoProverService service(
             EutxoProverStore store,
             EutxoProofBackend backend
@@ -177,7 +123,7 @@ class EutxoProverServiceTest {
                 Duration.ofSeconds(30), 3, 10);
     }
 
-    private static Fixtures fixtures(String verificationKeyDigest) {
+    static Fixtures fixtures(String verificationKeyDigest) {
         EutxoKeyPaymentBatch witness = new EutxoKeyPaymentBatch(
                 List.of(
                         payment(100, 70),
@@ -212,7 +158,7 @@ class EutxoProverServiceTest {
                 BigInteger.valueOf(input - first));
     }
 
-    private record Fixtures(
+    record Fixtures(
             EutxoKeyPaymentBatch witness,
             EutxoZkBatchData batchData,
             EutxoZkStatement statement

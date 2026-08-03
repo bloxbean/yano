@@ -71,7 +71,7 @@ absence is represented as `NOT_EXERCISED`, not as a build failure or a pass.
 ## Packaged acceptance command
 
 ```bash
-./gradlew :appchain-devtools:test \
+./gradlew :appchain-devtools:distributionTest \
   --tests \
   'com.bloxbean.cardano.yano.appchain.devtools.AppChainFinalDistributionAcceptanceTest.finalDistributionRunsEutxoValidityLifecyclePolicy'
 ```

@@ -56,6 +56,10 @@ tasks.named('compileTestJava') {
     options.compilerArgs += ['--add-modules', 'jdk.httpserver']
 }
 
+tasks.named('compileIntegrationTestJava') {
+    options.compilerArgs += ['--add-modules', 'jdk.httpserver']
+}
+
 tasks.withType(Test).configureEach {
     jvmArgs '--add-modules=jdk.httpserver'
     [

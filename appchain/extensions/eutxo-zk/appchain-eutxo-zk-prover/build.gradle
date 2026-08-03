@@ -17,6 +17,15 @@ java {
     targetCompatibility = 25
 }
 
-tasks.named('test') {
+tasks.withType(Test).configureEach {
     systemProperty 'zeroj.allowInsecureTrustedSetup', 'true'
+}
+
+sourceSets.cryptoTest.compileClasspath += sourceSets.test.output
+sourceSets.cryptoTest.runtimeClasspath += sourceSets.test.output
+tasks.named('compileCryptoTestJava') {
+    dependsOn tasks.named('testClasses')
+}
+tasks.named('cryptoTest') {
+    classpath += sourceSets.test.output
 }

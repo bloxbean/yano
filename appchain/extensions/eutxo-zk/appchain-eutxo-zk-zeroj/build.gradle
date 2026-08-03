@@ -25,10 +25,24 @@ java {
     targetCompatibility = 25
 }
 
-tasks.named('test') {
+tasks.withType(Test).configureEach {
     systemProperty 'zeroj.allowInsecureTrustedSetup', 'true'
+}
+
+tasks.named('test') {
+    maxHeapSize = '2g'
+}
+
+tasks.named('cryptoTest') {
     // The measured b16 Groth16 gate compiles and proves the full fixed circuit.
     maxHeapSize = '4g'
+    classpath += sourceSets.test.output
+}
+
+sourceSets.cryptoTest.compileClasspath += sourceSets.test.output
+sourceSets.cryptoTest.runtimeClasspath += sourceSets.test.output
+tasks.named('compileCryptoTestJava') {
+    dependsOn tasks.named('testClasses')
 }
 
 publishing {

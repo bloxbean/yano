@@ -105,6 +105,10 @@ def packagedCliZip = tasks.named('distZip')
 def finalYanoZip = project(':app').tasks.named('yanoDistZip', Zip)
 
 tasks.named('test') {
+    systemProperty 'yano.test.repo-root', rootProject.projectDir.absolutePath
+}
+
+tasks.named('distributionTest') {
     dependsOn packagedCliInstall, packagedCliZip, finalYanoZip
     doFirst {
         systemProperty 'yano.test.repo-root', rootProject.projectDir.absolutePath
@@ -331,6 +335,7 @@ tasks.register('appChainReleaseCandidateJvmAcceptance') {
     group = 'verification'
     description = 'Runs static, generated-project, packaged JVM, and stock outcome gates.'
     dependsOn tasks.named('appChainReleaseCandidateStaticCheck'),
+            tasks.named('distributionTest'),
             tasks.named('finalDistributionRuntimeAcceptance'),
             tasks.named('finalDistributionStockOutcomeAcceptance'),
             project(':app').tasks.named('packagedJvmPluginCatalogSmoke')

@@ -32,45 +32,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class EutxoJubjubAuthorizationCircuitTest {
 
     @Test
-    void developmentProfileVerifiesExactL2SignatureAndRealProof() throws Exception {
-        EutxoL2Transaction transaction = transaction(BigInteger.valueOf(101));
-        var engine = new ZerojPoseidonValidityEngine(
-                "jubjub-test", EutxoProfile.V1);
-        String credential = transaction.authorizations()
-                .getFirst().paymentCredential();
-        var registration = new EutxoL2KeyRegistration(
-                credential,
-                engine.authorizationProfile(),
-                1,
-                transaction.authorizations().getFirst().publicKey(),
-                EutxoL2KeyRegistration.Status.ACTIVE);
-
-        assertThat(engine.verifyAuthorization(
-                transaction, List.of(registration)).accepted()).isTrue();
-        var statement =
-                EutxoJubjubAuthorizationCircuit.statement(transaction);
-        BigInteger[] witness =
-                EutxoJubjubAuthorizationCircuit.witness(transaction);
-        assertThat(witness).isNotEmpty();
-
-        try (var setup = EutxoGroth16DevelopmentSetup.create(
-                EutxoJubjubAuthorizationCircuit.circuit())) {
-            var proof = setup.prove(statement.ordered(), witness);
-            assertThat(setup.verify(proof)).isTrue();
-            assertThat(setup.constraintCount()).isGreaterThan(5_000);
-            assertThat(setup.publicInputCount()).isEqualTo(2);
-            var tampered = new EutxoGroth16DevelopmentSetup.GenericProofArtifact(
-                    List.of(
-                            statement.messageCommitment().add(BigInteger.ONE),
-                            statement.publicKeyCommitment()),
-                    proof.proof(),
-                    proof.compressedProof(),
-                    proof.proofMillis());
-            assertThat(setup.verify(tampered)).isFalse();
-        }
-    }
-
-    @Test
     void hostGuardRejectsTamperingIdentityAndPublicTestnetWithoutAcknowledgement()
             throws Exception {
         EutxoL2Transaction valid = transaction(BigInteger.valueOf(202));
@@ -131,7 +92,7 @@ class EutxoJubjubAuthorizationCircuitTest {
                 .isNotNull();
     }
 
-    private static EutxoL2Transaction transaction(BigInteger secret)
+    static EutxoL2Transaction transaction(BigInteger secret)
             throws Exception {
         byte[] seed = new byte[32];
         Arrays.fill(seed, (byte) 7);

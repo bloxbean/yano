@@ -12,10 +12,15 @@ import java.util.Map;
 public class DevnetTestProfile implements QuarkusTestProfile {
 
     static final Path TEMP_STORAGE_DIR;
+    static final Path TEMP_SHELLEY_GENESIS;
 
     static {
         try {
             TEMP_STORAGE_DIR = Files.createTempDirectory("yaci-e2etest-chainstate");
+            TEMP_SHELLEY_GENESIS = TEMP_STORAGE_DIR.resolve("shelley-genesis.json");
+            Files.copy(
+                    Path.of("config/network/devnet/shelley-genesis.json"),
+                    TEMP_SHELLEY_GENESIS);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -56,6 +61,7 @@ public class DevnetTestProfile implements QuarkusTestProfile {
         return Map.of(
                 "yano.storage.rocksdb", "true",
                 "yano.storage.path", TEMP_STORAGE_DIR.toString(),
+                "yano.genesis.shelley-genesis-file", TEMP_SHELLEY_GENESIS.toString(),
                 "yaci.plugins.enabled", "false",
                 "yano.server.port", "23337"
         );

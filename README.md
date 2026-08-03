@@ -58,9 +58,13 @@ Yano's initial goal is to fill three roles:
 ### Build
 
 ```bash
-./gradlew clean build              # all modules + tests
+./gradlew clean build              # all modules + L1/app-chain core tests
+./gradlew fullBuild                # optional extended + crypto + distribution verification
 ./gradlew :app:quarkusBuild        # produce app/build/yano.jar (Quarkus uber-jar)
 ```
+
+See [Building and testing Yano](docs/BUILD_AND_TEST.md) for the test tiers,
+single-suite commands, and packaged-distribution checks.
 
 ### Run a preprod relay (default profile)
 

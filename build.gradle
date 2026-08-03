@@ -8,6 +8,15 @@ plugins {
     id 'com.gradleup.shadow' version '9.4.1' apply false
 }
 
+abstract class CryptoTestLock implements
+        org.gradle.api.services.BuildService<org.gradle.api.services.BuildServiceParameters.None> {
+}
+
+def cryptoTestLock = gradle.sharedServices.registerIfAbsent(
+        'yanoCryptoTestLock', CryptoTestLock) {
+    maxParallelUsages = 1
+}
+
 repositories {
     mavenCentral()
     mavenLocal()
@@ -325,6 +334,15 @@ subprojects {
 
         testSets {
             integrationTest
+            cryptoTest
+            distributionTest
+        }
+
+        tasks.named('cryptoTest') {
+            // Groth16 setup/proving tasks use large heaps. Keep these suites
+            // serialized even when the rest of the build uses --parallel.
+            usesService cryptoTestLock
+            maxParallelForks = 1
         }
 
         publishing {
@@ -377,12 +395,73 @@ subprojects {
         useJUnitPlatform()
         jvmArgs '--add-opens=java.base/java.lang=ALL-UNNAMED'
         testLogging {
-            events "started", "passed", "skipped", "failed"
-            exceptionFormat "full"
-            showStandardStreams = true
+            def verbose = rootProject.providers.gradleProperty('verboseTests')
+                    .map { it.toBoolean() }
+                    .getOrElse(false)
+            events(*(verbose
+                    ? ['started', 'passed', 'skipped', 'failed']
+                    : ['skipped', 'failed']))
+            exceptionFormat verbose ? 'full' : 'short'
+            showStandardStreams = verbose
         }
 
     }
+}
+
+def appChainExtendedProjects = [
+        ':runtime',
+        ':appchain-composite',
+        ':appchain-kafka',
+        ':appchain-objectstore-s3',
+        ':appchain-ipfs',
+        ':appchain-evidence-demo-runner'
+]
+
+def appChainCryptoProjects = [
+        ':appchain-eutxo-zk-zeroj',
+        ':appchain-eutxo-zk-onchain',
+        ':appchain-eutxo-zk-prover',
+        ':appchain-eutxo-zk-testkit'
+]
+
+tasks.register('appChainExtendedTest') {
+    group = 'verification'
+    description = 'Runs extended multi-node and real-connector app-chain tests.'
+    dependsOn appChainExtendedProjects.collect { "${it}:integrationTest" }
+}
+
+tasks.register('appChainCryptoTest') {
+    group = 'verification'
+    description = 'Runs the serialized full EUTxO Groth16 and on-chain proof matrix.'
+    dependsOn appChainCryptoProjects.collect { "${it}:cryptoTest" }
+}
+
+tasks.register('distributionCheck') {
+    group = 'verification'
+    description = 'Validates copied/extracted Yano, app-chain CLI, and showcase distributions.'
+    dependsOn ':appchain-devtools:distributionTest',
+            ':app:packagedJvmPluginCatalogSmoke',
+            ':appchain-showcase:showcaseDistributionContract',
+            ':appchain-devtools:finalDistributionRuntimeAcceptance',
+            ':appchain-devtools:finalDistributionStockOutcomeAcceptance'
+}
+
+tasks.register('extendedTest') {
+    group = 'verification'
+    description = 'Runs every repository integrationTest suite, including app-chain extensions.'
+    dependsOn subprojects.findAll { candidate ->
+        !(candidate.name in nonLibraryModules) || candidate.name == 'app'
+    }.collect { candidate -> "${candidate.path}:integrationTest" }
+}
+
+tasks.register('fullBuild') {
+    group = 'build'
+    description = 'Runs the default build plus extended, crypto, and distribution verification.'
+    dependsOn ':build'
+    dependsOn subprojects.collect { candidate -> "${candidate.path}:build" }
+    dependsOn tasks.named('extendedTest'),
+            tasks.named('appChainCryptoTest'),
+            tasks.named('distributionCheck')
 }
 
 def getCheckedOutGitCommitHash() {

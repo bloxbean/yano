@@ -64,6 +64,15 @@ tasks.withType(Test).configureEach {
     }
 }
 
+sourceSets.integrationTest.compileClasspath += sourceSets.test.output
+sourceSets.integrationTest.runtimeClasspath += sourceSets.test.output
+tasks.named('compileIntegrationTestJava') {
+    dependsOn tasks.named('testClasses')
+}
+tasks.named('integrationTest') {
+    classpath += sourceSets.test.output
+}
+
 // Keep the normal artifact thin for build-time/native inclusion. The bundle
 // classifier is the self-contained drop-in artifact for yaci.plugins.directory.
 tasks.named('shadowJar') {

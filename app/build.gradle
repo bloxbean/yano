@@ -367,6 +367,26 @@ tasks.register('generateBakedApiPrefixContract') {
 tasks.register('generatePluginCatalogIndex', JavaExec) {
     dependsOn project(':plugin-catalog').tasks.named('classes')
     inputs.files(configurations.runtimeClasspath)
+    inputs.property('runtimeResolutionGraph', providers.provider {
+        def runtimeConfiguration = configurations.runtimeClasspath
+        def resolution = runtimeConfiguration.incoming.resolutionResult
+        def graph = []
+        resolution.allComponents.each { component ->
+            graph.add("component|${component.id.displayName}".toString())
+            component.dependencies.each { dependency ->
+                if (dependency instanceof
+                        org.gradle.api.artifacts.result.ResolvedDependencyResult) {
+                    graph.add(("edge|${component.id.displayName}|"
+                            + "${dependency.selected.id.displayName}").toString())
+                }
+            }
+        }
+        runtimeConfiguration.incoming.artifactView { }.artifacts.artifacts.each { artifact ->
+            graph.add(("artifact|${artifact.id.componentIdentifier.displayName}|"
+                    + artifact.file.name).toString())
+        }
+        graph.sort().join('\n')
+    })
     outputs.file(generatedPluginCatalogDir.map {
         it.file('META-INF/yano-plugin-index-v1.json')
     })
@@ -374,10 +394,8 @@ tasks.register('generatePluginCatalogIndex', JavaExec) {
         it.file(generatedPluginReflectionPath)
     })
     // Closure ownership comes from resolution-graph edges, not only the global
-    // runtime file set. Always regenerate so an edge reassignment with the same
-    // artifact bytes cannot reuse stale per-bundle evidence.
-    outputs.upToDateWhen { false }
-    outputs.doNotCacheIf('per-bundle resolution-graph ownership is execution input') { true }
+    // runtime file set. The serialized component/edge/artifact inventory above
+    // makes that ownership an explicit incremental and build-cache input.
     classpath = project(':plugin-catalog').sourceSets.main.runtimeClasspath
     mainClass = 'com.bloxbean.cardano.yano.catalog.PluginIndexGenerator'
     doFirst {

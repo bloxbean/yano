@@ -265,14 +265,20 @@ tasks.register('showcaseDistributionContract', Exec) {
     group = 'verification'
     description = 'Checks the final copied/extracted showcase archive and documentation inventory'
     dependsOn tasks.named('distZip')
-    commandLine 'bash', file('src/test/scripts/distribution-contract.sh'),
+    commandLine 'bash', file('src/distributionTest/scripts/distribution-contract.sh'),
             tasks.named('distZip').flatMap { it.archiveFile }.get().asFile
 }
 
 tasks.named('check') {
     dependsOn tasks.named('verifyShowcasePluginArtifact'),
-            tasks.named('showcaseScriptContract'),
-            tasks.named('showcaseDistributionContract')
+            tasks.named('showcaseScriptContract')
+}
+
+// The distribution plugin normally wires ZIP and TAR assembly into every
+// ordinary build. The showcase archive is verified explicitly by the root
+// distributionCheck tier, so keep default iteration on classes and bundles.
+tasks.named('assemble') {
+    setDependsOn([tasks.named('jar'), tasks.named('shadowJar')])
 }
 
 // The showcase is a demo artifact, not a published production library.
