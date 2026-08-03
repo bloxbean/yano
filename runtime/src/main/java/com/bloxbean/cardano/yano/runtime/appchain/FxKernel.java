@@ -111,11 +111,11 @@ final class FxKernel {
      * (ADR-010 F4), so enabling effects later can never collide with
      * historical application leaves.
      */
-    Result apply(AppStateMachine machine, AppBlock block, MpfTrie trie, FxReader reader) {
+    Result apply(AppStateMachine machine, AppBlock block, AppStateWriter state, FxReader reader) {
         if (consensusProfileGuard != null) {
-            consensusProfileGuard.apply(block.height(), trie);
+            consensusProfileGuard.apply(block.height(), state);
         }
-        AppStateWriter machineWriter = guardedWriter(trie, settings.strictReservedPrefix());
+        AppStateWriter machineWriter = guardedWriter(state, settings.strictReservedPrefix());
 
         if (!settings.enabled()) {
             machine.apply(block, machineWriter, AppEffectEmitter.rejecting(
@@ -143,7 +143,7 @@ final class FxKernel {
                 continue; // audit no-op (malformed / unknown / dup / out of window)
             }
             if (settings.outcomeCommitment() == EffectOutcomeCommitment.PER_EFFECT) {
-                trie.put(FxKeys.doneKey(result.effectId()), result.envelopeHash());
+                state.put(FxKeys.doneKey(result.effectId()), result.envelopeHash());
             }
             closedInBlock.add(positionKey(result.effectId().height(), result.effectId().ordinal()));
             incorporated.add(result);
@@ -175,7 +175,7 @@ final class FxKernel {
             EffectResult expired = new EffectResult(record.effectId(), record.type(), record.scope(),
                     EffectOutcome.EXPIRED, new byte[0], null, block.height());
             if (settings.outcomeCommitment() == EffectOutcomeCommitment.PER_EFFECT) {
-                trie.put(FxKeys.doneKey(expired.effectId()), expired.envelopeHash());
+                state.put(FxKeys.doneKey(expired.effectId()), expired.envelopeHash());
             }
             incorporated.add(expired);
             expiredThisBlock++;
@@ -193,7 +193,7 @@ final class FxKernel {
                 hashes.add(staged.effectHash());
             }
             effectsRoot = FxKeys.effectsRoot(hashes);
-            trie.put(FxKeys.effectsRootKey(block.height()), effectsRoot);
+            state.put(FxKeys.effectsRootKey(block.height()), effectsRoot);
         }
         if (settings.outcomeCommitment() == EffectOutcomeCommitment.PER_BLOCK
                 && !incorporated.isEmpty()) {
@@ -201,7 +201,7 @@ final class FxKernel {
             for (EffectResult result : incorporated) {
                 outcomeHashes.add(result.envelopeHash());
             }
-            trie.put(FxKeys.resultsRootKey(block.height()), FxKeys.effectsRoot(outcomeHashes));
+            state.put(FxKeys.resultsRootKey(block.height()), FxKeys.effectsRoot(outcomeHashes));
         }
 
         // 5. Merge expiry buckets against committed state HERE (apply time),
@@ -226,6 +226,11 @@ final class FxKernel {
                 Map.copyOf(bucketPuts), bucket.isEmpty() ? -1 : block.height(),
                 Math.max(0, newOpen),
                 Math.addExact(reader.expiredCount(), expiredThisBlock));
+    }
+
+    /** Compatibility adapter for focused legacy MPF tests. Production uses {@link AppStateWriter}. */
+    Result apply(AppStateMachine machine, AppBlock block, MpfTrie trie, FxReader reader) {
+        return apply(machine, block, writerFor(trie), reader);
     }
 
     // ------------------------------------------------------------------
@@ -284,29 +289,33 @@ final class FxKernel {
         return (height << 20) | (ordinal & 0xFFFFF); // ordinal < max-per-block << 2^20
     }
 
-    private AppStateWriter guardedWriter(MpfTrie trie, boolean strict) {
+    private AppStateWriter guardedWriter(AppStateWriter state, boolean strict) {
         return new AppStateWriter() {
             @Override
             public void put(byte[] key, byte[] value) {
                 rejectReserved(key);
-                trie.put(key, value);
+                state.put(key, value);
             }
 
             @Override
             public void delete(byte[] key) {
                 rejectReserved(key);
-                trie.delete(key);
+                state.delete(key);
             }
 
             @Override
             public Optional<byte[]> get(byte[] key) {
-                return Optional.ofNullable(trie.get(key)); // reads of ~fx/* are allowed
+                return state.get(key); // reads of ~fx/* are allowed
             }
 
             @Override
             public byte[] stateRoot() {
-                byte[] root = trie.getRootHash();
-                return root != null ? root : new byte[32]; // AppStateReader contract: never null
+                return state.stateRoot();
+            }
+
+            @Override
+            public long committedHeight() {
+                return state.committedHeight();
             }
 
             private void rejectReserved(byte[] key) {
@@ -319,6 +328,20 @@ final class FxKernel {
                     throw new IllegalArgumentException(
                             "Application state keys must not use the reserved '~fx/' prefix (ADR-010 F4)");
                 }
+            }
+        };
+    }
+
+    private static AppStateWriter writerFor(MpfTrie trie) {
+        return new AppStateWriter() {
+            @Override public void put(byte[] key, byte[] value) { trie.put(key, value); }
+            @Override public void delete(byte[] key) { trie.delete(key); }
+            @Override public Optional<byte[]> get(byte[] key) {
+                return Optional.ofNullable(trie.get(key));
+            }
+            @Override public byte[] stateRoot() {
+                byte[] root = trie.getRootHash();
+                return root != null ? root : new byte[32];
             }
         };
     }

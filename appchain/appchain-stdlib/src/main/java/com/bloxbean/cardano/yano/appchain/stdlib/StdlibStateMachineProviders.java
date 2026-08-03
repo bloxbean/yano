@@ -7,6 +7,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfile;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import com.bloxbean.cardano.yano.appchain.config.AppChainApprovalsConfig;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
@@ -66,13 +67,18 @@ public final class StdlibStateMachineProviders {
             }
             StateCommitmentProfile profile = StateCommitmentProfiles.require(
                     genesis.commitmentProfileId());
-            if (!profile.id().equals(StateCommitmentProfiles.MPF.id())) {
-                throw new IllegalArgumentException(
-                        "ADR-025 Phase 1 supports only mpf-blake2b256-v1");
-            }
             if (!Arrays.equals(profile.formatFingerprint(), genesis.formatFingerprint())) {
                 throw new IllegalArgumentException(
                         "authenticated-map genesis format fingerprint is incompatible");
+            }
+            StateCommitmentIdentity stateIdentity = context.stateCommitmentIdentity()
+                    .orElseGet(() -> StateCommitmentIdentity.fromSettings(context.settings()));
+            if (stateIdentity.legacy()
+                    || !stateIdentity.profile().equals(profile)
+                    || !Arrays.equals(stateIdentity.genesisId(),
+                    AuthenticatedMapContract.genesisId(genesis))) {
+                throw new IllegalArgumentException(
+                        "authenticated-map genesis differs from the runtime state commitment identity");
             }
             AppChainConsensusProfile consensus = context.consensusProfile()
                     .orElseThrow(() -> new IllegalArgumentException(

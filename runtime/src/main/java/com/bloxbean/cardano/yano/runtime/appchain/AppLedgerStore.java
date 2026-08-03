@@ -9,6 +9,10 @@ import com.bloxbean.cardano.yano.api.appchain.effects.EffectProof;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectProofLookup;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectRecord;
 import com.bloxbean.cardano.yano.api.appchain.effects.FxKeys;
+import com.bloxbean.cardano.yano.api.appchain.state.AuthenticatedStateBackend;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
+import com.bloxbean.cardano.yano.api.appchain.state.StateProofEnvelope;
 import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 import org.rocksdb.*;
 import org.slf4j.Logger;
@@ -25,9 +29,9 @@ import java.util.Optional;
 
 /**
  * Durable app-chain ledger: hash-linked blocks, tip metadata, per-height vote
- * locks, an included-message index, and the MPF state trie — all in one
+ * locks, an included-message index, and the authenticated-state backend — all in one
  * RocksDB instance so a finalized block commits in a single atomic WriteBatch
- * (block + tip + message index + trie nodes + state root). The ledger is
+ * (block + tip + message index + backend nodes + state root). The ledger is
  * append-only after APP_FINAL: there is no rollback path by construction
  * (ADR app-layer/005, risk table).
  */
@@ -45,6 +49,12 @@ final class AppLedgerStore implements AutoCloseable {
     private static final byte[] KEY_TIP_HEIGHT = "tip_height".getBytes(StandardCharsets.UTF_8);
     private static final byte[] KEY_TIP_HASH = "tip_hash".getBytes(StandardCharsets.UTF_8);
     private static final byte[] KEY_STATE_ROOT = "state_root".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] KEY_STATE_PROFILE =
+            "state_commitment_profile".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] KEY_STATE_FINGERPRINT =
+            "state_commitment_fingerprint".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] KEY_STATE_GENESIS_ID =
+            "state_commitment_genesis_id".getBytes(StandardCharsets.UTF_8);
     private static final String KEY_VOTE_LOCK_PREFIX = "vote_lock_";
 
     private final RocksDB db;
@@ -57,10 +67,28 @@ final class AppLedgerStore implements AutoCloseable {
     private final ColumnFamilyHandle fxRecordsCf;
     private final ColumnFamilyHandle fxRuntimeCf;
     private final RocksDbNodeStore mpfNodeStore;
+    private final StateCommitmentIdentity stateCommitmentIdentity;
+    private final MpfAuthenticatedStateBackend stateBackend;
+    private final StateCommitFaultInjector stateCommitFaults;
     private final Logger log;
 
     AppLedgerStore(String path, Logger log) {
+        this(path, log, StateCommitmentIdentity.legacyMpf());
+    }
+
+    AppLedgerStore(String path, Logger log, StateCommitmentIdentity identity) {
+        this(path, log, identity, StateCommitFaultInjector.NONE);
+    }
+
+    AppLedgerStore(String path, Logger log, StateCommitmentIdentity identity,
+                   StateCommitFaultInjector stateCommitFaults) {
         this.log = Objects.requireNonNull(log, "log");
+        this.stateCommitmentIdentity = Objects.requireNonNull(identity, "identity");
+        this.stateCommitFaults = Objects.requireNonNull(stateCommitFaults, "stateCommitFaults");
+        if (!StateCommitmentProfiles.MPF.id().equals(stateCommitmentIdentity.profile().id())) {
+            throw new IllegalArgumentException(
+                    "Phase-2 runtime supports only mpf-blake2b256-v1");
+        }
         try {
             RocksDB.loadLibrary();
             new File(path).mkdirs();
@@ -90,6 +118,22 @@ final class AppLedgerStore implements AutoCloseable {
             this.queryIndexCf = cfHandles.get(5);
             this.fxRecordsCf = cfHandles.get(6);
             this.fxRuntimeCf = cfHandles.get(7);
+            this.stateBackend = new MpfAuthenticatedStateBackend(
+                    this, mpfNodeStore, stateCommitmentIdentity, stateCommitFaults);
+            try {
+                stateCommitFaults.at(
+                        StateCommitFaultInjector.FaultPoint.BEFORE_RESTART_VERIFICATION);
+                verifyRetainedStateIdentity();
+                stateCommitFaults.at(
+                        StateCommitFaultInjector.FaultPoint.AFTER_RESTART_VERIFICATION);
+            } catch (RuntimeException incompatible) {
+                try {
+                    close();
+                } catch (Throwable closeFailure) {
+                    incompatible.addSuppressed(closeFailure);
+                }
+                throw incompatible;
+            }
             log.info("App ledger opened at {} (tip height: {})", path, tipHeight());
         } catch (RocksDBException e) {
             throw new RuntimeException("Failed to open app ledger at " + path, e);
@@ -100,9 +144,53 @@ final class AppLedgerStore implements AutoCloseable {
         return mpfNodeStore;
     }
 
+    AuthenticatedStateBackend stateBackend() {
+        return stateBackend;
+    }
+
+    StateCommitmentIdentity stateCommitmentIdentity() {
+        return stateCommitmentIdentity;
+    }
+
     /** Committed state root, or null before the first block. */
     byte[] stateRoot() {
         return getMeta(KEY_STATE_ROOT);
+    }
+
+    /** Fail closed if this RocksDB belongs to another ADR-025 chain generation. */
+    private void verifyRetainedStateIdentity() {
+        byte[] retainedProfile = getMeta(KEY_STATE_PROFILE);
+        byte[] retainedFingerprint = getMeta(KEY_STATE_FINGERPRINT);
+        byte[] retainedGenesis = getMeta(KEY_STATE_GENESIS_ID);
+        boolean anyRetained = retainedProfile != null
+                || retainedFingerprint != null || retainedGenesis != null;
+        long height = tipHeight();
+        if (height == 0) {
+            if (anyRetained) {
+                throw new IllegalStateException(
+                        "Empty app ledger contains partial state-commitment identity metadata");
+            }
+            return;
+        }
+        if (stateCommitmentIdentity.legacy()) {
+            if (anyRetained) {
+                throw new IllegalStateException(
+                        "Legacy MPF configuration cannot open an explicit ADR-025 ledger");
+            }
+            return;
+        }
+        if (retainedProfile == null || retainedFingerprint == null || retainedGenesis == null) {
+            throw new IllegalStateException(
+                    "Explicit ADR-025 configuration cannot open a legacy or partial ledger");
+        }
+        String profile = new String(retainedProfile, StandardCharsets.US_ASCII);
+        if (!stateCommitmentIdentity.profile().id().equals(profile)
+                || !Arrays.equals(stateCommitmentIdentity.profile().formatFingerprint(),
+                retainedFingerprint)
+                || !Arrays.equals(stateCommitmentIdentity.genesisId(), retainedGenesis)) {
+            throw new IllegalStateException(
+                    "Retained state-commitment profile, fingerprint, or genesis id is incompatible");
+        }
     }
 
     long tipHeight() {
@@ -408,6 +496,31 @@ final class AppLedgerStore implements AutoCloseable {
                 keySnapshot, value, proof.orElseThrow(), root, height));
     }
 
+    Optional<StateProofEnvelope> stateProofEnvelope(String chainId, byte[] key) {
+        CommittedStateSnapshot committed = captureCommittedState();
+        return committed.height() > 0
+                ? stateProofEnvelopeAtHeight(chainId, committed.height(), key)
+                : Optional.empty();
+    }
+
+    Optional<StateProofEnvelope> stateProofEnvelopeAtHeight(
+            String chainId,
+            long height,
+            byte[] key
+    ) {
+        if (height <= 0) {
+            return Optional.empty();
+        }
+        return block(height).flatMap(block -> stateBackend.prove(height, key)
+                .filter(proof -> Arrays.equals(proof.snapshot().stateRoot(), block.stateRoot()))
+                .map(proof -> new StateProofEnvelope(
+                        StateProofEnvelope.PROOF_SCHEMA_VERSION,
+                        chainId,
+                        AppBlockCodec.blockHash(block),
+                        proof,
+                        block.cert())));
+    }
+
     /**
      * Atomically read the confirmed-anchor marker and its referenced app block.
      * Anchor metadata is written in one RocksDB batch; a snapshot prevents a
@@ -534,7 +647,57 @@ final class AppLedgerStore implements AutoCloseable {
      */
     void commitBlock(AppBlock block, byte[] blockHash, byte[] newStateRoot, WriteBatch batch,
                      List<GovernedMembership.MetaWrite> metaWrites) {
+        commitBlockWrites(block, blockHash, newStateRoot, batch, metaWrites);
+    }
+
+    /**
+     * Consume a frozen authenticated-state update into the same durable batch
+     * as the finalized block, indexes, effects, tip, and current root.
+     */
+    void commitBlock(AppBlock block, byte[] blockHash, StagedStateCommit stateCommit,
+                     WriteBatch batch, List<GovernedMembership.MetaWrite> metaWrites) {
+        Objects.requireNonNull(stateCommit, "stateCommit");
+        validatePreparedStateCommit(block, stateCommit);
+        stateCommit.stage(batch);
+        stateCommitFaults.at(StateCommitFaultInjector.FaultPoint.BEFORE_LEDGER_STAGE);
+        commitBlockWrites(block, blockHash, stateCommit.stateRoot(), batch, metaWrites);
+    }
+
+    private void validatePreparedStateCommit(AppBlock block, StagedStateCommit stateCommit) {
+        long committedHeight = tipHeight();
+        byte[] committedRoot = stateRoot();
+        byte[] normalizedRoot = committedRoot != null ? committedRoot : new byte[32];
+        StateCommitmentIdentity preparedIdentity = stateCommit.identity();
+        if (preparedIdentity.schemaVersion() != stateCommitmentIdentity.schemaVersion()
+                || preparedIdentity.legacy() != stateCommitmentIdentity.legacy()
+                || !preparedIdentity.profile().equals(stateCommitmentIdentity.profile())
+                || !Arrays.equals(preparedIdentity.genesisId(), stateCommitmentIdentity.genesisId())) {
+            throw new IllegalArgumentException("prepared state commit belongs to another profile or genesis");
+        }
+        if (stateCommit.baseHeight() != committedHeight
+                || !Arrays.equals(stateCommit.baseRoot(), normalizedRoot)) {
+            throw new IllegalStateException("prepared state commit is stale");
+        }
+        if (stateCommit.targetHeight() != block.height()
+                || block.height() != Math.addExact(committedHeight, 1)) {
+            throw new IllegalArgumentException("prepared state commit target differs from block height");
+        }
+        if (!Arrays.equals(stateCommit.stateRoot(), block.stateRoot())) {
+            throw new IllegalArgumentException("prepared state root differs from finalized block");
+        }
+    }
+
+    private void commitBlockWrites(AppBlock block, byte[] blockHash, byte[] newStateRoot,
+                                   WriteBatch batch,
+                                   List<GovernedMembership.MetaWrite> metaWrites) {
         try {
+            if (!stateCommitmentIdentity.legacy()) {
+                batch.put(metaCf, KEY_STATE_PROFILE,
+                        stateCommitmentIdentity.profile().id().getBytes(StandardCharsets.US_ASCII));
+                batch.put(metaCf, KEY_STATE_FINGERPRINT,
+                        stateCommitmentIdentity.profile().formatFingerprint());
+                batch.put(metaCf, KEY_STATE_GENESIS_ID, stateCommitmentIdentity.genesisId());
+            }
             for (GovernedMembership.MetaWrite write : metaWrites) {
                 batch.put(metaCf, write.key().getBytes(StandardCharsets.UTF_8), write.value());
             }
@@ -570,9 +733,13 @@ final class AppLedgerStore implements AutoCloseable {
                 long floor = Math.max(senderSeq(sender), seqEntry.getValue());
                 batch.put(metaCf, senderSeqKey(sender), longBytes(floor));
             }
+            stateCommitFaults.at(StateCommitFaultInjector.FaultPoint.BEFORE_DURABLE_WRITE);
             try (WriteOptions writeOptions = new WriteOptions().setSync(true)) {
                 db.write(writeOptions, batch);
             }
+            stateCommitFaults.at(StateCommitFaultInjector.FaultPoint.AFTER_DURABLE_WRITE);
+            verifyCommittedBlock(block, blockHash, newStateRoot);
+            stateCommitFaults.at(StateCommitFaultInjector.FaultPoint.AFTER_COMMIT_VERIFICATION);
             log.info("App block committed: height={}, hash={}, msgs={}, stateRoot={}",
                     block.height(), com.bloxbean.cardano.yaci.core.util.HexUtil.encodeHexString(blockHash),
                     block.messages().size(),
@@ -580,6 +747,21 @@ final class AppLedgerStore implements AutoCloseable {
         } catch (RocksDBException e) {
             throw new RuntimeException("Failed to commit app block " + block.height(), e);
         }
+    }
+
+    private void verifyCommittedBlock(AppBlock block, byte[] blockHash, byte[] stateRoot) {
+        boolean blockMatches = block(block.height())
+                .map(stored -> Arrays.equals(
+                        AppBlockCodec.serialize(stored), AppBlockCodec.serialize(block)))
+                .orElse(false);
+        if (tipHeight() != block.height()
+                || !Arrays.equals(tipHash(), blockHash)
+                || !Arrays.equals(stateRoot(), stateRoot)
+                || !blockMatches) {
+            throw new IllegalStateException(
+                    "Atomic app block/state commit verification failed at height " + block.height());
+        }
+        verifyRetainedStateIdentity();
     }
 
     // ------------------------------------------------------------------

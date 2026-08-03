@@ -4,6 +4,7 @@ import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfile;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfileCommitment;
+import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 
 import java.util.Arrays;
 import java.util.Objects;
@@ -51,15 +52,15 @@ final class ConsensusProfileGuard {
         }
     }
 
-    void apply(long height, MpfTrie trie) {
+    void apply(long height, AppStateWriter writer) {
         byte[] key = AppChainConsensusProfileCommitment.markerKey();
-        byte[] observed = trie.get(key);
+        byte[] observed = writer.get(key).orElse(null);
         if (height == 1) {
             if (observed != null) {
                 throw new IllegalStateException(
                         "consensus profile marker exists before height-1 initialization");
             }
-            trie.put(key, canonicalBytes);
+            writer.put(key, canonicalBytes);
             return;
         }
         if (height < 1) {
@@ -69,6 +70,21 @@ final class ConsensusProfileGuard {
             throw new IllegalStateException("consensus profile marker is absent or mismatched at height "
                     + height + " (expected " + digestHex + ")");
         }
+    }
+
+    /** Compatibility adapter for focused legacy MPF tests. */
+    void apply(long height, MpfTrie trie) {
+        apply(height, new AppStateWriter() {
+            @Override public void put(byte[] key, byte[] value) { trie.put(key, value); }
+            @Override public void delete(byte[] key) { trie.delete(key); }
+            @Override public Optional<byte[]> get(byte[] key) {
+                return Optional.ofNullable(trie.get(key));
+            }
+            @Override public byte[] stateRoot() {
+                byte[] root = trie.getRootHash();
+                return root != null ? root : new byte[32];
+            }
+        });
     }
 
     private IllegalStateException incompatible(

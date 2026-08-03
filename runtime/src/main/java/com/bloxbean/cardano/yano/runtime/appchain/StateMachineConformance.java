@@ -14,6 +14,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
 import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -364,27 +365,34 @@ public final class StateMachineConformance {
         Map<Long, HeightOutcome> outcomes = new LinkedHashMap<>();
         AppChainConsensusProfile profile = profileFor(
                 chainId, settings, Math.max(1, maxBlockMessages));
-        AppLedgerStore store = new AppLedgerStore(dir.toString(), log);
+        StateCommitmentIdentity stateIdentity = StateCommitmentIdentity.fromSettings(settings);
+        AppLedgerStore store = new AppLedgerStore(dir.toString(), log, stateIdentity);
         try {
             new ConsensusProfileGuard(profile).verifyRetained(store, chainId);
-            AppStateMachine machine = provider.create(contextFor(chainId, settings, profile));
+            new StateCommitmentGuard(stateIdentity).verifyRetained(store, chainId);
+            AppStateMachine machine = provider.create(
+                    contextFor(chainId, settings, profile, stateIdentity));
             machine.init(readerFor(store), new AppChainInfo(chainId, "00".repeat(32), 1));
             for (AppBlock block : corpus) {
                 if (restartAt > 0 && block.height() == restartAt + 1) {
                     // Kill-and-reopen replay: crash recovery must not change roots
                     store.close();
-                    store = new AppLedgerStore(dir.toString(), log);
+                    store = new AppLedgerStore(dir.toString(), log, stateIdentity);
                     new ConsensusProfileGuard(profile).verifyRetained(store, chainId);
-                    machine = provider.create(contextFor(chainId, settings, profile));
+                    new StateCommitmentGuard(stateIdentity).verifyRetained(store, chainId);
+                    machine = provider.create(
+                            contextFor(chainId, settings, profile, stateIdentity));
                     machine.init(readerFor(store), new AppChainInfo(chainId, "00".repeat(32), 1));
                 }
                 if (snapshotAt > 0 && block.height() == snapshotAt + 1) {
                     Path checkpoint = dir.resolveSibling(dir.getFileName() + "-checkpoint");
                     store.createSnapshot(checkpoint.toString());
                     store.close();
-                    store = new AppLedgerStore(checkpoint.toString(), log);
+                    store = new AppLedgerStore(checkpoint.toString(), log, stateIdentity);
                     new ConsensusProfileGuard(profile).verifyRetained(store, chainId);
-                    machine = provider.create(contextFor(chainId, settings, profile));
+                    new StateCommitmentGuard(stateIdentity).verifyRetained(store, chainId);
+                    machine = provider.create(
+                            contextFor(chainId, settings, profile, stateIdentity));
                     machine.init(readerFor(store), new AppChainInfo(chainId, "00".repeat(32), 1));
                 }
                 outcomes.put(block.height(), applyAndCommit(
@@ -396,7 +404,7 @@ public final class StateMachineConformance {
         return outcomes;
     }
 
-    /** Same pipeline as production, via the shared applier (FxKernel + MPF batch staging). */
+    /** Same pipeline as production, via the shared candidate/prepared-commit applier. */
     private static HeightOutcome applyAndCommit(AppLedgerStore store, AppStateMachine machine,
                                                 Map<String, String> settings,
                                                 AppChainConsensusProfile profile,
@@ -424,13 +432,17 @@ public final class StateMachineConformance {
     private static AppStateMachineContext contextFor(
             String chainId,
             Map<String, String> settings,
-            AppChainConsensusProfile profile
+            AppChainConsensusProfile profile,
+            StateCommitmentIdentity stateIdentity
     ) {
         return new AppStateMachineContext() {
             @Override public String chainId() { return chainId; }
             @Override public Map<String, String> settings() { return settings; }
             @Override public Optional<AppChainConsensusProfile> consensusProfile() {
                 return Optional.of(profile);
+            }
+            @Override public Optional<StateCommitmentIdentity> stateCommitmentIdentity() {
+                return Optional.of(stateIdentity);
             }
             @Override
             public Optional<com.bloxbean.cardano.yano.api.appchain.AppChainMembershipView>

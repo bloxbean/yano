@@ -9,6 +9,9 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectIntent;
 import com.bloxbean.cardano.yano.api.appchain.effects.ResultPolicy;
+import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -26,6 +29,7 @@ import java.util.Set;
 import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * ADR-006 E5.3: an atomic ledger snapshot restores full state on a fresh node
@@ -89,6 +93,24 @@ class AppChainSnapshotTest {
         Path snapshotDir = tempDir.resolve("snapshot");
         long snapHeight = source.snapshot(snapshotDir.toString());
         assertThat(snapHeight).isEqualTo(sourceTip);
+        var manifest = new com.fasterxml.jackson.databind.ObjectMapper().readTree(
+                java.nio.file.Files.readAllBytes(snapshotDir.resolve(
+                        SnapshotManifest.MANIFEST_FILE)));
+        assertThat(manifest.path("version").asInt()).isEqualTo(2);
+        assertThat(manifest.path("stateCommitmentProfile").asText())
+                .isEqualTo(StateCommitmentProfiles.MPF_BLAKE2B256_V1);
+        assertThat(manifest.path("legacyStateCommitment").asBoolean()).isTrue();
+        StateCommitmentIdentity wrongIdentity = StateCommitmentIdentity.explicit(
+                StateCommitmentProfiles.MPF, seed(99));
+        assertThatThrownBy(() -> SnapshotManifest.verifyPostOpen(
+                manifest,
+                sourceTip,
+                AppBlockCodec.blockHash(source.block(sourceTip).orElseThrow()),
+                sourceRoot,
+                null,
+                wrongIdentity))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("state commitment identity");
 
         // Open a fresh subsystem whose ledger is the restored snapshot.
         // Subsystem appends "/<chainId>" to the base path, so place the snapshot
