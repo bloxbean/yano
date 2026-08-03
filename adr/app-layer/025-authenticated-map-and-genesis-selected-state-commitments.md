@@ -33,10 +33,15 @@ chains remain bound to their original MPF state history.
 - [ADR-024](024-appchain-full-support-review-readiness-and-roadmap.md) identifies
   the remaining need to authenticate all consensus-affecting machine settings
   and to keep block, state, recovery, and proof identities aligned.
-- Cardano Client Lib (CCL) supplies the current MPF and JMT implementations.
-- ZeroJ supplies the `zeroj-poseidon-jmt-v1` commitment profile,
-  operation-specific JMT circuits, and Cardano Plutus V3 Groth16 verification
-  path discussed in this ADR.
+- Cardano Client Lib (CCL) development release
+  [`v0.8.0-pre5-dev1`](https://github.com/bloxbean/cardano-client-lib/releases/tag/v0.8.0-pre5-dev1)
+  is the temporary implementation baseline for current MPF and Blake2b-256 JMT
+  work. It is not the eventual production dependency; replace it with a proper
+  CCL release before production qualification.
+- ZeroJ supplies the host implementation for Yano's
+  `jmt-poseidon-bls12381-v1` commitment profile, operation-specific JMT
+  circuits, and the Cardano Plutus V3 Groth16 verification path. Its current
+  dependency-specific host descriptor is `zeroj-poseidon-jmt-v1`.
 
 The number is local to the `adr/app-layer` series.
 
@@ -194,9 +199,9 @@ entry.
    profile set is:
 
    ```text
-   yano-mpf-blake2b256-v1
-   classic-radix16-blake2b256-v1
-   zeroj-poseidon-jmt-v1
+   mpf-blake2b256-v1
+   jmt-blake2b256-v1
+   jmt-poseidon-bls12381-v1
    ```
 
 5. Make the selection immutable for the lifetime of the chain generation. A
@@ -258,7 +263,7 @@ app-chain:
           id: authenticated-map
           version: 1
         state:
-          commitment-profile: zeroj-poseidon-jmt-v1
+          commitment-profile: jmt-poseidon-bls12381-v1
         authenticated-map:
           collections:
             - id: products
@@ -418,9 +423,24 @@ The initial allowlist is closed:
 
 | Yano profile ID | Backend and commitment | Primary fit |
 |---|---|---|
-| `yano-mpf-blake2b256-v1` | Current CCL MPF with Blake2b-256 key hashing and Cardano-compatible MPF commitment | Default; direct Cardano/Aiken-oriented proofs and existing Yano compatibility |
-| `classic-radix16-blake2b256-v1` | CCL `JmtProfile.classicBlake2b256V1()` and its exact persistent format descriptor | Large versioned off-chain maps and historical point proofs without a ZK requirement |
-| `zeroj-poseidon-jmt-v1` | CCL custom JMT profile defined by ZeroJ using the reviewed BLS12-381 Poseidon parameter/encoding profile | ZK membership/property and state-transition proofs intended for Cardano Plutus V3 verification |
+| `mpf-blake2b256-v1` | Current CCL MPF with Blake2b-256 key hashing and Cardano-compatible MPF commitment | Default; direct Cardano/Aiken-oriented proofs and existing Yano compatibility |
+| `jmt-blake2b256-v1` | CCL `JmtProfile.classicBlake2b256V1()` radix-16 JMT and its exact persistent format | Large versioned off-chain maps and historical point proofs without a ZK requirement |
+| `jmt-poseidon-bls12381-v1` | CCL custom JMT profile supplied by ZeroJ using the reviewed BLS12-381 Poseidon parameter/encoding profile | ZK membership/property and state-transition proofs intended for Cardano Plutus V3 verification |
+
+These are Yano's canonical, genesis-bound commitment-profile identifiers. A
+dependency-specific persistence or host descriptor is separate metadata and is
+bound by the profile's format fingerprint. For the current temporary dependency
+baseline, the mappings are:
+
+| Yano profile ID | Current dependency descriptor |
+|---|---|
+| `mpf-blake2b256-v1` | Existing CCL MPF format and proof contract in `0.8.0-pre5-dev1`; CCL does not yet expose a matching named MPF descriptor |
+| `jmt-blake2b256-v1` | CCL `classic-radix16-blake2b256-v1` in development release `0.8.0-pre5-dev1` |
+| `jmt-poseidon-bls12381-v1` | ZeroJ `zeroj-poseidon-jmt-v1` host descriptor |
+
+The dependency descriptor strings are not alternate genesis profile IDs. A
+member must resolve the selected Yano profile to the pinned descriptor and
+format fingerprint and fail closed on any mismatch.
 
 Aliases such as `mpf`, `jmt`, `poseidon`, or a Java class name are not canonical
 genesis values. A configuration layer may offer friendly input aliases only if
@@ -444,7 +464,7 @@ canonical BLS12-381 scalar encoding.
 
 ### 4.2 MPF profile
 
-`yano-mpf-blake2b256-v1` preserves the current Yano root algorithm for new
+`mpf-blake2b256-v1` preserves the current Yano root algorithm for new
 authenticated-map chains choosing MPF.
 
 Properties:
@@ -462,7 +482,12 @@ though MPF does not use JMT's native numeric version model.
 
 ### 4.3 Classic Blake2b-256 JMT profile
 
-`classic-radix16-blake2b256-v1` maps exactly to CCL's stable classic descriptor.
+`jmt-blake2b256-v1` is Yano's canonical profile ID for CCL
+`JmtProfile.classicBlake2b256V1()`. The temporary CCL development baseline
+`0.8.0-pre5-dev1` persists the dependency descriptor
+`classic-radix16-blake2b256-v1`. A later CCL release must reproduce the exact
+root, proof, and persistence contract or require a new Yano profile ID and
+format fingerprint.
 
 Properties:
 
@@ -481,9 +506,10 @@ proved by the current ZeroJ JMT circuit family.
 
 ### 4.4 ZeroJ Poseidon JMT profile
 
-`zeroj-poseidon-jmt-v1` is a custom CCL JMT commitment profile supplied by
-ZeroJ. It is deliberately different from classic CCL JMT and from ZeroJ's
-Poseidon MPF profile.
+`jmt-poseidon-bls12381-v1` is Yano's canonical profile ID for the custom CCL JMT
+commitment supplied by ZeroJ. The current ZeroJ host descriptor is
+`zeroj-poseidon-jmt-v1`. The commitment is deliberately different from classic
+CCL JMT and from ZeroJ's Poseidon MPF profile.
 
 The currently implemented operation-specific circuit family covers:
 
@@ -502,8 +528,9 @@ not native JMT path evaluation inside Plutus.
 
 Important boundaries:
 
-- only roots produced by the exact `zeroj-poseidon-jmt-v1` commitment can be
-  used; classic Blake2b-256 JMT roots cannot be substituted;
+- only roots produced by the exact `jmt-poseidon-bls12381-v1` commitment and
+  its bound ZeroJ host descriptor can be used; classic Blake2b-256 JMT roots
+  cannot be substituted;
 - every bounded circuit shape and public-input schema has an exact circuit
   fingerprint and verification key;
 - an inclusion template with only `root` public proves existential knowledge,
@@ -1057,12 +1084,15 @@ This plan intentionally separates product semantics from backend work.
 1. Freeze canonical profile IDs and map/collection/entry/command codecs.
 2. Add cross-language/cross-module golden vectors for keys, entries, genesis,
    roots, and proofs.
-3. Pin CCL/ZeroJ versions that expose persistent named profiles and the required
-   proof contracts.
-4. Benchmark current MPF and both JMT profiles on identical map workloads.
-5. Design the prepared-update/external-batch contract with CCL; do not build a
+3. Pin initial work to CCL development release `0.8.0-pre5-dev1` and an exact
+   ZeroJ revision exposing the required persistent profiles and proof contracts.
+4. Replace the CCL development pin with a proper CCL release and rerun descriptor,
+   root, proof, persistence, and cross-module golden-vector checks before any
+   production qualification.
+5. Benchmark current MPF and both JMT profiles on identical map workloads.
+6. Design the prepared-update/external-batch contract with CCL; do not build a
    sidecar commit workaround.
-6. Decide and document the initial authorization subset and projection API.
+7. Decide and document the initial authorization subset and projection API.
 
 Benchmark dimensions include:
 
@@ -1106,7 +1136,8 @@ refactor.
 
 ### Phase 3 — Classic Blake2b-256 JMT
 
-1. Integrate `classic-radix16-blake2b256-v1` through the prepared backend.
+1. Integrate `jmt-blake2b256-v1` through the prepared backend and require its
+   pinned CCL descriptor and format fingerprint.
 2. Map app height to JMT version and implement retained historical proofs.
 3. Implement tombstone-aware logical reads, proof classification, snapshots,
    integrity checks, and pruning.
@@ -1116,8 +1147,9 @@ refactor.
 
 ### Phase 4 — ZeroJ Poseidon JMT
 
-1. Integrate the exact `zeroj-poseidon-jmt-v1` host profile without reimplementing
-   its hash/commitment rules in Yano.
+1. Integrate the exact `jmt-poseidon-bls12381-v1` profile through the pinned
+   ZeroJ host descriptor without reimplementing its hash/commitment rules in
+   Yano.
 2. Reuse ZeroJ strict witness conversion and circuit manifests through an
    optional integration module; avoid making ZeroJ a mandatory dependency for
    MPF/classic-JMT chains.
@@ -1421,9 +1453,9 @@ canonical profile, for example:
 
 | Product-facing preset | Canonical commitment profile | User outcome |
 |---|---|---|
-| `cardano-verifiable` | `yano-mpf-blake2b256-v1` | Direct Cardano-oriented state proofs and current compatibility |
-| `versioned-audit` | `classic-radix16-blake2b256-v1` | Native versioned JMT storage and off-chain historical proofs |
-| `zk-cardano-verifiable` | `zeroj-poseidon-jmt-v1` | Private facts/transitions proved through ZeroJ and verified by Plutus V3 |
+| `cardano-verifiable` | `mpf-blake2b256-v1` | Direct Cardano-oriented state proofs and current compatibility |
+| `versioned-audit` | `jmt-blake2b256-v1` | Native versioned JMT storage and off-chain historical proofs |
+| `zk-cardano-verifiable` | `jmt-poseidon-bls12381-v1` | Private facts/transitions proved through ZeroJ and verified by Plutus V3 |
 
 These names are illustrative UX, not additional genesis aliases unless a later
 configuration contract freezes their resolution.
@@ -1584,8 +1616,12 @@ while retaining the three-profile architecture for later deployments.
   <https://docs.cosmos.network/sdk/latest/learn/concepts/store>
   and
   <https://docs.cosmos.network/sdk/latest/reference/architecture/adr-040-storage-and-smt-state-commitments>
-- CCL Jellyfish Merkle Tree implementation and production-readiness material:
-  <https://github.com/bloxbean/cardano-client-lib/tree/master/verified-structures/jellyfish-merkle>
+- CCL `v0.8.0-pre5-dev1` development release, used only as the temporary
+  implementation baseline:
+  <https://github.com/bloxbean/cardano-client-lib/releases/tag/v0.8.0-pre5-dev1>
+- CCL Jellyfish Merkle Tree implementation and production-readiness material at
+  that development tag:
+  <https://github.com/bloxbean/cardano-client-lib/tree/v0.8.0-pre5-dev1/verified-structures/jellyfish-merkle>
 - ZeroJ Poseidon authenticated-state modules and Cardano verification path:
   <https://github.com/bloxbean/zeroj>
 - Transparency.dev, verifiable maps and the distinction between map state and

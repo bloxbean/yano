@@ -73,11 +73,11 @@ not an arbitrary YAML composition under the stock `composite` identity.
 All DPP component state is committed under exactly one selected backend:
 
 ```text
-yano-mpf-blake2b256-v1
+mpf-blake2b256-v1
 or
-classic-radix16-blake2b256-v1
+jmt-blake2b256-v1
 or
-zeroj-poseidon-jmt-v1
+jmt-poseidon-bls12381-v1
 ```
 
 Components do not select separate trees, create sidecar trees, or nest JMT in
@@ -408,9 +408,15 @@ protocol.
 
 | ADR-025 profile | DPP primary fit | Cardano verification path | Release position |
 |---|---|---|---|
-| `yano-mpf-blake2b256-v1` | Current product/status/certificate proofs, existing Yano compatibility, and applications needing the qualified Cardano/Aiken-oriented MPF path | Direct qualified MPF proof against the authoritative anchor root, plus DPP policy and replay binding | Required first DPP profile |
-| `classic-radix16-blake2b256-v1` | Large update-heavy registries, native JMT versions, retained historical point proofs, and off-chain verification without a ZK requirement | Root is anchored; native point proof remains off-chain until a separate Cardano verifier is specified and qualified | Optional after full composite qualification and benchmarks |
-| `zeroj-poseidon-jmt-v1` | Private eligibility, membership, non-membership, or DPP-specific property/transition statements proved through ZeroJ | Groth16 proof verified by a Plutus V3 application validator against the authoritative Poseidon JMT root | Optional after circuits, ceremony, audit, budgets, and public-network tests |
+| `mpf-blake2b256-v1` | Current product/status/certificate proofs, existing Yano compatibility, and applications needing the qualified Cardano/Aiken-oriented MPF path | Direct qualified MPF proof against the authoritative anchor root, plus DPP policy and replay binding | Required first DPP profile |
+| `jmt-blake2b256-v1` | Large update-heavy registries, native JMT versions, retained historical point proofs, and off-chain verification without a ZK requirement | Root is anchored; native point proof remains off-chain until a separate Cardano verifier is specified and qualified | Optional after full composite qualification and benchmarks |
+| `jmt-poseidon-bls12381-v1` | Private eligibility, membership, non-membership, or DPP-specific property/transition statements proved through ZeroJ | Groth16 proof verified by a Plutus V3 application validator against the authoritative Poseidon JMT root | Optional after circuits, ceremony, audit, budgets, and public-network tests |
+
+These are Yano's canonical profile IDs. ADR-025 owns their mapping to the
+dependency-specific CCL and ZeroJ descriptors. Its temporary CCL baseline is
+development release `0.8.0-pre5-dev1`; that development pin is not DPP
+production qualification and must be replaced by the proper CCL release under
+ADR-025's dependency gates.
 
 ### 6.2 Selection and qualification rules
 
@@ -428,7 +434,7 @@ protocol.
 
 ### 6.3 MPF-first release
 
-The first complete DPP profile uses `yano-mpf-blake2b256-v1` because Yano's
+The first complete DPP profile uses `mpf-blake2b256-v1` because Yano's
 existing integration is MPF-based, the direct Cardano/Aiken-oriented path has
 the clearest initial product semantics, and one baseline is needed for DPP
 commands, state, queries, effects, portal behavior, and acceptance tests before
@@ -1091,7 +1097,7 @@ claim is frozen ahead of that substrate.
 ### 18.6 Phase D4 — classic JMT profile
 
 1. Run the complete DPP logical conformance suite on
-   `classic-radix16-blake2b256-v1`.
+   `jmt-blake2b256-v1`.
 2. Verify height/version mapping, history, pruning, snapshot/restore, restart,
    catch-up, and failed-candidate discard through the composite.
 3. Benchmark writes, reads, proofs, database size, pruning, and recovery against
