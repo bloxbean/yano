@@ -1,0 +1,424 @@
+package com.bloxbean.cardano.yano.appchain.stdlib;
+
+import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
+import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
+import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipEpoch;
+import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipView;
+import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
+import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
+import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
+import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
+import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract.CollectionDescriptor;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract.Command;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract.Entry;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract.Genesis;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract.Mutation;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract.MutationResult;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract.PointQuery;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract.PointResult;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract.Receipt;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract.ReceiptQuery;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract.ReceiptResult;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HexFormat;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+
+/**
+ * ADR-025 version-1 authenticated map.
+ *
+ * <p>The logical transition is commitment-profile neutral. Phase 1 runs it on
+ * the existing MPF-backed runtime; later phases reuse these exact command,
+ * entry, authorization, receipt, and query semantics with other backends.</p>
+ */
+public final class AuthenticatedMapStateMachine implements AppStateMachine {
+    public static final String ID = AuthenticatedMapContract.STATE_MACHINE_ID;
+
+    private final Genesis genesis;
+    private final byte[] genesisId;
+    private final Map<String, CollectionDescriptor> collections;
+    private final AppChainMembershipView membershipView;
+
+    public AuthenticatedMapStateMachine(Genesis genesis) {
+        this(genesis, null);
+    }
+
+    public AuthenticatedMapStateMachine(Genesis genesis, AppChainMembershipView membershipView) {
+        this.genesis = Objects.requireNonNull(genesis, "genesis");
+        this.genesisId = AuthenticatedMapContract.genesisId(genesis);
+        Map<String, CollectionDescriptor> declared = new LinkedHashMap<>();
+        genesis.collections().forEach(descriptor -> declared.put(descriptor.id(), descriptor));
+        this.collections = Map.copyOf(declared);
+        this.membershipView = membershipView;
+        if (membershipView == null && genesis.collections().stream()
+                .anyMatch(descriptor -> descriptor.authorization()
+                        == AuthenticatedMapContract.AUTH_MEMBER)) {
+            throw new IllegalArgumentException(
+                    "authenticated-map member authorization requires a membership view");
+        }
+    }
+
+    @Override
+    public String id() {
+        return ID;
+    }
+
+    public Genesis genesis() {
+        return genesis;
+    }
+
+    public byte[] genesisId() {
+        return genesisId.clone();
+    }
+
+    @Override
+    public void init(AppStateReader state, AppChainInfo info) {
+        Objects.requireNonNull(state, "state");
+        if (!genesis.chainId().equals(info.chainId())) {
+            throw new IllegalStateException("authenticated-map genesis chain id differs from runtime chain");
+        }
+        Optional<byte[]> marker = state.get(AuthenticatedMapContract.genesisMarkerKey());
+        if (state.committedHeight() == 0) {
+            if (marker.isPresent()) {
+                throw new IllegalStateException(
+                        "authenticated-map genesis marker exists before height 1");
+            }
+        } else if (marker.isEmpty() || !Arrays.equals(marker.orElseThrow(), genesisId)) {
+            throw new IllegalStateException(
+                    "retained authenticated-map genesis identity differs from local configuration");
+        }
+    }
+
+    @Override
+    public AdmissionResult validate(AppMessage message) {
+        try {
+            if (!AuthenticatedMapContract.DEFAULT_TOPIC.equals(message.getTopic())) {
+                return AdmissionResult.reject("authenticated-map requires topic "
+                        + AuthenticatedMapContract.DEFAULT_TOPIC);
+            }
+            if (message.getBody() == null || message.getBody().length > genesis.maxBatchBytes()) {
+                return AdmissionResult.reject("authenticated-map command exceeds genesis byte limit");
+            }
+            Command command = AuthenticatedMapContract.decodeCommand(message.getBody());
+            validateCommandBounds(command);
+            return AdmissionResult.accept();
+        } catch (IllegalArgumentException malformed) {
+            return AdmissionResult.reject("Malformed authenticated-map v1 command");
+        }
+    }
+
+    @Override
+    public AdmissionResult validateForBlock(
+            AppMessage message,
+            long candidateHeight,
+            AppStateReader committedState
+    ) {
+        AdmissionResult structural = validate(message);
+        if (!structural.isAccepted()) {
+            return structural;
+        }
+        Command command = AuthenticatedMapContract.decodeCommand(message.getBody());
+        for (Mutation mutation : command.mutations()) {
+            CollectionDescriptor descriptor = collections.get(mutation.collectionId());
+            if (descriptor.authorization() == AuthenticatedMapContract.AUTH_MEMBER
+                    && !isMember(message.getSender(), candidateHeight)) {
+                return AdmissionResult.reject(
+                        "authenticated-map sender is not a member at candidate height");
+            }
+        }
+        return AdmissionResult.accept();
+    }
+
+    @Override
+    public void apply(AppBlock block, AppStateWriter writer) {
+        initializeOrVerify(block.height(), writer);
+        for (AppMessage message : block.messages()) {
+            if (!AuthenticatedMapContract.DEFAULT_TOPIC.equals(message.getTopic())) {
+                continue;
+            }
+            Command command;
+            try {
+                command = AuthenticatedMapContract.decodeCommand(message.getBody());
+                validateCommandBounds(command);
+            } catch (IllegalArgumentException malformed) {
+                continue;
+            }
+            byte[] receiptKey = AuthenticatedMapContract.receiptKey(message.getMessageId());
+            if (writer.get(receiptKey).isPresent()) {
+                continue;
+            }
+            applyCommand(block.height(), message, command, receiptKey, writer);
+        }
+    }
+
+    @Override
+    public byte[] query(String path, byte[] params, AppQueryContext state) {
+        try {
+            return switch (path) {
+                case AuthenticatedMapContract.POINT_QUERY_PATH -> queryPoint(params, state);
+                case AuthenticatedMapContract.RECEIPT_QUERY_PATH -> queryReceipt(params, state);
+                default -> throw new AppQueryException(AppQueryException.Code.UNSUPPORTED,
+                        "unsupported authenticated-map query path");
+            };
+        } catch (AppQueryException expected) {
+            throw expected;
+        } catch (IllegalArgumentException malformed) {
+            throw new AppQueryException(AppQueryException.Code.INVALID_REQUEST,
+                    "invalid authenticated-map query parameters");
+        }
+    }
+
+    private byte[] queryPoint(byte[] params, AppQueryContext state) {
+        PointQuery query = AuthenticatedMapContract.decodePointQuery(params);
+        CollectionDescriptor descriptor = collections.get(query.collectionId());
+        if (descriptor == null || query.applicationKey().length > descriptor.maxKeyBytes()) {
+            throw new AppQueryException(AppQueryException.Code.INVALID_REQUEST,
+                    "unknown collection or key exceeds collection bounds");
+        }
+        if (query.historical() && query.height() != state.committedHeight()) {
+            throw new AppQueryException(AppQueryException.Code.INVALID_REQUEST,
+                    "historical query must execute against its requested finalized height");
+        }
+        Entry entry = state.get(AuthenticatedMapContract.canonicalKey(
+                        query.collectionId(), query.applicationKey()))
+                .map(AuthenticatedMapContract::decodeEntry)
+                .orElse(null);
+        int presence = entry == null
+                ? AuthenticatedMapContract.PRESENCE_ABSENT
+                : entry.status() == AuthenticatedMapContract.STATUS_ACTIVE
+                ? AuthenticatedMapContract.PRESENCE_ACTIVE
+                : AuthenticatedMapContract.PRESENCE_REVOKED;
+        return AuthenticatedMapContract.encodePointResult(new PointResult(
+                state.committedHeight(), state.stateRoot(), query.collectionId(),
+                query.applicationKey(), presence, entry));
+    }
+
+    private byte[] queryReceipt(byte[] params, AppQueryContext state) {
+        ReceiptQuery query = AuthenticatedMapContract.decodeReceiptQuery(params);
+        Receipt receipt = state.get(AuthenticatedMapContract.receiptKey(query.messageId()))
+                .map(AuthenticatedMapContract::decodeReceipt)
+                .orElse(null);
+        int presence = receipt == null
+                ? AuthenticatedMapContract.RECEIPT_ABSENT
+                : AuthenticatedMapContract.RECEIPT_PRESENT;
+        return AuthenticatedMapContract.encodeReceiptResult(new ReceiptResult(
+                state.committedHeight(), state.stateRoot(), query.messageId(), presence, receipt));
+    }
+
+    private void initializeOrVerify(long height, AppStateWriter writer) {
+        byte[] markerKey = AuthenticatedMapContract.genesisMarkerKey();
+        Optional<byte[]> marker = writer.get(markerKey);
+        if (height == 1) {
+            if (marker.isPresent()) {
+                throw new IllegalStateException(
+                        "authenticated-map genesis marker exists before initialization");
+            }
+            writer.put(markerKey, genesisId);
+            for (AuthenticatedMapContract.GenesisEntry initial : genesis.initialEntries()) {
+                byte[] key = AuthenticatedMapContract.canonicalKey(
+                        initial.collectionId(), initial.applicationKey());
+                if (writer.get(key).isPresent()) {
+                    throw new IllegalStateException(
+                            "authenticated-map initial entry already exists before height 1");
+                }
+                writer.put(key, AuthenticatedMapContract.encodeEntry(Entry.active(
+                        1, initial.controller(), initial.value(), 0, 0)));
+            }
+        } else if (height < 1 || marker.isEmpty()
+                || !Arrays.equals(marker.orElseThrow(), genesisId)) {
+            throw new IllegalStateException(
+                    "authenticated-map genesis marker is absent or mismatched at height " + height);
+        }
+    }
+
+    private void validateCommandBounds(Command command) {
+        if (command.mutations().size() > genesis.maxBatchItems()) {
+            throw new IllegalArgumentException("command exceeds genesis item limit");
+        }
+        for (Mutation mutation : command.mutations()) {
+            CollectionDescriptor descriptor = collections.get(mutation.collectionId());
+            if (descriptor == null) {
+                throw new IllegalArgumentException("unknown collection");
+            }
+            if (mutation.applicationKey().length > descriptor.maxKeyBytes()
+                    || mutation.value().length > descriptor.maxValueBytes()) {
+                throw new IllegalArgumentException("mutation exceeds collection bounds");
+            }
+        }
+    }
+
+    private void applyCommand(long height, AppMessage message, Command command,
+                              byte[] receiptKey, AppStateWriter writer) {
+        byte[] batchCommitment = AuthenticatedMapContract.batchCommitment(command);
+        List<PendingMutation> pending = new ArrayList<>(command.mutations().size());
+        try {
+            for (Mutation mutation : command.mutations()) {
+                byte[] key = AuthenticatedMapContract.canonicalKey(
+                        mutation.collectionId(), mutation.applicationKey());
+                Entry current = writer.get(key)
+                        .map(AuthenticatedMapContract::decodeEntry)
+                        .orElse(null);
+                Entry next = transition(height, message.getSender(), mutation,
+                        collections.get(mutation.collectionId()), current);
+                pending.add(new PendingMutation(key, mutation, next));
+            }
+        } catch (TransitionFailure rejected) {
+            Receipt receipt = Receipt.rejected(message.getMessageId(), height,
+                    batchCommitment, rejected.errorCode());
+            writer.put(receiptKey, AuthenticatedMapContract.encodeReceipt(receipt));
+            return;
+        }
+
+        List<MutationResult> results = new ArrayList<>(pending.size());
+        for (PendingMutation mutation : pending) {
+            writer.put(mutation.canonicalKey(),
+                    AuthenticatedMapContract.encodeEntry(mutation.entry()));
+            results.add(new MutationResult(
+                    mutation.mutation().collectionId(),
+                    mutation.mutation().applicationKey(),
+                    mutation.entry().status(),
+                    mutation.entry().revision(),
+                    mutation.entry().logicalValueHash()));
+        }
+        Receipt receipt = Receipt.applied(message.getMessageId(), height,
+                batchCommitment, results);
+        writer.put(receiptKey, AuthenticatedMapContract.encodeReceipt(receipt));
+    }
+
+    private Entry transition(long height, byte[] sender, Mutation mutation,
+                             CollectionDescriptor descriptor, Entry current) {
+        if (sender == null || sender.length != 32) {
+            throw failure(AuthenticatedMapContract.ERROR_UNAUTHORIZED);
+        }
+        if (current == null) {
+            return create(height, sender, mutation, descriptor);
+        }
+        authorize(height, sender, descriptor, current);
+        if (current.status() == AuthenticatedMapContract.STATUS_REVOKED) {
+            if (mutation.operation() != AuthenticatedMapContract.OP_RESTORE) {
+                throw failure(AuthenticatedMapContract.ERROR_REVOKED);
+            }
+            if (!descriptor.restoreAllowed()) {
+                throw failure(AuthenticatedMapContract.ERROR_RESTORE_FORBIDDEN);
+            }
+            return Entry.active(Math.addExact(current.revision(), 1),
+                    current.controller(), mutation.value(), current.createdHeight(), height);
+        }
+
+        return switch (mutation.operation()) {
+            case AuthenticatedMapContract.OP_PUT -> updated(height, current, mutation.value());
+            case AuthenticatedMapContract.OP_PUT_IF_ABSENT ->
+                    throw failure(AuthenticatedMapContract.ERROR_ALREADY_EXISTS);
+            case AuthenticatedMapContract.OP_COMPARE_AND_SET -> {
+                requirePreconditions(current, mutation);
+                yield updated(height, current, mutation.value());
+            }
+            case AuthenticatedMapContract.OP_TRANSFER_CONTROLLER -> {
+                if (descriptor.authorization() != AuthenticatedMapContract.AUTH_OWNER) {
+                    throw failure(AuthenticatedMapContract.ERROR_UNAUTHORIZED);
+                }
+                requirePreconditions(current, mutation);
+                yield Entry.active(Math.addExact(current.revision(), 1),
+                        mutation.newController(), current.value(), current.createdHeight(), height);
+            }
+            case AuthenticatedMapContract.OP_REVOKE -> {
+                requirePreconditions(current, mutation);
+                yield current.revoked(height);
+            }
+            case AuthenticatedMapContract.OP_RESTORE ->
+                    throw failure(AuthenticatedMapContract.ERROR_ACTIVE);
+            default -> throw new IllegalStateException("unsupported authenticated-map operation");
+        };
+    }
+
+    private Entry create(long height, byte[] sender, Mutation mutation,
+                         CollectionDescriptor descriptor) {
+        if (mutation.operation() != AuthenticatedMapContract.OP_PUT
+                && mutation.operation() != AuthenticatedMapContract.OP_PUT_IF_ABSENT) {
+            throw failure(AuthenticatedMapContract.ERROR_ABSENT);
+        }
+        if (descriptor.authorization() == AuthenticatedMapContract.AUTH_MEMBER
+                && !isMember(sender, height)) {
+            throw failure(AuthenticatedMapContract.ERROR_UNAUTHORIZED);
+        }
+        byte[] controller = descriptor.authorization() == AuthenticatedMapContract.AUTH_OWNER
+                ? sender : new byte[0];
+        return Entry.active(1, controller, mutation.value(), height, height);
+    }
+
+    private void authorize(long height, byte[] sender,
+                           CollectionDescriptor descriptor, Entry current) {
+        switch (descriptor.authorization()) {
+            case AuthenticatedMapContract.AUTH_OPEN -> {
+                return;
+            }
+            case AuthenticatedMapContract.AUTH_OWNER -> {
+                if (!Arrays.equals(sender, current.controller())) {
+                    throw failure(AuthenticatedMapContract.ERROR_UNAUTHORIZED);
+                }
+            }
+            case AuthenticatedMapContract.AUTH_MEMBER -> {
+                if (!isMember(sender, height)) {
+                    throw failure(AuthenticatedMapContract.ERROR_UNAUTHORIZED);
+                }
+            }
+            default -> throw failure(AuthenticatedMapContract.ERROR_UNAUTHORIZED);
+        }
+    }
+
+    private boolean isMember(byte[] sender, long height) {
+        if (membershipView == null || sender == null || sender.length != 32) {
+            return false;
+        }
+        AppChainMembershipEpoch epoch = membershipView.epochAt(height);
+        String senderHex = HexFormat.of().formatHex(sender);
+        return epoch.members().contains(senderHex);
+    }
+
+    private static void requirePreconditions(Entry current, Mutation mutation) {
+        if (mutation.expectedRevision() != 0
+                && mutation.expectedRevision() != current.revision()
+                || mutation.expectedValueHash().length != 0
+                && !Arrays.equals(mutation.expectedValueHash(), current.logicalValueHash())) {
+            throw failure(AuthenticatedMapContract.ERROR_PRECONDITION);
+        }
+    }
+
+    private static Entry updated(long height, Entry current, byte[] value) {
+        return Entry.active(Math.addExact(current.revision(), 1), current.controller(),
+                value, current.createdHeight(), height);
+    }
+
+    private static TransitionFailure failure(int errorCode) {
+        return new TransitionFailure(errorCode);
+    }
+
+    private record PendingMutation(byte[] canonicalKey, Mutation mutation, Entry entry) {
+        private PendingMutation {
+            canonicalKey = canonicalKey.clone();
+        }
+
+        @Override public byte[] canonicalKey() { return canonicalKey.clone(); }
+    }
+
+    private static final class TransitionFailure extends RuntimeException {
+        private final int errorCode;
+
+        private TransitionFailure(int errorCode) {
+            super(null, null, false, false);
+            this.errorCode = errorCode;
+        }
+
+        private int errorCode() {
+            return errorCode;
+        }
+    }
+}

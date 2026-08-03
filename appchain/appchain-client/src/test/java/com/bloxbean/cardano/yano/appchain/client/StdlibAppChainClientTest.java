@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.client;
 
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.BalancesContract;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -51,6 +52,65 @@ class StdlibAppChainClientTest {
         assertThat(BalancesContract.decodeCommand(
                 Hex.decode(body.path("bodyHex").asText())).amount()).isEqualTo(BigInteger.TEN);
         assertThat(result.messageId()).isEqualTo(MESSAGE_ID);
+    }
+
+    @Test
+    void authenticatedMapFacadeUsesFrozenCommandAndRootBoundQueryDtos() throws Exception {
+        AtomicReference<String> submitRequest = new AtomicReference<>();
+        AtomicReference<String> queryRequest = new AtomicReference<>();
+        byte[] root = Hex.decode("44".repeat(32));
+        byte[] key = "sku-1".getBytes(StandardCharsets.US_ASCII);
+        AuthenticatedMapContract.Entry entry = AuthenticatedMapContract.Entry.active(
+                1, Hex.decode("11".repeat(32)),
+                "value".getBytes(StandardCharsets.US_ASCII), 3, 3);
+        byte[] payload = AuthenticatedMapContract.encodePointResult(
+                new AuthenticatedMapContract.PointResult(
+                        3, root, "products", key,
+                        AuthenticatedMapContract.PRESENCE_ACTIVE, entry));
+
+        server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
+        server.createContext("/api/v1/app-chain/chains/c1/messages", exchange -> {
+            submitRequest.set(new String(exchange.getRequestBody().readAllBytes(),
+                    StandardCharsets.UTF_8));
+            respond(exchange, 202, """
+                    {"messageId":"%s","chainId":"c1","topic":"%s"}
+                    """.formatted(MESSAGE_ID, AuthenticatedMapContract.DEFAULT_TOPIC));
+        });
+        server.createContext(
+                "/api/v1/app-chain/chains/c1/query/authenticated-map/entry-v1",
+                exchange -> {
+                    queryRequest.set(new String(exchange.getRequestBody().readAllBytes(),
+                            StandardCharsets.UTF_8));
+                    respond(exchange, 200, """
+                            {"chainId":"c1","stateMachineId":"authenticated-map",
+                             "committedHeight":3,"stateRoot":"%s","payloadHex":"%s"}
+                            """.formatted(Hex.encode(root), Hex.encode(payload)));
+                });
+        server.start();
+        StdlibAppChainClient client = new StdlibAppChainClient(AppChainClient.builder(
+                        "http://localhost:" + server.getAddress().getPort() + "/api/v1")
+                .chainId("c1").build());
+
+        client.authenticatedMapMutate(AuthenticatedMapContract.Mutation.put(
+                "products", key, "value".getBytes(StandardCharsets.US_ASCII)));
+        AuthenticatedMapContract.PointResult result =
+                client.authenticatedMapEntry("products", key);
+
+        var submitted = json.readTree(submitRequest.get());
+        AuthenticatedMapContract.Command decodedCommand =
+                AuthenticatedMapContract.decodeCommand(
+                        Hex.decode(submitted.path("bodyHex").asText()));
+        assertThat(submitted.path("topic").asText())
+                .isEqualTo(AuthenticatedMapContract.DEFAULT_TOPIC);
+        assertThat(decodedCommand.mutations()).hasSize(1);
+        assertThat(result.entry().value()).isEqualTo("value".getBytes(StandardCharsets.US_ASCII));
+
+        var queried = json.readTree(queryRequest.get());
+        AuthenticatedMapContract.PointQuery decodedQuery =
+                AuthenticatedMapContract.decodePointQuery(
+                        Hex.decode(queried.path("paramsHex").asText()));
+        assertThat(decodedQuery.collectionId()).isEqualTo("products");
+        assertThat(decodedQuery.applicationKey()).isEqualTo(key);
     }
 
     private static void respond(HttpExchange exchange, int status, String body) throws IOException {

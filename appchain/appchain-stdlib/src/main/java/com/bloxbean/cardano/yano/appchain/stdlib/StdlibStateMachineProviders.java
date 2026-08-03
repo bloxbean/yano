@@ -1,9 +1,18 @@
 package com.bloxbean.cardano.yano.appchain.stdlib;
 
+import com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfile;
+import com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfileCommitment;
+import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipView;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfile;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import com.bloxbean.cardano.yano.appchain.config.AppChainApprovalsConfig;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
+
+import java.util.Arrays;
+import java.util.HexFormat;
 
 /**
  * ServiceLoader providers for the standard-library state machines.
@@ -16,7 +25,88 @@ import com.bloxbean.cardano.yano.appchain.config.AppChainApprovalsConfig;
  */
 public final class StdlibStateMachineProviders {
 
+    public static final String AUTHENTICATED_MAP_GENESIS_SETTING =
+            "machines.authenticated-map.genesis-cbor-hex";
+
     private StdlibStateMachineProviders() {
+    }
+
+    public static final class AuthenticatedMapProvider implements AppStateMachineProvider {
+        @Override
+        public String id() {
+            return AuthenticatedMapStateMachine.ID;
+        }
+
+        @Override
+        public AppStateMachine create() {
+            throw new IllegalStateException("authenticated-map requires "
+                    + AUTHENTICATED_MAP_GENESIS_SETTING);
+        }
+
+        @Override
+        public AppStateMachine create(AppStateMachineContext context) {
+            String encoded = context.settings().get(AUTHENTICATED_MAP_GENESIS_SETTING);
+            if (encoded == null || encoded.isEmpty() || (encoded.length() & 1) != 0
+                    || encoded.length() > 32 * 1024 * 1024
+                    || !isCanonicalLowerHex(encoded)) {
+                throw new IllegalArgumentException(AUTHENTICATED_MAP_GENESIS_SETTING
+                        + " must contain bounded canonical lowercase hex");
+            }
+            AuthenticatedMapContract.Genesis genesis;
+            try {
+                genesis = AuthenticatedMapContract.decodeGenesis(
+                        HexFormat.of().parseHex(encoded));
+            } catch (IllegalArgumentException malformed) {
+                throw new IllegalArgumentException(AUTHENTICATED_MAP_GENESIS_SETTING
+                        + " is not canonical authenticated-map v1 genesis", malformed);
+            }
+            if (!context.chainId().equals(genesis.chainId())) {
+                throw new IllegalArgumentException(
+                        "authenticated-map genesis chain id differs from configured chain id");
+            }
+            StateCommitmentProfile profile = StateCommitmentProfiles.require(
+                    genesis.commitmentProfileId());
+            if (!profile.id().equals(StateCommitmentProfiles.MPF.id())) {
+                throw new IllegalArgumentException(
+                        "ADR-025 Phase 1 supports only mpf-blake2b256-v1");
+            }
+            if (!Arrays.equals(profile.formatFingerprint(), genesis.formatFingerprint())) {
+                throw new IllegalArgumentException(
+                        "authenticated-map genesis format fingerprint is incompatible");
+            }
+            AppChainConsensusProfile consensus = context.consensusProfile()
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            "authenticated-map requires the normalized consensus profile"));
+            if (!Arrays.equals(AppChainConsensusProfileCommitment.digest(consensus),
+                    genesis.frameworkConsensusProfileDigest())) {
+                throw new IllegalArgumentException(
+                        "authenticated-map genesis consensus profile digest is incompatible");
+            }
+            if (genesis.maxBatchBytes() > consensus.maxMessageBytes()) {
+                throw new IllegalArgumentException(
+                        "authenticated-map genesis batch bytes exceed framework message bytes");
+            }
+            AppChainMembershipView membership = context.membershipView()
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            "authenticated-map requires the immutable membership view"));
+            if (!Arrays.equals(membership.epochAt(0).digest(),
+                    genesis.membershipCommitment())) {
+                throw new IllegalArgumentException(
+                        "authenticated-map genesis membership commitment is incompatible");
+            }
+            return new AuthenticatedMapStateMachine(genesis, membership);
+        }
+
+        private static boolean isCanonicalLowerHex(String value) {
+            for (int index = 0; index < value.length(); index++) {
+                char character = value.charAt(index);
+                if (!((character >= '0' && character <= '9')
+                        || (character >= 'a' && character <= 'f'))) {
+                    return false;
+                }
+            }
+            return true;
+        }
     }
 
     public static final class KvRegistryProvider implements AppStateMachineProvider {

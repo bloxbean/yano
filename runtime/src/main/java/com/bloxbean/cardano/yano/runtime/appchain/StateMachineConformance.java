@@ -465,6 +465,7 @@ public final class StateMachineConformance {
                 byte[] root = store.stateRoot();
                 return root != null ? root : new byte[32];
             }
+            @Override public long committedHeight() { return store.tipHeight(); }
         };
     }
 

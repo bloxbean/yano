@@ -64,6 +64,49 @@ public final class AuthenticatedMapGoldenVectorGenerator {
         vectors.put("entry.active", hex(entryBytes));
         vectors.put("entry.revoked", hex(AuthenticatedMapContract.encodeEntry(entry.revoked(7))));
 
+        byte[] messageId = repeated(0x55);
+        byte[] queryRoot = repeated(0x66);
+        AuthenticatedMapContract.PointQuery currentQuery =
+                AuthenticatedMapContract.PointQuery.current("products", ascii("sku-1"));
+        AuthenticatedMapContract.PointQuery historyQuery =
+                AuthenticatedMapContract.PointQuery.atHeight(7, "products", ascii("sku-1"));
+        AuthenticatedMapContract.PointResult pointResult =
+                new AuthenticatedMapContract.PointResult(
+                        7, queryRoot, "products", ascii("sku-1"),
+                        AuthenticatedMapContract.PRESENCE_ACTIVE, entry);
+        AuthenticatedMapContract.MutationResult mutationResult =
+                new AuthenticatedMapContract.MutationResult(
+                        "products", ascii("sku-1"), entry.status(), entry.revision(),
+                        entry.logicalValueHash());
+        AuthenticatedMapContract.Receipt appliedReceipt =
+                AuthenticatedMapContract.Receipt.applied(
+                        messageId, 7, AuthenticatedMapContract.batchCommitment(command),
+                        List.of(mutationResult));
+        AuthenticatedMapContract.Receipt rejectedReceipt =
+                AuthenticatedMapContract.Receipt.rejected(
+                        repeated(0x56), 8, AuthenticatedMapContract.batchCommitment(command),
+                        AuthenticatedMapContract.ERROR_PRECONDITION);
+        AuthenticatedMapContract.ReceiptResult receiptResult =
+                new AuthenticatedMapContract.ReceiptResult(
+                        7, queryRoot, messageId,
+                        AuthenticatedMapContract.RECEIPT_PRESENT, appliedReceipt);
+        vectors.put("key.framework.genesis", hex(AuthenticatedMapContract.genesisMarkerKey()));
+        vectors.put("key.framework.receipt", hex(AuthenticatedMapContract.receiptKey(messageId)));
+        vectors.put("query.point.current", hex(
+                AuthenticatedMapContract.encodePointQuery(currentQuery)));
+        vectors.put("query.point.history", hex(
+                AuthenticatedMapContract.encodePointQuery(historyQuery)));
+        vectors.put("query.point.result", hex(
+                AuthenticatedMapContract.encodePointResult(pointResult)));
+        vectors.put("query.receipt", hex(AuthenticatedMapContract.encodeReceiptQuery(
+                new AuthenticatedMapContract.ReceiptQuery(messageId))));
+        vectors.put("receipt.applied", hex(
+                AuthenticatedMapContract.encodeReceipt(appliedReceipt)));
+        vectors.put("receipt.rejected", hex(
+                AuthenticatedMapContract.encodeReceipt(rejectedReceipt)));
+        vectors.put("query.receipt.result", hex(
+                AuthenticatedMapContract.encodeReceiptResult(receiptResult)));
+
         AuthenticatedMapContract.Genesis genesis = genesis();
         vectors.put("genesis.cbor", hex(AuthenticatedMapContract.encodeGenesis(genesis)));
         vectors.put("genesis.id", hex(AuthenticatedMapContract.genesisId(genesis)));

@@ -11,6 +11,7 @@ NULL_HASH = bytes(32)
 VALUE_DOMAIN = b"yano-authenticated-map-value-v1\0"
 BATCH_DOMAIN = b"yano-authenticated-map-batch-v1\0"
 GENESIS_DOMAIN = b"yano-appchain-genesis-v1\0"
+RESULT_DOMAIN = b"yano-authenticated-map-result-v1\0"
 PROFILE_DOMAIN = b"yano-state-commitment-format-v1\0"
 
 
@@ -243,8 +244,8 @@ def profile_fingerprint(profile_id, backend, descriptor, proof, flags):
     return digest(PROFILE_DOMAIN + canonical)
 
 
-def decode_key(encoded):
-    require(len(encoded) >= 9 and encoded[0:2] == b"\x01\x01", "key prefix")
+def decode_key(encoded, namespace=1):
+    require(len(encoded) >= 9 and encoded[0:2] == bytes([1, namespace]), "key prefix")
     collection_length = int.from_bytes(encoded[2:4], "big")
     collection_end = 4 + collection_length
     require(0 < collection_length <= 64 and collection_end + 4 <= len(encoded),
@@ -280,11 +281,20 @@ def verify_vectors(values):
     missing = bytes.fromhex(values["key.products.missing"])
     require(decode_key(key) == ("products", b"sku-1"), "sku key encoding")
     require(decode_key(missing) == ("products", b"missing"), "missing key encoding")
+    require(decode_key(bytes.fromhex(values["key.framework.genesis"]), 0)
+            == ("yano-authenticated-map-internal-v1", b"genesis"),
+            "framework genesis key encoding")
+    receipt_key = decode_key(bytes.fromhex(values["key.framework.receipt"]), 0)
+    require(receipt_key == ("yano-authenticated-map-receipts-v1", bytes([0x55]) * 32),
+            "framework receipt key encoding")
     require(digest(VALUE_DOMAIN + struct.pack(">I", 2) + b"\x01\x02").hex()
             == values["value.0102.hash"], "logical value hash")
 
     for name in ("command.put", "command.batch", "entry.active", "entry.revoked",
-                 "genesis.cbor", "jmt.proof.inclusion", "jmt.proof.absence"):
+                 "genesis.cbor", "query.point.current", "query.point.history",
+                 "query.point.result", "query.receipt", "receipt.applied",
+                 "receipt.rejected", "query.receipt.result",
+                 "jmt.proof.inclusion", "jmt.proof.absence"):
         decode_exact(bytes.fromhex(values[name]))
     batch = bytes.fromhex(values["command.batch"])
     require(digest(BATCH_DOMAIN + batch).hex() == values["command.batch.commitment"],
@@ -299,6 +309,37 @@ def verify_vectors(values):
     revoked = decode_exact(bytes.fromhex(values["entry.revoked"]))
     require(revoked[0:3] == [1, 1, 2] and revoked[4] == b"" and revoked[5] == active[5],
             "revoked tombstone shape")
+
+    current_query = decode_exact(bytes.fromhex(values["query.point.current"]))
+    history_query = decode_exact(bytes.fromhex(values["query.point.history"]))
+    require(current_query == [1, 0, 0, "products", b"sku-1"],
+            "current point query shape")
+    require(history_query == [1, 1, 7, "products", b"sku-1"],
+            "historical point query shape")
+    point_result = decode_exact(bytes.fromhex(values["query.point.result"]))
+    require(point_result[:6] == [1, 7, bytes([0x66]) * 32,
+                                 "products", b"sku-1", 1],
+            "point result shape")
+    require(point_result[6] == bytes.fromhex(values["entry.active"]),
+            "point result entry")
+
+    receipt = decode_exact(bytes.fromhex(values["receipt.applied"]))
+    require(receipt[:5] == [1, bytes([0x55]) * 32, 7, 0, 0]
+            and len(receipt[7]) == 1, "applied receipt shape")
+    result_material = [1, receipt[3], receipt[4], receipt[7]]
+    require(digest(RESULT_DOMAIN + encode_cbor(result_material)) == receipt[6],
+            "applied receipt result commitment")
+    rejected_receipt = decode_exact(bytes.fromhex(values["receipt.rejected"]))
+    require(rejected_receipt[:5] == [1, bytes([0x56]) * 32, 8, 1, 8]
+            and rejected_receipt[7] == [], "rejected receipt shape")
+    rejected_material = [1, rejected_receipt[3], rejected_receipt[4], []]
+    require(digest(RESULT_DOMAIN + encode_cbor(rejected_material)) == rejected_receipt[6],
+            "rejected receipt result commitment")
+    receipt_result = decode_exact(bytes.fromhex(values["query.receipt.result"]))
+    require(receipt_result[:5] == [1, 7, bytes([0x66]) * 32,
+                                   bytes([0x55]) * 32, 1]
+            and receipt_result[5] == bytes.fromhex(values["receipt.applied"]),
+            "receipt query result shape")
 
     count = int(values["workload.count"])
     require(count == 3, "workload count")

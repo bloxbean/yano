@@ -45,6 +45,7 @@ public final class AuthenticatedMapContract {
             PROFILE_JMT_POSEIDON_BLS12381_V1);
 
     public static final int KEY_CODEC_VERSION = 1;
+    public static final int NAMESPACE_KIND_FRAMEWORK = 0;
     public static final int NAMESPACE_KIND_AUTHENTICATED_MAP = 1;
     public static final int MAX_COLLECTIONS = 64;
     public static final int MAX_COLLECTION_ID_BYTES = 64;
@@ -67,6 +68,36 @@ public final class AuthenticatedMapContract {
     public static final int OP_REVOKE = 4;
     public static final int OP_RESTORE = 5;
 
+    public static final String POINT_QUERY_PATH = "authenticated-map/entry-v1";
+    public static final String RECEIPT_QUERY_PATH = "authenticated-map/receipt-v1";
+
+    public static final int PRESENCE_ABSENT = 0;
+    public static final int PRESENCE_ACTIVE = 1;
+    public static final int PRESENCE_REVOKED = 2;
+
+    public static final int RECEIPT_APPLIED = 0;
+    public static final int RECEIPT_REJECTED = 1;
+    public static final int RECEIPT_ABSENT = 0;
+    public static final int RECEIPT_PRESENT = 1;
+
+    public static final int ERROR_NONE = 0;
+    public static final int ERROR_UNKNOWN_COLLECTION = 1;
+    public static final int ERROR_COLLECTION_BOUNDS = 2;
+    public static final int ERROR_UNAUTHORIZED = 3;
+    public static final int ERROR_ALREADY_EXISTS = 4;
+    public static final int ERROR_ABSENT = 5;
+    public static final int ERROR_REVOKED = 6;
+    public static final int ERROR_ACTIVE = 7;
+    public static final int ERROR_PRECONDITION = 8;
+    public static final int ERROR_RESTORE_FORBIDDEN = 9;
+
+    private static final String INTERNAL_GENESIS_COLLECTION =
+            "yano-authenticated-map-internal-v1";
+    private static final String INTERNAL_RECEIPTS_COLLECTION =
+            "yano-authenticated-map-receipts-v1";
+    private static final byte[] GENESIS_MARKER_APPLICATION_KEY =
+            "genesis".getBytes(StandardCharsets.US_ASCII);
+
     private static final int COMMAND_SINGLE = 0;
     private static final int COMMAND_BATCH = 1;
     private static final Pattern COLLECTION_ID =
@@ -77,6 +108,8 @@ public final class AuthenticatedMapContract {
             "yano-authenticated-map-batch-v1\0".getBytes(StandardCharsets.US_ASCII);
     private static final byte[] GENESIS_HASH_DOMAIN =
             "yano-appchain-genesis-v1\0".getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] RESULT_HASH_DOMAIN =
+            "yano-authenticated-map-result-v1\0".getBytes(StandardCharsets.US_ASCII);
 
     private AuthenticatedMapContract() {
     }
@@ -86,18 +119,8 @@ public final class AuthenticatedMapContract {
      * {@code version:u8 || namespace:u8 || collectionLen:u16 || collection || keyLen:u32 || key}.
      */
     public static byte[] canonicalKey(String collectionId, byte[] applicationKey) {
-        String collection = requireCollectionId(collectionId);
-        byte[] collectionBytes = collection.getBytes(StandardCharsets.US_ASCII);
-        byte[] key = requireApplicationKey(applicationKey, MAX_APPLICATION_KEY_BYTES);
-        return ByteBuffer.allocate(2 + Short.BYTES + collectionBytes.length
-                        + Integer.BYTES + key.length)
-                .put((byte) KEY_CODEC_VERSION)
-                .put((byte) NAMESPACE_KIND_AUTHENTICATED_MAP)
-                .putShort((short) collectionBytes.length)
-                .put(collectionBytes)
-                .putInt(key.length)
-                .put(key)
-                .array();
+        return encodeCanonicalKey(
+                NAMESPACE_KIND_AUTHENTICATED_MAP, collectionId, applicationKey);
     }
 
     public static CanonicalKey decodeCanonicalKey(byte[] canonical) {
@@ -139,6 +162,37 @@ public final class AuthenticatedMapContract {
                 + bounded.length);
         input.put(VALUE_HASH_DOMAIN).putInt(bounded.length).put(bounded);
         return Blake2bUtil.blake2bHash256(input.array());
+    }
+
+    /** Consensus-state key holding the canonical genesis identity. */
+    public static byte[] genesisMarkerKey() {
+        return encodeCanonicalKey(NAMESPACE_KIND_FRAMEWORK,
+                INTERNAL_GENESIS_COLLECTION, GENESIS_MARKER_APPLICATION_KEY);
+    }
+
+    /** Consensus-state key holding the retained receipt for one app message. */
+    public static byte[] receiptKey(byte[] messageId) {
+        return encodeCanonicalKey(NAMESPACE_KIND_FRAMEWORK,
+                INTERNAL_RECEIPTS_COLLECTION, require32(messageId, "messageId"));
+    }
+
+    private static byte[] encodeCanonicalKey(
+            int namespaceKind,
+            String collectionId,
+            byte[] applicationKey
+    ) {
+        String collection = requireCollectionId(collectionId);
+        byte[] collectionBytes = collection.getBytes(StandardCharsets.US_ASCII);
+        byte[] key = requireApplicationKey(applicationKey, MAX_APPLICATION_KEY_BYTES);
+        return ByteBuffer.allocate(2 + Short.BYTES + collectionBytes.length
+                        + Integer.BYTES + key.length)
+                .put((byte) KEY_CODEC_VERSION)
+                .put((byte) namespaceKind)
+                .putShort((short) collectionBytes.length)
+                .put(collectionBytes)
+                .putInt(key.length)
+                .put(key)
+                .array();
     }
 
     public static byte[] encodeCommand(Command command) {
@@ -322,6 +376,209 @@ public final class AuthenticatedMapContract {
         return Blake2bUtil.blake2bHash256(input);
     }
 
+    public static byte[] encodePointQuery(PointQuery query) {
+        Objects.requireNonNull(query, "query");
+        Array root = new Array();
+        root.add(new UnsignedInteger(STATE_MACHINE_VERSION));
+        root.add(new UnsignedInteger(query.historical() ? 1 : 0));
+        root.add(new UnsignedInteger(query.height()));
+        root.add(new UnicodeString(query.collectionId()));
+        root.add(new ByteString(query.applicationKey()));
+        return StdlibContractCbor.encode(root);
+    }
+
+    public static PointQuery decodePointQuery(byte[] encoded) {
+        List<co.nstant.in.cbor.model.DataItem> fields =
+                StdlibContractCbor.decodeArray(encoded, 5).getDataItems();
+        if (StdlibContractCbor.uintInt(fields.get(0)) != STATE_MACHINE_VERSION) {
+            throw malformed();
+        }
+        int mode = StdlibContractCbor.uintInt(fields.get(1));
+        if (mode > 1) {
+            throw malformed();
+        }
+        PointQuery decoded = new PointQuery(
+                mode == 1,
+                StdlibContractCbor.uint(fields.get(2)),
+                StdlibContractCbor.text(fields.get(3)),
+                StdlibContractCbor.bytes(fields.get(4)));
+        if (!Arrays.equals(encoded, encodePointQuery(decoded))) {
+            throw malformed();
+        }
+        return decoded;
+    }
+
+    public static byte[] encodePointResult(PointResult result) {
+        Objects.requireNonNull(result, "result");
+        Array root = new Array();
+        root.add(new UnsignedInteger(STATE_MACHINE_VERSION));
+        root.add(new UnsignedInteger(result.committedHeight()));
+        root.add(new ByteString(result.stateRoot()));
+        root.add(new UnicodeString(result.collectionId()));
+        root.add(new ByteString(result.applicationKey()));
+        root.add(new UnsignedInteger(result.presence()));
+        root.add(new ByteString(result.entry() == null
+                ? new byte[0] : encodeEntry(result.entry())));
+        return StdlibContractCbor.encode(root);
+    }
+
+    public static PointResult decodePointResult(byte[] encoded) {
+        List<co.nstant.in.cbor.model.DataItem> fields =
+                StdlibContractCbor.decodeArray(encoded, 7).getDataItems();
+        if (StdlibContractCbor.uintInt(fields.get(0)) != STATE_MACHINE_VERSION) {
+            throw malformed();
+        }
+        byte[] entryBytes = StdlibContractCbor.bytes(fields.get(6));
+        PointResult decoded = new PointResult(
+                StdlibContractCbor.uint(fields.get(1)),
+                StdlibContractCbor.bytes(fields.get(2)),
+                StdlibContractCbor.text(fields.get(3)),
+                StdlibContractCbor.bytes(fields.get(4)),
+                StdlibContractCbor.uintInt(fields.get(5)),
+                entryBytes.length == 0 ? null : decodeEntry(entryBytes));
+        if (!Arrays.equals(encoded, encodePointResult(decoded))) {
+            throw malformed();
+        }
+        return decoded;
+    }
+
+    public static byte[] encodeReceiptQuery(ReceiptQuery query) {
+        Objects.requireNonNull(query, "query");
+        Array root = new Array();
+        root.add(new UnsignedInteger(STATE_MACHINE_VERSION));
+        root.add(new ByteString(query.messageId()));
+        return StdlibContractCbor.encode(root);
+    }
+
+    public static ReceiptQuery decodeReceiptQuery(byte[] encoded) {
+        List<co.nstant.in.cbor.model.DataItem> fields =
+                StdlibContractCbor.decodeArray(encoded, 2).getDataItems();
+        if (StdlibContractCbor.uintInt(fields.get(0)) != STATE_MACHINE_VERSION) {
+            throw malformed();
+        }
+        ReceiptQuery decoded = new ReceiptQuery(StdlibContractCbor.bytes(fields.get(1)));
+        if (!Arrays.equals(encoded, encodeReceiptQuery(decoded))) {
+            throw malformed();
+        }
+        return decoded;
+    }
+
+    public static byte[] resultCommitment(int status, int errorCode,
+                                          List<MutationResult> results) {
+        Array items = new Array();
+        for (MutationResult result : List.copyOf(results)) {
+            items.add(encodeMutationResult(result));
+        }
+        Array material = new Array();
+        material.add(new UnsignedInteger(STATE_MACHINE_VERSION));
+        material.add(new UnsignedInteger(status));
+        material.add(new UnsignedInteger(errorCode));
+        material.add(items);
+        byte[] encoded = StdlibContractCbor.encode(material);
+        byte[] input = new byte[RESULT_HASH_DOMAIN.length + encoded.length];
+        System.arraycopy(RESULT_HASH_DOMAIN, 0, input, 0, RESULT_HASH_DOMAIN.length);
+        System.arraycopy(encoded, 0, input, RESULT_HASH_DOMAIN.length, encoded.length);
+        return Blake2bUtil.blake2bHash256(input);
+    }
+
+    public static byte[] encodeReceipt(Receipt receipt) {
+        Objects.requireNonNull(receipt, "receipt");
+        Array results = new Array();
+        for (MutationResult result : receipt.results()) {
+            results.add(encodeMutationResult(result));
+        }
+        Array root = new Array();
+        root.add(new UnsignedInteger(STATE_MACHINE_VERSION));
+        root.add(new ByteString(receipt.messageId()));
+        root.add(new UnsignedInteger(receipt.height()));
+        root.add(new UnsignedInteger(receipt.status()));
+        root.add(new UnsignedInteger(receipt.errorCode()));
+        root.add(new ByteString(receipt.batchCommitment()));
+        root.add(new ByteString(receipt.resultCommitment()));
+        root.add(results);
+        return StdlibContractCbor.encode(root);
+    }
+
+    public static Receipt decodeReceipt(byte[] encoded) {
+        List<co.nstant.in.cbor.model.DataItem> fields =
+                StdlibContractCbor.decodeArray(encoded, 8).getDataItems();
+        if (StdlibContractCbor.uintInt(fields.get(0)) != STATE_MACHINE_VERSION) {
+            throw malformed();
+        }
+        Array resultItems = StdlibContractCbor.array(fields.get(7), MAX_BATCH_ITEMS);
+        List<MutationResult> results = new ArrayList<>(resultItems.getDataItems().size());
+        for (co.nstant.in.cbor.model.DataItem item : resultItems.getDataItems()) {
+            results.add(decodeMutationResult(StdlibContractCbor.array(item, 5)));
+        }
+        Receipt decoded = new Receipt(
+                StdlibContractCbor.bytes(fields.get(1)),
+                StdlibContractCbor.uint(fields.get(2)),
+                StdlibContractCbor.uintInt(fields.get(3)),
+                StdlibContractCbor.uintInt(fields.get(4)),
+                StdlibContractCbor.bytes(fields.get(5)),
+                StdlibContractCbor.bytes(fields.get(6)),
+                results);
+        if (!Arrays.equals(encoded, encodeReceipt(decoded))) {
+            throw malformed();
+        }
+        return decoded;
+    }
+
+    public static byte[] encodeReceiptResult(ReceiptResult result) {
+        Objects.requireNonNull(result, "result");
+        Array root = new Array();
+        root.add(new UnsignedInteger(STATE_MACHINE_VERSION));
+        root.add(new UnsignedInteger(result.committedHeight()));
+        root.add(new ByteString(result.stateRoot()));
+        root.add(new ByteString(result.messageId()));
+        root.add(new UnsignedInteger(result.presence()));
+        root.add(new ByteString(result.receipt() == null
+                ? new byte[0] : encodeReceipt(result.receipt())));
+        return StdlibContractCbor.encode(root);
+    }
+
+    public static ReceiptResult decodeReceiptResult(byte[] encoded) {
+        List<co.nstant.in.cbor.model.DataItem> fields =
+                StdlibContractCbor.decodeArray(encoded, 6).getDataItems();
+        if (StdlibContractCbor.uintInt(fields.get(0)) != STATE_MACHINE_VERSION) {
+            throw malformed();
+        }
+        byte[] receiptBytes = StdlibContractCbor.bytes(fields.get(5));
+        ReceiptResult decoded = new ReceiptResult(
+                StdlibContractCbor.uint(fields.get(1)),
+                StdlibContractCbor.bytes(fields.get(2)),
+                StdlibContractCbor.bytes(fields.get(3)),
+                StdlibContractCbor.uintInt(fields.get(4)),
+                receiptBytes.length == 0 ? null : decodeReceipt(receiptBytes));
+        if (!Arrays.equals(encoded, encodeReceiptResult(decoded))) {
+            throw malformed();
+        }
+        return decoded;
+    }
+
+    private static Array encodeMutationResult(MutationResult result) {
+        Array item = new Array();
+        item.add(new UnicodeString(result.collectionId()));
+        item.add(new ByteString(result.applicationKey()));
+        item.add(new UnsignedInteger(result.status()));
+        item.add(new UnsignedInteger(result.revision()));
+        item.add(new ByteString(result.logicalValueHash()));
+        return item;
+    }
+
+    private static MutationResult decodeMutationResult(Array item) {
+        if (item.getDataItems().size() != 5) {
+            throw malformed();
+        }
+        List<co.nstant.in.cbor.model.DataItem> fields = item.getDataItems();
+        return new MutationResult(
+                StdlibContractCbor.text(fields.get(0)),
+                StdlibContractCbor.bytes(fields.get(1)),
+                StdlibContractCbor.uintInt(fields.get(2)),
+                StdlibContractCbor.uint(fields.get(3)),
+                StdlibContractCbor.bytes(fields.get(4)));
+    }
+
     private static Array encodeMutation(Mutation mutation) {
         Array item = new Array();
         item.add(new UnsignedInteger(mutation.operation()));
@@ -422,6 +679,169 @@ public final class AuthenticatedMapContract {
         public byte[] applicationKey() {
             return applicationKey.clone();
         }
+    }
+
+    public record PointQuery(
+            boolean historical,
+            long height,
+            String collectionId,
+            byte[] applicationKey
+    ) {
+        public PointQuery {
+            if (height < 0 || historical && height == 0 || !historical && height != 0) {
+                throw new IllegalArgumentException("point query height/mode is invalid");
+            }
+            collectionId = requireCollectionId(collectionId);
+            applicationKey = requireApplicationKey(applicationKey, MAX_APPLICATION_KEY_BYTES);
+        }
+
+        @Override public byte[] applicationKey() { return applicationKey.clone(); }
+
+        public static PointQuery current(String collectionId, byte[] applicationKey) {
+            return new PointQuery(false, 0, collectionId, applicationKey);
+        }
+
+        public static PointQuery atHeight(long height, String collectionId,
+                                          byte[] applicationKey) {
+            return new PointQuery(true, height, collectionId, applicationKey);
+        }
+    }
+
+    public record PointResult(
+            long committedHeight,
+            byte[] stateRoot,
+            String collectionId,
+            byte[] applicationKey,
+            int presence,
+            Entry entry
+    ) {
+        public PointResult {
+            if (committedHeight < 0) {
+                throw new IllegalArgumentException("committedHeight must be nonnegative");
+            }
+            stateRoot = require32(stateRoot, "stateRoot");
+            collectionId = requireCollectionId(collectionId);
+            applicationKey = requireApplicationKey(applicationKey, MAX_APPLICATION_KEY_BYTES);
+            if (presence < PRESENCE_ABSENT || presence > PRESENCE_REVOKED) {
+                throw new IllegalArgumentException("point result presence is unsupported");
+            }
+            if (presence == PRESENCE_ABSENT ? entry != null : entry == null) {
+                throw new IllegalArgumentException("point result presence and entry differ");
+            }
+            if (entry != null && (presence == PRESENCE_ACTIVE
+                    ? entry.status() != STATUS_ACTIVE : entry.status() != STATUS_REVOKED)) {
+                throw new IllegalArgumentException("point result status and entry differ");
+            }
+        }
+
+        @Override public byte[] stateRoot() { return stateRoot.clone(); }
+        @Override public byte[] applicationKey() { return applicationKey.clone(); }
+    }
+
+    public record ReceiptQuery(byte[] messageId) {
+        public ReceiptQuery {
+            messageId = require32(messageId, "messageId");
+        }
+
+        @Override public byte[] messageId() { return messageId.clone(); }
+    }
+
+    public record MutationResult(
+            String collectionId,
+            byte[] applicationKey,
+            int status,
+            long revision,
+            byte[] logicalValueHash
+    ) {
+        public MutationResult {
+            collectionId = requireCollectionId(collectionId);
+            applicationKey = requireApplicationKey(applicationKey, MAX_APPLICATION_KEY_BYTES);
+            if (status != STATUS_ACTIVE && status != STATUS_REVOKED || revision <= 0) {
+                throw new IllegalArgumentException("mutation result status/revision is invalid");
+            }
+            logicalValueHash = require32(logicalValueHash, "logicalValueHash");
+        }
+
+        @Override public byte[] applicationKey() { return applicationKey.clone(); }
+        @Override public byte[] logicalValueHash() { return logicalValueHash.clone(); }
+    }
+
+    public record Receipt(
+            byte[] messageId,
+            long height,
+            int status,
+            int errorCode,
+            byte[] batchCommitment,
+            byte[] resultCommitment,
+            List<MutationResult> results
+    ) {
+        public Receipt {
+            messageId = require32(messageId, "messageId");
+            if (height <= 0 || status < RECEIPT_APPLIED || status > RECEIPT_REJECTED
+                    || errorCode < ERROR_NONE || errorCode > ERROR_RESTORE_FORBIDDEN) {
+                throw new IllegalArgumentException("receipt status/height/error is invalid");
+            }
+            batchCommitment = require32(batchCommitment, "batchCommitment");
+            resultCommitment = require32(resultCommitment, "resultCommitment");
+            List<MutationResult> copy = List.copyOf(Objects.requireNonNull(results, "results"));
+            if (copy.size() > MAX_BATCH_ITEMS
+                    || status == RECEIPT_APPLIED && (errorCode != ERROR_NONE || copy.isEmpty())
+                    || status == RECEIPT_REJECTED && (errorCode == ERROR_NONE || !copy.isEmpty())) {
+                throw new IllegalArgumentException("receipt status/result shape is invalid");
+            }
+            if (!Arrays.equals(resultCommitment,
+                    AuthenticatedMapContract.resultCommitment(status, errorCode, copy))) {
+                throw new IllegalArgumentException("receipt result commitment does not match");
+            }
+            results = copy;
+        }
+
+        @Override public byte[] messageId() { return messageId.clone(); }
+        @Override public byte[] batchCommitment() { return batchCommitment.clone(); }
+        @Override public byte[] resultCommitment() { return resultCommitment.clone(); }
+
+        public static Receipt applied(byte[] messageId, long height, byte[] batchCommitment,
+                                      List<MutationResult> results) {
+            return new Receipt(messageId, height, RECEIPT_APPLIED, ERROR_NONE,
+                    batchCommitment,
+                    AuthenticatedMapContract.resultCommitment(
+                            RECEIPT_APPLIED, ERROR_NONE, results),
+                    results);
+        }
+
+        public static Receipt rejected(byte[] messageId, long height, byte[] batchCommitment,
+                                       int errorCode) {
+            return new Receipt(messageId, height, RECEIPT_REJECTED, errorCode,
+                    batchCommitment,
+                    AuthenticatedMapContract.resultCommitment(
+                            RECEIPT_REJECTED, errorCode, List.of()),
+                    List.of());
+        }
+    }
+
+    public record ReceiptResult(
+            long committedHeight,
+            byte[] stateRoot,
+            byte[] messageId,
+            int presence,
+            Receipt receipt
+    ) {
+        public ReceiptResult {
+            if (committedHeight < 0) {
+                throw new IllegalArgumentException("committedHeight must be nonnegative");
+            }
+            stateRoot = require32(stateRoot, "stateRoot");
+            messageId = require32(messageId, "messageId");
+            if (presence != RECEIPT_ABSENT && presence != RECEIPT_PRESENT
+                    || presence == RECEIPT_ABSENT && receipt != null
+                    || presence == RECEIPT_PRESENT && receipt == null
+                    || receipt != null && !Arrays.equals(messageId, receipt.messageId())) {
+                throw new IllegalArgumentException("receipt result presence/message is invalid");
+            }
+        }
+
+        @Override public byte[] stateRoot() { return stateRoot.clone(); }
+        @Override public byte[] messageId() { return messageId.clone(); }
     }
 
     public record CollectionDescriptor(

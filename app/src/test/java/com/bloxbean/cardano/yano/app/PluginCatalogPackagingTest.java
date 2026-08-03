@@ -129,7 +129,8 @@ class PluginCatalogPackagingTest {
                             && bundle.digestMode() == PluginDigestMode.ARTIFACT_CLOSURE));
             assertTrue(environment.providers().names(AppStateMachineProvider.class)
                     .containsAll(Set.of(
-                            "approvals", "balances", "doc-trail", "kv-registry",
+                            "approvals", "authenticated-map", "balances",
+                            "doc-trail", "kv-registry",
                             "composite", "role-approvals", "role-evidence")));
             AppStateMachine composite = environment.providers().require(
                     AppStateMachineProvider.class, "composite").create(
@@ -338,7 +339,8 @@ class PluginCatalogPackagingTest {
                 onlyStdlib, Thread.currentThread().getContextClassLoader())) {
             assertEquals(Set.of("com.bloxbean.cardano.yano.appchain.stdlib"),
                     environment.selectedBundleIds());
-            assertEquals(Set.of("approvals", "balances", "doc-trail", "kv-registry"),
+            assertEquals(Set.of("approvals", "authenticated-map", "balances",
+                            "doc-trail", "kv-registry"),
                     Set.copyOf(environment.providers().names(AppStateMachineProvider.class)));
             assertTrue(environment.providers().names(FinalizedStreamSinkFactory.class).isEmpty());
             assertTrue(environment.providers().names(AppEffectExecutorFactory.class).isEmpty());

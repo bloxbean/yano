@@ -105,6 +105,56 @@ class AuthenticatedMapContractTest {
         assertThatThrownBy(() -> new AuthenticatedMapContract.Entry(
                 AuthenticatedMapContract.STATUS_REVOKED, 2, OWNER, new byte[]{1},
                 new byte[32], 0, 1)).isInstanceOf(IllegalArgumentException.class);
+        assertThat(AuthenticatedMapContract.genesisMarkerKey()[1])
+                .isEqualTo((byte) AuthenticatedMapContract.NAMESPACE_KIND_FRAMEWORK);
+        assertThat(AuthenticatedMapContract.receiptKey(repeated(5))[1])
+                .isEqualTo((byte) AuthenticatedMapContract.NAMESPACE_KIND_FRAMEWORK);
+    }
+
+    @Test
+    void pointAndReceiptDtosAreCanonicalAndProfileNeutral() {
+        AuthenticatedMapContract.PointQuery query =
+                AuthenticatedMapContract.PointQuery.atHeight(
+                        7, "products", bytes("sku-1"));
+        AuthenticatedMapContract.PointQuery decodedQuery =
+                AuthenticatedMapContract.decodePointQuery(
+                        AuthenticatedMapContract.encodePointQuery(query));
+        assertThat(decodedQuery.historical()).isTrue();
+        assertThat(decodedQuery.height()).isEqualTo(7);
+        assertThat(decodedQuery.collectionId()).isEqualTo("products");
+        assertThat(decodedQuery.applicationKey()).isEqualTo(bytes("sku-1"));
+
+        AuthenticatedMapContract.Entry entry = AuthenticatedMapContract.Entry.active(
+                2, OWNER, bytes("value"), 1, 7);
+        AuthenticatedMapContract.PointResult point = new AuthenticatedMapContract.PointResult(
+                7, repeated(9), "products", bytes("sku-1"),
+                AuthenticatedMapContract.PRESENCE_ACTIVE, entry);
+        byte[] pointBytes = AuthenticatedMapContract.encodePointResult(point);
+        assertThat(AuthenticatedMapContract.encodePointResult(
+                AuthenticatedMapContract.decodePointResult(pointBytes))).isEqualTo(pointBytes);
+
+        AuthenticatedMapContract.Command command = AuthenticatedMapContract.Command.single(
+                AuthenticatedMapContract.Mutation.put(
+                        "products", bytes("sku-1"), bytes("value")));
+        AuthenticatedMapContract.MutationResult mutationResult =
+                new AuthenticatedMapContract.MutationResult(
+                        "products", bytes("sku-1"), entry.status(), entry.revision(),
+                        entry.logicalValueHash());
+        AuthenticatedMapContract.Receipt receipt = AuthenticatedMapContract.Receipt.applied(
+                repeated(4), 7, AuthenticatedMapContract.batchCommitment(command),
+                List.of(mutationResult));
+        byte[] receiptBytes = AuthenticatedMapContract.encodeReceipt(receipt);
+        assertThat(AuthenticatedMapContract.encodeReceipt(
+                AuthenticatedMapContract.decodeReceipt(receiptBytes))).isEqualTo(receiptBytes);
+
+        AuthenticatedMapContract.ReceiptResult result =
+                new AuthenticatedMapContract.ReceiptResult(
+                        7, repeated(9), repeated(4),
+                        AuthenticatedMapContract.RECEIPT_PRESENT, receipt);
+        byte[] resultBytes = AuthenticatedMapContract.encodeReceiptResult(result);
+        assertThat(AuthenticatedMapContract.encodeReceiptResult(
+                AuthenticatedMapContract.decodeReceiptResult(resultBytes)))
+                .isEqualTo(resultBytes);
     }
 
     @Test
