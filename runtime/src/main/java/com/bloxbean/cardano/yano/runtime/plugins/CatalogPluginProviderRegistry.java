@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.plugins;
 
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
+import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValueValidatorFactory;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerModeProvider;
@@ -9,6 +10,7 @@ import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory;
 import com.bloxbean.cardano.yano.api.plugin.NodePlugin;
 import com.bloxbean.cardano.yano.api.plugin.PluginActivationException;
 import com.bloxbean.cardano.yano.api.plugin.PluginCapability;
+import com.bloxbean.cardano.yano.api.plugin.PluginDigestMode;
 import com.bloxbean.cardano.yano.api.plugin.PluginContext;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider;
@@ -144,6 +146,19 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
         ensureOpen();
         Entry entry = entries.getOrDefault(providerType, Map.of()).get(selector);
         return entry != null ? Optional.of(entry.bundleId()) : Optional.empty();
+    }
+
+    @Override
+    public synchronized <P> Optional<ContributionProvenance> contributionProvenance(
+            Class<P> providerType,
+            String selector
+    ) {
+        Objects.requireNonNull(providerType, "providerType");
+        Objects.requireNonNull(selector, "selector");
+        requirePublicProviderType(providerType);
+        ensureOpen();
+        Entry entry = entries.getOrDefault(providerType, Map.of()).get(selector);
+        return entry == null ? Optional.empty() : entry.provenance();
     }
 
     private static void requirePublicProviderType(Class<?> providerType) {
@@ -430,6 +445,9 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
         private final BundleManifest manifest;
         private final Supplier<?> supplier;
         private final ImmutableNodePluginMetadata nodePluginMetadata;
+        private final String digest;
+        private final PluginDigestMode digestMode;
+        private final boolean explicitlyAllowListed;
         private Object instance;
         private Object exposedInstance;
         private RuntimeException constructionFailure;
@@ -452,6 +470,20 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
               BundleManifest manifest,
               Supplier<?> supplier,
               ImmutableNodePluginMetadata nodePluginMetadata) {
+            this(bundleId, kind, name, providerClass, manifest, supplier,
+                    nodePluginMetadata, "", PluginDigestMode.LEGACY_CLASS, false);
+        }
+
+        Entry(String bundleId,
+              ContributionKind kind,
+              String name,
+              String providerClass,
+              BundleManifest manifest,
+              Supplier<?> supplier,
+              ImmutableNodePluginMetadata nodePluginMetadata,
+              String digest,
+              PluginDigestMode digestMode,
+              boolean explicitlyAllowListed) {
             this.bundleId = Objects.requireNonNull(bundleId, "bundleId");
             this.kind = Objects.requireNonNull(kind, "kind");
             this.name = Objects.requireNonNull(name, "name");
@@ -459,6 +491,9 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
             this.manifest = manifest;
             this.supplier = Objects.requireNonNull(supplier, "supplier");
             this.nodePluginMetadata = nodePluginMetadata;
+            this.digest = Objects.requireNonNull(digest, "digest");
+            this.digestMode = Objects.requireNonNull(digestMode, "digestMode");
+            this.explicitlyAllowListed = explicitlyAllowListed;
         }
 
         String bundleId() {
@@ -471,6 +506,12 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
 
         String name() {
             return name;
+        }
+
+        Optional<ContributionProvenance> provenance() {
+            return digest.isEmpty() ? Optional.empty() : Optional.of(
+                    new ContributionProvenance(
+                            bundleId, digest, digestMode, explicitlyAllowListed));
         }
 
         Object get(
@@ -787,6 +828,9 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
                 case APP_STATE_MACHINE -> pluginCallback(
                         callbackTracker, pluginClassLoader,
                         ((AppStateMachineProvider) provider)::id);
+                case AUTHENTICATED_MAP_VALIDATOR -> pluginCallback(
+                        callbackTracker, pluginClassLoader,
+                        ((AuthenticatedMapValueValidatorFactory) provider)::id);
                 case SEQUENCER_MODE -> pluginCallback(
                         callbackTracker, pluginClassLoader,
                         ((SequencerModeProvider) provider)::id);

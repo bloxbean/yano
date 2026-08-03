@@ -4,6 +4,7 @@
       {"pattern": "\\QMETA-INF/yano-plugin-index-v1.json\\E"},
       {"pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yano.api.plugin.NodePlugin\\E"},
       {"pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider\\E"},
+      {"pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValueValidatorFactory\\E"},
       {"pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerModeProvider\\E"},
       {"pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider\\E"},
       {"pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yano.api.appchain.signer.SignerProviderFactory\\E"},

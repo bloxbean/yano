@@ -44,7 +44,8 @@ immutable catalog + typed provider registry
             +----> PluginManager ----> NodePlugin init/start lifecycle
             |
             +----> app-chain state machines, modes, observers, signers,
-                   effect executors, finalized sinks and domain APIs
+                   authenticated-map validators, effect executors,
+                   finalized sinks and domain APIs
 
 Runtime event publications ----> EventBus ----> plugin listeners
                                       |
@@ -164,6 +165,28 @@ rolls back the selected set in reverse dependency order and fails node startup.
 derive their trust tier from their SPI kind: consensus and privileged-local
 activation failures are fatal, while auxiliary sink failures are isolated and
 reported by the app-chain operations surface.
+
+### Authenticated-map validator bundles
+
+An `authenticated-map-validator` contribution implements
+`AuthenticatedMapValueValidatorFactory` from `core-api`. It is narrowly scoped
+to a pure verdict over `(collectionId, applicationKey, value)` and must not be
+used for rules that read state. The descriptor selecting it lives in
+authenticated-map genesis, not node-local plugin configuration.
+
+Production activation is stricter than ordinary discovery: the owning bundle
+must be named in the operator's explicit plugin allow-list, the catalog must
+provide `ARTIFACT_CLOSURE` evidence, and its raw SHA-256 digest must exactly
+match the digest pinned in genesis. All voting nodes therefore install and
+allow-list the same artifact closure. Provider id, SPI contract version, and
+canonical parameters must also match before the state machine starts.
+
+Java plugin validators run in process. The narrow SPI does not grant host
+services, but it is not a JVM sandbox: code can still call filesystem, network,
+clock, process, reflection, and thread APIs directly. Treat every such bundle
+as reviewed consensus code. Use the devtools determinism conformance harness,
+including its isolated-classloader check, before deployment; never load hostile
+or merely untrusted validator bytecode.
 
 Every context sees the same service registry. A dependency may register a
 service during `init()` and its dependent may retrieve it during its own

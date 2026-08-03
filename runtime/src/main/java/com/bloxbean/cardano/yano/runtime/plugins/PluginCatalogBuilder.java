@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.plugins;
 
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
+import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValueValidatorFactory;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerModeProvider;
@@ -266,7 +267,9 @@ final class PluginCatalogBuilder {
                     registryEntries.add(new CatalogPluginProviderRegistry.Entry(
                             candidate.id(), contribution.kind(), contribution.name(),
                             contribution.providerClass(), contribution.manifest(),
-                            contribution.supplier(), contribution.nodePluginMetadata()));
+                            contribution.supplier(), contribution.nodePluginMetadata(),
+                            candidate.digest(), candidate.digestMode(),
+                            options.allowList().contains(candidate.id())));
                 }
             }
             verifyDirectoryArtifactsUnchanged(inputs);
@@ -965,7 +968,8 @@ final class PluginCatalogBuilder {
     private static PluginTrustTier trust(ContributionKind kind) {
         return switch (kind) {
             case NODE_PLUGIN -> PluginTrustTier.REQUIRED;
-            case APP_STATE_MACHINE, SEQUENCER_MODE, L1_OBSERVER -> PluginTrustTier.CONSENSUS;
+            case APP_STATE_MACHINE, AUTHENTICATED_MAP_VALIDATOR,
+                    SEQUENCER_MODE, L1_OBSERVER -> PluginTrustTier.CONSENSUS;
             case SIGNER_PROVIDER, EFFECT_EXECUTOR, DOMAIN_API ->
                     PluginTrustTier.PRIVILEGED_LOCAL;
             case FINALIZED_SINK, HEALTH, METRICS -> PluginTrustTier.AUXILIARY_LOCAL;
@@ -1220,6 +1224,8 @@ final class PluginCatalogBuilder {
                 key, "provider selector", loader, () -> switch (key.kind()) {
                     case NODE_PLUGIN -> ((NodePlugin) provider).id();
                     case APP_STATE_MACHINE -> ((AppStateMachineProvider) provider).id();
+                    case AUTHENTICATED_MAP_VALIDATOR ->
+                            ((AuthenticatedMapValueValidatorFactory) provider).id();
                     case SEQUENCER_MODE -> ((SequencerModeProvider) provider).id();
                     case L1_OBSERVER -> ((L1ObserverProvider) provider).type();
                     case SIGNER_PROVIDER -> ((SignerProviderFactory) provider).scheme();

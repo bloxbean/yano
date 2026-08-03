@@ -27,6 +27,7 @@ dependencies {
     testImplementation(project(':core-api')) {
         transitive = false
     }
+    testImplementation project(':appchain-authenticated-map-validators')
 }
 
 application {

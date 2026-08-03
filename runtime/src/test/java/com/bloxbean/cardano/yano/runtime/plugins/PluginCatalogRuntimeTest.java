@@ -3,6 +3,10 @@ package com.bloxbean.cardano.yano.runtime.plugins;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
+import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValueValidator;
+import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValueValidatorFactory;
+import com.bloxbean.cardano.yano.api.appchain.authmap.ValidatorInitContext;
+import com.bloxbean.cardano.yano.api.appchain.authmap.ValidatorVerdict;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observer;
@@ -1338,7 +1342,9 @@ class PluginCatalogRuntimeTest {
         Set<String> allow = Set.of(baseId, featureId);
         Set<String> deny = Set.of(featureId);
         PluginCatalogInspection offlineFiltered = inspector.inspect(
-                combined, new PluginCatalogInspectionPolicy(1, 1, allow, deny));
+                combined, new PluginCatalogInspectionPolicy(
+                        PluginCatalogBuilder.PLUGIN_API_MAJOR,
+                        PluginCatalogBuilder.PLUGIN_API_LEVEL, allow, deny));
         try (URLClassLoader loader = new ServiceOnlyClassLoader(
                 new URL[]{baseJar.toUri().toURL(), featureJar.toUri().toURL()},
                 getClass().getClassLoader())) {
@@ -1399,6 +1405,37 @@ class PluginCatalogRuntimeTest {
                         .containsExactlyInAnyOrder(java.util.Arrays.stream(ContributionKind.values())
                                 .map(ContributionKind::manifestKey)
                                 .toArray(String[]::new));
+            } finally {
+                runtime.registry().close();
+            }
+        }
+    }
+
+    @Test
+    void registryPublishesExplicitAllowListAndClosureProvenance() throws Exception {
+        ParityMatrix matrix = parityMatrix();
+        Set<String> allow = Set.of(matrix.independentId(), matrix.baseId(),
+                matrix.middleId(), matrix.allKindsId());
+        PluginsOptions options = new PluginsOptions(
+                true, false, allow, Set.of(), Map.of());
+
+        try (URLClassLoader loader = new ServiceOnlyClassLoader(
+                new URL[]{matrix.services().toUri().toURL()}, getClass().getClassLoader())) {
+            PluginCatalogBuilder.BuildResult runtime = new PluginCatalogBuilder().build(
+                    options, loader,
+                    List.of(new PluginCatalogBuilder.CatalogInput(
+                            matrix.index(), PluginSourceCategory.CLASSPATH)));
+            try {
+                PluginProviderRegistry.ContributionProvenance provenance = runtime.registry()
+                        .contributionProvenance(
+                                AuthenticatedMapValueValidatorFactory.class,
+                                matrix.allKindsId())
+                        .orElseThrow();
+                assertThat(provenance.bundleId()).isEqualTo(matrix.allKindsId());
+                assertThat(provenance.digest()).isEqualTo(digest('d'));
+                assertThat(provenance.digestMode())
+                        .isEqualTo(PluginDigestMode.ARTIFACT_CLOSURE);
+                assertThat(provenance.explicitlyAllowListed()).isTrue();
             } finally {
                 runtime.registry().close();
             }
@@ -3099,12 +3136,12 @@ class PluginCatalogRuntimeTest {
                         List.of(new BundleDependency(
                                 baseId, SemVersion.parse("1.0.0"),
                                 SemVersion.parse("2.0.0"))),
-                        List.of(), 'c', PluginDigestMode.ARTIFACT_CLOSURE),
+                        List.of(), 'c', PluginDigestMode.JAR),
                 parityBundle(allKindsId, "3.0.0",
                         List.of(new BundleDependency(
                                 middleId, SemVersion.parse("2.0.0"),
                                 SemVersion.parse("3.0.0"))),
-                        allKinds, 'd', PluginDigestMode.JAR),
+                        allKinds, 'd', PluginDigestMode.ARTIFACT_CLOSURE),
                 parityBundle(baseId, "1.5.0", List.of(), List.of(),
                         'b', PluginDigestMode.ARTIFACT_TREE),
                 parityBundle(independentId, "1.0.0", List.of(), List.of(),
@@ -3167,6 +3204,7 @@ class PluginCatalogRuntimeTest {
         return switch (kind) {
             case NODE_PLUGIN -> ParityNodePlugin.class;
             case APP_STATE_MACHINE -> ParityStateMachineProvider.class;
+            case AUTHENTICATED_MAP_VALIDATOR -> ParityMapValidatorProvider.class;
             case SEQUENCER_MODE -> ParitySequencerProvider.class;
             case L1_OBSERVER -> ParityL1ObserverProvider.class;
             case SIGNER_PROVIDER -> ParitySignerProvider.class;
@@ -3835,6 +3873,15 @@ class PluginCatalogRuntimeTest {
     public static final class ParityStateMachineProvider implements AppStateMachineProvider {
         @Override public String id() { throw unexpectedParityActivation(); }
         @Override public AppStateMachine create() { throw unexpectedParityActivation(); }
+    }
+
+    public static final class ParityMapValidatorProvider
+            implements AuthenticatedMapValueValidatorFactory {
+        @Override public String id() { return "com.example.parity-c-all-kinds"; }
+        @Override public String contractVersion() { return "parity-v1"; }
+        @Override public AuthenticatedMapValueValidator create(ValidatorInitContext context) {
+            return (collection, key, value) -> ValidatorVerdict.ACCEPT;
+        }
     }
 
     public static final class ParitySequencerProvider implements SequencerModeProvider {

@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.app;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
+import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValueValidatorFactory;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecution;
@@ -65,6 +66,7 @@ class PluginCatalogPackagingTest {
     private static final Set<String> STOCK_BUNDLES = Set.of(
             "com.bloxbean.cardano.yaci.plugins.logging",
             "com.bloxbean.cardano.yano.appchain.stdlib",
+            "com.bloxbean.cardano.yano.appchain.authenticated-map-validators",
             "com.bloxbean.cardano.yano.appchain.role-workflow",
             "com.bloxbean.cardano.yano.appchain.evidence-profile",
             "com.bloxbean.cardano.yano.appchain.evidence-registry",
@@ -132,6 +134,8 @@ class PluginCatalogPackagingTest {
                             "approvals", "authenticated-map", "balances",
                             "doc-trail", "kv-registry",
                             "composite", "role-approvals", "role-evidence")));
+            assertEquals(List.of("gs1-gtin-v1"), environment.providers()
+                    .names(AuthenticatedMapValueValidatorFactory.class));
             AppStateMachine composite = environment.providers().require(
                     AppStateMachineProvider.class, "composite").create(
                     new AppStateMachineContext() {

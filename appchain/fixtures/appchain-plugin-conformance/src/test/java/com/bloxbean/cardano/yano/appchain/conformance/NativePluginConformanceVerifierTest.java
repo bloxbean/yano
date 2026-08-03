@@ -4,6 +4,9 @@ import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryResult;
+import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValueValidatorFactory;
+import com.bloxbean.cardano.yano.api.appchain.authmap.ValidatorInitContext;
+import com.bloxbean.cardano.yano.api.appchain.authmap.ValidatorVerdict;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecution;
@@ -83,6 +86,7 @@ class NativePluginConformanceVerifierTest {
             String constantPool = new String(input.readAllBytes(), StandardCharsets.ISO_8859_1);
             for (String provider : List.of(
                     ConformanceStateMachineProvider.class.getName(),
+                    ConformanceAuthenticatedMapValidatorFactory.class.getName(),
                     ConformanceSequencerModeProvider.class.getName(),
                     ConformanceL1ObserverProvider.class.getName(),
                     ConformanceSignerProviderFactory.class.getName(),
@@ -103,6 +107,8 @@ class NativePluginConformanceVerifierTest {
         assertExactService(loader, NodePlugin.class, NativePluginConformanceVerifier.class);
         assertExactService(loader, AppStateMachineProvider.class,
                 ConformanceStateMachineProvider.class);
+        assertExactService(loader, AuthenticatedMapValueValidatorFactory.class,
+                ConformanceAuthenticatedMapValidatorFactory.class);
         assertExactService(loader, SequencerModeProvider.class,
                 ConformanceSequencerModeProvider.class);
         assertExactService(loader, L1ObserverProvider.class,
@@ -122,7 +128,7 @@ class NativePluginConformanceVerifierTest {
     }
 
     @Test
-    void catalogRegistryResolvesAndConstructsAllNineTypedProviders(
+    void catalogRegistryResolvesAndConstructsAllTenTypedProviders(
             @TempDir Path pluginDirectory) throws Exception {
         String fixtureJarProperty = System.getProperty(
                 "yano.plugin.conformance.fixture.jar");
@@ -144,6 +150,8 @@ class NativePluginConformanceVerifierTest {
                     .containsExactly(NativePluginConformanceVerifier.BUNDLE_ID);
             assertCatalogProvider(environment, AppStateMachineProvider.class,
                     ConformanceStateMachineProvider.ID);
+            assertCatalogProvider(environment, AuthenticatedMapValueValidatorFactory.class,
+                    ConformanceAuthenticatedMapValidatorFactory.ID);
             assertCatalogProvider(environment, SequencerModeProvider.class,
                     ConformanceSequencerModeProvider.ID);
             assertCatalogProvider(environment, L1ObserverProvider.class,
@@ -165,7 +173,7 @@ class NativePluginConformanceVerifierTest {
     }
 
     @Test
-    void strictManifestDeclaresNodeVerifierAndAllNineTypedKinds() throws Exception {
+    void strictManifestDeclaresNodeVerifierAndAllTenTypedKinds() throws Exception {
         ClassLoader loader = getClass().getClassLoader();
         try (InputStream input = loader.getResourceAsStream(MANIFEST_PATH)) {
             assertThat(input).as("fixture manifest").isNotNull();
@@ -184,6 +192,7 @@ class NativePluginConformanceVerifierTest {
                     .containsExactlyInAnyOrderElementsOf(Set.of(
                             ContributionKind.NODE_PLUGIN,
                             ContributionKind.APP_STATE_MACHINE,
+                            ContributionKind.AUTHENTICATED_MAP_VALIDATOR,
                             ContributionKind.SEQUENCER_MODE,
                             ContributionKind.L1_OBSERVER,
                             ContributionKind.SIGNER_PROVIDER,
@@ -219,6 +228,19 @@ class NativePluginConformanceVerifierTest {
         AppStateMachine machine = environment.providers().require(
                 AppStateMachineProvider.class, ConformanceStateMachineProvider.ID).create();
         assertThat(machine.id()).isEqualTo(ConformanceStateMachineProvider.ID);
+
+        var validator = environment.providers().require(
+                        AuthenticatedMapValueValidatorFactory.class,
+                        ConformanceAuthenticatedMapValidatorFactory.ID)
+                .create(new ValidatorInitContext(
+                        "conformance-validator",
+                        ConformanceAuthenticatedMapValidatorFactory.ID,
+                        ConformanceAuthenticatedMapValidatorFactory.CONTRACT,
+                        new byte[]{(byte) 0xa0}, List.of("records")));
+        assertThat(validator.validate("records", new byte[0], new byte[0]))
+                .isEqualTo(ValidatorVerdict.ACCEPT);
+        assertThat(validator.validate("records", new byte[0], new byte[0]))
+                .isEqualTo(ValidatorVerdict.ACCEPT);
 
         SequencerContext sequencerContext = new SequencerContext() {
             @Override public String chainId() { return "conformance-chain"; }

@@ -32,3 +32,11 @@ genesis; nodes evaluate only those inlined, genesis-bound bytes. The frozen
 grammar and limits are published beside `schema-vectors.properties` under the
 authenticated-map v1 resource directory. `check` runs both the Java corpus and
 an independent Python compiler/evaluator against those vectors.
+
+Custom validators use `VALIDATOR_KIND_PLUGIN`. Their descriptor pins the
+factory provider id, `authenticated-map-validator-v1` SPI contract, canonical
+parameter map, and raw 32-byte SHA-256 artifact-closure digest. A normal plugin
+rejection produces `ERROR_VALUE_VALIDATOR = 12`; an unexpected plugin failure
+is a node failure and must not become a receipt. The public validator SPI lives
+in `core-api`, while first-party implementations live in the separate
+`appchain-authenticated-map-validators` bundle.
