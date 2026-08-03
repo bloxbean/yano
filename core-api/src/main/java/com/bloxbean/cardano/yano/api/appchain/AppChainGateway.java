@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.api.appchain;
 
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
+import com.bloxbean.cardano.yano.api.appchain.state.StateIntegrityReport;
 import com.bloxbean.cardano.yano.api.appchain.state.StateProofEnvelope;
 
 import java.util.List;
@@ -68,10 +69,7 @@ public interface AppChainGateway {
     /** Committed state value for a key, if present. */
     java.util.Optional<byte[]> stateValue(byte[] key);
 
-    /**
-     * MPF inclusion or exclusion proof (wire format) for a key against the
-     * committed root; verifiable off-chain and on-chain (Aiken MPF validator).
-     */
+    /** Native profile-specific inclusion or exclusion proof against the committed root. */
     java.util.Optional<byte[]> stateProof(byte[] key);
 
     /**
@@ -118,6 +116,21 @@ public interface AppChainGateway {
     default java.util.Optional<StateProofEnvelope> stateProofEnvelopeAtHeight(
             long height, byte[] key) {
         return java.util.Optional.empty();
+    }
+
+    /** Bounded integrity result for the selected authenticated-state backend. */
+    default java.util.Optional<StateIntegrityReport> stateIntegrity() {
+        return java.util.Optional.empty();
+    }
+
+    /** Oldest finalized height for which this node can currently build a proof. */
+    default long oldestProvableHeight() {
+        return 0;
+    }
+
+    /** Operationally prune authenticated-state proof history below a retained height. */
+    default int pruneStateProofsBefore(long retainFromHeight) {
+        throw new UnsupportedOperationException("Authenticated-state pruning is unavailable");
     }
 
     /**

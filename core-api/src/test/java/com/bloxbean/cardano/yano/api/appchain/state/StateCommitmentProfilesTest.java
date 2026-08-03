@@ -73,4 +73,31 @@ class StateCommitmentProfilesTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("does not match");
     }
+
+    @Test
+    void classicJmtLogicalTombstoneAndProofPresenceAreCanonical() {
+        byte[] tombstone = StateCommitmentValues.classicJmtTombstone();
+        assertThat(StateCommitmentValues.isClassicJmtTombstone(tombstone)).isTrue();
+        tombstone[0] ^= 1;
+        assertThat(StateCommitmentValues.isClassicJmtTombstone(tombstone)).isFalse();
+        assertThat(StateCommitmentValues.isClassicJmtTombstone(
+                StateCommitmentValues.classicJmtTombstone())).isTrue();
+
+        StateSnapshot snapshot = new StateSnapshot(
+                StateCommitmentIdentity.explicit(
+                        StateCommitmentProfiles.CLASSIC_JMT, new byte[32]),
+                1, new byte[32]);
+        StateProof proof = new StateProof(
+                snapshot, new byte[]{1}, StateCommitmentValues.classicJmtTombstone(),
+                StateProof.Presence.TOMBSTONED,
+                StateCommitmentProfiles.CLASSIC_JMT.nativeProofEncoding(),
+                new byte[]{(byte) 0x80});
+        assertThat(proof.presence()).isEqualTo(StateProof.Presence.TOMBSTONED);
+        assertThatThrownBy(() -> new StateProof(
+                snapshot, new byte[]{1}, null, StateProof.Presence.TOMBSTONED,
+                StateCommitmentProfiles.CLASSIC_JMT.nativeProofEncoding(),
+                new byte[]{(byte) 0x80}))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("presence/value");
+    }
 }

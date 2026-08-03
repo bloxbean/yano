@@ -240,6 +240,44 @@ class AuthenticatedMapStateMachineTest {
     }
 
     @Test
+    void realClassicJmtReplayIsIdenticalAcrossMembersRestartSnapshotAndCatchUp() {
+        String chainId = "classic-jmt-conformance-chain";
+        String member = "11".repeat(32);
+        AppChainConfig config = AppChainConfig.builder(chainId)
+                .signingKeyHex("22".repeat(32))
+                .memberKeysHex(Set.of(member))
+                .proposerKeyHex(member)
+                .maxBlockMessages(2)
+                .stateMachineId(AuthenticatedMapStateMachine.ID)
+                .build();
+        AuthenticatedMapContract.Genesis genesis = AuthenticatedMapGenesisFactory.classicJmt(
+                config, repeated(7), 16, 32_768,
+                List.of(collection("records", AuthenticatedMapContract.AUTH_OPEN, true)),
+                List.of());
+
+        StateMachineConformance.builder(
+                        new StdlibStateMachineProviders.AuthenticatedMapProvider())
+                .settings(AuthenticatedMapGenesisFactory.settings(genesis))
+                .chainId(chainId)
+                .blocks(16)
+                .messagesPerBlock(2)
+                .runs(3)
+                .restartAtHeight(6)
+                .snapshotAtHeight(9)
+                .messageGenerator((height, index, random) ->
+                        new StateMachineConformance.CorpusMessage(
+                                AuthenticatedMapContract.DEFAULT_TOPIC,
+                                AuthenticatedMapContract.encodeCommand(single(
+                                        AuthenticatedMapContract.Mutation.put(
+                                                "records",
+                                                bytes("key-" + height + "-" + index),
+                                                bytes("value-" + random.nextInt(10_000)))))))
+                .stateProbe("first-record", AuthenticatedMapContract.canonicalKey(
+                        "records", bytes("key-1-0")))
+                .assertDeterministic();
+    }
+
+    @Test
     void providerFailsClosedOnMissingOrMismatchedCanonicalGenesis() {
         String chainId = "provider-chain";
         String member = "11".repeat(32);

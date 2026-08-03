@@ -39,7 +39,7 @@ final class MpfAuthenticatedStateBackend implements AuthenticatedStateBackend {
         this.durableNodes = Objects.requireNonNull(durableNodes, "durableNodes");
         this.identity = Objects.requireNonNull(identity, "identity");
         this.faults = Objects.requireNonNull(faults, "faults");
-        if (!StateCommitmentProfiles.MPF.id().equals(identity.profile().id())) {
+        if (!StateCommitmentProfiles.MPF.equals(identity.profile())) {
             throw new IllegalArgumentException("MPF backend requires mpf-blake2b256-v1");
         }
     }
@@ -74,6 +74,18 @@ final class MpfAuthenticatedStateBackend implements AuthenticatedStateBackend {
         return ledger.block(height)
                 .map(AppBlock::stateRoot)
                 .map(root -> new StateSnapshot(identity, height, root));
+    }
+
+    @Override
+    public Optional<byte[]> get(long height, byte[] canonicalKey) {
+        Objects.requireNonNull(canonicalKey, "canonicalKey");
+        return snapshot(height).flatMap(snapshot -> {
+            if (height == 0) {
+                return Optional.empty();
+            }
+            return Optional.ofNullable(new MpfTrie(durableNodes, snapshot.stateRoot())
+                    .get(canonicalKey));
+        });
     }
 
     @Override
