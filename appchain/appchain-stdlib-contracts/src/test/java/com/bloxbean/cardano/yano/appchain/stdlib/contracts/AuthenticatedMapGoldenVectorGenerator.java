@@ -28,6 +28,12 @@ public final class AuthenticatedMapGoldenVectorGenerator {
     static Map<String, String> vectors() {
         Map<String, String> vectors = new TreeMap<>();
         vectors.put("schema.version", "1");
+        vectors.put("genesis.codec.version",
+                Integer.toString(AuthenticatedMapContract.GENESIS_CODEC_VERSION));
+        vectors.put("value.encoding.opaque",
+                Integer.toString(AuthenticatedMapContract.VALUE_ENCODING_OPAQUE));
+        vectors.put("value.encoding.canonical-cbor",
+                Integer.toString(AuthenticatedMapContract.VALUE_ENCODING_CANONICAL_CBOR));
         vectors.put("dependency.ccl.version", "0.8.0-pre5-dev1");
         vectors.put("profile.mpf.id", StateCommitmentProfiles.MPF.id());
         vectors.put("profile.mpf.descriptor", StateCommitmentProfiles.MPF.dependencyDescriptor());

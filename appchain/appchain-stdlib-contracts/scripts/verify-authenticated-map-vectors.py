@@ -169,7 +169,7 @@ def decode_node(encoded):
     if item[0] == b"\x00":
         require(len(item) >= 2 and isinstance(item[1], int) and item[1] <= 0xFFFF,
                 "internal bitmap")
-        child_count = item[1].bit_count()
+        child_count = bin(item[1]).count("1")
         require(len(item) in (2 + child_count, 3 + child_count), "internal fields")
         children = item[2:2 + child_count]
         require(all(isinstance(value, bytes) and len(value) == 32 for value in children),
@@ -260,6 +260,10 @@ def decode_key(encoded, namespace=1):
 
 def verify_vectors(values):
     require(values["schema.version"] == "1", "schema version")
+    require(values["genesis.codec.version"] == "2", "genesis codec version")
+    require(values["value.encoding.opaque"] == "0", "opaque value encoding")
+    require(values["value.encoding.canonical-cbor"] == "1",
+            "canonical CBOR value encoding")
     require(values["dependency.ccl.version"] == "0.8.0-pre5-dev1", "CCL pin")
     require(values["profile.mpf.id"] == "mpf-blake2b256-v1", "MPF profile id")
     require(values["profile.jmt.id"] == "jmt-blake2b256-v1", "JMT profile id")
@@ -299,8 +303,15 @@ def verify_vectors(values):
     batch = bytes.fromhex(values["command.batch"])
     require(digest(BATCH_DOMAIN + batch).hex() == values["command.batch.commitment"],
             "batch commitment")
-    genesis = bytes.fromhex(values["genesis.cbor"])
-    require(digest(GENESIS_DOMAIN + genesis).hex() == values["genesis.id"], "genesis id")
+    genesis_bytes = bytes.fromhex(values["genesis.cbor"])
+    genesis = decode_exact(genesis_bytes)
+    require(genesis[0:4] == [2, "product-registry", "authenticated-map", 1]
+            and len(genesis) == 13, "genesis codec/machine version")
+    require(all(isinstance(collection, list) and len(collection) == 7
+                and collection[0] == 2 and collection[6] == 0
+                for collection in genesis[11]), "collection value encoding")
+    require(digest(GENESIS_DOMAIN + genesis_bytes).hex() == values["genesis.id"],
+            "genesis id")
 
     active = decode_exact(bytes.fromhex(values["entry.active"]))
     require(active[0:3] == [1, 0, 1] and len(active) == 8, "active entry shape")
