@@ -119,7 +119,9 @@ public final class EutxoDemoCli {
                     options.scenario() == null ? "ledger" : options.scenario());
             EutxoDemoWorkspace workspace = EutxoDemoWorkspace.create(options, provider);
             provider.setup(workspace, options);
-            return provider.execute("up", workspace, options);
+            return withIndex(
+                    provider.execute("up", workspace, options),
+                    workspace, true);
         }
         EutxoDemoWorkspace workspace = EutxoDemoWorkspace.open(options.workspace());
         if (options.scenario() != null
@@ -130,7 +132,9 @@ public final class EutxoDemoCli {
         EutxoDemoScenarioProvider provider =
                 scenarios.require(workspace.manifest().scenario());
         if ("status".equals(options.command())) {
-            return provider.execute("status", workspace, options);
+            return withIndex(
+                    provider.execute("status", workspace, options),
+                    workspace, false);
         }
         if ("reset".equals(options.command())) {
             if (!options.confirmed()) {
@@ -148,7 +152,28 @@ public final class EutxoDemoCli {
             throw new IllegalArgumentException(
                     options.command() + " is not supported by scenario " + provider.id());
         }
-        return provider.execute(options.command(), workspace, options);
+        EutxoDemoResult result =
+                provider.execute(options.command(), workspace, options);
+        return withIndex(
+                result,
+                workspace,
+                List.of("start", "up", "round-trip", "verify")
+                        .contains(options.command()));
+    }
+
+    private static EutxoDemoResult withIndex(
+            EutxoDemoResult result,
+            EutxoDemoWorkspace workspace,
+            boolean requireReady
+    ) throws InterruptedException {
+        EutxoDemoCluster cluster = new EutxoDemoCluster(workspace);
+        if (requireReady) {
+            cluster.awaitIndexReady(java.time.Duration.ofMinutes(2));
+        }
+        Map<String, Object> fields = new LinkedHashMap<>(result.fields());
+        fields.put("index", cluster.indexSummary());
+        fields.put("console", cluster.consoleUrl());
+        return EutxoDemoResult.of(result.status(), fields);
     }
 
     private static EutxoDemoResult ready(EutxoDemoWorkspace workspace) {

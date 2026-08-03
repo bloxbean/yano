@@ -14,6 +14,8 @@
     "evidence-ledger",
     "eutxo-ledger",
     "eutxo-cardano-bridge",
+    "eutxo-zeroj-validity",
+    "eutxo-zeroj-preview",
     "custom-plugin"
   ],
   "artifacts": [
@@ -22,7 +24,14 @@
     "appchain-evidence-registry",
     "appchain-composite",
     "appchain-role-workflow",
-    "appchain-evidence-profile"
+    "appchain-evidence-profile",
+    "appchain-eutxo-ledger",
+    "appchain-eutxo-indexer-core",
+    "appchain-eutxo-indexer-jdbc",
+    "appchain-eutxo-bridge-cardano",
+    "appchain-eutxo-zk-zeroj",
+    "appchain-eutxo-zk-runtime",
+    "appchain-eutxo-zk-lifecycle"
   ],
   "distributions": [
     {
@@ -31,7 +40,7 @@
       "archivePattern": "yano-{version}.zip",
       "tooling": "bundled",
       "platforms": ["java-25"],
-      "artifacts": ["yano-runtime", "appchain-stdlib", "appchain-evidence-registry", "appchain-composite", "appchain-role-workflow", "appchain-evidence-profile"]
+      "artifacts": ["yano-runtime", "appchain-stdlib", "appchain-evidence-registry", "appchain-composite", "appchain-role-workflow", "appchain-evidence-profile", "appchain-eutxo-ledger", "appchain-eutxo-indexer-core", "appchain-eutxo-indexer-jdbc", "appchain-eutxo-bridge-cardano", "appchain-eutxo-zk-zeroj", "appchain-eutxo-zk-runtime", "appchain-eutxo-zk-lifecycle"]
     },
     {
       "id": "native-unix",

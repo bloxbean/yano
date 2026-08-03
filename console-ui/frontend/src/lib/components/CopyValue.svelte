@@ -8,13 +8,15 @@
     display,
     width = 28,
     label = 'value',
-    mono = true
+    mono = true,
+    iconOnly = false
   } = $props<{
     value: unknown;
     display?: string;
     width?: number;
     label?: string;
     mono?: boolean;
+    iconOnly?: boolean;
   }>();
 
   let state = $state<'idle' | 'copied' | 'failed'>('idle');
@@ -41,7 +43,9 @@
 </script>
 
 <span class="inline-flex min-w-0 items-center justify-end gap-1.5">
-  <span class:font-mono={mono} class="min-w-0 break-all" title={fullValue}>{shown}</span>
+  {#if !iconOnly}
+    <span class:font-mono={mono} class="min-w-0 break-all" title={fullValue}>{shown}</span>
+  {/if}
   {#if copyable}
     <button type="button"
             class="copy-button"

@@ -54,6 +54,8 @@ final class AppChainProjectCatalog {
             "BUNDLED", "FIRST_PARTY_OPTIONAL", "REFERENCE", "EXPERIMENTAL");
     private static final Set<String> MATURITY = Set.of("stable", "preview", "experimental");
     private static final Set<String> SCOPES = Set.of("chain", "node", "distribution");
+    private static final Set<String> NETWORKS =
+            Set.copyOf(AppChainProjectModel.DEFAULT_SUPPORTED_NETWORKS);
     private static final Set<String> NATIVE_POSTURES = Set.of(
             "bundled", "build-time-only", "unsupported", "not-applicable");
 
@@ -349,12 +351,18 @@ final class AppChainProjectCatalog {
                     "Release capability index must match the embedded catalogs");
         }
         for (AppChainProjectModel.DistributionFlavor flavor : index.distributions()) {
+            Set<String> expectedFlavorArtifacts = artifacts.values().stream()
+                    .filter(artifact -> "BUNDLED".equals(artifact.availability()))
+                    .filter(artifact -> safeList(artifact.runtimeTypes())
+                            .contains(flavor.runtimeType()))
+                    .map(AppChainProjectModel.Artifact::id)
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
             if (!index.runtimeTypes().contains(flavor.runtimeType())
                     || flavor.id() == null || flavor.archivePattern() == null
                     || flavor.tooling() == null || flavor.platforms() == null
                     || flavor.artifacts() == null
                     || !knownArtifacts.containsAll(flavor.artifacts())
-                    || !Set.copyOf(flavor.artifacts()).equals(Set.copyOf(index.artifacts()))) {
+                    || !Set.copyOf(flavor.artifacts()).equals(expectedFlavorArtifacts)) {
                 throw new IllegalStateException("Release distribution flavor is invalid");
             }
         }
@@ -430,6 +438,8 @@ final class AppChainProjectCatalog {
             }
             requireNonEmpty(capability.runtimeTypes(), capability.id(), "runtimeTypes");
             requireNonEmpty(capability.deploymentTargets(), capability.id(), "deploymentTargets");
+            validateSupportedNetworks(
+                    capability.effectiveSupportedNetworks(), capability.id());
             requireText(capability.name(), capability.id(), "name");
             requireText(capability.category(), capability.id(), "category");
             requireEnum(capability.availability(), AVAILABILITY, capability.id(), "availability");
@@ -537,6 +547,7 @@ final class AppChainProjectCatalog {
             requireNonEmpty(recipe.capabilities(), recipe.id(), "capabilities");
             requireNonEmpty(recipe.runtimeTypes(), recipe.id(), "runtimeTypes");
             requireNonEmpty(recipe.deploymentTargets(), recipe.id(), "deploymentTargets");
+            validateSupportedNetworks(recipe.effectiveSupportedNetworks(), recipe.id());
             requireText(recipe.name(), recipe.id(), "name");
             requireText(recipe.category(), recipe.id(), "category");
             requireEnum(recipe.availability(), AVAILABILITY, recipe.id(), "availability");
@@ -615,6 +626,15 @@ final class AppChainProjectCatalog {
         }
     }
 
+    private static void validateSupportedNetworks(List<String> networks, String owner) {
+        requireNonEmpty(networks, owner, "supportedNetworks");
+        if (!NETWORKS.containsAll(networks)
+                || new LinkedHashSet<>(networks).size() != networks.size()) {
+            throw new IllegalStateException(
+                    owner + " declares invalid or duplicate supportedNetworks");
+        }
+    }
+
     private static void requireEnum(
             String value, Set<String> allowed, String id, String field) {
         if (!allowed.contains(value)) {
@@ -642,6 +662,7 @@ final class AppChainProjectCatalog {
         // These values are resolved from the project topology, not user input.
         allowed.add("proposer");
         allowed.add("chainId");
+        allowed.add("network");
         for (String value : safeMap(capability.properties()).values()) {
             var matcher = PLACEHOLDER.matcher(value);
             while (matcher.find()) {

@@ -1,0 +1,411 @@
+package com.bloxbean.cardano.yano.appchain.eutxo.zk.onchain;
+
+import com.bloxbean.cardano.julc.core.PlutusData;
+import com.bloxbean.cardano.julc.core.types.JulcList;
+import com.bloxbean.cardano.julc.ledger.OutputDatum;
+import com.bloxbean.cardano.julc.ledger.ScriptContext;
+import com.bloxbean.cardano.julc.ledger.TxInInfo;
+import com.bloxbean.cardano.julc.ledger.TxOut;
+import com.bloxbean.cardano.julc.stdlib.Builtins;
+import com.bloxbean.cardano.julc.stdlib.annotation.Entrypoint;
+import com.bloxbean.cardano.julc.stdlib.annotation.Param;
+import com.bloxbean.cardano.julc.stdlib.annotation.SpendingValidator;
+import com.bloxbean.cardano.julc.stdlib.lib.ContextsLib;
+import com.bloxbean.cardano.julc.stdlib.lib.ValuesLib;
+import com.bloxbean.cardano.zeroj.onchain.julc.groth16.lib.Groth16BLS12381Lib;
+
+import java.math.BigInteger;
+import java.util.Optional;
+
+/**
+ * Proof-gated validity-root thread.
+ *
+ * <p>Action 0 is permissionless proof advancement. Action 1 is an
+ * authority-signed, root-preserving handoff to a precommitted successor
+ * script; ordinary advancement can never alter the settlement identity.</p>
+ */
+@SpendingValidator
+public final class EutxoValidityRootValidator {
+    private static final BigInteger BLS12_381_SCALAR_FIELD = new BigInteger(
+            "52435875175126190479447740508185965837690552500527637822603658699938581184513");
+    @Param
+    static byte[] rootThreadPolicyId;
+
+    @Param
+    static byte[] rootThreadAssetName;
+
+    @Param
+    static BigInteger settlementContext;
+
+    @Param
+    static BigInteger maximumBatchSize;
+
+    @Param
+    static BigInteger canonicalBatchDataBytes;
+
+    @Param
+    static byte[] vkAlpha;
+
+    @Param
+    static byte[] vkBeta;
+
+    @Param
+    static byte[] vkGamma;
+
+    @Param
+    static byte[] vkDelta;
+
+    @Param
+    static PlutusData vkIc;
+
+    @Param
+    static byte[] dataAvailabilityScriptHash;
+
+    @Param
+    static byte[] migrationAuthority;
+
+    @Param
+    static byte[] migrationTargetScriptHash;
+
+    record RootDatum(
+            BigInteger version,
+            byte[] chainId,
+            BigInteger bridgeEpoch,
+            BigInteger height,
+            BigInteger validityRoot,
+            BigInteger settlementContext,
+            BigInteger batchDataCommitment,
+            BigInteger withdrawalCommitment,
+            BigInteger generation
+    ) {
+    }
+
+    record Action(
+            BigInteger kind,
+            BigInteger previousRoot,
+            BigInteger nextRoot,
+            BigInteger transitionDigest,
+            BigInteger ownerCommitment,
+            BigInteger batchSize,
+            BigInteger settlementContext,
+            BigInteger batchDataCommitment,
+            BigInteger withdrawalCommitment,
+            byte[] batchData,
+            byte[] piA,
+            byte[] piB,
+            byte[] piC
+    ) {
+    }
+
+    private EutxoValidityRootValidator() {
+    }
+
+    @Entrypoint
+    public static boolean validate(
+            RootDatum current,
+            Action action,
+            ScriptContext context
+    ) {
+        if (!datumShapeValid(current)
+                || !currentValid(current)) {
+            return false;
+        }
+        if (action.kind().signum() == 0) {
+            return advance(current, action, context);
+        }
+        return action.kind().equals(BigInteger.ONE)
+                && migrate(current, action, context);
+    }
+
+    private static boolean advance(
+            RootDatum current,
+            Action action,
+            ScriptContext context
+    ) {
+        JulcList<TxOut> continuing =
+                ContextsLib.getContinuingOutputs(context);
+        Optional<TxInInfo> ownInput =
+                ContextsLib.findOwnInput(context);
+        if (ownInput.isEmpty()
+                || !hasThread(ownInput.get().resolved())
+                || !singleThreadTransition(context)
+                || continuing.size() != 1
+                || !hasThread(continuing.head())
+                || !advanceOutputValid(
+                continuing.head().datum(), current, action)
+                || !dataPublished(action, context)) {
+            return false;
+        }
+        return proofShapeValid(action)
+                && Groth16BLS12381Lib.verify(
+                publicInputs(action),
+                action.piA(),
+                action.piB(),
+                action.piC(),
+                vkAlpha,
+                vkBeta,
+                vkGamma,
+                vkDelta,
+                vkIc);
+    }
+
+    private static boolean migrate(
+            RootDatum current,
+            Action action,
+            ScriptContext context
+    ) {
+        if (Builtins.lengthOfByteString(migrationAuthority) != 28
+                || Builtins.lengthOfByteString(
+                migrationTargetScriptHash) != 28
+                || !ContextsLib.signedBy(
+                context.txInfo(), migrationAuthority)) {
+            return false;
+        }
+        JulcList<TxOut> targets = ContextsLib.scriptOutputsAt(
+                context.txInfo(), migrationTargetScriptHash);
+        Optional<TxInInfo> ownInput =
+                ContextsLib.findOwnInput(context);
+        return ownInput.isPresent()
+                && hasThread(ownInput.get().resolved())
+                && singleThreadTransition(context)
+                && targets.size() == 1
+                && hasThread(targets.head())
+                && migrationOutputValid(
+                targets.head().datum(), current, action);
+    }
+
+    static boolean currentValid(RootDatum current) {
+        return current.version().equals(BigInteger.ONE)
+                && Builtins.lengthOfByteString(current.chainId()) >= 1
+                && Builtins.lengthOfByteString(current.chainId()) <= 128
+                && current.bridgeEpoch().signum() >= 0
+                && current.height().signum() >= 0
+                && current.validityRoot().signum() >= 0
+                && current.settlementContext().equals(settlementContext)
+                && current.batchDataCommitment().signum() >= 0
+                && current.withdrawalCommitment().signum() >= 0
+                && current.generation().signum() >= 0;
+    }
+
+    static boolean datumShapeValid(RootDatum datum) {
+        PlutusData fields = Builtins.sndPair(
+                Builtins.unConstrData(datum));
+        PlutusData f1 = Builtins.tailList(fields);
+        PlutusData f2 = Builtins.tailList(f1);
+        PlutusData f3 = Builtins.tailList(f2);
+        PlutusData f4 = Builtins.tailList(f3);
+        PlutusData f5 = Builtins.tailList(f4);
+        PlutusData f6 = Builtins.tailList(f5);
+        PlutusData f7 = Builtins.tailList(f6);
+        PlutusData f8 = Builtins.tailList(f7);
+        PlutusData f9 = Builtins.tailList(f8);
+        return Builtins.constrTag(datum) == 0
+                && Builtins.nullList(f9);
+    }
+
+    private static boolean proofShapeValid(Action action) {
+        return action.previousRoot().signum() >= 0
+                && action.nextRoot().signum() >= 0
+                && action.transitionDigest().signum() >= 0
+                && action.ownerCommitment().signum() >= 0
+                && action.batchSize().compareTo(BigInteger.ONE) >= 0
+                && maximumBatchSize.compareTo(BigInteger.ONE) >= 0
+                && maximumBatchSize.compareTo(
+                BigInteger.valueOf(64)) <= 0
+                && action.batchSize().compareTo(maximumBatchSize) <= 0
+                && action.settlementContext().equals(settlementContext)
+                && action.batchDataCommitment().signum() >= 0
+                && action.withdrawalCommitment().signum() >= 0;
+    }
+
+    /**
+     * The root transition is accepted only when its canonical public batch
+     * bytes are published in the same L1 transaction at the configured DA
+     * script. The proof binds the reduced BLAKE2b-256 commitment.
+     */
+    private static boolean dataPublished(
+            Action action,
+            ScriptContext context
+    ) {
+        long length = Builtins.lengthOfByteString(action.batchData());
+        if (Builtins.lengthOfByteString(dataAvailabilityScriptHash) != 28
+                || canonicalBatchDataBytes.compareTo(
+                BigInteger.ONE) < 0
+                || canonicalBatchDataBytes.compareTo(
+                BigInteger.valueOf(16384)) > 0
+                || !BigInteger.valueOf(length).equals(
+                canonicalBatchDataBytes)
+                || !digestScalar(action.batchData()).equals(
+                action.batchDataCommitment())) {
+            return false;
+        }
+        JulcList<TxOut> outputs = ContextsLib.scriptOutputsAt(
+                context.txInfo(), dataAvailabilityScriptHash);
+        if (outputs.size() != 1) {
+            return false;
+        }
+        OutputDatum datum = outputs.head().datum();
+        if (datum instanceof OutputDatum.OutputDatumInline inline) {
+            return Builtins.equalsData(
+                    inline.datum(), Builtins.bData(action.batchData()));
+        }
+        return false;
+    }
+
+    private static BigInteger digestScalar(byte[] value) {
+        BigInteger raw = Builtins.byteStringToInteger(
+                true, Builtins.blake2b_256(value));
+        BigInteger once = raw.compareTo(
+                BLS12_381_SCALAR_FIELD) >= 0
+                ? raw.subtract(BLS12_381_SCALAR_FIELD)
+                : raw;
+        return once.compareTo(BLS12_381_SCALAR_FIELD) >= 0
+                ? once.subtract(BLS12_381_SCALAR_FIELD)
+                : once;
+    }
+
+    private static PlutusData publicInputs(Action action) {
+        return Builtins.listData(Builtins.mkCons(
+                Builtins.iData(action.previousRoot()),
+                Builtins.mkCons(
+                        Builtins.iData(action.nextRoot()),
+                        Builtins.mkCons(
+                                Builtins.iData(action.transitionDigest()),
+                                Builtins.mkCons(
+                                        Builtins.iData(action.ownerCommitment()),
+                                        Builtins.mkCons(
+                                                Builtins.iData(action.batchSize()),
+                                                Builtins.mkCons(
+                                                        Builtins.iData(
+                                                                action.settlementContext()),
+                                                        Builtins.mkCons(
+                                                                Builtins.iData(
+                                                                        action.batchDataCommitment()),
+                                                                Builtins.mkCons(
+                                                                        Builtins.iData(
+                                                                                action.withdrawalCommitment()),
+                                                                        Builtins.mkNilData())))))))));
+    }
+
+    private static boolean advanceOutputValid(
+            OutputDatum outputDatum,
+            RootDatum current,
+            Action action
+    ) {
+        if (outputDatum
+                instanceof OutputDatum.OutputDatumInline inline) {
+            return nextDataValid(
+                    inline.datum(), current, action, false);
+        }
+        return false;
+    }
+
+    private static boolean migrationOutputValid(
+            OutputDatum outputDatum,
+            RootDatum current,
+            Action action
+    ) {
+        if (outputDatum
+                instanceof OutputDatum.OutputDatumInline inline) {
+            return nextDataValid(
+                    inline.datum(), current, action, true);
+        }
+        return false;
+    }
+
+    private static boolean nextDataValid(
+            PlutusData data,
+            RootDatum current,
+            Action action,
+            boolean migration
+    ) {
+        PlutusData fields = Builtins.sndPair(
+                Builtins.unConstrData(data));
+        BigInteger version =
+                Builtins.unIData(Builtins.headList(fields));
+        PlutusData f1 = Builtins.tailList(fields);
+        byte[] chainId =
+                Builtins.unBData(Builtins.headList(f1));
+        PlutusData f2 = Builtins.tailList(f1);
+        BigInteger epoch =
+                Builtins.unIData(Builtins.headList(f2));
+        PlutusData f3 = Builtins.tailList(f2);
+        BigInteger height =
+                Builtins.unIData(Builtins.headList(f3));
+        PlutusData f4 = Builtins.tailList(f3);
+        BigInteger root =
+                Builtins.unIData(Builtins.headList(f4));
+        PlutusData f5 = Builtins.tailList(f4);
+        BigInteger context =
+                Builtins.unIData(Builtins.headList(f5));
+        PlutusData f6 = Builtins.tailList(f5);
+        BigInteger batch =
+                Builtins.unIData(Builtins.headList(f6));
+        PlutusData f7 = Builtins.tailList(f6);
+        BigInteger withdrawal =
+                Builtins.unIData(Builtins.headList(f7));
+        PlutusData f8 = Builtins.tailList(f7);
+        BigInteger generation =
+                Builtins.unIData(Builtins.headList(f8));
+        if (Builtins.constrTag(data) != 0
+                || !Builtins.nullList(Builtins.tailList(f8))
+                || !version.equals(BigInteger.ONE)
+                || !Builtins.equalsByteString(
+                chainId, current.chainId())) {
+            return false;
+        }
+        if (migration) {
+            return epoch.equals(
+                    current.bridgeEpoch().add(BigInteger.ONE))
+                    && height.equals(current.height())
+                    && root.equals(current.validityRoot())
+                    && context.signum() >= 0
+                    && !context.equals(current.settlementContext())
+                    && batch.signum() >= 0
+                    && batch.equals(current.batchDataCommitment())
+                    && withdrawal.signum() >= 0
+                    && withdrawal.equals(
+                    current.withdrawalCommitment())
+                    && generation.equals(
+                    current.generation().add(BigInteger.ONE));
+        }
+        return epoch.equals(current.bridgeEpoch())
+                && height.compareTo(current.height()) > 0
+                && root.equals(action.nextRoot())
+                && action.previousRoot().equals(
+                current.validityRoot())
+                && context.equals(current.settlementContext())
+                && context.equals(action.settlementContext())
+                && batch.equals(action.batchDataCommitment())
+                && withdrawal.equals(
+                action.withdrawalCommitment())
+                && generation.equals(current.generation());
+    }
+
+    private static boolean hasThread(TxOut output) {
+        return ValuesLib.assetOf(
+                output.value(),
+                rootThreadPolicyId,
+                rootThreadAssetName)
+                .equals(BigInteger.ONE);
+    }
+
+    private static boolean singleThreadTransition(
+            ScriptContext context
+    ) {
+        BigInteger inputs = BigInteger.ZERO;
+        BigInteger outputs = BigInteger.ZERO;
+        for (TxInInfo input : context.txInfo().inputs()) {
+            if (hasThread(input.resolved())) {
+                inputs = inputs.add(BigInteger.ONE);
+            }
+        }
+        for (TxOut output : context.txInfo().outputs()) {
+            if (hasThread(output)) {
+                outputs = outputs.add(BigInteger.ONE);
+            }
+        }
+        return inputs.equals(BigInteger.ONE)
+                && outputs.equals(BigInteger.ONE);
+    }
+}

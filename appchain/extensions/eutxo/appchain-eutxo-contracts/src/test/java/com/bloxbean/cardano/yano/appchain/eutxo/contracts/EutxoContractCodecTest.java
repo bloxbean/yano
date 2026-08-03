@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.eutxo.contracts;
 
+import com.bloxbean.cardano.client.transaction.spec.Transaction;
+import com.bloxbean.cardano.client.transaction.spec.TransactionBody;
 import org.junit.jupiter.api.Test;
 
 import java.util.HexFormat;
@@ -38,6 +40,15 @@ class EutxoContractCodecTest {
                 EutxoQueryCodec.optionalRecord(null))).isNull();
         assertThat(EutxoQueryCodec.decodeOptionalReceipt(
                 EutxoQueryCodec.optionalReceipt(null))).isNull();
+        assertThat(EutxoQueryCodec.decodeCount(
+                EutxoQueryCodec.count(17))).isEqualTo(17);
+        assertThat(EutxoQueryCodec.decodeBridgeHalt(
+                EutxoQueryCodec.bridgeHalt(
+                        "DEEP_ROLLBACK_BELOW_CREDITED_DEPOSIT")))
+                .isEqualTo("DEEP_ROLLBACK_BELOW_CREDITED_DEPOSIT");
+        assertThatThrownBy(() -> EutxoQueryCodec.bridgeHalt(
+                "not canonical"))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
@@ -52,6 +63,13 @@ class EutxoContractCodecTest {
         assertThat(EutxoStateKeys.addressIndex("addr_test1x")).hasSizeLessThan(100);
         assertThat(EutxoStateKeys.totalWithdrawalCount(7))
                 .isNotEqualTo(EutxoStateKeys.totalWithdrawalCount(8));
+        assertThat(EutxoStateKeys.depositIndex(12))
+                .asString()
+                .endsWith("/00000000000000000012");
+        assertThat(EutxoStateKeys.withdrawalIndex(7, 12))
+                .asString()
+                .isEqualTo("eutxo/v1/bridge/7/withdrawal/index/"
+                        + "00000000000000000012");
         assertThatThrownBy(() -> EutxoOutpoint.parse("not-an-outpoint"))
                 .isInstanceOf(IllegalArgumentException.class);
     }
@@ -65,7 +83,85 @@ class EutxoContractCodecTest {
     }
 
     @Test
+    void l2ParameterSnapshotRoundTripsAndBindsEveryIdentity() {
+        EutxoL2ParameterSnapshot snapshot =
+                new EutxoL2ParameterSnapshot(
+                        "payments",
+                        EutxoProfile.V1.digestHex(),
+                        "aa".repeat(32),
+                        "zeroj-jubjub-dev-v1",
+                        "bb".repeat(32),
+                        EutxoProfile.V1.maxTransactionBytes(),
+                        EutxoProfile.V1.maxInputs(),
+                        EutxoProfile.V1.maxOutputs(),
+                        "");
+
+        assertThat(EutxoL2ParameterSnapshot.decode(snapshot.encode()))
+                .isEqualTo(snapshot);
+        assertThat(EutxoQueryCodec.decodeL2Parameters(
+                EutxoQueryCodec.l2Parameters(snapshot)))
+                .isEqualTo(snapshot);
+        assertThat(snapshot.digest()).matches("[0-9a-f]{64}");
+        assertThatThrownBy(() -> new EutxoL2ParameterSnapshot(
+                snapshot.chainId(),
+                snapshot.ledgerProfileDigest(),
+                snapshot.validityProfileDigest(),
+                snapshot.authorizationProfile(),
+                snapshot.authorizationProfileDigest(),
+                snapshot.maxTransactionBytes(),
+                snapshot.maxInputs(),
+                snapshot.maxOutputs(),
+                "00".repeat(32)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("digest mismatch");
+    }
+
+    @Test
+    void validityDomainRoundTripsAsBodyBoundCardanoMetadata() throws Exception {
+        EutxoTransactionDomain domain = new EutxoTransactionDomain(
+                "payments-zk",
+                "preview",
+                EutxoProfile.V1.digestHex(),
+                "aa".repeat(32),
+                fill(32, 7),
+                900);
+        Transaction transaction = Transaction.builder()
+                .body(TransactionBody.builder().ttl(900).build())
+                .build();
+
+        domain.attach(transaction);
+        Transaction decoded = Transaction.deserialize(
+                transaction.serialize());
+
+        assertThat(EutxoTransactionDomain.from(decoded))
+                .isEqualTo(domain);
+        assertThat(EutxoTransactionDomain.from(decoded).commitment())
+                .isEqualTo(domain.commitment());
+        assertThat(decoded.getBody().getAuxiliaryDataHash())
+                .isEqualTo(decoded.getAuxiliaryData()
+                        .getAuxiliaryDataHash());
+
+        decoded.getBody().getAuxiliaryDataHash()[0] ^= 1;
+        assertThatThrownBy(() -> EutxoTransactionDomain.from(decoded))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("hash");
+        assertThatThrownBy(() -> domain.attach(transaction))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("empty auxiliary-data");
+    }
+
+    @Test
     void bridgeContractsRoundTripAndReserveRejectsInflation() {
+        EutxoStagingDatum staging = new EutxoStagingDatum(
+                EutxoStagingDatum.ABI_VERSION,
+                "payments",
+                "addr_test1owner",
+                fill(32, 9),
+                fill(28, 8),
+                100);
+        assertThat(EutxoStagingDatum.decode(staging.encode()))
+                .isEqualTo(staging);
+
         EutxoDepositClaim claim = new EutxoDepositClaim(
                 EutxoDepositClaim.ABI_VERSION,
                 "payments",
@@ -84,6 +180,9 @@ class EutxoContractCodecTest {
         EutxoDepositRecord record =
                 new EutxoDepositRecord(claim, claim.mirroredOutpoint(), 7);
         assertThat(EutxoDepositRecord.decode(record.encode())).isEqualTo(record);
+        assertThat(EutxoQueryCodec.decodeDepositRecords(
+                EutxoQueryCodec.depositRecords(List.of(record))))
+                .containsExactly(record);
 
         EutxoReserve reserve = EutxoReserve.empty(EutxoReserve.LOVELACE)
                 .credit(java.math.BigInteger.TEN);
@@ -146,6 +245,9 @@ class EutxoContractCodecTest {
         assertThat(EutxoWithdrawalClaim.decode(claim.encode())).isEqualTo(claim);
         EutxoWithdrawalRecord pending = EutxoWithdrawalRecord.pending(claim, 9);
         assertThat(EutxoWithdrawalRecord.decode(pending.encode())).isEqualTo(pending);
+        assertThat(EutxoQueryCodec.decodeWithdrawalRecords(
+                EutxoQueryCodec.withdrawalRecords(List.of(pending))))
+                .containsExactly(pending);
 
         EutxoWithdrawalConfirmation confirmation =
                 new EutxoWithdrawalConfirmation(

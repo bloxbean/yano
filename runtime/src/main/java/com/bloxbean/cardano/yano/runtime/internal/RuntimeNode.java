@@ -188,6 +188,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     private final ServeSubsystem serveSubsystem;
     private final com.bloxbean.cardano.yano.runtime.appchain.AppChainManager appChainManager;
     private final DomainApiRegistry domainApiRegistry;
+    private final com.bloxbean.cardano.yano.runtime.plugins.LocalReadModelRegistry
+            localReadModels;
     private final PluginOperationsRegistry pluginOperationsRegistry;
     private final RelayConnectionManager relayConnectionManager;
     private final int serverPort;
@@ -449,10 +451,14 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 constructionCleanup.addLast(appChainManager::stop);
                 serveSubsystem.enableAppLayer(appChainManager.serverAgentFactories());
             }
+            this.localReadModels =
+                    new com.bloxbean.cardano.yano.runtime.plugins.LocalReadModelRegistry();
+            constructionCleanup.addLast(localReadModels::close);
             this.domainApiRegistry = new DomainApiRegistry(
                     this.pluginEnvironment,
                     appChainGateways(),
                     log,
+                    localReadModels,
                     pluginOperationsRegistry);
             constructionCleanup.addLast(domainApiRegistry::close);
 
@@ -817,6 +823,11 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     /** Constrained ADR-011.3 domain API dispatcher. */
     public com.bloxbean.cardano.yano.api.plugin.domain.DomainApiGateway domainApis() {
         return domainApiRegistry;
+    }
+
+    public com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelHost
+            localReadModels() {
+        return localReadModels;
     }
 
     /** Cached ADR-011.4 operations view; reading it never invokes plugin code. */

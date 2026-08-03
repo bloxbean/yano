@@ -67,6 +67,18 @@ describe('Yano API client', () => {
     expect(headers.get('X-API-Key')).toBe('secret');
   });
 
+  it('uses bounded block pages and encoded block detail routes', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ blocks: [] }) });
+    vi.stubGlobal('fetch', fetchMock);
+    const api = new YanoApi('/api/v1', 'reader-key');
+    await api.chainBlocks('orders/east', undefined, 51, 25);
+    await api.chainBlock('orders/east', 75);
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      '/api/v1/app-chain/chains/orders%2Feast/blocks?limit=25&from=51');
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      '/api/v1/app-chain/chains/orders%2Feast/blocks/75');
+  });
+
   it('keeps capability queries bounded to encoded routes and privileged actions authenticated', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
     vi.stubGlobal('fetch', fetchMock);
@@ -94,6 +106,26 @@ describe('Yano API client', () => {
     expect(fetchMock.mock.calls[0][0]).toBe(
       `/api/v1/plugins/com.bloxbean.cardano.yano.appchain.eutxo/transactions/${'ab'.repeat(32)}?chain=payments%2Feast&limit=20`);
     expect((fetchMock.mock.calls[0][1].headers as Headers).get('X-API-Key')).toBe('reader-key');
+  });
+
+  it('routes lifecycle-index and lazy L1 enrichment through the reviewed client', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true, json: async () => ({ apiVersion: 'eutxo-index/v1' })
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const api = new YanoApi('/api/v1', 'reader-key');
+    await api.eutxoIndex('transactions', {
+      chain: 'payments/east', limit: '25', cursor: 'c1_safe'
+    });
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      '/api/v1/plugins/com.bloxbean.cardano.yano.appchain.eutxo.indexer/index/v1/transactions'
+      + '?chain=payments%2Feast&limit=25&cursor=c1_safe');
+    const id = 'ab'.repeat(32);
+    await api.l1Transaction(id);
+    await api.l1TransactionUtxos(id);
+    expect(fetchMock.mock.calls[1][0]).toBe(`/api/v1/txs/${id}`);
+    expect(fetchMock.mock.calls[2][0]).toBe(`/api/v1/txs/${id}/utxos`);
+    expect((fetchMock.mock.calls[2][1].headers as Headers).get('X-API-Key')).toBe('reader-key');
   });
 
   it('turns browser network failures into an actionable standalone diagnostic', () => {

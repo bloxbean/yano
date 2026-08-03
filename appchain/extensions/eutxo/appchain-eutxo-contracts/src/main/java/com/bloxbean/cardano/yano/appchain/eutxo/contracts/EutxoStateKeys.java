@@ -23,6 +23,37 @@ public final class EutxoStateKeys {
         return bytes(PREFIX + "genesis");
     }
 
+    /** Selected optional validity-commitment engine identity. */
+    public static byte[] validityEngine() {
+        return bytes(PREFIX + "validity/engine");
+    }
+
+    /** Latest ZK-friendly validity commitment, distinct from the runtime MPF root. */
+    public static byte[] validityRoot() {
+        return bytes(PREFIX + "validity/root");
+    }
+
+    /** Descriptor of the transition witness that produced the latest validity root. */
+    public static byte[] validityWitness() {
+        return bytes(PREFIX + "validity/witness");
+    }
+
+    /** Exact finalized transition witness keyed by app height and message ordinal. */
+    public static byte[] validityTransition(long appHeight, int ordinal) {
+        if (appHeight < 1 || ordinal < 0) {
+            throw new IllegalArgumentException(
+                    "invalid validity transition position");
+        }
+        return bytes(PREFIX + "validity/transition/"
+                + appHeight + "/" + ordinal);
+    }
+
+    /** Active L2 authorization key for one Cardano payment credential. */
+    public static byte[] l2Key(String paymentCredential) {
+        String credential = EutxoL2Authorization.credential(paymentCredential);
+        return bytes(PREFIX + "validity/l2-key/" + credential);
+    }
+
     public static byte[] utxo(EutxoOutpoint outpoint) {
         return bytes(PREFIX + "u/" + Objects.requireNonNull(outpoint, "outpoint"));
     }
@@ -61,6 +92,15 @@ public final class EutxoStateKeys {
                 acceptedOutpoint, "acceptedOutpoint"));
     }
 
+    /** Immutable deposit record in canonical acceptance order. */
+    public static byte[] depositIndex(long sequence) {
+        return indexedKey(PREFIX + "bridge/deposit/index/", sequence);
+    }
+
+    public static byte[] depositCount() {
+        return bytes(PREFIX + "bridge/deposit/count");
+    }
+
     public static byte[] reserve(String assetId) {
         Objects.requireNonNull(assetId, "assetId");
         if (assetId.isBlank() || assetId.length() > 120) {
@@ -75,6 +115,17 @@ public final class EutxoStateKeys {
 
     public static byte[] withdrawal(String claimId) {
         return bytes(PREFIX + "w/" + transactionId(claimId));
+    }
+
+    /** Withdrawal claim id in canonical order within one bridge epoch. */
+    public static byte[] withdrawalIndex(long bridgeEpoch, long sequence) {
+        if (bridgeEpoch < 0) {
+            throw new IllegalArgumentException(
+                    "bridge epoch cannot be negative");
+        }
+        return indexedKey(
+                PREFIX + "bridge/" + bridgeEpoch + "/withdrawal/index/",
+                sequence);
     }
 
     public static byte[] withdrawalCommitment(String claimId) {
@@ -127,6 +178,14 @@ public final class EutxoStateKeys {
 
     private static String transactionId(String value) {
         return new EutxoOutpoint(value, 0).transactionId();
+    }
+
+    private static byte[] indexedKey(String prefix, long sequence) {
+        if (sequence < 1) {
+            throw new IllegalArgumentException("index sequence must be positive");
+        }
+        return bytes(prefix + String.format(
+                java.util.Locale.ROOT, "%020d", sequence));
     }
 
     private static byte[] bytes(String value) {

@@ -15,6 +15,7 @@ consensus, proof, or operational details.
 | [7. Anchors and verification](07-anchors-and-verification.md) | 20 min | Connect an application proof to Cardano settlement |
 | [8. Plugins and composites](08-plugins-and-composites.md) | 30–60 min | Extend Yano without rebuilding or forking core |
 | [9. From demo to pilot](09-from-demo-to-pilot.md) | planning | Convert local assumptions into an operable deployment |
+| [10. EUTxO ZK rollup on devnet](../../../appchain/extensions/eutxo-zk/DEVNET_WALKTHROUGH.md) | 60+ min | Trace L1 deposit, L2 spend, proof, root settlement, and L1 withdrawal |
 
 ## Tutorial conventions
 

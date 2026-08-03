@@ -579,6 +579,18 @@ public final class YanoPropertyKeys {
         /** Release catalog identity exposed only through the privileged diagnostics endpoint. */
         public static final String DX_RELEASE_CATALOG_DIGEST =
                 "yano.app-chain.dx.release-catalog-digest";
+        /** Enable the node-local, rebuildable EUTxO lifecycle index. */
+        public static final String EUTXO_INDEXER_ENABLED =
+                "yano.app-chain.eutxo-indexer.enabled";
+        /** Node-local EUTxO index provider. Version 1 supports jdbc only. */
+        public static final String EUTXO_INDEXER_STORE_TYPE =
+                "yano.app-chain.eutxo-indexer.store.type";
+        /** Optional explicit single-chain JDBC URL; empty derives a safe path. */
+        public static final String EUTXO_INDEXER_JDBC_URL =
+                "yano.app-chain.eutxo-indexer.store.jdbc.url";
+        /** Optional canonical validity-lifecycle root for provider adapters. */
+        public static final String EUTXO_INDEXER_VALIDITY_PATH =
+                "yano.app-chain.eutxo-indexer.validity.path";
 
         private AppChain() {
         }

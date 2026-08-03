@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.appchain.eutxo.contracts;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
@@ -18,8 +19,17 @@ public final class EutxoQueryCodec {
             "transactions/summaries";
     public static final String ATTEMPT_PATH = "attempts/receipt";
     public static final String DEPOSIT_PATH = "bridge/deposits/record";
+    public static final String DEPOSITS_PATH = "bridge/deposits/records";
+    public static final String DEPOSIT_COUNT_PATH = "bridge/deposits/count";
     public static final String RESERVE_PATH = "bridge/reserve";
+    public static final String BRIDGE_HALT_PATH = "bridge/halt";
     public static final String WITHDRAWAL_PATH = "bridge/withdrawals/record";
+    public static final String WITHDRAWALS_PATH = "bridge/withdrawals/records";
+    public static final String WITHDRAWAL_COUNT_PATH =
+            "bridge/withdrawals/count";
+    public static final String VALIDITY_TRANSITION_PATH =
+            "validity/transitions/finalized";
+    public static final String L2_PARAMETERS_PATH = "protocol-parameters";
     public static final String PROFILE_PATH = "profile";
 
     private EutxoQueryCodec() {
@@ -87,6 +97,46 @@ public final class EutxoQueryCodec {
     public record SummaryPage(long before, int limit) {
     }
 
+    public static byte[] lifecyclePageRequest(long before, int limit) {
+        validatePage(before, limit, "lifecycle");
+        return ByteBuffer.allocate(Long.BYTES + Integer.BYTES)
+                .putLong(before).putInt(limit).array();
+    }
+
+    public static LifecyclePage decodeLifecyclePageRequest(byte[] bytes) {
+        Objects.requireNonNull(bytes, "bytes");
+        if (bytes.length != Long.BYTES + Integer.BYTES) {
+            throw new IllegalArgumentException("invalid lifecycle page request");
+        }
+        ByteBuffer input = ByteBuffer.wrap(bytes);
+        long before = input.getLong();
+        int limit = input.getInt();
+        validatePage(before, limit, "lifecycle");
+        return new LifecyclePage(before, limit);
+    }
+
+    public record LifecyclePage(long before, int limit) {
+    }
+
+    public static byte[] count(long value) {
+        if (value < 0) {
+            throw new IllegalArgumentException("count cannot be negative");
+        }
+        return ByteBuffer.allocate(Long.BYTES).putLong(value).array();
+    }
+
+    public static long decodeCount(byte[] bytes) {
+        Objects.requireNonNull(bytes, "bytes");
+        if (bytes.length != Long.BYTES) {
+            throw new IllegalArgumentException("invalid count response");
+        }
+        long value = ByteBuffer.wrap(bytes).getLong();
+        if (value < 0) {
+            throw new IllegalArgumentException("count cannot be negative");
+        }
+        return value;
+    }
+
     public static byte[] decodeAttemptRequest(byte[] bytes) {
         return attemptRequest(bytes);
     }
@@ -135,12 +185,40 @@ public final class EutxoQueryCodec {
         return boundedUtf8(bytes, 120, "asset id");
     }
 
+    public static byte[] bridgeHalt(String code) {
+        String normalized = Objects.requireNonNullElse(
+                code, "").trim();
+        if (!normalized.isEmpty()
+                && (normalized.length() > 128
+                || !normalized.matches("[A-Z0-9_]+"))) {
+            throw new IllegalArgumentException(
+                    "invalid bridge halt code");
+        }
+        return normalized.getBytes(StandardCharsets.US_ASCII);
+    }
+
+    public static String decodeBridgeHalt(byte[] bytes) {
+        Objects.requireNonNull(bytes, "bytes");
+        return new String(
+                bridgeHalt(new String(
+                        bytes, StandardCharsets.US_ASCII)),
+                StandardCharsets.US_ASCII);
+    }
+
     public static byte[] optionalDepositRecord(EutxoDepositRecord record) {
         return EutxoCbor.encodeOptionalDepositRecord(record);
     }
 
     public static EutxoDepositRecord decodeOptionalDepositRecord(byte[] bytes) {
         return EutxoCbor.decodeOptionalDepositRecord(bytes);
+    }
+
+    public static byte[] depositRecords(List<EutxoDepositRecord> records) {
+        return encodeList(records, EutxoDepositRecord::encode);
+    }
+
+    public static List<EutxoDepositRecord> decodeDepositRecords(byte[] bytes) {
+        return decodeList(bytes, EutxoDepositRecord::decode);
     }
 
     public static byte[] optionalReserve(EutxoReserve reserve) {
@@ -165,6 +243,161 @@ public final class EutxoQueryCodec {
 
     public static EutxoWithdrawalRecord decodeOptionalWithdrawalRecord(byte[] bytes) {
         return EutxoCbor.decodeOptionalWithdrawalRecord(bytes);
+    }
+
+    public static byte[] withdrawalRecords(List<EutxoWithdrawalRecord> records) {
+        return encodeList(records, EutxoWithdrawalRecord::encode);
+    }
+
+    public static List<EutxoWithdrawalRecord> decodeWithdrawalRecords(byte[] bytes) {
+        return decodeList(bytes, EutxoWithdrawalRecord::decode);
+    }
+
+    public static byte[] validityTransitionRequest(
+            long appHeight,
+            int ordinal
+    ) {
+        if (appHeight < 1 || ordinal < 0) {
+            throw new IllegalArgumentException(
+                    "invalid validity transition position");
+        }
+        return ByteBuffer.allocate(Long.BYTES + Integer.BYTES)
+                .putLong(appHeight).putInt(ordinal).array();
+    }
+
+    public static Position decodeValidityTransitionRequest(byte[] bytes) {
+        Objects.requireNonNull(bytes, "bytes");
+        if (bytes.length != Long.BYTES + Integer.BYTES) {
+            throw new IllegalArgumentException(
+                    "invalid validity transition request");
+        }
+        ByteBuffer input = ByteBuffer.wrap(bytes);
+        Position position = new Position(
+                input.getLong(), input.getInt());
+        if (position.appHeight() < 1 || position.ordinal() < 0) {
+            throw new IllegalArgumentException(
+                    "invalid validity transition position");
+        }
+        return position;
+    }
+
+    public static byte[] optionalValidityTransition(
+            EutxoValidityTransition transition
+    ) {
+        if (transition == null) {
+            return new byte[]{0};
+        }
+        byte[] encoded = transition.canonicalBytes();
+        return ByteBuffer.allocate(1 + Integer.BYTES + encoded.length)
+                .put((byte) 1).putInt(encoded.length).put(encoded).array();
+    }
+
+    public static EutxoValidityTransition decodeOptionalValidityTransition(
+            byte[] bytes
+    ) {
+        Objects.requireNonNull(bytes, "bytes");
+        if (bytes.length == 1 && bytes[0] == 0) {
+            return null;
+        }
+        if (bytes.length < 1 + Integer.BYTES || bytes[0] != 1) {
+            throw new IllegalArgumentException(
+                    "invalid optional validity transition");
+        }
+        ByteBuffer input = ByteBuffer.wrap(bytes);
+        input.get();
+        int length = input.getInt();
+        if (length < 1 || length != input.remaining()) {
+            throw new IllegalArgumentException(
+                    "invalid optional validity transition length");
+        }
+        byte[] encoded = new byte[length];
+        input.get(encoded);
+        return EutxoValidityTransition.decode(encoded);
+    }
+
+    public static byte[] l2Parameters(EutxoL2ParameterSnapshot snapshot) {
+        return Objects.requireNonNull(snapshot, "snapshot").encode();
+    }
+
+    public static EutxoL2ParameterSnapshot decodeL2Parameters(byte[] bytes) {
+        return EutxoL2ParameterSnapshot.decode(bytes);
+    }
+
+    public record Position(long appHeight, int ordinal) {
+    }
+
+    private static <T> byte[] encodeList(
+            List<T> values,
+            java.util.function.Function<T, byte[]> encoder
+    ) {
+        Objects.requireNonNull(values, "values");
+        if (values.size() > 50) {
+            throw new IllegalArgumentException("lifecycle page exceeds 50 records");
+        }
+        List<byte[]> encoded = values.stream()
+                .map(value -> encoder.apply(Objects.requireNonNull(value, "value")))
+                .toList();
+        long size = 1L + Integer.BYTES;
+        for (byte[] item : encoded) {
+            if (item.length == 0 || item.length > 262_144) {
+                throw new IllegalArgumentException(
+                        "lifecycle record has an invalid encoded size");
+            }
+            size = Math.addExact(size, Integer.BYTES + item.length);
+        }
+        if (size > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("lifecycle page is too large");
+        }
+        ByteBuffer output = ByteBuffer.allocate((int) size);
+        output.put((byte) 1).putInt(encoded.size());
+        encoded.forEach(item -> output.putInt(item.length).put(item));
+        return output.array();
+    }
+
+    private static <T> List<T> decodeList(
+            byte[] bytes,
+            java.util.function.Function<byte[], T> decoder
+    ) {
+        Objects.requireNonNull(bytes, "bytes");
+        if (bytes.length < 1 + Integer.BYTES) {
+            throw new IllegalArgumentException("invalid lifecycle page");
+        }
+        ByteBuffer input = ByteBuffer.wrap(bytes);
+        if (input.get() != 1) {
+            throw new IllegalArgumentException(
+                    "unsupported lifecycle page version");
+        }
+        int count = input.getInt();
+        if (count < 0 || count > 50) {
+            throw new IllegalArgumentException(
+                    "invalid lifecycle page record count");
+        }
+        List<T> values = new ArrayList<>(count);
+        for (int index = 0; index < count; index++) {
+            if (input.remaining() < Integer.BYTES) {
+                throw new IllegalArgumentException("truncated lifecycle page");
+            }
+            int length = input.getInt();
+            if (length < 1 || length > 262_144 || length > input.remaining()) {
+                throw new IllegalArgumentException(
+                        "invalid lifecycle record length");
+            }
+            byte[] item = new byte[length];
+            input.get(item);
+            values.add(decoder.apply(item));
+        }
+        if (input.hasRemaining()) {
+            throw new IllegalArgumentException(
+                    "trailing lifecycle page bytes");
+        }
+        return List.copyOf(values);
+    }
+
+    private static void validatePage(long before, int limit, String kind) {
+        if (before < 0 || limit < 1 || limit > 50) {
+            throw new IllegalArgumentException(
+                    "invalid " + kind + " page request");
+        }
     }
 
     private static String boundedUtf8(byte[] bytes, int maximum, String field) {

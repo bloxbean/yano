@@ -67,15 +67,16 @@ class PluginCatalogPackagingTest {
             "com.bloxbean.cardano.yano.appchain.stdlib",
             "com.bloxbean.cardano.yano.appchain.role-workflow",
             "com.bloxbean.cardano.yano.appchain.evidence-profile",
-            "com.bloxbean.cardano.yano.appchain.evidence-registry");
+            "com.bloxbean.cardano.yano.appchain.evidence-registry",
+            "com.bloxbean.cardano.yano.appchain.eutxo",
+            "com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano",
+            "com.bloxbean.cardano.yano.appchain.eutxo.indexer");
     private static final Set<String> OPTIONAL_BUNDLES = Set.of(
             "com.bloxbean.cardano.yano.appchain.kafka",
             "com.bloxbean.cardano.yano.appchain.objectstore.s3",
             "com.bloxbean.cardano.yano.appchain.ipfs",
             "com.bloxbean.cardano.yano.appchain.effects.cardano",
-            "com.bloxbean.cardano.yano.appchain.zk",
-            "com.bloxbean.cardano.yano.appchain.eutxo",
-            "com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano");
+            "com.bloxbean.cardano.yano.appchain.zk");
     private static final String CONFORMANCE_BUNDLE =
             "com.bloxbean.cardano.yano.fixture.plugin-conformance";
     private static final String EXPECT_FIRST_PARTY =
@@ -163,8 +164,12 @@ class PluginCatalogPackagingTest {
                     environment.providers().names(AppStateMachineProvider.class).stream()
                             .filter(Set.of("credential-registry", "zk-gate", "zk-membership")::contains)
                             .collect(Collectors.toSet()));
-            assertEquals(optionalIncluded, environment.providers().find(
+            assertTrue(environment.providers().find(
                     AppStateMachineProvider.class, "eutxo-ledger").isPresent());
+            assertTrue(environment.providers().names(
+                    L1ObserverProvider.class).containsAll(Set.of(
+                    "eutxo-vault-deposit-v1",
+                    "eutxo-withdrawal-confirmation-v1")));
             assertTrue(environment.providers().find(
                     AppStateMachineProvider.class, "evidence-registry").isPresent());
             Set<String> expectedSinks = new java.util.HashSet<>();
@@ -186,12 +191,9 @@ class PluginCatalogPackagingTest {
             }
             assertEquals(conformanceIncluded ? Set.of("conformance-mode") : Set.of(), Set.copyOf(
                     environment.providers().names(SequencerModeProvider.class)));
-            Set<String> expectedObservers = new java.util.HashSet<>();
-            if (optionalIncluded) {
-                expectedObservers.addAll(Set.of(
-                        "eutxo-vault-deposit-v1",
-                        "eutxo-withdrawal-confirmation-v1"));
-            }
+            Set<String> expectedObservers = new java.util.HashSet<>(Set.of(
+                    "eutxo-vault-deposit-v1",
+                    "eutxo-withdrawal-confirmation-v1"));
             if (conformanceIncluded) {
                 expectedObservers.add("conformance-observer");
             }

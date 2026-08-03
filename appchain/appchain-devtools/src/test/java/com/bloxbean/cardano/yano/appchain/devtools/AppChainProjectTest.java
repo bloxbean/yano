@@ -41,7 +41,8 @@ class AppChainProjectTest {
         assertThat(catalog.recipes()).extracting(AppChainProjectModel.Recipe::id)
                 .containsExactly("audit-log", "owned-registry", "approval-workflow",
                         "role-approval", "evidence-ledger", "eutxo-ledger",
-                        "eutxo-cardano-bridge", "custom-plugin");
+                        "eutxo-cardano-bridge", "eutxo-zeroj-validity",
+                        "eutxo-zeroj-preview", "custom-plugin");
         assertThat(catalog.recipes()).allSatisfy(recipe -> {
             assertThat(recipe.primaryOutcome()).isNotBlank();
             assertThat(recipe.firstCommand()).isNotBlank();
@@ -154,7 +155,8 @@ class AppChainProjectTest {
         AppChainProjectModel.Resolution resolution = resolver.resolve(blueprint);
 
         assertThat(resolution.selectedCapabilities())
-                .contains("state:eutxo-ledger", "funding:eutxo-genesis");
+                .contains("state:eutxo-ledger", "profile:eutxo-plutus-v3",
+                        "funding:eutxo-genesis");
         assertThat(resolution.artifacts()).contains("appchain-eutxo-ledger");
         assertThat(resolution.consensusProperties())
                 .containsEntry("yano.app-chain.chains[0].state-machine", "eutxo-ledger")
@@ -178,34 +180,180 @@ class AppChainProjectTest {
     }
 
     @Test
-    void eutxoAnswersRejectLabeledAndMalformedPublicValuesBeforeRendering()
-            throws IOException {
+    void eutxoAnswersRejectLabeledAndMalformedPublicValuesBeforeRendering() throws Exception {
         AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
         AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
         AppChainProjectResolver resolver = new AppChainProjectResolver(properties, catalog);
-        Map<String, String> labeled = Map.of(
-                "eutxoGenesisAddress",
-                "L2_ADDRESS=addr_test1vr8nlm7example",
-                "eutxoGenesisLovelace",
-                "100000000");
+        Map<String, String> labeled = new java.util.LinkedHashMap<>(l2Answers());
+        labeled.put("eutxoGenesisAddress", "addr_test1vr8nlm7example");
+        labeled.put("eutxoGenesisLovelace", "100000000");
+        labeled.put("eutxoL2Address",
+                "L2_ADDRESS=addr_test1vr8nlm7example");
 
         assertThatThrownBy(() -> resolver.resolve(withAnswers(
-                blueprint("eutxo-ledger", "fixed", List.of()), labeled)))
+                blueprint("eutxo-zeroj-validity", "fixed", List.of()), labeled)))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("eutxoGenesisAddress")
+                .hasMessageContaining("eutxoL2Address")
                 .hasMessageContaining("not NAME=value")
                 .hasMessageNotContaining("L2_ADDRESS=");
 
-        Map<String, String> malformed = Map.of(
+        Map<String, String> malformedKey = new java.util.LinkedHashMap<>(labeled);
+        malformedKey.put("eutxoL2Address", "addr_test1vr8nlm7example");
+        malformedKey.put("eutxoL2PublicKey", "ABC123");
+        assertThatThrownBy(() -> resolver.resolve(withAnswers(
+                blueprint("eutxo-zeroj-validity", "fixed", List.of()), malformedKey)))
+                .hasMessageContaining("eutxoL2PublicKey")
+                .hasMessageContaining("64 lowercase hexadecimal");
+
+        Map<String, String> malformedGenesis = Map.of(
                 "eutxoGenesisAddress",
                 "addr_test1vr8nlm7example",
                 "eutxoGenesisLovelace",
                 "not-a-number");
         assertThatThrownBy(() -> resolver.resolve(withAnswers(
-                blueprint("eutxo-ledger", "fixed", List.of()), malformed)))
+                blueprint("eutxo-ledger", "fixed", List.of()), malformedGenesis)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("eutxoGenesisLovelace")
                 .hasMessageContaining("bounded decimal integer");
+    }
+
+    @Test
+    void zerojValidityPolicyAllowsTestnetsAndRejectsEveryMainnetSelectionPath()
+            throws Exception {
+        AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
+        AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
+        AppChainProjectResolver resolver = new AppChainProjectResolver(properties, catalog);
+        Map<String, String> genesis =
+                new java.util.LinkedHashMap<>(l2Answers());
+        genesis.putAll(Map.of(
+                "eutxoGenesisAddress", "addr_test1vr8nlm7example",
+                "eutxoGenesisLovelace", "100000000"));
+
+        AppChainProjectModel.Blueprint preprod = withAnswers(
+                blueprint("eutxo-zeroj-validity", "fixed", List.of()), genesis);
+        assertThat(resolver.resolve(preprod).selectedCapabilities())
+                .contains("state:eutxo-ledger", "profile:eutxo-key-payments",
+                        "settlement:zeroj-validity");
+        assertThat(resolver.resolve(preprod).consensusProperties())
+                .containsEntry("yano.app-chain.chains[0].machines.eutxo.profile",
+                        "yano-eutxo-v1")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.network",
+                        "preprod")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.genesis."
+                                + "l2-address",
+                        "addr_test1vr8nlm7example")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.genesis."
+                                + "l2-public-key",
+                        "2".repeat(64))
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.genesis."
+                                + "l2-key-epoch",
+                        "1")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.expected-profile-digest",
+                        "2499d01ee7cb0d09d0d498040c6351accd9da83df31666cd4463d0b1722d1212")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.validity."
+                                + "transaction-format",
+                        "yano-eutxo-l2-envelope-v1")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.validity."
+                                + "expected-profile-digest",
+                        "cfe1767761cbe05c7e2b82f951222fbb9df34afa5eb1f39fb8a5c1cc2af87d45")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.validity.circuit-id",
+                        "eutxo-jubjub-batch-dev-b16-v4")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.validity."
+                                + "batch-profile",
+                        "cardano-payment-b16")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.validity."
+                                + "batch-profile-digest",
+                        "bd0835736116cb6338a82069e913f381"
+                                + "5547008e4994508f110065c5dfc64747")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.validity.zeroj-version",
+                        "0.1.0-pre10")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.validity.julc-version",
+                        "0.1.0-pre14")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.validity."
+                                + "authorization-profile",
+                        "zeroj-jubjub-dev-v1")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.validity."
+                                + "authorization-trusted-prover-required",
+                        "true")
+                .containsEntry(
+                        "yano.app-chain.chains[0].machines.eutxo.validity."
+                                + "funds-policy",
+                        "disposable-test-funds-only");
+
+        assertThat(catalog.recipe("eutxo-zeroj-validity")
+                .effectiveSupportedNetworks())
+                .containsExactly("devnet", "preview", "preprod");
+        assertThat(catalog.capability("settlement:zeroj-validity")
+                .effectiveSupportedNetworks())
+                .containsExactly("devnet", "preview", "preprod");
+        assertThat(catalog.recipe("audit-log").effectiveSupportedNetworks())
+                .containsExactly("devnet", "preview", "preprod", "mainnet");
+
+        assertThatThrownBy(() -> resolver.resolve(
+                withNetwork(preprod, "mainnet")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("eutxo-zeroj-validity")
+                .hasMessageContaining("does not support network mainnet");
+        Path rejectedOutput = temporary.resolve("rejected-mainnet-zeroj");
+        assertThatThrownBy(() -> new AppChainProjectRenderer(catalog, resolver)
+                .initialize(rejectedOutput, withNetwork(preprod, "mainnet")))
+                .hasMessageContaining("does not support network mainnet");
+        assertThat(rejectedOutput).doesNotExist();
+
+        AppChainProjectModel.Blueprint explicitCapability = withNetwork(
+                withCapabilities(blueprint("audit-log", "fixed", List.of()),
+                        List.of("settlement:zeroj-validity")),
+                "mainnet");
+        assertThatThrownBy(() -> resolver.resolve(explicitCapability))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("settlement:zeroj-validity")
+                .hasMessageContaining("does not support network mainnet");
+
+        AppChainProjectModel.Blueprint previewRecipe =
+                withAnswers(withNetwork(blueprint(
+                        "eutxo-zeroj-preview",
+                        "fixed",
+                        List.of()), "preview"), previewAnswers());
+        assertThatThrownBy(() -> resolver.resolve(previewRecipe))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining(
+                        AppChainProjectResolver
+                                .EUTXO_UNSAFE_TESTNET_ACKNOWLEDGEMENT);
+        AppChainProjectModel.Blueprint acknowledged =
+                withAcknowledgements(
+                        previewRecipe,
+                        List.of(AppChainProjectResolver
+                                .EUTXO_UNSAFE_TESTNET_ACKNOWLEDGEMENT));
+        assertThat(resolver.resolve(acknowledged)
+                .selectedCapabilities())
+                .contains("settlement:zeroj-validity",
+                        "profile:eutxo-key-payments",
+                        "bridge:cardano-federated",
+                        "l1:slot-feed");
+        Path previewOutput =
+                temporary.resolve("acknowledged-zeroj-preview");
+        AppChainProjectModel.Lock lock =
+                new AppChainProjectRenderer(catalog, resolver)
+                        .initialize(previewOutput, acknowledged);
+        assertThat(lock.acknowledgements())
+                .contains(
+                        "EUTXO_ZEROJ_TRUSTED_PROVER_TEST_FUNDS_ONLY",
+                        AppChainProjectResolver
+                                .EUTXO_UNSAFE_TESTNET_ACKNOWLEDGEMENT);
     }
 
     @Test
@@ -221,9 +369,13 @@ class AppChainProjectTest {
         AppChainProjectModel.Resolution resolution = resolver.resolve(blueprint);
 
         assertThat(resolution.selectedCapabilities())
-                .contains("state:eutxo-ledger", "bridge:cardano-federated", "l1:slot-feed")
+                .contains("state:eutxo-ledger", "profile:eutxo-plutus-v3",
+                        "bridge:cardano-federated", "l1:slot-feed")
                 .doesNotContain("funding:eutxo-genesis");
         assertThat(resolution.consensusProperties())
+                .containsEntry(
+                        "yano.app-chain.chains[0].l1.stability-depth",
+                        "2")
                 .containsEntry(
                         "yano.app-chain.chains[0].observers.bridge-deposits.chain-id",
                         "product-evidence")
@@ -253,6 +405,19 @@ class AppChainProjectTest {
                 "bridgeEpoch", "1",
                 "bridgeMaxWithdrawalLovelace", "50000000",
                 "bridgeMaxPendingWithdrawals", "100");
+    }
+
+    private static Map<String, String> l2Answers() {
+        return Map.of(
+                "eutxoL2Address", "addr_test1vr8nlm7example",
+                "eutxoL2PublicKey", "2".repeat(64));
+    }
+
+    private static Map<String, String> previewAnswers() {
+        Map<String, String> answers =
+                new java.util.LinkedHashMap<>(bridgeAnswers());
+        answers.putAll(l2Answers());
+        return Map.copyOf(answers);
     }
 
     @Test
@@ -454,7 +619,9 @@ class AppChainProjectTest {
                     assertShellSyntax(project.resolve("scripts/status"));
                     if ("host".equals(deployment)) {
                         assertThat(Files.readString(project.resolve("scripts/stop")))
-                                .contains("did not stop within 10 seconds");
+                                .contains("did not stop within 10 seconds")
+                                .doesNotContain("records[@]");
+                        assertScriptSucceeds(project.resolve("scripts/stop"));
                     }
                     if (Files.exists(project.resolve("scripts/start-node"))) {
                         assertShellSyntax(project.resolve("scripts/start-node"));
@@ -479,6 +646,15 @@ class AppChainProjectTest {
 
     private static void assertShellSyntax(Path script) throws Exception {
         Process process = new ProcessBuilder("bash", "-n", script.toString())
+                .redirectErrorStream(true)
+                .start();
+        String diagnostics = new String(process.getInputStream().readAllBytes(),
+                StandardCharsets.UTF_8);
+        assertThat(process.waitFor()).as("%s: %s", script, diagnostics).isZero();
+    }
+
+    private static void assertScriptSucceeds(Path script) throws Exception {
+        Process process = new ProcessBuilder("bash", script.toString())
                 .redirectErrorStream(true)
                 .start();
         String diagnostics = new String(process.getInputStream().readAllBytes(),
@@ -645,7 +821,7 @@ class AppChainProjectTest {
         AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
         AppChainProjectResolver resolver = new AppChainProjectResolver(properties, catalog);
 
-        assertThat(catalog.capabilities()).hasSize(36)
+        assertThat(catalog.capabilities()).hasSize(41)
                 .allSatisfy(capability -> {
                     assertThat(capability.availability()).isIn(
                             "BUNDLED", "FIRST_PARTY_OPTIONAL", "REFERENCE", "EXPERIMENTAL");
@@ -666,6 +842,11 @@ class AppChainProjectTest {
                 blueprint("audit-log", "fixed", List.of()), List.of("ui:console"))))
                 .hasMessageContaining("not selectable")
                 .hasMessageContaining("ui:console");
+        assertThatThrownBy(() -> resolver.resolve(withCapabilities(
+                blueprint("audit-log", "fixed", List.of()),
+                        List.of("rollup:zeroj-cardano"))))
+                .hasMessageContaining("not selectable")
+                .hasMessageContaining("rollup:zeroj-cardano");
         assertThat(catalog.capabilities())
                 .filteredOn(capability -> "observability:prometheus".equals(capability.id()))
                 .singleElement()
@@ -879,6 +1060,20 @@ class AppChainProjectTest {
                 blueprint.apiVersion(), blueprint.kind(), blueprint.metadata(),
                 new AppChainProjectModel.Spec(spec.yanoVersion(), network, spec.runtime(),
                         spec.deployment(), spec.chains()));
+    }
+
+    private static AppChainProjectModel.Blueprint withAcknowledgements(
+            AppChainProjectModel.Blueprint blueprint,
+            List<String> acknowledgements) {
+        AppChainProjectModel.Spec spec = blueprint.spec();
+        return new AppChainProjectModel.Blueprint(
+                blueprint.apiVersion(), blueprint.kind(),
+                blueprint.metadata(),
+                new AppChainProjectModel.Spec(
+                        spec.yanoVersion(), spec.network(),
+                        spec.runtime(), spec.deployment(),
+                        spec.chains(), spec.componentCatalogs(),
+                        acknowledgements));
     }
 
     private static AppChainProjectModel.Blueprint withHosts(

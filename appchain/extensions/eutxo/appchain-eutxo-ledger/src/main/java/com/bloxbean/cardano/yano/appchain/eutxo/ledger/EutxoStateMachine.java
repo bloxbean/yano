@@ -17,6 +17,10 @@ import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReceipt;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoRecord;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReserve;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoStateKeys;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2Domain;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2KeyRegistration;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2ParameterSnapshot;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2Transaction;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoTransactionSummary;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoContract;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalClaim;
@@ -24,6 +28,11 @@ import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalCommitm
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalConfirmation;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalDatum;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalRecord;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoValidityCommitment;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoValidityCommitmentEngine;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoValidityTransition;
+import com.bloxbean.cardano.client.address.Address;
+import com.bloxbean.cardano.client.address.AddressProvider;
 import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
 
 import java.math.BigInteger;
@@ -43,13 +52,17 @@ public final class EutxoStateMachine implements AppStateMachine {
     private final EutxoGenesis genesis;
     private final UtxoTransitionEngine transitionEngine;
     private final EutxoBridgeConfig bridge;
+    private final EutxoValidityCommitmentEngine validityEngine;
+    private final String chainId;
+    private final String network;
 
     EutxoStateMachine(
             EutxoProfile profile,
             EutxoGenesis genesis,
             UtxoTransitionEngine transitionEngine
     ) {
-        this(profile, genesis, transitionEngine, EutxoBridgeConfig.disabled());
+        this(profile, genesis, transitionEngine, EutxoBridgeConfig.disabled(), null,
+                "local-eutxo", "devnet");
     }
 
     EutxoStateMachine(
@@ -58,10 +71,42 @@ public final class EutxoStateMachine implements AppStateMachine {
             UtxoTransitionEngine transitionEngine,
             EutxoBridgeConfig bridge
     ) {
+        this(profile, genesis, transitionEngine, bridge, null,
+                "local-eutxo", "devnet");
+    }
+
+    EutxoStateMachine(
+            EutxoProfile profile,
+            EutxoGenesis genesis,
+            UtxoTransitionEngine transitionEngine,
+            EutxoBridgeConfig bridge,
+            EutxoValidityCommitmentEngine validityEngine
+    ) {
+        this(profile, genesis, transitionEngine, bridge, validityEngine,
+                "local-eutxo", "devnet");
+    }
+
+    EutxoStateMachine(
+            EutxoProfile profile,
+            EutxoGenesis genesis,
+            UtxoTransitionEngine transitionEngine,
+            EutxoBridgeConfig bridge,
+            EutxoValidityCommitmentEngine validityEngine,
+            String chainId,
+            String network
+    ) {
         this.profile = Objects.requireNonNull(profile, "profile");
         this.genesis = Objects.requireNonNull(genesis, "genesis");
         this.transitionEngine = Objects.requireNonNull(transitionEngine, "transitionEngine");
         this.bridge = Objects.requireNonNull(bridge, "bridge");
+        this.validityEngine = validityEngine;
+        this.chainId = requireText(chainId, "chainId");
+        this.network = requireText(network, "network");
+        if (validityEngine != null
+                && !List.of("devnet", "preview", "preprod").contains(this.network)) {
+            throw new IllegalArgumentException(
+                    "validity-enabled EUTxO requires devnet, preview, or preprod");
+        }
     }
 
     @Override
@@ -139,7 +184,7 @@ public final class EutxoStateMachine implements AppStateMachine {
                 }
             }
             List<EutxoRecord> resolvedInputs = result.accepted()
-                    ? resolvedInputs(result, writer) : List.of();
+                    ? result.resolvedInputs() : List.of();
             EutxoReceipt receipt = new EutxoReceipt(
                     result.accepted() ? EutxoReceipt.Status.ACCEPTED : EutxoReceipt.Status.REJECTED,
                     result.transactionId(),
@@ -150,6 +195,13 @@ public final class EutxoStateMachine implements AppStateMachine {
                     result.code(),
                     result.detail());
             if (result.accepted()) {
+                applyValidity(
+                        result,
+                        withdrawalPlan,
+                        block.l1Slot(),
+                        block.height(),
+                        ordinal,
+                        writer);
                 applyAccepted(result, withdrawalPlan, writer);
                 writer.put(EutxoStateKeys.transaction(result.transactionId()), receipt.encode());
             }
@@ -234,17 +286,102 @@ public final class EutxoStateMachine implements AppStateMachine {
                             state.get(EutxoStateKeys.deposit(outpoint))
                                     .map(EutxoDepositRecord::decode).orElse(null));
                 }
+                case EutxoQueryCodec.DEPOSITS_PATH -> {
+                    EutxoQueryCodec.LifecyclePage page =
+                            EutxoQueryCodec.decodeLifecyclePageRequest(params);
+                    long count = state.get(EutxoStateKeys.depositCount())
+                            .map(EutxoStateMachine::longValue)
+                            .orElse(0L);
+                    long cursor = page.before() == 0
+                            ? count : Math.min(count, page.before() - 1);
+                    List<EutxoDepositRecord> deposits = new ArrayList<>();
+                    while (cursor > 0 && deposits.size() < page.limit()) {
+                        state.get(EutxoStateKeys.depositIndex(cursor))
+                                .map(EutxoDepositRecord::decode)
+                                .ifPresent(deposits::add);
+                        cursor--;
+                    }
+                    yield EutxoQueryCodec.depositRecords(deposits);
+                }
+                case EutxoQueryCodec.DEPOSIT_COUNT_PATH -> {
+                    requireEmptyQuery(params);
+                    yield EutxoQueryCodec.count(
+                            state.get(EutxoStateKeys.depositCount())
+                                    .map(EutxoStateMachine::longValue)
+                                    .orElse(0L));
+                }
                 case EutxoQueryCodec.RESERVE_PATH -> {
                     String assetId = EutxoQueryCodec.decodeReserveRequest(params);
                     yield EutxoQueryCodec.optionalReserve(
                             state.get(EutxoStateKeys.reserve(assetId))
                                     .map(EutxoReserve::decode).orElse(null));
                 }
+                case EutxoQueryCodec.BRIDGE_HALT_PATH -> {
+                    requireEmptyQuery(params);
+                    yield EutxoQueryCodec.bridgeHalt(
+                            state.get(EutxoStateKeys.bridgeHalt())
+                                    .map(bytes -> new String(
+                                            bytes,
+                                            StandardCharsets.US_ASCII))
+                                    .orElse(""));
+                }
                 case EutxoQueryCodec.WITHDRAWAL_PATH -> {
                     String claimId = EutxoQueryCodec.decodeWithdrawalRequest(params);
                     yield EutxoQueryCodec.optionalWithdrawalRecord(
                             state.get(EutxoStateKeys.withdrawal(claimId))
                                     .map(EutxoWithdrawalRecord::decode).orElse(null));
+                }
+                case EutxoQueryCodec.WITHDRAWALS_PATH -> {
+                    EutxoQueryCodec.LifecyclePage page =
+                            EutxoQueryCodec.decodeLifecyclePageRequest(params);
+                    long count = state.get(EutxoStateKeys.totalWithdrawalCount(
+                                    bridge.bridgeEpoch()))
+                            .map(EutxoStateMachine::longValue)
+                            .orElse(0L);
+                    long cursor = page.before() == 0
+                            ? count : Math.min(count, page.before() - 1);
+                    List<EutxoWithdrawalRecord> withdrawals =
+                            new ArrayList<>();
+                    while (cursor > 0 && withdrawals.size() < page.limit()) {
+                        state.get(EutxoStateKeys.withdrawalIndex(
+                                        bridge.bridgeEpoch(), cursor))
+                                .map(bytes -> new String(
+                                        bytes, StandardCharsets.US_ASCII))
+                                .flatMap(claimId -> state.get(
+                                        EutxoStateKeys.withdrawal(claimId)))
+                                .map(EutxoWithdrawalRecord::decode)
+                                .ifPresent(withdrawals::add);
+                        cursor--;
+                    }
+                    yield EutxoQueryCodec.withdrawalRecords(withdrawals);
+                }
+                case EutxoQueryCodec.WITHDRAWAL_COUNT_PATH -> {
+                    requireEmptyQuery(params);
+                    yield EutxoQueryCodec.count(
+                            state.get(EutxoStateKeys.totalWithdrawalCount(
+                                            bridge.bridgeEpoch()))
+                                    .map(EutxoStateMachine::longValue)
+                                    .orElse(0L));
+                }
+                case EutxoQueryCodec.VALIDITY_TRANSITION_PATH -> {
+                    EutxoQueryCodec.Position position =
+                            EutxoQueryCodec.decodeValidityTransitionRequest(params);
+                    yield EutxoQueryCodec.optionalValidityTransition(
+                            state.get(EutxoStateKeys.validityTransition(
+                                            position.appHeight(),
+                                            position.ordinal()))
+                                    .map(EutxoValidityTransition::decode)
+                                    .orElse(null));
+                }
+                case EutxoQueryCodec.L2_PARAMETERS_PATH -> {
+                    if (params.length != 0 || validityEngine == null) {
+                        throw new AppQueryException(
+                                AppQueryException.Code.UNSUPPORTED,
+                                "L2 protocol parameters require a validity profile");
+                    }
+                    yield EutxoQueryCodec.l2Parameters(
+                            EutxoL2ParameterSnapshot.create(
+                                    chainId, profile, validityEngine));
                 }
                 case EutxoQueryCodec.PROFILE_PATH ->
                         profile.digestHex().getBytes(StandardCharsets.UTF_8);
@@ -261,6 +398,13 @@ public final class EutxoStateMachine implements AppStateMachine {
         }
     }
 
+    private static void requireEmptyQuery(byte[] params) {
+        if (params.length != 0) {
+            throw new IllegalArgumentException(
+                    "count query does not accept parameters");
+        }
+    }
+
     private void ensureGenesis(AppStateWriter writer) {
         byte[] expectedProfile = profile.digestHex().getBytes(StandardCharsets.UTF_8);
         byte[] existingProfile = writer.get(EutxoStateKeys.profile()).orElse(null);
@@ -268,26 +412,117 @@ public final class EutxoStateMachine implements AppStateMachine {
             throw new IllegalStateException("retained EUTxO profile digest differs from configured profile");
         }
         if (writer.get(EutxoStateKeys.genesis()).isPresent()) {
+            ensureValidityState(writer, false);
             return;
         }
         writer.put(EutxoStateKeys.profile(), expectedProfile);
         for (EutxoRecord record : genesis.records()) {
             putRecord(writer, record);
         }
+        for (EutxoL2KeyRegistration registration :
+                genesis.l2KeyRegistrations()) {
+            writer.put(
+                    EutxoStateKeys.l2Key(registration.paymentCredential()),
+                    registration.encode());
+        }
         writer.put(EutxoStateKeys.genesis(),
                 genesis.transactionId().getBytes(StandardCharsets.UTF_8));
+        ensureValidityState(writer, true);
     }
 
-    private static List<EutxoRecord> resolvedInputs(
-            UtxoTransitionEngine.TransitionResult result,
-            AppStateReader state
+    private void ensureValidityState(
+            AppStateWriter writer,
+            boolean creatingGenesis
     ) {
-        return result.consumed().stream()
-                .map(outpoint -> state.get(EutxoStateKeys.utxo(outpoint))
-                        .map(EutxoRecord::decode)
-                        .orElseThrow(() -> new IllegalStateException(
-                                "validated EUTxO input disappeared before projection")))
-                .toList();
+        if (validityEngine == null) {
+            if (writer.get(EutxoStateKeys.validityEngine()).isPresent()
+                    || writer.get(EutxoStateKeys.validityRoot()).isPresent()
+                    || writer.get(EutxoStateKeys.validityWitness()).isPresent()) {
+                throw new IllegalStateException(
+                        "retained EUTxO state requires its configured validity engine");
+            }
+            return;
+        }
+        byte[] engineId = validityEngine.id().getBytes(StandardCharsets.UTF_8);
+        byte[] retainedEngine = writer.get(EutxoStateKeys.validityEngine()).orElse(null);
+        if (retainedEngine != null && !java.util.Arrays.equals(retainedEngine, engineId)) {
+            throw new IllegalStateException(
+                    "retained EUTxO validity engine differs from configured engine");
+        }
+        if (retainedEngine != null) {
+            if (writer.get(EutxoStateKeys.validityRoot()).isEmpty()
+                    || writer.get(EutxoStateKeys.validityWitness()).isEmpty()) {
+                throw new IllegalStateException(
+                        "retained EUTxO validity state is incomplete");
+            }
+            return;
+        }
+        if (writer.get(EutxoStateKeys.validityRoot()).isPresent()
+                || writer.get(EutxoStateKeys.validityWitness()).isPresent()) {
+            throw new IllegalStateException(
+                    "retained EUTxO validity state has no engine identity");
+        }
+        if (!creatingGenesis) {
+            throw new IllegalStateException(
+                    "validity commitments cannot be enabled on retained EUTxO state "
+                            + "without an explicit checkpoint migration");
+        }
+        EutxoValidityCommitment genesisCommitment = validityEngine.genesis();
+        writer.put(EutxoStateKeys.validityEngine(), engineId);
+        writer.put(EutxoStateKeys.validityRoot(), genesisCommitment.root());
+        writer.put(EutxoStateKeys.validityWitness(),
+                genesisCommitment.witnessDescriptor());
+    }
+
+    private void applyValidity(
+            UtxoTransitionEngine.TransitionResult result,
+            WithdrawalPlan withdrawalPlan,
+            long l1Slot,
+            long appHeight,
+            int ordinal,
+            AppStateWriter writer
+    ) {
+        if (validityEngine == null) {
+            return;
+        }
+        byte[] previousRoot = writer.get(EutxoStateKeys.validityRoot())
+                .orElseThrow(() -> new IllegalStateException(
+                        "selected EUTxO validity engine has no committed root"));
+        EutxoL2Transaction l2Transaction = Objects.requireNonNull(
+                result.l2Transaction(),
+                "validity-enabled accepted transition has no L2 envelope");
+        EutxoL2Domain domain = l2Transaction.domain();
+        EutxoValidityTransition transition = new EutxoValidityTransition(
+                previousRoot,
+                chainId,
+                network,
+                profile.digestHex(),
+                validityEngine.profileDigest(),
+                validityEngine.authorizationProfile(),
+                validityEngine.authorizationProfileDigest(),
+                domain.commitment(),
+                result.transactionId(),
+                result.canonicalTransaction(),
+                result.resolvedInputs(),
+                result.consumed(),
+                result.created(),
+                withdrawalPlan.claims(),
+                l1Slot,
+                appHeight,
+                ordinal);
+        EutxoValidityCommitment next = validityEngine.commit(transition);
+        writer.put(EutxoStateKeys.validityRoot(), next.root());
+        writer.put(EutxoStateKeys.validityWitness(), next.witnessDescriptor());
+        writer.put(EutxoStateKeys.validityTransition(appHeight, ordinal),
+                transition.canonicalBytes());
+    }
+
+    private static String requireText(String value, String label) {
+        value = Objects.requireNonNull(value, label).trim();
+        if (value.isEmpty() || value.length() > 63) {
+            throw new IllegalArgumentException("invalid " + label);
+        }
+        return value;
     }
 
     private static EutxoTransactionSummary summary(
@@ -299,6 +534,9 @@ public final class EutxoStateMachine implements AppStateMachine {
             int ordinal,
             long l1Slot
     ) {
+        String authorization = result.l2Transaction() == null
+                ? "cardano-vkey"
+                : result.l2Transaction().domain().authorizationProfile();
         return new EutxoTransactionSummary(
                 result.transactionId(),
                 HexFormat.of().formatHex(message.getMessageId()),
@@ -309,7 +547,7 @@ public final class EutxoStateMachine implements AppStateMachine {
                 result.accepted()
                         ? EutxoTransactionSummary.Status.ACCEPTED
                         : EutxoTransactionSummary.Status.REJECTED,
-                "cardano-vkey",
+                authorization,
                 resolvedInputs.stream()
                         .map(EutxoStateMachine::summaryEntry)
                         .toList(),
@@ -361,10 +599,17 @@ public final class EutxoStateMachine implements AppStateMachine {
             putRecord(writer, record);
         }
         if (!withdrawalPlan.claims().isEmpty()) {
-            withdrawalPlan.claims().forEach(claim -> writer.put(
-                    EutxoStateKeys.withdrawal(claim.claimId()),
-                    EutxoWithdrawalRecord.pending(
-                            claim, claim.requestedHeight()).encode()));
+            withdrawalPlan.claims().forEach(claim -> {
+                writer.put(
+                        EutxoStateKeys.withdrawal(claim.claimId()),
+                        EutxoWithdrawalRecord.pending(
+                                claim, claim.requestedHeight()).encode());
+                writer.put(
+                        EutxoStateKeys.withdrawalIndex(
+                                claim.bridgeEpoch(),
+                                Math.addExact(claim.settlementSequence(), 1)),
+                        claim.claimId().getBytes(StandardCharsets.US_ASCII));
+            });
             withdrawalPlan.claims().forEach(claim -> writer.put(
                     EutxoStateKeys.withdrawalCommitment(claim.claimId()),
                     EutxoWithdrawalCommitment.fromClaim(claim).encode()));
@@ -553,13 +798,69 @@ public final class EutxoStateMachine implements AppStateMachine {
                 .map(EutxoReserve::decode)
                 .orElseGet(() -> EutxoReserve.empty(EutxoReserve.LOVELACE))
                 .credit(lovelace);
-        if (claim.l2KeyBinding().present()) {
-            throw new IllegalStateException(
-                    "deposit L2 key binding requires a configured authorization profile");
-        }
+        importL2KeyBinding(claim, writer);
         putRecord(writer, mirrored);
         writer.put(depositKey, expected.encode());
+        long depositSequence = Math.addExact(
+                writer.get(EutxoStateKeys.depositCount())
+                        .map(EutxoStateMachine::longValue)
+                        .orElse(0L),
+                1);
+        writer.put(EutxoStateKeys.depositIndex(depositSequence), expected.encode());
+        writer.put(EutxoStateKeys.depositCount(), longBytes(depositSequence));
         writer.put(reserveKey, reserve.encode());
+    }
+
+    private void importL2KeyBinding(
+            EutxoDepositClaim claim,
+            AppStateWriter writer
+    ) {
+        if (!claim.l2KeyBinding().present()) {
+            return;
+        }
+        if (validityEngine == null
+                || !validityEngine.authorizationProfile().equals(
+                claim.l2KeyBinding().authorizationProfile())) {
+            throw new IllegalStateException(
+                    "deposit L2 key binding differs from the selected authorization profile");
+        }
+        Address address;
+        try {
+            address = new Address(claim.l2Address());
+        } catch (RuntimeException failure) {
+            throw new IllegalStateException(
+                    "deposit L2 key binding has an invalid address", failure);
+        }
+        if (!AddressProvider.isPubKeyHashInPaymentPart(address)) {
+            throw new IllegalStateException(
+                    "deposit L2 key binding requires a key-controlled address");
+        }
+        byte[] paymentCredential = address.getPaymentCredentialHash()
+                .orElseThrow(() -> new IllegalStateException(
+                        "deposit L2 key binding has no payment credential"));
+        if (!java.util.Arrays.equals(
+                paymentCredential, claim.depositorKeyHash())) {
+            throw new IllegalStateException(
+                    "deposit L2 key binding is not authorized by its depositor");
+        }
+        String credential = HexFormat.of().formatHex(paymentCredential);
+        EutxoL2KeyRegistration registration =
+                new EutxoL2KeyRegistration(
+                        credential,
+                        claim.l2KeyBinding().authorizationProfile(),
+                        claim.l2KeyBinding().keyEpoch(),
+                        claim.l2KeyBinding().publicKey(),
+                        EutxoL2KeyRegistration.Status.ACTIVE);
+        byte[] key = EutxoStateKeys.l2Key(credential);
+        EutxoL2KeyRegistration existing = writer.get(key)
+                .map(EutxoL2KeyRegistration::decode)
+                .orElse(null);
+        if (existing == null) {
+            writer.put(key, registration.encode());
+        } else if (!existing.equals(registration)) {
+            throw new IllegalStateException(
+                    "deposit conflicts with the active L2 key registration");
+        }
     }
 
     private static BigInteger mirroredLovelace(EutxoDepositClaim claim) {

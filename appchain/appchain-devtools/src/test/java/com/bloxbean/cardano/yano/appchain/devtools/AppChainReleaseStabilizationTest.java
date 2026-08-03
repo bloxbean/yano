@@ -1,12 +1,16 @@
 package com.bloxbean.cardano.yano.appchain.devtools;
 
 import com.bloxbean.cardano.yano.appchain.config.AppChainPropertyRegistry;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -64,5 +68,190 @@ class AppChainReleaseStabilizationTest {
                     .as("evidence fragment: %s", reference)
                     .contains(parts.get(1));
         }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void eutxoNetworkEvidenceCannotOverstateDevelopmentProfile()
+            throws Exception {
+        Path repository = Path.of(System.getProperty("yano.test.repo-root"));
+        Path evidenceFile = repository.resolve(
+                "appchain/extensions/eutxo-zk/acceptance/"
+                        + "network-acceptance-v1.json");
+        Path schemaFile = repository.resolve(
+                "appchain/extensions/eutxo-zk/acceptance/"
+                        + "eutxo-zk-network-acceptance.schema.json");
+        assertThat(evidenceFile).isRegularFile();
+        assertThat(schemaFile).isRegularFile();
+
+        Map<String, Object> evidence = new ObjectMapper()
+                .readValue(evidenceFile.toFile(), Map.class);
+        assertThat(evidence)
+                .containsEntry("schemaVersion",
+                        "eutxo-zk-network-acceptance/v1")
+                .containsEntry("authorizationProfile",
+                        "zeroj-jubjub-dev-v1")
+                .containsEntry("batchProfile",
+                        "cardano-payment-b16")
+                .containsEntry("trustedProverRequired", true)
+                .containsEntry("fundsPolicy",
+                        "disposable-test-funds-only");
+
+        Map<String, Map<String, Object>> networks =
+                (Map<String, Map<String, Object>>)
+                        evidence.get("networks");
+        assertThat(networks.keySet())
+                .containsExactlyInAnyOrder(
+                        "devnet", "preview", "preprod", "mainnet");
+        assertThat(networks.get("devnet").get("policy"))
+                .isEqualTo("ALLOWED");
+        for (String network : List.of("preview", "preprod")) {
+            assertThat(networks.get(network).get("policy"))
+                    .isEqualTo("ACKNOWLEDGEMENT_REQUIRED");
+        }
+        assertThat(networks.get("mainnet").get("policy"))
+                .isEqualTo("REJECTED");
+
+        Map<String, Object> devnet = networks.get("devnet");
+        assertThat(status(devnet, "packagedLifecycle"))
+                .isEqualTo("PASSED");
+        assertThat(status(devnet, "liveDepositToWithdrawal"))
+                .isEqualTo("PASSED");
+        assertThat(devnet.get("liveDepositToWithdrawal").toString())
+                .contains("EutxoZkRollupDevnetE2ETest");
+        assertThat(status(devnet, "rollbackAndRecovery"))
+                .isEqualTo("NOT_EXERCISED");
+        assertThat(status(devnet, "independentReconstruction"))
+                .isEqualTo("NOT_EXERCISED");
+
+        for (String network : List.of("preview", "preprod")) {
+            Map<String, Object> result = networks.get(network);
+            assertThat(status(result, "packagedLifecycle"))
+                    .isEqualTo("PASSED");
+            assertThat(status(result, "liveDepositToWithdrawal"))
+                    .isEqualTo("NOT_EXERCISED");
+            assertThat(status(result, "rollbackAndRecovery"))
+                    .isEqualTo("NOT_EXERCISED");
+            assertThat(status(result, "independentReconstruction"))
+                    .isEqualTo("NOT_EXERCISED");
+        }
+
+        Map<String, Map<String, Object>> security =
+                (Map<String, Map<String, Object>>)
+                        evidence.get("securityGates");
+        assertThat(security.get("maliciousProverSecurity")
+                .get("status")).isEqualTo("BLOCKED_BY_PROFILE");
+        assertThat(security.values())
+                .extracting(gate -> gate.get("status"))
+                .doesNotContain("PASSED");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void eutxoPreviewReleaseContractPinsCatalogAndRemainsExperimental()
+            throws Exception {
+        Path repository = Path.of(System.getProperty("yano.test.repo-root"));
+        Path acceptance = repository.resolve(
+                "appchain/extensions/eutxo-zk/acceptance");
+        Path contractFile = acceptance.resolve(
+                "preview-release-contract-v1.json");
+        assertThat(contractFile).isRegularFile();
+        assertThat(acceptance.resolve(
+                "eutxo-zk-preview-release-contract.schema.json"))
+                .isRegularFile();
+
+        Map<String, Object> contract = new ObjectMapper()
+                .readValue(contractFile.toFile(), Map.class);
+        assertThat(contract)
+                .containsEntry("releaseDecision",
+                        "EXPERIMENTAL_TESTNET_ONLY")
+                .containsEntry("recipe",
+                        "eutxo-zeroj-preview:1")
+                .containsEntry("runtimeTypes", List.of("jvm"))
+                .containsEntry("supportedNetworks",
+                        List.of("devnet", "preview", "preprod"))
+                .containsEntry("mainnet", "REJECTED")
+                .containsEntry("trustedProverRequired", true)
+                .containsEntry("fundsPolicy",
+                        "disposable-test-funds-only");
+
+        AppChainProjectCatalog catalog = new AppChainProjectCatalog(
+                AppChainPropertyRegistry.framework());
+        AppChainProjectModel.Recipe recipe =
+                catalog.recipe("eutxo-zeroj-preview");
+        assertThat(recipe.maturity()).isEqualTo("experimental");
+        assertThat(recipe.availability()).isEqualTo("EXPERIMENTAL");
+        assertThat(recipe.runtimeTypes()).containsExactly("jvm");
+        assertThat(recipe.supportedNetworks())
+                .containsExactly("devnet", "preview", "preprod");
+        assertThat(catalog.capability("rollup:zeroj-cardano")
+                .effectiveSelectable()).isFalse();
+
+        Map<String, String> identities =
+                (Map<String, String>) contract.get("identities");
+        Map<String, String> properties =
+                catalog.capability("settlement:zeroj-validity")
+                        .properties();
+        assertThat(identities)
+                .containsEntry("yanoVersion",
+                        catalog.releaseIndex().yanoVersion())
+                .containsEntry("transactionFormat",
+                        properties.get(
+                                "machines.eutxo.validity."
+                                        + "transaction-format"))
+                .containsEntry("authorizationProfile",
+                        properties.get(
+                                "machines.eutxo.validity."
+                                        + "authorization-profile"))
+                .containsEntry("authorizationProfileDigest",
+                        properties.get(
+                                "machines.eutxo.validity."
+                                        + "authorization-profile-digest"))
+                .containsEntry("batchProfile",
+                        properties.get(
+                                "machines.eutxo.validity.batch-profile"))
+                .containsEntry("batchProfileDigest",
+                        properties.get(
+                                "machines.eutxo.validity."
+                                        + "batch-profile-digest"))
+                .containsEntry("circuitId",
+                        properties.get(
+                                "machines.eutxo.validity.circuit-id"))
+                .containsEntry("zerojVersion",
+                        properties.get(
+                                "machines.eutxo.validity.zeroj-version"))
+                .containsEntry("julcVersion",
+                        properties.get(
+                                "machines.eutxo.validity.julc-version"));
+
+        Map<String, String> sourceDigests =
+                (Map<String, String>) contract.get("sourceDigests");
+        assertThat(sourceDigests)
+                .containsEntry("capabilityCatalogSha256",
+                        catalog.digests().get("capabilities"))
+                .containsEntry("networkAcceptanceSha256",
+                        sha256(acceptance.resolve(
+                                "network-acceptance-v1.json")));
+        assertThat((List<String>) contract.get("openSecurityGates"))
+                .isNotEmpty()
+                .contains("jubjub-adversarial-circuit-hardening",
+                        "live-preview-preprod-round-trip",
+                        "devnet-maximum-batch-restart-and-rollback",
+                        "accountable-production-funds-approval");
+    }
+
+    @SuppressWarnings("unchecked")
+    private static String status(
+            Map<String, Object> network,
+            String gate
+    ) {
+        return ((Map<String, Object>) network.get(gate))
+                .get("status").toString();
+    }
+
+    private static String sha256(Path path) throws Exception {
+        return HexFormat.of().formatHex(
+                MessageDigest.getInstance("SHA-256")
+                        .digest(Files.readAllBytes(path)));
     }
 }

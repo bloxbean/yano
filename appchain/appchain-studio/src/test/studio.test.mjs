@@ -13,21 +13,29 @@ const metadata=path.join(repo,'appchain/appchain-devtools/src/main/resources/app
 const recipes=JSON.parse(fs.readFileSync(path.join(metadata,'appchain-recipe-catalog.json'))).recipes;
 const capabilities=JSON.parse(fs.readFileSync(path.join(metadata,'appchain-capability-catalog.json'))).capabilities;
 const release=JSON.parse(fs.readFileSync(path.join(metadata,'appchain-release-capability-index.json')));
+const eutxoGenesisAnswers={
+  eutxoGenesisAddress:'addr_test1vqexample',
+  eutxoGenesisLovelace:'100000000'
+};
+const eutxoL2Answers={
+  eutxoL2Address:'addr_test1vqexample',
+  eutxoL2PublicKey:'11'.repeat(32)
+};
+const eutxoBridgeAnswers={
+  bridgeVaultAddress:'addr_test1wqexample',
+  bridgeVaultScriptHash:'0123456789abcdef0123456789abcdef0123456789abcdef01234567',
+  bridgeMaxDepositLovelace:'100000000',
+  bridgeWithdrawalAddress:'addr_test1wqwithdrawal',
+  bridgeEpoch:'1',
+  bridgeMaxWithdrawalLovelace:'50000000',
+  bridgeMaxPendingWithdrawals:'100'
+};
 const releaseRecipeAnswers={
   'custom-plugin':{stateMachine:'com.example.test-machine'},
-  'eutxo-ledger':{
-    eutxoGenesisAddress:'addr_test1vqexample',
-    eutxoGenesisLovelace:'100000000'
-  },
-  'eutxo-cardano-bridge':{
-    bridgeVaultAddress:'addr_test1wqexample',
-    bridgeVaultScriptHash:'0123456789abcdef0123456789abcdef0123456789abcdef01234567',
-    bridgeMaxDepositLovelace:'100000000',
-    bridgeWithdrawalAddress:'addr_test1wqwithdrawal',
-    bridgeEpoch:'1',
-    bridgeMaxWithdrawalLovelace:'50000000',
-    bridgeMaxPendingWithdrawals:'100'
-  }
+  'eutxo-ledger':eutxoGenesisAnswers,
+  'eutxo-cardano-bridge':eutxoBridgeAnswers,
+  'eutxo-zeroj-validity':{...eutxoGenesisAnswers,...eutxoL2Answers},
+  'eutxo-zeroj-preview':{...eutxoL2Answers,...eutxoBridgeAnswers}
 };
 
 test('every release recipe produces safe release-pinned intent',()=>{

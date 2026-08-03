@@ -115,6 +115,29 @@ script identity. The browser digest remains a byte-integrity check rather than
 finality, anchor, or MPF verification. Custom component-specific panels remain
 data-only future catalog work; plugins cannot inject executable console code.
 
+### EUTxO lifecycle
+
+An `eutxo-ledger` chain exposes a reviewed EUTxO route at
+`/ui/app-chain/eutxo/?chain=<chain-id>`. With the node-local
+`indexer:eutxo-lifecycle` capability, it provides bounded transaction,
+account, bridge, lineage, and optional validity views. A user can start from
+an address, L1 deposit outpoint, app-message ID, L2 transaction ID, or
+withdrawal claim and follow the canonical L1 deposit to L2 activity to L1
+payout.
+
+The indexer is a derived SQLite projection. The console displays its coverage,
+checkpoint, finalized height, lag, and bridge-reconciliation diagnostics.
+If it is disabled or unavailable, the page falls back to the committed
+transaction-summary API; consensus and bridge execution are unaffected.
+L1 transaction details are loaded lazily from the connected Yano node and
+remain optional when retained L1 history is unavailable. The browser does not
+decode arbitrary Cardano or proof CBOR and never reads the disposable demo
+journal.
+
+Operational configuration, endpoints, metrics, rebuild safety, and the
+measured SQLite support envelope are documented in the
+[EUTxO indexer runbook](../appchain/extensions/eutxo/INDEXER_OPERATIONS.md).
+
 For local frontend development, run `npm run dev` in
 `console-ui/frontend`; Vite proxies `/api` and `/q` to
 `http://127.0.0.1:7070`.

@@ -8,6 +8,8 @@ final class AppChainProjectModel {
     static final String API_VERSION = "yano.bloxbean.com/v1alpha1";
     static final String BLUEPRINT_KIND = "AppChainProject";
     static final String LOCK_KIND = "AppChainLock";
+    static final List<String> DEFAULT_SUPPORTED_NETWORKS =
+            List.of("devnet", "preview", "preprod", "mainnet");
 
     private AppChainProjectModel() {
     }
@@ -24,11 +26,20 @@ final class AppChainProjectModel {
             RuntimeSelection runtime,
             DeploymentSelection deployment,
             List<ChainIntent> chains,
-            List<ComponentCatalogRef> componentCatalogs) {
+            List<ComponentCatalogRef> componentCatalogs,
+            List<String> acknowledgements) {
 
         Spec(String yanoVersion, String network, RuntimeSelection runtime,
              DeploymentSelection deployment, List<ChainIntent> chains) {
-            this(yanoVersion, network, runtime, deployment, chains, List.of());
+            this(yanoVersion, network, runtime, deployment, chains,
+                    List.of(), List.of());
+        }
+
+        Spec(String yanoVersion, String network, RuntimeSelection runtime,
+             DeploymentSelection deployment, List<ChainIntent> chains,
+             List<ComponentCatalogRef> componentCatalogs) {
+            this(yanoVersion, network, runtime, deployment, chains,
+                    componentCatalogs, List.of());
         }
     }
 
@@ -94,6 +105,7 @@ final class AppChainProjectModel {
             List<String> conflicts,
             List<String> runtimeTypes,
             List<String> deploymentTargets,
+            List<String> supportedNetworks,
             List<String> artifacts,
             String nativePosture,
             List<String> externalPrerequisites,
@@ -110,6 +122,11 @@ final class AppChainProjectModel {
 
         boolean effectiveSelectable() {
             return selectable == null || selectable;
+        }
+
+        List<String> effectiveSupportedNetworks() {
+            return supportedNetworks == null
+                    ? DEFAULT_SUPPORTED_NETWORKS : supportedNetworks;
         }
     }
 
@@ -134,6 +151,7 @@ final class AppChainProjectModel {
             Map<String, String> recommended,
             List<String> runtimeTypes,
             List<String> deploymentTargets,
+            List<String> supportedNetworks,
             List<String> artifacts,
             String nativePosture,
             List<String> externalPrerequisites,
@@ -148,6 +166,11 @@ final class AppChainProjectModel {
 
         boolean effectiveSelectable() {
             return selectable == null || selectable;
+        }
+
+        List<String> effectiveSupportedNetworks() {
+            return supportedNetworks == null
+                    ? DEFAULT_SUPPORTED_NETWORKS : supportedNetworks;
         }
     }
 

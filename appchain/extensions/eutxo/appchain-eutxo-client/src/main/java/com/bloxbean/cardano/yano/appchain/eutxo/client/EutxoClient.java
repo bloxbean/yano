@@ -6,12 +6,14 @@ import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoContract;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoDepositRecord;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoOutpoint;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoMpfProof;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2ParameterSnapshot;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoQueryCodec;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReceipt;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoRecord;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReserve;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoStateKeys;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalRecord;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoValidityTransition;
 
 import java.util.List;
 import java.util.Objects;
@@ -118,6 +120,22 @@ public final class EutxoClient {
     }
 
     /**
+     * Fetches the exact finalized Cardano transition witness committed by the
+     * validity root. The returned snapshot height lets a prover reject reads
+     * that are not yet final under its configured policy.
+     */
+    public EutxoSnapshot<Optional<EutxoValidityTransition>>
+            finalizedValidityTransition(long appHeight, int ordinal) {
+        AppChainClient.QueryResult result = client.query(
+                EutxoQueryCodec.VALIDITY_TRANSITION_PATH,
+                EutxoQueryCodec.validityTransitionRequest(
+                        appHeight, ordinal));
+        return snapshot(result, Optional.ofNullable(
+                EutxoQueryCodec.decodeOptionalValidityTransition(
+                        result.payload())));
+    }
+
+    /**
      * Fetch and locally verify the compact Plutus withdrawal commitment proof
      * used by the permissionless Cardano relay path.
      */
@@ -135,6 +153,14 @@ public final class EutxoClient {
                 client.query(EutxoQueryCodec.PROFILE_PATH, new byte[0]);
         return snapshot(result, new String(result.payload(),
                 java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    public EutxoSnapshot<EutxoL2ParameterSnapshot> l2ParametersSnapshot() {
+        AppChainClient.QueryResult result = client.query(
+                EutxoQueryCodec.L2_PARAMETERS_PATH, new byte[0]);
+        return snapshot(
+                result,
+                EutxoQueryCodec.decodeL2Parameters(result.payload()));
     }
 
     private static <T> EutxoSnapshot<T> snapshot(

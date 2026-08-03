@@ -1,0 +1,46 @@
+dependencies {
+    api project(':appchain-eutxo-indexer-core')
+    implementation libs.flyway.core
+    runtimeOnly libs.sqlite.jdbc
+
+    testImplementation testFixtures(project(':appchain-eutxo-indexer-core'))
+    testImplementation libs.sqlite.jdbc
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+tasks.named('compileJava') {
+    options.compilerArgs.removeAll { it.startsWith('-Aproject=') }
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano App-Chain EUTxO JDBC Indexer'
+                description = 'Flyway-managed SQLite store for the EUTxO lifecycle index'
+            }
+        }
+    }
+}
+
+tasks.register('benchmarkEutxoIndexer', JavaExec) {
+    group = 'verification'
+    description = 'Runs the reproducible bounded SQLite EUTxO index benchmark'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.appchain.eutxo.indexer.jdbc.EutxoIndexBenchmark'
+    dependsOn testClasses
+    def report = layout.buildDirectory.file(
+            'reports/eutxo-indexer/benchmark.json')
+    args report.get().asFile.absolutePath,
+            providers.gradleProperty('eutxoBenchmarkOperations')
+                    .getOrElse('20000')
+    outputs.file(report)
+}

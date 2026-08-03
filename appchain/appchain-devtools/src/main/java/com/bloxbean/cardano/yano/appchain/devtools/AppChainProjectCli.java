@@ -67,6 +67,7 @@ final class AppChainProjectCli {
               --plugin-jar <path>           signed custom plugin product metadata (repeatable)
               --component-catalog <path>    exported signed catalog snapshot (repeatable)
               --trust-key <id=public-key>   trusted Ed25519 publisher key (repeatable)
+              --acknowledge <id>            persist an explicit product acknowledgement
             Drift options:
               --peer <http(s)-base-url>     repeat for every node to compare
               --api-key-env <variable>      read the privileged API key from this environment variable
@@ -367,7 +368,8 @@ final class AppChainProjectCli {
                 new AppChainProjectModel.RuntimeSelection(options.runtime()),
                 new AppChainProjectModel.DeploymentSelection(options.deployment()),
                 List.of(chain),
-                external.references());
+                external.references(),
+                options.acknowledgements());
         AppChainProjectModel.Blueprint blueprint = new AppChainProjectModel.Blueprint(
                 AppChainProjectModel.API_VERSION,
                 AppChainProjectModel.BLUEPRINT_KIND,
@@ -560,7 +562,8 @@ final class AppChainProjectCli {
                 options.format(),
                 options.pluginJars(),
                 options.componentCatalogs(),
-                options.trustKeys());
+                options.trustKeys(),
+                options.acknowledgements());
     }
 
     private String prompt(String label, String existing, String defaultValue) throws IOException {
@@ -594,6 +597,7 @@ final class AppChainProjectCli {
         List<Path> pluginJars = new ArrayList<>();
         List<Path> componentCatalogs = new ArrayList<>();
         Map<String, String> trustKeys = new LinkedHashMap<>();
+        List<String> acknowledgements = new ArrayList<>();
         Integer httpPortBase = null;
         Integer serverPortBase = null;
         for (int cursor = 0; cursor < arguments.length; cursor++) {
@@ -621,6 +625,8 @@ final class AppChainProjectCli {
                         path(value(arguments, ++cursor, argument)));
                 case "--trust-key" -> parseTrustKey(
                         value(arguments, ++cursor, argument), trustKeys);
+                case "--acknowledge" -> acknowledgements.add(
+                        value(arguments, ++cursor, argument));
                 case "--http-port-base" -> {
                     if (httpPortBase != null) throw new Usage(argument + " may be specified once");
                     httpPortBase = parsePort(value(arguments, ++cursor, argument), argument);
@@ -650,7 +656,7 @@ final class AppChainProjectCli {
                 httpPortBase, serverPortBase,
                 name, chainId, yanoVersion, output, nonInteractive, format,
                 List.copyOf(pluginJars), List.copyOf(componentCatalogs),
-                Map.copyOf(trustKeys));
+                Map.copyOf(trustKeys), List.copyOf(acknowledgements));
     }
 
     private static void parseAnswer(String assignment, Map<String, String> answers) {
@@ -1187,7 +1193,8 @@ final class AppChainProjectCli {
             Format format,
             List<Path> pluginJars,
             List<Path> componentCatalogs,
-            Map<String, String> trustKeys) {
+            Map<String, String> trustKeys,
+            List<String> acknowledgements) {
         int members() {
             return membersBoxed;
         }

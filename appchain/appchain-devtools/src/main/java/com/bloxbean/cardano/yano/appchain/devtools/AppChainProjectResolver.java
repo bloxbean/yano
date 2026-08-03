@@ -25,15 +25,19 @@ final class AppChainProjectResolver {
     private static final Pattern NAME = Pattern.compile("[a-z][a-z0-9-]{0,62}");
     private static final Pattern MEMBER_KEY = Pattern.compile("[0-9a-fA-F]{64}");
     private static final Pattern LOWER_HEX_56 = Pattern.compile("[0-9a-f]{56}");
+    private static final Pattern LOWER_HEX_64 = Pattern.compile("[0-9a-f]{64}");
     private static final Pattern TESTNET_ADDRESS =
             Pattern.compile("addr_test1[a-z0-9]{5,120}");
     private static final Pattern MAINNET_ADDRESS =
             Pattern.compile("addr1[a-z0-9]{5,120}");
     private static final Pattern LABELED_VALUE =
             Pattern.compile("[A-Za-z_][A-Za-z0-9_]*=.*", Pattern.DOTALL);
-    private static final Set<String> NETWORKS = Set.of("devnet", "preview", "preprod", "mainnet");
+    private static final Set<String> NETWORKS =
+            Set.copyOf(AppChainProjectModel.DEFAULT_SUPPORTED_NETWORKS);
     private static final Set<String> RUNTIMES = Set.of("jvm", "native");
     private static final Set<String> DEPLOYMENTS = Set.of("host", "docker-compose");
+    static final String EUTXO_UNSAFE_TESTNET_ACKNOWLEDGEMENT =
+            "EUTXO_ZEROJ_UNSAFE_DEVELOPMENT_TESTNET";
 
     private final AppChainPropertyRegistry properties;
     private final AppChainProjectCatalog catalog;
@@ -49,9 +53,16 @@ final class AppChainProjectResolver {
         AppChainProjectModel.ChainIntent chain = validateBlueprint(blueprint);
         AppChainProjectModel.Spec spec = blueprint.spec();
         AppChainProjectModel.Recipe recipe = catalog.recipe(chain.recipe());
+        if (!recipe.effectiveSelectable()) {
+            throw new IllegalArgumentException("Recipe " + recipe.id()
+                    + " is not selectable for app-chain initialization");
+        }
+        requireSupported(recipe.effectiveSupportedNetworks(), spec.network(),
+                "network", recipe.id());
         requireSupported(recipe.runtimeTypes(), spec.runtime().type(), "runtime", recipe.id());
         requireSupported(recipe.deploymentTargets(), spec.deployment().target(),
                 "deployment target", recipe.id());
+        validateAcknowledgements(spec, recipe);
 
         LinkedHashSet<String> requested = new LinkedHashSet<>(safeList(recipe.capabilities()));
         requested.removeIf(id -> id.startsWith("sequencer:"));
@@ -86,6 +97,8 @@ final class AppChainProjectResolver {
                     "runtime", capability.id());
             requireSupported(capability.deploymentTargets(), spec.deployment().target(),
                     "deployment target", capability.id());
+            requireSupported(capability.effectiveSupportedNetworks(), spec.network(),
+                    "network", capability.id());
             for (String dependency : concat(capability.requires(), capability.implies())) {
                 if (!requested.contains(dependency)) implied.add(dependency);
                 queue.addLast(dependency);
@@ -243,6 +256,30 @@ final class AppChainProjectResolver {
         return chain;
     }
 
+    private static void validateAcknowledgements(
+            AppChainProjectModel.Spec spec,
+            AppChainProjectModel.Recipe recipe
+    ) {
+        List<String> acknowledgements = safeList(spec.acknowledgements());
+        if (acknowledgements.size() > 32
+                || new LinkedHashSet<>(acknowledgements).size()
+                != acknowledgements.size()
+                || acknowledgements.stream().anyMatch(value ->
+                value == null || !value.matches("[A-Z][A-Z0-9_]{0,127}"))) {
+            throw new IllegalArgumentException(
+                    "Blueprint acknowledgements are invalid");
+        }
+        if ("eutxo-zeroj-preview".equals(recipe.id())
+                && Set.of("preview", "preprod").contains(spec.network())
+                && !acknowledgements.contains(
+                EUTXO_UNSAFE_TESTNET_ACKNOWLEDGEMENT)) {
+            throw new IllegalArgumentException(
+                    recipe.id() + " on " + spec.network()
+                            + " requires --acknowledge "
+                            + EUTXO_UNSAFE_TESTNET_ACKNOWLEDGEMENT);
+        }
+    }
+
     private static void validatePortRange(Integer base, int members, String label) {
         if (base != null && (base < 1024 || base + members - 1 > 65535)) {
             throw new IllegalArgumentException(label + " port range is outside [1024, 65535]");
@@ -303,9 +340,12 @@ final class AppChainProjectResolver {
                 throw invalidAnswer(name, "must contain only the value, not NAME=value");
             }
             switch (name) {
-                case "eutxoGenesisAddress", "bridgeVaultAddress",
-                        "bridgeWithdrawalAddress" ->
+                case "eutxoGenesisAddress", "eutxoL2Address",
+                        "bridgeVaultAddress", "bridgeWithdrawalAddress" ->
                         validateCardanoAddress(name, value, network);
+                case "eutxoL2PublicKey" ->
+                        requireMatch(name, value, LOWER_HEX_64,
+                                "must be 64 lowercase hexadecimal characters");
                 case "bridgeVaultScriptHash" ->
                         requireMatch(name, value, LOWER_HEX_56,
                                 "must be 56 lowercase hexadecimal characters");

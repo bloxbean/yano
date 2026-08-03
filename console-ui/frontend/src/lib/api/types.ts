@@ -137,6 +137,18 @@ export interface AppChainMessage {
   bodyHex?: string;
 }
 
+export interface AppChainBlockDetail {
+  chainId: string;
+  height: number;
+  prevHash: string;
+  timestamp: number;
+  messagesRoot: string;
+  stateRoot: string;
+  proposer: string;
+  certSignatures: number;
+  messages: AppChainMessage[];
+}
+
 export interface AppChainStatus {
   chainId?: string;
   running?: boolean;
@@ -276,4 +288,131 @@ export interface EutxoTransactionDetail {
   committedHeight: number;
   stateRoot: string;
   data: EutxoTransactionSummary;
+}
+
+export interface EutxoIndexProjection {
+  kind: 'DERIVED';
+  status: string;
+  indexedHeight: number;
+  finalizedHeight: number;
+  lagBlocks: number;
+  historyFromHeight: number;
+  fullHistory: boolean;
+}
+
+export interface EutxoIndexEnvelope<T> {
+  apiVersion: 'eutxo-index/v1';
+  chainId: string;
+  stateMachineId: 'eutxo-ledger';
+  projection: EutxoIndexProjection;
+  data: T;
+}
+
+export interface EutxoIndexPage<T> {
+  items: T[];
+  cursor: string;
+  scanTruncated?: boolean;
+}
+
+export interface EutxoIndexStatus {
+  storeType: string;
+  checkpointHeight: number;
+  finalizedHeight: number;
+  lagBlocks: number;
+  coverage: 'NONE' | 'PARTIAL' | 'FULL';
+  normalizedDigest: string;
+  validityAvailable?: boolean;
+  diagnosticCode?: string;
+}
+
+export interface EutxoValidityBatch {
+  batchId: string;
+  provider: string;
+  proofSystem: string;
+  profileId: string;
+  profileDigest: string;
+  transactionIds: string[];
+  previousRoot: string;
+  nextRoot: string;
+  dataCommitment: string;
+  dataStatus: string;
+  proofDigest: string;
+  verificationKeyDigest: string;
+  proofStatus: string;
+  settlementStatus: string;
+  settlementTransactionId: string;
+  settlementSlot: number;
+  settlementBlockHash: string;
+}
+
+export interface EutxoIndexedAccount {
+  address: string;
+  lovelace: string;
+  utxos: EutxoTransactionEntry[];
+  activityTransactionIds: string[];
+}
+
+export interface EutxoDeposit {
+  acceptedOutpoint: string;
+  stagingOutpoint: string;
+  mirroredOutpoint: string;
+  l2Address: string;
+  l1Slot: number;
+  l1BlockHash: string;
+  creditedHeight: number;
+}
+
+export interface EutxoWithdrawal {
+  claimId: string;
+  status: string;
+  withdrawalOutpoint: string;
+  destinationAddress: string;
+  lovelace: string;
+  requestedHeight: number;
+  settlementTransactionId: string;
+  confirmedSlot: number;
+  confirmedBlockHash: string;
+  updatedHeight: number;
+}
+
+export interface EutxoLineageNode {
+  kind: string;
+  id: string;
+  status: string;
+}
+
+export interface EutxoLineage {
+  nodes: EutxoLineageNode[];
+  edges: Array<{ from: string; to: string; relation: string }>;
+  truncated: boolean;
+}
+
+export interface L1Transaction {
+  hash?: string;
+  block?: string;
+  block_height?: number;
+  block_time?: number;
+  slot?: number;
+  index?: number;
+  output_amount?: Array<{ unit?: string; quantity?: string }>;
+  fees?: string;
+  invalid_before?: string | null;
+  invalid_hereafter?: string | null;
+  utxo_count?: number;
+}
+
+export interface L1TransactionUtxo {
+  tx_hash?: string;
+  output_index?: number;
+  address?: string;
+  amount?: Array<{ unit?: string; quantity?: string }>;
+  data_hash?: string | null;
+  inline_datum?: string | null;
+  reference_script_hash?: string | null;
+}
+
+export interface L1TransactionUtxos {
+  hash?: string;
+  inputs?: L1TransactionUtxo[];
+  outputs?: L1TransactionUtxo[];
 }

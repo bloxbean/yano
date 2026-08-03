@@ -247,6 +247,36 @@
         "description": "Positive no-real-funds lovelace allocated to genesis output zero"
       },
       {
+        "key": "yano.app-chain.machines.eutxo.genesis.l2-address",
+        "owner": "yano-first-party/appchain-eutxo-ledger", "type": "STRING",
+        "defaultValue": null, "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": 1, "maximumUtf8Bytes": 256, "maximumItems": null,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Key-controlled L2 address registered without creating virtual funds"
+      },
+      {
+        "key": "yano.app-chain.machines.eutxo.genesis.l2-public-key",
+        "owner": "yano-first-party/appchain-eutxo-ledger", "type": "STRING",
+        "defaultValue": null, "minimum": null, "maximum": null,
+        "minimumUtf8Bytes": 64, "maximumUtf8Bytes": 64, "maximumItems": null,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Lowercase 32-byte Jubjub public key registered for the initial L2 address"
+      },
+      {
+        "key": "yano.app-chain.machines.eutxo.genesis.l2-key-epoch",
+        "owner": "yano-first-party/appchain-eutxo-ledger", "type": "LONG",
+        "defaultValue": "1", "minimum": 1, "maximum": null,
+        "minimumUtf8Bytes": null, "maximumUtf8Bytes": null, "maximumItems": null,
+        "allowedValues": [], "scope": "CONSENSUS_SHARED",
+        "changePolicy": "NEW_CHAIN_REQUIRED", "secret": false, "indexed": true,
+        "constraintProvenance": "RUNTIME_PARSER_TEST", "coverage": "PARTIAL",
+        "description": "Initial consensus key epoch for the registered L2 Jubjub key"
+      },
+      {
         "key": "yano.app-chain.machines.eutxo.genesis.inline-datum-hex",
         "owner": "yano-first-party/appchain-eutxo-ledger", "type": "STRING",
         "defaultValue": null, "minimum": null, "maximum": null,

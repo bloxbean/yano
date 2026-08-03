@@ -67,6 +67,10 @@ final class AppChainProjectRenderer {
             Map<String, byte[]> componentCatalogInputs) throws IOException {
         Path root = safeRoot(project);
         requireEmptyOrMissing(root);
+        // Resolve before creating the project directory. Unsupported product
+        // policies (especially testnet-only capabilities on mainnet) must
+        // fail without leaving a partial blueprint or bootstrap plan behind.
+        resolver.resolve(blueprint);
         Files.createDirectories(root);
         byte[] blueprintBytes = yaml.writerWithDefaultPrettyPrinter()
                 .writeValueAsBytes(blueprint);
@@ -161,6 +165,12 @@ final class AppChainProjectRenderer {
         }
         if (resolution.selectedCapabilities().contains("state:custom-plugin")) {
             acknowledgements.add("CUSTOM_PLUGIN_REVIEW_AND_METADATA_REQUIRED");
+        }
+        if (resolution.selectedCapabilities().contains(
+                "settlement:zeroj-validity")) {
+            acknowledgements.add("EUTXO_ZEROJ_TRUSTED_PROVER_TEST_FUNDS_ONLY");
+            acknowledgements.addAll(
+                    safeList(blueprint.spec().acknowledgements()));
         }
         AppChainProjectModel.Lock lock = new AppChainProjectModel.Lock(
                 AppChainProjectModel.API_VERSION,
@@ -335,6 +345,15 @@ final class AppChainProjectRenderer {
         values.put("yano.app-chain.validation.strict", "true");
         values.put("yano.app-chain.dx.resolved-config-digest", resolvedConfigDigest);
         values.put("yano.app-chain.dx.release-catalog-digest", releaseCatalogDigest);
+        if (resolution.selectedCapabilities().contains("state:eutxo-ledger")) {
+            values.put("yano.app-chain.eutxo-indexer.enabled", "true");
+            values.put("yano.app-chain.eutxo-indexer.store.type", "jdbc");
+            if (resolution.selectedCapabilities().contains(
+                    "settlement:zeroj-validity")) {
+                values.put("yano.app-chain.eutxo-indexer.validity.path",
+                        "${YANO_APPCHAIN_PROJECT_ROOT}/runtime/validity");
+            }
+        }
         if ("devnet".equals(resolution.blueprint().spec().network()) && node > 0) {
             values.put("yano.block-producer.enabled", "false");
             values.put("yano.dev-mode", "false");
@@ -834,6 +853,7 @@ final class AppChainProjectRenderer {
                 . "$secret"
                 set +a
                 : "${YANO_APPCHAIN_SIGNING_KEY:?Missing signing key in node env file}"
+                export YANO_APPCHAIN_PROJECT_ROOT="$root"
                 export YANO_APPCHAIN_DATA_ROOT="${YANO_APPCHAIN_DATA_ROOT:-$root/data}"
                 mkdir -p "$YANO_APPCHAIN_DATA_ROOT/node${node}"
                 %s
@@ -924,14 +944,14 @@ final class AppChainProjectRenderer {
                 #!/usr/bin/env bash
                 set -euo pipefail
                 root="$(cd "$(dirname "$0")/.." && pwd)"
-                shopt -s nullglob
-                records=("$root"/run/node*.pid)
-                for record in "${records[@]}"; do
+                for record in "$root"/run/node*.pid; do
+                  [ -f "$record" ] || continue
                   pid="$(cat "$record")"
                   kill "$pid" 2>/dev/null || true
                 done
                 failed=0
-                for record in "${records[@]}"; do
+                for record in "$root"/run/node*.pid; do
+                  [ -f "$record" ] || continue
                   pid="$(cat "$record")"
                   stopped=0
                   for attempt in $(seq 1 100); do

@@ -456,6 +456,22 @@ class EutxoStateMachineTest {
                         EutxoQueryCodec.withdrawalRequest(claim.claimId()),
                         state));
         assertThat(pending.status()).isEqualTo(EutxoWithdrawalRecord.Status.PENDING);
+        assertThat(EutxoQueryCodec.decodeDepositRecords(machine.query(
+                EutxoQueryCodec.DEPOSITS_PATH,
+                EutxoQueryCodec.lifecyclePageRequest(0, 10),
+                state))).extracting(record -> record.claim().acceptedOutpoint())
+                .containsExactly(depositClaim.acceptedOutpoint());
+        assertThat(EutxoQueryCodec.decodeCount(machine.query(
+                EutxoQueryCodec.DEPOSIT_COUNT_PATH, new byte[0], state)))
+                .isEqualTo(1);
+        assertThat(EutxoQueryCodec.decodeWithdrawalRecords(machine.query(
+                EutxoQueryCodec.WITHDRAWALS_PATH,
+                EutxoQueryCodec.lifecyclePageRequest(0, 10),
+                state))).extracting(record -> record.claim().claimId())
+                .containsExactly(claim.claimId());
+        assertThat(EutxoQueryCodec.decodeCount(machine.query(
+                EutxoQueryCodec.WITHDRAWAL_COUNT_PATH, new byte[0], state)))
+                .isEqualTo(1);
         EutxoReserve pendingReserve = EutxoReserve.decode(
                 state.get(EutxoStateKeys.reserve(EutxoReserve.LOVELACE)).orElseThrow());
         assertThat(pendingReserve.spendableMirrored()).isZero();
@@ -491,6 +507,11 @@ class EutxoStateMachineTest {
                         EutxoQueryCodec.withdrawalRequest(claim.claimId()),
                         state));
         assertThat(confirmed.status()).isEqualTo(EutxoWithdrawalRecord.Status.CONFIRMED);
+        assertThat(EutxoQueryCodec.decodeWithdrawalRecords(machine.query(
+                EutxoQueryCodec.WITHDRAWALS_PATH,
+                EutxoQueryCodec.lifecyclePageRequest(0, 10),
+                state))).extracting(EutxoWithdrawalRecord::status)
+                .containsExactly(EutxoWithdrawalRecord.Status.CONFIRMED);
         EutxoReserve reconciled = EutxoReserve.decode(
                 state.get(EutxoStateKeys.reserve(EutxoReserve.LOVELACE)).orElseThrow());
         assertThat(reconciled.stableVault()).isZero();
@@ -550,6 +571,11 @@ class EutxoStateMachineTest {
         assertThat(new String(
                 state.get(EutxoStateKeys.bridgeHalt()).orElseThrow(),
                 java.nio.charset.StandardCharsets.US_ASCII))
+                .isEqualTo("UNKNOWN_WITHDRAWAL_CONFIRMATION");
+        assertThat(EutxoQueryCodec.decodeBridgeHalt(machine.query(
+                EutxoQueryCodec.BRIDGE_HALT_PATH,
+                new byte[0],
+                state)))
                 .isEqualTo("UNKNOWN_WITHDRAWAL_CONFIRMATION");
     }
 

@@ -5,6 +5,9 @@ plugins {
 dependencies {
     implementation project(':appchain-eutxo-client')
     implementation project(':appchain-eutxo-demo')
+    runtimeOnly project(':appchain-eutxo-indexer-jdbc')
+    runtimeOnly project(':appchain-eutxo-zk-demo')
+    implementation project(':appchain-eutxo-zk-lifecycle')
     implementation(project(':appchain-config')) {
         transitive = false
     }
@@ -28,6 +31,7 @@ dependencies {
 application {
     applicationName = 'yano-appchain'
     mainClass = 'com.bloxbean.cardano.yano.appchain.devtools.AppChainDevtoolsCli'
+    applicationDefaultJvmArgs = ['-Xmx4g']
 }
 
 def generatedMetadataDirectory = layout.buildDirectory.dir('generated/appchain-metadata')
@@ -299,6 +303,14 @@ def appChainReleaseCheckProjects = [
         ':appchain-eutxo-testkit',
         ':appchain-eutxo-bridge-cardano',
         ':appchain-eutxo-bridge-onchain',
+        ':appchain-eutxo-zk-contracts',
+        ':appchain-eutxo-zk-zeroj',
+        ':appchain-eutxo-zk-prover',
+        ':appchain-eutxo-zk-client',
+        ':appchain-eutxo-zk-onchain',
+        ':appchain-eutxo-zk-testkit',
+        ':appchain-eutxo-zk-runtime',
+        ':appchain-eutxo-zk-lifecycle',
         ':appchain-spring-boot-starter',
         ':appchain-testkit',
         ':appchain-studio',
