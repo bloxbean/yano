@@ -63,14 +63,36 @@ public final class StdlibAppChainClient {
                 AuthenticatedMapContract.encodeCommand(command));
     }
 
+    /** Advisory local validation followed by the normal authoritative submission path. */
+    public AppChainClient.SubmitResult authenticatedMapCommand(
+            AuthenticatedMapContract.Command command,
+            AuthenticatedMapPreflight preflight) {
+        Objects.requireNonNull(preflight, "preflight").requireAccepted(command);
+        return authenticatedMapCommand(command);
+    }
+
     public AppChainClient.SubmitResult authenticatedMapMutate(
             AuthenticatedMapContract.Mutation mutation) {
         return authenticatedMapCommand(AuthenticatedMapContract.Command.single(mutation));
     }
 
+    public AppChainClient.SubmitResult authenticatedMapMutate(
+            AuthenticatedMapContract.Mutation mutation,
+            AuthenticatedMapPreflight preflight) {
+        return authenticatedMapCommand(
+                AuthenticatedMapContract.Command.single(mutation), preflight);
+    }
+
     public AppChainClient.SubmitResult authenticatedMapBatch(
             List<AuthenticatedMapContract.Mutation> mutations) {
         return authenticatedMapCommand(AuthenticatedMapContract.Command.batch(mutations));
+    }
+
+    public AppChainClient.SubmitResult authenticatedMapBatch(
+            List<AuthenticatedMapContract.Mutation> mutations,
+            AuthenticatedMapPreflight preflight) {
+        return authenticatedMapCommand(
+                AuthenticatedMapContract.Command.batch(mutations), preflight);
     }
 
     /** Current root-attested logical entry DTO; use its presence to distinguish tombstone/absence. */

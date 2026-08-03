@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.appchain.devtools;
 
+import com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -230,6 +231,15 @@ final class AppChainProjectRenderer {
                 catalog.aiSkillOpenAiBytes());
         outputs.put("config/shared-consensus.yaml", utf8(yamlConfig(
                 resolution.consensusProperties())));
+        String authenticatedMapGenesis = resolution.consensusProperties().get(
+                "yano.app-chain.chains[0]."
+                        + StdlibStateMachineProviders.AUTHENTICATED_MAP_GENESIS_SETTING);
+        if (authenticatedMapGenesis != null) {
+            outputs.put("config/authenticated-map-genesis.hex",
+                    utf8(authenticatedMapGenesis + "\n"));
+            outputs.put("docs/VALUE_VALIDATION.md",
+                    utf8(authenticatedMapValidationDocumentation(resolution)));
+        }
 
         int members = resolution.blueprint().spec().chains().getFirst().topology().members();
         boolean compose = "docker-compose".equals(
@@ -767,6 +777,47 @@ final class AppChainProjectRenderer {
                 only redacted identity categories; it never prints digest values or reads an API
                 key from command-line arguments.
                 """.formatted(resolution.validationCoverage());
+    }
+
+    private static String authenticatedMapValidationDocumentation(
+            AppChainProjectModel.Resolution resolution
+    ) {
+        AppChainProjectModel.AuthenticatedMapIntent intent = resolution.blueprint()
+                .spec().chains().getFirst().authenticatedMap();
+        long schemaCollections = safeList(intent.collections()).stream()
+                .filter(collection -> collection.validator() != null
+                        && !collection.validator().isBlank())
+                .count();
+        String exampleCollection = safeList(intent.collections()).getFirst().id();
+        return """
+                # Authenticated-map value validation
+
+                The canonical genesis used by every node is available as
+                `config/authenticated-map-genesis.hex`. Its validation rules are consensus-bound;
+                node-local overrides are not supported.
+
+                Inspect the resolved collection and validator identities:
+
+                ```bash
+                "$YANO_HOME/yano.sh" appchain state validators \\
+                  --genesis-file config/authenticated-map-genesis.hex
+                ```
+
+                Run advisory offline preflight before submission:
+
+                ```bash
+                "$YANO_HOME/yano.sh" appchain state validate \\
+                  --genesis-file config/authenticated-map-genesis.hex \\
+                  --collection %s --key 736b752d31 --value-file value.cbor
+                ```
+
+                Preflight is not authoritative. Every member repeats encoding and validator
+                checks during state application. Edit `spec.chains[0].authenticatedMap` in the
+                blueprint and run `appchain render`; changing a validation rule after chain start
+                requires a new chain generation in v1.
+
+                Profile: `%s`; schema-bound collections: %d.
+                """.formatted(exampleCollection, intent.profile(), schemaCollections);
     }
 
     private String pluginDocumentation(AppChainProjectModel.Resolution resolution) {

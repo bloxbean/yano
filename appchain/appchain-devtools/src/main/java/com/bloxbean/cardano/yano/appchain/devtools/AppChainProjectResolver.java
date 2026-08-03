@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.devtools;
 
+import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 import com.bloxbean.cardano.yano.appchain.config.AppChainConfigParser;
 import com.bloxbean.cardano.yano.appchain.config.AppChainConfigSemantics;
 import com.bloxbean.cardano.yano.appchain.config.AppChainApprovalsConfig;
@@ -7,9 +9,12 @@ import com.bloxbean.cardano.yano.appchain.config.AppChainEffectsConfig;
 import com.bloxbean.cardano.yano.appchain.config.AppChainPropertyDefinition;
 import com.bloxbean.cardano.yano.appchain.config.AppChainPropertyRegistry;
 import com.bloxbean.cardano.yano.appchain.config.PropertyScope;
+import com.bloxbean.cardano.yano.appchain.stdlib.AuthenticatedMapGenesisFactory;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -106,9 +111,14 @@ final class AppChainProjectResolver {
         }
         validateConflicts(selected);
         validateProvides(selected);
+        validateAuthenticatedMapSelection(chain, selected);
 
         int threshold = threshold(chain.topology().finality(), chain.topology().members());
         List<String> memberKeys = normalizedMemberKeys(chain.topology());
+        if (chain.authenticatedMap() != null && memberKeys.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "authenticated-map genesis requires every topology.memberKeys value");
+        }
         boolean bootstrapRequired = memberKeys.isEmpty();
         String members = bootstrapRequired
                 ? "${YANO_APPCHAIN_MEMBER_KEYS}" : String.join(",", memberKeys);
@@ -174,6 +184,10 @@ final class AppChainProjectResolver {
             consensus.putIfAbsent(prefix + "block.interval-ms", blockInterval);
         }
         materializeConsensusDefaults(consensus, prefix);
+        if (chain.authenticatedMap() != null) {
+            materializeAuthenticatedMap(
+                    chain, consensus, nodeTemplate, prefix);
+        }
 
         validateWithRuntimeParser(consensus, nodeTemplate, chain.topology().members());
 
@@ -419,6 +433,150 @@ final class AppChainProjectResolver {
         }
     }
 
+    private static void validateAuthenticatedMapSelection(
+            AppChainProjectModel.ChainIntent chain,
+            Set<String> selected
+    ) {
+        boolean selectedMap = selected.contains("state:authenticated-map");
+        if (selectedMap && chain.authenticatedMap() == null) {
+            throw new IllegalArgumentException(
+                    "state:authenticated-map requires an authenticatedMap blueprint section");
+        }
+        if (!selectedMap && chain.authenticatedMap() != null) {
+            throw new IllegalArgumentException(
+                    "authenticatedMap is valid only with state:authenticated-map");
+        }
+    }
+
+    private static void materializeAuthenticatedMap(
+            AppChainProjectModel.ChainIntent chain,
+            Map<String, String> consensus,
+            Map<String, String> nodeTemplate,
+            String prefix
+    ) {
+        AppChainProjectModel.AuthenticatedMapIntent intent = chain.authenticatedMap();
+        List<AppChainProjectModel.AuthenticatedMapSchemaIntent> schemaIntents =
+                safeList(intent.schemas());
+        List<AuthenticatedMapContract.ValidatorDescriptor> validators = new ArrayList<>();
+        for (AppChainProjectModel.AuthenticatedMapSchemaIntent schema : schemaIntents) {
+            if (schema == null || blank(schema.id()) || blank(schema.source())) {
+                throw new IllegalArgumentException(
+                        "authenticatedMap schemas require id and inline CDDL source");
+            }
+            String root = blank(schema.root()) ? "root" : schema.root();
+            byte[] definition = AuthenticatedMapCddlCompiler
+                    .compile(schema.source(), root).definition();
+            validators.add(AuthenticatedMapContract.ValidatorDescriptor.schema(
+                    schema.id(), definition));
+        }
+
+        List<AppChainProjectModel.AuthenticatedMapCollectionIntent> collectionIntents =
+                safeList(intent.collections());
+        if (collectionIntents.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "authenticatedMap requires at least one collection");
+        }
+        List<AuthenticatedMapContract.CollectionDescriptor> collections = new ArrayList<>();
+        for (AppChainProjectModel.AuthenticatedMapCollectionIntent collection
+                : collectionIntents) {
+            if (collection == null) {
+                throw new IllegalArgumentException(
+                        "authenticatedMap collection must not be null");
+            }
+            collections.add(new AuthenticatedMapContract.CollectionDescriptor(
+                    collection.id(),
+                    authorization(collection.authorization()),
+                    Boolean.TRUE.equals(collection.restoreAllowed()),
+                    valueOr(collection.maxKeyBytes(),
+                            AuthenticatedMapContract.MAX_APPLICATION_KEY_BYTES),
+                    valueOr(collection.maxValueBytes(), 65_536),
+                    valueEncoding(collection.valueEncoding()),
+                    blank(collection.validator()) ? "" : collection.validator()));
+        }
+
+        byte[] anchorPolicy = canonicalHex32(
+                intent.anchorPolicyCommitment(), "authenticatedMap.anchorPolicyCommitment");
+        int maxBatchItems = valueOr(intent.maxBatchItems(),
+                AuthenticatedMapContract.MAX_BATCH_ITEMS);
+        int maxBatchBytes = valueOr(intent.maxBatchBytes(), 65_536);
+        AppChainConfig config = runtimeConfig(consensus, nodeTemplate, prefix);
+        AuthenticatedMapContract.Genesis genesis = switch (intent.profile()) {
+            case AuthenticatedMapContract.PROFILE_MPF_BLAKE2B256_V1 ->
+                    AuthenticatedMapGenesisFactory.mpf(
+                            config, anchorPolicy, maxBatchItems, maxBatchBytes,
+                            collections, validators, List.of());
+            case AuthenticatedMapContract.PROFILE_JMT_BLAKE2B256_V1 ->
+                    AuthenticatedMapGenesisFactory.classicJmt(
+                            config, anchorPolicy, maxBatchItems, maxBatchBytes,
+                            collections, validators, List.of());
+            case AuthenticatedMapContract.PROFILE_JMT_POSEIDON_BLS12381_V1 ->
+                    throw new IllegalArgumentException(
+                            "Poseidon authenticated-map genesis remains deferred by ADR-025 Phase 4");
+            case null, default -> throw new IllegalArgumentException(
+                    "authenticatedMap.profile must be mpf-blake2b256-v1 or jmt-blake2b256-v1");
+        };
+        for (Map.Entry<String, String> setting
+                : AuthenticatedMapGenesisFactory.settings(genesis).entrySet()) {
+            String prior = consensus.putIfAbsent(prefix + setting.getKey(), setting.getValue());
+            if (prior != null && !prior.equals(setting.getValue())) {
+                throw new IllegalArgumentException(
+                        "authenticated-map genesis conflicts with " + setting.getKey());
+            }
+        }
+    }
+
+    private static AppChainConfig runtimeConfig(
+            Map<String, String> consensus,
+            Map<String, String> nodeTemplate,
+            String prefix
+    ) {
+        Map<String, String> suffix = new LinkedHashMap<>();
+        consensus.forEach((key, value) -> {
+            if (key.startsWith(prefix)) suffix.put(key.substring(prefix.length()), value);
+        });
+        nodeTemplate.forEach((key, value) -> {
+            if (key.startsWith(prefix)) suffix.put(key.substring(prefix.length()), value);
+        });
+        suffix.put("signing-key", "b".repeat(64));
+        suffix.put("peers", "");
+        AppChainConfig config = AppChainConfigParser.parse(suffix);
+        AppChainConfigSemantics.validate(config);
+        AppChainEffectsConfig.from(config).consensusProfile(config);
+        return config;
+    }
+
+    private static int authorization(String value) {
+        return switch (value == null ? "open" : value) {
+            case "open" -> AuthenticatedMapContract.AUTH_OPEN;
+            case "owner" -> AuthenticatedMapContract.AUTH_OWNER;
+            case "member" -> AuthenticatedMapContract.AUTH_MEMBER;
+            default -> throw new IllegalArgumentException(
+                    "authenticatedMap collection authorization must be open, owner, or member");
+        };
+    }
+
+    private static int valueEncoding(String value) {
+        return switch (value == null ? "opaque" : value) {
+            case "opaque" -> AuthenticatedMapContract.VALUE_ENCODING_OPAQUE;
+            case "canonical-cbor" ->
+                    AuthenticatedMapContract.VALUE_ENCODING_CANONICAL_CBOR;
+            default -> throw new IllegalArgumentException(
+                    "authenticatedMap valueEncoding must be opaque or canonical-cbor");
+        };
+    }
+
+    private static byte[] canonicalHex32(String value, String name) {
+        if (value == null || !value.matches("[0-9a-f]{64}")) {
+            throw new IllegalArgumentException(name
+                    + " must contain 32 bytes of canonical lowercase hex");
+        }
+        return HexFormat.of().parseHex(value);
+    }
+
+    private static int valueOr(Integer value, int defaultValue) {
+        return value == null ? defaultValue : value;
+    }
+
     private void materializeConsensusDefaults(Map<String, String> values, String prefix) {
         for (AppChainPropertyDefinition definition : properties.definitions()) {
             if (!AppChainPropertyRegistry.OWNER_CORE.equals(definition.owner())
@@ -460,6 +618,7 @@ final class AppChainProjectResolver {
         AppChainConfigSemantics.validate(config);
         AppChainEffectsConfig.fromSettings(suffix);
         AppChainApprovalsConfig.fromSettings(suffix);
+        StateCommitmentIdentity.fromSettings(config.pluginSettings());
     }
 
     private static List<String> normalizedMemberKeys(AppChainProjectModel.Topology topology) {
@@ -529,7 +688,7 @@ final class AppChainProjectResolver {
         return result;
     }
 
-    private static List<String> safeList(List<String> values) {
+    private static <T> List<T> safeList(List<T> values) {
         return values == null ? List.of() : values;
     }
 

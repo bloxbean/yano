@@ -108,6 +108,7 @@ class AppChainResolvedValidatorTest {
                 "yano.app-chain.signing-key", SIGNING_KEY,
                 "yano.app-chain.members", MEMBER,
                 "yano.app-chain.effects.result.signerz", MEMBER,
+                "yano.app-chain.state.genesis-idd", "ab".repeat(32),
                 "yano.app-chain.effects.executors.custom.option", "kept"));
 
         ResolvedValidationResult result = new AppChainResolvedValidator().validate(values);
@@ -115,6 +116,11 @@ class AppChainResolvedValidatorTest {
         assertThat(result.valid()).isFalse();
         assertThat(result.diagnostics())
                 .filteredOn(diagnostic -> "yano.app-chain.effects.result.signerz"
+                        .equals(diagnostic.key()))
+                .extracting(ValidationDiagnostic::code)
+                .containsExactly("DX_CONFIG_UNKNOWN_PROPERTY");
+        assertThat(result.diagnostics())
+                .filteredOn(diagnostic -> "yano.app-chain.state.genesis-idd"
                         .equals(diagnostic.key()))
                 .extracting(ValidationDiagnostic::code)
                 .containsExactly("DX_CONFIG_UNKNOWN_PROPERTY");

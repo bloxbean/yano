@@ -27,6 +27,14 @@ Use `StdlibAppChainClient.authenticatedMapMutate(...)` or
 queries use `AuthenticatedMapContract.PointResult` and `ReceiptResult`; a
 revoked entry is reported as `REVOKED`, not absent.
 
+Collections may independently use opaque values, canonical CBOR, one compiled
+declarative schema, or one pinned custom validator. The explicit default remains
+opaque with no validator. Use `AuthenticatedMapPreflight` or the `appchain state
+validate` command for advisory checks, and see the
+[validation user guide](../../docs/appchain/state-machines/authenticated-map-validation.md)
+for blueprint examples, CLI inspection, plugin trust requirements, and error
+codes. The state machine always repeats the check authoritatively during apply.
+
 With a configured node running, the small curl demo submits a PUT and prints
 the point-query, MPF-proof, and tip envelopes:
 

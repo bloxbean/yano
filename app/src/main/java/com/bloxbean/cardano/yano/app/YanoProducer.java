@@ -952,7 +952,7 @@ public class YanoProducer {
     }
 
     private static final java.util.List<String> APP_CHAIN_DYNAMIC_PREFIXES = java.util.List.of(
-            "sinks.", "zk.", "machines.", "sequencer.", "membership.",
+            "sinks.", "zk.", "machines.", "state.", "sequencer.", "membership.",
             "observers.", "transport.", "effects.");
 
     private static boolean isAppChainDynamicKey(String property, String base) {

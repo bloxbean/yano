@@ -19,6 +19,7 @@
   "capabilityEvidence": {
     "state:ordered-log": ["appchain/appchain-devtools/src/test/scripts/final-distribution-stock-outcomes.sh#recipe-audit-log"],
     "state:kv-registry": ["appchain/appchain-devtools/src/test/scripts/final-distribution-stock-outcomes.sh#recipe-owned-registry"],
+    "state:authenticated-map": ["appchain/appchain-devtools/src/test/java/com/bloxbean/cardano/yano/appchain/devtools/AppChainProjectTest.java#authenticatedMapBlueprintCompilesSchemaAndPinsGenesis"],
     "state:approval-workflow": ["appchain/appchain-devtools/src/test/scripts/final-distribution-stock-outcomes.sh#recipe-approval-workflow"],
     "state:balances": ["appchain/appchain-stdlib/src/test/java/com/bloxbean/cardano/yano/appchain/stdlib/BalancesAndDocTrailTest.java#balances_mintTransfer_nonNegative_provable"],
     "state:doc-trail": ["appchain/appchain-stdlib/src/test/java/com/bloxbean/cardano/yano/appchain/stdlib/BalancesAndDocTrailTest.java#docTrail_appendOnlyHistory_provableHead"],
@@ -73,6 +74,14 @@
       "gitOpsTargets": ["helm", "kustomize"], "outcomeLevel": "PACKAGED_RUNTIME",
       "acceptanceScenario": "recipe-owned-registry",
       "evidence": ["appchain/appchain-devtools/src/test/scripts/final-distribution-stock-outcomes.sh#recipe-owned-registry"]
+    },
+    {
+      "id": "authenticated-map", "maturity": "preview", "availability": "BUNDLED",
+      "runtimeTypes": ["jvm", "native"], "deploymentTargets": ["host", "docker-compose"],
+      "gitOpsTargets": ["helm", "kustomize"],
+      "outcomeLevel": "MODULE_OUTCOME_AND_PACKAGED_PROVIDER",
+      "acceptanceScenario": "authenticated-map-schema-blueprint",
+      "evidence": ["appchain/appchain-devtools/src/test/java/com/bloxbean/cardano/yano/appchain/devtools/AppChainProjectTest.java#authenticatedMapBlueprintCompilesSchemaAndPinsGenesis", "app/build.gradle#packagedJvmPluginCatalogSmoke"]
     },
     {
       "id": "approval-workflow", "maturity": "stable", "availability": "BUNDLED",

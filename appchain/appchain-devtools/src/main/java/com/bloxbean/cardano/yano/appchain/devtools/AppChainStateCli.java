@@ -1,8 +1,10 @@
 package com.bloxbean.cardano.yano.appchain.devtools;
 
 import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
+import com.bloxbean.cardano.yano.appchain.client.AuthenticatedMapPreflight;
 import com.bloxbean.cardano.yano.appchain.client.Hex;
 import com.bloxbean.cardano.yano.appchain.client.ProofVerifier;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -12,7 +14,10 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
@@ -20,8 +25,10 @@ import java.util.Set;
 /** ADR-025 online state inspection and offline trusted-root proof verification. */
 final class AppChainStateCli {
     private static final int MAX_PROOF_FILE_BYTES = 5 * 1024 * 1024;
+    private static final int MAX_GENESIS_FILE_BYTES = 16 * 1024 * 1024;
     private static final Set<String> COMMANDS = Set.of(
-            "entry", "proof", "verify", "identity", "integrity", "snapshot", "oldest");
+            "entry", "proof", "verify", "identity", "integrity", "snapshot", "oldest",
+            "validate", "validators", "explain");
     static final String USAGE = """
             Usage: ./yano.sh appchain state entry|proof --url <api-base> --chain <id>
                      --key <hex> [--height <n>] [--api-key <key>]
@@ -31,9 +38,15 @@ final class AppChainStateCli {
                or: ./yano.sh appchain state identity|integrity|oldest --url <api-base> --chain <id> [--api-key <key>]
                or: ./yano.sh appchain state snapshot --url <api-base> --chain <id>
                      --path <server-path> [--api-key <key>]
+               or: ./yano.sh appchain state validate --genesis-file <cbor-or-hex-file>
+                     --collection <id> --key <lower-hex>
+                     (--value-hex <lower-hex> | --value-file <path>)
+               or: ./yano.sh appchain state validators --genesis-file <cbor-or-hex-file>
+               or: ./yano.sh appchain state explain --code <0..12>
 
             Trusted root sources: locally-verified-block, finality-certificate, cardano-anchor, caller-pinned
             Verification never defaults to the root carried by the proof envelope.
+            Candidate validation is advisory; authoritative validation occurs during apply.
             """.stripTrailing();
 
     private final ObjectMapper json = new ObjectMapper();
@@ -56,6 +69,9 @@ final class AppChainStateCli {
                 case "integrity" -> integrity(options, out);
                 case "snapshot" -> snapshot(options, out);
                 case "oldest" -> oldest(options, out);
+                case "validate" -> validateCandidate(options, out);
+                case "validators" -> validators(options, out);
+                case "explain" -> explain(options, out);
                 default -> throw new Usage("Unknown state command: " + command);
             };
             out.flush();
@@ -66,7 +82,7 @@ final class AppChainStateCli {
             err.flush();
             return AppChainDevtoolsCli.EXIT_USAGE;
         } catch (IOException failure) {
-            err.println("State proof file could not be read");
+            err.println("State input file could not be read");
             err.flush();
             return AppChainDevtoolsCli.EXIT_IO;
         } catch (AppChainClient.AppChainClientException failure) {
@@ -169,6 +185,150 @@ final class AppChainStateCli {
         result.put("oldestProvableHeight", client.oldestProvableHeight());
         print(result, out);
         return AppChainDevtoolsCli.EXIT_OK;
+    }
+
+    private int validateCandidate(Map<String, String> options, PrintWriter out)
+            throws IOException {
+        rejectUnknown(options, Set.of(
+                "genesis-file", "collection", "key", "value-hex", "value-file"));
+        AuthenticatedMapContract.Genesis genesis = readGenesis(
+                Path.of(required(options, "genesis-file")));
+        String keyHex = required(options, "key");
+        if (!keyHex.matches("(?:[0-9a-f]{2}){1,128}")) {
+            throw new Usage("--key must contain 1-128 bytes of canonical lowercase hex");
+        }
+        byte[] value = candidateValue(options);
+        AuthenticatedMapPreflight.Result check = AuthenticatedMapPreflight
+                .fromGenesis(genesis)
+                .validate(required(options, "collection"), Hex.decode(keyHex), value);
+        ObjectNode result = json.createObjectNode();
+        result.put("status", check.status().name());
+        result.put("code", check.code());
+        result.put("codeName", check.codeName());
+        result.put("mechanism", check.mechanism());
+        result.put("detail", check.detail());
+        result.put("authoritative", false);
+        result.put("chainId", genesis.chainId());
+        result.put("genesisId", Hex.encode(AuthenticatedMapContract.genesisId(genesis)));
+        result.put("collectionId", required(options, "collection"));
+        result.put("trustBoundary",
+                "offline advisory preflight against the supplied canonical genesis");
+        print(result, out);
+        return check.accepted()
+                ? AppChainDevtoolsCli.EXIT_OK : AppChainDevtoolsCli.EXIT_INVALID_CONFIG;
+    }
+
+    private int validators(Map<String, String> options, PrintWriter out) throws IOException {
+        rejectUnknown(options, Set.of("genesis-file"));
+        AuthenticatedMapContract.Genesis genesis = readGenesis(
+                Path.of(required(options, "genesis-file")));
+        ObjectNode result = json.createObjectNode();
+        result.put("chainId", genesis.chainId());
+        result.put("profile", genesis.commitmentProfileId());
+        result.put("formatFingerprint", Hex.encode(genesis.formatFingerprint()));
+        result.put("genesisId", Hex.encode(AuthenticatedMapContract.genesisId(genesis)));
+        ArrayNode collections = result.putArray("collections");
+        for (AuthenticatedMapContract.CollectionDescriptor descriptor : genesis.collections()) {
+            ObjectNode item = collections.addObject();
+            item.put("id", descriptor.id());
+            item.put("valueEncoding", encodingName(descriptor.valueEncoding()));
+            item.put("validatorId", descriptor.validatorId());
+            item.put("maxKeyBytes", descriptor.maxKeyBytes());
+            item.put("maxValueBytes", descriptor.maxValueBytes());
+        }
+        ArrayNode validators = result.putArray("validators");
+        for (AuthenticatedMapContract.ValidatorDescriptor descriptor : genesis.validators()) {
+            ObjectNode item = validators.addObject();
+            item.put("id", descriptor.id());
+            item.put("kind", descriptor.kind() == AuthenticatedMapContract.VALIDATOR_KIND_SCHEMA
+                    ? "schema" : "plugin");
+            item.put("providerId", descriptor.providerId());
+            item.put("contractVersion", descriptor.contractVersion());
+            if (descriptor.kind() == AuthenticatedMapContract.VALIDATOR_KIND_PLUGIN) {
+                item.put("artifactClosureSha256", Hex.encode(descriptor.definition()));
+            } else {
+                item.put("definitionSha256", sha256(descriptor.definition()));
+            }
+            item.put("parametersSha256", sha256(descriptor.parameters()));
+        }
+        result.put("validatorCount", genesis.validators().size());
+        result.put("consensusBound", true);
+        print(result, out);
+        return AppChainDevtoolsCli.EXIT_OK;
+    }
+
+    private int explain(Map<String, String> options, PrintWriter out) throws IOException {
+        rejectUnknown(options, Set.of("code"));
+        int code;
+        try {
+            code = Integer.parseInt(required(options, "code"));
+        } catch (NumberFormatException invalid) {
+            throw new Usage("--code must be an integer in [0, 12]");
+        }
+        AuthenticatedMapPreflight.Explanation explanation;
+        try {
+            explanation = AuthenticatedMapPreflight.explain(code);
+        } catch (IllegalArgumentException invalid) {
+            throw new Usage("--code must be an integer in [0, 12]");
+        }
+        ObjectNode result = json.createObjectNode();
+        result.put("code", explanation.code());
+        result.put("name", explanation.name());
+        result.put("mechanism", explanation.mechanism());
+        result.put("meaning", explanation.meaning());
+        result.put("receiptAuthenticatedOnlyAfterApply", true);
+        print(result, out);
+        return AppChainDevtoolsCli.EXIT_OK;
+    }
+
+    private static AuthenticatedMapContract.Genesis readGenesis(Path path) throws IOException {
+        if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)
+                || Files.isSymbolicLink(path)) {
+            throw new Usage("--genesis-file must name a regular non-symlink file");
+        }
+        long size = Files.size(path);
+        if (size <= 0 || size > MAX_GENESIS_FILE_BYTES) {
+            throw new Usage("--genesis-file must contain at most 16 MiB");
+        }
+        byte[] bytes = Files.readAllBytes(path);
+        String text = new String(bytes, StandardCharsets.UTF_8).strip();
+        byte[] canonical = text.matches("[0-9a-f]+") && (text.length() & 1) == 0
+                ? Hex.decode(text) : bytes;
+        return AuthenticatedMapContract.decodeGenesis(canonical);
+    }
+
+    private static byte[] candidateValue(Map<String, String> options) throws IOException {
+        String valueHex = options.get("value-hex");
+        String valueFile = options.get("value-file");
+        if ((valueHex == null) == (valueFile == null)) {
+            throw new Usage("exactly one of --value-hex or --value-file is required");
+        }
+        if (valueHex != null) {
+            if ((valueHex.length() & 1) != 0 || valueHex.length() > 2 * 1_048_576
+                    || !valueHex.matches("[0-9a-f]*")) {
+                throw new Usage("--value-hex must be at most 1 MiB of canonical lowercase hex");
+            }
+            return Hex.decode(valueHex);
+        }
+        Path path = Path.of(valueFile);
+        if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)
+                || Files.isSymbolicLink(path) || Files.size(path) > 1_048_576) {
+            throw new Usage("--value-file must be a regular non-symlink file of at most 1 MiB");
+        }
+        return Files.readAllBytes(path);
+    }
+
+    private static String encodingName(int encoding) {
+        return encoding == AuthenticatedMapContract.VALUE_ENCODING_CANONICAL_CBOR
+                ? "canonical-cbor" : "opaque";
+    }
+
+    private static String sha256(byte[] value) {
+        try {
+            return Hex.encode(MessageDigest.getInstance("SHA-256").digest(value));
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
     }
 
     private AppChainClient client(Map<String, String> options) {

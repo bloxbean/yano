@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.config;
 
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -29,7 +30,7 @@ public final class AppChainConfigParser {
             "message.enforce-sender-seq");
 
     private static final List<String> DYNAMIC_PREFIXES = List.of(
-            "sinks.", "zk.", "machines.", "sequencer.", "membership.",
+            "sinks.", "zk.", "machines.", "state.", "sequencer.", "membership.",
             "observers.", "transport.", "effects.");
 
     /*
@@ -37,7 +38,11 @@ public final class AppChainConfigParser {
      * Open plugin namespaces deliberately stay out of this list.
      */
     private static final Map<String, Set<String>> STRICT_OWNERSHIP_DOMAINS = Map.of(
-            "effects.result.", Set.of("effects.result.signers"));
+            "effects.result.", Set.of("effects.result.signers"),
+            "state.", Set.of(
+                    StateCommitmentIdentity.PROFILE_SETTING,
+                    StateCommitmentIdentity.FINGERPRINT_SETTING,
+                    StateCommitmentIdentity.GENESIS_ID_SETTING));
 
     private AppChainConfigParser() {
     }
@@ -84,6 +89,7 @@ public final class AppChainConfigParser {
         if (settings == null) {
             throw new IllegalArgumentException("settings must not be null");
         }
+        validateStrict(settings);
         Set<String> memberKeys = commaSeparatedSet(settings.get("members"));
         List<AppChainConfig.AppPeer> peers = new ArrayList<>();
         for (String peer : commaSeparatedList(settings.get("peers"))) {

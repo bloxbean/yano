@@ -13,6 +13,7 @@ dependencies {
         transitive = false
     }
     implementation project(':appchain-role-workflow-contracts')
+    implementation project(':appchain-stdlib')
     implementation libs.cardano.client.crypto
     compileOnly(project(':core-api')) {
         transitive = false

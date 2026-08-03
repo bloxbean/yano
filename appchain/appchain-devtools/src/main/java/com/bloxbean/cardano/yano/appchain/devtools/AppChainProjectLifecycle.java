@@ -131,7 +131,18 @@ final class AppChainProjectLifecycle {
         String configStage = project == null ? "NOT_REQUIRED" : "FAIL";
         String artifactStage = distribution == null ? "PENDING" : "FAIL";
         String identityStage = "NOT_REQUIRED";
+        boolean schemaEncodingFailure = false;
         if (project != null) {
+            try {
+                AppChainProjectModel.DoctorCheck schemaEncoding =
+                        authenticatedMapSchemaEncoding(renderer.readBlueprint(project));
+                checks.add(schemaEncoding);
+                schemaEncodingFailure = "FAIL".equals(schemaEncoding.status());
+            } catch (IOException | RuntimeException failure) {
+                checks.add(check("authenticated-map-schema-encoding", "FAIL",
+                        "blueprint could not be inspected: " + safeMessage(failure)));
+                schemaEncodingFailure = true;
+            }
             try {
                 AppChainProjectModel.ProjectValidation validation = validate(project);
                 projectLock = validation.lock();
@@ -155,6 +166,7 @@ final class AppChainProjectLifecycle {
             } catch (IOException | IllegalArgumentException | IllegalStateException failure) {
                 checks.add(check("project", "FAIL", safeMessage(failure)));
             }
+            if (schemaEncodingFailure) configStage = "FAIL";
         }
 
         if (distribution != null) {
@@ -496,6 +508,45 @@ final class AppChainProjectLifecycle {
     private static AppChainProjectModel.DoctorCheck check(
             String id, String status, String detail) {
         return new AppChainProjectModel.DoctorCheck(id, status, detail);
+    }
+
+    private static AppChainProjectModel.DoctorCheck authenticatedMapSchemaEncoding(
+            AppChainProjectModel.Blueprint blueprint
+    ) {
+        if (blueprint == null || blueprint.spec() == null
+                || safeList(blueprint.spec().chains()).isEmpty()
+                || blueprint.spec().chains().getFirst().authenticatedMap() == null) {
+            return check("authenticated-map-schema-encoding", "NOT_REQUIRED",
+                    "project does not declare authenticated-map validation");
+        }
+        AppChainProjectModel.AuthenticatedMapIntent intent = blueprint.spec().chains()
+                .getFirst().authenticatedMap();
+        Set<String> schemaIds = safeList(intent.schemas()).stream()
+                .filter(Objects::nonNull)
+                .map(AppChainProjectModel.AuthenticatedMapSchemaIntent::id)
+                .filter(Objects::nonNull)
+                .collect(java.util.stream.Collectors.toCollection(TreeSet::new));
+        List<String> invalid = safeList(intent.collections()).stream()
+                .filter(Objects::nonNull)
+                .filter(collection -> schemaIds.contains(collection.validator()))
+                .filter(collection -> !"canonical-cbor".equals(collection.valueEncoding()))
+                .map(AppChainProjectModel.AuthenticatedMapCollectionIntent::id)
+                .sorted()
+                .toList();
+        if (!invalid.isEmpty()) {
+            return check("authenticated-map-schema-encoding", "FAIL",
+                    "schema-bound collections must use canonical-cbor: "
+                            + String.join(", ", invalid));
+        }
+        long schemaCollections = safeList(intent.collections()).stream()
+                .filter(Objects::nonNull)
+                .filter(collection -> schemaIds.contains(collection.validator()))
+                .count();
+        return check("authenticated-map-schema-encoding",
+                schemaCollections == 0 ? "NOT_REQUIRED" : "PASS",
+                schemaCollections == 0
+                        ? "no collection selects a declarative schema"
+                        : schemaCollections + " schema-bound collection(s) use canonical-cbor");
     }
 
     private static String safeMessage(Exception failure) {
