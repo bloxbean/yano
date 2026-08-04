@@ -42,7 +42,7 @@ select it explicitly.
 |---|---|---|---|---|---:|---|---|---|---|
 | `state:ordered-log` | `state` | `BUNDLED` | `stable` | `chain` | yes | JVM, native | `bundled` | `yano-runtime` | [Ordered log](state-machines/ordered-log.md) |
 | `state:kv-registry` | `state` | `BUNDLED` | `stable` | `chain` | yes | JVM, native | `bundled` | `yano-runtime`, `appchain-stdlib` | [KV registry](state-machines/kv-registry.md) |
-| `state:authenticated-map` | `state` | `BUNDLED` | `preview` | `chain` | yes | JVM, native | `bundled` | `yano-runtime`, `appchain-stdlib` | [Authenticated map](state-machines/authenticated-map-validation.md) |
+| `state:authenticated-map` | `state` | `BUNDLED` | `preview` | `chain` | yes | JVM, native | `bundled` | `yano-runtime`, `appchain-stdlib` | [Authenticated map](state-machines/authenticated-map.md) |
 | `state:approval-workflow` | `state` | `BUNDLED` | `stable` | `chain` | yes | JVM, native | `bundled` | `yano-runtime`, `appchain-stdlib` | [Approvals](state-machines/approvals.md) |
 | `state:balances` | `state` | `BUNDLED` | `stable` | `chain` | yes | JVM, native | `bundled` | `yano-runtime`, `appchain-stdlib` | [Balances](state-machines/balances.md) |
 | `state:doc-trail` | `state` | `BUNDLED` | `stable` | `chain` | yes | JVM, native | `bundled` | `yano-runtime`, `appchain-stdlib` | [Document trail](state-machines/doc-trail.md) |
@@ -94,7 +94,7 @@ capabilities first; users may then add only compatible selectable capabilities.
 |---|---|---|---|---|---|---|
 | `audit-log` | `BUNDLED` | `stable` | JVM, native | `bundled` | `yano-runtime` | [Ordered log](state-machines/ordered-log.md) |
 | `owned-registry` | `BUNDLED` | `stable` | JVM, native | `bundled` | `yano-runtime`, `appchain-stdlib` | [KV registry](state-machines/kv-registry.md) |
-| `authenticated-map` | `BUNDLED` | `preview` | JVM, native | `bundled` | `yano-runtime`, `appchain-stdlib` | [Authenticated map](state-machines/authenticated-map-validation.md) |
+| `authenticated-map` | `BUNDLED` | `preview` | JVM, native | `bundled` | `yano-runtime`, `appchain-stdlib` | [Authenticated map](state-machines/authenticated-map.md) |
 | `approval-workflow` | `BUNDLED` | `stable` | JVM, native | `bundled` | `yano-runtime`, `appchain-stdlib` | [Approvals](state-machines/approvals.md) |
 | `role-approval` | `BUNDLED` | `preview` | JVM, native | `bundled` | `yano-runtime`, `appchain-composite`, `appchain-role-workflow` | [Generic role approvals](state-machines/role-approvals.md) |
 | `evidence-ledger` | `BUNDLED` | `preview` | JVM, native | `bundled` | `yano-runtime`, `appchain-stdlib`, `appchain-evidence-registry`, `appchain-composite`, `appchain-role-workflow`, `appchain-evidence-profile` | [Evidence](tutorials/04-evidence-publication.md) |

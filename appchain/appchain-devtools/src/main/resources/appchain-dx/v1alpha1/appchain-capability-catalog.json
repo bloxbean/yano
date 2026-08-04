@@ -40,7 +40,7 @@
       "trustStatement":"First-party standard-library state machine with genesis-bound collections, commitment profile, encodings, and validators.","description":"Multi-collection authenticated records with immutable optional canonical-CBOR and schema validation.",
       "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-stdlib"],"nativePosture":"bundled",
       "externalPrerequisites":[],"bootstrapRequirements":["pin-all-genesis-member-identities"],"nonSecretAnswers":[],"secretReferences":{},"properties":{"state-machine":"authenticated-map"},
-      "documentation":"docs/appchain/state-machines/authenticated-map-validation.md","acceptanceScenario":"authenticated-map-schema-blueprint"
+      "documentation":"docs/appchain/state-machines/authenticated-map.md","acceptanceScenario":"authenticated-map-schema-blueprint"
     },
     {
       "id":"state:approval-workflow","name":"Threshold approval workflow","category":"state","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,

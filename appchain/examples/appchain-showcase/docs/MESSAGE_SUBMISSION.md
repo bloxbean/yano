@@ -69,6 +69,7 @@ The common light-profile routes are:
 | `approvals-chain` | `approvals.command.v1` | proposal/approval CBOR |
 | `balances-chain` | `balances.command.v1` | mint/transfer CBOR |
 | `documents-chain` | `doc-trail.command.v1` | document-trail CBOR |
+| `authenticated-map-chain` | `authenticated-map.command.v1` | authenticated-map mutation/batch CBOR |
 | `workflow-chain` | `orders.command.v1`, `approvals.command.v1`, `showcase.release.v1` | composite component commands |
 | `roles-chain` | `actors.command.v1` and role-policy topics | role workflow commands |
 | `payments-chain` | `eutxo.transactions` | signed virtual EUTxO transaction bytes |
@@ -76,6 +77,13 @@ The common light-profile routes are:
 The application should normally use `appchain-client` or its own typed codec
 rather than invoke the showcase codec. The wire contract remains this same
 HTTP endpoint.
+
+The authenticated-map demo helper shows opaque, canonical-CBOR, schema, and
+plugin-validated submissions through that endpoint:
+
+```bash
+./demos/submit-authenticated-map.sh demo
+```
 
 ## API keys
 

@@ -13,6 +13,12 @@ printf 'fake plugin\n' > "$ROOT/yano/plugins/yano-appchain-showcase-test-bundle.
 cat > "$ROOT/yano/appchain-cluster/cluster.sh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${SHOWCASE_STUB_LOG:?}"
+if [ "${1:-}" = keys ]; then
+  printf '%s\n' 'node  seed(hex, 32 bytes)                                              member-pubkey'
+  for ((i=0;i<${2:-3};i++)); do
+    printf '%-4d  %064x  %064x\n' "$i" "$((i + 1))" "$((i + 1))"
+  done
+fi
 exit 0
 SH
 cat > "$ROOT/yano/appchain-cluster/loadtest.sh" <<'SH'
@@ -43,13 +49,39 @@ case "$*" in
 esac
 printf '{"messageId":"%064d","chainId":"orders-chain","topic":"orders.command.v1"}' 1
 SH
+cat > "$WORK/bin/java" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  *ShowcaseAuthenticatedMapConfig*)
+    printf '%s\n' \
+      'yano.app-chain.chains[8].machines.authenticated-map.genesis-cbor-hex=830102' \
+      'yano.app-chain.chains[8].state.commitment-profile=mpf-blake2b256-v1' \
+      "yano.app-chain.chains[8].state.format-fingerprint=$(printf '11%.0s' {1..32})" \
+      "yano.app-chain.chains[8].state.genesis-id=$(printf '22%.0s' {1..32})"
+    exit 0;;
+  -version)
+    printf '%s\n' 'openjdk version "25"' >&2; exit 0;;
+  *) exit 0;;
+esac
+SH
 printf 'DEMO_EVIDENCE_ID=showcase-contract\n' > \
   "$ROOT/profiles/evidence/demo/config/common.env"
 chmod +x "$ROOT/showcase.sh" "$ROOT/tools/"*.py "$ROOT/demos/"*.sh "$WORK/bin/curl" \
+  "$WORK/bin/java" \
   "$ROOT/yano/appchain-cluster/cluster.sh" "$ROOT/yano/appchain-cluster/loadtest.sh" \
   "$ROOT/yano/appchain-cluster/soaktest.sh" "$ROOT/yano/yano.sh" \
   "$ROOT/profiles/evidence/demo/demo.sh"
 export SHOWCASE_STUB_LOG="$WORK/cluster.log"
+export PATH="$WORK/bin:$PATH"
+
+[ "$(python3 "$ROOT/tools/showcase_codec.py" \
+  authmap-value event created 1)" = "82676372656174656401" ]
+[ "$(python3 "$ROOT/tools/showcase_codec.py" \
+  authmap-value product sku-1 5 active)" = \
+  "a363736b7565736b752d316673746174757366616374697665687175616e7469747905" ]
+[ "$(python3 "$ROOT/tools/showcase_codec.py" \
+  authmap state-key products sku-1)" = \
+  "0101000870726f647563747300000005736b752d31" ]
 
 export SHOWCASE_CURL_LOG="$WORK/curl.log"
 PATH="$WORK/bin:$PATH" "$ROOT/demos/submit-message-curl.sh" \
@@ -65,11 +97,18 @@ grep -q '^light' <<< "$PROFILES"
 grep -q 'governance activate' <<< "$("$ROOT/showcase.sh" help)"
 "$ROOT/showcase.sh" prepare --instance three --nodes 3 --http-base 19770 --server-base 19370
 [ -f "$ROOT/data/showcase/three/showcase-identity.json" ]
+jq -e '.chainIds | length == 9' \
+  "$ROOT/data/showcase/three/showcase-identity.json" >/dev/null
+jq -e '.authenticatedMapConfigSha256 | test("^[0-9a-f]{64}$")' \
+  "$ROOT/data/showcase/three/showcase-identity.json" >/dev/null
 [ "$(find "$ROOT/data/showcase/three/node-config" -type f -name 'node*.properties' | wc -l | tr -d ' ')" = 3 ]
 grep -q 'showcase-outbox.enabled=true' "$ROOT/data/showcase/three/node-config/node0.properties"
 grep -q 'showcase-outbox.enabled=false' "$ROOT/data/showcase/three/node-config/node1.properties"
 grep -q 'effects.executor.enabled=true' "$ROOT/data/showcase/three/node-config/node0.properties"
 grep -q 'effects.executor.enabled=false' "$ROOT/data/showcase/three/node-config/node1.properties"
+grep -q 'chains\[8\].machines.authenticated-map.genesis-cbor-hex=' \
+  "$ROOT/data/showcase/three/node-config/node0.properties"
+[ -s "$ROOT/data/showcase/three/authenticated-map-genesis.hex" ]
 ! grep -R 'signing-key\|api-key' "$ROOT/data/showcase/three/node-config" >/dev/null
 
 "$ROOT/showcase.sh" load-test orders --count 25 --concurrency 3 \
@@ -113,7 +152,8 @@ document = {
     "threshold": 2,
     "proposer": members[0],
     "chainIds": ["orders-chain", "registry-chain", "approvals-chain", "balances-chain",
-                 "documents-chain", "workflow-chain", "roles-chain", "payments-chain"],
+                 "documents-chain", "workflow-chain", "roles-chain", "payments-chain",
+                 "authenticated-map-chain"],
     "anchor": {"enabled": True, "mode": "script", "signerFingerprint": fingerprint,
                "chainId": "workflow-chain"},
 }
@@ -138,11 +178,11 @@ grep -q '^ANCHOR_CHAINS=registry-chain,workflow-chain$' \
 grep -q -- '--anchor-chain registry-chain --anchor-chain workflow-chain' "$WORK/cluster.log"
 
 "$ROOT/showcase.sh" anchor enable all --instance anchor-expand
-jq -e '.anchor.chainIds | length == 8' "$ANCHOR_ROOT/showcase-identity.json" >/dev/null
-jq -e '.anchor.chainIds | length == 8' \
+jq -e '.anchor.chainIds | length == 9' "$ANCHOR_ROOT/showcase-identity.json" >/dev/null
+jq -e '.anchor.chainIds | length == 9' \
   "$ANCHOR_ROOT/cluster/cluster-appchain-identity.json" >/dev/null
 PATH="$WORK/bin:$PATH" "$ROOT/showcase.sh" anchor bootstrap all --instance anchor-expand
-[ "$(grep -c '^anchor-bootstrap .*chain$' "$WORK/cluster.log")" = 8 ]
+[ "$(grep -c '^anchor-bootstrap .*chain$' "$WORK/cluster.log")" = 9 ]
 
 "$ROOT/showcase.sh" prepare --instance five --nodes 5 --http-base 19870 --server-base 19470
 [ "$(find "$ROOT/data/showcase/five/node-config" -type f -name 'node*.properties' | wc -l | tr -d ' ')" = 5 ]

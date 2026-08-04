@@ -1,18 +1,21 @@
 # ADR-025 Phase 0 — contract, measurement, and dependency gates
 
-Status: implemented baseline; production qualification remains blocked on the
-release and durable-runtime gates below.
+Status: implemented pre-amendment baseline. ADR-025.1 and ADR-025.2 reopen the
+unreleased v1 genesis/contract, so final Phase 0 freeze and qualification are
+pending their combined vectors and measurements. Production qualification also
+remains blocked on the release and durable-runtime gates below.
 
 This note records the executable decisions completed before the Phase 1 state
-machine and the Phase 2 backend refactor. It does not change ADR-025.
+machine and the Phase 2 backend refactor. It is a historical baseline rather
+than the final v1 contract where ADR-025.1 or ADR-025.2 supersedes it.
 
-## 1. Frozen v1 contract
+## 1. Pre-amendment v1 baseline and final-v1 reopen
 
 The canonical implementation is `AuthenticatedMapContract` in
 `appchain-stdlib-contracts`. Its checked-in vectors are verified from Java and
 from an independent standard-library Python implementation.
 
-The v1 choices are:
+The pre-amendment choices were:
 
 - state-machine id/version: `authenticated-map` / `1`;
 - application namespace kind: `1`, with the exact length-delimited binary key
@@ -20,7 +23,8 @@ The v1 choices are:
 - canonical lowercase ASCII collection ids, bounded to 64 bytes;
 - opaque application keys bounded to 128 bytes;
 - opaque value bytes, with application-specific canonical codecs enforced by
-  the owning application before command construction;
+  the owning application before command construction; ADR-025.1 supersedes
+  this with optional genesis-bound encoding/schema/plugin validation;
 - `ACTIVE` and included `REVOKED` tombstone entry states;
 - revisions starting at one and increasing exactly once per successful
   mutation;
@@ -35,15 +39,18 @@ The v1 choices are:
   framework-consensus digest, membership commitment, anchor-policy commitment,
   collections, initial entries, and resource bounds.
 
-The initial authorization subset is deliberately limited to:
+The pre-amendment authorization subset was deliberately limited to:
 
 1. `open`: any already admitted signed sender;
 2. `owner`: the creator/controller controls subsequent mutation; and
 3. `member`: any active consensus member at the candidate height.
 
-`governed-role` and approval-reference authorization need explicit component
-state contracts and cross-component/JMT qualification. They are not silently
-accepted by v1.
+[ADR-025.2](025.2-governed-authenticated-map-authorization-and-console.md)
+now supplies the required component and workflow decision and supersedes this
+subset for the final unreleased v1. Final v1 includes `governed-role` and
+`approval` in addition to the three modes above. The contract phase must
+regenerate genesis, commands, state namespaces, golden vectors, roots, proofs,
+clients, and measurements before this phase can be called frozen again.
 
 ## 2. Profile and dependency gate
 
@@ -145,6 +152,9 @@ can be executed without changing code. Resource/time limits and every omitted
 cell must be reported rather than inferred.
 
 ## 6. Phase 0 acceptance
+
+The completion markers below describe the pre-amendment baseline. Final v1
+acceptance is pending the ADR-025.2 contract/vector work and rerun.
 
 - Strict canonical codecs and fail-closed validation: complete.
 - Java cross-module vectors for keys, values, commands, genesis, roots, and

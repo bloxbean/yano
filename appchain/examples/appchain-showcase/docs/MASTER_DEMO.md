@@ -28,13 +28,16 @@ reported present. Python uses only its standard library.
 
 This starts nodes on HTTP ports 7070–7072 and n2n ports 13337–13339. The MPF
 threshold defaults to 2. It bootstraps the one-time script identity for
-`workflow-chain`, runs the composite scenario, checks converged roots and
-prints the UI URL.
+`workflow-chain`, runs the composite and authenticated-map scenarios, checks
+converged roots, and prints the UI URL.
 
 Expected checkpoints:
 
 - all three nodes become ready;
 - every named chain reports the same root on all nodes;
+- opaque, canonical-CBOR, schema-validated, and plugin-validated map values
+  finalize while two deliberately invalid values are filtered before
+  finalization;
 - the release effect becomes confirmed;
 - exactly one JSON receipt appears below the instance outbox; and
 - the status UI URL is `http://127.0.0.1:7070/ui/app-chain/`.
@@ -93,7 +96,25 @@ state root.
 Expected: the registry value and its inclusion proof. The first writer owns
 the key; a different member’s update is a deterministic no-op.
 
-## 6. Approval chain — proposal and approvals are separate messages
+## 6. Authenticated map — multiple collections and validation
+
+```bash
+./demos/submit-authenticated-map.sh master-demo
+```
+
+The scenario writes an opaque attachment, a canonical-CBOR event, a product
+that matches the genesis-bound schema, and a GTIN accepted by the first-party
+validator plugin. It then proves that an unknown product status and an invalid
+GTIN check digit are filtered before finalization and leave exclusion proofs.
+Finally it prints both the root-attested product query and the native MPF proof
+for the physical collection/key leaf.
+
+Say: “Collection encoding, schema IR, validator provider and parameters, and
+the exact validator artifact closure are committed by genesis. An application
+can supply another trusted validator through the same public SPI, but it is
+consensus code shared by every node—not an uploaded runtime script.”
+
+## 7. Approval chain — proposal and approvals are separate messages
 
 ```bash
 ./demos/approval-propose.sh master-demo approval-A-100 \
@@ -109,7 +130,7 @@ business rule is independent from the two-of-three MPF block-finality rule.”
 Expected: a root-attested approval record with approved status and two distinct
 application approvers.
 
-## 7. Balances and rejection behavior
+## 8. Balances and rejection behavior
 
 ```bash
 ./demos/submit-balances.sh master-demo
@@ -119,7 +140,7 @@ Expected: node 0 mints to its own member account, transfers 250 to
 `demo-recipient`, and proves the recipient balance. Overspending cannot make a
 balance negative; it finalizes as a deterministic no-op.
 
-## 8. Document trail — compact tamper-evident audit head
+## 9. Document trail — compact tamper-evident audit head
 
 ```bash
 ./demos/submit-documents.sh master-demo case-A-100
@@ -128,7 +149,7 @@ balance negative; it finalizes as a deterministic no-op.
 Expected: a per-entity count/head-hash state leaf and proof. Documents remain
 off-chain; hashes and references form the ordered trail.
 
-## 9. Composite approval → effect flow, one step at a time
+## 10. Composite approval → effect flow, one step at a time
 
 Keep the JSON byte-identical between register and propose:
 
@@ -158,7 +179,7 @@ Narrate the boundaries:
 Run `composite verify` twice. The same effect identity still maps to one file;
 no duplicate business event is created.
 
-## 10. Roles and EUTxO capability discovery
+## 11. Roles and EUTxO capability discovery
 
 ```bash
 ./demos/inspect-roles.sh master-demo
@@ -177,7 +198,7 @@ role variant. For signed ledger/bridge/ZK flows use the EUTxO profile:
 Docker is needed only for evidence. Run these optional profiles in a longer
 session, not in the minimal light rehearsal.
 
-## 11. Load demonstration
+## 12. Load demonstration
 
 First repeat fully verified business scenarios:
 
@@ -205,7 +226,7 @@ Then show convergence:
 ./showcase.sh verify all --instance master-demo
 ```
 
-## 12. Govern a new member into the running cluster
+## 13. Govern a new member into the running cluster
 
 The next index after a three-node bootstrap is 3:
 
@@ -232,7 +253,7 @@ Expected sequence for every chain:
 No live YAML member list is edited. Application state, membership history,
 and old block verification remain height-versioned.
 
-## 13. Govern a new MPF finality threshold
+## 14. Govern a new MPF finality threshold
 
 After node 3 has joined, demonstrate 3-of-4:
 
@@ -263,7 +284,7 @@ To lower it again:
 ./showcase.sh governance activate --instance master-demo
 ```
 
-## 14. Restart and prove retained identity
+## 15. Restart and prove retained identity
 
 ```bash
 ./showcase.sh restart --instance master-demo
@@ -275,7 +296,7 @@ Expected: bootstrap nodes restart from retained state; previously joined nodes
 use the retained `resume` path (no second governance vote), roots converge,
 the outbox receipt remains one file, and the anchor identity is reused.
 
-## 15. Preprod anchor branch (optional, fee-paying)
+## 16. Preprod anchor branch (optional, fee-paying)
 
 Read [ANCHORING_DEMO.md](ANCHORING_DEMO.md) and
 [PREPROD_ANCHORING.md](PREPROD_ANCHORING.md) first. Never put a
@@ -320,7 +341,7 @@ Use `anchor enable all` and `anchor bootstrap all` to cover every configured
 chain. The latter waits for each L1 bootstrap confirmation before submitting
 the next transaction.
 
-## 16. Stop or explicitly reset
+## 17. Stop or explicitly reset
 
 ```bash
 ./showcase.sh stop --instance master-demo

@@ -10,7 +10,9 @@ IDENTITY="$SHOWCASE_HOME/tools/showcase_identity.py"
 VERSION="$(tr -d '\r\n' < "$SHOWCASE_HOME/VERSION" 2>/dev/null || printf development)"
 API_KEY="${YANO_CLUSTER_API_KEY:-yano-local-cluster-full-key}"
 LIGHT_CHAINS=(orders-chain registry-chain approvals-chain balances-chain
-  documents-chain workflow-chain roles-chain payments-chain)
+  documents-chain workflow-chain roles-chain payments-chain authenticated-map-chain)
+AUTHMAP_GENERATOR=com.bloxbean.cardano.yano.appchain.showcase.ShowcaseAuthenticatedMapConfig
+AUTHMAP_CHAIN_INDEX=8
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 note() { printf '%s\n' "$*"; }
@@ -143,12 +145,96 @@ cluster_dir() { printf '%s/cluster' "$(instance_root)"; }
 node_config_dir() { printf '%s/node-config' "$(instance_root)"; }
 outbox_dir() { printf '%s/outbox' "$(instance_root)"; }
 joined_file() { printf '%s/joined-nodes' "$(instance_root)"; }
+authenticated_map_properties() { printf '%s/authenticated-map.properties' "$(instance_root)"; }
+authenticated_map_genesis() { printf '%s/authenticated-map-genesis.hex' "$(instance_root)"; }
 
 plugin_file() {
   local matches=("$YANO_HOME"/plugins/yano-appchain-showcase-*-bundle.jar)
   [ "${#matches[@]}" -eq 1 ] && [ -f "${matches[0]}" ] \
     || die "expected exactly one showcase plugin bundle"
   printf '%s' "${matches[0]}"
+}
+
+generate_authenticated_map_candidate() {
+  [ -z "${YANO_CLUSTER_MEMBER_KEY_DIR:-}" ] \
+    || die "the light showcase uses deterministic demo membership; custom member keys need a custom generated profile"
+  local root="$(instance_root)" members candidate
+  members="$("$CLUSTER" keys "$NODES" | awk 'NR > 1 {print $3}' | paste -sd, -)"
+  [ -n "$members" ] || die "could not derive authenticated-map bootstrap member keys"
+  candidate="$(mktemp "$root/.authenticated-map.properties.XXXXXX")"
+  chmod 600 "$candidate"
+  if ! java -cp "$(plugin_file):$YANO_HOME/yano.jar" "$AUTHMAP_GENERATOR" \
+      --runtime-jar "$YANO_HOME/yano.jar" \
+      --chain-id authenticated-map-chain \
+      --members "$members" \
+      --threshold "$THRESHOLD" > "$candidate"; then
+    rm -f -- "$candidate"
+    die "could not generate the release-matched authenticated-map genesis"
+  fi
+  python3 - "$candidate" "$AUTHMAP_CHAIN_INDEX" <<'PY' >/dev/null || {
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+prefix = f"yano.app-chain.chains[{sys.argv[2]}]."
+expected = {
+    prefix + "state.commitment-profile",
+    prefix + "state.format-fingerprint",
+    prefix + "state.genesis-id",
+    prefix + "machines.authenticated-map.genesis-cbor-hex",
+}
+values = {}
+for line in path.read_text(encoding="ascii").splitlines():
+    if "=" not in line:
+        raise ValueError("invalid generated property")
+    key, value = line.split("=", 1)
+    if key in values or key not in expected:
+        raise ValueError("unknown or duplicate generated property")
+    values[key] = value
+if set(values) != expected:
+    raise ValueError("generated property set is incomplete")
+if values[prefix + "state.commitment-profile"] != "mpf-blake2b256-v1":
+    raise ValueError("unexpected commitment profile")
+for name in ("state.format-fingerprint", "state.genesis-id"):
+    if not re.fullmatch(r"[0-9a-f]{64}", values[prefix + name]):
+        raise ValueError("invalid generated identity digest")
+genesis = values[prefix + "machines.authenticated-map.genesis-cbor-hex"]
+if not genesis or len(genesis) > 32 * 1024 * 1024 or not re.fullmatch(r"(?:[0-9a-f]{2})+", genesis):
+    raise ValueError("invalid generated genesis")
+PY
+    rm -f -- "$candidate"
+    die "authenticated-map generator returned an invalid configuration"
+  }
+  printf '%s' "$candidate"
+}
+
+install_authenticated_map_candidate() {
+  local candidate="$1" properties="$(authenticated_map_properties)"
+  mv -f -- "$candidate" "$properties"
+  chmod 600 "$properties"
+  python3 - "$properties" "$(authenticated_map_genesis)" "$AUTHMAP_CHAIN_INDEX" <<'PY'
+import os
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1])
+target = pathlib.Path(sys.argv[2])
+key = f"yano.app-chain.chains[{sys.argv[3]}].machines.authenticated-map.genesis-cbor-hex="
+matches = [line[len(key):] for line in source.read_text(encoding="ascii").splitlines()
+           if line.startswith(key)]
+if len(matches) != 1:
+    raise ValueError("authenticated-map genesis property is missing or duplicated")
+temporary = target.with_name(target.name + f".tmp.{os.getpid()}")
+descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+try:
+    os.write(descriptor, (matches[0] + "\n").encode("ascii"))
+    os.fsync(descriptor)
+finally:
+    os.close(descriptor)
+os.replace(temporary, target)
+os.chmod(target, 0o600)
+PY
 }
 
 marker_value() {
@@ -201,6 +287,8 @@ adopt_marker() {
 
 write_node_configs() {
   local count="$1" directory="$(node_config_dir)" i file
+  [ -f "$(authenticated_map_properties)" ] \
+    || die "authenticated-map genesis is missing; prepare the instance first"
   mkdir -p "$directory" "$(outbox_dir)"
   chmod 700 "$directory" "$(outbox_dir)"
   find "$directory" -maxdepth 1 -type f -name 'node*.properties' -delete
@@ -216,21 +304,26 @@ write_node_configs() {
         printf 'yano.app-chain.chains[5].effects.executor.enabled=false\n'
         printf 'yano.app-chain.chains[5].effects.executors.showcase-outbox.enabled=false\n'
       fi
+      while IFS= read -r property || [ -n "$property" ]; do
+        printf '%s\n' "$property"
+      done < "$(authenticated_map_properties)"
     } > "$file"
     chmod 600 "$file"
   done
 }
 
 prepare_light() {
-  need python3; need jq; need curl
+  need java; need python3; need jq; need curl
   [ -x "$CLUSTER" ] || die "packaged cluster launcher is missing"
-  local root="$(instance_root)" plugin="$(plugin_file)" args=()
+  local root="$(instance_root)" plugin="$(plugin_file)" candidate args=()
   if [ -e "$root" ] && [ -L "$root" ]; then die "instance root must not be a symlink"; fi
   mkdir -p "$root"; chmod 700 "$root"
+  candidate="$(generate_authenticated_map_candidate)"
   args=(ensure --marker "$(marker)" --version "$VERSION" --profile light
     --variant default --network "$NETWORK" --nodes "$NODES" --threshold "$THRESHOLD"
     --http-base "$HTTP_BASE" --server-base "$SERVER_BASE"
-    --config "$YANO_HOME/config/application-appchain.yml" --plugin "$plugin")
+    --config "$YANO_HOME/config/application-appchain.yml" --plugin "$plugin"
+    --authenticated-map-config "$candidate")
   if [ "$ANCHOR" = true ]; then args+=(--anchor --anchor-mode "$ANCHOR_MODE"); fi
   if [ "$ANCHOR" = true ]; then
     local -a anchor_chains=()
@@ -239,13 +332,18 @@ prepare_light() {
     for anchor_chain in "${anchor_chains[@]}"; do args+=(--anchor-chain "$anchor_chain"); done
   fi
   if [ -n "$ANCHOR_KEY_FILE" ]; then args+=(--anchor-key-file "$ANCHOR_KEY_FILE"); fi
-  python3 "$IDENTITY" "${args[@]}"
+  if ! python3 "$IDENTITY" "${args[@]}"; then
+    rm -f -- "$candidate"
+    return 1
+  fi
+  install_authenticated_map_candidate "$candidate"
   write_node_configs "$NODES"
   note "Prepared light instance '$INSTANCE'"
   note "  data:    $root"
   note "  config:  $YANO_HOME/config/application-appchain.yml"
   note "  marker:  $(marker)"
   note "  plugin:  $plugin"
+  note "  map:     $(authenticated_map_genesis)"
 }
 
 cluster_env() {
@@ -302,6 +400,33 @@ submit_hex() {
   printf '%s' "$id"
 }
 
+expect_authenticated_map_filtered() {
+  local body="$1" collection="$2" key="$3" label="$4"
+  local rejected_id barrier_key barrier_value barrier_body barrier_id status state_key proof
+  rejected_id="$(submit_hex authenticated-map-chain authenticated-map.command.v1 "$body")"
+
+  # HTTP 202 is ingress/pool acceptance. A later valid message is the barrier
+  # proving the candidate-height validator had an opportunity to filter the
+  # invalid message before we assert non-finalization and state absence.
+  barrier_key="validation-barrier-${rejected_id:0:16}"
+  barrier_value="$(python3 "$CODEC" authmap-value opaque "$barrier_key")"
+  barrier_body="$(python3 "$CODEC" authmap put attachments \
+    "$barrier_key" "$barrier_value")"
+  barrier_id="$(submit_hex authenticated-map-chain \
+    authenticated-map.command.v1 "$barrier_body")"
+  wait_message authenticated-map-chain "$barrier_id" >/dev/null
+
+  status="$(curl -sS -o /dev/null -w '%{http_code}' \
+    "http://127.0.0.1:$HTTP_BASE/api/v1/app-chain/chains/authenticated-map-chain/messages/$rejected_id")"
+  [ "$status" = 404 ] || die "$label unexpectedly finalized (HTTP $status)"
+  state_key="$(python3 "$CODEC" authmap state-key "$collection" "$key")"
+  proof="$(proof_key authenticated-map-chain "$state_key")"
+  printf '%s' "$proof" | jq -e \
+    '.presence == "ABSENT" and .valueHex == null and (.proofWireHex | length > 0)' \
+    >/dev/null || die "$label changed authenticated state"
+  note "REJECTED before finalization as expected: $label"
+}
+
 submit_text() {
   local chain="$1" topic="$2" body="$3" node="${4:-$NODE}" response id
   response="$(curl -fsS -X POST \
@@ -333,6 +458,57 @@ run_registry() {
   id="$(submit_hex registry-chain kv.command.v1 "$body")"; wait_message registry-chain "$id" >/dev/null
   proof_key registry-chain "$(printf '%s' "$key" | od -An -v -tx1 | tr -d ' \n')" \
     | jq '{chainId,committedHeight,stateRoot,valueHex}'
+}
+
+run_authenticated_map() {
+  local suffix="${1:-$(date +%s)}" key value body id query state_key result
+
+  key="attachment-$suffix"
+  value="$(python3 "$CODEC" authmap-value opaque "demo-bytes-$suffix")"
+  body="$(python3 "$CODEC" authmap put attachments "$key" "$value")"
+  id="$(submit_hex authenticated-map-chain authenticated-map.command.v1 "$body")"
+  wait_message authenticated-map-chain "$id" >/dev/null
+
+  key="event-$suffix"
+  value="$(python3 "$CODEC" authmap-value event created 1)"
+  body="$(python3 "$CODEC" authmap put canonical-events "$key" "$value")"
+  id="$(submit_hex authenticated-map-chain authenticated-map.command.v1 "$body")"
+  wait_message authenticated-map-chain "$id" >/dev/null
+
+  key="sku-$suffix"
+  value="$(python3 "$CODEC" authmap-value product "$key" 5 active "showcase product")"
+  body="$(python3 "$CODEC" authmap put products "$key" "$value")"
+  id="$(submit_hex authenticated-map-chain authenticated-map.command.v1 "$body")"
+  wait_message authenticated-map-chain "$id" >/dev/null
+
+  value="$(python3 "$CODEC" authmap-value gtin 95012346)"
+  body="$(python3 "$CODEC" authmap put gtins 95012346 "$value")"
+  id="$(submit_hex authenticated-map-chain authenticated-map.command.v1 "$body")"
+  wait_message authenticated-map-chain "$id" >/dev/null
+
+  value="$(python3 "$CODEC" authmap-value product invalid-sku 5 unknown)"
+  body="$(python3 "$CODEC" authmap put products invalid-sku "$value")"
+  expect_authenticated_map_filtered \
+    "$body" products invalid-sku "product schema violation"
+
+  value="$(python3 "$CODEC" authmap-value gtin 95012345)"
+  body="$(python3 "$CODEC" authmap put gtins 95012345 "$value")"
+  expect_authenticated_map_filtered \
+    "$body" gtins 95012345 "custom GTIN validator violation"
+
+  query="$(python3 "$CODEC" authmap query products "$key")"
+  result="$(curl -fsS -X POST \
+    "http://127.0.0.1:$HTTP_BASE/api/v1/app-chain/chains/authenticated-map-chain/query/authenticated-map/entry-v1" \
+    -H 'Content-Type: application/json' \
+    -d "$(jq -nc --arg params "$query" '{paramsHex:$params}')")"
+  note "root-attested schema-validated product entry:"
+  printf '%s' "$result" | jq '{chainId,stateMachineId,committedHeight,stateRoot,payloadHex}'
+
+  state_key="$(python3 "$CODEC" authmap state-key products "$key")"
+  note "native proof for the product collection entry:"
+  proof_key authenticated-map-chain "$state_key" \
+    | jq '{chainId,committedHeight,stateRoot,valueHex,proofWireHex}'
+  note "AUTHENTICATED MAP: opaque, canonical CBOR, schema, and plugin validation passed"
 }
 
 approval_propose() {
@@ -612,7 +788,7 @@ submit_eutxo_payment() {
 }
 
 activation_submit() {
-  local cid="$1" suffix="$2" body sender result
+  local cid="$1" suffix="$2" body sender result value
   case "$cid" in
     orders-chain)
       submit_text "$cid" showcase.governance-heartbeat.v1 "$suffix" 0;;
@@ -642,6 +818,10 @@ activation_submit() {
       wait_message "$cid" "$(printf '%s' "$result" | jq -r .messageId)" >/dev/null
       accepted_eutxo_receipt "$(printf '%s' "$result" | jq -r .transactionId)" >/dev/null
       printf '%s' "$result" | jq -r .messageId;;
+    authenticated-map-chain)
+      value="$(python3 "$CODEC" authmap-value opaque "$suffix")"
+      body="$(python3 "$CODEC" authmap put attachments "$suffix" "$value")"
+      submit_hex "$cid" authenticated-map.command.v1 "$body" 0;;
     *) die "unsupported light-profile chain: $cid";;
   esac
 }
@@ -706,8 +886,7 @@ verify_light() {
       [ "$((joined + 1))" -le "$total" ] || total=$((joined + 1))
     done < "$(joined_file)"
   fi
-  for cid in orders-chain registry-chain approvals-chain balances-chain documents-chain \
-      workflow-chain roles-chain payments-chain; do
+  for cid in "${LIGHT_CHAINS[@]}"; do
     deadline=$(( $(date +%s) + 120 ))
     while :; do
       converged=true
@@ -834,6 +1013,7 @@ config_paths() {
   note "showcase marker : $(marker)"
   note "shared YAML     : $YANO_HOME/config/application-appchain.yml"
   note "node overlays  : $(node_config_dir)/node<N>.properties (secret values are not printed)"
+  note "map genesis   : $(authenticated_map_genesis)"
   note "cluster state  : $(cluster_dir)"
   note "outbox receipts: $(outbox_dir)"
   note "plugin bundle  : $(plugin_file)"
@@ -905,6 +1085,7 @@ anchor_enable() {
     --cluster-marker "$(cluster_dir)/cluster-appchain-identity.json"
     --cluster-env "$(cluster_dir)/cluster.env"
     --config "$YANO_HOME/config/application-appchain.yml" --plugin "$(plugin_file)"
+    --authenticated-map-config "$(authenticated_map_properties)"
     --anchor-mode "$ANCHOR_MODE")
   local -a desired_chains=()
   IFS=',' read -r -a desired_chains <<< "$desired"
@@ -971,7 +1152,7 @@ Yano unified app-chain showcase
   ./showcase.sh prepare|up|quickstart [--profile light] [--nodes 3|5|7]
   ./showcase.sh status|ui|logs|restart|stop|reset [--instance name]
   ./showcase.sh config show|paths|export <file>
-  ./showcase.sh run orders|registry|approvals|balances|documents|composite|roles|eutxo|anchor|all
+  ./showcase.sh run orders|registry|authenticated-map|approvals|balances|documents|composite|roles|eutxo|anchor|all
   ./showcase.sh approvals propose <id> <payload> [required]
   ./showcase.sh approvals approve <id> <member-node>
   ./showcase.sh composite register-order <key> '<json>'
@@ -1008,7 +1189,7 @@ case "$COMMAND" in
     note "eutxo     maintained virtual-ledger, bridge, and ZK demos (ledger|bridge|zk)";;
   describe)
     case "${POSITIONAL[0]:-$PROFILE}" in
-      light) note "Eight chains, MPF finality/proofs, governed membership, composite outbox effect, optional L1 anchor.";;
+      light) note "Nine chains, including authenticated-map collections/validation, MPF proofs, governance, effects, and optional L1 anchor.";;
       evidence) note "Maintained evidence product deployment; Docker required. Evidence is the product, this is its demo harness.";;
       eutxo) note "Maintained experimental EUTxO scenarios; no real funds in the ledger variant.";;
       *) die "unknown profile";; esac;;
@@ -1040,6 +1221,7 @@ PY
       up_light
       [ "$ANCHOR_MODE" != script ] || { cluster_env; "$CLUSTER" anchor-bootstrap workflow-chain; }
       run_composite quickstart
+      run_authenticated_map quickstart
       verify_light
       note "Status UI: http://127.0.0.1:$HTTP_BASE/ui/app-chain/"
     else
@@ -1080,10 +1262,11 @@ PY
     else
       case "${POSITIONAL[0]:-}" in
         orders) run_orders "${POSITIONAL[1]:-}";; registry) run_registry "${POSITIONAL[1]:-}" "${POSITIONAL[2]:-}";;
+        authenticated-map|authmap) run_authenticated_map "${POSITIONAL[1]:-}";;
         approvals) run_approvals "${POSITIONAL[1]:-}";; balances) run_balances;;
         documents) run_documents "${POSITIONAL[1]:-}";; composite) run_composite "${POSITIONAL[1]:-}";;
         roles) run_roles;; eutxo) run_eutxo;; anchor) cluster_env; "$CLUSTER" status;;
-        all) run_orders; run_registry; run_approvals; run_balances; run_documents; run_composite; run_roles; run_eutxo;;
+        all) run_orders; run_registry; run_authenticated_map; run_approvals; run_balances; run_documents; run_composite; run_roles; run_eutxo;;
         *) die "unknown run scenario";; esac
     fi;;
   approvals)

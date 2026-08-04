@@ -18,6 +18,7 @@ dependencies {
     compileOnly libs.cbor
     compileOnly libs.cardano.client.core
     compileOnly libs.cardano.client.crypto
+    compileOnly libs.jackson.databind
     compileOnly libs.slf4j.api
 
     testImplementation project(':core-api')
@@ -31,6 +32,7 @@ dependencies {
     testImplementation libs.cbor
     testImplementation libs.cardano.client.core
     testImplementation libs.cardano.client.crypto
+    testImplementation libs.jackson.databind
     testImplementation libs.slf4j.api
     testImplementation libs.assertj.core
     testImplementation libs.junit.jupiter.api
@@ -227,6 +229,7 @@ tasks.register('verifyShowcasePluginArtifact') {
                         effectExecutorService,
                         pluginManifest,
                         'com/bloxbean/cardano/yano/appchain/showcase/ShowcaseCompositeStateMachineProvider.class',
+                        'com/bloxbean/cardano/yano/appchain/showcase/ShowcaseAuthenticatedMapConfig.class',
                         'com/bloxbean/cardano/yano/appchain/showcase/ShowcaseOutboxExecutorFactory.class',
                         'com/bloxbean/cardano/yano/appchain/showcase/ShowcaseEutxoTransactions.class'
                 ]

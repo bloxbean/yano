@@ -5,6 +5,10 @@ registry. Each collection independently chooses its authorization policy, key
 and value bounds, value encoding, and optional validator. These choices are
 compiled into canonical genesis and are identical on every member.
 
+Start with the [authenticated-map state-machine guide](authenticated-map.md)
+for the collection model, mutations, configuration, submission, queries, and
+showcase walkthrough. This page is the deeper validation reference.
+
 The safe default is intentionally simple:
 
 | Setting | Default | Effect |
@@ -185,8 +189,10 @@ Explain any authenticated-map result or receipt code:
 | 12 | `VALUE_VALIDATOR` | Custom validator rejected the value |
 
 Only a rejection reached during authoritative application has an authenticated
-receipt. A CLI or client-side rejection has no receipt and makes no finality
-claim.
+receipt. A CLI/client-side rejection or a message filtered during candidate
+block validation has no receipt and makes no finality claim. HTTP `202` means
+only that ingress retained the message; wait for finalized inclusion before
+treating a mutation as applied.
 
 ## Java client preflight
 

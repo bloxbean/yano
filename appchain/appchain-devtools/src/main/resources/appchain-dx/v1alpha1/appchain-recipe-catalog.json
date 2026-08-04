@@ -17,7 +17,7 @@
       "id":"authenticated-map","version":"1","name":"Authenticated map","category":"application","availability":"BUNDLED","maturity":"preview","scope":"chain","selectable":true,
       "trustStatement":"First-party Yano recipe whose collection, encoding, schema, and commitment identities are frozen in canonical genesis.","description":"A proof-oriented multi-collection registry with optional canonical-CBOR and declarative schema validation.","primaryOutcome":"A value accepted under a genesis-declared collection schema is committed and available with a state proof.","firstCommand":"appchain state validate --genesis-file config/authenticated-map-genesis.hex ...","verificationQuery":"appchain state validators --genesis-file config/authenticated-map-genesis.hex",
       "capabilities":["state:authenticated-map","sequencer:fixed"],"recommended":{"blockIntervalMs":"2000"},"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-stdlib"],"nativePosture":"bundled",
-      "externalPrerequisites":[],"bootstrapRequirements":["pin-all-genesis-member-identities"],"nonSecretAnswers":[],"documentation":"docs/appchain/state-machines/authenticated-map-validation.md","acceptanceScenario":"authenticated-map-schema-blueprint"
+      "externalPrerequisites":[],"bootstrapRequirements":["pin-all-genesis-member-identities"],"nonSecretAnswers":[],"documentation":"docs/appchain/state-machines/authenticated-map.md","acceptanceScenario":"authenticated-map-schema-blueprint"
     },
     {
       "id":"approval-workflow","version":"1","name":"Threshold approval workflow","category":"application","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,

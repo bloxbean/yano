@@ -44,6 +44,13 @@ def array(*items: bytes) -> bytes:
     return head(4, len(items)) + b"".join(items)
 
 
+def cbor_map(entries: list[tuple[str, bytes]]) -> bytes:
+    encoded = [(text(key), value) for key, value in entries]
+    encoded.sort(key=lambda item: item[0])
+    return head(5, len(encoded)) + b"".join(
+        key + value for key, value in encoded)
+
+
 def emit(value: bytes) -> None:
     print(value.hex())
 
@@ -88,6 +95,16 @@ def main() -> None:
     state_key = sub.add_parser("state-key")
     state_key.add_argument("kind", choices=("approval", "balance", "document", "release"))
     state_key.add_argument("value")
+    authmap = sub.add_parser("authmap")
+    authmap.add_argument("operation", choices=("put", "query", "state-key"))
+    authmap.add_argument("collection")
+    authmap.add_argument("key")
+    authmap.add_argument("value_hex", nargs="?", default="")
+    authmap_receipt = sub.add_parser("authmap-receipt")
+    authmap_receipt.add_argument("message_id")
+    authmap_value = sub.add_parser("authmap-value")
+    authmap_value.add_argument("kind", choices=("opaque", "event", "product", "gtin"))
+    authmap_value.add_argument("values", nargs="+")
     args = parser.parse_args()
 
     if args.command == "kv":
@@ -125,6 +142,55 @@ def main() -> None:
     elif args.command == "state-key":
         prefixes = {"approval": "i/", "balance": "b/", "document": "e/", "release": "r/"}
         print((prefixes[args.kind] + args.value).encode().hex())
+    elif args.command == "authmap":
+        collection = args.collection.encode("ascii")
+        key = args.key.encode("utf-8")
+        if not collection or len(collection) > 64 or not key or len(key) > 128:
+            raise ValueError("authenticated-map collection/key is outside showcase bounds")
+        if args.operation == "put":
+            if not args.value_hex or re.fullmatch(r"(?:[0-9a-f]{2})*", args.value_hex) is None:
+                raise ValueError("authenticated-map PUT requires canonical lowercase value hex")
+            value = bytes.fromhex(args.value_hex)
+            mutation = array(uint(0), text(args.collection), bstr(key), bstr(value),
+                             uint(0), bstr(b""), bstr(b""))
+            emit(array(uint(1), uint(0), array(mutation)))
+        elif args.operation == "query":
+            if args.value_hex:
+                raise ValueError("authenticated-map query does not accept a value")
+            emit(array(uint(1), uint(0), uint(0), text(args.collection), bstr(key)))
+        else:
+            if args.value_hex:
+                raise ValueError("authenticated-map state-key does not accept a value")
+            emit(b"\x01\x01" + len(collection).to_bytes(2, "big") + collection
+                 + len(key).to_bytes(4, "big") + key)
+    elif args.command == "authmap-receipt":
+        if re.fullmatch(r"[0-9a-f]{64}", args.message_id) is None:
+            raise ValueError("authenticated-map receipt requires a 32-byte message id")
+        emit(array(uint(1), bstr(bytes.fromhex(args.message_id))))
+    elif args.command == "authmap-value":
+        if args.kind == "opaque":
+            if len(args.values) != 1:
+                raise ValueError("opaque value requires one text argument")
+            emit(args.values[0].encode("utf-8"))
+        elif args.kind == "event":
+            if len(args.values) != 2 or not args.values[1].isdigit():
+                raise ValueError("event value requires <event-name> <nonnegative-sequence>")
+            emit(array(text(args.values[0]), uint(int(args.values[1]))))
+        elif args.kind == "product":
+            if len(args.values) not in (3, 4) or not args.values[1].isdigit():
+                raise ValueError("product value requires <sku> <quantity> <status> [note]")
+            entries = [
+                ("sku", text(args.values[0])),
+                ("quantity", uint(int(args.values[1]))),
+                ("status", text(args.values[2])),
+            ]
+            if len(args.values) == 4:
+                entries.append(("note", text(args.values[3])))
+            emit(cbor_map(entries))
+        else:
+            if len(args.values) != 1:
+                raise ValueError("GTIN value requires one identifier")
+            emit(text(args.values[0]))
 
 
 if __name__ == "__main__":

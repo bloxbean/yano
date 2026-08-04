@@ -16,6 +16,7 @@ import sys
 LIGHT_CHAINS = [
     "orders-chain", "registry-chain", "approvals-chain", "balances-chain",
     "documents-chain", "workflow-chain", "roles-chain", "payments-chain",
+    "authenticated-map-chain",
 ]
 CHAIN_ID = re.compile(r"[A-Za-z0-9._~-]{1,128}")
 HEX_32 = re.compile(r"[0-9a-f]{64}")
@@ -105,6 +106,8 @@ def document(args: argparse.Namespace) -> dict:
         "chainIds": chains,
         "configSha256": sha256(config),
         "pluginSha256": sha256(plugin),
+        "authenticatedMapConfigSha256": sha256(
+            pathlib.Path(args.authenticated_map_config).resolve()),
         "anchor": anchor_identity(
             args.anchor,
             args.anchor_mode,
@@ -209,12 +212,15 @@ def validate_deployment_identity(document: dict) -> None:
         "schemaVersion", "kind", "showcaseVersion", "profile", "variant", "network",
         "protocolMagic", "bootstrapNodeCount", "bootstrapThreshold", "httpBase",
         "serverBase", "runtime", "chainIds", "configSha256", "pluginSha256", "anchor",
+        "authenticatedMapConfigSha256",
     }
     anchor = document.get("anchor")
     if (set(document) != expected or document.get("profile") != "light"
             or document.get("network") not in ("devnet", "preprod")
             or document.get("protocolMagic") != (1 if document.get("network") == "preprod" else 42)
             or document.get("chainIds") != LIGHT_CHAINS
+            or not isinstance(document.get("authenticatedMapConfigSha256"), str)
+            or not HEX_32.fullmatch(document["authenticatedMapConfigSha256"])
             or type(document.get("bootstrapNodeCount")) is not int
             or type(document.get("bootstrapThreshold")) is not int
             or not 1 <= document["bootstrapThreshold"] <= document["bootstrapNodeCount"] <= 16
@@ -321,11 +327,15 @@ def migrate_anchor(args: argparse.Namespace) -> None:
     marker = pathlib.Path(args.marker)
     deployment = parsed_identity(marker, "yano.showcase.deployment")
     validate_deployment_identity(deployment)
-    if not args.config or not args.plugin:
-        raise ValueError("anchor-enable requires --config and --plugin")
+    if not args.config or not args.plugin or not args.authenticated_map_config:
+        raise ValueError(
+            "anchor-enable requires --config, --plugin, and --authenticated-map-config")
     if (sha256(pathlib.Path(args.config).resolve()) != deployment.get("configSha256")
             or sha256(pathlib.Path(args.plugin).resolve()) != deployment.get("pluginSha256")):
         raise ValueError("packaged config/plugin differs from the retained showcase identity")
+    if (sha256(pathlib.Path(args.authenticated_map_config).resolve())
+            != deployment.get("authenticatedMapConfigSha256")):
+        raise ValueError("authenticated-map genesis differs from the retained showcase identity")
     configured = deployment.get("chainIds")
     if (deployment.get("profile") != "light" or not isinstance(configured, list)
             or configured != LIGHT_CHAINS):
@@ -400,6 +410,7 @@ def main() -> None:
     parser.add_argument("--server-base", type=int, default=13337)
     parser.add_argument("--config")
     parser.add_argument("--plugin")
+    parser.add_argument("--authenticated-map-config")
     parser.add_argument("--anchor", action="store_true")
     parser.add_argument("--anchor-mode", default="script")
     parser.add_argument("--anchor-chain", action="append", default=[])
@@ -430,8 +441,9 @@ def main() -> None:
         else:
             print(encoded, end="")
         return
-    if not args.config or not args.plugin:
-        raise ValueError("ensure requires --config and --plugin")
+    if not args.config or not args.plugin or not args.authenticated_map_config:
+        raise ValueError(
+            "ensure requires --config, --plugin, and --authenticated-map-config")
     expected = canonical(document(args))
     marker.parent.mkdir(parents=True, exist_ok=True)
     if marker.exists():

@@ -8,7 +8,7 @@ for a quick comparison.
 |---|---|
 | `ordered-log` | [Opaque ordered events, topics, proofs, and customization](ordered-log.md) |
 | `kv-registry` | [Owned mutable records, REST/Java usage, and proofs](kv-registry.md) |
-| `authenticated-map` | [Proof-oriented collections and optional value validation](authenticated-map-validation.md) |
+| `authenticated-map` | [Proof-oriented multi-collection registry](authenticated-map.md) ([value validation](authenticated-map-validation.md)) |
 | `approvals` | [Member decisions, REST/Java usage, proofs, and effects](approvals.md) |
 | `balances` | [Member-authorized minting, transfers, Java/Spring usage, and proofs](balances.md) |
 | `doc-trail` | [Per-entity document hashes, REST/Java usage, and proofs](doc-trail.md) |

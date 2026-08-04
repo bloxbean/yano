@@ -13,6 +13,7 @@ ROOT="$1"
 [ -x "$ROOT/demos/load-test.sh" ]
 [ -x "$ROOT/demos/soak-test.sh" ]
 [ -x "$ROOT/demos/submit-message-curl.sh" ]
+[ -x "$ROOT/demos/submit-authenticated-map.sh" ]
 [ -x "$ROOT/tools/showcase_codec.py" ]
 [ -x "$ROOT/yano/yano.sh" ]
 [ -x "$ROOT/yano/appchain-cluster/cluster.sh" ]
@@ -51,6 +52,10 @@ grep -q '^light' <<< "$PROFILES"
 grep -q 'config show|paths|export' <<< "$HELP"
 grep -q 'chain-id: "workflow-chain"' "$ROOT/yano/config/application-appchain.yml"
 grep -q 'state-machine: showcase-composite' "$ROOT/yano/config/application-appchain.yml"
+grep -q 'chain-id: "authenticated-map-chain"' "$ROOT/yano/config/application-appchain.yml"
+grep -q 'state-machine: authenticated-map' "$ROOT/yano/config/application-appchain.yml"
+grep -q 'com.bloxbean.cardano.yano.appchain.authenticated-map-validators' \
+  "$ROOT/yano/config/application-appchain.yml"
 grep -q 'addr_test1vrld3msldls64ax7c06vu85nvhk70260q970cssxzjh0hlchc79qg' \
   "$ROOT/yano/config/application-appchain.yml"
 grep -q 'member join 3' "$ROOT/docs/MASTER_DEMO.md"
@@ -60,4 +65,30 @@ grep -q 'POST.*messages' "$ROOT/docs/MASTER_DEMO_CURL.md"
 grep -q 'load-test' "$ROOT/docs/LOAD_AND_SOAK.md"
 grep -q 'anchor bootstrap' "$ROOT/docs/ANCHORING_DEMO.md"
 grep -q 'Python 3 standard library only' "$ROOT/README.md"
+
+# Exercise the real packaged generator against the authoritative catalog. This
+# catches a release whose validator bundle, digest mode, or generator classpath
+# differs from the source-level showcase contract.
+"$ROOT/showcase.sh" prepare --instance distribution-contract --nodes 3 \
+  --http-base 29770 --server-base 29370 >/dev/null
+MAP_ROOT="$ROOT/data/showcase/distribution-contract"
+[ -s "$MAP_ROOT/authenticated-map.properties" ]
+[ -s "$MAP_ROOT/authenticated-map-genesis.hex" ]
+[ "$(grep -c '^yano.app-chain.chains\[8\]\.' \
+  "$MAP_ROOT/authenticated-map.properties")" = 4 ]
+MAP_INFO="$("$ROOT/yano/yano.sh" appchain state validators \
+  --genesis-file "$MAP_ROOT/authenticated-map-genesis.hex")"
+printf '%s' "$MAP_INFO" | jq -e '
+  .chainId == "authenticated-map-chain" and
+  .profile == "mpf-blake2b256-v1" and
+  .validatorCount == 2 and
+  ([.collections[].id] | sort ==
+    ["attachments", "canonical-events", "gtins", "products"]) and
+  any(.validators[];
+    .id == "product-v1" and .kind == "schema") and
+  any(.validators[];
+    .id == "gtin-v1" and .kind == "plugin" and
+    .providerId == "gs1-gtin-v1" and
+    (.artifactClosureSha256 | test("^[0-9a-f]{64}$")))
+' >/dev/null
 echo "PASS: copied showcase ZIP is self-contained and documents every demo path"

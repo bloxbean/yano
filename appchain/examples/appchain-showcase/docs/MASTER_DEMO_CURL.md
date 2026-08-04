@@ -100,7 +100,55 @@ curl -fsS \
 The codec only constructs deterministic command bytes. curl is sending the
 actual API request a typed application client would send.
 
-## 5. Proposal and application approvals as separate messages
+## 5. Authenticated map with schema and plugin validation
+
+Submit a canonical-CBOR product that matches the genesis-bound schema:
+
+```bash
+PRODUCT_KEY=sku-curl-200
+VALUE_HEX="$(python3 "$CODEC" authmap-value product \
+  "$PRODUCT_KEY" 5 active 'curl demo product')"
+BODY_HEX="$(python3 "$CODEC" authmap put products \
+  "$PRODUCT_KEY" "$VALUE_HEX")"
+ID="$(submit_hex 7070 authenticated-map-chain \
+  authenticated-map.command.v1 "$BODY_HEX")"
+wait_finalized authenticated-map-chain "$ID" | jq '{messageId,height,topic}'
+```
+
+Submit a canonical-CBOR GTIN text value checked by the first-party validator
+plugin:
+
+```bash
+GTIN=95012346
+VALUE_HEX="$(python3 "$CODEC" authmap-value gtin "$GTIN")"
+BODY_HEX="$(python3 "$CODEC" authmap put gtins "$GTIN" "$VALUE_HEX")"
+ID="$(submit_hex 7070 authenticated-map-chain \
+  authenticated-map.command.v1 "$BODY_HEX")"
+wait_finalized authenticated-map-chain "$ID" >/dev/null
+```
+
+Run the logical point query and retrieve the native MPF proof:
+
+```bash
+QUERY_HEX="$(python3 "$CODEC" authmap query products "$PRODUCT_KEY")"
+curl -fsS -X POST \
+  "http://127.0.0.1:7070/api/v1/app-chain/chains/authenticated-map-chain/query/authenticated-map/entry-v1" \
+  -H 'Content-Type: application/json' \
+  -d "$(jq -nc --arg params "$QUERY_HEX" '{paramsHex:$params}')" \
+  | jq '{chainId,stateMachineId,committedHeight,stateRoot,payloadHex}'
+
+STATE_KEY="$(python3 "$CODEC" authmap state-key products "$PRODUCT_KEY")"
+curl -fsS \
+  "http://127.0.0.1:7070/api/v1/app-chain/chains/authenticated-map-chain/proof/$STATE_KEY" \
+  | jq '{chainId,committedHeight,stateRoot,valueHex,proofWireHex}'
+```
+
+Use `./demos/submit-authenticated-map.sh curl-demo` for the complete four-
+collection path plus deliberate schema and GTIN pre-finality rejection checks.
+Those invalid submissions first receive normal HTTP `202` ingress acceptance;
+the scenario then proves they never finalize and their keys remain absent.
+
+## 6. Proposal and application approvals as separate messages
 
 ```bash
 PROPOSAL=approval-A-200
@@ -125,7 +173,7 @@ curl -fsS \
 Node 1 and node 2 each submit a business approval. Those are ordinary app
 messages and are different from the member signatures certifying every block.
 
-## 6. Balances and document trail
+## 7. Balances and document trail
 
 ```bash
 MEMBER0="$(curl -fsS \
@@ -145,7 +193,7 @@ ID="$(submit_hex 7070 documents-chain doc-trail.command.v1 "$BODY_HEX")"
 wait_finalized documents-chain "$ID" | jq '{messageId,height}'
 ```
 
-## 7. Composite order → approval → effect
+## 8. Composite order → approval → effect
 
 Keep the order bytes identical at registration and proposal:
 
@@ -210,7 +258,7 @@ Only node 0 executes the demo outbox effect. All nodes validate the deterministi
 intent and the finalized result. Empty Effect Executors panels on other chains
 are expected.
 
-## 8. Load, governance, anchoring, and restart
+## 9. Load, governance, anchoring, and restart
 
 The dedicated drivers use the same submission endpoint and add pacing/reporting:
 
@@ -244,7 +292,7 @@ curl -fsS \
 For manual devnet bootstrap and fee-paying preprod setup, follow
 [ANCHORING_DEMO.md](ANCHORING_DEMO.md).
 
-## 9. Authentication behavior
+## 10. Authentication behavior
 
 The local showcase has broad API auth disabled; curl reads/submissions therefore
 omit a key. Privileged admin endpoints require the configured full local-demo

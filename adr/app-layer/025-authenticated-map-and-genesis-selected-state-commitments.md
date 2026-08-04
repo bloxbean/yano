@@ -2,7 +2,14 @@
 
 ## Status
 
-Accepted for phased implementation. Phases 0, 1, 2, 3, and 5 are implemented;
+Accepted for phased implementation. Phases 0, 1, 2, 3, and 5 were implemented
+against the pre-amendment development baseline, and ADR-025.1 value validation
+is implemented. [ADR-025.2](025.2-governed-authenticated-map-authorization-and-console.md)
+is accepted for implementation and reopens the unreleased v1 authorization,
+command, genesis, composite-state, proof, and console contracts. The existing
+phase records therefore remain useful baselines, not final v1 qualification,
+until ADR-025.2 is implemented and the applicable phases are rerun.
+
 Phase 4 is deferred until the required ZeroJ library is released, and optional
 Phase 6 is deferred. CCL `0.8.0-pre5-dev1` remains a development baseline, so
 this status is not production qualification.
@@ -32,6 +39,12 @@ chains remain bound to their original MPF state history.
 - [ADR-019](019-reusable-domain-actor-registry-and-role-aware-approvals.md)
   defines reusable actor and role authorization that an authenticated map may
   consume.
+- [ADR-025.1](025.1-authenticated-map-value-validation.md) adds optional,
+  genesis-bound canonical encoding, declarative schemas, and deterministic
+  value-validator plugins to the final v1 contract.
+- [ADR-025.2](025.2-governed-authenticated-map-authorization-and-console.md)
+  makes `governed-role` and approval-gated mutation part of final v1 through
+  one committed composite product and adds its capability-gated console.
 - [ADR-024](024-appchain-full-support-review-readiness-and-roadmap.md) identifies
   the remaining need to authenticate all consensus-affecting machine settings
   and to keep block, state, recovery, and proof identities aligned.
@@ -64,7 +77,9 @@ This ADR proposes a richer, backend-neutral **authenticated map** product with:
 - one app-chain-wide authenticated state tree;
 - multiple fixed logical collections inside that tree;
 - versioned canonical entries;
-- collection authorization;
+- a closed five-mode collection authorization catalog: `open`, `owner`,
+  `member`, `governed-role`, and `approval`;
+- optional genesis-bound value encoding, schema, and plugin validation;
 - put-if-absent, compare-and-set, transfer, revoke, and atomic batch semantics;
 - current and historical point proofs;
 - finality and L1-anchor proof bundles; and
@@ -281,13 +296,13 @@ app-chain:
               max-value-bytes: 16384
             - id: issuer-keys
               authorization: governed-role
-              role: issuer-admin
+              authorization-policy: issuer-write
               value-format: cbor
               max-key-bytes: 128
               max-value-bytes: 4096
             - id: revocations
-              authorization: governed-role
-              role: revocation-admin
+              authorization: approval
+              authorization-policy: revocation-release
               value-format: cbor
               max-key-bytes: 128
               max-value-bytes: 4096
@@ -376,8 +391,7 @@ and UI responses must call it `REVOKED`, never `ABSENT`.
 
 ### 3.6 Authorization
 
-Collection authorization is fixed by genesis or by a separately specified,
-height-activated governance profile. Candidate policies include:
+The final unreleased v1 collection authorization catalog is:
 
 - `open`: any admitted sender may mutate, subject to operation preconditions;
 - `owner`: first creator becomes controller and controls later mutation;
@@ -385,10 +399,17 @@ height-activated governance profile. Candidate policies include:
 - `governed-role`: an actor must have a named role under ADR-019 state; and
 - `approval`: a referenced finalized approval authorizes the mutation.
 
-The concrete v1 subset must be frozen before implementation. Authorization
-uses authenticated app-chain state and the signed message sender, never a
-node-local allowlist. Role or membership lookup is evaluated at the candidate
-block's deterministic state point.
+The collection kind and, for governed modes, its stable policy ID are fixed by
+genesis or by an explicitly cataloged, height-activated governance profile.
+Actor and policy contents evolve through authenticated immutable revisions and
+governed current pointers. Authorization uses authenticated app-chain state,
+the outer signed message sender, and bounded embedded actor/approval evidence,
+never a node-local allowlist. Role, policy, approval, or membership lookup is
+evaluated at the candidate block's deterministic state point.
+
+[ADR-025.2](025.2-governed-authenticated-map-authorization-and-console.md)
+owns the exact policy records, action/signature binding, one-time approval
+consumption, internal composite assembly, query/proof surface, and console.
 
 ### 3.7 Atomic batches
 
@@ -1100,7 +1121,9 @@ This plan intentionally separates product semantics from backend work.
 5. Benchmark current MPF and both JMT profiles on identical map workloads.
 6. Design the prepared-update/external-batch contract with CCL; do not build a
    sidecar commit workaround.
-7. Decide and document the initial authorization subset and projection API.
+7. Freeze the five-mode authorization catalog, governed action/evidence
+   contracts, and authoritative-versus-derived projection API defined by
+   ADR-025.2.
 
 Benchmark dimensions include:
 
@@ -1120,7 +1143,8 @@ Benchmark dimensions include:
 1. Add the versioned `authenticated-map` state machine without changing
    `kv-registry`.
 2. Implement collections, canonical namespaces, active/revoked entries,
-   revisions, initial authorization, compare-and-set, and bounded atomic batch.
+   revisions, the five authorization modes, compare-and-set, governed evidence
+   consumption, and bounded atomic batch.
 3. Add profile-neutral point/history/receipt query DTOs.
 4. Use the current MPF runtime path and prove identical replay across several
    members, restarts, snapshots, and catch-up.
@@ -1367,20 +1391,18 @@ corresponding phase:
    `genesisId`?
 2. Does the prepared JMT update land first in CCL, or can its store safely
    expose an external RocksDB batch without leaking RocksDB into public APIs?
-3. Which authorization policies are in authenticated-map v1 versus later
-   governed profiles?
-4. Is `BATCH` submitted order authoritative, or are independent keys sorted
+3. Is `BATCH` submitted order authoritative, or are independent keys sorted
    canonically before application? The answer must preserve application intent
    and future circuit compatibility.
-5. What are the default and maximum collection/key/value/batch limits?
-6. What historical proof-retention tiers are supported and advertised?
-7. Should the anchor script store the complete profile ID/genesis ID directly
+4. What are the default and maximum collection/key/value/batch limits?
+5. What historical proof-retention tiers are supported and advertised?
+6. Should the anchor script store the complete profile ID/genesis ID directly
    or only a versioned genesis commitment plus root?
-8. Which ZeroJ application circuits are worth standardizing beyond the generic
+7. Which ZeroJ application circuits are worth standardizing beyond the generic
    operation primitives?
-9. What canonical host transition trace will support future bounded JMT batch
+8. What canonical host transition trace will support future bounded JMT batch
    circuits?
-10. When, if ever, should fixed multi-tree/root-of-roots support be considered?
+9. When, if ever, should fixed multi-tree/root-of-roots support be considered?
 
 Each answer that changes consensus, root, proof, or migration semantics requires
 this ADR to be amended before implementation or a focused follow-up ADR.

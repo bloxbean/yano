@@ -9,11 +9,13 @@ with [MASTER_DEMO.md](docs/MASTER_DEMO.md), use the
 ./showcase.sh quickstart --profile light --nodes 3 --instance demo
 ```
 
-The light profile runs eight app chains on one local multi-node Yano cluster,
-with no Kafka, object store, IPFS, or separate effect service. It includes one
-clearly demo-only plugin, `showcase-composite` / `showcase-outbox`, to make the
-deterministic-intent → finality-gate → external-execution → on-chain-result
-flow visible. It is not a production connector or a new Yano core feature.
+The light profile runs nine app chains on one local multi-node Yano cluster,
+with no Kafka, object store, IPFS, or separate effect service. Its built-in
+`authenticated-map` scenario demonstrates multiple collections, opaque and
+canonical-CBOR values, a declarative schema, and the first-party GS1 validator
+SPI example. It also includes one clearly demo-only plugin,
+`showcase-composite` / `showcase-outbox`, to make the deterministic-intent →
+finality-gate → external-execution → on-chain-result flow visible.
 
 `showcase-composite`, its `order-approval-outbox-v1` preset, and the local
 `showcase-outbox` executor are demo-only showcase artifacts. They are not
@@ -50,10 +52,12 @@ script-anchor co-sign requests; it does not resubmit governance.
 ## Data, restart, and configuration
 
 State stays below `data/showcase/<instance>/` by default. `stop` preserves it;
-`restart` validates the retained deployment marker and reuses it. Identity
-drift fails closed; the only supported marker evolution is an explicit,
-additive `anchor enable` migration. `reset --instance <name> --yes` is the only
-showcase command that deletes the named instance.
+`restart` validates the retained deployment marker and reuses it. The marker
+also binds the generated authenticated-map settings and genesis to the actual
+bootstrap members and release validator digest. Identity drift fails closed;
+the only supported marker evolution is an explicit, additive `anchor enable`
+migration. `reset --instance <name> --yes` is the only showcase command that
+deletes the named instance.
 
 ```bash
 ./showcase.sh config show  --instance demo
@@ -69,11 +73,12 @@ plugin, state, logs, and outbox. `export` writes a redacted shareable snapshot.
 
 Configuration safety has two layers. Launcher-owned identity files bind the
 L1 network/genesis, configured chain IDs, bootstrap members/threshold,
-proposer, config/plugin digests, and anchor signer/scope. Per-chain RocksDB
-stores finalized blocks and MPF state, the committed consensus-profile marker,
-and every governed membership epoch. A normal restart therefore rejects YAML
-or bootstrap identity drift before starting, while governed member/threshold
-changes survive restart and win over the original static values.
+proposer, config/plugin/authenticated-map digests, and anchor signer/scope.
+Per-chain RocksDB stores finalized blocks and MPF state, the committed
+consensus-profile marker, and every governed membership epoch. A normal
+restart therefore rejects YAML or bootstrap identity drift before starting,
+while governed member/threshold changes survive restart and win over the
+original static values.
 
 Do not bypass the launcher with a one-node system-property or YAML edit. A
 consensus-profile mismatch fails that node's startup; other ungoverned drift
