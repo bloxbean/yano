@@ -92,6 +92,7 @@ Validate and operate:
                                   Work with signed custom component catalogs
   metadata verify ...             Verify custom-plugin metadata signatures
   role ...                        Encode/sign role commands offline (seed files only)
+  authenticated-map ...           Assemble governed map actions/evidence offline
   validity key generate ...       Create an encrypted local L2 session key
   validity ...                    Operate an experimental EUTxO ZeroJ testnet lifecycle
 

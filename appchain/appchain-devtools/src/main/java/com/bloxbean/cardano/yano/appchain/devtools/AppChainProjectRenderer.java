@@ -1,6 +1,9 @@
 package com.bloxbean.cardano.yano.appchain.devtools;
 
+import com.bloxbean.cardano.yano.appchain.roles.contracts.GovernedGenesisV1;
+import com.bloxbean.cardano.yano.appchain.stdlib.AuthenticatedMapDomainApi;
 import com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -16,6 +19,7 @@ import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermission;
 import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -239,6 +243,9 @@ final class AppChainProjectRenderer {
                     utf8(authenticatedMapGenesis + "\n"));
             outputs.put("docs/VALUE_VALIDATION.md",
                     utf8(authenticatedMapValidationDocumentation(resolution)));
+            materializeAuthenticatedMapArtifacts(outputs, resolution,
+                    AuthenticatedMapContract.decodeGenesis(
+                            HexFormat.of().parseHex(authenticatedMapGenesis)));
         }
 
         int members = resolution.blueprint().spec().chains().getFirst().topology().members();
@@ -818,6 +825,126 @@ final class AppChainProjectRenderer {
 
                 Profile: `%s`; schema-bound collections: %d.
                 """.formatted(exampleCollection, intent.profile(), schemaCollections);
+    }
+
+    private static void materializeAuthenticatedMapArtifacts(
+            Map<String, byte[]> outputs,
+            AppChainProjectModel.Resolution resolution,
+            AuthenticatedMapContract.Genesis genesis
+    ) {
+        HexFormat hex = HexFormat.of();
+        Map<String, String> identity = new TreeMap<>();
+        identity.put("stateMachine", AuthenticatedMapContract.STATE_MACHINE_ID);
+        identity.put("contractVersion", Integer.toString(
+                AuthenticatedMapContract.STATE_MACHINE_VERSION));
+        identity.put("domainApiVersion", AuthenticatedMapDomainApi.API_VERSION);
+        identity.put("profile", genesis.commitmentProfileId());
+        identity.put("formatFingerprint", hex.formatHex(genesis.formatFingerprint()));
+        identity.put("genesisId", hex.formatHex(AuthenticatedMapContract.genesisId(genesis)));
+        identity.put("governed", Boolean.toString(genesis.governedGenesis() != null));
+        outputs.put("config/authenticated-map/identity.yaml", utf8(yamlConfig(identity)));
+
+        Map<String, String> capabilities = new TreeMap<>();
+        capabilities.put("metadata", "bounded-v1");
+        capabilities.put("entries", "exact-point-v1");
+        capabilities.put("receipts", "exact-message-v1");
+        capabilities.put("proofs", "trusted-root-v1");
+        if (genesis.governedGenesis() != null) {
+            capabilities.put("actors", "revisioned-v1");
+            capabilities.put("policies", "revisioned-v1");
+            capabilities.put("approvals", "bounded-v1");
+            capabilities.put("governance", "bounded-v1");
+            capabilities.put("consumption", "exact-v1");
+        }
+        outputs.put("config/authenticated-map/capabilities.yaml",
+                utf8(yamlConfig(capabilities)));
+
+        GovernedGenesisV1 governed = genesis.governedGenesis();
+        if (governed == null) return;
+        outputs.put("config/authenticated-map/governed-genesis-v1.hex",
+                hexLine(governed.encode()));
+        outputs.put("config/authenticated-map/administrator-authority-v1.hex",
+                hexLine(governed.administratorAuthority().encode()));
+        outputs.put("config/authenticated-map/limits-v1.hex",
+                hexLine(governed.limits().encode()));
+        governed.organizations().forEach(record -> outputs.put(
+                "config/authenticated-map/organizations/" + record.organizationId()
+                        + "-v1.hex", hexLine(record.encode())));
+        governed.actors().forEach(record -> outputs.put(
+                "config/authenticated-map/actors/" + record.actor().actorId()
+                        + "-v1.hex", hexLine(record.encode())));
+        governed.directPolicies().forEach(record -> outputs.put(
+                "config/authenticated-map/direct-policies/" + record.policyId()
+                        + "-v1.hex", hexLine(record.encode())));
+        governed.approvalPolicies().forEach(record -> outputs.put(
+                "config/authenticated-map/approval-policies/" + record.policyId()
+                        + "-v1.hex", hexLine(record.encode())));
+        outputs.put("docs/AUTHORIZATION.md", utf8(
+                authenticatedMapAuthorizationDocumentation(genesis)));
+
+        List<AppChainProjectModel.AuthenticatedMapOnboardingIntent> onboarding = safeList(
+                resolution.blueprint().spec().chains().getFirst()
+                        .authenticatedMap().onboarding());
+        if (!onboarding.isEmpty()) {
+            StringBuilder plan = new StringBuilder(GENERATED)
+                    .append("schemaVersion: authenticated-map-onboarding-v1\n")
+                    .append("chainId: ").append(genesis.chainId()).append('\n')
+                    .append("genesisId: ").append(hex.formatHex(
+                            AuthenticatedMapContract.genesisId(genesis))).append('\n')
+                    .append("records:\n");
+            onboarding.stream().sorted(java.util.Comparator
+                            .comparing(AppChainProjectModel.AuthenticatedMapOnboardingIntent::kind)
+                            .thenComparing(AppChainProjectModel.AuthenticatedMapOnboardingIntent::id))
+                    .forEach(item -> {
+                        plan.append("  - kind: ").append(item.kind()).append('\n')
+                                .append("    id: ").append(item.id()).append('\n');
+                        if (item.note() != null && !item.note().isBlank()) {
+                            plan.append("    note: ").append(yamlQuoted(item.note())).append('\n');
+                        }
+                    });
+            outputs.put("bootstrap/authenticated-map-onboarding.yaml", utf8(plan.toString()));
+        }
+    }
+
+    private static byte[] hexLine(byte[] value) {
+        return utf8(HexFormat.of().formatHex(value) + "\n");
+    }
+
+    private static String yamlQuoted(String value) {
+        return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"")
+                .replace("\n", "\\n") + "\"";
+    }
+
+    private static String authenticatedMapAuthorizationDocumentation(
+            AuthenticatedMapContract.Genesis genesis
+    ) {
+        GovernedGenesisV1 governed = genesis.governedGenesis();
+        return """
+                # Authenticated-map governed authorization
+
+                This project commits a closed revision-1 actor and policy registry in genesis.
+                Every file under `config/authenticated-map/` is a public, canonical artifact;
+                private actor and member keys are deliberately absent.
+
+                Authority `%s` requires %d of %d administrator actors. The genesis contains
+                %d organizations, %d actors, %d direct-role policies, and %d approval policies.
+                Collection policy identifiers are stable while policy revisions evolve through
+                authenticated governance.
+
+                Use the offline action/signing helpers to construct an exact action commitment.
+                Submit actor or approval commands separately, then execute the fully bound map
+                command. Verify entry, policy, actor, pointer, consumption, receipt, and decision
+                proofs against one independently trusted height/root; JSON projections are not
+                the verification boundary.
+
+                Optional records listed in `bootstrap/authenticated-map-onboarding.yaml` are not
+                active at genesis. Doctor reports any governed collection whose policy is absent
+                until that public plan is completed.
+                """.formatted(governed.administratorAuthority().authorityId(),
+                governed.administratorAuthority().distinctActorThreshold(),
+                governed.administratorAuthority().administratorActorIds().size(),
+                governed.organizations().size(), governed.actors().size(),
+                governed.directPolicies().size(), governed.approvalPolicies().size());
     }
 
     private String pluginDocumentation(AppChainProjectModel.Resolution resolution) {

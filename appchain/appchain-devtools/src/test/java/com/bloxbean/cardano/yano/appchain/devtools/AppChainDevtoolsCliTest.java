@@ -7,6 +7,8 @@ import com.bloxbean.cardano.yano.appchain.config.ConstraintProvenance;
 import com.bloxbean.cardano.yano.appchain.config.PropertyScope;
 import com.bloxbean.cardano.yano.appchain.config.PropertyType;
 import com.bloxbean.cardano.yano.appchain.config.ValidationCoverage;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapAuthorizationContract;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -220,6 +222,45 @@ class AppChainDevtoolsCliTest {
                 .doesNotContain(secret);
         assertThat(inline.exit()).isEqualTo(AppChainDevtoolsCli.EXIT_USAGE);
         assertThat(inline.err()).doesNotContain(secret);
+    }
+
+    @Test
+    void actorKeyProofSignatureCanBeInsertedDirectlyIntoGovernedGenesis() throws Exception {
+        Path seed = temporary.resolve("governed-actor.seed");
+        Files.writeString(seed, "12".repeat(32));
+        String publicKey = run("appchain", "role", "public-key",
+                "--seed-file", seed.toString()).out().trim();
+
+        Result signature = run("appchain", "role", "key-proof-signature",
+                "--chain", "registry-chain",
+                "--actor", "issuer-a",
+                "--actor-revision", "1",
+                "--key", "issuer-a-v1",
+                "--public-key", publicKey,
+                "--valid-from-height", "1",
+                "--valid-until-height", "0",
+                "--seed-file", seed.toString());
+
+        assertThat(signature.exit()).isZero();
+        assertThat(signature.err()).isEmpty();
+        assertThat(signature.out().trim()).matches("[0-9a-f]{128}");
+    }
+
+    @Test
+    void authenticatedMapAuthorizationToolIsWiredThroughDistributionCli() {
+        var command = AuthenticatedMapContract.Command.single(
+                AuthenticatedMapContract.Mutation.put("records", new byte[]{1},
+                        new byte[]{2}));
+        var action = AuthenticatedMapAuthorizationContract.MapActionV1.open(command);
+        String encoded = java.util.HexFormat.of().formatHex(
+                AuthenticatedMapAuthorizationContract.encodeAction(action));
+
+        Result result = run("authenticated-map", "action-commitment",
+                "--action-hex", encoded);
+
+        assertThat(result.exit()).isZero();
+        assertThat(result.err()).isEmpty();
+        assertThat(result.out().trim()).matches("[0-9a-f]{64}");
     }
 
     @Test

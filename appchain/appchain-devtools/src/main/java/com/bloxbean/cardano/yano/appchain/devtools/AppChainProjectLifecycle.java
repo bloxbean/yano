@@ -132,16 +132,25 @@ final class AppChainProjectLifecycle {
         String artifactStage = distribution == null ? "PENDING" : "FAIL";
         String identityStage = "NOT_REQUIRED";
         boolean schemaEncodingFailure = false;
+        boolean governedReadinessFailure = false;
         if (project != null) {
             try {
+                AppChainProjectModel.Blueprint blueprint = renderer.readBlueprint(project);
                 AppChainProjectModel.DoctorCheck schemaEncoding =
-                        authenticatedMapSchemaEncoding(renderer.readBlueprint(project));
+                        authenticatedMapSchemaEncoding(blueprint);
                 checks.add(schemaEncoding);
                 schemaEncodingFailure = "FAIL".equals(schemaEncoding.status());
+                AppChainProjectModel.DoctorCheck governedReadiness =
+                        authenticatedMapGovernedReadiness(blueprint);
+                checks.add(governedReadiness);
+                governedReadinessFailure = "FAIL".equals(governedReadiness.status());
             } catch (IOException | RuntimeException failure) {
                 checks.add(check("authenticated-map-schema-encoding", "FAIL",
                         "blueprint could not be inspected: " + safeMessage(failure)));
                 schemaEncodingFailure = true;
+                checks.add(check("authenticated-map-governed-readiness", "FAIL",
+                        "blueprint could not be inspected: " + safeMessage(failure)));
+                governedReadinessFailure = true;
             }
             try {
                 AppChainProjectModel.ProjectValidation validation = validate(project);
@@ -166,7 +175,7 @@ final class AppChainProjectLifecycle {
             } catch (IOException | IllegalArgumentException | IllegalStateException failure) {
                 checks.add(check("project", "FAIL", safeMessage(failure)));
             }
-            if (schemaEncodingFailure) configStage = "FAIL";
+            if (schemaEncodingFailure || governedReadinessFailure) configStage = "FAIL";
         }
 
         if (distribution != null) {
@@ -528,7 +537,8 @@ final class AppChainProjectLifecycle {
                 .collect(java.util.stream.Collectors.toCollection(TreeSet::new));
         List<String> invalid = safeList(intent.collections()).stream()
                 .filter(Objects::nonNull)
-                .filter(collection -> schemaIds.contains(collection.validator()))
+                .filter(collection -> collection.validator() != null
+                        && schemaIds.contains(collection.validator()))
                 .filter(collection -> !"canonical-cbor".equals(collection.valueEncoding()))
                 .map(AppChainProjectModel.AuthenticatedMapCollectionIntent::id)
                 .sorted()
@@ -540,13 +550,76 @@ final class AppChainProjectLifecycle {
         }
         long schemaCollections = safeList(intent.collections()).stream()
                 .filter(Objects::nonNull)
-                .filter(collection -> schemaIds.contains(collection.validator()))
+                .filter(collection -> collection.validator() != null
+                        && schemaIds.contains(collection.validator()))
                 .count();
         return check("authenticated-map-schema-encoding",
                 schemaCollections == 0 ? "NOT_REQUIRED" : "PASS",
                 schemaCollections == 0
                         ? "no collection selects a declarative schema"
                         : schemaCollections + " schema-bound collection(s) use canonical-cbor");
+    }
+
+    private static AppChainProjectModel.DoctorCheck authenticatedMapGovernedReadiness(
+            AppChainProjectModel.Blueprint blueprint
+    ) {
+        if (blueprint == null || blueprint.spec() == null
+                || safeList(blueprint.spec().chains()).isEmpty()
+                || blueprint.spec().chains().getFirst().authenticatedMap() == null) {
+            return check("authenticated-map-governed-readiness", "NOT_REQUIRED",
+                    "project does not declare authenticated-map governance");
+        }
+        AppChainProjectModel.AuthenticatedMapIntent intent = blueprint.spec().chains()
+                .getFirst().authenticatedMap();
+        List<AppChainProjectModel.AuthenticatedMapCollectionIntent> governed = safeList(
+                intent.collections()).stream().filter(Objects::nonNull)
+                .filter(collection -> "governed-role".equals(collection.authorization())
+                        || "approval".equals(collection.authorization())).toList();
+        if (governed.isEmpty()) {
+            return check("authenticated-map-governed-readiness", "NOT_REQUIRED",
+                    "project has no governed authenticated-map collections");
+        }
+        AppChainProjectModel.AuthenticatedMapGenesisRecordsIntent records =
+                intent.genesisRecords();
+        if (intent.authorizationGovernance() == null || records == null) {
+            return check("authenticated-map-governed-readiness", "FAIL",
+                    "GOVERNED_COLLECTION_NOT_BOOTSTRAPPED: authority/genesis records absent");
+        }
+        Set<String> activeDirect = safeList(records.directPolicies()).stream()
+                .filter(Objects::nonNull)
+                .filter(policy -> policy.status() == null || "active".equals(policy.status()))
+                .map(AppChainProjectModel.AuthenticatedMapDirectPolicyIntent::id)
+                .filter(Objects::nonNull).collect(java.util.stream.Collectors.toSet());
+        Set<String> activeApproval = safeList(records.approvalPolicies()).stream()
+                .filter(Objects::nonNull)
+                .filter(policy -> policy.status() == null || "active".equals(policy.status()))
+                .map(AppChainProjectModel.AuthenticatedMapApprovalPolicyIntent::id)
+                .filter(Objects::nonNull).collect(java.util.stream.Collectors.toSet());
+        Set<String> planned = safeList(intent.onboarding()).stream()
+                .filter(Objects::nonNull)
+                .map(item -> item.kind() + ":" + item.id())
+                .collect(java.util.stream.Collectors.toSet());
+        List<String> missing = governed.stream().filter(collection -> {
+            String policy = collection.authorizationPolicy();
+            return policy == null || policy.isBlank()
+                    || "governed-role".equals(collection.authorization())
+                    && !activeDirect.contains(policy)
+                    || "approval".equals(collection.authorization())
+                    && !activeApproval.contains(policy);
+        }).map(collection -> {
+            String policy = collection.authorizationPolicy() == null
+                    ? "<missing>" : collection.authorizationPolicy();
+            String kind = "governed-role".equals(collection.authorization())
+                    ? "direct-policy" : "approval-policy";
+            return collection.id() + "->" + policy
+                    + (planned.contains(kind + ":" + policy) ? " (onboarding planned)" : "");
+        }).sorted().toList();
+        if (!missing.isEmpty()) {
+            return check("authenticated-map-governed-readiness", "FAIL",
+                    "GOVERNED_COLLECTION_NOT_BOOTSTRAPPED: " + String.join(", ", missing));
+        }
+        return check("authenticated-map-governed-readiness", "PASS",
+                governed.size() + " governed collection policy binding(s) are active at genesis");
     }
 
     private static String safeMessage(Exception failure) {

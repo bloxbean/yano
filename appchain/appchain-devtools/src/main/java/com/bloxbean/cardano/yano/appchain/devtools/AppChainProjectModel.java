@@ -84,18 +84,48 @@ final class AppChainProjectModel {
             Integer maxBatchItems,
             Integer maxBatchBytes,
             List<AuthenticatedMapCollectionIntent> collections,
-            List<AuthenticatedMapSchemaIntent> schemas) {
+            List<AuthenticatedMapSchemaIntent> schemas,
+            AuthenticatedMapGovernanceIntent authorizationGovernance,
+            AuthenticatedMapGenesisRecordsIntent genesisRecords,
+            GovernedAuthorizationLimitsIntent authorizationLimits,
+            List<AuthenticatedMapOnboardingIntent> onboarding) {
+
+        AuthenticatedMapIntent(
+                String profile,
+                String anchorPolicyCommitment,
+                Integer maxBatchItems,
+                Integer maxBatchBytes,
+                List<AuthenticatedMapCollectionIntent> collections,
+                List<AuthenticatedMapSchemaIntent> schemas
+        ) {
+            this(profile, anchorPolicyCommitment, maxBatchItems, maxBatchBytes,
+                    collections, schemas, null, null, null, List.of());
+        }
     }
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
     record AuthenticatedMapCollectionIntent(
             String id,
             String authorization,
+            String authorizationPolicy,
             Boolean restoreAllowed,
             Integer maxKeyBytes,
             Integer maxValueBytes,
             String valueEncoding,
             String validator) {
+
+        AuthenticatedMapCollectionIntent(
+                String id,
+                String authorization,
+                Boolean restoreAllowed,
+                Integer maxKeyBytes,
+                Integer maxValueBytes,
+                String valueEncoding,
+                String validator
+        ) {
+            this(id, authorization, null, restoreAllowed, maxKeyBytes,
+                    maxValueBytes, valueEncoding, validator);
+        }
     }
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -103,6 +133,107 @@ final class AppChainProjectModel {
             String id,
             String root,
             String source) {
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record AuthenticatedMapGovernanceIntent(
+            String authorityId,
+            Long initialRevision,
+            List<String> administratorActors,
+            Integer threshold,
+            Long maximumMutationLifetimeBlocks) {
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record AuthenticatedMapGenesisRecordsIntent(
+            List<AuthenticatedMapOrganizationIntent> organizations,
+            List<AuthenticatedMapActorIntent> actors,
+            List<AuthenticatedMapDirectPolicyIntent> directPolicies,
+            List<AuthenticatedMapApprovalPolicyIntent> approvalPolicies) {
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record AuthenticatedMapOrganizationIntent(
+            String id,
+            Long revision,
+            String status,
+            String metadataCommitment) {
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record AuthenticatedMapActorIntent(
+            String id,
+            Long revision,
+            String organization,
+            String status,
+            List<String> roles,
+            List<AuthenticatedMapActorKeyIntent> keys,
+            String metadataCommitment) {
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record AuthenticatedMapActorKeyIntent(
+            String id,
+            String algorithm,
+            String publicKey,
+            String proofOfPossession,
+            Long validFromHeight,
+            Long validUntilHeight,
+            String status) {
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record AuthenticatedMapDirectPolicyIntent(
+            String id,
+            Long revision,
+            String status,
+            String requiredRole,
+            Long maximumAuthorizationLifetimeBlocks) {
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record AuthenticatedMapApprovalPolicyIntent(
+            String id,
+            Long revision,
+            String status,
+            List<String> proposerRoles,
+            List<AuthenticatedMapApprovalClauseIntent> clauses,
+            String rejectionMode,
+            Long maximumLifetimeBlocks) {
+    }
+
+    record AuthenticatedMapApprovalClauseIntent(
+            String id,
+            String role,
+            Integer minimumCount,
+            String distinctBy) {
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record GovernedAuthorizationLimitsIntent(
+            Integer maximumEvidenceItemsPerCommand,
+            Integer maximumCoveredIndexesPerEvidence,
+            Integer maximumGenesisOrganizations,
+            Integer maximumGenesisActors,
+            Integer maximumGenesisKeys,
+            Integer maximumGenesisPolicies,
+            Integer maximumGenesisRecordBytes,
+            Integer maximumPendingGovernance,
+            Integer maximumPendingApprovals,
+            Integer maximumPendingPerActor,
+            Integer maximumPendingPerPolicy,
+            Integer maximumPendingPerAuthority,
+            Integer maximumPendingPerDeadline,
+            Integer maximumExpiryWorkPerBlock,
+            Integer maximumAuthoritySupersessionWork,
+            Integer maximumQueryPageSize,
+            Integer maximumCryptoWorkUnitsPerBlock) {
+    }
+
+    record AuthenticatedMapOnboardingIntent(
+            String kind,
+            String id,
+            String note) {
     }
 
     @JsonInclude(JsonInclude.Include.NON_NULL)

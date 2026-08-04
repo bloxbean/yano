@@ -5,8 +5,12 @@ import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContr
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.BalancesContract;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.DocTrailContract;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.KvRegistryContract;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapAuthorizationContract;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorGovernanceCommandV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.SignedActorCommandV1;
 
 import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
@@ -61,6 +65,31 @@ public final class StdlibAppChainClient {
             AuthenticatedMapContract.Command command) {
         return client.submit(AuthenticatedMapContract.DEFAULT_TOPIC,
                 AuthenticatedMapContract.encodeCommand(command));
+    }
+
+    /** Execute a fully action-bound basic/direct-role/approval map command. */
+    public AppChainClient.SubmitResult authenticatedMapGovernedCommand(
+            AuthenticatedMapAuthorizationContract.AuthenticatedMapCommandV1 command) {
+        return client.submit(AuthenticatedMapContract.DEFAULT_TOPIC,
+                AuthenticatedMapAuthorizationContract.encodeCommand(command));
+    }
+
+    /** Submit one externally signed proposal/decision statement. */
+    public AppChainClient.SubmitResult authenticatedMapApprovalCommand(
+            SignedActorCommandV1 command) {
+        return client.submit(SignedActorCommandV1.DEFAULT_TOPIC, command.encode());
+    }
+
+    /** Submit actor-authenticated policy governance through the approval workflow. */
+    public AppChainClient.SubmitResult authenticatedMapPolicyGovernance(
+            ActorGovernanceCommandV1 command) {
+        return client.submit(ActorGovernanceCommandV1.POLICY_TOPIC, command.encode());
+    }
+
+    /** Submit actor/organization/authority governance through the actor registry. */
+    public AppChainClient.SubmitResult authenticatedMapActorGovernance(
+            ActorGovernanceCommandV1 command) {
+        return client.submit(ActorGovernanceCommandV1.ACTOR_REGISTRY_TOPIC, command.encode());
     }
 
     /** Advisory local validation followed by the normal authoritative submission path. */
@@ -139,6 +168,40 @@ public final class StdlibAppChainClient {
             String collectionId, byte[] applicationKey) {
         return verified(AuthenticatedMapContract.canonicalKey(collectionId, applicationKey),
                 AuthenticatedMapContract::decodeEntry);
+    }
+
+    public Optional<AuthenticatedMapAuthorizationContract.DirectConsumptionV1>
+    authenticatedMapDirectConsumption(String actorId, byte[] authorizationId) {
+        byte[] params = new AuthenticatedMapAuthorizationContract.DirectConsumptionQueryV1(
+                actorId, authorizationId).encode();
+        AppChainClient.QueryResult result = client.query(
+                AuthenticatedMapContract.DIRECT_CONSUMPTION_QUERY_PATH, params);
+        requireAuthenticatedMapQuery(result);
+        if (result.payload().length == 0) return Optional.empty();
+        var consumption = AuthenticatedMapAuthorizationContract.DirectConsumptionV1
+                .decode(result.payload());
+        if (!actorId.equals(consumption.actorId())
+                || !Arrays.equals(authorizationId, consumption.authorizationId())) {
+            throw new AppChainClient.AppChainClientException(
+                    "Authenticated-map direct consumption differs from query subject");
+        }
+        return Optional.of(consumption);
+    }
+
+    public Optional<AuthenticatedMapAuthorizationContract.ApprovalConsumptionV1>
+    authenticatedMapApprovalConsumption(String proposalId) {
+        AppChainClient.QueryResult result = client.query(
+                AuthenticatedMapContract.APPROVAL_CONSUMPTION_QUERY_PATH,
+                proposalId.getBytes(StandardCharsets.US_ASCII));
+        requireAuthenticatedMapQuery(result);
+        if (result.payload().length == 0) return Optional.empty();
+        var consumption = AuthenticatedMapAuthorizationContract.ApprovalConsumptionV1
+                .decode(result.payload());
+        if (!proposalId.equals(consumption.proposalId())) {
+            throw new AppChainClient.AppChainClientException(
+                    "Authenticated-map approval consumption differs from query subject");
+        }
+        return Optional.of(consumption);
     }
 
     public AppChainClient.SubmitResult propose(

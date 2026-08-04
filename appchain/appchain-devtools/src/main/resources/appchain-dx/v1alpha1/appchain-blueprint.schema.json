@@ -83,7 +83,8 @@
                       "required": ["id"],
                       "properties": {
                         "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"},
-                        "authorization": {"enum": ["open", "owner", "member"]},
+                        "authorization": {"enum": ["open", "owner", "member", "governed-role", "approval"]},
+                        "authorizationPolicy": {"$ref": "#/$defs/identifier"},
                         "restoreAllowed": {"type": "boolean"},
                         "maxKeyBytes": {"type": "integer", "minimum": 1, "maximum": 128},
                         "maxValueBytes": {"type": "integer", "minimum": 0, "maximum": 1048576},
@@ -106,6 +107,14 @@
                       },
                       "additionalProperties": false
                     }
+                  },
+                  "authorizationGovernance": {"$ref": "#/$defs/authenticatedMapGovernance"},
+                  "genesisRecords": {"$ref": "#/$defs/authenticatedMapGenesisRecords"},
+                  "authorizationLimits": {"$ref": "#/$defs/governedAuthorizationLimits"},
+                  "onboarding": {
+                    "type": "array",
+                    "maxItems": 128,
+                    "items": {"$ref": "#/$defs/authenticatedMapOnboarding"}
                   }
                 },
                 "additionalProperties": false
@@ -129,6 +138,143 @@
             "additionalProperties": false
           }
         }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "identifier": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,62}$"},
+    "recordStatus": {"enum": ["active", "suspended", "revoked"]},
+    "revisionOne": {"type": "integer", "const": 1},
+    "authenticatedMapGovernance": {
+      "type": "object",
+      "required": ["authorityId", "administratorActors", "threshold", "maximumMutationLifetimeBlocks"],
+      "properties": {
+        "authorityId": {"$ref": "#/$defs/identifier"},
+        "initialRevision": {"$ref": "#/$defs/revisionOne"},
+        "administratorActors": {"type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": {"$ref": "#/$defs/identifier"}},
+        "threshold": {"type": "integer", "minimum": 1, "maximum": 64},
+        "maximumMutationLifetimeBlocks": {"type": "integer", "minimum": 1, "maximum": 1000000}
+      },
+      "additionalProperties": false
+    },
+    "authenticatedMapGenesisRecords": {
+      "type": "object",
+      "required": ["organizations", "actors"],
+      "properties": {
+        "organizations": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"$ref": "#/$defs/authenticatedMapOrganization"}},
+        "actors": {"type": "array", "minItems": 1, "maxItems": 128, "items": {"$ref": "#/$defs/authenticatedMapActor"}},
+        "directPolicies": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/authenticatedMapDirectPolicy"}},
+        "approvalPolicies": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/authenticatedMapApprovalPolicy"}}
+      },
+      "additionalProperties": false
+    },
+    "authenticatedMapOrganization": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "revision": {"$ref": "#/$defs/revisionOne"},
+        "status": {"$ref": "#/$defs/recordStatus"},
+        "metadataCommitment": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "authenticatedMapActor": {
+      "type": "object",
+      "required": ["id", "organization", "roles", "keys"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "revision": {"$ref": "#/$defs/revisionOne"},
+        "organization": {"$ref": "#/$defs/identifier"},
+        "status": {"$ref": "#/$defs/recordStatus"},
+        "roles": {"type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": {"$ref": "#/$defs/identifier"}},
+        "keys": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"$ref": "#/$defs/authenticatedMapActorKey"}},
+        "metadataCommitment": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "authenticatedMapActorKey": {
+      "type": "object",
+      "required": ["id", "algorithm", "publicKey", "proofOfPossession"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "algorithm": {"const": "ed25519"},
+        "publicKey": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "proofOfPossession": {"type": "string", "pattern": "^[0-9a-f]{128}$"},
+        "validFromHeight": {"type": "integer", "minimum": 1},
+        "validUntilHeight": {"type": "integer", "minimum": 0},
+        "status": {"$ref": "#/$defs/recordStatus"}
+      },
+      "additionalProperties": false
+    },
+    "authenticatedMapDirectPolicy": {
+      "type": "object",
+      "required": ["id", "requiredRole", "maximumAuthorizationLifetimeBlocks"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "revision": {"$ref": "#/$defs/revisionOne"},
+        "status": {"$ref": "#/$defs/recordStatus"},
+        "requiredRole": {"$ref": "#/$defs/identifier"},
+        "maximumAuthorizationLifetimeBlocks": {"type": "integer", "minimum": 1, "maximum": 1000000}
+      },
+      "additionalProperties": false
+    },
+    "authenticatedMapApprovalPolicy": {
+      "type": "object",
+      "required": ["id", "proposerRoles", "clauses", "rejectionMode", "maximumLifetimeBlocks"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "revision": {"$ref": "#/$defs/revisionOne"},
+        "status": {"$ref": "#/$defs/recordStatus"},
+        "proposerRoles": {"type": "array", "maxItems": 16, "uniqueItems": true, "items": {"$ref": "#/$defs/identifier"}},
+        "clauses": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"$ref": "#/$defs/authenticatedMapApprovalClause"}},
+        "rejectionMode": {"enum": ["disabled", "any-eligible"]},
+        "maximumLifetimeBlocks": {"type": "integer", "minimum": 1, "maximum": 1000000}
+      },
+      "additionalProperties": false
+    },
+    "authenticatedMapApprovalClause": {
+      "type": "object",
+      "required": ["id", "role", "minimumCount", "distinctBy"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "role": {"$ref": "#/$defs/identifier"},
+        "minimumCount": {"type": "integer", "minimum": 1, "maximum": 64},
+        "distinctBy": {"enum": ["actor", "organization"]}
+      },
+      "additionalProperties": false
+    },
+    "governedAuthorizationLimits": {
+      "type": "object",
+      "properties": {
+        "maximumEvidenceItemsPerCommand": {"type": "integer", "minimum": 1, "maximum": 32},
+        "maximumCoveredIndexesPerEvidence": {"type": "integer", "minimum": 1, "maximum": 128},
+        "maximumGenesisOrganizations": {"type": "integer", "minimum": 1, "maximum": 64},
+        "maximumGenesisActors": {"type": "integer", "minimum": 1, "maximum": 128},
+        "maximumGenesisKeys": {"type": "integer", "minimum": 1, "maximum": 256},
+        "maximumGenesisPolicies": {"type": "integer", "minimum": 1, "maximum": 128},
+        "maximumGenesisRecordBytes": {"type": "integer", "minimum": 1, "maximum": 262144},
+        "maximumPendingGovernance": {"type": "integer", "minimum": 1, "maximum": 1024},
+        "maximumPendingApprovals": {"type": "integer", "minimum": 1, "maximum": 4096},
+        "maximumPendingPerActor": {"type": "integer", "minimum": 1, "maximum": 64},
+        "maximumPendingPerPolicy": {"type": "integer", "minimum": 1, "maximum": 256},
+        "maximumPendingPerAuthority": {"type": "integer", "minimum": 1, "maximum": 256},
+        "maximumPendingPerDeadline": {"type": "integer", "minimum": 1, "maximum": 128},
+        "maximumExpiryWorkPerBlock": {"type": "integer", "minimum": 1, "maximum": 256},
+        "maximumAuthoritySupersessionWork": {"type": "integer", "minimum": 1, "maximum": 256},
+        "maximumQueryPageSize": {"type": "integer", "minimum": 1, "maximum": 100},
+        "maximumCryptoWorkUnitsPerBlock": {"type": "integer", "minimum": 1, "maximum": 512}
+      },
+      "additionalProperties": false
+    },
+    "authenticatedMapOnboarding": {
+      "type": "object",
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {"enum": ["organization", "actor", "direct-policy", "approval-policy"]},
+        "id": {"$ref": "#/$defs/identifier"},
+        "note": {"type": "string", "maxLength": 512}
       },
       "additionalProperties": false
     }

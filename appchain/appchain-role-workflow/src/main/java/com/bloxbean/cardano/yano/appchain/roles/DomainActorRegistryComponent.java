@@ -23,6 +23,7 @@ import com.bloxbean.cardano.yano.appchain.roles.contracts.OrganizationRecordV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RecordStatus;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RegistryMutationV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowKeys;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowIdentifiers;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleCommandResultV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowResultCode;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RolePendingQueriesV1;
@@ -38,8 +39,8 @@ import java.util.List;
 
 /** Threshold-governed, append-revision domain organization/actor/key registry. */
 public final class DomainActorRegistryComponent implements CompositeComponent {
-    public static final String COMPONENT_ID = "domain-actors";
-    public static final String TOPIC = "actors.command.v1";
+    public static final String COMPONENT_ID = RoleWorkflowIdentifiers.DOMAIN_ACTORS_COMPONENT_ID;
+    public static final String TOPIC = ActorGovernanceCommandV1.ACTOR_REGISTRY_TOPIC;
     public static final String QUERY_ORGANIZATION = "organization";
     public static final String QUERY_ORGANIZATION_CURRENT = "organization-current";
     public static final String QUERY_ACTOR = "actor";

@@ -33,7 +33,7 @@ import java.util.List;
 /** Atomic registry-read + policy/proposal-write role authorization workflow. */
 public final class RoleApprovalWorkflow implements CompositeWorkflow {
     public static final String WORKFLOW_ID = "role-approval";
-    public static final String TOPIC = "role-approvals.command.v1";
+    public static final String TOPIC = SignedActorCommandV1.DEFAULT_TOPIC;
     public static final String PRODUCT_VERSION = "1.0.0";
 
     private final WorkflowDescriptor descriptor;

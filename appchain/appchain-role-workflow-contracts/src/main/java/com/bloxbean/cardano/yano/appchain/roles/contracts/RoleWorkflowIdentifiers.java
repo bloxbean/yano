@@ -4,6 +4,11 @@ import java.nio.charset.StandardCharsets;
 
 /** Canonical v1 identifiers shared by clients and deterministic components. */
 public final class RoleWorkflowIdentifiers {
+    /** Frozen composite component id for organization, actor, and authority state. */
+    public static final String DOMAIN_ACTORS_COMPONENT_ID = "domain-actors";
+    /** Frozen composite component id for direct policies, approvals, and policy governance. */
+    public static final String ROLE_APPROVALS_COMPONENT_ID = "role-approvals";
+
     private RoleWorkflowIdentifiers() {
     }
 

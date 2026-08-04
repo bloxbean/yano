@@ -9,6 +9,17 @@ import com.bloxbean.cardano.yano.appchain.config.AppChainEffectsConfig;
 import com.bloxbean.cardano.yano.appchain.config.AppChainPropertyDefinition;
 import com.bloxbean.cardano.yano.appchain.config.AppChainPropertyRegistry;
 import com.bloxbean.cardano.yano.appchain.config.PropertyScope;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorKeyEpochV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorKeyProofV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorRecordV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.AdministratorAuthorityV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.ApprovalPolicyV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.DirectRolePolicyV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.GenesisActorV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.GovernedAuthorizationLimitsV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.GovernedGenesisV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.OrganizationRecordV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.RecordStatus;
 import com.bloxbean.cardano.yano.appchain.stdlib.AuthenticatedMapGenesisFactory;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
 
@@ -486,6 +497,8 @@ final class AppChainProjectResolver {
             collections.add(new AuthenticatedMapContract.CollectionDescriptor(
                     collection.id(),
                     authorization(collection.authorization()),
+                    blank(collection.authorizationPolicy())
+                            ? "" : collection.authorizationPolicy(),
                     Boolean.TRUE.equals(collection.restoreAllowed()),
                     valueOr(collection.maxKeyBytes(),
                             AuthenticatedMapContract.MAX_APPLICATION_KEY_BYTES),
@@ -500,15 +513,17 @@ final class AppChainProjectResolver {
                 AuthenticatedMapContract.MAX_BATCH_ITEMS);
         int maxBatchBytes = valueOr(intent.maxBatchBytes(), 65_536);
         AppChainConfig config = runtimeConfig(consensus, nodeTemplate, prefix);
+        GovernedGenesisV1 governedGenesis = governedGenesis(
+                config.chainId(), intent, collections);
         AuthenticatedMapContract.Genesis genesis = switch (intent.profile()) {
             case AuthenticatedMapContract.PROFILE_MPF_BLAKE2B256_V1 ->
                     AuthenticatedMapGenesisFactory.mpf(
                             config, anchorPolicy, maxBatchItems, maxBatchBytes,
-                            collections, validators, List.of());
+                            collections, validators, List.of(), governedGenesis);
             case AuthenticatedMapContract.PROFILE_JMT_BLAKE2B256_V1 ->
                     AuthenticatedMapGenesisFactory.classicJmt(
                             config, anchorPolicy, maxBatchItems, maxBatchBytes,
-                            collections, validators, List.of());
+                            collections, validators, List.of(), governedGenesis);
             case AuthenticatedMapContract.PROFILE_JMT_POSEIDON_BLS12381_V1 ->
                     throw new IllegalArgumentException(
                             "Poseidon authenticated-map genesis remains deferred by ADR-025 Phase 4");
@@ -550,9 +565,204 @@ final class AppChainProjectResolver {
             case "open" -> AuthenticatedMapContract.AUTH_OPEN;
             case "owner" -> AuthenticatedMapContract.AUTH_OWNER;
             case "member" -> AuthenticatedMapContract.AUTH_MEMBER;
+            case "governed-role" -> AuthenticatedMapContract.AUTH_GOVERNED_ROLE;
+            case "approval" -> AuthenticatedMapContract.AUTH_APPROVAL;
             default -> throw new IllegalArgumentException(
-                    "authenticatedMap collection authorization must be open, owner, or member");
+                    "authenticatedMap collection authorization must be open, owner, member, "
+                            + "governed-role, or approval");
         };
+    }
+
+    private static GovernedGenesisV1 governedGenesis(
+            String chainId,
+            AppChainProjectModel.AuthenticatedMapIntent intent,
+            List<AuthenticatedMapContract.CollectionDescriptor> collections
+    ) {
+        boolean governed = collections.stream().anyMatch(collection ->
+                collection.authorization() == AuthenticatedMapContract.AUTH_GOVERNED_ROLE
+                        || collection.authorization() == AuthenticatedMapContract.AUTH_APPROVAL);
+        if (!governed) {
+            if (intent.authorizationGovernance() != null
+                    || intent.genesisRecords() != null
+                    || intent.authorizationLimits() != null
+                    || !safeList(intent.onboarding()).isEmpty()) {
+                throw new IllegalArgumentException(
+                        "authenticatedMap governance is valid only for governed collections");
+            }
+            return null;
+        }
+        AppChainProjectModel.AuthenticatedMapGovernanceIntent governance =
+                intent.authorizationGovernance();
+        AppChainProjectModel.AuthenticatedMapGenesisRecordsIntent records =
+                intent.genesisRecords();
+        if (governance == null || records == null) {
+            throw new IllegalArgumentException(
+                    "governed authenticatedMap requires authorizationGovernance and genesisRecords");
+        }
+        AdministratorAuthorityV1 authority = new AdministratorAuthorityV1(
+                governance.authorityId(), exactOne(governance.initialRevision(),
+                "authorizationGovernance.initialRevision"),
+                safeList(governance.administratorActors()),
+                requiredPositive(governance.threshold(),
+                        "authorizationGovernance.threshold"),
+                requiredPositive(governance.maximumMutationLifetimeBlocks(),
+                        "authorizationGovernance.maximumMutationLifetimeBlocks"));
+        List<OrganizationRecordV1> organizations = safeList(records.organizations()).stream()
+                .map(record -> new OrganizationRecordV1(
+                        record.id(), exactOne(record.revision(), "organization.revision"),
+                        recordStatus(record.status()), optionalHex32(
+                        record.metadataCommitment(), "organization.metadataCommitment")))
+                .toList();
+        List<GenesisActorV1> actors = safeList(records.actors()).stream()
+                .map(record -> genesisActor(chainId, record)).toList();
+        List<DirectRolePolicyV1> directPolicies = safeList(records.directPolicies()).stream()
+                .map(policy -> new DirectRolePolicyV1(
+                        policy.id(), exactOne(policy.revision(), "directPolicy.revision"),
+                        recordStatus(policy.status()), policy.requiredRole(),
+                        requiredPositive(policy.maximumAuthorizationLifetimeBlocks(),
+                                "directPolicy.maximumAuthorizationLifetimeBlocks")))
+                .toList();
+        List<ApprovalPolicyV1> approvalPolicies = safeList(records.approvalPolicies()).stream()
+                .map(AppChainProjectResolver::approvalPolicy).toList();
+        return new GovernedGenesisV1(chainId, authority, organizations, actors,
+                directPolicies, approvalPolicies, limits(intent.authorizationLimits()));
+    }
+
+    private static GenesisActorV1 genesisActor(
+            String chainId,
+            AppChainProjectModel.AuthenticatedMapActorIntent actor
+    ) {
+        long revision = exactOne(actor.revision(), "actor.revision");
+        List<ActorKeyEpochV1> keys = safeList(actor.keys()).stream().map(key -> {
+            if (!"ed25519".equals(key.algorithm())) {
+                throw new IllegalArgumentException("actor key algorithm must be ed25519");
+            }
+            return new ActorKeyEpochV1(key.id(), canonicalHex32(
+                    key.publicKey(), "actor.key.publicKey"),
+                    valueOr(key.validFromHeight(), 1L),
+                    valueOr(key.validUntilHeight(), 0L), recordStatus(key.status()));
+        }).toList();
+        ActorRecordV1 record = new ActorRecordV1(actor.id(), actor.organization(), revision,
+                recordStatus(actor.status()), safeList(actor.roles()), keys,
+                optionalHex32(actor.metadataCommitment(), "actor.metadataCommitment"));
+        Map<String, AppChainProjectModel.AuthenticatedMapActorKeyIntent> keyIntents =
+                new LinkedHashMap<>();
+        safeList(actor.keys()).forEach(key -> {
+            if (key != null && keyIntents.putIfAbsent(key.id(), key) != null) {
+                throw new IllegalArgumentException("actor key ids must be unique");
+            }
+        });
+        List<ActorKeyProofV1> proofs = new ArrayList<>();
+        for (ActorKeyEpochV1 key : record.keys()) {
+            AppChainProjectModel.AuthenticatedMapActorKeyIntent keyIntent =
+                    keyIntents.get(key.keyId());
+            if (keyIntent == null) {
+                throw new IllegalArgumentException("actor key proof is absent");
+            }
+            proofs.add(new ActorKeyProofV1(chainId, record.actorId(), revision, key,
+                    canonicalHex64(keyIntent.proofOfPossession(),
+                            "actor.key.proofOfPossession")));
+        }
+        return new GenesisActorV1(record, proofs);
+    }
+
+    private static ApprovalPolicyV1 approvalPolicy(
+            AppChainProjectModel.AuthenticatedMapApprovalPolicyIntent policy
+    ) {
+        List<ApprovalPolicyV1.RequiredClause> clauses = safeList(policy.clauses()).stream()
+                .map(clause -> new ApprovalPolicyV1.RequiredClause(
+                        clause.id(), clause.role(), requiredPositive(clause.minimumCount(),
+                        "approvalPolicy.clause.minimumCount"),
+                        switch (clause.distinctBy()) {
+                            case "actor" -> ApprovalPolicyV1.DistinctBy.ACTOR;
+                            case "organization" -> ApprovalPolicyV1.DistinctBy.ORGANIZATION;
+                            case null, default -> throw new IllegalArgumentException(
+                                    "approvalPolicy clause distinctBy must be actor or organization");
+                        })).toList();
+        ApprovalPolicyV1.RejectionMode rejection = switch (policy.rejectionMode()) {
+            case "disabled" -> ApprovalPolicyV1.RejectionMode.DISABLED;
+            case "any-eligible" -> ApprovalPolicyV1.RejectionMode.ANY_ELIGIBLE;
+            case null, default -> throw new IllegalArgumentException(
+                    "approvalPolicy rejectionMode must be disabled or any-eligible");
+        };
+        return new ApprovalPolicyV1(policy.id(),
+                exactOne(policy.revision(), "approvalPolicy.revision"),
+                recordStatus(policy.status()), safeList(policy.proposerRoles()), clauses,
+                rejection, requiredPositive(policy.maximumLifetimeBlocks(),
+                "approvalPolicy.maximumLifetimeBlocks"));
+    }
+
+    private static GovernedAuthorizationLimitsV1 limits(
+            AppChainProjectModel.GovernedAuthorizationLimitsIntent intent
+    ) {
+        GovernedAuthorizationLimitsV1 defaults = GovernedAuthorizationLimitsV1.defaults();
+        if (intent == null) return defaults;
+        return new GovernedAuthorizationLimitsV1(
+                valueOr(intent.maximumEvidenceItemsPerCommand(),
+                        defaults.maximumEvidenceItemsPerCommand()),
+                valueOr(intent.maximumCoveredIndexesPerEvidence(),
+                        defaults.maximumCoveredIndexesPerEvidence()),
+                valueOr(intent.maximumGenesisOrganizations(),
+                        defaults.maximumGenesisOrganizations()),
+                valueOr(intent.maximumGenesisActors(), defaults.maximumGenesisActors()),
+                valueOr(intent.maximumGenesisKeys(), defaults.maximumGenesisKeys()),
+                valueOr(intent.maximumGenesisPolicies(), defaults.maximumGenesisPolicies()),
+                valueOr(intent.maximumGenesisRecordBytes(),
+                        defaults.maximumGenesisRecordBytes()),
+                valueOr(intent.maximumPendingGovernance(), defaults.maximumPendingGovernance()),
+                valueOr(intent.maximumPendingApprovals(), defaults.maximumPendingApprovals()),
+                valueOr(intent.maximumPendingPerActor(), defaults.maximumPendingPerActor()),
+                valueOr(intent.maximumPendingPerPolicy(), defaults.maximumPendingPerPolicy()),
+                valueOr(intent.maximumPendingPerAuthority(), defaults.maximumPendingPerAuthority()),
+                valueOr(intent.maximumPendingPerDeadline(), defaults.maximumPendingPerDeadline()),
+                valueOr(intent.maximumExpiryWorkPerBlock(), defaults.maximumExpiryWorkPerBlock()),
+                valueOr(intent.maximumAuthoritySupersessionWork(),
+                        defaults.maximumAuthoritySupersessionWork()),
+                valueOr(intent.maximumQueryPageSize(), defaults.maximumQueryPageSize()),
+                valueOr(intent.maximumCryptoWorkUnitsPerBlock(),
+                        defaults.maximumCryptoWorkUnitsPerBlock()));
+    }
+
+    private static RecordStatus recordStatus(String status) {
+        return switch (status == null ? "active" : status) {
+            case "active" -> RecordStatus.ACTIVE;
+            case "suspended" -> RecordStatus.SUSPENDED;
+            case "revoked" -> RecordStatus.REVOKED;
+            default -> throw new IllegalArgumentException(
+                    "governed record status must be active, suspended, or revoked");
+        };
+    }
+
+    private static long exactOne(Long value, String name) {
+        long result = valueOr(value, 1L);
+        if (result != 1) throw new IllegalArgumentException(name + " must be 1 at genesis");
+        return result;
+    }
+
+    private static int requiredPositive(Integer value, String name) {
+        if (value == null || value < 1) {
+            throw new IllegalArgumentException(name + " must be positive");
+        }
+        return value;
+    }
+
+    private static long requiredPositive(Long value, String name) {
+        if (value == null || value < 1) {
+            throw new IllegalArgumentException(name + " must be positive");
+        }
+        return value;
+    }
+
+    private static byte[] optionalHex32(String value, String name) {
+        return blank(value) ? new byte[0] : canonicalHex32(value, name);
+    }
+
+    private static byte[] canonicalHex64(String value, String name) {
+        if (value == null || !value.matches("[0-9a-f]{128}")) {
+            throw new IllegalArgumentException(name
+                    + " must contain 64 bytes of canonical lowercase hex");
+        }
+        return HexFormat.of().parseHex(value);
     }
 
     private static int valueEncoding(String value) {
@@ -574,6 +784,10 @@ final class AppChainProjectResolver {
     }
 
     private static int valueOr(Integer value, int defaultValue) {
+        return value == null ? defaultValue : value;
+    }
+
+    private static long valueOr(Long value, long defaultValue) {
         return value == null ? defaultValue : value;
     }
 

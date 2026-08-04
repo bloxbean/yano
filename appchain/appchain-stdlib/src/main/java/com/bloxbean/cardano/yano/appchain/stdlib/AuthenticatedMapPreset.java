@@ -97,7 +97,10 @@ public final class AuthenticatedMapPreset {
                         AuthenticatedMapContract.POINT_QUERY_PATH),
                 new LegacyQueryAlias(AuthenticatedMapContract.RECEIPT_QUERY_PATH,
                         AuthenticatedMapComponent.COMPONENT_ID,
-                        AuthenticatedMapContract.RECEIPT_QUERY_PATH)));
+                        AuthenticatedMapContract.RECEIPT_QUERY_PATH),
+                new LegacyQueryAlias(AuthenticatedMapContract.CAPABILITIES_QUERY_PATH,
+                        AuthenticatedMapComponent.COMPONENT_ID,
+                        AuthenticatedMapContract.CAPABILITIES_QUERY_PATH)));
         if (governed) {
             queryAliases.add(new LegacyQueryAlias(
                     AuthenticatedMapContract.DIRECT_CONSUMPTION_QUERY_PATH,
@@ -148,7 +151,8 @@ public final class AuthenticatedMapPreset {
     private static List<String> mapQueries(boolean governed) {
         List<String> paths = new ArrayList<>(List.of(
                 AuthenticatedMapContract.POINT_QUERY_PATH,
-                AuthenticatedMapContract.RECEIPT_QUERY_PATH));
+                AuthenticatedMapContract.RECEIPT_QUERY_PATH,
+                AuthenticatedMapContract.CAPABILITIES_QUERY_PATH));
         if (governed) {
             paths.add(AuthenticatedMapContract.DIRECT_CONSUMPTION_QUERY_PATH);
             paths.add(AuthenticatedMapContract.APPROVAL_CONSUMPTION_QUERY_PATH);
