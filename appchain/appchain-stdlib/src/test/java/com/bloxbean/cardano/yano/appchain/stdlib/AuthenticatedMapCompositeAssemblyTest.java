@@ -784,6 +784,108 @@ class AuthenticatedMapCompositeAssemblyTest {
     }
 
     @Test
+    void hostileCryptoWorkloadIsFencedByTheDeterministicPerBlockCap() {
+        AppChainConfig config = config(CHAIN_ID);
+        ThresholdFixture base = thresholdFixture();
+        GovernedGenesisV1 governed = new GovernedGenesisV1(
+                base.genesis().chainId(), base.authority(),
+                base.genesis().organizations(), base.genesis().actors(),
+                base.genesis().directPolicies(), base.genesis().approvalPolicies(),
+                constrainedCryptoLimits());
+        ThresholdFixture fixture = new ThresholdFixture(
+                governed, base.actorA(), base.actorB(), base.actorC(),
+                base.authority(), base.directPolicy(), base.approvalPolicy(),
+                base.collections());
+        AuthenticatedMapContract.Genesis genesis = governedMapGenesis(
+                config, fixture, repeated(0x18));
+        CompositeStateMachine machine = AuthenticatedMapPreset.create(
+                context(config), genesis);
+        MemoryState state = new MemoryState();
+        machine.init(state, new AppChainInfo(CHAIN_ID, hex(MEMBER), 1));
+        machine.apply(block(1), state);
+        state.committedHeight = 1;
+
+        AppMessage first = directCryptoMessage(70, fixture, genesis,
+                repeated(0x61), "crypto-1");
+        AppMessage second = directCryptoMessage(71, fixture, genesis,
+                repeated(0x62), "crypto-2");
+        machine.apply(block(2, first, second), state);
+        state.committedHeight = 2;
+
+        byte[] applied = state.get(physical(AuthenticatedMapComponent.COMPONENT_ID,
+                        AuthenticatedMapContract.receiptKey(first.getMessageId())))
+                .orElseThrow();
+        assertThat(AuthenticatedMapContract.decodeReceipt(applied).status())
+                .isEqualTo(AuthenticatedMapContract.RECEIPT_APPLIED);
+        assertReceiptError(state, second,
+                AuthenticatedMapContract.ERROR_CRYPTO_WORK_EXCEEDED);
+        assertThat(state.get(physical(AuthenticatedMapComponent.COMPONENT_ID,
+                AuthenticatedMapContract.canonicalKey(
+                        "governed-products", bytes("crypto-2"))))).isEmpty();
+
+        // The fence is a deterministic per-block reservation, not a lockout:
+        // the same evidence budget reopens at the next height.
+        AppMessage reopened = directCryptoMessage(72, fixture, genesis,
+                repeated(0x63), "crypto-3");
+        machine.apply(block(3, reopened), state);
+        state.committedHeight = 3;
+        byte[] recovered = state.get(physical(AuthenticatedMapComponent.COMPONENT_ID,
+                        AuthenticatedMapContract.receiptKey(reopened.getMessageId())))
+                .orElseThrow();
+        assertThat(AuthenticatedMapContract.decodeReceipt(recovered).status())
+                .isEqualTo(AuthenticatedMapContract.RECEIPT_APPLIED);
+    }
+
+    private static AppMessage directCryptoMessage(
+            int discriminator,
+            ThresholdFixture fixture,
+            AuthenticatedMapContract.Genesis genesis,
+            byte[] authorizationId,
+            String key
+    ) {
+        AuthenticatedMapContract.Command mutation = AuthenticatedMapContract.Command.single(
+                AuthenticatedMapContract.Mutation.put(
+                        "governed-products", bytes(key), bytes("metadata")));
+        MapActionV1 action = new MapActionV1(false, mutation.mutations(),
+                List.of(new AuthorizationAssignmentV1(
+                        0, AuthenticatedMapContract.AUTH_GOVERNED_ROLE,
+                        fixture.directPolicy().policyId(), 1)));
+        MapActorAuthorizationV1 authorization = MapActorAuthorizationV1.sign(
+                authorizationId, CHAIN_ID, AuthenticatedMapContract.genesisId(genesis),
+                AuthenticatedMapAuthorizationContract.actionCommitment(action),
+                List.of(0), fixture.directPolicy().policyId(), 1,
+                fixture.actorA().actorId(), 1,
+                fixture.actorA().keys().getFirst().keyId(),
+                fixture.actorA().keys().getFirst().publicKey(),
+                1, 20, ACTOR_SEED);
+        return message(AuthenticatedMapContract.DEFAULT_TOPIC, discriminator,
+                AuthenticatedMapAuthorizationContract.encodeCommand(
+                        new AuthenticatedMapCommandV1(action, List.of(authorization))));
+    }
+
+    private static GovernedAuthorizationLimitsV1 constrainedCryptoLimits() {
+        GovernedAuthorizationLimitsV1 defaults = GovernedAuthorizationLimitsV1.defaults();
+        return new GovernedAuthorizationLimitsV1(
+                defaults.maximumEvidenceItemsPerCommand(),
+                defaults.maximumCoveredIndexesPerEvidence(),
+                defaults.maximumGenesisOrganizations(),
+                defaults.maximumGenesisActors(),
+                defaults.maximumGenesisKeys(),
+                defaults.maximumGenesisPolicies(),
+                defaults.maximumGenesisRecordBytes(),
+                defaults.maximumPendingGovernance(),
+                defaults.maximumPendingApprovals(),
+                defaults.maximumPendingPerActor(),
+                defaults.maximumPendingPerPolicy(),
+                defaults.maximumPendingPerAuthority(),
+                defaults.maximumPendingPerDeadline(),
+                defaults.maximumExpiryWorkPerBlock(),
+                defaults.maximumAuthoritySupersessionWork(),
+                defaults.maximumQueryPageSize(),
+                1);
+    }
+
+    @Test
     void approvalCapacityReturnsAResultAndReopensAfterAutomaticExpiry() {
         AppChainConfig config = config(CHAIN_ID);
         ThresholdFixture base = thresholdFixture();
