@@ -1350,9 +1350,10 @@ def assertPluginOperationsAdapters = { int httpPort, int timeoutSeconds,
                 "Plugin operations summary smoke failed: ${summaryResponse}")
     }
     def summary = new groovy.json.JsonSlurper().parseText(summaryResponse.text)
+    // Must match PluginApiVersion.CURRENT_MAJOR / CURRENT_LEVEL (core-api).
     if (!(summary.catalogFingerprint ==~ /sha256:[0-9a-f]{64}/)
             || summary.pluginApiMajor != 1
-            || summary.pluginApiLevel != 1
+            || summary.pluginApiLevel != 2
             || !(summary.generation instanceof Number)
             || !(summary.totals instanceof Map)
             || !summary.totals.containsKey('observedContributions')
