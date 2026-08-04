@@ -50,6 +50,7 @@ public final class RoleWorkflowKeys {
         return key("g/" + RoleWorkflowIdentifiers.id(id, "mutationId"));
     }
     public static byte[] governancePendingIndex() { return key("l/g/v1"); }
+    public static byte[] approvalPendingIndex() { return key("l/q/v1"); }
     public static byte[] governanceDeadline(long height, String id) {
         return key("x/g/" + height(height) + "/"
                 + RoleWorkflowIdentifiers.id(id, "mutationId"));
@@ -74,16 +75,13 @@ public final class RoleWorkflowKeys {
         return key("i/q/p/" + RoleWorkflowIdentifiers.id(policyId, "policyId") + "/"
                 + RoleWorkflowIdentifiers.id(proposalId, "proposalId"));
     }
-    public static byte[] pendingCount(String dimension, String id) {
-        String canonicalDimension = switch (dimension) {
-            case "governance", "approval", "actor", "policy", "authority", "deadline" ->
-                    dimension;
-            default -> throw new IllegalArgumentException("unsupported pending-count dimension");
-        };
-        return key("c/" + canonicalDimension + "/"
-                + RoleWorkflowIdentifiers.id(id, "pendingCountId"));
-    }
     public static byte[] cryptoWork() { return key("w/crypto/v1"); }
+    public static byte[] commandResult(byte[] messageId) {
+        if (messageId == null || messageId.length != 32) {
+            throw new IllegalArgumentException("messageId must be 32 bytes");
+        }
+        return key("r/c/" + java.util.HexFormat.of().formatHex(messageId));
+    }
 
     private static long positive(long value, String name) {
         if (value < 1) throw new IllegalArgumentException(name + " must be positive");

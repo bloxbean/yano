@@ -4,6 +4,8 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.appchain.roles.GovernedCryptoWork;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorKeyEpochV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorRecordV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.ApprovalPolicyV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.ApprovalProposalV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.DirectRolePolicyV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.GovernedAuthorizationLimitsV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.OrganizationRecordV1;
@@ -48,11 +50,6 @@ final class AuthenticatedMapDirectAuthorizer {
             AppStateWriter approvalState,
             AppStateWriter mapState
     ) {
-        if (command.evidence().stream().anyMatch(
-                evidence -> evidence instanceof MapApprovalReferenceV1)) {
-            return AuthorizationResult.rejected(
-                    AuthenticatedMapContract.ERROR_GOVERNED_ROUTE_UNSUPPORTED);
-        }
         int cryptoUnits = command.cryptoWorkUnits();
         if (cryptoUnits > 0 && !GovernedCryptoWork.reserve(actorState, height,
                 cryptoUnits, limits.maximumCryptoWorkUnitsPerBlock())) {
@@ -61,24 +58,88 @@ final class AuthenticatedMapDirectAuthorizer {
         }
 
         List<DirectConsumptionV1> consumptions = new ArrayList<>();
+        List<ApprovalConsumptionV1> approvalConsumptions = new ArrayList<>();
         Set<Integer> governedIndexes = new LinkedHashSet<>();
         for (AuthorizationEvidenceV1 evidence : command.evidence()) {
-            MapActorAuthorizationV1 actor = (MapActorAuthorizationV1) evidence;
-            VerifiedActor verified = verify(actor, command, height,
-                    actorState, approvalState, mapState);
-            if (verified.errorCode() != AuthenticatedMapContract.ERROR_NONE) {
-                return AuthorizationResult.rejected(verified.errorCode());
+            if (evidence instanceof MapActorAuthorizationV1 actor) {
+                VerifiedActor verified = verify(actor, command, height,
+                        actorState, approvalState, mapState);
+                if (verified.errorCode() != AuthenticatedMapContract.ERROR_NONE) {
+                    return AuthorizationResult.rejected(verified.errorCode());
+                }
+                governedIndexes.addAll(actor.coveredMutationIndexes());
+                consumptions.add(new DirectConsumptionV1(
+                        actor.actorId(), actor.authorizationId(),
+                        actor.actionCommitment(), height, messageId,
+                        actor.coveredMutationIndexes(), actor.policyId(),
+                        actor.policyRevision(), actor.actorRevision(),
+                        verified.organization().organizationId(),
+                        verified.organization().revision(),
+                        verified.policy().requiredRole(), actor.keyId(),
+                        actor.statementDigest(), sha256(actor.signature())));
+            } else {
+                MapApprovalReferenceV1 approval =
+                        (MapApprovalReferenceV1) evidence;
+                int error = verifyApproval(
+                        approval, height, approvalState, mapState);
+                if (error != AuthenticatedMapContract.ERROR_NONE) {
+                    return AuthorizationResult.rejected(error);
+                }
+                governedIndexes.addAll(approval.coveredMutationIndexes());
+                approvalConsumptions.add(new ApprovalConsumptionV1(
+                        approval.proposalId(), approval.actionCommitment(), height,
+                        messageId, approval.coveredMutationIndexes(),
+                        approval.policyId(), approval.policyRevision()));
             }
-            governedIndexes.addAll(actor.coveredMutationIndexes());
-            consumptions.add(new DirectConsumptionV1(
-                    actor.actorId(), actor.authorizationId(), actor.actionCommitment(),
-                    height, messageId, actor.coveredMutationIndexes(), actor.policyId(),
-                    actor.policyRevision(), actor.actorRevision(),
-                    verified.organization().organizationId(),
-                    verified.organization().revision(), verified.policy().requiredRole(),
-                    actor.keyId(), actor.statementDigest(), sha256(actor.signature())));
         }
-        return AuthorizationResult.accepted(governedIndexes, consumptions);
+        return AuthorizationResult.accepted(
+                governedIndexes, consumptions, approvalConsumptions);
+    }
+
+    private int verifyApproval(
+            MapApprovalReferenceV1 reference,
+            long height,
+            AppStateWriter approvalState,
+            AppStateWriter mapState
+    ) {
+        ApprovalProposalV1 proposal = approvalState.get(
+                        RoleWorkflowKeys.proposal(reference.proposalId()))
+                .map(ApprovalProposalV1::decode).orElse(null);
+        if (proposal == null
+                || proposal.status() != ApprovalProposalV1.ProposalStatus.APPROVED
+                || height > proposal.deadlineHeight()) {
+            return AuthenticatedMapContract.ERROR_APPROVAL_NOT_APPROVED;
+        }
+        if (!proposal.proposalId().equals(reference.proposalId())) {
+            throw new IllegalStateException(
+                    "approval proposal key is incompatible with retained record");
+        }
+        if (!proposal.payloadDomain().equals(
+                AuthenticatedMapAuthorizationContract.APPROVAL_PAYLOAD_DOMAIN)
+                || !MessageDigest.isEqual(proposal.payloadHash(),
+                AuthenticatedMapAuthorizationContract.approvalPayloadHash(
+                        genesisId, reference.actionCommitment()))
+                || !proposal.policyId().equals(reference.policyId())
+                || proposal.policyRevision() != reference.policyRevision()) {
+            return AuthenticatedMapContract.ERROR_APPROVAL_MISMATCH;
+        }
+        ApprovalPolicyV1 policy = approvalState.get(
+                        RoleWorkflowKeys.policyRevision(
+                                reference.policyId(), reference.policyRevision()))
+                .map(ApprovalPolicyV1::decode)
+                .orElseThrow(() -> new IllegalStateException(
+                        "approved proposal policy revision is absent"));
+        if (!policy.policyId().equals(reference.policyId())
+                || policy.revision() != reference.policyRevision()
+                || !MessageDigest.isEqual(policy.digest(), proposal.policyDigest())) {
+            throw new IllegalStateException(
+                    "approved proposal policy revision is incompatible");
+        }
+        if (mapState.get(AuthenticatedMapContract.approvalConsumptionKey(
+                reference.proposalId())).isPresent()) {
+            return AuthenticatedMapContract.ERROR_APPROVAL_REPLAY;
+        }
+        return AuthenticatedMapContract.ERROR_NONE;
     }
 
     private VerifiedActor verify(
@@ -207,23 +268,27 @@ final class AuthenticatedMapDirectAuthorizer {
     record AuthorizationResult(
             int errorCode,
             Set<Integer> governedMutationIndexes,
-            List<DirectConsumptionV1> consumptions
+            List<DirectConsumptionV1> consumptions,
+            List<ApprovalConsumptionV1> approvalConsumptions
     ) {
         AuthorizationResult {
             governedMutationIndexes = Set.copyOf(governedMutationIndexes);
             consumptions = List.copyOf(consumptions);
+            approvalConsumptions = List.copyOf(approvalConsumptions);
         }
 
         static AuthorizationResult accepted(
                 Set<Integer> indexes,
-                List<DirectConsumptionV1> consumptions
+                List<DirectConsumptionV1> consumptions,
+                List<ApprovalConsumptionV1> approvalConsumptions
         ) {
             return new AuthorizationResult(AuthenticatedMapContract.ERROR_NONE,
-                    indexes, consumptions);
+                    indexes, consumptions, approvalConsumptions);
         }
 
         static AuthorizationResult rejected(int errorCode) {
-            return new AuthorizationResult(errorCode, Set.of(), List.of());
+            return new AuthorizationResult(
+                    errorCode, Set.of(), List.of(), List.of());
         }
 
         boolean accepted() {

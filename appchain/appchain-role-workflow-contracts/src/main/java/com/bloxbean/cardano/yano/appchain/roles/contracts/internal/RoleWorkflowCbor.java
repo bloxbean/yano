@@ -36,17 +36,30 @@ public final class RoleWorkflowCbor {
     }
 
     public static Array decodeArray(byte[] input, int expectedArity) {
-        byte[] bytes = bounded(input, RoleWorkflowLimits.MAX_COMMAND_BYTES);
-        preflight(bytes);
+        return decodeArray(input, expectedArity,
+                RoleWorkflowLimits.MAX_COMMAND_BYTES, RoleWorkflowLimits.MAX_CBOR_ITEMS);
+    }
+
+    public static Array decodeArray(
+            byte[] input,
+            int expectedArity,
+            int maximumBytes,
+            int maximumItems
+    ) {
+        if (expectedArity < 0 || maximumBytes < 1 || maximumItems < 1) {
+            throw malformed();
+        }
+        byte[] bytes = bounded(input, maximumBytes);
+        preflight(bytes, maximumItems);
         try {
             CborDecoder decoder = new CborDecoder(new ByteArrayInputStream(bytes));
-            decoder.setMaxPreallocationSize(RoleWorkflowLimits.MAX_COMMAND_BYTES);
+            decoder.setMaxPreallocationSize(maximumBytes);
             List<DataItem> roots = decoder.decode();
             if (roots.size() != 1 || !(roots.getFirst() instanceof Array array)
                     || array.isChunked() || array.getDataItems().size() != expectedArity) {
                 throw malformed();
             }
-            rejectForms(array);
+            rejectForms(array, maximumItems);
             if (!Arrays.equals(bytes, encode(array))) {
                 throw malformed();
             }
@@ -113,13 +126,13 @@ public final class RoleWorkflowCbor {
         if (!Arrays.equals(supplied, normalized)) throw malformed();
     }
 
-    private static void rejectForms(DataItem root) {
+    private static void rejectForms(DataItem root, int maximumItems) {
         Deque<DataItem> pending = new ArrayDeque<>();
         pending.add(root);
         int seen = 0;
         while (!pending.isEmpty()) {
             DataItem item = pending.removeLast();
-            if (++seen > RoleWorkflowLimits.MAX_CBOR_ITEMS || item.hasTag()) throw malformed();
+            if (++seen > maximumItems || item.hasTag()) throw malformed();
             if (item instanceof Array array) {
                 if (array.isChunked()) throw malformed();
                 pending.addAll(array.getDataItems());
@@ -136,7 +149,7 @@ public final class RoleWorkflowCbor {
         }
     }
 
-    private static void preflight(byte[] bytes) {
+    private static void preflight(byte[] bytes, int maximumItems) {
         long[] remaining = new long[RoleWorkflowLimits.MAX_NESTING_DEPTH + 1];
         remaining[0] = 1;
         int depth = 0;
@@ -148,7 +161,7 @@ public final class RoleWorkflowCbor {
                 continue;
             }
             remaining[depth]--;
-            if (++count > RoleWorkflowLimits.MAX_CBOR_ITEMS || offset >= bytes.length) throw malformed();
+            if (++count > maximumItems || offset >= bytes.length) throw malformed();
             int initial = bytes[offset++] & 0xff;
             int major = initial >>> 5;
             int additional = initial & 0x1f;
@@ -162,7 +175,7 @@ public final class RoleWorkflowCbor {
                     offset += (int) value;
                 }
                 case 4 -> {
-                    if (value > RoleWorkflowLimits.MAX_CBOR_ITEMS - count
+                    if (value > maximumItems - count
                             || depth >= RoleWorkflowLimits.MAX_NESTING_DEPTH) throw malformed();
                     if (value > 0) remaining[++depth] = value;
                 }

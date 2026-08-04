@@ -78,13 +78,16 @@ public record ActorStatementV1(Action action, String chainId, String proposalId,
         List<co.nstant.in.cbor.model.DataItem> values =
                 RoleWorkflowCbor.decodeArray(bytes, 13).getDataItems();
         OrganizationRecordV1.requireVersion(values.get(0));
-        return new ActorStatementV1(Action.fromCode(RoleWorkflowCbor.uintInt(values.get(1))),
+        ActorStatementV1 decoded = new ActorStatementV1(
+                Action.fromCode(RoleWorkflowCbor.uintInt(values.get(1))),
                 RoleWorkflowCbor.text(values.get(2)), RoleWorkflowCbor.text(values.get(3)),
                 RoleWorkflowCbor.text(values.get(4)), RoleWorkflowCbor.uint(values.get(5)),
                 RoleWorkflowCbor.text(values.get(6)), RoleWorkflowCbor.bytes(values.get(7), 32),
                 RoleWorkflowCbor.uint(values.get(8)), RoleWorkflowCbor.text(values.get(9)),
                 RoleWorkflowCbor.uint(values.get(10)), RoleWorkflowCbor.text(values.get(11)),
                 RoleWorkflowCbor.text(values.get(12)));
+        RoleWorkflowCbor.requireCanonical(bytes, decoded.encode());
+        return decoded;
     }
 
     public enum Action {

@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.appchain.roles.internal;
 
+import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.appchain.roles.GovernedCryptoWork;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.AcceptedAdministratorVoteV1;
@@ -14,12 +15,16 @@ import com.bloxbean.cardano.yano.appchain.roles.contracts.OrganizationRecordV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RecordStatus;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowKeys;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowResultCode;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.RolePendingQueriesV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.SignedAdministratorStatementV1;
 
 import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /** Actor-authenticated, member-neutral governance for one component namespace. */
 public final class ActorGovernanceProcessor {
@@ -95,6 +100,68 @@ public final class ActorGovernanceProcessor {
             case ACTIVATE -> activate(command, height, authorityState, ownedState, handler);
             case CANCEL -> cancel(command, height, authorityState, ownedState);
         };
+    }
+
+    public static RolePendingQueriesV1.GovernancePage pendingPage(
+            AppStateReader state,
+            RolePendingQueriesV1.PageQuery query,
+            int maximumPageSize
+    ) {
+        if (query.limit() > maximumPageSize) {
+            throw new IllegalArgumentException("governance page exceeds genesis limit");
+        }
+        List<GovernancePendingIndexV1.Entry> remaining = pendingIndex(state).entries()
+                .stream().filter(entry -> query.afterId().isEmpty()
+                        || entry.mutationId().compareTo(query.afterId()) > 0)
+                .toList();
+        List<GovernancePendingIndexV1.Entry> selected = remaining.stream()
+                .limit(query.limit()).toList();
+        String next = remaining.size() > selected.size() && !selected.isEmpty()
+                ? selected.getLast().mutationId() : "";
+        return new RolePendingQueriesV1.GovernancePage(selected.stream()
+                .map(entry -> new RolePendingQueriesV1.GovernanceEntry(
+                        entry.mutationId(), entry.expiryHeight(), entry.authorityId(),
+                        entry.authorityRevision(), entry.proposerActorId())).toList(), next);
+    }
+
+    /** Fails startup when retained pending governance records and markers disagree. */
+    public static void verifyPendingState(
+            AppStateReader state,
+            GovernedAuthorizationLimitsV1 limits
+    ) {
+        GovernancePendingIndexV1 index = pendingIndex(state);
+        if (index.entries().size() > limits.maximumPendingGovernance()) {
+            throw new IllegalStateException("governance pending index exceeds genesis bound");
+        }
+        requireDimensionBound(index.entries(), GovernancePendingIndexV1.Entry::proposerActorId,
+                limits.maximumPendingPerActor(), "actor");
+        requireDimensionBound(index.entries(), entry -> entry.authorityId() + "\u0000"
+                        + entry.authorityRevision(), limits.maximumPendingPerAuthority(),
+                "authority");
+        requireDimensionBound(index.entries(), entry -> Long.toString(entry.expiryHeight()),
+                limits.maximumPendingPerDeadline(), "deadline");
+
+        for (GovernancePendingIndexV1.Entry entry : index.entries()) {
+            GovernedMutationRecordV1 record = state.get(RoleWorkflowKeys.governedMutation(
+                            entry.mutationId()))
+                    .map(GovernedMutationRecordV1::decode)
+                    .orElseThrow(() -> new IllegalStateException(
+                            "governance pending index points to an absent mutation"));
+            if (record.status() != GovernedMutationRecordV1.Status.PENDING
+                    || record.expiryHeight() != entry.expiryHeight()
+                    || !record.authorityId().equals(entry.authorityId())
+                    || record.authorityRevision() != entry.authorityRevision()
+                    || !record.proposerActorId().equals(entry.proposerActorId())) {
+                throw new IllegalStateException(
+                        "governance pending index is incompatible with mutation state");
+            }
+            requireMarker(state, RoleWorkflowKeys.governanceDeadline(
+                    record.expiryHeight(), record.mutationId()), record.mutationHash());
+            requireMarker(state, RoleWorkflowKeys.governanceByActor(
+                    record.proposerActorId(), record.mutationId()), record.mutationHash());
+            requireMarker(state, RoleWorkflowKeys.governanceByAuthority(
+                    record.authorityId(), record.mutationId()), record.mutationHash());
+        }
     }
 
     private RoleWorkflowResultCode propose(
@@ -419,7 +486,33 @@ public final class ActorGovernanceProcessor {
                 record.authorityId(), record.mutationId()));
     }
 
-    private static GovernancePendingIndexV1 pendingIndex(AppStateWriter state) {
+    private static <T> void requireDimensionBound(
+            List<T> values,
+            Function<T, String> classifier,
+            int maximum,
+            String dimension
+    ) {
+        Map<String, Long> counts = values.stream().collect(Collectors.groupingBy(
+                classifier, Collectors.counting()));
+        if (counts.values().stream().anyMatch(count -> count > maximum)) {
+            throw new IllegalStateException(
+                    "governance pending " + dimension + " count exceeds genesis bound");
+        }
+    }
+
+    private static void requireMarker(
+            AppStateReader state,
+            byte[] key,
+            byte[] expected
+    ) {
+        byte[] actual = state.get(key).orElseThrow(() -> new IllegalStateException(
+                "governance pending marker is absent"));
+        if (!MessageDigest.isEqual(actual, expected)) {
+            throw new IllegalStateException("governance pending marker is incompatible");
+        }
+    }
+
+    private static GovernancePendingIndexV1 pendingIndex(AppStateReader state) {
         return state.get(RoleWorkflowKeys.governancePendingIndex())
                 .map(GovernancePendingIndexV1::decode)
                 .orElseGet(GovernancePendingIndexV1::empty);

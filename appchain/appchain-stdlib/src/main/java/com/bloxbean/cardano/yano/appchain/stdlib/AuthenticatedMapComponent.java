@@ -4,12 +4,14 @@ import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
+import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.appchain.composite.ComponentDescriptor;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeComponent;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowIdentifiers;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapAuthorizationContract;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
 
@@ -37,7 +39,8 @@ public final class AuthenticatedMapComponent implements CompositeComponent {
                 ? BASIC_QUERY_PATHS
                 : List.of(AuthenticatedMapContract.POINT_QUERY_PATH,
                 AuthenticatedMapContract.RECEIPT_QUERY_PATH,
-                AuthenticatedMapContract.DIRECT_CONSUMPTION_QUERY_PATH).stream()
+                AuthenticatedMapContract.DIRECT_CONSUMPTION_QUERY_PATH,
+                AuthenticatedMapContract.APPROVAL_CONSUMPTION_QUERY_PATH).stream()
                 .sorted().toList();
         if (!COMPONENT_ID.equals(descriptor.componentId())
                 || !descriptor.topics().isEmpty()
@@ -72,6 +75,19 @@ public final class AuthenticatedMapComponent implements CompositeComponent {
                     .decode(params);
             return ownState.get(AuthenticatedMapContract.directConsumptionKey(
                     query.actorId(), query.authorizationId())).orElse(new byte[0]);
+        }
+        if (AuthenticatedMapContract.APPROVAL_CONSUMPTION_QUERY_PATH.equals(localPath)) {
+            String proposalId;
+            try {
+                proposalId = new String(
+                        params, java.nio.charset.StandardCharsets.US_ASCII);
+                RoleWorkflowIdentifiers.id(proposalId, "proposalId");
+            } catch (RuntimeException malformed) {
+                throw new AppQueryException(AppQueryException.Code.INVALID_REQUEST,
+                        "approval-consumption query requires a canonical proposal id");
+            }
+            return ownState.get(AuthenticatedMapContract.approvalConsumptionKey(
+                    proposalId)).orElse(new byte[0]);
         }
         return transitions.query(localPath, params, ownState);
     }

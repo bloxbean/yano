@@ -187,6 +187,22 @@ class AuthenticatedMapAuthorizationContractTest {
                 .isNotEqualTo(AuthenticatedMapAuthorizationContract.actionCommitment(original));
     }
 
+    @Test
+    void approvalPayloadHashBindsGenesisAndPlainActionCommitment() {
+        byte[] commitment = AuthenticatedMapAuthorizationContract.actionCommitment(
+                mixedAction());
+        byte[] scoped = AuthenticatedMapAuthorizationContract.approvalPayloadHash(
+                repeated(0x41), commitment);
+
+        assertThat(scoped).hasSize(32);
+        assertThat(AuthenticatedMapAuthorizationContract.approvalPayloadHash(
+                repeated(0x42), commitment)).isNotEqualTo(scoped);
+        byte[] changed = commitment.clone();
+        changed[0] ^= 1;
+        assertThat(AuthenticatedMapAuthorizationContract.approvalPayloadHash(
+                repeated(0x41), changed)).isNotEqualTo(scoped);
+    }
+
     private static MapActionV1 mixedAction() {
         List<AuthenticatedMapContract.Mutation> mutations = List.of(
                 AuthenticatedMapContract.Mutation.put(

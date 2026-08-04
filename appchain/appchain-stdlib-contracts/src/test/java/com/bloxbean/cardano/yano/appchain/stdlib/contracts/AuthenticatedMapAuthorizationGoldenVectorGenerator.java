@@ -145,6 +145,9 @@ public final class AuthenticatedMapAuthorizationGoldenVectorGenerator {
         vectors.put("limits", hex(limits.encode()));
         vectors.put("action.cbor", hex(AuthenticatedMapAuthorizationContract.encodeAction(action)));
         vectors.put("action.commitment", hex(actionCommitment));
+        vectors.put("approval.payload-hash", hex(
+                AuthenticatedMapAuthorizationContract.approvalPayloadHash(
+                        genesisId, actionCommitment)));
         vectors.put("actor.statement", hex(actorAuthorization.unsignedStatement()));
         vectors.put("actor.preimage", hex(actorAuthorization.signingPreimage()));
         vectors.put("actor.signature", hex(actorAuthorization.signature()));

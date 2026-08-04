@@ -319,7 +319,8 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
             }
             applyCommand(block.height(), message, mutations, receiptKey, writer,
                     actionCommitment, authorization.governedMutationIndexes(),
-                    authorization.directConsumptions());
+                    authorization.directConsumptions(),
+                    authorization.approvalConsumptions());
         }
     }
 
@@ -480,7 +481,7 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
                               byte[] receiptKey, AppStateWriter writer,
                               byte[] batchCommitment) {
         applyCommand(height, message, command, receiptKey, writer, batchCommitment,
-                Set.of(), List.of());
+                Set.of(), List.of(), List.of());
     }
 
     private void applyCommand(
@@ -491,7 +492,8 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
             AppStateWriter writer,
             byte[] batchCommitment,
             Set<Integer> governedMutationIndexes,
-            List<DirectConsumptionV1> directConsumptions
+            List<DirectConsumptionV1> directConsumptions,
+            List<ApprovalConsumptionV1> approvalConsumptions
     ) {
         Set<ByteKey> consumptionKeys = new HashSet<>();
         for (DirectConsumptionV1 consumption : directConsumptions) {
@@ -501,6 +503,18 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
                 Receipt receipt = Receipt.rejected(message.getMessageId(), height,
                         batchCommitment,
                         AuthenticatedMapContract.ERROR_DIRECT_AUTHORIZATION_REPLAY);
+                writer.put(receiptKey, AuthenticatedMapContract.encodeReceipt(receipt));
+                return;
+            }
+        }
+        Set<ByteKey> approvalConsumptionKeys = new HashSet<>();
+        for (ApprovalConsumptionV1 consumption : approvalConsumptions) {
+            byte[] key = AuthenticatedMapContract.approvalConsumptionKey(
+                    consumption.proposalId());
+            if (!approvalConsumptionKeys.add(new ByteKey(key))
+                    || writer.get(key).isPresent()) {
+                Receipt receipt = Receipt.rejected(message.getMessageId(), height,
+                        batchCommitment, AuthenticatedMapContract.ERROR_APPROVAL_REPLAY);
                 writer.put(receiptKey, AuthenticatedMapContract.encodeReceipt(receipt));
                 return;
             }
@@ -530,6 +544,10 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
             writer.put(AuthenticatedMapContract.directConsumptionKey(
                             consumption.actorId(), consumption.authorizationId()),
                     consumption.encode());
+        }
+        for (ApprovalConsumptionV1 consumption : approvalConsumptions) {
+            writer.put(AuthenticatedMapContract.approvalConsumptionKey(
+                    consumption.proposalId()), consumption.encode());
         }
         List<MutationResult> results = new ArrayList<>(pending.size());
         for (PendingMutation mutation : pending) {
@@ -731,20 +749,22 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
     record FinalAuthorization(
             int errorCode,
             Set<Integer> governedMutationIndexes,
-            List<DirectConsumptionV1> directConsumptions
+            List<DirectConsumptionV1> directConsumptions,
+            List<ApprovalConsumptionV1> approvalConsumptions
     ) {
         FinalAuthorization {
             governedMutationIndexes = Set.copyOf(governedMutationIndexes);
             directConsumptions = List.copyOf(directConsumptions);
+            approvalConsumptions = List.copyOf(approvalConsumptions);
         }
 
         static FinalAuthorization basic() {
             return new FinalAuthorization(AuthenticatedMapContract.ERROR_NONE,
-                    Set.of(), List.of());
+                    Set.of(), List.of(), List.of());
         }
 
         static FinalAuthorization rejected(int errorCode) {
-            return new FinalAuthorization(errorCode, Set.of(), List.of());
+            return new FinalAuthorization(errorCode, Set.of(), List.of(), List.of());
         }
 
         boolean accepted() {

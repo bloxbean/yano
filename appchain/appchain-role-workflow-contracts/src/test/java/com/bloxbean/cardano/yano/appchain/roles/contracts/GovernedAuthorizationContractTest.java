@@ -4,6 +4,7 @@ import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
+import java.util.HexFormat;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -131,6 +132,55 @@ class GovernedAuthorizationContractTest {
         assertThat(record.terminal(GovernedMutationRecordV1.Status.ACTIVATED,
                 20, List.of()).status())
                 .isEqualTo(GovernedMutationRecordV1.Status.ACTIVATED);
+    }
+
+    @Test
+    void commandResultsAndBoundedPendingPagesRoundTripCanonically() {
+        byte[] messageId = repeated(0x31);
+        RoleCommandResultV1 result = new RoleCommandResultV1(
+                RoleCommandResultV1.KIND_APPROVAL, "release-001",
+                RoleWorkflowResultCode.CAPACITY_EXCEEDED, 42,
+                messageId, RoleCommandResultV1.commandDigest(
+                "proposal".getBytes(StandardCharsets.UTF_8)));
+        RolePendingQueriesV1.PageQuery query =
+                new RolePendingQueriesV1.PageQuery("release-001", 25);
+        RolePendingQueriesV1.ApprovalPage approvals =
+                new RolePendingQueriesV1.ApprovalPage(List.of(
+                        new RolePendingQueriesV1.ApprovalEntry(
+                                "release-003", 80, "release-policy", "issuer-b"),
+                        new RolePendingQueriesV1.ApprovalEntry(
+                                "release-002", 70, "release-policy", "issuer-a")),
+                        "release-003");
+        RolePendingQueriesV1.GovernancePage governance =
+                new RolePendingQueriesV1.GovernancePage(List.of(
+                        new RolePendingQueriesV1.GovernanceEntry(
+                                "mutation-002", 90, "registry-admins", 2, "admin-b"),
+                        new RolePendingQueriesV1.GovernanceEntry(
+                                "mutation-001", 85, "registry-admins", 2, "admin-a")),
+                        "mutation-002");
+
+        assertThat(RoleCommandResultV1.decode(result.encode()).encode())
+                .isEqualTo(result.encode());
+        assertThat(RolePendingQueriesV1.PageQuery.decode(query.encode())).isEqualTo(query);
+        assertThat(RolePendingQueriesV1.ApprovalPage.decode(approvals.encode()))
+                .isEqualTo(approvals);
+        assertThat(RolePendingQueriesV1.GovernancePage.decode(governance.encode()))
+                .isEqualTo(governance);
+        assertThat(approvals.entries()).extracting(
+                        RolePendingQueriesV1.ApprovalEntry::proposalId)
+                .containsExactly("release-002", "release-003");
+        assertThat(governance.entries()).extracting(
+                        RolePendingQueriesV1.GovernanceEntry::mutationId)
+                .containsExactly("mutation-001", "mutation-002");
+        assertThat(new String(RoleWorkflowKeys.commandResult(messageId),
+                StandardCharsets.US_ASCII)).isEqualTo("r/c/"
+                + HexFormat.of().formatHex(messageId));
+
+        assertThatThrownBy(() -> new RolePendingQueriesV1.ApprovalPage(List.of(
+                approvals.entries().getFirst(), approvals.entries().getFirst()), ""))
+                .isInstanceOf(RoleWorkflowException.class);
+        assertThatThrownBy(() -> new RolePendingQueriesV1.PageQuery("", 101))
+                .isInstanceOf(RoleWorkflowException.class);
     }
 
     static GovernedGenesisV1 genesis() {

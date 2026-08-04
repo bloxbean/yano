@@ -9,12 +9,16 @@ import com.bloxbean.cardano.yano.appchain.composite.CompositeWorkflow;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeWorkflowContext;
 import com.bloxbean.cardano.yano.appchain.composite.WorkflowDescriptor;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorGovernanceCommandV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.SignedActorCommandV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ApprovalPolicyV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.DirectRolePolicyV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.GovernedGenesisV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.PolicyMutationV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleCommandResultV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowKeys;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowResultCode;
 import com.bloxbean.cardano.yano.appchain.roles.internal.ActorGovernanceProcessor;
+import com.bloxbean.cardano.yano.appchain.roles.internal.ActorApprovalProcessor;
 import com.bloxbean.cardano.yano.appchain.roles.internal.RoleState;
 
 import java.util.List;
@@ -33,6 +37,7 @@ public final class GovernedRoleApprovalWorkflow implements CompositeWorkflow {
     private final ComponentGeneration actors;
     private final ComponentGeneration approvals;
     private final ActorGovernanceProcessor governance;
+    private final ActorApprovalProcessor actorApprovals;
 
     public GovernedRoleApprovalWorkflow(
             WorkflowDescriptor descriptor,
@@ -40,7 +45,8 @@ public final class GovernedRoleApprovalWorkflow implements CompositeWorkflow {
             ComponentGeneration approvals,
             String chainId,
             byte[] authenticatedMapGenesisId,
-            GovernedGenesisV1 genesis
+            GovernedGenesisV1 genesis,
+            String approvalPayloadDomain
     ) {
         this.descriptor = Objects.requireNonNull(descriptor, "descriptor");
         this.actors = Objects.requireNonNull(actors, "actors");
@@ -53,6 +59,8 @@ public final class GovernedRoleApprovalWorkflow implements CompositeWorkflow {
         this.governance = new ActorGovernanceProcessor(chainId,
                 authenticatedMapGenesisId,
                 genesis.administratorAuthority().authorityId(), genesis.limits());
+        this.actorApprovals = new ActorApprovalProcessor(
+                chainId, approvalPayloadDomain, genesis.limits());
     }
 
     @Override
@@ -63,14 +71,15 @@ public final class GovernedRoleApprovalWorkflow implements CompositeWorkflow {
     @Override
     public AppStateMachine.AdmissionResult validate(AppMessage routedMessage) {
         try {
-            ActorGovernanceCommandV1 command =
-                    ActorGovernanceCommandV1.decode(routedMessage.getBody());
-            if (command.authorizations().stream().anyMatch(
-                    authorization -> !authorization.verifyClaimedKey())) {
-                return AppStateMachine.AdmissionResult.reject("INVALID_SIGNATURE");
-            }
-            if (command.operation() == ActorGovernanceCommandV1.Operation.PROPOSE) {
-                PolicyMutationV1.decode(command.mutation());
+            Object decoded = decode(routedMessage.getBody());
+            if (decoded instanceof ActorGovernanceCommandV1 command) {
+                if (command.authorizations().stream().anyMatch(
+                        authorization -> !authorization.verifyClaimedKey())) {
+                    return AppStateMachine.AdmissionResult.reject("INVALID_SIGNATURE");
+                }
+                if (command.operation() == ActorGovernanceCommandV1.Operation.PROPOSE) {
+                    PolicyMutationV1.decode(command.mutation());
+                }
             }
             return AppStateMachine.AdmissionResult.accept();
         } catch (RuntimeException malformed) {
@@ -83,18 +92,47 @@ public final class GovernedRoleApprovalWorkflow implements CompositeWorkflow {
         var actorState = context.state(actors);
         var approvalState = context.state(approvals);
         governance.prepareHeight(routedBlock.height(), actorState, approvalState);
+        actorApprovals.prepareHeight(routedBlock.height(), approvalState);
         ActorGovernanceProcessor.MutationHandler handler = policyGovernanceHandler();
         for (AppMessage message : routedBlock.messages()) {
+            byte[] resultKey = RoleWorkflowKeys.commandResult(message.getMessageId());
+            if (approvalState.get(resultKey).isPresent()) continue;
             try {
-                governance.apply(ActorGovernanceCommandV1.decode(message.getBody()),
-                        routedBlock.height(), actorState, approvalState, handler);
+                Object command = decode(message.getBody());
+                RoleWorkflowResultCode result;
+                String subjectId;
+                int commandKind;
+                if (command instanceof ActorGovernanceCommandV1 governed) {
+                    result = governance.apply(governed, routedBlock.height(),
+                            actorState, approvalState, handler);
+                    subjectId = governed.mutationId();
+                    commandKind = RoleCommandResultV1.KIND_POLICY_GOVERNANCE;
+                } else {
+                    SignedActorCommandV1 actor = (SignedActorCommandV1) command;
+                    result = actorApprovals.apply(actor,
+                            routedBlock.height(), actorState, approvalState);
+                    subjectId = actor.statement().proposalId();
+                    commandKind = RoleCommandResultV1.KIND_APPROVAL;
+                }
+                approvalState.put(resultKey, new RoleCommandResultV1(
+                        commandKind, subjectId, result, routedBlock.height(),
+                        message.getMessageId(), RoleCommandResultV1.commandDigest(
+                        message.getBody())).encode());
             } catch (IllegalArgumentException malformed) {
                 // Canonically malformed finalized commands are deterministic no-ops.
             }
         }
     }
 
-    private static ActorGovernanceProcessor.MutationHandler policyGovernanceHandler() {
+    private Object decode(byte[] body) {
+        try {
+            return ActorGovernanceCommandV1.decode(body);
+        } catch (IllegalArgumentException notGovernance) {
+            return SignedActorCommandV1.decode(body);
+        }
+    }
+
+    private ActorGovernanceProcessor.MutationHandler policyGovernanceHandler() {
         return new ActorGovernanceProcessor.MutationHandler() {
             @Override
             public void validate(
@@ -134,12 +172,15 @@ public final class GovernedRoleApprovalWorkflow implements CompositeWorkflow {
                             policy.revision());
                     return true;
                 }
-                return false;
+                PolicyMutationV1.CancelProposal cancel =
+                        (PolicyMutationV1.CancelProposal) mutation;
+                return actorApprovals.cancelByGovernance(
+                        cancel.proposalId(), approvalState);
             }
         };
     }
 
-    private static boolean canActivate(
+    private boolean canActivate(
             PolicyMutationV1 mutation,
             AppStateWriter state
     ) {
@@ -148,15 +189,21 @@ public final class GovernedRoleApprovalWorkflow implements CompositeWorkflow {
             return RoleState.pointer(state,
                     RoleWorkflowKeys.policyCurrent(policy.policyId())) == 0
                     && policy.revision() == RoleState.pointer(state,
-                    RoleWorkflowKeys.directPolicyCurrent(policy.policyId())) + 1;
+                    RoleWorkflowKeys.directPolicyCurrent(policy.policyId())) + 1
+                    && state.get(RoleWorkflowKeys.directPolicyRevision(
+                    policy.policyId(), policy.revision())).isEmpty();
         }
         if (mutation instanceof PolicyMutationV1.PutPolicy put) {
             ApprovalPolicyV1 policy = put.policy();
             return RoleState.pointer(state,
                     RoleWorkflowKeys.directPolicyCurrent(policy.policyId())) == 0
                     && policy.revision() == RoleState.pointer(state,
-                    RoleWorkflowKeys.policyCurrent(policy.policyId())) + 1;
+                    RoleWorkflowKeys.policyCurrent(policy.policyId())) + 1
+                    && state.get(RoleWorkflowKeys.policyRevision(
+                    policy.policyId(), policy.revision())).isEmpty();
         }
-        return false;
+        PolicyMutationV1.CancelProposal cancel =
+                (PolicyMutationV1.CancelProposal) mutation;
+        return actorApprovals.canCancelByGovernance(cancel.proposalId(), state);
     }
 }

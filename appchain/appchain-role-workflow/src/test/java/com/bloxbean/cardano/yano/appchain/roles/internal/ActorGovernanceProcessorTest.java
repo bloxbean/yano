@@ -13,6 +13,8 @@ import com.bloxbean.cardano.yano.appchain.roles.contracts.OrganizationRecordV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RecordStatus;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RegistryMutationV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowKeys;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.RolePendingQueriesV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowLimits;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowResultCode;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.SignedAdministratorStatementV1;
 import org.junit.jupiter.api.BeforeEach;
@@ -23,6 +25,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -60,6 +63,12 @@ class ActorGovernanceProcessorTest {
                 2, state, state, handler)).isEqualTo(RoleWorkflowResultCode.ACCEPTED);
         GovernedMutationRecordV1 proposed = record(subject.id());
         assertThat(proposed.approvals()).hasSize(1);
+        ActorGovernanceProcessor.verifyPendingState(
+                state, GovernedAuthorizationLimitsV1.defaults());
+        assertThat(ActorGovernanceProcessor.pendingPage(state,
+                new RolePendingQueriesV1.PageQuery("", 10), 10).entries())
+                .extracting(RolePendingQueriesV1.GovernanceEntry::mutationId)
+                .containsExactly("change-1");
 
         assertThat(processor.apply(command(ActorGovernanceCommandV1.Operation.APPROVE,
                         subject, 3, List.of("admin-b")),
@@ -74,6 +83,49 @@ class ActorGovernanceProcessorTest {
         assertThat(GovernancePendingIndexV1.decode(state.get(
                 RoleWorkflowKeys.governancePendingIndex()).orElseThrow()).entries())
                 .isEmpty();
+    }
+
+    @Test
+    void saturationReturnsStableCodeAndExpiryReopensGovernanceCapacity() {
+        processor = new ActorGovernanceProcessor(CHAIN_ID, GENESIS_ID,
+                "registry-admins", constrainedLimits());
+        ActorGovernanceProcessor.MutationHandler handler = handler(false);
+        Subject expiring = new Subject("expiring", new byte[]{7}, 2, 4);
+        Subject blocked = new Subject("blocked", new byte[]{8}, 3, 10);
+        Subject reopened = new Subject("reopened", new byte[]{9}, 5, 10);
+
+        assertThat(processor.apply(command(ActorGovernanceCommandV1.Operation.PROPOSE,
+                        expiring, 2, List.of("admin-a")),
+                2, state, state, handler)).isEqualTo(RoleWorkflowResultCode.ACCEPTED);
+        assertThat(processor.apply(command(ActorGovernanceCommandV1.Operation.PROPOSE,
+                        blocked, 3, List.of("admin-b")),
+                3, state, state, handler))
+                .isEqualTo(RoleWorkflowResultCode.CAPACITY_EXCEEDED);
+
+        processor.prepareHeight(5, state, state);
+        assertThat(record("expiring").status())
+                .isEqualTo(GovernedMutationRecordV1.Status.EXPIRED);
+        assertThat(processor.apply(command(ActorGovernanceCommandV1.Operation.PROPOSE,
+                        reopened, 5, List.of("admin-b")),
+                5, state, state, handler)).isEqualTo(RoleWorkflowResultCode.ACCEPTED);
+        assertThat(ActorGovernanceProcessor.pendingPage(state,
+                new RolePendingQueriesV1.PageQuery("", 10), 10).entries())
+                .extracting(RolePendingQueriesV1.GovernanceEntry::mutationId)
+                .containsExactly("reopened");
+    }
+
+    @Test
+    void pendingIndexRoundTripsBeyondCommandCborLimits() {
+        GovernancePendingIndexV1 index = new GovernancePendingIndexV1(IntStream
+                .range(0, 512)
+                .mapToObj(value -> new GovernancePendingIndexV1.Entry(
+                        "mutation-" + value, value + 1L,
+                        "registry-admins", 1, "admin-a"))
+                .toList());
+
+        byte[] encoded = index.encode();
+        assertThat(encoded.length).isGreaterThan(RoleWorkflowLimits.MAX_COMMAND_BYTES);
+        assertThat(GovernancePendingIndexV1.decode(encoded)).isEqualTo(index);
     }
 
     @Test
@@ -225,6 +277,19 @@ class ActorGovernanceProcessorTest {
         byte[] bytes = new byte[32];
         Arrays.fill(bytes, (byte) value);
         return bytes;
+    }
+
+    private static GovernedAuthorizationLimitsV1 constrainedLimits() {
+        return new GovernedAuthorizationLimitsV1(
+                RoleWorkflowLimits.MAX_AUTHORIZATION_EVIDENCE_ITEMS,
+                RoleWorkflowLimits.MAX_COVERED_MUTATION_INDEXES,
+                RoleWorkflowLimits.MAX_GENESIS_ORGANIZATIONS,
+                RoleWorkflowLimits.MAX_GENESIS_ACTORS,
+                RoleWorkflowLimits.MAX_GENESIS_KEYS,
+                RoleWorkflowLimits.MAX_GENESIS_POLICIES,
+                RoleWorkflowLimits.MAX_GENESIS_RECORD_BYTES,
+                1, 2, 1, 2, 1, 1, 1, 1, 10,
+                RoleWorkflowLimits.MAX_CRYPTO_WORK_UNITS_PER_BLOCK);
     }
 
     private static final class MemoryState implements AppStateWriter {

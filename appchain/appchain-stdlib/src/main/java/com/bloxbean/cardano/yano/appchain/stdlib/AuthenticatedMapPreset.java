@@ -14,6 +14,7 @@ import com.bloxbean.cardano.yano.appchain.roles.DomainActorRegistryComponent;
 import com.bloxbean.cardano.yano.appchain.roles.GovernedRoleApprovalWorkflow;
 import com.bloxbean.cardano.yano.appchain.roles.RoleAwareApprovalsComponent;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.GovernedGenesisV1;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapAuthorizationContract;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
 
 import java.util.ArrayList;
@@ -78,7 +79,8 @@ public final class AuthenticatedMapPreset {
             workflowDescriptors.add(roleDescriptor);
             workflows.add(new GovernedRoleApprovalWorkflow(roleDescriptor,
                     generations.get(0), generations.get(1), context.chainId(),
-                    AuthenticatedMapContract.genesisId(genesis), governedGenesis));
+                    AuthenticatedMapContract.genesisId(genesis), governedGenesis,
+                    AuthenticatedMapAuthorizationContract.APPROVAL_PAYLOAD_DOMAIN));
         }
         WorkflowDescriptor mapWorkflowDescriptor = new WorkflowDescriptor(
                 AuthenticatedMapAuthorizationWorkflow.WORKFLOW_ID,
@@ -101,6 +103,10 @@ public final class AuthenticatedMapPreset {
                     AuthenticatedMapContract.DIRECT_CONSUMPTION_QUERY_PATH,
                     AuthenticatedMapComponent.COMPONENT_ID,
                     AuthenticatedMapContract.DIRECT_CONSUMPTION_QUERY_PATH));
+            queryAliases.add(new LegacyQueryAlias(
+                    AuthenticatedMapContract.APPROVAL_CONSUMPTION_QUERY_PATH,
+                    AuthenticatedMapComponent.COMPONENT_ID,
+                    AuthenticatedMapContract.APPROVAL_CONSUMPTION_QUERY_PATH));
         }
         CompositeProfile profile = new CompositeProfile(
                 CompositeProfile.SCHEMA_VERSION, PROFILE_ID, PROFILE_VERSION,
@@ -120,7 +126,9 @@ public final class AuthenticatedMapPreset {
                 DomainActorRegistryComponent.QUERY_ORGANIZATION_CURRENT,
                 DomainActorRegistryComponent.QUERY_AUTHORITY,
                 DomainActorRegistryComponent.QUERY_AUTHORITY_CURRENT,
-                DomainActorRegistryComponent.QUERY_GOVERNANCE_MUTATION);
+                DomainActorRegistryComponent.QUERY_GOVERNANCE_MUTATION,
+                DomainActorRegistryComponent.QUERY_COMMAND_RESULT,
+                DomainActorRegistryComponent.QUERY_PENDING_GOVERNANCE);
     }
 
     private static List<String> approvalQueries() {
@@ -131,7 +139,10 @@ public final class AuthenticatedMapPreset {
                 RoleAwareApprovalsComponent.QUERY_DIRECT_POLICY_CURRENT,
                 RoleAwareApprovalsComponent.QUERY_PROPOSAL,
                 RoleAwareApprovalsComponent.QUERY_GOVERNANCE_MUTATION,
-                RoleAwareApprovalsComponent.QUERY_STATS);
+                RoleAwareApprovalsComponent.QUERY_STATS,
+                RoleAwareApprovalsComponent.QUERY_COMMAND_RESULT,
+                RoleAwareApprovalsComponent.QUERY_PENDING_APPROVALS,
+                RoleAwareApprovalsComponent.QUERY_PENDING_GOVERNANCE);
     }
 
     private static List<String> mapQueries(boolean governed) {
@@ -140,6 +151,7 @@ public final class AuthenticatedMapPreset {
                 AuthenticatedMapContract.RECEIPT_QUERY_PATH));
         if (governed) {
             paths.add(AuthenticatedMapContract.DIRECT_CONSUMPTION_QUERY_PATH);
+            paths.add(AuthenticatedMapContract.APPROVAL_CONSUMPTION_QUERY_PATH);
         }
         return List.copyOf(paths);
     }
