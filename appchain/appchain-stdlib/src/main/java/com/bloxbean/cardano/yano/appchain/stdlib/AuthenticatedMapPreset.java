@@ -52,11 +52,11 @@ public final class AuthenticatedMapPreset {
         ComponentDescriptor mapDescriptor = new ComponentDescriptor(
                 AuthenticatedMapComponent.COMPONENT_ID, PROFILE_VERSION,
                 configurationId, "authenticated-map-state-v1", 1, 0,
-                List.of(), List.of(AuthenticatedMapContract.POINT_QUERY_PATH,
-                AuthenticatedMapContract.RECEIPT_QUERY_PATH), 0);
+                List.of(), mapQueries(governed), 0);
 
         DomainActorRegistryComponent actors = DomainActorRegistryComponent.genesisBound(
-                actorsDescriptor, context.chainId(), governedGenesis);
+                actorsDescriptor, context.chainId(), governedGenesis,
+                AuthenticatedMapContract.genesisId(genesis));
         RoleAwareApprovalsComponent approvals = new RoleAwareApprovalsComponent(
                 approvalsDescriptor, governedGenesis);
         AuthenticatedMapComponent map = new AuthenticatedMapComponent(mapDescriptor,
@@ -77,7 +77,8 @@ public final class AuthenticatedMapPreset {
                     List.of(generations.get(0), generations.get(1)), 0);
             workflowDescriptors.add(roleDescriptor);
             workflows.add(new GovernedRoleApprovalWorkflow(roleDescriptor,
-                    generations.get(0), generations.get(1)));
+                    generations.get(0), generations.get(1), context.chainId(),
+                    AuthenticatedMapContract.genesisId(genesis), governedGenesis));
         }
         WorkflowDescriptor mapWorkflowDescriptor = new WorkflowDescriptor(
                 AuthenticatedMapAuthorizationWorkflow.WORKFLOW_ID,
@@ -88,17 +89,24 @@ public final class AuthenticatedMapPreset {
                 mapWorkflowDescriptor, generations.get(0), generations.get(1),
                 generations.get(2), map));
 
+        List<LegacyQueryAlias> queryAliases = new ArrayList<>(List.of(
+                new LegacyQueryAlias(AuthenticatedMapContract.POINT_QUERY_PATH,
+                        AuthenticatedMapComponent.COMPONENT_ID,
+                        AuthenticatedMapContract.POINT_QUERY_PATH),
+                new LegacyQueryAlias(AuthenticatedMapContract.RECEIPT_QUERY_PATH,
+                        AuthenticatedMapComponent.COMPONENT_ID,
+                        AuthenticatedMapContract.RECEIPT_QUERY_PATH)));
+        if (governed) {
+            queryAliases.add(new LegacyQueryAlias(
+                    AuthenticatedMapContract.DIRECT_CONSUMPTION_QUERY_PATH,
+                    AuthenticatedMapComponent.COMPONENT_ID,
+                    AuthenticatedMapContract.DIRECT_CONSUMPTION_QUERY_PATH));
+        }
         CompositeProfile profile = new CompositeProfile(
                 CompositeProfile.SCHEMA_VERSION, PROFILE_ID, PROFILE_VERSION,
                 components.stream().map(CompositeComponent::descriptor).toList(),
                 workflowDescriptors,
-                List.of(
-                        new LegacyQueryAlias(AuthenticatedMapContract.POINT_QUERY_PATH,
-                                AuthenticatedMapComponent.COMPONENT_ID,
-                                AuthenticatedMapContract.POINT_QUERY_PATH),
-                        new LegacyQueryAlias(AuthenticatedMapContract.RECEIPT_QUERY_PATH,
-                                AuthenticatedMapComponent.COMPONENT_ID,
-                                AuthenticatedMapContract.RECEIPT_QUERY_PATH)),
+                queryAliases,
                 AggregateQueryLimitsV1.DEFAULT);
         return CompositeStateMachine.create(AuthenticatedMapContract.STATE_MACHINE_ID,
                 context, profile, components, workflows);
@@ -109,14 +117,30 @@ public final class AuthenticatedMapPreset {
                 DomainActorRegistryComponent.QUERY_ACTOR,
                 DomainActorRegistryComponent.QUERY_ACTOR_CURRENT,
                 DomainActorRegistryComponent.QUERY_ORGANIZATION,
-                DomainActorRegistryComponent.QUERY_ORGANIZATION_CURRENT);
+                DomainActorRegistryComponent.QUERY_ORGANIZATION_CURRENT,
+                DomainActorRegistryComponent.QUERY_AUTHORITY,
+                DomainActorRegistryComponent.QUERY_AUTHORITY_CURRENT,
+                DomainActorRegistryComponent.QUERY_GOVERNANCE_MUTATION);
     }
 
     private static List<String> approvalQueries() {
         return List.of(
                 RoleAwareApprovalsComponent.QUERY_POLICY,
                 RoleAwareApprovalsComponent.QUERY_POLICY_CURRENT,
+                RoleAwareApprovalsComponent.QUERY_DIRECT_POLICY,
+                RoleAwareApprovalsComponent.QUERY_DIRECT_POLICY_CURRENT,
                 RoleAwareApprovalsComponent.QUERY_PROPOSAL,
+                RoleAwareApprovalsComponent.QUERY_GOVERNANCE_MUTATION,
                 RoleAwareApprovalsComponent.QUERY_STATS);
+    }
+
+    private static List<String> mapQueries(boolean governed) {
+        List<String> paths = new ArrayList<>(List.of(
+                AuthenticatedMapContract.POINT_QUERY_PATH,
+                AuthenticatedMapContract.RECEIPT_QUERY_PATH));
+        if (governed) {
+            paths.add(AuthenticatedMapContract.DIRECT_CONSUMPTION_QUERY_PATH);
+        }
+        return List.copyOf(paths);
     }
 }

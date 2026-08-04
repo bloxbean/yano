@@ -15,6 +15,7 @@ import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorKeyEpochV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorKeyProofV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorRecordV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.AdministratorAuthorityV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorGovernanceCommandV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.GenesisActorV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.GovernedMutationCommandV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.GovernedGenesisV1;
@@ -23,6 +24,7 @@ import com.bloxbean.cardano.yano.appchain.roles.contracts.RecordStatus;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RegistryMutationV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowKeys;
 import com.bloxbean.cardano.yano.appchain.roles.internal.GovernedMutationProcessor;
+import com.bloxbean.cardano.yano.appchain.roles.internal.ActorGovernanceProcessor;
 import com.bloxbean.cardano.yano.appchain.roles.internal.OverlayState;
 import com.bloxbean.cardano.yano.appchain.roles.internal.RoleState;
 
@@ -39,31 +41,38 @@ public final class DomainActorRegistryComponent implements CompositeComponent {
     public static final String QUERY_ORGANIZATION_CURRENT = "organization-current";
     public static final String QUERY_ACTOR = "actor";
     public static final String QUERY_ACTOR_CURRENT = "actor-current";
+    public static final String QUERY_AUTHORITY = "administrator-authority";
+    public static final String QUERY_AUTHORITY_CURRENT = "administrator-authority-current";
+    public static final String QUERY_GOVERNANCE_MUTATION = "governance-mutation";
 
     private final ComponentDescriptor descriptor;
     private final String chainId;
     private final GovernedMutationProcessor governance;
     private final GovernedGenesisV1 genesis;
+    private final ActorGovernanceProcessor actorGovernance;
 
     public DomainActorRegistryComponent(ComponentDescriptor descriptor, String chainId,
                                         RoleWorkflowGovernanceConfig governanceConfig) {
-        this(descriptor, chainId, governanceConfig, null);
+        this(descriptor, chainId, governanceConfig, null, null);
     }
 
     /** Genesis-bound component used by the authenticated-map composite profile. */
     public static DomainActorRegistryComponent genesisBound(
             ComponentDescriptor descriptor,
             String chainId,
-            GovernedGenesisV1 genesis
+            GovernedGenesisV1 genesis,
+            byte[] authenticatedMapGenesisId
     ) {
-        return new DomainActorRegistryComponent(descriptor, chainId, null, genesis);
+        return new DomainActorRegistryComponent(descriptor, chainId, null,
+                genesis, authenticatedMapGenesisId);
     }
 
     private DomainActorRegistryComponent(
             ComponentDescriptor descriptor,
             String chainId,
             RoleWorkflowGovernanceConfig governanceConfig,
-            GovernedGenesisV1 genesis
+            GovernedGenesisV1 genesis,
+            byte[] authenticatedMapGenesisId
     ) {
         this.descriptor = java.util.Objects.requireNonNull(descriptor, "descriptor");
         this.chainId = com.bloxbean.cardano.yano.appchain.roles.contracts
@@ -71,6 +80,9 @@ public final class DomainActorRegistryComponent implements CompositeComponent {
         this.governance = governanceConfig == null
                 ? null : new GovernedMutationProcessor(governanceConfig);
         this.genesis = genesis;
+        this.actorGovernance = genesis == null ? null : new ActorGovernanceProcessor(
+                this.chainId, authenticatedMapGenesisId,
+                genesis.administratorAuthority().authorityId(), genesis.limits());
         List<String> expectedTopics = governanceConfig != null || genesis != null
                 ? List.of(TOPIC) : List.of();
         if (!descriptor.componentId().equals(COMPONENT_ID)
@@ -94,6 +106,22 @@ public final class DomainActorRegistryComponent implements CompositeComponent {
 
     @Override
     public AppStateMachine.AdmissionResult validate(AppMessage message) {
+        if (actorGovernance != null) {
+            try {
+                ActorGovernanceCommandV1 command =
+                        ActorGovernanceCommandV1.decode(message.getBody());
+                if (command.authorizations().stream().anyMatch(
+                        authorization -> !authorization.verifyClaimedKey())) {
+                    return AppStateMachine.AdmissionResult.reject("INVALID_SIGNATURE");
+                }
+                if (command.operation() == ActorGovernanceCommandV1.Operation.PROPOSE) {
+                    RegistryMutationV1.decode(command.mutation());
+                }
+                return AppStateMachine.AdmissionResult.accept();
+            } catch (RuntimeException malformed) {
+                return AppStateMachine.AdmissionResult.reject("INVALID_PAYLOAD");
+            }
+        }
         if (governance == null) {
             return AppStateMachine.AdmissionResult.reject("GOVERNED_ROUTE_UNSUPPORTED");
         }
@@ -113,6 +141,19 @@ public final class DomainActorRegistryComponent implements CompositeComponent {
     public void apply(AppBlock block, AppStateWriter ownState, AppEffectEmitter effects) {
         if (genesis != null) {
             initializeOrVerify(block.height(), ownState);
+        }
+        if (actorGovernance != null) {
+            actorGovernance.prepareHeight(block.height(), ownState, ownState);
+            ActorGovernanceProcessor.MutationHandler handler = actorGovernanceHandler();
+            for (AppMessage message : block.messages()) {
+                try {
+                    actorGovernance.apply(ActorGovernanceCommandV1.decode(message.getBody()),
+                            block.height(), ownState, ownState, handler);
+                } catch (IllegalArgumentException malformed) {
+                    // Canonically malformed finalized commands are deterministic no-ops.
+                }
+            }
+            return;
         }
         if (governance == null) {
             return;
@@ -137,6 +178,34 @@ public final class DomainActorRegistryComponent implements CompositeComponent {
                 // Admission is repeated during apply; invalid finalized input is a no-op.
             }
         }
+    }
+
+    private ActorGovernanceProcessor.MutationHandler actorGovernanceHandler() {
+        return new ActorGovernanceProcessor.MutationHandler() {
+            @Override
+            public void validate(
+                    byte[] encoded,
+                    AppStateWriter authorityState,
+                    AppStateWriter ownedState
+            ) {
+                RegistryMutationV1 mutation = RegistryMutationV1.decode(encoded);
+                if (!canActivateMutation(mutation, ownedState, 0)) {
+                    throw new IllegalArgumentException("registry mutation is not activatable");
+                }
+            }
+
+            @Override
+            public boolean activate(
+                    byte[] encoded,
+                    long height,
+                    AppStateWriter authorityState,
+                    AppStateWriter ownedState
+            ) {
+                RegistryMutationV1 mutation = RegistryMutationV1.decode(encoded);
+                return canActivateMutation(mutation, ownedState, height)
+                        && activateMutation(mutation, ownedState);
+            }
+        };
     }
 
     private void initializeOrVerify(long height, AppStateWriter state) {
@@ -299,6 +368,11 @@ public final class DomainActorRegistryComponent implements CompositeComponent {
             if (ref.revision != 0) throw currentQueryRevision();
             return RoleState.pointerBytes(ownState, RoleWorkflowKeys.actorCurrent(ref.id));
         }
+        if (QUERY_AUTHORITY_CURRENT.equals(localPath)) {
+            if (ref.revision != 0) throw currentQueryRevision();
+            return RoleState.pointerBytes(ownState,
+                    RoleWorkflowKeys.authorityCurrent(ref.id));
+        }
         if (QUERY_ORGANIZATION.equals(localPath)) {
             long revision = ref.revision != 0 ? ref.revision
                     : RoleState.pointer(ownState, RoleWorkflowKeys.organizationCurrent(ref.id));
@@ -311,6 +385,21 @@ public final class DomainActorRegistryComponent implements CompositeComponent {
             return revision == 0 ? new byte[0] : ownState.get(
                     RoleWorkflowKeys.actorRevision(ref.id, revision)).orElse(new byte[0]);
         }
+        if (QUERY_AUTHORITY.equals(localPath)) {
+            long revision = ref.revision != 0 ? ref.revision
+                    : RoleState.pointer(ownState, RoleWorkflowKeys.authorityCurrent(ref.id));
+            return revision == 0 ? new byte[0] : ownState.get(
+                    RoleWorkflowKeys.authorityRevision(ref.id, revision))
+                    .orElse(new byte[0]);
+        }
+        if (QUERY_GOVERNANCE_MUTATION.equals(localPath)) {
+            if (ref.revision != 0) {
+                throw new AppQueryException(AppQueryException.Code.INVALID_REQUEST,
+                        "governance-mutation queries do not accept a revision");
+            }
+            return ownState.get(RoleWorkflowKeys.governedMutation(ref.id))
+                    .orElse(new byte[0]);
+        }
         throw new AppQueryException(AppQueryException.Code.UNSUPPORTED,
                 "unsupported domain actor query");
     }
@@ -321,6 +410,9 @@ public final class DomainActorRegistryComponent implements CompositeComponent {
     }
 
     private boolean activateMutation(RegistryMutationV1 mutation, AppStateWriter state) {
+        if (!canActivateMutation(mutation, state, 0)) {
+            return false;
+        }
         if (mutation instanceof RegistryMutationV1.PutOrganization put) {
             OrganizationRecordV1 record = put.organization();
             long current = RoleState.pointer(state,
@@ -332,19 +424,141 @@ public final class DomainActorRegistryComponent implements CompositeComponent {
                     record.organizationId()), record.revision());
             return true;
         }
-        RegistryMutationV1.PutActor put = (RegistryMutationV1.PutActor) mutation;
-        ActorRecordV1 record = put.actor();
-        OrganizationRecordV1 organization = currentOrganization(state, record.organizationId());
-        if (organization == null
-                || (record.status() == RecordStatus.ACTIVE
-                && organization.status() != RecordStatus.ACTIVE)) return false;
-        long currentRevision = RoleState.pointer(state, RoleWorkflowKeys.actorCurrent(record.actorId()));
-        if (record.revision() != currentRevision + 1) return false;
-        ActorRecordV1 prior = currentRevision == 0 ? null : actor(state, record.actorId(), currentRevision);
-        if (!validKeyEvolution(record, prior, put)) return false;
-        state.put(RoleWorkflowKeys.actorRevision(record.actorId(), record.revision()), record.encode());
-        RoleState.pointer(state, RoleWorkflowKeys.actorCurrent(record.actorId()), record.revision());
+        if (mutation instanceof RegistryMutationV1.PutActor put) {
+            ActorRecordV1 record = put.actor();
+            state.put(RoleWorkflowKeys.actorRevision(
+                    record.actorId(), record.revision()), record.encode());
+            RoleState.pointer(state, RoleWorkflowKeys.actorCurrent(
+                    record.actorId()), record.revision());
+            return true;
+        }
+        RegistryMutationV1.PutAuthority put =
+                (RegistryMutationV1.PutAuthority) mutation;
+        if (genesis == null) return false;
+        AdministratorAuthorityV1 authority = put.authority();
+        state.put(RoleWorkflowKeys.authorityRevision(
+                authority.authorityId(), authority.revision()), authority.encode());
+        RoleState.pointer(state, RoleWorkflowKeys.authorityCurrent(
+                authority.authorityId()), authority.revision());
         return true;
+    }
+
+    private boolean canActivateMutation(
+            RegistryMutationV1 mutation,
+            AppStateWriter state,
+            long height
+    ) {
+        if (mutation instanceof RegistryMutationV1.PutOrganization put) {
+            OrganizationRecordV1 record = put.organization();
+            return record.revision() == RoleState.pointer(state,
+                    RoleWorkflowKeys.organizationCurrent(record.organizationId())) + 1
+                    && keepsCurrentAuthoritySatisfiable(mutation, state, height);
+        }
+        if (mutation instanceof RegistryMutationV1.PutActor put) {
+            ActorRecordV1 record = put.actor();
+            OrganizationRecordV1 organization = currentOrganization(
+                    state, record.organizationId());
+            if (organization == null || record.status() == RecordStatus.ACTIVE
+                    && organization.status() != RecordStatus.ACTIVE) {
+                return false;
+            }
+            long currentRevision = RoleState.pointer(state,
+                    RoleWorkflowKeys.actorCurrent(record.actorId()));
+            ActorRecordV1 prior = currentRevision == 0 ? null
+                    : actor(state, record.actorId(), currentRevision);
+            return record.revision() == currentRevision + 1
+                    && validKeyEvolution(record, prior, put)
+                    && keepsCurrentAuthoritySatisfiable(mutation, state, height);
+        }
+        RegistryMutationV1.PutAuthority put =
+                (RegistryMutationV1.PutAuthority) mutation;
+        if (genesis == null) return false;
+        AdministratorAuthorityV1 authority = put.authority();
+        AdministratorAuthorityV1 current = currentAuthority(state);
+        if (!authority.authorityId().equals(current.authorityId())
+                || authority.revision() != current.revision() + 1) {
+            return false;
+        }
+        long eligible = authority.administratorActorIds().stream()
+                .map(actorId -> currentActor(state, actorId))
+                .filter(java.util.Objects::nonNull)
+                .filter(actor -> actor.status() == RecordStatus.ACTIVE)
+                .filter(actor -> {
+                    OrganizationRecordV1 organization = currentOrganization(
+                            state, actor.organizationId());
+                    return organization != null
+                            && organization.status() == RecordStatus.ACTIVE;
+                })
+                .filter(actor -> actor.keys().stream().anyMatch(key -> height == 0
+                        ? key.status() == RecordStatus.ACTIVE
+                        : key.activeAt(height)))
+                .count();
+        return eligible >= authority.distinctActorThreshold();
+    }
+
+    private boolean keepsCurrentAuthoritySatisfiable(
+            RegistryMutationV1 mutation,
+            AppStateWriter state,
+            long height
+    ) {
+        if (genesis == null) return true;
+        AdministratorAuthorityV1 authority = currentAuthority(state);
+        if (authority == null) return false;
+        long eligible = authority.administratorActorIds().stream()
+                .map(actorId -> candidateActor(mutation, state, actorId))
+                .filter(java.util.Objects::nonNull)
+                .filter(actor -> actor.status() == RecordStatus.ACTIVE)
+                .filter(actor -> {
+                    OrganizationRecordV1 organization = candidateOrganization(
+                            mutation, state, actor.organizationId());
+                    return organization != null
+                            && organization.status() == RecordStatus.ACTIVE;
+                })
+                .filter(actor -> actor.keys().stream().anyMatch(key -> height == 0
+                        ? key.status() == RecordStatus.ACTIVE
+                        : key.activeAt(height)))
+                .count();
+        return eligible >= authority.distinctActorThreshold();
+    }
+
+    private static ActorRecordV1 candidateActor(
+            RegistryMutationV1 mutation,
+            AppStateWriter state,
+            String actorId
+    ) {
+        if (mutation instanceof RegistryMutationV1.PutActor put
+                && put.actor().actorId().equals(actorId)) {
+            return put.actor();
+        }
+        return currentActor(state, actorId);
+    }
+
+    private static OrganizationRecordV1 candidateOrganization(
+            RegistryMutationV1 mutation,
+            AppStateWriter state,
+            String organizationId
+    ) {
+        if (mutation instanceof RegistryMutationV1.PutOrganization put
+                && put.organization().organizationId().equals(organizationId)) {
+            return put.organization();
+        }
+        return currentOrganization(state, organizationId);
+    }
+
+    private AdministratorAuthorityV1 currentAuthority(AppStateWriter state) {
+        String authorityId = genesis.administratorAuthority().authorityId();
+        long revision = RoleState.pointer(
+                state, RoleWorkflowKeys.authorityCurrent(authorityId));
+        if (revision == 0) return null;
+        byte[] encoded = state.get(RoleWorkflowKeys.authorityRevision(
+                authorityId, revision)).orElseThrow(() ->
+                new IllegalStateException("authority current pointer is dangling"));
+        return AdministratorAuthorityV1.decode(encoded);
+    }
+
+    private static ActorRecordV1 currentActor(AppStateWriter state, String actorId) {
+        long revision = RoleState.pointer(state, RoleWorkflowKeys.actorCurrent(actorId));
+        return revision == 0 ? null : actor(state, actorId, revision);
     }
 
     private boolean validKeyEvolution(ActorRecordV1 record, ActorRecordV1 prior,

@@ -20,10 +20,12 @@ import com.bloxbean.cardano.yano.appchain.config.AppChainEffectsConfig;
 import com.bloxbean.cardano.yano.appchain.roles.DomainActorRegistryComponent;
 import com.bloxbean.cardano.yano.appchain.roles.GovernedRoleApprovalWorkflow;
 import com.bloxbean.cardano.yano.appchain.roles.RoleAwareApprovalsComponent;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorGovernanceCommandV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorKeyEpochV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorKeyProofV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorRecordV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.AdministratorAuthorityV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.AdministratorStatementV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ApprovalPolicyV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.DirectRolePolicyV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.GenesisActorV1;
@@ -32,6 +34,7 @@ import com.bloxbean.cardano.yano.appchain.roles.contracts.GovernedGenesisV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.OrganizationRecordV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RecordStatus;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowKeys;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.SignedAdministratorStatementV1;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapAuthorizationContract;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapAuthorizationContract.*;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
@@ -55,6 +58,8 @@ class AuthenticatedMapCompositeAssemblyTest {
     private static final String CHAIN_ID = "authenticated-map-assembly";
     private static final byte[] MEMBER = repeated(0x31);
     private static final byte[] ACTOR_SEED = repeated(0x41);
+    private static final byte[] ACTOR_SEED_B = repeated(0x42);
+    private static final byte[] ACTOR_SEED_C = repeated(0x43);
 
     @Test
     void basicGenesisKeepsOneSelectorAndFinalEnvelopeSemantics() {
@@ -118,7 +123,7 @@ class AuthenticatedMapCompositeAssemblyTest {
     }
 
     @Test
-    void governedGenesisCommitsOrderInitializesClosureAndGatesFutureProcessors() {
+    void governedGenesisCommitsOrderInitializesClosureAndAuthorizesDirectRole() {
         AppChainConfig config = config(CHAIN_ID);
         GovernedFixture fixture = governedFixture();
         AuthenticatedMapContract.Genesis basic = AuthenticatedMapGenesisFactory.mpf(
@@ -171,7 +176,7 @@ class AuthenticatedMapCompositeAssemblyTest {
                 new byte[]{(byte) 0x80});
         assertThat(machine.validate(roleCommand).isAccepted()).isFalse();
         assertThat(machine.validate(roleCommand).reason())
-                .isEqualTo("GOVERNED_ROUTE_UNSUPPORTED");
+                .isEqualTo("INVALID_PAYLOAD");
 
         AuthenticatedMapContract.Command mutation = AuthenticatedMapContract.Command.single(
                 AuthenticatedMapContract.Mutation.put(
@@ -196,11 +201,54 @@ class AuthenticatedMapCompositeAssemblyTest {
         byte[] receipt = state.get(physical(AuthenticatedMapComponent.COMPONENT_ID,
                         AuthenticatedMapContract.receiptKey(mapCommand.getMessageId())))
                 .orElseThrow();
-        assertThat(AuthenticatedMapContract.decodeReceipt(receipt).errorCode())
-                .isEqualTo(AuthenticatedMapContract.ERROR_GOVERNED_ROUTE_UNSUPPORTED);
+        assertThat(AuthenticatedMapContract.decodeReceipt(receipt).status())
+                .isEqualTo(AuthenticatedMapContract.RECEIPT_APPLIED);
         assertThat(state.get(physical(AuthenticatedMapComponent.COMPONENT_ID,
                 AuthenticatedMapContract.canonicalKey(
-                        "governed-products", bytes("sku-2"))))).isEmpty();
+                        "governed-products", bytes("sku-2"))))).isPresent();
+        byte[] consumptionQuery = new DirectConsumptionQueryV1(
+                "admin-a", repeated(0x51)).encode();
+        DirectConsumptionV1 consumption = DirectConsumptionV1.decode(machine.query(
+                AuthenticatedMapContract.DIRECT_CONSUMPTION_QUERY_PATH,
+                consumptionQuery, state));
+        assertThat(consumption.actorId()).isEqualTo("admin-a");
+        assertThat(consumption.messageId()).isEqualTo(mapCommand.getMessageId());
+
+        AppMessage replay = message(AuthenticatedMapContract.DEFAULT_TOPIC, 4,
+                mapCommand.getBody());
+        machine.apply(block(3, replay), state);
+        state.committedHeight = 3;
+        assertReceiptError(state, replay,
+                AuthenticatedMapContract.ERROR_DIRECT_AUTHORIZATION_REPLAY);
+        AuthenticatedMapContract.Entry retained = state.get(physical(
+                        AuthenticatedMapComponent.COMPONENT_ID,
+                        AuthenticatedMapContract.canonicalKey(
+                                "governed-products", bytes("sku-2"))))
+                .map(AuthenticatedMapContract::decodeEntry).orElseThrow();
+        assertThat(retained.revision()).isEqualTo(1);
+
+        byte[] invalidSignature = authorization.signature();
+        invalidSignature[0] ^= 1;
+        MapActorAuthorizationV1 forged = new MapActorAuthorizationV1(
+                authorization.authorizationId(), authorization.chainId(),
+                authorization.genesisId(), authorization.actionCommitment(),
+                authorization.coveredMutationIndexes(), authorization.policyId(),
+                authorization.policyRevision(), authorization.actorId(),
+                authorization.actorRevision(), authorization.keyId(),
+                authorization.publicKey(), authorization.issuedHeight(),
+                authorization.deadlineHeight(), authorization.signatureAlgorithm(),
+                invalidSignature);
+        AppMessage invalidSignatureCommand = message(
+                AuthenticatedMapContract.DEFAULT_TOPIC, 5,
+                AuthenticatedMapAuthorizationContract.encodeCommand(
+                        new AuthenticatedMapCommandV1(action, List.of(forged))));
+        assertThat(machine.validate(invalidSignatureCommand).isAccepted()).isFalse();
+        assertThat(machine.validate(invalidSignatureCommand).reason())
+                .isEqualTo("INVALID_SIGNATURE");
+        machine.apply(block(4, invalidSignatureCommand), state);
+        state.committedHeight = 4;
+        assertReceiptError(state, invalidSignatureCommand,
+                AuthenticatedMapContract.ERROR_ACTOR_SIGNATURE);
 
         machine.init(state, new AppChainInfo(CHAIN_ID, hex(MEMBER), 1));
         byte[] authorityRevision = physical(DomainActorRegistryComponent.COMPONENT_ID,
@@ -343,6 +391,184 @@ class AuthenticatedMapCompositeAssemblyTest {
                 AuthenticatedMapContract.ERROR_VALUE_VALIDATOR);
     }
 
+    @Test
+    void governedPolicyAndActorRevisionsTakeEffectBeforeMapAuthorization() {
+        AppChainConfig config = config(CHAIN_ID);
+        ThresholdFixture fixture = thresholdFixture();
+        AuthenticatedMapContract.Genesis basic = AuthenticatedMapGenesisFactory.mpf(
+                config, repeated(0x15), 16, 32_768,
+                List.of(new AuthenticatedMapContract.CollectionDescriptor(
+                        "placeholder", AuthenticatedMapContract.AUTH_OPEN,
+                        false, 64, 4_096)), List.of());
+        AuthenticatedMapContract.Genesis genesis = new AuthenticatedMapContract.Genesis(
+                basic.chainId(), basic.commitmentProfileId(), basic.formatFingerprint(),
+                basic.frameworkConsensusProfileDigest(), basic.membershipCommitment(),
+                basic.anchorPolicyCommitment(), basic.maxBatchItems(),
+                basic.maxBatchBytes(), fixture.collections(), basic.validators(),
+                basic.initialEntries(), fixture.genesis());
+        CompositeStateMachine machine = AuthenticatedMapPreset.create(
+                context(config), genesis);
+        MemoryState state = new MemoryState();
+        machine.init(state, new AppChainInfo(CHAIN_ID, hex(MEMBER), 1));
+        machine.apply(block(1), state);
+        state.committedHeight = 1;
+
+        DirectRolePolicyV1 revisionTwo = new DirectRolePolicyV1(
+                "issuer-write", 2, RecordStatus.ACTIVE, "auditor", 100);
+        byte[] policyMutation = new com.bloxbean.cardano.yano.appchain.roles.contracts
+                .PolicyMutationV1.PutDirectPolicy(revisionTwo).encode();
+        GovernanceSubject policySubject = new GovernanceSubject(
+                "issuer-policy-2", policyMutation, 4, 20);
+        machine.apply(block(2, governanceMessage(GovernedRoleApprovalWorkflow.TOPIC, 20,
+                ActorGovernanceCommandV1.Operation.PROPOSE, policySubject,
+                List.of(signedAdministrator(fixture, genesis, policySubject,
+                        AdministratorStatementV1.Decision.PROPOSE,
+                        fixture.actorA(), ACTOR_SEED, 2)))), state);
+        state.committedHeight = 2;
+        machine.apply(block(3, governanceMessage(GovernedRoleApprovalWorkflow.TOPIC, 21,
+                ActorGovernanceCommandV1.Operation.APPROVE, policySubject,
+                List.of(signedAdministrator(fixture, genesis, policySubject,
+                        AdministratorStatementV1.Decision.APPROVE,
+                        fixture.actorC(), ACTOR_SEED_C, 3)))), state);
+        state.committedHeight = 3;
+
+        AppMessage policyTwoAction = directMapMessage(genesis, fixture.actorB(),
+                ACTOR_SEED_B, revisionTwo, repeated(0x72), 22,
+                AuthenticatedMapContract.Command.single(
+                        AuthenticatedMapContract.Mutation.put(
+                                "governed-products", bytes("policy-two"),
+                                bytes("accepted"))), 3, 15);
+        AppMessage activatePolicy = governanceMessage(
+                GovernedRoleApprovalWorkflow.TOPIC, 23,
+                ActorGovernanceCommandV1.Operation.ACTIVATE,
+                policySubject, List.of());
+        machine.apply(block(4, policyTwoAction, activatePolicy), state);
+        state.committedHeight = 4;
+        assertThat(state.get(physical(RoleAwareApprovalsComponent.COMPONENT_ID,
+                RoleWorkflowKeys.directPolicyCurrent("issuer-write"))))
+                .contains(ByteBuffer.allocate(Long.BYTES).putLong(2).array());
+        assertThat(machine.query("components/role-approvals/direct-policy",
+                bytes("issuer-write@2"), state)).isEqualTo(revisionTwo.encode());
+        assertThat(machine.query("components/role-approvals/governance-mutation",
+                bytes(policySubject.id()), state)).isNotEmpty();
+        assertThat(state.get(physical(AuthenticatedMapComponent.COMPONENT_ID,
+                AuthenticatedMapContract.canonicalKey(
+                        "governed-products", bytes("policy-two"))))).isPresent();
+
+        byte[] sharedAuthorizationId = repeated(0x73);
+        AppMessage actorAAction = directMapMessage(genesis, fixture.actorA(),
+                ACTOR_SEED, revisionTwo, sharedAuthorizationId, 24,
+                AuthenticatedMapContract.Command.single(
+                        AuthenticatedMapContract.Mutation.put(
+                                "governed-products", bytes("actor-a"), bytes("a"))),
+                4, 15);
+        machine.apply(block(5, actorAAction), state);
+        state.committedHeight = 5;
+        AppMessage actorBAction = directMapMessage(genesis, fixture.actorB(),
+                ACTOR_SEED_B, revisionTwo, sharedAuthorizationId, 25,
+                AuthenticatedMapContract.Command.single(
+                        AuthenticatedMapContract.Mutation.put(
+                                "governed-products", bytes("actor-b"), bytes("b"))),
+                5, 15);
+        machine.apply(block(6, actorBAction), state);
+        state.committedHeight = 6;
+        assertThat(machine.query(AuthenticatedMapContract.DIRECT_CONSUMPTION_QUERY_PATH,
+                new DirectConsumptionQueryV1(
+                        fixture.actorA().actorId(), sharedAuthorizationId).encode(), state))
+                .isNotEmpty();
+        assertThat(machine.query(AuthenticatedMapContract.DIRECT_CONSUMPTION_QUERY_PATH,
+                new DirectConsumptionQueryV1(
+                        fixture.actorB().actorId(), sharedAuthorizationId).encode(), state))
+                .isNotEmpty();
+
+        AuthenticatedMapContract.Command failingBatch =
+                AuthenticatedMapContract.Command.batch(List.of(
+                        AuthenticatedMapContract.Mutation.put(
+                                "governed-products", bytes("must-not-write"), bytes("x")),
+                        AuthenticatedMapContract.Mutation.compareAndSet(
+                                "governed-products", bytes("absent"), bytes("y"),
+                                1, new byte[0])));
+        byte[] unusedAuthorizationId = repeated(0x74);
+        AppMessage atomicFailure = directMapMessage(genesis, fixture.actorB(),
+                ACTOR_SEED_B, revisionTwo, unusedAuthorizationId, 26,
+                failingBatch, 6, 15);
+        machine.apply(block(7, atomicFailure), state);
+        state.committedHeight = 7;
+        assertReceiptError(state, atomicFailure, AuthenticatedMapContract.ERROR_ABSENT);
+        assertThat(state.get(physical(AuthenticatedMapComponent.COMPONENT_ID,
+                AuthenticatedMapContract.canonicalKey(
+                        "governed-products", bytes("must-not-write"))))).isEmpty();
+        assertThat(machine.query(AuthenticatedMapContract.DIRECT_CONSUMPTION_QUERY_PATH,
+                new DirectConsumptionQueryV1(
+                        fixture.actorB().actorId(), unusedAuthorizationId).encode(), state))
+                .isEmpty();
+
+        ActorRecordV1 suspendedB = new ActorRecordV1(
+                fixture.actorB().actorId(), fixture.actorB().organizationId(), 2,
+                RecordStatus.SUSPENDED, fixture.actorB().roles(),
+                fixture.actorB().keys(), new byte[0]);
+        byte[] actorMutation = new com.bloxbean.cardano.yano.appchain.roles.contracts
+                .RegistryMutationV1.PutActor(suspendedB, List.of()).encode();
+        GovernanceSubject actorSubject = new GovernanceSubject(
+                "suspend-auditor-b", actorMutation, 10, 20);
+        machine.apply(block(8, governanceMessage(DomainActorRegistryComponent.TOPIC, 27,
+                ActorGovernanceCommandV1.Operation.PROPOSE, actorSubject,
+                List.of(signedAdministrator(fixture, genesis, actorSubject,
+                        AdministratorStatementV1.Decision.PROPOSE,
+                        fixture.actorA(), ACTOR_SEED, 8)))), state);
+        state.committedHeight = 8;
+        machine.apply(block(9, governanceMessage(DomainActorRegistryComponent.TOPIC, 28,
+                ActorGovernanceCommandV1.Operation.APPROVE, actorSubject,
+                List.of(signedAdministrator(fixture, genesis, actorSubject,
+                        AdministratorStatementV1.Decision.APPROVE,
+                        fixture.actorC(), ACTOR_SEED_C, 9)))), state);
+        state.committedHeight = 9;
+        AppMessage staleActorAction = directMapMessage(genesis, fixture.actorB(),
+                ACTOR_SEED_B, revisionTwo, repeated(0x75), 29,
+                AuthenticatedMapContract.Command.single(
+                        AuthenticatedMapContract.Mutation.put(
+                                "governed-products", bytes("stale-actor"), bytes("no"))),
+                9, 18);
+        AppMessage activateActor = governanceMessage(
+                DomainActorRegistryComponent.TOPIC, 30,
+                ActorGovernanceCommandV1.Operation.ACTIVATE, actorSubject, List.of());
+        machine.apply(block(10, staleActorAction, activateActor), state);
+        state.committedHeight = 10;
+        assertReceiptError(state, staleActorAction,
+                AuthenticatedMapContract.ERROR_ACTOR_INELIGIBLE);
+        assertThat(state.get(physical(DomainActorRegistryComponent.COMPONENT_ID,
+                RoleWorkflowKeys.actorCurrent(fixture.actorB().actorId()))))
+                .contains(ByteBuffer.allocate(Long.BYTES).putLong(2).array());
+        assertThat(machine.query(
+                "components/domain-actors/administrator-authority",
+                bytes(fixture.authority().authorityId()), state))
+                .isEqualTo(fixture.authority().encode());
+        assertThat(machine.query("components/domain-actors/governance-mutation",
+                bytes(actorSubject.id()), state)).isNotEmpty();
+
+        ActorRecordV1 suspendedAdministrator = new ActorRecordV1(
+                fixture.actorA().actorId(), fixture.actorA().organizationId(), 2,
+                RecordStatus.SUSPENDED, fixture.actorA().roles(),
+                fixture.actorA().keys(), new byte[0]);
+        GovernanceSubject unsafeSubject = new GovernanceSubject(
+                "unsafe-admin-suspension",
+                new com.bloxbean.cardano.yano.appchain.roles.contracts
+                        .RegistryMutationV1.PutActor(
+                        suspendedAdministrator, List.of()).encode(), 12, 20);
+        machine.apply(block(11, governanceMessage(
+                DomainActorRegistryComponent.TOPIC, 31,
+                ActorGovernanceCommandV1.Operation.PROPOSE, unsafeSubject,
+                List.of(signedAdministrator(fixture, genesis, unsafeSubject,
+                        AdministratorStatementV1.Decision.PROPOSE,
+                        fixture.actorA(), ACTOR_SEED, 11)))), state);
+        state.committedHeight = 11;
+        assertThat(machine.query("components/domain-actors/governance-mutation",
+                bytes(unsafeSubject.id()), state)).isEmpty();
+        assertThat(machine.query("components/domain-actors/actor",
+                bytes(fixture.actorA().actorId()), state))
+                .isEqualTo(fixture.actorA().encode());
+    }
+
     private static GovernedFixture governedFixture() {
         byte[] publicKey = KeyGenUtil.getPublicKeyFromPrivateKey(ACTOR_SEED);
         ActorKeyEpochV1 key = new ActorKeyEpochV1(
@@ -379,6 +605,142 @@ class AuthenticatedMapCompositeAssemblyTest {
                         AuthenticatedMapContract.VALUE_ENCODING_OPAQUE, ""));
         return new GovernedFixture(genesis, organization, actor, authority,
                 direct, approval, collections);
+    }
+
+    private static ThresholdFixture thresholdFixture() {
+        OrganizationRecordV1 organizationA = new OrganizationRecordV1(
+                "operator-a", 1, RecordStatus.ACTIVE, new byte[0]);
+        OrganizationRecordV1 organizationB = new OrganizationRecordV1(
+                "operator-b", 1, RecordStatus.ACTIVE, new byte[0]);
+        OrganizationRecordV1 organizationC = new OrganizationRecordV1(
+                "operator-c", 1, RecordStatus.ACTIVE, new byte[0]);
+        ActorRecordV1 actorA = actor("admin-a", organizationA.organizationId(),
+                "admin-a-key", ACTOR_SEED,
+                List.of("auditor", "issuer", "registry-admin"));
+        ActorRecordV1 actorB = actor("auditor-b", organizationB.organizationId(),
+                "auditor-b-key", ACTOR_SEED_B, List.of("auditor"));
+        ActorRecordV1 actorC = actor("admin-c", organizationC.organizationId(),
+                "admin-c-key", ACTOR_SEED_C, List.of("registry-admin"));
+        AdministratorAuthorityV1 authority = new AdministratorAuthorityV1(
+                "registry-admins", 1, List.of(actorA.actorId(), actorC.actorId()),
+                2, 100);
+        DirectRolePolicyV1 direct = new DirectRolePolicyV1(
+                "issuer-write", 1, RecordStatus.ACTIVE, "issuer", 100);
+        ApprovalPolicyV1 approval = new ApprovalPolicyV1(
+                "release-policy", 1, RecordStatus.ACTIVE, List.of("issuer"),
+                List.of(new ApprovalPolicyV1.RequiredClause(
+                        "issuer", "issuer", 1,
+                        ApprovalPolicyV1.DistinctBy.ACTOR)),
+                ApprovalPolicyV1.RejectionMode.ANY_ELIGIBLE, 100);
+        GovernedGenesisV1 governed = new GovernedGenesisV1(
+                CHAIN_ID, authority,
+                List.of(organizationA, organizationB, organizationC),
+                List.of(genesisActor(actorA, ACTOR_SEED),
+                        genesisActor(actorB, ACTOR_SEED_B),
+                        genesisActor(actorC, ACTOR_SEED_C)),
+                List.of(direct), List.of(approval),
+                GovernedAuthorizationLimitsV1.defaults());
+        List<AuthenticatedMapContract.CollectionDescriptor> collections = List.of(
+                new AuthenticatedMapContract.CollectionDescriptor(
+                        "governed-products",
+                        AuthenticatedMapContract.AUTH_GOVERNED_ROLE,
+                        direct.policyId(), false, 64, 4_096,
+                        AuthenticatedMapContract.VALUE_ENCODING_OPAQUE, ""),
+                new AuthenticatedMapContract.CollectionDescriptor(
+                        "releases", AuthenticatedMapContract.AUTH_APPROVAL,
+                        approval.policyId(), false, 64, 4_096,
+                        AuthenticatedMapContract.VALUE_ENCODING_OPAQUE, ""));
+        return new ThresholdFixture(governed, actorA, actorB, actorC,
+                authority, direct, approval, collections);
+    }
+
+    private static ActorRecordV1 actor(
+            String actorId,
+            String organizationId,
+            String keyId,
+            byte[] seed,
+            List<String> roles
+    ) {
+        ActorKeyEpochV1 key = new ActorKeyEpochV1(
+                keyId, KeyGenUtil.getPublicKeyFromPrivateKey(seed),
+                1, 0, RecordStatus.ACTIVE);
+        return new ActorRecordV1(actorId, organizationId, 1,
+                RecordStatus.ACTIVE, roles, List.of(key), new byte[0]);
+    }
+
+    private static GenesisActorV1 genesisActor(ActorRecordV1 actor, byte[] seed) {
+        return new GenesisActorV1(actor, List.of(ActorKeyProofV1.sign(
+                CHAIN_ID, actor.actorId(), actor.revision(),
+                actor.keys().getFirst(), seed)));
+    }
+
+    private static SignedAdministratorStatementV1 signedAdministrator(
+            ThresholdFixture fixture,
+            AuthenticatedMapContract.Genesis mapGenesis,
+            GovernanceSubject subject,
+            AdministratorStatementV1.Decision decision,
+            ActorRecordV1 actor,
+            byte[] seed,
+            long issuedHeight
+    ) {
+        AdministratorStatementV1 statement = new AdministratorStatementV1(
+                decision, CHAIN_ID, AuthenticatedMapContract.genesisId(mapGenesis),
+                fixture.authority().authorityId(), fixture.authority().revision(),
+                subject.id(), ActorGovernanceCommandV1.mutationHash(subject.mutation()),
+                subject.notBeforeHeight(), subject.expiryHeight(), actor.actorId(),
+                actor.revision(), actor.keys().getFirst().keyId(),
+                actor.keys().getFirst().publicKey(), issuedHeight,
+                subject.expiryHeight(), AdministratorStatementV1.ED25519);
+        return SignedAdministratorStatementV1.sign(statement, seed);
+    }
+
+    private static AppMessage governanceMessage(
+            String topic,
+            int discriminator,
+            ActorGovernanceCommandV1.Operation operation,
+            GovernanceSubject subject,
+            List<SignedAdministratorStatementV1> authorizations
+    ) {
+        ActorGovernanceCommandV1 command = new ActorGovernanceCommandV1(
+                operation, subject.id(),
+                operation == ActorGovernanceCommandV1.Operation.PROPOSE
+                        ? subject.mutation() : new byte[0], authorizations);
+        return message(topic, discriminator, command.encode());
+    }
+
+    private static AppMessage directMapMessage(
+            AuthenticatedMapContract.Genesis genesis,
+            ActorRecordV1 actor,
+            byte[] seed,
+            DirectRolePolicyV1 policy,
+            byte[] authorizationId,
+            int discriminator,
+            AuthenticatedMapContract.Command command,
+            long issuedHeight,
+            long deadlineHeight
+    ) {
+        List<AuthorizationAssignmentV1> assignments = java.util.stream.IntStream
+                .range(0, command.mutations().size())
+                .mapToObj(index -> new AuthorizationAssignmentV1(
+                        index, AuthenticatedMapContract.AUTH_GOVERNED_ROLE,
+                        policy.policyId(), 1))
+                .toList();
+        MapActionV1 action = new MapActionV1(
+                command.batch(), command.mutations(), assignments);
+        List<Integer> coverage = java.util.stream.IntStream
+                .range(0, command.mutations().size()).boxed().toList();
+        MapActorAuthorizationV1 authorization = MapActorAuthorizationV1.sign(
+                authorizationId, CHAIN_ID,
+                AuthenticatedMapContract.genesisId(genesis),
+                AuthenticatedMapAuthorizationContract.actionCommitment(action),
+                coverage, policy.policyId(), policy.revision(), actor.actorId(),
+                actor.revision(), actor.keys().getFirst().keyId(),
+                actor.keys().getFirst().publicKey(), issuedHeight,
+                deadlineHeight, seed);
+        return message(AuthenticatedMapContract.DEFAULT_TOPIC, discriminator,
+                AuthenticatedMapAuthorizationContract.encodeCommand(
+                        new AuthenticatedMapCommandV1(action,
+                                List.of(authorization))));
     }
 
     private static AppChainConfig config(String chainId) {
@@ -508,6 +870,34 @@ class AuthenticatedMapCompositeAssemblyTest {
             ApprovalPolicyV1 approvalPolicy,
             List<AuthenticatedMapContract.CollectionDescriptor> collections
     ) {
+    }
+
+    private record ThresholdFixture(
+            GovernedGenesisV1 genesis,
+            ActorRecordV1 actorA,
+            ActorRecordV1 actorB,
+            ActorRecordV1 actorC,
+            AdministratorAuthorityV1 authority,
+            DirectRolePolicyV1 directPolicy,
+            ApprovalPolicyV1 approvalPolicy,
+            List<AuthenticatedMapContract.CollectionDescriptor> collections
+    ) {
+    }
+
+    private record GovernanceSubject(
+            String id,
+            byte[] mutation,
+            long notBeforeHeight,
+            long expiryHeight
+    ) {
+        private GovernanceSubject {
+            mutation = mutation.clone();
+        }
+
+        @Override
+        public byte[] mutation() {
+            return mutation.clone();
+        }
     }
 
     private static final class MemoryState implements AppStateWriter, AppQueryContext {

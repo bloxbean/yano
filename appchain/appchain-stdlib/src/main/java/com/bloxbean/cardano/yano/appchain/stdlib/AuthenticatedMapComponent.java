@@ -10,6 +10,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.appchain.composite.ComponentDescriptor;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeComponent;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapAuthorizationContract;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
 
 import java.util.List;
@@ -19,7 +20,7 @@ import java.util.Objects;
 public final class AuthenticatedMapComponent implements CompositeComponent {
     public static final String COMPONENT_ID = AuthenticatedMapContract.STATE_MACHINE_ID;
 
-    private static final List<String> QUERY_PATHS = List.of(
+    private static final List<String> BASIC_QUERY_PATHS = List.of(
             AuthenticatedMapContract.POINT_QUERY_PATH,
             AuthenticatedMapContract.RECEIPT_QUERY_PATH);
 
@@ -32,9 +33,15 @@ public final class AuthenticatedMapComponent implements CompositeComponent {
     ) {
         this.descriptor = Objects.requireNonNull(descriptor, "descriptor");
         this.transitions = Objects.requireNonNull(transitions, "transitions");
+        List<String> expectedQueryPaths = transitions.genesis().governedGenesis() == null
+                ? BASIC_QUERY_PATHS
+                : List.of(AuthenticatedMapContract.POINT_QUERY_PATH,
+                AuthenticatedMapContract.RECEIPT_QUERY_PATH,
+                AuthenticatedMapContract.DIRECT_CONSUMPTION_QUERY_PATH).stream()
+                .sorted().toList();
         if (!COMPONENT_ID.equals(descriptor.componentId())
                 || !descriptor.topics().isEmpty()
-                || !QUERY_PATHS.equals(descriptor.queryPaths())) {
+                || !expectedQueryPaths.equals(descriptor.queryPaths())) {
             throw new IllegalArgumentException("invalid authenticated-map component descriptor");
         }
     }
@@ -60,6 +67,12 @@ public final class AuthenticatedMapComponent implements CompositeComponent {
 
     @Override
     public byte[] query(String localPath, byte[] params, AppQueryContext ownState) {
+        if (AuthenticatedMapContract.DIRECT_CONSUMPTION_QUERY_PATH.equals(localPath)) {
+            var query = AuthenticatedMapAuthorizationContract.DirectConsumptionQueryV1
+                    .decode(params);
+            return ownState.get(AuthenticatedMapContract.directConsumptionKey(
+                    query.actorId(), query.authorizationId())).orElse(new byte[0]);
+        }
         return transitions.query(localPath, params, ownState);
     }
 
@@ -76,6 +89,14 @@ public final class AuthenticatedMapComponent implements CompositeComponent {
 
     void applyCommands(AppBlock block, AppStateWriter ownState) {
         transitions.applyFinal(block, ownState);
+    }
+
+    void applyCommands(
+            AppBlock block,
+            AppStateWriter ownState,
+            AuthenticatedMapStateMachine.FinalAuthorizationEvaluator authorizer
+    ) {
+        transitions.applyFinal(block, ownState, authorizer);
     }
 
     AuthenticatedMapContract.Genesis genesis() {

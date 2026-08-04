@@ -97,6 +97,42 @@ class GovernedAuthorizationContractTest {
                 .isInstanceOf(RoleWorkflowException.class);
     }
 
+    @Test
+    void governedMutationFamiliesAndRetainedVoteRecordRoundTrip() {
+        AdministratorAuthorityV1 successor = new AdministratorAuthorityV1(
+                "registry-admins", 2, List.of("admin-a"), 1, 500);
+        RegistryMutationV1 registry = new RegistryMutationV1.PutAuthority(successor);
+        DirectRolePolicyV1 direct = new DirectRolePolicyV1(
+                "issuer-write", 2, RecordStatus.ACTIVE, "auditor", 50);
+        PolicyMutationV1 policy = new PolicyMutationV1.PutDirectPolicy(direct);
+
+        assertThat(RegistryMutationV1.decode(registry.encode())).isEqualTo(registry);
+        assertThat(PolicyMutationV1.decode(policy.encode())).isEqualTo(policy);
+
+        byte[] mutationHash = ActorGovernanceCommandV1.mutationHash(policy.encode());
+        AdministratorStatementV1 statement = new AdministratorStatementV1(
+                AdministratorStatementV1.Decision.PROPOSE,
+                "authenticated-map-chain", repeated(9), "registry-admins", 1,
+                "policy-change", mutationHash, 20, 100,
+                "admin-a", 1, "admin-a-key",
+                KeyGenUtil.getPublicKeyFromPrivateKey(SEED_A),
+                10, 80, AdministratorStatementV1.ED25519);
+        AcceptedAdministratorVoteV1 vote = new AcceptedAdministratorVoteV1(
+                SignedAdministratorStatementV1.sign(statement, SEED_A),
+                "operator-a", 1, 10);
+        GovernedMutationRecordV1 record = new GovernedMutationRecordV1(
+                "policy-change", policy.encode(), mutationHash,
+                "registry-admins", 1, repeated(7), 20, 100,
+                "admin-a", 10, List.of(vote), List.of(),
+                GovernedMutationRecordV1.Status.PENDING, 0);
+
+        assertThat(GovernedMutationRecordV1.decode(record.encode()).encode())
+                .isEqualTo(record.encode());
+        assertThat(record.terminal(GovernedMutationRecordV1.Status.ACTIVATED,
+                20, List.of()).status())
+                .isEqualTo(GovernedMutationRecordV1.Status.ACTIVATED);
+    }
+
     static GovernedGenesisV1 genesis() {
         OrganizationRecordV1 organizationA = new OrganizationRecordV1(
                 "operator-a", 1, RecordStatus.ACTIVE, new byte[0]);

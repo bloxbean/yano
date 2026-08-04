@@ -47,7 +47,7 @@ key-proof = [
 
 registry-mutation = [
   version: 1,
-  operation: 0 / 1, ; organization / actor
+  operation: 0 / 1 / 2, ; organization / actor / administrator authority
   record: bytes,
   proofs: [*16 bytes] ; ascending decoded key.key-id text
 ]
@@ -128,7 +128,7 @@ governed-genesis = [
 
 policy-mutation = [
   version: 1,
-  operation: 0 / 1, ; put policy / cancel proposal
+  operation: 0 / 1 / 2, ; put approval policy / cancel proposal / put direct policy
   payload: bytes
 ]
 
@@ -188,6 +188,48 @@ actor-governance-command = [
   mutation-id: identifier,
   mutation-or-empty: bytes,
   authorizations: [*64 bytes] ; ascending actor id; empty only for activate
+]
+
+accepted-administrator-vote = [
+  version: 1,
+  authorization: bytes, ; signed-administrator-statement
+  organization-id: identifier,
+  organization-revision: uint .gt 0,
+  accepted-height: uint .gt 0
+]
+
+governed-mutation-status = 0 / 1 / 2 / 3 / 4 / 5
+; PENDING / ACTIVATED / CANCELLED / EXPIRED / FAILED / SUPERSEDED
+
+governed-mutation-record = [
+  version: 1,
+  mutation-id: identifier,
+  mutation: bytes,
+  mutation-hash: digest32,
+  authority-id: identifier,
+  authority-revision: uint .gt 0,
+  authority-digest: digest32,
+  not-before-height: uint .gt 0,
+  expiry-height: uint .gt 0,
+  proposer-actor-id: identifier,
+  created-height: uint .gt 0,
+  accepted-votes: [1*64 bytes], ; accepted-administrator-vote by actor id
+  terminal-authorizations: [*64 bytes], ; cancellation votes by actor id
+  status: governed-mutation-status,
+  terminal-height-or-zero: uint
+]
+
+governance-pending-entry = [
+  mutation-id: identifier,
+  expiry-height: uint .gt 0,
+  authority-id: identifier,
+  authority-revision: uint .gt 0,
+  proposer-actor-id: identifier
+]
+
+governance-pending-index = [
+  version: 1,
+  entries: [*1024 governance-pending-entry] ; ascending mutation id
 ]
 
 signed-actor-command = [

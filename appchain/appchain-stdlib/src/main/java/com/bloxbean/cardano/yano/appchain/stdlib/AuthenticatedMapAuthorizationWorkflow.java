@@ -7,6 +7,8 @@ import com.bloxbean.cardano.yano.appchain.composite.ComponentGeneration;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeWorkflow;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeWorkflowContext;
 import com.bloxbean.cardano.yano.appchain.composite.WorkflowDescriptor;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapAuthorizationContract;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapAuthorizationContract.*;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
 
 import java.util.List;
@@ -18,8 +20,11 @@ public final class AuthenticatedMapAuthorizationWorkflow implements CompositeWor
     public static final String PRODUCT_VERSION = "1.0.0";
 
     private final WorkflowDescriptor descriptor;
+    private final ComponentGeneration actorsGeneration;
+    private final ComponentGeneration approvalsGeneration;
     private final ComponentGeneration mapGeneration;
     private final AuthenticatedMapComponent map;
+    private final AuthenticatedMapDirectAuthorizer directAuthorizer;
 
     public AuthenticatedMapAuthorizationWorkflow(
             WorkflowDescriptor descriptor,
@@ -29,6 +34,8 @@ public final class AuthenticatedMapAuthorizationWorkflow implements CompositeWor
             AuthenticatedMapComponent map
     ) {
         this.descriptor = Objects.requireNonNull(descriptor, "descriptor");
+        this.actorsGeneration = Objects.requireNonNull(actors, "actors");
+        this.approvalsGeneration = Objects.requireNonNull(approvals, "approvals");
         this.mapGeneration = Objects.requireNonNull(mapGeneration, "mapGeneration");
         this.map = Objects.requireNonNull(map, "map");
         if (!WORKFLOW_ID.equals(descriptor.workflowId())
@@ -39,6 +46,11 @@ public final class AuthenticatedMapAuthorizationWorkflow implements CompositeWor
             throw new IllegalArgumentException(
                     "invalid authenticated-map authorization workflow descriptor");
         }
+        var governed = map.genesis().governedGenesis();
+        this.directAuthorizer = governed == null ? null
+                : new AuthenticatedMapDirectAuthorizer(
+                map.genesis().chainId(),
+                AuthenticatedMapContract.genesisId(map.genesis()), governed.limits());
     }
 
     @Override
@@ -48,7 +60,8 @@ public final class AuthenticatedMapAuthorizationWorkflow implements CompositeWor
 
     @Override
     public AppStateMachine.AdmissionResult validate(AppMessage routedMessage) {
-        return map.validateCommand(routedMessage);
+        return validateActorSignatures(
+                map.validateCommand(routedMessage), routedMessage);
     }
 
     @Override
@@ -56,11 +69,46 @@ public final class AuthenticatedMapAuthorizationWorkflow implements CompositeWor
             AppMessage routedMessage,
             long candidateHeight
     ) {
-        return map.validateCommandForBlock(routedMessage, candidateHeight);
+        return validateActorSignatures(
+                map.validateCommandForBlock(routedMessage, candidateHeight),
+                routedMessage);
     }
 
     @Override
     public void apply(AppBlock routedBlock, CompositeWorkflowContext context) {
-        map.applyCommands(routedBlock, context.state(mapGeneration));
+        if (directAuthorizer == null) {
+            map.applyCommands(routedBlock, context.state(mapGeneration));
+            return;
+        }
+        map.applyCommands(routedBlock, context.state(mapGeneration),
+                (message, command, mapState) -> {
+                    AuthenticatedMapDirectAuthorizer.AuthorizationResult result =
+                            directAuthorizer.authorize(command, routedBlock.height(),
+                                    message.getMessageId(), context.state(actorsGeneration),
+                                    context.state(approvalsGeneration), mapState);
+                    return new AuthenticatedMapStateMachine.FinalAuthorization(
+                            result.errorCode(), result.governedMutationIndexes(),
+                            result.consumptions());
+                });
+    }
+
+    private static AppStateMachine.AdmissionResult validateActorSignatures(
+            AppStateMachine.AdmissionResult structural,
+            AppMessage message
+    ) {
+        if (!structural.isAccepted()) return structural;
+        try {
+            var command = AuthenticatedMapAuthorizationContract.decodeCommand(
+                    message.getBody());
+            boolean invalid = command.evidence().stream()
+                    .filter(MapActorAuthorizationV1.class::isInstance)
+                    .map(MapActorAuthorizationV1.class::cast)
+                    .anyMatch(authorization -> !authorization.verifyClaimedKey());
+            return invalid
+                    ? AppStateMachine.AdmissionResult.reject("INVALID_SIGNATURE")
+                    : structural;
+        } catch (RuntimeException malformed) {
+            return AppStateMachine.AdmissionResult.reject("INVALID_PAYLOAD");
+        }
     }
 }
