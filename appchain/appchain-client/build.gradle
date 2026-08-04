@@ -3,6 +3,7 @@
 // release-matched MPF/JMT verifiers for client-side proof checks.
 dependencies {
     api project(':appchain-stdlib-contracts')
+    implementation project(':appchain-composite-contracts')
     implementation libs.jackson.databind
     implementation libs.jackson.dataformat.cbor
     implementation libs.cardano.client.crypto

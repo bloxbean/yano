@@ -8,6 +8,7 @@ import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfile;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import com.bloxbean.cardano.yano.appchain.config.AppChainEffectsConfig;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.GovernedGenesisV1;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
 
 import java.util.HexFormat;
@@ -48,6 +49,22 @@ public final class AuthenticatedMapGenesisFactory {
                 maxBatchItems, maxBatchBytes, collections, validators, initialEntries);
     }
 
+    /** Construct governed MPF genesis from a referentially closed public record set. */
+    public static AuthenticatedMapContract.Genesis mpf(
+            AppChainConfig config,
+            byte[] anchorPolicyCommitment,
+            int maxBatchItems,
+            int maxBatchBytes,
+            List<AuthenticatedMapContract.CollectionDescriptor> collections,
+            List<AuthenticatedMapContract.ValidatorDescriptor> validators,
+            List<AuthenticatedMapContract.GenesisEntry> initialEntries,
+            GovernedGenesisV1 governedGenesis
+    ) {
+        return create(config, StateCommitmentProfiles.MPF, anchorPolicyCommitment,
+                maxBatchItems, maxBatchBytes, collections, validators, initialEntries,
+                governedGenesis);
+    }
+
     /** Construct a Phase-3 classic Blake2b-256 JMT genesis identity. */
     public static AuthenticatedMapContract.Genesis classicJmt(
             AppChainConfig config,
@@ -75,6 +92,22 @@ public final class AuthenticatedMapGenesisFactory {
                 maxBatchItems, maxBatchBytes, collections, validators, initialEntries);
     }
 
+    /** Construct governed classic-JMT genesis from a closed public record set. */
+    public static AuthenticatedMapContract.Genesis classicJmt(
+            AppChainConfig config,
+            byte[] anchorPolicyCommitment,
+            int maxBatchItems,
+            int maxBatchBytes,
+            List<AuthenticatedMapContract.CollectionDescriptor> collections,
+            List<AuthenticatedMapContract.ValidatorDescriptor> validators,
+            List<AuthenticatedMapContract.GenesisEntry> initialEntries,
+            GovernedGenesisV1 governedGenesis
+    ) {
+        return create(config, StateCommitmentProfiles.CLASSIC_JMT, anchorPolicyCommitment,
+                maxBatchItems, maxBatchBytes, collections, validators, initialEntries,
+                governedGenesis);
+    }
+
     /** Encode one genesis as the exact plugin setting consumed by the provider. */
     public static Map<String, String> settings(AuthenticatedMapContract.Genesis genesis) {
         String encoded = HexFormat.of().formatHex(
@@ -97,6 +130,21 @@ public final class AuthenticatedMapGenesisFactory {
             List<AuthenticatedMapContract.CollectionDescriptor> collections,
             List<AuthenticatedMapContract.ValidatorDescriptor> validators,
             List<AuthenticatedMapContract.GenesisEntry> initialEntries
+    ) {
+        return create(config, stateProfile, anchorPolicyCommitment, maxBatchItems,
+                maxBatchBytes, collections, validators, initialEntries, null);
+    }
+
+    private static AuthenticatedMapContract.Genesis create(
+            AppChainConfig config,
+            StateCommitmentProfile stateProfile,
+            byte[] anchorPolicyCommitment,
+            int maxBatchItems,
+            int maxBatchBytes,
+            List<AuthenticatedMapContract.CollectionDescriptor> collections,
+            List<AuthenticatedMapContract.ValidatorDescriptor> validators,
+            List<AuthenticatedMapContract.GenesisEntry> initialEntries,
+            GovernedGenesisV1 governedGenesis
     ) {
         Objects.requireNonNull(config, "config");
         if (!AuthenticatedMapStateMachine.ID.equals(config.stateMachineId())) {
@@ -122,6 +170,7 @@ public final class AuthenticatedMapGenesisFactory {
                 maxBatchBytes,
                 collections,
                 validators,
-                initialEntries);
+                initialEntries,
+                governedGenesis);
     }
 }

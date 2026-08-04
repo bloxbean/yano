@@ -47,6 +47,12 @@ public final class RoleWorkflowCli {
                         "--seed-file");
                 yield HEX.formatHex(keyProof(options).encode());
             }
+            case "key-proof-signature" -> {
+                requireOnly(options, "--chain", "--actor", "--actor-revision", "--key",
+                        "--public-key", "--valid-from-height", "--valid-until-height",
+                        "--seed-file");
+                yield HEX.formatHex(keyProof(options).signature());
+            }
             case "govern-propose" -> {
                 requireOnly(options, "--mutation-id", "--mutation-hex", "--expiry-height");
                 yield HEX.formatHex(new GovernedMutationCommandV1.Propose(

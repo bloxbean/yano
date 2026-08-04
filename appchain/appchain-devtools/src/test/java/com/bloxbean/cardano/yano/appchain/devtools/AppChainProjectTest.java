@@ -1,7 +1,11 @@
 package com.bloxbean.cardano.yano.appchain.devtools;
 
+import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yano.appchain.config.AppChainPropertyRegistry;
 import com.bloxbean.cardano.yano.appchain.client.Hex;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorKeyEpochV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorKeyProofV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.RecordStatus;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -155,6 +159,73 @@ class AppChainProjectTest {
         assertThatThrownBy(() -> resolver.resolve(authenticatedMapBlueprint(
                 "canonical-cbor", List.of())))
                 .hasMessageContaining("requires every topology.memberKeys");
+    }
+
+    @Test
+    void governedAuthenticatedMapRendersClosedPublicGenesisAndReadiness() throws Exception {
+        AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
+        AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
+        AppChainProjectResolver resolver = new AppChainProjectResolver(properties, catalog);
+        AppChainProjectRenderer renderer = new AppChainProjectRenderer(catalog, resolver);
+        AppChainProjectModel.Blueprint blueprint = governedAuthenticatedMapBlueprint(true);
+
+        AppChainProjectModel.Resolution resolution = resolver.resolve(blueprint);
+        String encoded = resolution.consensusProperties().get(
+                "yano.app-chain.chains[0].machines.authenticated-map.genesis-cbor-hex");
+        AuthenticatedMapContract.Genesis genesis = AuthenticatedMapContract.decodeGenesis(
+                Hex.decode(encoded));
+
+        assertThat(genesis.governedGenesis()).isNotNull();
+        assertThat(genesis.governedGenesis().administratorAuthority()
+                .administratorActorIds()).containsExactly("admin-a");
+        assertThat(genesis.collections()).singleElement().satisfies(collection -> {
+            assertThat(collection.authorization())
+                    .isEqualTo(AuthenticatedMapContract.AUTH_GOVERNED_ROLE);
+            assertThat(collection.authorizationPolicyId()).isEqualTo("issuer-write");
+        });
+        assertThat(resolution.artifacts()).contains("appchain-role-workflow");
+
+        Path project = temporary.resolve("governed-authenticated-map");
+        renderer.initialize(project, blueprint);
+        assertThat(project.resolve("config/authenticated-map/governed-genesis-v1.hex"))
+                .isRegularFile();
+        assertThat(Files.readString(
+                project.resolve("config/authenticated-map/identity.yaml")))
+                .contains("domainApiVersion: \"authenticated-map-domain-v1\"");
+        assertThat(project.resolve("config/authenticated-map/actors/admin-a-v1.hex"))
+                .isRegularFile();
+        assertThat(project.resolve("config/authenticated-map/direct-policies/"
+                + "issuer-write-v1.hex")).isRegularFile();
+        assertThat(project.resolve("docs/AUTHORIZATION.md")).isRegularFile();
+        AppChainProjectModel.DoctorReport doctor =
+                new AppChainProjectLifecycle(properties).doctor(project, null);
+        assertThat(doctor.checks()).anySatisfy(check -> {
+            assertThat(check.id()).isEqualTo("authenticated-map-governed-readiness");
+            assertThat(check.status()).isEqualTo("PASS");
+        });
+    }
+
+    @Test
+    void doctorNamesGovernedCollectionWhosePolicyIsOnlyPlanned() throws Exception {
+        AppChainPropertyRegistry properties = AppChainPropertyRegistry.framework();
+        AppChainProjectCatalog catalog = new AppChainProjectCatalog(properties);
+        AppChainProjectRenderer renderer = new AppChainProjectRenderer(catalog,
+                new AppChainProjectResolver(properties, catalog));
+        Path project = temporary.resolve("planned-policy");
+        renderer.initialize(project, governedAuthenticatedMapBlueprint(false));
+
+        AppChainProjectModel.DoctorReport doctor =
+                new AppChainProjectLifecycle(properties).doctor(project, null);
+
+        assertThat(doctor.status()).isEqualTo("DOCTOR_FAILED");
+        assertThat(doctor.checks()).anySatisfy(check -> {
+            assertThat(check.id()).isEqualTo("authenticated-map-governed-readiness");
+            assertThat(check.status()).isEqualTo("FAIL");
+            assertThat(check.detail()).contains("GOVERNED_COLLECTION_NOT_BOOTSTRAPPED",
+                    "records->issuer-write", "onboarding planned");
+        });
+        assertThat(project.resolve("bootstrap/authenticated-map-onboarding.yaml"))
+                .isRegularFile();
     }
 
     @Test
@@ -1131,6 +1202,51 @@ class AppChainProjectTest {
                         List.of(new AppChainProjectModel.AuthenticatedMapSchemaIntent(
                                 "product-v1", "product",
                                 "product = { sku: tstr .size (1..32), qty: uint .le 1000 }")));
+        return replaceChain(base, new AppChainProjectModel.ChainIntent(
+                chain.chainId(), chain.recipe(), chain.capabilities(), chain.answers(),
+                chain.topology(), authenticatedMap));
+    }
+
+    private static AppChainProjectModel.Blueprint governedAuthenticatedMapBlueprint(
+            boolean includePolicy
+    ) {
+        List<String> memberKeys = List.of(
+                "a".repeat(64), "b".repeat(64), "c".repeat(64));
+        AppChainProjectModel.Blueprint base = blueprint(
+                "authenticated-map", "fixed", memberKeys);
+        AppChainProjectModel.ChainIntent chain = base.spec().chains().getFirst();
+        byte[] seed = Hex.decode("01".repeat(32));
+        byte[] publicKey = KeyGenUtil.getPublicKeyFromPrivateKey(seed);
+        ActorKeyEpochV1 key = new ActorKeyEpochV1(
+                "admin-a-key", publicKey, 1, 0, RecordStatus.ACTIVE);
+        ActorKeyProofV1 proof = ActorKeyProofV1.sign(
+                chain.chainId(), "admin-a", 1, key, seed);
+        var actorKey = new AppChainProjectModel.AuthenticatedMapActorKeyIntent(
+                key.keyId(), "ed25519", Hex.encode(publicKey),
+                Hex.encode(proof.signature()), 1L, 0L, "active");
+        var records = new AppChainProjectModel.AuthenticatedMapGenesisRecordsIntent(
+                List.of(new AppChainProjectModel.AuthenticatedMapOrganizationIntent(
+                        "operator-a", 1L, "active", null)),
+                List.of(new AppChainProjectModel.AuthenticatedMapActorIntent(
+                        "admin-a", 1L, "operator-a", "active",
+                        List.of("registry-admin", "issuer"), List.of(actorKey), null)),
+                includePolicy ? List.of(
+                        new AppChainProjectModel.AuthenticatedMapDirectPolicyIntent(
+                                "issuer-write", 1L, "active", "issuer", 100L))
+                        : List.of(),
+                List.of());
+        var authenticatedMap = new AppChainProjectModel.AuthenticatedMapIntent(
+                "mpf-blake2b256-v1", "00".repeat(32), 16, 65_536,
+                List.of(new AppChainProjectModel.AuthenticatedMapCollectionIntent(
+                        "records", "governed-role", "issuer-write", false,
+                        64, 1024, "canonical-cbor", null)),
+                List.of(),
+                new AppChainProjectModel.AuthenticatedMapGovernanceIntent(
+                        "registry-admins", 1L, List.of("admin-a"), 1, 1000L),
+                records, null,
+                includePolicy ? List.of() : List.of(
+                new AppChainProjectModel.AuthenticatedMapOnboardingIntent(
+                        "direct-policy", "issuer-write", "activate before writes")));
         return replaceChain(base, new AppChainProjectModel.ChainIntent(
                 chain.chainId(), chain.recipe(), chain.capabilities(), chain.answers(),
                 chain.topology(), authenticatedMap));

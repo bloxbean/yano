@@ -22,6 +22,8 @@ public record ActorGovernanceCommandV1(
         byte[] mutation,
         List<SignedAdministratorStatementV1> authorizations
 ) {
+    public static final String POLICY_TOPIC = SignedActorCommandV1.DEFAULT_TOPIC;
+    public static final String ACTOR_REGISTRY_TOPIC = "actors.command.v1";
     private static final byte[] MUTATION_DOMAIN =
             "yano:authenticated-map:governed-mutation:v1\0"
                     .getBytes(StandardCharsets.US_ASCII);

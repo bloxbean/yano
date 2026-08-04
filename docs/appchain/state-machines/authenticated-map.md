@@ -36,7 +36,8 @@ are:
 | Option | Meaning |
 |---|---|
 | `id` | Stable lowercase collection identifier |
-| `authorization` | `open`, `owner`, or `member` mutation policy |
+| `authorization` | `open`, `owner`, `member`, `governed-role`, or `approval` mutation policy |
+| `authorizationPolicy` | Stable direct-role or approval policy id; required only by governed modes |
 | `restoreAllowed` | Whether a revoked tombstone may become active again |
 | `maxKeyBytes` | Maximum application-key size |
 | `maxValueBytes` | Maximum value size |
@@ -46,7 +47,16 @@ are:
 `open` permits any authenticated sender. `owner` records the first successful
 creator as the 32-byte controller and permits later mutations only from that
 controller. `member` requires the sender to be an active app-chain member at
-the finalized height. Only an `owner` collection supports controller transfer.
+the finalized height. `governed-role` requires a current actor with the role
+named by its direct policy and a one-use signature over the complete action.
+`approval` requires a terminal role-approval proposal for that exact action and
+consumes the proposal atomically with the mutation. Only an `owner` collection
+supports controller transfer.
+
+Member keys remain consensus/relay identities. Governed authorization uses
+separate domain actors, organizations, rotatable actor keys, and immutable
+policy revisions. Any active member may relay actor-signed evidence, but the
+relay gains no business authority and cannot alter the signed action.
 
 An entry contains status (`ACTIVE` or `REVOKED`), revision, optional
 controller, value, logical value hash, creation height, and last-mutation
@@ -129,6 +139,109 @@ authenticatedMap:
           ? note: tstr .size (0..256)
         }
 ```
+
+To use `governed-role` or `approval`, add a stable policy id to the collection
+and provide a closed genesis actor/policy set. This abridged direct-role example
+shows the public shape; substitute the generated lowercase hex values before
+rendering:
+
+```yaml
+authenticatedMap:
+  collections:
+    - id: regulated-products
+      authorization: governed-role
+      authorizationPolicy: issuer-write
+      restoreAllowed: false
+      maxKeyBytes: 64
+      maxValueBytes: 4096
+      valueEncoding: canonical-cbor
+  authorizationGovernance:
+    authorityId: registry-admins
+    initialRevision: 1
+    administratorActors: [admin-a]
+    threshold: 1
+    maximumMutationLifetimeBlocks: 1000
+  genesisRecords:
+    organizations:
+      - id: manufacturer-a
+        revision: 1
+        status: active
+    actors:
+      - id: admin-a
+        revision: 1
+        organization: manufacturer-a
+        status: active
+        roles: [registry-admin, issuer]
+        keys:
+          - id: admin-a-v1
+            algorithm: ed25519
+            publicKey: "${ADMIN_PUBLIC_KEY}"
+            proofOfPossession: "${ADMIN_POP_SIGNATURE}"
+            validFromHeight: 1
+            validUntilHeight: 0
+            status: active
+    directPolicies:
+      - id: issuer-write
+        revision: 1
+        status: active
+        requiredRole: issuer
+        maximumAuthorizationLifetimeBlocks: 100
+    approvalPolicies: []
+```
+
+Generate the public key and the raw proof-of-possession signature offline. The
+seed remains in the caller-controlled file and is never written to the project:
+
+```bash
+ADMIN_PUBLIC_KEY="$(./yano.sh appchain role public-key \
+  --seed-file /owner-only/admin-a.seed)"
+ADMIN_POP_SIGNATURE="$(./yano.sh appchain role key-proof-signature \
+  --chain product-registry \
+  --actor admin-a --actor-revision 1 --key admin-a-v1 \
+  --public-key "$ADMIN_PUBLIC_KEY" \
+  --valid-from-height 1 --valid-until-height 0 \
+  --seed-file /owner-only/admin-a.seed)"
+```
+
+An approval policy uses `proposerRoles` plus one or more clauses. Each clause
+sets a role, minimum count, and `distinctBy: actor|organization`; for example,
+two `auditor` actors from distinct organizations:
+
+```yaml
+approvalPolicies:
+  - id: product-release
+    revision: 1
+    status: active
+    proposerRoles: [issuer]
+    clauses:
+      - id: independent-auditors
+        role: auditor
+        minimumCount: 2
+        distinctBy: organization
+    rejectionMode: any-eligible
+    maximumLifetimeBlocks: 500
+```
+
+Every referenced organization, actor, key and policy must be revision 1,
+canonical, active, proof-of-possession valid, and inside the configured bounds.
+The renderer refuses an invalid genesis closure. `authorizationLimits` can
+lower the committed evidence, genesis, pending-index, expiry, query-page and
+crypto-work maxima; omitted values use the release defaults.
+
+For an intentionally post-genesis policy, list an `onboarding` item instead of
+pretending the collection is ready:
+
+```yaml
+onboarding:
+  - kind: approval-policy
+    id: product-release
+    note: activate before enabling release submissions
+```
+
+The collection remains fail closed until governance activates that policy.
+`appchain doctor` reports `GOVERNED_COLLECTION_NOT_BOOTSTRAPPED` and names the
+planned item; the renderer writes `bootstrap/authenticated-map-onboarding.yaml`
+as an operational plan, not as consensus state.
 
 Then render and verify the exact release:
 
@@ -259,6 +372,66 @@ curl -fsS \
 Verify the proof locally and bind its root to an independently trusted finality
 certificate or Cardano anchor at an audit boundary.
 
+## Governed authoring and external signing
+
+A governed command commits to the complete ordered action: every collection,
+key, operation, value, precondition, controller, authorization kind, stable
+policy id, evidence handle, and covered mutation index. Evidence handles are
+one-based; `0` means no evidence for `open`, `owner`, or `member`. The same
+evidence item may cover several declared mutation indexes, but its coverage
+must be exact.
+
+The packaged CLI assembles canonical bytes and never reads a direct-role
+private key. For one `governed-role` mutation whose first evidence item is the
+actor authorization:
+
+```bash
+ACTION_HEX="$(./yano.sh appchain authenticated-map action \
+  --command-hex "$BASIC_COMMAND_HEX" \
+  --assignments '0:governed-role:issuer-write:1')"
+
+PREIMAGE_HEX="$(./yano.sh appchain authenticated-map direct-preimage \
+  --action-hex "$ACTION_HEX" \
+  --authorization-id "$UNIQUE_32_BYTE_ID_HEX" \
+  --chain product-registry --genesis-id "$GENESIS_ID_HEX" \
+  --indexes 0 --policy issuer-write --policy-revision 1 \
+  --actor issuer-a --actor-revision 1 --key issuer-a-v1 \
+  --public-key "$ISSUER_PUBLIC_KEY" \
+  --issued-height "$CURRENT_HEIGHT" --deadline-height "$DEADLINE_HEIGHT")"
+
+# Sign PREIMAGE_HEX with the actor's Ed25519 key in the caller's wallet/HSM.
+SIGNATURE_HEX="$(external-ed25519-signer "$PREIMAGE_HEX")"
+
+EVIDENCE_HEX="$(./yano.sh appchain authenticated-map direct-complete \
+  --action-hex "$ACTION_HEX" \
+  --authorization-id "$UNIQUE_32_BYTE_ID_HEX" \
+  --chain product-registry --genesis-id "$GENESIS_ID_HEX" \
+  --indexes 0 --policy issuer-write --policy-revision 1 \
+  --actor issuer-a --actor-revision 1 --key issuer-a-v1 \
+  --public-key "$ISSUER_PUBLIC_KEY" \
+  --issued-height "$CURRENT_HEIGHT" --deadline-height "$DEADLINE_HEIGHT" \
+  --signature "$SIGNATURE_HEX")"
+
+GOVERNED_COMMAND_HEX="$(./yano.sh appchain authenticated-map command \
+  --action-hex "$ACTION_HEX" --evidence-hex "$EVIDENCE_HEX")"
+```
+
+`direct-complete` verifies the returned signature against the claimed public
+key before emitting evidence. Submit `GOVERNED_COMMAND_HEX` on
+`authenticated-map.command.v1`. A successful action consumes
+`(actorId, authorizationId)` exactly once; reuse is a deterministic replay
+rejection even if a different member relays it.
+
+For an `approval` collection, derive the proposal payload with
+`authenticated-map approval-payload --action-hex ... --genesis-id ...`. Actors
+sign `PROPOSE` and `APPROVE` statements for payload domain
+`yano.authenticated-map.action.v1` through the offline `appchain role sign`
+flow and submit them on `role-approvals.command.v1`. Only after the exact
+proposal is terminal `APPROVED`, create its one-based evidence item with
+`authenticated-map approval-reference`, assemble the final map command, and
+submit it. Successful execution consumes the proposal id globally and
+atomically with every mutation; threshold approval never auto-executes.
+
 ## Submit from Java
 
 Use `appchain-stdlib-contracts` for the portable wire contract and
@@ -288,6 +461,71 @@ hash from the last trusted entry. Use `authenticatedMapBatch` for an atomic
 list of distinct collection/key mutations. Application-side preflight can
 reuse the exact genesis encoding/schema rules, but authoritative validation
 still occurs independently on every node.
+
+Governed Java applications use `AuthenticatedMapAuthoring` to keep signing
+outside the client process:
+
+```java
+var command = AuthenticatedMapContract.Command.single(mutation);
+var action = AuthenticatedMapAuthoring.action(command, List.of(
+        new AuthenticatedMapAuthorizationContract.AuthorizationAssignmentV1(
+                0, AuthenticatedMapContract.AUTH_GOVERNED_ROLE,
+                "issuer-write", 1)));
+
+var request = AuthenticatedMapAuthoring.directSigningRequest(
+        authorizationId, "product-registry", genesisId, action, List.of(0),
+        "issuer-write", 1, "issuer-a", 1, "issuer-a-v1", publicKey,
+        currentHeight, deadlineHeight);
+byte[] signature = externalSigner.sign(request.signingPreimage());
+var evidence = AuthenticatedMapAuthoring.completeDirectSignature(
+        request, signature);
+
+map.authenticatedMapGovernedCommand(AuthenticatedMapAuthoring.command(
+        action, List.of(evidence)));
+```
+
+Approval helpers construct the exact proposal statement and approval reference;
+`StdlibAppChainClient` submits signed approval, actor-governance, and
+policy-governance commands on their versioned topics. The SDK never infers a
+policy revision or silently signs with a node/member key.
+
+## Domain API and composite proofs
+
+The first-party bundle publishes read-only routes below
+`/api/v1/plugins/com.bloxbean.cardano.yano.appchain.stdlib/`. Set `chain=<id>`
+when a node hosts more than one app chain. Important routes include:
+
+| Route | Result |
+|---|---|
+| `authenticated-map` | Genesis identity, profile, collections, authorization capabilities |
+| `authenticated-map/entries/{collection}/{keyHex}` | Exact entry, absence, or tombstone |
+| `authenticated-map/receipts/{messageIdHex}` | Receipt and complete action commitment |
+| `authenticated-map/direct-consumptions/{actor}/{authorizationIdHex}` | One-use actor claim |
+| `authenticated-map/approval-consumptions/{proposal}` | One-use proposal claim |
+| `authenticated-map/direct-policies/{id}` | Current or `?revision=` direct policy |
+| `authenticated-map/administrator-authorities/{id}` | Current or historical authority |
+| `authenticated-map/pending/approvals` | Bounded `?after=&limit=` pending page |
+| `authenticated-map/pending/actor-governance` | Bounded actor-governance page |
+| `authenticated-map/pending/policy-governance` | Bounded policy-governance page |
+
+The same bundle also composes the exact organization, actor, approval-policy,
+proposal, and statistics routes from the role workflow API. Every exact-record
+response names the chain/API/state-machine identity, height/root, physical
+proof key, canonical leaf value, and—when it asserts currency—the
+current-pointer key/value. Pending pages instead return `sourceIndexProofKey`
+and canonical `queryValue`, explicitly labelled as a bounded index-derived
+view; they do not mislabel page bytes as a Merkle leaf. JSON is presentation
+only; verify canonical record values and native proofs.
+
+`AuthenticatedMapProofBundle` verifies a bounded same-root assembly for
+`BASIC`, `DIRECT_ROLE`, `APPROVAL`, or `ADMINISTRATOR_GOVERNANCE`. It rejects
+mixed chain/profile/genesis/root/height facts, wrong physical namespaces,
+receipt-to-entry substitution, missing current pointers, wrong revisions,
+invalid actor/administrator signatures, unsatisfied approval clauses, and
+consumption/action mismatches. Use `verify(trustedRoot)` with an independently
+trusted exact root, or `verifyCertified(...)` with pinned finality membership.
+A later-root proof establishes retention, not historical currency; use the
+decision/execution root when the bundle must prove that a pointer was current.
 
 ## Attach a custom validator format
 

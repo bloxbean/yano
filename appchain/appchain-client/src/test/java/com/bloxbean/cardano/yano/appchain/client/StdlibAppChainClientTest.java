@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.client;
 
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.BalancesContract;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapAuthorizationContract;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
@@ -143,6 +144,32 @@ class StdlibAppChainClientTest {
                         "records", new byte[]{1}, new byte[]{1, 2}), preflight))
                 .isInstanceOf(AuthenticatedMapPreflight.PreflightException.class);
         assertThat(requests).hasValue(0);
+    }
+
+    @Test
+    void authenticatedMapConsumptionQueryRejectsSubstitutedSubject() throws Exception {
+        byte[] authorizationId = Hex.decode("21".repeat(32));
+        byte[] payload = new AuthenticatedMapAuthorizationContract.DirectConsumptionV1(
+                "actor-b", authorizationId, Hex.decode("22".repeat(32)), 3,
+                Hex.decode("23".repeat(32)), List.of(0), "issuer-write", 1, 1,
+                "operator-b", 1, "issuer", "actor-b-v1",
+                Hex.decode("24".repeat(32)), Hex.decode("25".repeat(32))).encode();
+        server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
+        server.createContext("/api/v1/app-chain/chains/c1/query/"
+                        + AuthenticatedMapContract.DIRECT_CONSUMPTION_QUERY_PATH,
+                exchange -> respond(exchange, 200, """
+                        {"chainId":"c1","stateMachineId":"authenticated-map",
+                         "committedHeight":3,"stateRoot":"%s","payloadHex":"%s"}
+                        """.formatted("44".repeat(32), Hex.encode(payload))));
+        server.start();
+        StdlibAppChainClient client = new StdlibAppChainClient(AppChainClient.builder(
+                        "http://localhost:" + server.getAddress().getPort() + "/api/v1")
+                .chainId("c1").build());
+
+        assertThatThrownBy(() -> client.authenticatedMapDirectConsumption(
+                "actor-a", authorizationId))
+                .isInstanceOf(AppChainClient.AppChainClientException.class)
+                .hasMessageContaining("differs from query subject");
     }
 
     private static void respond(HttpExchange exchange, int status, String body) throws IOException {

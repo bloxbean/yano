@@ -15,6 +15,8 @@ Yaci networking stack. It provides:
   `StdlibAppChainClient`
 - advisory authenticated-map encoding/schema/plugin preflight through
   `AuthenticatedMapPreflight`
+- governed authenticated-map action/proposal construction with external signing
+- bounded same-root authenticated-map composite proof-bundle verification
 
 See also:
 
@@ -185,6 +187,24 @@ stock.authenticatedMapMutate(mutation, preflight);
 This is advisory. `REJECTED` and plugin `UNAVAILABLE` results stop the client
 call, while authoritative validation still occurs during state application.
 See the [authenticated-map validation guide](../../docs/appchain/state-machines/authenticated-map-validation.md).
+
+For `governed-role` and `approval` collections, construct the complete action
+with `AuthenticatedMapAuthoring`. `directSigningRequest(...)` returns the exact
+Ed25519 preimage for a caller-owned wallet or HSM; `completeDirectSignature(...)`
+verifies the returned signature before it can be submitted. The client also
+submits actor-signed approval statements and actor/policy governance commands,
+but it does not store or infer actor private keys.
+
+`AuthenticatedMapProofBundle` verifies the native proofs and semantic links
+among an entry, receipt, consumption record, frozen policy, actor/organization
+revisions, proposal decisions, or administrator-governance records. Facts must
+share the exact chain/profile/genesis/height/root, use the frozen composite
+physical keys, and bind to an independently trusted root or pinned finality
+certificate. JSON domain projections are not a substitute for these canonical
+record and proof checks.
+
+See the full [authenticated-map state-machine guide](../../docs/appchain/state-machines/authenticated-map.md)
+for governed genesis, offline CLI authoring, domain routes, and proof assembly.
 
 ## Test
 

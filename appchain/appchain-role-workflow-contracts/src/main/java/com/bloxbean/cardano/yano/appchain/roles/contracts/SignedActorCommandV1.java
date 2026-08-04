@@ -10,6 +10,7 @@ import java.util.List;
 
 /** Client-facing actor-signed command transported inside a member-authenticated message. */
 public record SignedActorCommandV1(ActorStatementV1 statement, byte[] signature) {
+    public static final String DEFAULT_TOPIC = "role-approvals.command.v1";
     public SignedActorCommandV1 {
         if (statement == null || signature == null || signature.length != 64) {
             throw OrganizationRecordV1.invalid();

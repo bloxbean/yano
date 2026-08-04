@@ -24,7 +24,8 @@ public final class AuthenticatedMapComponent implements CompositeComponent {
 
     private static final List<String> BASIC_QUERY_PATHS = List.of(
             AuthenticatedMapContract.POINT_QUERY_PATH,
-            AuthenticatedMapContract.RECEIPT_QUERY_PATH);
+            AuthenticatedMapContract.RECEIPT_QUERY_PATH,
+            AuthenticatedMapContract.CAPABILITIES_QUERY_PATH).stream().sorted().toList();
 
     private final ComponentDescriptor descriptor;
     private final AuthenticatedMapStateMachine transitions;
@@ -39,6 +40,7 @@ public final class AuthenticatedMapComponent implements CompositeComponent {
                 ? BASIC_QUERY_PATHS
                 : List.of(AuthenticatedMapContract.POINT_QUERY_PATH,
                 AuthenticatedMapContract.RECEIPT_QUERY_PATH,
+                AuthenticatedMapContract.CAPABILITIES_QUERY_PATH,
                 AuthenticatedMapContract.DIRECT_CONSUMPTION_QUERY_PATH,
                 AuthenticatedMapContract.APPROVAL_CONSUMPTION_QUERY_PATH).stream()
                 .sorted().toList();
@@ -70,6 +72,13 @@ public final class AuthenticatedMapComponent implements CompositeComponent {
 
     @Override
     public byte[] query(String localPath, byte[] params, AppQueryContext ownState) {
+        if (AuthenticatedMapContract.CAPABILITIES_QUERY_PATH.equals(localPath)) {
+            if (params == null || params.length != 0) {
+                throw new AppQueryException(AppQueryException.Code.INVALID_REQUEST,
+                        "authenticated-map capabilities query takes no parameters");
+            }
+            return AuthenticatedMapContract.encodeGenesis(transitions.genesis());
+        }
         if (AuthenticatedMapContract.DIRECT_CONSUMPTION_QUERY_PATH.equals(localPath)) {
             var query = AuthenticatedMapAuthorizationContract.DirectConsumptionQueryV1
                     .decode(params);

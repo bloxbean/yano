@@ -50,6 +50,15 @@ namespaces. The checked-in `authorization-vectors.properties` file is verified
 by Java and dependency-free Python. The companion CDDL publishes every array
 discriminant and bound.
 
+`AuthenticatedMapAuthorizationCli` is wired as
+`./yano.sh appchain authenticated-map`. It assembles actions and commitments,
+emits direct-role external-signing preimages, verifies and completes returned
+signatures, derives approval payloads/references, and emits final governed
+commands. It never accepts a private-key option. Actor key proof signatures for
+genesis can be emitted separately with
+`./yano.sh appchain role key-proof-signature --seed-file ...`; only that
+explicit offline role command reads a caller-owned seed file.
+
 The logical framework key namespaces are:
 
 | Fact | Logical key before composite wrapping |

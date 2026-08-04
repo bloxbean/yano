@@ -42,7 +42,7 @@ select it explicitly.
 |---|---|---|---|---|---:|---|---|---|---|
 | `state:ordered-log` | `state` | `BUNDLED` | `stable` | `chain` | yes | JVM, native | `bundled` | `yano-runtime` | [Ordered log](state-machines/ordered-log.md) |
 | `state:kv-registry` | `state` | `BUNDLED` | `stable` | `chain` | yes | JVM, native | `bundled` | `yano-runtime`, `appchain-stdlib` | [KV registry](state-machines/kv-registry.md) |
-| `state:authenticated-map` | `state` | `BUNDLED` | `preview` | `chain` | yes | JVM, native | `bundled` | `yano-runtime`, `appchain-stdlib` | [Authenticated map](state-machines/authenticated-map.md) |
+| `state:authenticated-map` | `state` | `BUNDLED` | `preview` | `chain` | yes | JVM, native | `bundled` | `yano-runtime`, `appchain-stdlib`, `appchain-role-workflow` | [Authenticated map](state-machines/authenticated-map.md) |
 | `state:approval-workflow` | `state` | `BUNDLED` | `stable` | `chain` | yes | JVM, native | `bundled` | `yano-runtime`, `appchain-stdlib` | [Approvals](state-machines/approvals.md) |
 | `state:balances` | `state` | `BUNDLED` | `stable` | `chain` | yes | JVM, native | `bundled` | `yano-runtime`, `appchain-stdlib` | [Balances](state-machines/balances.md) |
 | `state:doc-trail` | `state` | `BUNDLED` | `stable` | `chain` | yes | JVM, native | `bundled` | `yano-runtime`, `appchain-stdlib` | [Document trail](state-machines/doc-trail.md) |

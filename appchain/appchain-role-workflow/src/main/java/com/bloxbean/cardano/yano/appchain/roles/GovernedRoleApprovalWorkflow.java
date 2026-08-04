@@ -30,7 +30,7 @@ import java.util.Objects;
  */
 public final class GovernedRoleApprovalWorkflow implements CompositeWorkflow {
     public static final String WORKFLOW_ID = "role-approval-v1";
-    public static final String TOPIC = "role-approvals.command.v1";
+    public static final String TOPIC = SignedActorCommandV1.DEFAULT_TOPIC;
     public static final String PRODUCT_VERSION = "1.0.0";
 
     private final WorkflowDescriptor descriptor;

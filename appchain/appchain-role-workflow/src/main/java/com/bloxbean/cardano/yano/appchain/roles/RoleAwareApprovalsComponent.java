@@ -25,7 +25,7 @@ import java.security.MessageDigest;
 
 /** State owner and exact-query surface for policy revisions and role decisions. */
 public final class RoleAwareApprovalsComponent implements CompositeComponent {
-    public static final String COMPONENT_ID = "role-approvals";
+    public static final String COMPONENT_ID = RoleWorkflowIdentifiers.ROLE_APPROVALS_COMPONENT_ID;
     public static final String QUERY_POLICY = "policy";
     public static final String QUERY_POLICY_CURRENT = "policy-current";
     public static final String QUERY_DIRECT_POLICY = "direct-policy";
