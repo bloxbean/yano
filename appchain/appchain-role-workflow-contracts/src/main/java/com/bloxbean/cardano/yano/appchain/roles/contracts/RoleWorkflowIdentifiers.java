@@ -20,6 +20,16 @@ public final class RoleWorkflowIdentifiers {
         return id(value, "role");
     }
 
+    public static String chainId(String value) {
+        if (value == null || value.isBlank() || value.indexOf('\0') >= 0
+                || !StandardCharsets.UTF_8.newEncoder().canEncode(value)
+                || value.getBytes(StandardCharsets.UTF_8).length
+                > RoleWorkflowLimits.MAX_CHAIN_ID_BYTES) {
+            throw new RoleWorkflowException(RoleWorkflowResultCode.INVALID_PAYLOAD);
+        }
+        return value;
+    }
+
     public static String payloadDomain(String value) {
         if (value == null || !value.matches("[a-z][a-z0-9.-]{0,63}")
                 || value.getBytes(StandardCharsets.US_ASCII).length

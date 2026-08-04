@@ -6,9 +6,10 @@ Accepted for phased implementation. Phases 0, 1, 2, 3, and 5 were implemented
 against the pre-amendment development baseline, and ADR-025.1 value validation
 is implemented. [ADR-025.2](025.2-governed-authenticated-map-authorization-and-console.md)
 is accepted for implementation and reopens the unreleased v1 authorization,
-command, genesis, composite-state, proof, and console contracts. The existing
-phase records therefore remain useful baselines, not final v1 qualification,
-until ADR-025.2 is implemented and the applicable phases are rerun.
+command, genesis, composite-state, proof, and console contracts. ADR-025.2
+Phase A has frozen genesis codec 4, the final command/evidence contract, and
+resource bounds. The existing runtime phase records remain useful baselines,
+not final v1 qualification, until ADR-025.2 Phases B-G are complete.
 
 Phase 4 is deferred until the required ZeroJ library is released, and optional
 Phase 6 is deferred. CCL `0.8.0-pre5-dev1` remains a development baseline, so
@@ -45,6 +46,8 @@ chains remain bound to their original MPF state history.
 - [ADR-025.2](025.2-governed-authenticated-map-authorization-and-console.md)
   makes `governed-role` and approval-gated mutation part of final v1 through
   one committed composite product and adds its capability-gated console.
+- [ADR-025.2 Phase A](025.2-phase-a-contract-and-work-bounds.md) records the
+  final v1 CBOR, replay namespaces, work bounds, and crypto-cap measurement.
 - [ADR-024](024-appchain-full-support-review-readiness-and-roadmap.md) identifies
   the remaining need to authenticate all consensus-affecting machine settings
   and to keep block, state, recovery, and proof identities aligned.

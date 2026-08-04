@@ -5,6 +5,8 @@ import co.nstant.in.cbor.model.ByteString;
 import co.nstant.in.cbor.model.UnicodeString;
 import co.nstant.in.cbor.model.UnsignedInteger;
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.GovernedGenesisV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowIdentifiers;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.internal.CanonicalValueCbor;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.internal.StdlibContractCbor;
 
@@ -33,7 +35,7 @@ import java.util.regex.Pattern;
 public final class AuthenticatedMapContract {
     public static final String STATE_MACHINE_ID = "authenticated-map";
     public static final int STATE_MACHINE_VERSION = 1;
-    public static final int GENESIS_CODEC_VERSION = 3;
+    public static final int GENESIS_CODEC_VERSION = 4;
     public static final String DEFAULT_TOPIC = "authenticated-map.command.v1";
 
     public static final String PROFILE_MPF_BLAKE2B256_V1 = "mpf-blake2b256-v1";
@@ -60,6 +62,8 @@ public final class AuthenticatedMapContract {
     public static final int AUTH_OPEN = 0;
     public static final int AUTH_OWNER = 1;
     public static final int AUTH_MEMBER = 2;
+    public static final int AUTH_GOVERNED_ROLE = 3;
+    public static final int AUTH_APPROVAL = 4;
 
     public static final int VALUE_ENCODING_OPAQUE = 0;
     public static final int VALUE_ENCODING_CANONICAL_CBOR = 1;
@@ -85,6 +89,12 @@ public final class AuthenticatedMapContract {
 
     public static final String POINT_QUERY_PATH = "authenticated-map/entry-v1";
     public static final String RECEIPT_QUERY_PATH = "authenticated-map/receipt-v1";
+    public static final String DIRECT_CONSUMPTION_QUERY_PATH =
+            "authenticated-map/direct-consumption-v1";
+    public static final String APPROVAL_CONSUMPTION_QUERY_PATH =
+            "authenticated-map/approval-consumption-v1";
+    public static final String CAPABILITIES_QUERY_PATH =
+            "authenticated-map/capabilities-v1";
 
     public static final int PRESENCE_ABSENT = 0;
     public static final int PRESENCE_ACTIVE = 1;
@@ -108,11 +118,30 @@ public final class AuthenticatedMapContract {
     public static final int ERROR_VALUE_ENCODING = 10;
     public static final int ERROR_VALUE_SCHEMA = 11;
     public static final int ERROR_VALUE_VALIDATOR = 12;
+    public static final int ERROR_AUTHORIZATION_ASSIGNMENT = 13;
+    public static final int ERROR_UNKNOWN_POLICY = 14;
+    public static final int ERROR_POLICY_INACTIVE = 15;
+    public static final int ERROR_ACTOR_INELIGIBLE = 16;
+    public static final int ERROR_ACTOR_SIGNATURE = 17;
+    public static final int ERROR_AUTHORIZATION_DEADLINE = 18;
+    public static final int ERROR_DIRECT_AUTHORIZATION_REPLAY = 19;
+    public static final int ERROR_APPROVAL_NOT_APPROVED = 20;
+    public static final int ERROR_APPROVAL_MISMATCH = 21;
+    public static final int ERROR_APPROVAL_REPLAY = 22;
+    public static final int ERROR_CAPACITY_EXCEEDED = 23;
+    public static final int ERROR_CRYPTO_WORK_EXCEEDED = 24;
+    public static final int ERROR_GOVERNED_ROUTE_UNSUPPORTED = 25;
+    public static final int ERROR_WRONG_GENESIS = 26;
+    public static final int ERROR_WRONG_REVISION = 27;
 
     private static final String INTERNAL_GENESIS_COLLECTION =
             "yano-authenticated-map-internal-v1";
     private static final String INTERNAL_RECEIPTS_COLLECTION =
             "yano-authenticated-map-receipts-v1";
+    private static final String INTERNAL_DIRECT_CONSUMPTION_COLLECTION =
+            "yano-authenticated-map-direct-consumption-v1";
+    private static final String INTERNAL_APPROVAL_CONSUMPTION_COLLECTION =
+            "yano-authenticated-map-approval-consumption-v1";
     private static final byte[] GENESIS_MARKER_APPLICATION_KEY =
             "genesis".getBytes(StandardCharsets.US_ASCII);
 
@@ -211,6 +240,30 @@ public final class AuthenticatedMapContract {
     public static byte[] receiptKey(byte[] messageId) {
         return encodeCanonicalKey(NAMESPACE_KIND_FRAMEWORK,
                 INTERNAL_RECEIPTS_COLLECTION, require32(messageId, "messageId"));
+    }
+
+    /** One replay namespace per actor; another actor may independently use the same ID. */
+    public static byte[] directConsumptionKey(String actorId, byte[] authorizationId) {
+        byte[] actor = RoleWorkflowIdentifiers.id(actorId, "actorId")
+                .getBytes(StandardCharsets.US_ASCII);
+        byte[] identifier = require32(authorizationId, "authorizationId");
+        byte[] applicationKey = ByteBuffer.allocate(1 + Short.BYTES + actor.length
+                        + identifier.length)
+                .put((byte) 1)
+                .putShort((short) actor.length)
+                .put(actor)
+                .put(identifier)
+                .array();
+        return encodeCanonicalKey(NAMESPACE_KIND_FRAMEWORK,
+                INTERNAL_DIRECT_CONSUMPTION_COLLECTION, applicationKey);
+    }
+
+    /** Exactly one replay namespace per approval proposal, with no action-scope suffix. */
+    public static byte[] approvalConsumptionKey(String proposalId) {
+        byte[] applicationKey = RoleWorkflowIdentifiers.id(proposalId, "proposalId")
+                .getBytes(StandardCharsets.US_ASCII);
+        return encodeCanonicalKey(NAMESPACE_KIND_FRAMEWORK,
+                INTERNAL_APPROVAL_CONSUMPTION_COLLECTION, applicationKey);
     }
 
     private static byte[] encodeCanonicalKey(
@@ -363,12 +416,14 @@ public final class AuthenticatedMapContract {
         root.add(collections);
         root.add(validators);
         root.add(initialEntries);
+        root.add(new ByteString(genesis.governedGenesis() == null
+                ? new byte[0] : genesis.governedGenesis().encode()));
         return StdlibContractCbor.encode(root);
     }
 
     public static Genesis decodeGenesis(byte[] encoded) {
         List<co.nstant.in.cbor.model.DataItem> values =
-                StdlibContractCbor.decodeArray(encoded, 14).getDataItems();
+                StdlibContractCbor.decodeArray(encoded, 15).getDataItems();
         if (StdlibContractCbor.uintInt(values.get(0)) != GENESIS_CODEC_VERSION
                 || !STATE_MACHINE_ID.equals(StdlibContractCbor.text(values.get(2)))
                 || StdlibContractCbor.uintInt(values.get(3)) != STATE_MACHINE_VERSION) {
@@ -377,7 +432,7 @@ public final class AuthenticatedMapContract {
         Array collectionItems = StdlibContractCbor.array(values.get(11), MAX_COLLECTIONS);
         List<CollectionDescriptor> collections = new ArrayList<>(collectionItems.getDataItems().size());
         for (co.nstant.in.cbor.model.DataItem item : collectionItems.getDataItems()) {
-            collections.add(decodeCollection(StdlibContractCbor.array(item, 8)));
+            collections.add(decodeCollection(StdlibContractCbor.array(item, 9)));
         }
         Array validatorItems = StdlibContractCbor.array(values.get(12), MAX_VALIDATORS);
         List<ValidatorDescriptor> validators = new ArrayList<>(
@@ -410,11 +465,19 @@ public final class AuthenticatedMapContract {
                 StdlibContractCbor.uintInt(values.get(10)),
                 collections,
                 validators,
-                entries);
+                entries,
+                governedGenesis(values.get(14)));
         if (!Arrays.equals(encoded, encodeGenesis(decoded))) {
             throw malformed();
         }
         return decoded;
+    }
+
+    private static GovernedGenesisV1 governedGenesis(
+            co.nstant.in.cbor.model.DataItem value
+    ) {
+        byte[] encoded = StdlibContractCbor.bytes(value);
+        return encoded.length == 0 ? null : GovernedGenesisV1.decode(encoded);
     }
 
     public static byte[] genesisId(Genesis genesis) {
@@ -645,6 +708,7 @@ public final class AuthenticatedMapContract {
         item.add(new UnsignedInteger(GENESIS_CODEC_VERSION));
         item.add(new UnicodeString(descriptor.id()));
         item.add(new UnsignedInteger(descriptor.authorization()));
+        item.add(new UnicodeString(descriptor.authorizationPolicyId()));
         item.add(new UnsignedInteger(descriptor.restoreAllowed() ? 1 : 0));
         item.add(new UnsignedInteger(descriptor.maxKeyBytes()));
         item.add(new UnsignedInteger(descriptor.maxValueBytes()));
@@ -654,25 +718,26 @@ public final class AuthenticatedMapContract {
     }
 
     private static CollectionDescriptor decodeCollection(Array item) {
-        if (item.getDataItems().size() != 8) {
+        if (item.getDataItems().size() != 9) {
             throw malformed();
         }
         List<co.nstant.in.cbor.model.DataItem> values = item.getDataItems();
         if (StdlibContractCbor.uintInt(values.get(0)) != GENESIS_CODEC_VERSION) {
             throw malformed();
         }
-        int restore = StdlibContractCbor.uintInt(values.get(3));
+        int restore = StdlibContractCbor.uintInt(values.get(4));
         if (restore > 1) {
             throw malformed();
         }
         return new CollectionDescriptor(
                 StdlibContractCbor.text(values.get(1)),
                 StdlibContractCbor.uintInt(values.get(2)),
+                StdlibContractCbor.text(values.get(3)),
                 restore == 1,
-                StdlibContractCbor.uintInt(values.get(4)),
                 StdlibContractCbor.uintInt(values.get(5)),
                 StdlibContractCbor.uintInt(values.get(6)),
-                StdlibContractCbor.text(values.get(7)));
+                StdlibContractCbor.uintInt(values.get(7)),
+                StdlibContractCbor.text(values.get(8)));
     }
 
     private static Array encodeValidator(ValidatorDescriptor descriptor) {
@@ -722,6 +787,12 @@ public final class AuthenticatedMapContract {
                     "validatorId must be canonical lowercase ASCII");
         }
         return value;
+    }
+
+    private static String requirePolicyId(String id, boolean emptyAllowed) {
+        String value = Objects.requireNonNull(id, "authorizationPolicyId");
+        if (emptyAllowed && value.isEmpty()) return value;
+        return RoleWorkflowIdentifiers.id(value, "authorizationPolicyId");
     }
 
     private static boolean canonicalParameterMap(byte[] parameters) {
@@ -947,6 +1018,7 @@ public final class AuthenticatedMapContract {
     public record CollectionDescriptor(
             String id,
             int authorization,
+            String authorizationPolicyId,
             boolean restoreAllowed,
             int maxKeyBytes,
             int maxValueBytes,
@@ -955,9 +1027,16 @@ public final class AuthenticatedMapContract {
     ) {
         public CollectionDescriptor {
             id = requireCollectionId(id);
+            authorizationPolicyId = requirePolicyId(authorizationPolicyId, true);
             validatorId = requireValidatorId(validatorId, true);
-            if (authorization < AUTH_OPEN || authorization > AUTH_MEMBER) {
+            if (authorization < AUTH_OPEN || authorization > AUTH_APPROVAL) {
                 throw new IllegalArgumentException("unsupported authenticated-map authorization policy");
+            }
+            boolean governed = authorization == AUTH_GOVERNED_ROLE
+                    || authorization == AUTH_APPROVAL;
+            if (governed == authorizationPolicyId.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "authenticated-map policy id does not match authorization kind");
             }
             if (maxKeyBytes <= 0 || maxKeyBytes > MAX_APPLICATION_KEY_BYTES) {
                 throw new IllegalArgumentException("maxKeyBytes is outside the v1 contract");
@@ -979,7 +1058,7 @@ public final class AuthenticatedMapContract {
                 int maxKeyBytes,
                 int maxValueBytes
         ) {
-            this(id, authorization, restoreAllowed, maxKeyBytes, maxValueBytes,
+            this(id, authorization, "", restoreAllowed, maxKeyBytes, maxValueBytes,
                     VALUE_ENCODING_OPAQUE, "");
         }
 
@@ -992,8 +1071,22 @@ public final class AuthenticatedMapContract {
                 int maxValueBytes,
                 int valueEncoding
         ) {
-            this(id, authorization, restoreAllowed, maxKeyBytes, maxValueBytes,
+            this(id, authorization, "", restoreAllowed, maxKeyBytes, maxValueBytes,
                     valueEncoding, "");
+        }
+
+        /** Source-compatible constructor for the ADR-025.1 descriptor. */
+        public CollectionDescriptor(
+                String id,
+                int authorization,
+                boolean restoreAllowed,
+                int maxKeyBytes,
+                int maxValueBytes,
+                int valueEncoding,
+                String validatorId
+        ) {
+            this(id, authorization, "", restoreAllowed, maxKeyBytes, maxValueBytes,
+                    valueEncoding, validatorId);
         }
     }
 
@@ -1238,7 +1331,8 @@ public final class AuthenticatedMapContract {
             int maxBatchBytes,
             List<CollectionDescriptor> collections,
             List<ValidatorDescriptor> validators,
-            List<GenesisEntry> initialEntries
+            List<GenesisEntry> initialEntries,
+            GovernedGenesisV1 governedGenesis
     ) {
         public Genesis {
             if (chainId == null || chainId.isBlank()
@@ -1270,6 +1364,31 @@ public final class AuthenticatedMapContract {
             for (CollectionDescriptor descriptor : collectionCopy) {
                 if (descriptors.put(descriptor.id(), descriptor) != null) {
                     throw new IllegalArgumentException("duplicate collection id: " + descriptor.id());
+                }
+            }
+
+            boolean governed = collectionCopy.stream().anyMatch(descriptor ->
+                    descriptor.authorization() == AUTH_GOVERNED_ROLE
+                            || descriptor.authorization() == AUTH_APPROVAL);
+            if (governed != (governedGenesis != null)) {
+                throw new IllegalArgumentException(
+                        "governed collection capability does not match genesis closure");
+            }
+            if (governedGenesis != null) {
+                if (!chainId.equals(governedGenesis.chainId())) {
+                    throw new IllegalArgumentException(
+                            "governed genesis closure belongs to another chain");
+                }
+                for (CollectionDescriptor descriptor : collectionCopy) {
+                    if (descriptor.authorization() == AUTH_GOVERNED_ROLE
+                            && governedGenesis.approvalPolicy(
+                            descriptor.authorizationPolicyId()) != null
+                            || descriptor.authorization() == AUTH_APPROVAL
+                            && governedGenesis.directPolicy(
+                            descriptor.authorizationPolicyId()) != null) {
+                        throw new IllegalArgumentException(
+                                "collection references the wrong governed policy kind");
+                    }
                 }
             }
 
@@ -1356,6 +1475,26 @@ public final class AuthenticatedMapContract {
             initialEntries = List.copyOf(entryCopy);
         }
 
+        /** Source-compatible constructor for ADR-025.1 genesis without governance. */
+        public Genesis(
+                String chainId,
+                String commitmentProfileId,
+                byte[] formatFingerprint,
+                byte[] frameworkConsensusProfileDigest,
+                byte[] membershipCommitment,
+                byte[] anchorPolicyCommitment,
+                int maxBatchItems,
+                int maxBatchBytes,
+                List<CollectionDescriptor> collections,
+                List<ValidatorDescriptor> validators,
+                List<GenesisEntry> initialEntries
+        ) {
+            this(chainId, commitmentProfileId, formatFingerprint,
+                    frameworkConsensusProfileDigest, membershipCommitment,
+                    anchorPolicyCommitment, maxBatchItems, maxBatchBytes,
+                    collections, validators, initialEntries, null);
+        }
+
         /** Source-compatible constructor for genesis without value validators. */
         public Genesis(
                 String chainId,
@@ -1372,7 +1511,7 @@ public final class AuthenticatedMapContract {
             this(chainId, commitmentProfileId, formatFingerprint,
                     frameworkConsensusProfileDigest, membershipCommitment,
                     anchorPolicyCommitment, maxBatchItems, maxBatchBytes,
-                    collections, List.of(), initialEntries);
+                    collections, List.of(), initialEntries, null);
         }
 
         @Override public byte[] formatFingerprint() { return formatFingerprint.clone(); }

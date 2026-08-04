@@ -77,8 +77,8 @@ class RoleWorkflowAdversarialContractTest {
                                 "regulator", "regulator", 1,
                                 ApprovalPolicyV1.DistinctBy.ACTOR)),
                 ApprovalPolicyV1.RejectionMode.ANY_ELIGIBLE, 100);
-        assertSwappedArrayRejected(policy.encode(), 7, 3, ApprovalPolicyV1::decode);
-        assertSwappedArrayRejected(policy.encode(), 7, 4, ApprovalPolicyV1::decode);
+        assertSwappedArrayRejected(policy.encode(), 8, 4, ApprovalPolicyV1::decode);
+        assertSwappedArrayRejected(policy.encode(), 8, 5, ApprovalPolicyV1::decode);
 
         ApprovalProposalV1 proposal = proposal(policy);
         assertSwappedArrayRejected(proposal.encode(), 17, 16, ApprovalProposalV1::decode);

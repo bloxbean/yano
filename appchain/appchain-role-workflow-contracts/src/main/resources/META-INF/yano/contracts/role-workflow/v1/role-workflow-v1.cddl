@@ -4,6 +4,7 @@
 
 identifier = tstr .size (1..63)
 role = identifier
+chain-id = tstr .size (1..128)
 digest32 = bytes .size 32
 signature64 = bytes .size 64
 status = 0 / 1 / 2 ; ACTIVE / SUSPENDED / REVOKED
@@ -37,7 +38,7 @@ actor-record = [
 
 key-proof = [
   version: 1,
-  chain-id: identifier,
+  chain-id: chain-id,
   actor-id: identifier,
   actor-revision: uint .gt 0,
   key: actor-key-epoch,
@@ -62,10 +63,67 @@ approval-policy = [
   version: 1,
   policy-id: identifier,
   revision: uint .gt 0,
+  status: status,
   proposer-roles: [*16 role], ; ascending UTF-8 role text
   clauses: [1*16 required-clause], ; ascending clause-id text
   rejection-mode: 0 / 1, ; disabled / any eligible
   maximum-lifetime-blocks: 1..1000000
+]
+
+direct-role-policy = [
+  version: 1,
+  policy-id: identifier,
+  revision: uint .gt 0,
+  status: status,
+  required-role: role,
+  maximum-authorization-lifetime-blocks: 1..1000000
+]
+
+administrator-authority = [
+  version: 1,
+  authority-id: identifier,
+  revision: uint .gt 0,
+  administrator-actor-ids: [1*64 identifier], ; ascending actor id
+  distinct-actor-threshold: 1..64,
+  maximum-mutation-lifetime-blocks: 1..1000000
+]
+
+governed-authorization-limits = [
+  version: 1,
+  maximum-evidence-items-per-command: 1..32,
+  maximum-covered-indexes-per-evidence: 1..128,
+  maximum-genesis-organizations: 1..64,
+  maximum-genesis-actors: 1..128,
+  maximum-genesis-keys: 1..256,
+  maximum-genesis-policies: 1..128,
+  maximum-genesis-record-bytes: 1..262144,
+  maximum-pending-governance: 1..1024,
+  maximum-pending-approvals: 1..4096,
+  maximum-pending-per-actor: 1..64,
+  maximum-pending-per-policy: 1..256,
+  maximum-pending-per-authority: 1..256,
+  maximum-pending-per-deadline: 1..128,
+  maximum-expiry-work-per-block: 1..256,
+  maximum-authority-supersession-work: 1..256,
+  maximum-query-page-size: 1..100,
+  maximum-crypto-work-units-per-block: 1..512
+]
+
+genesis-actor = [
+  version: 1,
+  actor-record: bytes,
+  key-proofs: [1*16 bytes] ; one per actor key, ascending key id
+]
+
+governed-genesis = [
+  version: 1,
+  chain-id: chain-id,
+  administrator-authority: bytes,
+  organizations: [1*64 bytes], ; ascending organization id
+  actors: [1*128 bytes], ; ascending actor id
+  direct-policies: [*128 bytes], ; ascending policy id
+  approval-policies: [*128 bytes], ; ascending policy id, disjoint from direct
+  limits: bytes
 ]
 
 policy-mutation = [
@@ -85,7 +143,7 @@ governed-command = [
 actor-statement = [
   version: 1,
   action: 0 / 1 / 2 / 3, ; propose / approve / reject / cancel
-  chain-id: identifier,
+  chain-id: chain-id,
   proposal-id: identifier,
   policy-id: identifier,
   policy-revision: uint .gt 0,
@@ -96,6 +154,40 @@ actor-statement = [
   actor-revision: uint .gt 0,
   key-id: identifier,
   clause-id-or-empty: tstr .size (0..63)
+]
+
+administrator-statement = [
+  version: 1,
+  decision: 0 / 1 / 2, ; propose / approve / cancel
+  chain-id: chain-id,
+  authenticated-map-genesis-id: digest32,
+  authority-id: identifier,
+  authority-revision: uint .gt 0,
+  mutation-id: identifier,
+  mutation-hash: digest32,
+  not-before-height: uint .gt 0,
+  expiry-height: uint .gt 0,
+  actor-id: identifier,
+  actor-revision: uint .gt 0,
+  key-id: identifier,
+  claimed-public-key: digest32,
+  issued-height: uint .gt 0,
+  deadline-height: uint .gt 0,
+  signature-algorithm: 0 ; Ed25519
+]
+
+signed-administrator-statement = [
+  version: 1,
+  statement: bytes,
+  signature: signature64
+]
+
+actor-governance-command = [
+  version: 1,
+  operation: 0 / 1 / 2 / 3, ; propose / approve / activate / cancel
+  mutation-id: identifier,
+  mutation-or-empty: bytes,
+  authorizations: [*64 bytes] ; ascending actor id; empty only for activate
 ]
 
 signed-actor-command = [
@@ -156,8 +248,13 @@ approval-stats = [
 ; o/{id}/current, o/{id}/r/{revision}
 ; a/{id}/current, a/{id}/r/{revision}
 ; p/{id}/current, p/{id}/r/{revision}
+; d/{id}/current, d/{id}/r/{revision}
+; h/{id}/current, h/{id}/r/{revision}
 ; q/{proposal-id}
 ; s/proposals/v1
 ; g/{governed-mutation-id}
+; x/g/{16-hex-height}/{mutation-id}, x/q/{16-hex-height}/{proposal-id}
+; i/g/a/{actor-id}/{mutation-id}, i/g/h/{authority-id}/{mutation-id}
+; i/q/a/{actor-id}/{proposal-id}, i/q/p/{policy-id}/{proposal-id}
 ; A */current value is exactly one positive uint64 revision in big-endian
 ; binary form. It is not CBOR.

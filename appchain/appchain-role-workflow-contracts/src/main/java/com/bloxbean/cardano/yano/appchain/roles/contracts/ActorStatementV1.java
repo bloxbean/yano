@@ -23,7 +23,7 @@ public record ActorStatementV1(Action action, String chainId, String proposalId,
 
     public ActorStatementV1 {
         if (action == null) throw OrganizationRecordV1.invalid();
-        chainId = RoleWorkflowIdentifiers.id(chainId, "chainId");
+        chainId = RoleWorkflowIdentifiers.chainId(chainId);
         proposalId = RoleWorkflowIdentifiers.id(proposalId, "proposalId");
         policyId = RoleWorkflowIdentifiers.id(policyId, "policyId");
         payloadDomain = RoleWorkflowIdentifiers.payloadDomain(payloadDomain);
