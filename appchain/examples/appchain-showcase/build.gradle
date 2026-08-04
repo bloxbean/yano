@@ -13,6 +13,7 @@ dependencies {
     compileOnly project(':appchain-composite-contracts')
     compileOnly project(':appchain-stdlib')
     compileOnly project(':appchain-stdlib-contracts')
+    compileOnly project(':appchain-role-workflow-contracts')
     compileOnly project(':appchain-config')
     compileOnly project(':appchain-eutxo-contracts')
     compileOnly libs.cbor
@@ -26,6 +27,7 @@ dependencies {
     testImplementation project(':appchain-composite-contracts')
     testImplementation project(':appchain-stdlib')
     testImplementation project(':appchain-stdlib-contracts')
+    testImplementation project(':appchain-role-workflow-contracts')
     testImplementation project(':appchain-config')
     testImplementation project(':appchain-eutxo-contracts')
     testImplementation project(':appchain-testkit')

@@ -83,7 +83,8 @@ printf '%s' "$MAP_INFO" | jq -e '
   .profile == "mpf-blake2b256-v1" and
   .validatorCount == 2 and
   ([.collections[].id] | sort ==
-    ["attachments", "canonical-events", "gtins", "products"]) and
+    ["attachments", "canonical-events", "governed-catalog", "gtins",
+     "products", "released-products"]) and
   any(.validators[];
     .id == "product-v1" and .kind == "schema") and
   any(.validators[];

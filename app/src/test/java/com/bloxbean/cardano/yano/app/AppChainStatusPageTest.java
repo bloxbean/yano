@@ -61,4 +61,19 @@ class AppChainStatusPageTest {
                 "transaction, message, claim, outpoint, or address"));
     }
 
+    @Test
+    void authenticatedMapConsoleIsARealPackagedStaticPage() {
+        String page = given()
+                .when().get("/ui/app-chain/authenticated-map/index.html")
+                .then()
+                .statusCode(200)
+                .extract().asString();
+
+        assertTrue(page.contains("Yano · Authenticated Map"));
+        assertTrue(page.contains("data-console-route=\"authenticated-map\""));
+        assertTrue(page.contains("Committed state console"));
+        assertTrue(page.contains(
+                "Exact records, receipts, approvals, and proofs from the committed authenticated map."));
+    }
+
 }

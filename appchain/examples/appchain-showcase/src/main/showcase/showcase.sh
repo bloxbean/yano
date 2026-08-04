@@ -410,8 +410,8 @@ expect_authenticated_map_filtered() {
   # invalid message before we assert non-finalization and state absence.
   barrier_key="validation-barrier-${rejected_id:0:16}"
   barrier_value="$(python3 "$CODEC" authmap-value opaque "$barrier_key")"
-  barrier_body="$(python3 "$CODEC" authmap put attachments \
-    "$barrier_key" "$barrier_value")"
+  barrier_body="$(authmap_basic_body owner "$(python3 "$CODEC" authmap put attachments \
+    "$barrier_key" "$barrier_value")")"
   barrier_id="$(submit_hex authenticated-map-chain \
     authenticated-map.command.v1 "$barrier_body")"
   wait_message authenticated-map-chain "$barrier_id" >/dev/null
@@ -465,34 +465,34 @@ run_authenticated_map() {
 
   key="attachment-$suffix"
   value="$(python3 "$CODEC" authmap-value opaque "demo-bytes-$suffix")"
-  body="$(python3 "$CODEC" authmap put attachments "$key" "$value")"
+  body="$(authmap_basic_body owner "$(python3 "$CODEC" authmap put attachments "$key" "$value")")"
   id="$(submit_hex authenticated-map-chain authenticated-map.command.v1 "$body")"
   wait_message authenticated-map-chain "$id" >/dev/null
 
   key="event-$suffix"
   value="$(python3 "$CODEC" authmap-value event created 1)"
-  body="$(python3 "$CODEC" authmap put canonical-events "$key" "$value")"
+  body="$(authmap_basic_body member "$(python3 "$CODEC" authmap put canonical-events "$key" "$value")")"
   id="$(submit_hex authenticated-map-chain authenticated-map.command.v1 "$body")"
   wait_message authenticated-map-chain "$id" >/dev/null
 
   key="sku-$suffix"
   value="$(python3 "$CODEC" authmap-value product "$key" 5 active "showcase product")"
-  body="$(python3 "$CODEC" authmap put products "$key" "$value")"
+  body="$(authmap_basic_body owner "$(python3 "$CODEC" authmap put products "$key" "$value")")"
   id="$(submit_hex authenticated-map-chain authenticated-map.command.v1 "$body")"
   wait_message authenticated-map-chain "$id" >/dev/null
 
   value="$(python3 "$CODEC" authmap-value gtin 95012346)"
-  body="$(python3 "$CODEC" authmap put gtins 95012346 "$value")"
+  body="$(authmap_basic_body owner "$(python3 "$CODEC" authmap put gtins 95012346 "$value")")"
   id="$(submit_hex authenticated-map-chain authenticated-map.command.v1 "$body")"
   wait_message authenticated-map-chain "$id" >/dev/null
 
   value="$(python3 "$CODEC" authmap-value product invalid-sku 5 unknown)"
-  body="$(python3 "$CODEC" authmap put products invalid-sku "$value")"
+  body="$(authmap_basic_body owner "$(python3 "$CODEC" authmap put products invalid-sku "$value")")"
   expect_authenticated_map_filtered \
     "$body" products invalid-sku "product schema violation"
 
   value="$(python3 "$CODEC" authmap-value gtin 95012345)"
-  body="$(python3 "$CODEC" authmap put gtins 95012345 "$value")"
+  body="$(authmap_basic_body owner "$(python3 "$CODEC" authmap put gtins 95012345 "$value")")"
   expect_authenticated_map_filtered \
     "$body" gtins 95012345 "custom GTIN validator violation"
 
@@ -509,6 +509,146 @@ run_authenticated_map() {
   proof_key authenticated-map-chain "$state_key" \
     | jq '{chainId,committedHeight,stateRoot,valueHex,proofWireHex}'
   note "AUTHENTICATED MAP: opaque, canonical CBOR, schema, and plugin validation passed"
+
+  run_authenticated_map_governed "$suffix"
+  note "Inspect every record in the packaged console:"
+  note "  http://127.0.0.1:$((HTTP_BASE + NODE))/ui/app-chain/authenticated-map/?chain=authenticated-map-chain"
+}
+
+# The composite authenticated-map machine admits only the final v1 command
+# envelope (action + evidence). Wrap a legacy single-mutation command from the
+# codec into a basic (evidence-free) envelope with the release-matched CLI.
+authmap_basic_body() {
+  local kind="$1" legacy_hex="$2" action
+  [ -x "$YANO_HOME/yano.sh" ] || die "packaged yano.sh CLI is required for authenticated-map commands"
+  action="$("$YANO_HOME/yano.sh" appchain authenticated-map action \
+    --command-hex "$legacy_hex" --assignments "0:$kind::0")"
+  "$YANO_HOME/yano.sh" appchain authenticated-map command \
+    --action-hex "$action" --evidence-hex ''
+}
+
+# Demo-only deterministic actor seed shared with ShowcaseAuthenticatedMapConfig.
+demo_actor_seed() {
+  python3 -c 'import hashlib,sys
+print(hashlib.sha256(("yano-showcase-demo-actor:"+sys.argv[1]).encode()).hexdigest())' "$1"
+}
+
+authmap_domain() {
+  curl -fsS "http://127.0.0.1:$((HTTP_BASE + NODE))/api/v1/plugins/com.bloxbean.cardano.yano.appchain.stdlib/$1?chain=authenticated-map-chain"
+}
+
+authmap_tip_height() {
+  curl -fsS "http://127.0.0.1:$((HTTP_BASE + NODE))/api/v1/app-chain/chains/authenticated-map-chain/tip" \
+    | jq -r '.height'
+}
+
+expect_receipt_applied() {
+  local id="$1" label="$2" deadline=$(( $(date +%s) + 60 )) receipt
+  while :; do
+    receipt="$(authmap_domain "authenticated-map/receipts/$id" 2>/dev/null || true)"
+    if printf '%s' "$receipt" | jq -e '.record.presence == 1' >/dev/null 2>&1; then
+      printf '%s' "$receipt" | jq -e '.record.status == 0' >/dev/null \
+        || die "$label was rejected: $(printf '%s' "$receipt" | jq -c .record)"
+      return 0
+    fi
+    [ "$(date +%s)" -le "$deadline" ] || die "timed out waiting for $label receipt"
+    sleep 1
+  done
+}
+
+# ADR-025.2 Phase F: direct-role and two-distinct-organization approval flows
+# exercised end to end through offline CLI authoring and the demo signer. The
+# node API and console never see actor private keys.
+run_authenticated_map_governed() {
+  local suffix="$1" yano="$YANO_HOME/yano.sh" signer="$SHOWCASE_HOME/tools/showcase_signer.py"
+  local genesis_id issuer_seed issuer_pub key value cmd action height deadline
+  [ -x "$yano" ] || die "packaged yano.sh CLI is required for the governed showcase"
+  genesis_id="$(grep 'state.genesis-id=' "$(authenticated_map_properties)" | cut -d= -f2)"
+  [ -n "$genesis_id" ] || die "authenticated-map genesis identity is missing; run prepare first"
+  issuer_seed="$(demo_actor_seed issuer-a)"
+  issuer_pub="$(python3 "$signer" public-key "$issuer_seed")"
+
+  # --- direct-role: issuer-a writes to governed-catalog under issuer-write ---
+  key="catalog-$suffix"
+  value="$(python3 "$CODEC" authmap-value opaque "governed-entry-$suffix")"
+  cmd="$(python3 "$CODEC" authmap put governed-catalog "$key" "$value")"
+  action="$("$yano" appchain authenticated-map action \
+    --command-hex "$cmd" --assignments 0:governed-role:issuer-write:1)"
+  local authz_id preimage signature evidence governed_cmd id
+  authz_id="$(python3 -c 'import hashlib,sys
+print(hashlib.sha256(("yano-showcase-authz:"+sys.argv[1]).encode()).hexdigest())' "$suffix")"
+  height="$(authmap_tip_height)"
+  deadline=$((height + 90))
+  local direct_args=(--action-hex "$action" --authorization-id "$authz_id"
+    --chain authenticated-map-chain --genesis-id "$genesis_id" --indexes 0
+    --policy issuer-write --policy-revision 1 --actor issuer-a --actor-revision 1
+    --key issuer-a-k1 --public-key "$issuer_pub"
+    --issued-height "$height" --deadline-height "$deadline")
+  preimage="$("$yano" appchain authenticated-map direct-preimage "${direct_args[@]}")"
+  signature="$(python3 "$signer" sign "$issuer_seed" "$preimage")"
+  evidence="$("$yano" appchain authenticated-map direct-complete \
+    "${direct_args[@]}" --signature "$signature")"
+  governed_cmd="$("$yano" appchain authenticated-map command \
+    --action-hex "$action" --evidence-hex "$evidence")"
+  id="$(submit_hex authenticated-map-chain authenticated-map.command.v1 "$governed_cmd")"
+  wait_message authenticated-map-chain "$id" >/dev/null
+  expect_receipt_applied "$id" "direct-role governed-catalog write"
+  authmap_domain "authenticated-map/direct-consumptions/issuer-a/$authz_id" \
+    | jq -e '.record.policyId == "issuer-write" and .record.appliedHeight > 0' >/dev/null \
+    || die "direct authorization consumption record is missing"
+  note "DIRECT ROLE: issuer-a wrote governed-catalog/$key with externally signed evidence"
+
+  # --- approval: issuer-a proposes, auditors from two organizations approve ---
+  local proposal payload_hash statement approve_seed reference approval_cmd
+  key="release-$suffix"
+  value="$(python3 "$CODEC" authmap-value opaque "released-product-$suffix")"
+  cmd="$(python3 "$CODEC" authmap put released-products "$key" "$value")"
+  action="$("$yano" appchain authenticated-map action \
+    --command-hex "$cmd" --assignments 0:approval:product-release:1)"
+  payload_hash="$("$yano" appchain authenticated-map approval-payload \
+    --action-hex "$action" --genesis-id "$genesis_id")"
+  proposal="release-$suffix"
+  height="$(authmap_tip_height)"
+  deadline=$((height + 300))
+  local seed_file
+  seed_file="$(mktemp "$(instance_root)/.demo-seed.XXXXXX")"
+  chmod 600 "$seed_file"
+  sign_statement() {
+    local actor="$1" seed="$2" statement_action="$3" clause="$4"
+    printf '%s' "$seed" > "$seed_file"
+    "$yano" appchain role sign --action "$statement_action" \
+      --chain authenticated-map-chain --proposal "$proposal" \
+      --policy product-release --policy-revision 1 \
+      --payload-domain yano.authenticated-map.action.v1 \
+      --payload-hash "$payload_hash" --deadline-height "$deadline" \
+      --actor "$actor" --actor-revision 1 --key "$actor-k1" \
+      --clause "$clause" --seed-file "$seed_file"
+  }
+  statement="$(sign_statement issuer-a "$issuer_seed" PROPOSE '')"
+  id="$(submit_hex authenticated-map-chain role-approvals.command.v1 "$statement")"
+  wait_message authenticated-map-chain "$id" >/dev/null
+  for auditor in auditor-a auditor-b; do
+    approve_seed="$(demo_actor_seed "$auditor")"
+    statement="$(sign_statement "$auditor" "$approve_seed" APPROVE independent-auditors)"
+    id="$(submit_hex authenticated-map-chain role-approvals.command.v1 "$statement")"
+    wait_message authenticated-map-chain "$id" >/dev/null
+  done
+  rm -f -- "$seed_file"
+  authmap_domain "proposals/$proposal" \
+    | jq -e '.record.status == "APPROVED" and (.record.decisions | length) == 2' >/dev/null \
+    || die "product-release proposal did not reach APPROVED with two distinct-organization decisions"
+  reference="$("$yano" appchain authenticated-map approval-reference \
+    --action-hex "$action" --proposal "$proposal" --indexes 0 \
+    --policy product-release --policy-revision 1)"
+  approval_cmd="$("$yano" appchain authenticated-map command \
+    --action-hex "$action" --evidence-hex "$reference")"
+  id="$(submit_hex authenticated-map-chain authenticated-map.command.v1 "$approval_cmd")"
+  wait_message authenticated-map-chain "$id" >/dev/null
+  expect_receipt_applied "$id" "approved released-products execution"
+  authmap_domain "authenticated-map/approval-consumptions/$proposal" \
+    | jq -e '.record.policyId == "product-release" and .record.appliedHeight > 0' >/dev/null \
+    || die "approval consumption record is missing"
+  note "APPROVAL: $proposal approved by auditors in two organizations and executed exactly once"
 }
 
 approval_propose() {
@@ -820,7 +960,8 @@ activation_submit() {
       printf '%s' "$result" | jq -r .messageId;;
     authenticated-map-chain)
       value="$(python3 "$CODEC" authmap-value opaque "$suffix")"
-      body="$(python3 "$CODEC" authmap put attachments "$suffix" "$value")"
+      body="$(authmap_basic_body owner \
+        "$(python3 "$CODEC" authmap put attachments "$suffix" "$value")")"
       submit_hex "$cid" authenticated-map.command.v1 "$body" 0;;
     *) die "unsupported light-profile chain: $cid";;
   esac

@@ -34,7 +34,8 @@ class ShowcaseAuthenticatedMapConfigTest {
         assertThat(genesis.maxBatchBytes()).isEqualTo(65_536);
         assertThat(genesis.collections())
                 .extracting(AuthenticatedMapContract.CollectionDescriptor::id)
-                .containsExactly("attachments", "canonical-events", "gtins", "products");
+                .containsExactly("attachments", "canonical-events", "governed-catalog",
+                        "gtins", "products", "released-products");
         assertThat(genesis.collections())
                 .filteredOn(collection -> collection.id().equals("attachments"))
                 .singleElement()
@@ -58,6 +59,40 @@ class ShowcaseAuthenticatedMapConfigTest {
                 .singleElement()
                 .satisfies(collection -> assertThat(collection.validatorId())
                         .isEqualTo("product-v1"));
+        assertThat(genesis.collections())
+                .filteredOn(collection -> collection.id().equals("governed-catalog"))
+                .singleElement()
+                .satisfies(collection -> {
+                    assertThat(collection.authorization())
+                            .isEqualTo(AuthenticatedMapContract.AUTH_GOVERNED_ROLE);
+                    assertThat(collection.authorizationPolicyId()).isEqualTo("issuer-write");
+                });
+        assertThat(genesis.collections())
+                .filteredOn(collection -> collection.id().equals("released-products"))
+                .singleElement()
+                .satisfies(collection -> {
+                    assertThat(collection.authorization())
+                            .isEqualTo(AuthenticatedMapContract.AUTH_APPROVAL);
+                    assertThat(collection.authorizationPolicyId())
+                            .isEqualTo("product-release");
+                });
+        assertThat(genesis.governedGenesis()).isNotNull();
+        assertThat(genesis.governedGenesis().organizations())
+                .extracting(organization -> organization.organizationId())
+                .containsExactly("acme-manufacturing", "auditor-guild-a", "auditor-guild-b");
+        assertThat(genesis.governedGenesis().actors())
+                .extracting(actor -> actor.actor().actorId())
+                .containsExactly("auditor-a", "auditor-b", "issuer-a", "registry-admin-a");
+        assertThat(genesis.governedGenesis().approvalPolicies())
+                .singleElement()
+                .satisfies(policy -> {
+                    assertThat(policy.clauses()).singleElement().satisfies(clause -> {
+                        assertThat(clause.minimumCount()).isEqualTo(2);
+                        assertThat(clause.distinctBy())
+                                .isEqualTo(com.bloxbean.cardano.yano.appchain.roles.contracts
+                                        .ApprovalPolicyV1.DistinctBy.ORGANIZATION);
+                    });
+                });
         assertThat(genesis.validators())
                 .extracting(AuthenticatedMapContract.ValidatorDescriptor::id)
                 .containsExactly("gtin-v1", "product-v1");
@@ -94,6 +129,46 @@ class ShowcaseAuthenticatedMapConfigTest {
                 "state.commitment-profile",
                 "state.format-fingerprint",
                 "state.genesis-id");
+    }
+
+    @Test
+    void demoActorSeedsMatchTheShellDerivationContract() {
+        // showcase.sh derives the identical value with:
+        //   printf 'yano-showcase-demo-actor:issuer-a' | shasum -a 256
+        assertThat(HexFormat.of().formatHex(
+                ShowcaseAuthenticatedMapConfig.demoActorSeed("issuer-a")))
+                .isEqualTo("014e1f28afa92a08710af43d06117868d84bf83185f3a4db14eb358e2e8a468a");
+        // tools/showcase_signer.py derives the same public key for that seed,
+        // proving the demo shell signer and the genesis key material agree.
+        assertThat(HexFormat.of().formatHex(
+                com.bloxbean.cardano.client.crypto.KeyGenUtil.getPublicKeyFromPrivateKey(
+                        ShowcaseAuthenticatedMapConfig.demoActorSeed("issuer-a"))))
+                .isEqualTo("67ddc1ac79b76d0e6abae1c133195fa48904948af3b202b761a4c727c4e169ff");
+    }
+
+    @Test
+    void basicEnvelopeWrappingMatchesTheCompositeAdmissionContract() {
+        // showcase.sh authmap_basic_body wraps the codec's legacy command into
+        // the final v1 envelope with exactly these CLI invocations; the
+        // composite machine admits only the final envelope.
+        String legacy = HexFormat.of().formatHex(
+                com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract
+                        .encodeCommand(AuthenticatedMapContract.Command.single(
+                                AuthenticatedMapContract.Mutation.put(
+                                        "attachments",
+                                        "demo-key".getBytes(StandardCharsets.UTF_8),
+                                        "demo-value".getBytes(StandardCharsets.UTF_8)))));
+        String action = com.bloxbean.cardano.yano.appchain.stdlib.contracts
+                .AuthenticatedMapAuthorizationCli.execute(new String[] {
+                        "action", "--command-hex", legacy, "--assignments", "0:owner::0"});
+        String wrapped = com.bloxbean.cardano.yano.appchain.stdlib.contracts
+                .AuthenticatedMapAuthorizationCli.execute(new String[] {
+                        "command", "--action-hex", action, "--evidence-hex", ""});
+        var decoded = com.bloxbean.cardano.yano.appchain.stdlib.contracts
+                .AuthenticatedMapAuthorizationContract.decodeCommand(
+                        HexFormat.of().parseHex(wrapped));
+        assertThat(decoded.action().mutations()).hasSize(1);
+        assertThat(decoded.evidence()).isEmpty();
     }
 
     @Test

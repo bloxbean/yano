@@ -453,3 +453,208 @@ export interface L1TransactionUtxos {
   inputs?: L1TransactionUtxo[];
   outputs?: L1TransactionUtxo[];
 }
+
+export interface MessageSubmitResult {
+  messageId: string;
+  chainId: string;
+  topic: string;
+}
+
+// ADR-025.2 authenticated-map domain API. Exact-record routes carry proofKey/
+// recordValue with verificationLevel "authenticated-record"; pending pages are
+// deterministic projections and carry sourceIndexProofKey/queryValue with
+// verificationLevel "DERIVED_FROM_PENDING_INDEX" instead. Composed
+// role-workflow routes omit apiVersion/verificationLevel.
+export interface AuthMapEnvelope<T> {
+  apiVersion?: string;
+  chainId: string;
+  stateMachineId: string;
+  committedHeight: number;
+  stateRoot: string;
+  proofKey?: string;
+  recordValue?: string;
+  verificationLevel?: string;
+  currentPointerProofKey?: string;
+  currentPointerValue?: string;
+  sourceIndexProofKey?: string;
+  queryValue?: string;
+  record: T;
+}
+
+export interface AuthMapCollection {
+  id: string;
+  authorization: number;
+  authorizationPolicy: string;
+  restoreAllowed: boolean;
+  maxKeyBytes: number;
+  maxValueBytes: number;
+  valueEncoding: number;
+  validator: string;
+}
+
+export interface AuthMapMetadataRecord {
+  type: 'metadata';
+  apiVersion: string;
+  profile: string;
+  genesisId: string;
+  governed: boolean;
+  collections: AuthMapCollection[];
+}
+
+export interface AuthMapEntryRecord {
+  type: 'entry';
+  collectionId: string;
+  applicationKey: string;
+  presence: number;
+  revision?: number;
+  status?: number;
+  logicalValueHash?: string;
+}
+
+export interface AuthMapReceiptRecord {
+  type: 'receipt';
+  messageId: string;
+  presence: number;
+  status?: number;
+  errorCode?: number;
+  actionCommitment?: string;
+}
+
+export interface AuthMapDirectConsumptionRecord {
+  type: 'direct-consumption';
+  actorId: string;
+  authorizationId: string;
+  actionCommitment: string;
+  appliedHeight: number;
+  policyId: string;
+  policyRevision: number;
+}
+
+export interface AuthMapApprovalConsumptionRecord {
+  type: 'approval-consumption';
+  proposalId: string;
+  actionCommitment: string;
+  appliedHeight: number;
+  policyId: string;
+  policyRevision: number;
+}
+
+export interface AuthMapDirectPolicyRecord {
+  type: 'direct-policy';
+  policyId: string;
+  revision: number;
+  status: string;
+  requiredRole: string;
+  maximumAuthorizationLifetimeBlocks: number;
+}
+
+export interface AuthMapAuthorityRecord {
+  type: 'administrator-authority';
+  authorityId: string;
+  revision: number;
+  administratorActors: string[];
+  threshold: number;
+}
+
+export interface AuthMapGovernanceMutationRecord {
+  type: 'governance-mutation';
+  mutationId: string;
+  status: string;
+  authorityId: string;
+  authorityRevision: number;
+  expiryHeight: number;
+}
+
+export interface AuthMapCommandResultRecord {
+  type: 'command-result';
+  commandKind: number;
+  subjectId: string;
+  resultCode: string;
+  appliedHeight: number;
+}
+
+export interface AuthMapPendingRecord {
+  type: 'pending-approvals' | 'pending-governance';
+  ids: string[];
+  nextAfterId: string;
+}
+
+export interface RoleOrganizationRecord {
+  type: 'organization';
+  organizationId: string;
+  revision: number;
+  status: string;
+  metadataCommitment: string;
+}
+
+export interface RoleActorKey {
+  keyId: string;
+  publicKey: string;
+  validFromHeight: number;
+  validUntilHeight: number;
+  status: string;
+}
+
+export interface RoleActorRecord {
+  type: 'actor';
+  actorId: string;
+  organizationId: string;
+  revision: number;
+  status: string;
+  roles: string[];
+  keys: RoleActorKey[];
+}
+
+export interface RolePolicyClause {
+  clauseId: string;
+  role: string;
+  minimumCount: number;
+  distinctBy: string;
+}
+
+export interface RolePolicyRecord {
+  type: 'policy';
+  policyId: string;
+  revision: number;
+  proposerRoles: string[];
+  clauses: RolePolicyClause[];
+  rejectionMode: string;
+  maximumLifetimeBlocks: number;
+}
+
+export interface RoleProposalDecision {
+  decision: string;
+  actorId: string;
+  organizationId: string;
+  organizationRevision: number;
+  role: string;
+  clauseId: string;
+  actorRevision: number;
+  keyId: string;
+  acceptedHeight: number;
+}
+
+export interface RoleProposalRecord {
+  type: 'proposal';
+  proposalId: string;
+  policyId: string;
+  policyRevision: number;
+  payloadDomain: string;
+  payloadHash: string;
+  deadlineHeight: number;
+  status: string;
+  proposerActorId: string;
+  proposerOrganizationId: string;
+  proposerRole: string;
+  decisions: RoleProposalDecision[];
+}
+
+export interface RoleApprovalStatsRecord {
+  type: 'approval-stats';
+  created: number;
+  pending: number;
+  approved: number;
+  rejected: number;
+  cancelled: number;
+  expired: number;
+}

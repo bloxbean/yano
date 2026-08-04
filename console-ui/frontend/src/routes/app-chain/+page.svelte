@@ -21,6 +21,7 @@
   import { StreamCursor } from '$lib/appchain/sse';
   import { boolValue, numberValue, objectList, objectValue, recordEntries, shortHash, stringValue } from '$lib/appchain/value';
   import { isEutxoChain } from '$lib/eutxo/model';
+  import { isAuthenticatedMapChain } from '$lib/authmap/model';
 
   const CHAIN_KEY = 'yano.console.app-chain.selected.v1';
   const PAGE_SIZE = 25;
@@ -355,6 +356,10 @@
     {#if isEutxoChain(status)}
       <a class="rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-300 no-underline hover:border-cyan-400"
          href={`${base}/app-chain/eutxo/?chain=${encodeURIComponent(selectedChain)}`}>EUTxO Explorer</a>
+    {/if}
+    {#if isAuthenticatedMapChain(status)}
+      <a class="rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-300 no-underline hover:border-cyan-400"
+         href={`${base}/app-chain/authenticated-map/?chain=${encodeURIComponent(selectedChain)}`}>Authenticated Map</a>
     {/if}
     <span class="rounded-md border border-slate-700 px-2 py-1 text-xs font-mono text-slate-400">{requestMs || '-'} ms</span>
   </div>

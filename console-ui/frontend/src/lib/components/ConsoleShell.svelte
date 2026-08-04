@@ -1,7 +1,7 @@
 <script lang="ts">
   import { base } from '$app/paths';
   import { onMount } from 'svelte';
-  import { apiFailureMessage, currentApiKey, resolveApiBase, resolvePluginApiBase, saveConnection, YanoApi } from '$lib/api/client';
+  import { apiFailureMessage, currentApiKey, hasPersistedApiKey, resolveApiBase, resolvePluginApiBase, saveConnection, YanoApi } from '$lib/api/client';
   import type { NodeConfig, NodeStatus } from '$lib/api/types';
   import { metricsCredential, resolveMetricsBase, saveMetricsConnection } from '$lib/telemetry/prometheus';
   import { logoDarkUrl } from '$lib/brand';
@@ -22,10 +22,10 @@
     hostBound = location.pathname.startsWith('/ui/plugins/');
     try {
       apiBase = hostBound ? await resolvePluginApiBase() : await resolveApiBase();
-      key = hostBound ? '' : currentApiKey();
+      key = hostBound ? '' : currentApiKey(apiBase);
       metricsBase = hostBound ? '' : resolveMetricsBase();
       metricsBearer = metricsBase ? metricsCredential(metricsBase) : '';
-      persistKey = !!localStorage.getItem('yano.console.api-key.v1');
+      persistKey = !hostBound && hasPersistedApiKey(apiBase);
       const api = new YanoApi(apiBase, key);
       [config, status] = await Promise.all([api.config(), api.status()]);
     } catch (error) {
