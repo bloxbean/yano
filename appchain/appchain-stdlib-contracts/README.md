@@ -16,8 +16,10 @@ contracts. Checked-in MPF/classic-JMT roots and proof vectors live at
 Run `./gradlew :appchain-stdlib-contracts:check` to verify them through both
 CCL and the independent Python verifier.
 
-Authenticated-map genesis codec version 3 incorporates the ADR-025.1
-value-encoding and validator catalogs. `VALUE_ENCODING_OPAQUE` (the default,
+Authenticated-map genesis codec version 4 is the final unreleased v1 layout.
+It incorporates the ADR-025.1 value-encoding/validator catalogs and the
+ADR-025.2 five-mode authorization catalog, stable policy IDs, and optional
+canonical governed genesis closure. `VALUE_ENCODING_OPAQUE` (the default,
 including the source-compatible five-argument collection constructor)
 preserves byte-transparent values.
 `VALUE_ENCODING_CANONICAL_CBOR` accepts exactly one RFC 8949 deterministic-CBOR
@@ -40,3 +42,23 @@ rejection produces `ERROR_VALUE_VALIDATOR = 12`; an unexpected plugin failure
 is a node failure and must not become a receipt. The public validator SPI lives
 in `core-api`, while first-party implementations live in the separate
 `appchain-authenticated-map-validators` bundle.
+
+`AuthenticatedMapAuthorizationContract` freezes the separate action/evidence
+layers, complete-action Blake2b-256 commitment, claimed-key Ed25519 statement,
+approval reference, direct/approval consumption records, and their exact key
+namespaces. The checked-in `authorization-vectors.properties` file is verified
+by Java and dependency-free Python. The companion CDDL publishes every array
+discriminant and bound.
+
+The logical framework key namespaces are:
+
+| Fact | Logical key before composite wrapping |
+|---|---|
+| Genesis marker | `yano-authenticated-map-internal-v1 / genesis` |
+| Receipt/result | `yano-authenticated-map-receipts-v1 / messageId` |
+| Direct consumption | `yano-authenticated-map-direct-consumption-v1 / (v1, actorId, authorizationId)` |
+| Approval consumption | `yano-authenticated-map-approval-consumption-v1 / proposalId` |
+
+There is deliberately no collection or action-scope suffix on the approval
+key. Physical proofs add the committed composite component namespace; domain
+APIs return that exact physical key rather than asking callers to recreate it.

@@ -4,6 +4,11 @@ This artifact contains no plugin service. It freezes the portable ADR-019 wire,
 state, signing, and client contracts used by the domain-actor registry and
 role-aware approval workflow.
 
+ADR-025.2 extends the same generic artifact with `DirectRolePolicyV1`,
+`AdministratorAuthorityV1`, `GovernedGenesisV1`, the genesis-bound resource
+profile, and actor-signed administrator statements. These contracts do not
+turn an outer member relay into a business administrator.
+
 The important identity boundary is:
 
 ```text
@@ -101,7 +106,10 @@ java -cp yano.jar \
   --mutation-id actor-a-v2 --mutation-hash <32-byte-mutation-hash>
 ```
 
-The outer member sender determines which administrator vote is counted.
+The legacy standalone role-workflow provider still uses its original
+member-administrator configuration. In a governed authenticated-map profile,
+administrator votes instead come from `SignedAdministratorStatementV1`; the
+outer member is only a relay and repeated relays cannot multiply an actor vote.
 Actor seed files are read locally by the signing process only. Use a
 KMS/HSM/Vault implementation of the same `ActorStatementV1.signingPreimage()`
 contract in production; never send a seed file to a Yano REST endpoint.

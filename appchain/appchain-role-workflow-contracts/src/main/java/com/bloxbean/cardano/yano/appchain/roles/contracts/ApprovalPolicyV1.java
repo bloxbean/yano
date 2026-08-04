@@ -11,17 +11,18 @@ import java.util.Comparator;
 import java.util.List;
 
 /** Frozen bounded AND-of-clauses policy contract. */
-public record ApprovalPolicyV1(String policyId, long revision, List<String> proposerRoles,
+public record ApprovalPolicyV1(String policyId, long revision, RecordStatus status,
+                               List<String> proposerRoles,
                                List<RequiredClause> clauses, RejectionMode rejectionMode,
                                long maximumLifetimeBlocks) {
     public ApprovalPolicyV1 {
         policyId = RoleWorkflowIdentifiers.id(policyId, "policyId");
-        if (revision < 1 || proposerRoles == null
+        if (revision < 1 || status == null || proposerRoles == null
                 || proposerRoles.size() > RoleWorkflowLimits.MAX_PROPOSER_ROLES
                 || clauses == null || clauses.isEmpty()
                 || clauses.size() > RoleWorkflowLimits.MAX_CLAUSES_PER_POLICY
                 || rejectionMode == null || maximumLifetimeBlocks < 1
-                || maximumLifetimeBlocks > 1_000_000) {
+                || maximumLifetimeBlocks > RoleWorkflowLimits.MAX_AUTHORIZATION_LIFETIME_BLOCKS) {
             throw OrganizationRecordV1.invalid();
         }
         proposerRoles = proposerRoles.stream().map(RoleWorkflowIdentifiers::role).sorted().toList();
@@ -53,6 +54,7 @@ public record ApprovalPolicyV1(String policyId, long revision, List<String> prop
         value.add(new UnsignedInteger(1));
         value.add(new UnicodeString(policyId));
         value.add(new UnsignedInteger(revision));
+        value.add(new UnsignedInteger(status.code()));
         value.add(proposerValues);
         value.add(clauseValues);
         value.add(new UnsignedInteger(rejectionMode.code));
@@ -70,20 +72,34 @@ public record ApprovalPolicyV1(String policyId, long revision, List<String> prop
 
     public static ApprovalPolicyV1 decode(byte[] bytes) {
         List<co.nstant.in.cbor.model.DataItem> values =
-                RoleWorkflowCbor.decodeArray(bytes, 7).getDataItems();
+                RoleWorkflowCbor.decodeArray(bytes, 8).getDataItems();
         OrganizationRecordV1.requireVersion(values.get(0));
-        Array proposers = RoleWorkflowCbor.array(values.get(3),
+        Array proposers = RoleWorkflowCbor.array(values.get(4),
                 RoleWorkflowLimits.MAX_PROPOSER_ROLES);
-        Array clauses = RoleWorkflowCbor.array(values.get(4),
+        Array clauses = RoleWorkflowCbor.array(values.get(5),
                 RoleWorkflowLimits.MAX_CLAUSES_PER_POLICY);
         ApprovalPolicyV1 decoded = new ApprovalPolicyV1(RoleWorkflowCbor.text(values.get(1)),
                 RoleWorkflowCbor.uint(values.get(2)),
+                RecordStatus.fromCode(RoleWorkflowCbor.uintInt(values.get(3))),
                 proposers.getDataItems().stream().map(RoleWorkflowCbor::text).toList(),
                 clauses.getDataItems().stream().map(RequiredClause::fromCbor).toList(),
-                RejectionMode.fromCode(RoleWorkflowCbor.uintInt(values.get(5))),
-                RoleWorkflowCbor.uint(values.get(6)));
+                RejectionMode.fromCode(RoleWorkflowCbor.uintInt(values.get(6))),
+                RoleWorkflowCbor.uint(values.get(7)));
         RoleWorkflowCbor.requireCanonical(bytes, decoded.encode());
         return decoded;
+    }
+
+    /** Source-compatible constructor for the pre-025.2 active-policy form. */
+    public ApprovalPolicyV1(
+            String policyId,
+            long revision,
+            List<String> proposerRoles,
+            List<RequiredClause> clauses,
+            RejectionMode rejectionMode,
+            long maximumLifetimeBlocks
+    ) {
+        this(policyId, revision, RecordStatus.ACTIVE, proposerRoles, clauses,
+                rejectionMode, maximumLifetimeBlocks);
     }
 
     public record RequiredClause(String clauseId, String role, int minimumCount,

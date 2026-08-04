@@ -1,9 +1,9 @@
 # ADR-025 Phase 0 — contract, measurement, and dependency gates
 
-Status: implemented pre-amendment baseline. ADR-025.1 and ADR-025.2 reopen the
-unreleased v1 genesis/contract, so final Phase 0 freeze and qualification are
-pending their combined vectors and measurements. Production qualification also
-remains blocked on the release and durable-runtime gates below.
+Status: implemented baseline, with the final amended v1 contract freeze now
+completed by [ADR-025.2 Phase A](025.2-phase-a-contract-and-work-bounds.md).
+Runtime and production qualification remain pending ADR-025.2 Phases B-G and
+the release/durable-runtime gates below.
 
 This note records the executable decisions completed before the Phase 1 state
 machine and the Phase 2 backend refactor. It is a historical baseline rather
@@ -48,9 +48,10 @@ The pre-amendment authorization subset was deliberately limited to:
 [ADR-025.2](025.2-governed-authenticated-map-authorization-and-console.md)
 now supplies the required component and workflow decision and supersedes this
 subset for the final unreleased v1. Final v1 includes `governed-role` and
-`approval` in addition to the three modes above. The contract phase must
-regenerate genesis, commands, state namespaces, golden vectors, roots, proofs,
-clients, and measurements before this phase can be called frozen again.
+`approval` in addition to the three modes above. Phase A regenerated genesis
+codec 4, commands, state namespaces, golden vectors, release metadata, and the
+crypto-work measurement. Runtime roots/proofs and clients are regenerated in
+Phases B-E and qualified in Phase G.
 
 ## 2. Profile and dependency gate
 

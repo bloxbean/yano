@@ -18,7 +18,7 @@ public record ActorKeyProofV1(String chainId, String actorId, long actorRevision
             "yano:actor-key-proof:v1\0".getBytes(StandardCharsets.US_ASCII);
 
     public ActorKeyProofV1 {
-        chainId = RoleWorkflowIdentifiers.id(chainId, "chainId");
+        chainId = RoleWorkflowIdentifiers.chainId(chainId);
         actorId = RoleWorkflowIdentifiers.id(actorId, "actorId");
         if (actorRevision < 1 || key == null || signature == null || signature.length != 64) {
             throw OrganizationRecordV1.invalid();
@@ -51,9 +51,11 @@ public record ActorKeyProofV1(String chainId, String actorId, long actorRevision
                 RoleWorkflowCbor.decodeArray(bytes, 6).getDataItems();
         OrganizationRecordV1.requireVersion(values.get(0));
         ActorKeyEpochV1 key = ActorKeyEpochV1.fromCbor(values.get(4));
-        return new ActorKeyProofV1(RoleWorkflowCbor.text(values.get(1)),
+        ActorKeyProofV1 decoded = new ActorKeyProofV1(RoleWorkflowCbor.text(values.get(1)),
                 RoleWorkflowCbor.text(values.get(2)), RoleWorkflowCbor.uint(values.get(3)),
                 key, RoleWorkflowCbor.bytes(values.get(5), 64));
+        RoleWorkflowCbor.requireCanonical(bytes, decoded.encode());
+        return decoded;
     }
 
     private static byte[] unsignedBytes(String chainId, String actorId, long revision,
@@ -65,7 +67,7 @@ public record ActorKeyProofV1(String chainId, String actorId, long actorRevision
                                       ActorKeyEpochV1 key) {
         Array value = new Array();
         value.add(new UnsignedInteger(1));
-        value.add(new UnicodeString(RoleWorkflowIdentifiers.id(chainId, "chainId")));
+        value.add(new UnicodeString(RoleWorkflowIdentifiers.chainId(chainId)));
         value.add(new UnicodeString(RoleWorkflowIdentifiers.id(actorId, "actorId")));
         value.add(new UnsignedInteger(revision));
         value.add(key.toCbor());

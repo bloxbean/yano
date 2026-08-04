@@ -1,4 +1,6 @@
 dependencies {
+    api project(':appchain-role-workflow-contracts')
+
     implementation libs.cbor
     implementation libs.cardano.client.crypto
 
@@ -19,6 +21,15 @@ tasks.register('printAuthenticatedMapGoldenVectors', JavaExec) {
     mainClass = 'com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapGoldenVectorGenerator'
 }
 
+tasks.register('printAuthenticatedMapAuthorizationGoldenVectors', JavaExec) {
+    group = 'verification'
+    description = 'Prints deterministic ADR-025.2 Phase A governance vectors'
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.appchain.stdlib.contracts.' +
+            'AuthenticatedMapAuthorizationGoldenVectorGenerator'
+}
+
 tasks.register('verifyAuthenticatedMapGoldenVectors', Exec) {
     group = 'verification'
     description = 'Verifies ADR-025 vectors with an independent Python implementation'
@@ -33,6 +44,15 @@ tasks.register('verifyAuthenticatedMapSchemaGoldenVectors', Exec) {
     commandLine 'python3',
             file('scripts/verify-authenticated-map-schema-vectors.py'),
             file('src/main/resources/META-INF/yano/contracts/authenticated-map/v1/schema-vectors.properties')
+}
+
+tasks.register('verifyAuthenticatedMapAuthorizationGoldenVectors', Exec) {
+    group = 'verification'
+    description = 'Independently verifies ADR-025.2 action/signature/replay vectors'
+    commandLine 'python3',
+            file('scripts/verify-authenticated-map-authorization-vectors.py'),
+            file('src/main/resources/META-INF/yano/contracts/authenticated-map/v1/'
+                    + 'authorization-vectors.properties')
 }
 
 tasks.register('benchmarkAuthenticatedMapContracts', JavaExec) {
@@ -57,6 +77,19 @@ tasks.register('benchmarkAuthenticatedMapSchema', JavaExec) {
     def report = layout.buildDirectory.file('reports/adr025/phase-b-schema.json')
     args report.get().asFile.absolutePath,
             providers.gradleProperty('adr025SchemaBenchmarkIterations').getOrElse('500000')
+    outputs.file(report)
+}
+
+tasks.register('benchmarkAuthenticatedMapAuthorizationCrypto', JavaExec) {
+    group = 'verification'
+    description = 'Measures ADR-025.2 dual-verification work and the frozen block cap'
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.appchain.stdlib.contracts.' +
+            'AuthenticatedMapCryptoWorkBenchmark'
+    def report = layout.buildDirectory.file('reports/adr0252/phase-a-crypto-work.json')
+    args report.get().asFile.absolutePath,
+            providers.gradleProperty('adr0252CryptoBenchmarkIterations').getOrElse('50000')
     outputs.file(report)
 }
 
@@ -108,6 +141,18 @@ tasks.register('verifyStdlibContractArtifact') {
     doLast {
         def archive = tasks.named('jar').get().archiveFile.get().asFile
         new java.util.zip.ZipFile(archive).withCloseable { jar ->
+            [
+                    'META-INF/yano/contracts/authenticated-map/v1/'
+                            + 'authenticated-map-authorization-v1.cddl',
+                    'META-INF/yano/contracts/authenticated-map/v1/'
+                            + 'authorization-vectors.properties'
+            ].each { entryName ->
+                def entry = jar.getEntry(entryName)
+                if (entry == null || entry.size == 0) {
+                    throw new GradleException(
+                            "Missing authenticated-map contract entry: ${entryName}")
+                }
+            }
             if (jar.entries().any { entry ->
                 entry.name.startsWith('META-INF/services/')
                         || entry.name.startsWith('META-INF/yano/plugins/')
@@ -124,6 +169,7 @@ tasks.named('check') {
     dependsOn tasks.named('verifyStdlibContractArtifact')
     dependsOn tasks.named('verifyAuthenticatedMapGoldenVectors')
     dependsOn tasks.named('verifyAuthenticatedMapSchemaGoldenVectors')
+    dependsOn tasks.named('verifyAuthenticatedMapAuthorizationGoldenVectors')
     dependsOn tasks.named('verifyAdr025DependencyBaseline')
 }
 
