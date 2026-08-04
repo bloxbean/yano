@@ -27,4 +27,15 @@ describe('app-chain capability discovery', () => {
       chainId: 'payments', stateMachine: 'custom-eutxo'
     }).eutxoExplorer).toBe(false);
   });
+
+  it('gates the authenticated-map console on the state-machine identity', () => {
+    const capabilities = discoverChainCapabilities({
+      chainId: 'map-chain', stateMachine: 'authenticated-map'
+    });
+    expect(capabilities.authenticatedMap).toBe(true);
+    expect(capabilities.sources).toContain('status:stateMachine=authenticated-map');
+    expect(discoverChainCapabilities({
+      chainId: 'map-chain', stateMachine: 'kv-registry'
+    }).authenticatedMap).toBe(false);
+  });
 });

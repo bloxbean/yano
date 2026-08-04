@@ -81,6 +81,7 @@ tasks.register('verifyStaticConsoleContract') {
                 'status/index.html',
                 'app-chain/index.html',
                 'app-chain/eutxo/index.html',
+                'app-chain/authenticated-map/index.html',
                 'plugins/index.html',
                 'observability/index.html'
         ]
@@ -124,6 +125,9 @@ tasks.register('verifyStaticConsoleContract') {
         }
         if (!textAssets.any { it.contains('data-console-route="eutxo"') }) {
             throw new GradleException('Embedded console lacks the capability-gated EUTxO explorer')
+        }
+        if (!textAssets.any { it.contains('data-console-route="authenticated-map"') }) {
+            throw new GradleException('Embedded console lacks the capability-gated authenticated-map console')
         }
 
         def appChainSource = file('frontend/src/routes/app-chain/+page.svelte').getText('UTF-8')

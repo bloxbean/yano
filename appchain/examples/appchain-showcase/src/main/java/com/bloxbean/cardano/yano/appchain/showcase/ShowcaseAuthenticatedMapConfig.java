@@ -1,6 +1,18 @@
 package com.bloxbean.cardano.yano.appchain.showcase;
 
+import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorKeyEpochV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorKeyProofV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorRecordV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.AdministratorAuthorityV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.ApprovalPolicyV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.DirectRolePolicyV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.GenesisActorV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.GovernedAuthorizationLimitsV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.GovernedGenesisV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.OrganizationRecordV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.RecordStatus;
 import com.bloxbean.cardano.yano.appchain.stdlib.AuthenticatedMapGenesisFactory;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapSchema;
@@ -10,7 +22,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.io.InputStream;
 import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HexFormat;
@@ -99,7 +114,15 @@ public final class ShowcaseAuthenticatedMapConfig {
                         VALIDATOR_DESCRIPTOR_ID),
                 collection("products", AuthenticatedMapContract.AUTH_OWNER,
                         64, 4_096, AuthenticatedMapContract.VALUE_ENCODING_CANONICAL_CBOR,
-                        productSchema.id()));
+                        productSchema.id()),
+                new AuthenticatedMapContract.CollectionDescriptor(
+                        "governed-catalog", AuthenticatedMapContract.AUTH_GOVERNED_ROLE,
+                        DIRECT_POLICY_ID, false, 64, 4_096,
+                        AuthenticatedMapContract.VALUE_ENCODING_OPAQUE, ""),
+                new AuthenticatedMapContract.CollectionDescriptor(
+                        "released-products", AuthenticatedMapContract.AUTH_APPROVAL,
+                        APPROVAL_POLICY_ID, false, 64, 4_096,
+                        AuthenticatedMapContract.VALUE_ENCODING_OPAQUE, ""));
 
         AuthenticatedMapContract.Genesis genesis = AuthenticatedMapGenesisFactory.mpf(
                 config,
@@ -108,9 +131,81 @@ public final class ShowcaseAuthenticatedMapConfig {
                 AppChainConfig.DEFAULT_MAX_MESSAGE_BYTES,
                 collections,
                 List.of(gtinValidator, productSchema),
-                List.of());
+                List.of(),
+                governedGenesis(chainId));
         return Collections.unmodifiableMap(
                 new TreeMap<>(AuthenticatedMapGenesisFactory.settings(genesis)));
+    }
+
+    static final String DIRECT_POLICY_ID = "issuer-write";
+    static final String APPROVAL_POLICY_ID = "product-release";
+    static final String AUTHORITY_ID = "registry-admins";
+    static final List<String> DEMO_ACTOR_IDS = List.of(
+            "registry-admin-a", "issuer-a", "auditor-a", "auditor-b");
+
+    /**
+     * Demo-only deterministic Ed25519 seed shared with showcase.sh, which
+     * derives the same value via `printf 'yano-showcase-demo-actor:%s' <id> |
+     * shasum -a 256`. Never reuse outside the packaged showcase.
+     */
+    static byte[] demoActorSeed(String actorId) {
+        try {
+            return MessageDigest.getInstance("SHA-256").digest(
+                    ("yano-showcase-demo-actor:" + actorId)
+                            .getBytes(StandardCharsets.UTF_8));
+        } catch (NoSuchAlgorithmException unavailable) {
+            throw new IllegalStateException("SHA-256 is unavailable", unavailable);
+        }
+    }
+
+    /**
+     * ADR-025.2 Phase F: the direct-role collection is writable by the issuer
+     * role, and the approval collection requires two auditor approvals from
+     * distinct organizations before an approved action executes.
+     */
+    static GovernedGenesisV1 governedGenesis(String chainId) {
+        OrganizationRecordV1 manufacturer = new OrganizationRecordV1(
+                "acme-manufacturing", 1, RecordStatus.ACTIVE, new byte[0]);
+        OrganizationRecordV1 guildA = new OrganizationRecordV1(
+                "auditor-guild-a", 1, RecordStatus.ACTIVE, new byte[0]);
+        OrganizationRecordV1 guildB = new OrganizationRecordV1(
+                "auditor-guild-b", 1, RecordStatus.ACTIVE, new byte[0]);
+        List<GenesisActorV1> actors = List.of(
+                genesisActor(chainId, "registry-admin-a",
+                        manufacturer.organizationId(), List.of("registry-admin")),
+                genesisActor(chainId, "issuer-a",
+                        manufacturer.organizationId(), List.of("issuer")),
+                genesisActor(chainId, "auditor-a",
+                        guildA.organizationId(), List.of("auditor")),
+                genesisActor(chainId, "auditor-b",
+                        guildB.organizationId(), List.of("auditor")));
+        AdministratorAuthorityV1 authority = new AdministratorAuthorityV1(
+                AUTHORITY_ID, 1, List.of("registry-admin-a"), 1, 1_000);
+        DirectRolePolicyV1 directPolicy = new DirectRolePolicyV1(
+                DIRECT_POLICY_ID, 1, RecordStatus.ACTIVE, "issuer", 100);
+        ApprovalPolicyV1 approvalPolicy = new ApprovalPolicyV1(
+                APPROVAL_POLICY_ID, 1, RecordStatus.ACTIVE, List.of("issuer"),
+                List.of(new ApprovalPolicyV1.RequiredClause(
+                        "independent-auditors", "auditor", 2,
+                        ApprovalPolicyV1.DistinctBy.ORGANIZATION)),
+                ApprovalPolicyV1.RejectionMode.ANY_ELIGIBLE, 600);
+        return new GovernedGenesisV1(
+                chainId, authority, List.of(manufacturer, guildA, guildB), actors,
+                List.of(directPolicy), List.of(approvalPolicy),
+                GovernedAuthorizationLimitsV1.defaults());
+    }
+
+    private static GenesisActorV1 genesisActor(
+            String chainId, String actorId, String organizationId, List<String> roles) {
+        byte[] seed = demoActorSeed(actorId);
+        ActorKeyEpochV1 key = new ActorKeyEpochV1(
+                actorId + "-k1", KeyGenUtil.getPublicKeyFromPrivateKey(seed),
+                1, 0, RecordStatus.ACTIVE);
+        ActorRecordV1 actor = new ActorRecordV1(
+                actorId, organizationId, 1, RecordStatus.ACTIVE,
+                roles, List.of(key), new byte[0]);
+        return new GenesisActorV1(actor, List.of(
+                ActorKeyProofV1.sign(chainId, actorId, 1, key, seed)));
     }
 
     static byte[] catalogArtifactClosure(Path runtimeJar, String bundleId) throws IOException {

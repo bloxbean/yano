@@ -1,14 +1,21 @@
 import type { AnchorCommitment, AppChainBlockDetail, AppChainBlocks, AppChainMessage, AppChainStatus, ChainSummary,
   CommittedQueryResult,
-  EffectPage, EffectStats, NodeConfig, NodePeers, NodeStatus, PluginBundleDetail, PluginBundlePage,
+  EffectPage, EffectStats, MessageSubmitResult, NodeConfig, NodePeers, NodeStatus,
+  PluginBundleDetail, PluginBundlePage,
   L1Transaction, L1TransactionUtxos, PluginOperationsSummary, ProofVerificationRequest,
   ProofVerificationResult, StateProofEnvelope,
   StorageStatus } from './types';
 
 const API_STORAGE_KEY = 'yano.console.api-base.v1';
 const KEY_STORAGE_KEY = 'yano.console.api-key.v1';
+const CREDENTIAL_STORAGE_KEY = 'yano.console.api-credential.v2';
 export const PLUGIN_DISCOVERY_PATH = '/ui/plugins/api-prefix.json';
-let memoryKey = '';
+let memoryCredential: ApiCredential | null = null;
+
+interface ApiCredential {
+  apiBase: string;
+  apiKey: string;
+}
 
 export function normalizeApiBase(value: string, origin = globalThis.location?.origin ?? 'http://localhost'): string {
   const trimmed = value.trim();
@@ -75,14 +82,48 @@ export async function resolvePluginApiBase(): Promise<string> {
 }
 
 export function saveConnection(apiBase: string, apiKey: string, persistKey: boolean): void {
-  localStorage.setItem(API_STORAGE_KEY, normalizeApiBase(apiBase));
-  memoryKey = apiKey;
-  if (persistKey && apiKey) localStorage.setItem(KEY_STORAGE_KEY, apiKey);
-  else localStorage.removeItem(KEY_STORAGE_KEY);
+  const normalized = normalizeApiBase(apiBase);
+  localStorage.setItem(API_STORAGE_KEY, normalized);
+  memoryCredential = apiKey ? { apiBase: normalized, apiKey } : null;
+  if (persistKey && apiKey) {
+    localStorage.setItem(CREDENTIAL_STORAGE_KEY, JSON.stringify({ apiBase: normalized, apiKey }));
+  } else {
+    localStorage.removeItem(CREDENTIAL_STORAGE_KEY);
+  }
+  // v1 stored an unscoped key. It must never be inherited by a query-selected
+  // or otherwise different API base.
+  localStorage.removeItem(KEY_STORAGE_KEY);
 }
 
-export function currentApiKey(): string {
-  return memoryKey || localStorage.getItem(KEY_STORAGE_KEY) || '';
+export function currentApiKey(apiBase: string): string {
+  const normalized = normalizeApiBase(apiBase);
+  if (memoryCredential?.apiBase === normalized) return memoryCredential.apiKey;
+  const persisted = persistedCredential();
+  return persisted?.apiBase === normalized ? persisted.apiKey : '';
+}
+
+export function hasPersistedApiKey(apiBase: string): boolean {
+  const persisted = persistedCredential();
+  return persisted?.apiBase === normalizeApiBase(apiBase) && persisted.apiKey.length > 0;
+}
+
+function persistedCredential(): ApiCredential | null {
+  // Fail closed during migration from the unscoped v1 credential.
+  localStorage.removeItem(KEY_STORAGE_KEY);
+  const encoded = localStorage.getItem(CREDENTIAL_STORAGE_KEY);
+  if (!encoded || encoded.length > 16_384) return null;
+  try {
+    const value = JSON.parse(encoded) as Partial<ApiCredential>;
+    if (typeof value.apiBase !== 'string' || typeof value.apiKey !== 'string'
+      || value.apiKey.length === 0 || value.apiKey.length > 8_192
+      || normalizeApiBase(value.apiBase) !== value.apiBase) {
+      throw new Error('invalid credential');
+    }
+    return { apiBase: value.apiBase, apiKey: value.apiKey };
+  } catch {
+    localStorage.removeItem(CREDENTIAL_STORAGE_KEY);
+    return null;
+  }
 }
 
 export class ApiError extends Error {
@@ -97,7 +138,13 @@ export function apiFailureMessage(cause: unknown, fallback: string): string {
 }
 
 export class YanoApi {
-  constructor(public readonly base: string, private readonly apiKey = currentApiKey()) {}
+  public readonly base: string;
+  private readonly apiKey: string;
+
+  constructor(base: string, apiKey?: string) {
+    this.base = normalizeApiBase(base);
+    this.apiKey = apiKey ?? currentApiKey(this.base);
+  }
 
   async response(path: string, accept: string, signal?: AbortSignal): Promise<Response> {
     const headers = new Headers({ Accept: accept });
@@ -182,6 +229,9 @@ export class YanoApi {
   chainAnchorCommitment(chainId: string, signal?: AbortSignal) {
     return this.json<AnchorCommitment>(`${chainPath(chainId)}/anchor/commitment`, signal);
   }
+  chainStateIdentity(chainId: string, signal?: AbortSignal) {
+    return this.json<Record<string, unknown>>(`${chainPath(chainId)}/state/identity`, signal);
+  }
   domain<T = Record<string, unknown>>(
     bundleId: string, path: string, parameters: Record<string, string>, signal?: AbortSignal
   ) {
@@ -196,6 +246,16 @@ export class YanoApi {
     return this.domain<T>(
       'com.bloxbean.cardano.yano.appchain.eutxo.indexer',
       `index/v1/${path}`, parameters, signal);
+  }
+  authenticatedMapDomain<T>(
+    path: string, parameters: Record<string, string>, signal?: AbortSignal
+  ) {
+    return this.domain<T>(
+      'com.bloxbean.cardano.yano.appchain.stdlib', path, parameters, signal);
+  }
+  chainSubmitMessage(chainId: string, topic: string, bodyHex: string, signal?: AbortSignal) {
+    return this.post<MessageSubmitResult>(
+      `${chainPath(chainId)}/messages`, { topic, bodyHex }, signal);
   }
   l1Transaction(transactionId: string, signal?: AbortSignal) {
     return this.json<L1Transaction>(`/txs/${encodeURIComponent(transactionId)}`, signal);

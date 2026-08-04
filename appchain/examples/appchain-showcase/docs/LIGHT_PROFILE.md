@@ -18,7 +18,9 @@ The shared YAML hosts `ordered-log`, `kv-registry`, `approvals`, `balances`,
 threshold are injected by the maintained cluster launcher; the same YAML works
 at every node count.
 
-The authenticated-map chain demonstrates four independent collection policies:
+The authenticated-map chain demonstrates six independent collection policies,
+covering the basic, direct-role, and multi-organization approval authorization
+modes of ADR-025.2:
 
 | Collection | Authorization | Value policy |
 |---|---|---|
@@ -26,6 +28,19 @@ The authenticated-map chain demonstrates four independent collection policies:
 | `canonical-events` | member | canonical-CBOR array, no validator |
 | `products` | owner | canonical-CBOR map plus a declarative product schema |
 | `gtins` | owner | canonical-CBOR text plus the first-party `gs1-gtin-v1` plugin |
+| `governed-catalog` | governed-role (`issuer-write`) | opaque bytes, actor-signed direct authorization |
+| `released-products` | approval (`product-release`) | opaque bytes, two auditor approvals from distinct organizations |
+
+The governed genesis registers three demo organizations
+(`acme-manufacturing`, `auditor-guild-a`, `auditor-guild-b`), four
+deterministic demo actors (`registry-admin-a`, `issuer-a`, `auditor-a`,
+`auditor-b`), an administrator authority, one direct-role policy, and one
+approval policy. `./showcase.sh run authenticated-map` exercises both governed
+flows through offline CLI authoring: the node API never receives an actor
+private key; `tools/showcase_signer.py` plays the external wallet/HSM signer
+for the deterministic demo seeds only. Every record — entries, receipts,
+actors, policies, proposals, consumptions, and proofs — is then inspectable in
+the packaged console at `/ui/app-chain/authenticated-map/`.
 
 The launcher generates this chain's canonical genesis from the actual
 bootstrap public keys and the `ARTIFACT_CLOSURE` digest in the bundled runtime

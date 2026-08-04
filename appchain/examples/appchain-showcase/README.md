@@ -12,8 +12,12 @@ with [MASTER_DEMO.md](docs/MASTER_DEMO.md), use the
 The light profile runs nine app chains on one local multi-node Yano cluster,
 with no Kafka, object store, IPFS, or separate effect service. Its built-in
 `authenticated-map` scenario demonstrates multiple collections, opaque and
-canonical-CBOR values, a declarative schema, and the first-party GS1 validator
-SPI example. It also includes one clearly demo-only plugin,
+canonical-CBOR values, a declarative schema, the first-party GS1 validator
+SPI example, and the ADR-025.2 governed flows: a direct-role collection
+written with externally signed actor evidence and an approval collection
+executed only after two auditors from distinct organizations approve. The
+packaged console renders every governed record at
+`/ui/app-chain/authenticated-map/`. It also includes one clearly demo-only plugin,
 `showcase-composite` / `showcase-outbox`, to make the deterministic-intent →
 finality-gate → external-execution → on-chain-result flow visible.
 

@@ -337,18 +337,24 @@ class PluginCatalogPackagingTest {
 
     @Test
     void allowPolicySelectsWholeBundleAcrossEveryContributionKind() {
+        // The stdlib bundle declares a dependency on role-workflow (its domain
+        // API composes the role routes), so allow-listing it selects both.
         PluginsOptions onlyStdlib = new PluginsOptions(true, false,
-                Set.of("com.bloxbean.cardano.yano.appchain.stdlib"), Set.of(), Map.of());
+                Set.of("com.bloxbean.cardano.yano.appchain.stdlib",
+                        "com.bloxbean.cardano.yano.appchain.role-workflow"), Set.of(), Map.of());
         try (PluginRuntimeEnvironment environment = PluginRuntimeEnvironment.packagedClasspath(
                 onlyStdlib, Thread.currentThread().getContextClassLoader())) {
-            assertEquals(Set.of("com.bloxbean.cardano.yano.appchain.stdlib"),
+            assertEquals(Set.of("com.bloxbean.cardano.yano.appchain.stdlib",
+                            "com.bloxbean.cardano.yano.appchain.role-workflow"),
                     environment.selectedBundleIds());
             assertEquals(Set.of("approvals", "authenticated-map", "balances",
-                            "doc-trail", "kv-registry"),
+                            "doc-trail", "kv-registry", "role-approvals"),
                     Set.copyOf(environment.providers().names(AppStateMachineProvider.class)));
             assertTrue(environment.providers().names(FinalizedStreamSinkFactory.class).isEmpty());
             assertTrue(environment.providers().names(AppEffectExecutorFactory.class).isEmpty());
-            assertTrue(environment.providers().names(DomainApiProvider.class).isEmpty());
+            assertEquals(Set.of("com.bloxbean.cardano.yano.appchain.stdlib",
+                            "com.bloxbean.cardano.yano.appchain.role-workflow"),
+                    Set.copyOf(environment.providers().names(DomainApiProvider.class)));
             assertFalse(environment.catalog().bundles().isEmpty());
         }
     }

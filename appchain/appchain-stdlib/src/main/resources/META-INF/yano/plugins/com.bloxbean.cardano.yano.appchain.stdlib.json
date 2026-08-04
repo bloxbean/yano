@@ -16,6 +16,6 @@
     { "kind": "app-state-machine", "name": "balances", "provider": "com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders$BalancesProvider" },
     { "kind": "app-state-machine", "name": "doc-trail", "provider": "com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders$DocTrailProvider" },
     { "kind": "app-state-machine", "name": "kv-registry", "provider": "com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders$KvRegistryProvider" },
-    { "kind": "domain-api", "name": "authenticated-map-v1", "provider": "com.bloxbean.cardano.yano.appchain.stdlib.AuthenticatedMapDomainApiProvider" }
+    { "kind": "domain-api", "name": "com.bloxbean.cardano.yano.appchain.stdlib", "provider": "com.bloxbean.cardano.yano.appchain.stdlib.AuthenticatedMapDomainApiProvider" }
   ]
 }

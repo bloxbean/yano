@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { apiFailureMessage, normalizeApiBase, resolveApiBase, resolvePluginApiBase, saveConnection, YanoApi } from './client';
+import { apiFailureMessage, currentApiKey, hasPersistedApiKey, normalizeApiBase, resolveApiBase,
+  resolvePluginApiBase, saveConnection, YanoApi } from './client';
 
 describe('Yano API client', () => {
   beforeEach(() => {
@@ -31,6 +32,28 @@ describe('Yano API client', () => {
       json: async () => ({ apiPrefix: '/baked' })
     }));
     expect(await resolveApiBase()).toBe('/baked');
+  });
+
+  it('binds persisted and in-memory credentials to the exact normalized API base', async () => {
+    saveConnection('https://node.example/api/v1/', 'secret', true);
+    expect(currentApiKey('https://node.example/api/v1')).toBe('secret');
+    expect(hasPersistedApiKey('https://node.example/api/v1')).toBe(true);
+    expect(currentApiKey('https://other.example/api/v1')).toBe('');
+    expect(currentApiKey('/api/v1')).toBe('');
+
+    history.replaceState({}, '', '/ui/status/?api=https://other.example/api/v1');
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ running: true }) });
+    vi.stubGlobal('fetch', fetchMock);
+    const selectedBase = await resolveApiBase();
+    await new YanoApi(selectedBase).status();
+    expect((fetchMock.mock.calls[0][1].headers as Headers).has('X-API-Key')).toBe(false);
+  });
+
+  it('fails closed instead of migrating an unscoped v1 API key', () => {
+    localStorage.setItem('yano.console.api-key.v1', 'legacy-secret');
+    localStorage.setItem('yano.console.api-base.v1', '/api/v1');
+    expect(currentApiKey('/api/v1')).toBe('');
+    expect(localStorage.getItem('yano.console.api-key.v1')).toBeNull();
   });
 
   it('binds plugin discovery to its exact same-origin immutable asset', async () => {
@@ -126,6 +149,23 @@ describe('Yano API client', () => {
     expect(fetchMock.mock.calls[1][0]).toBe(`/api/v1/txs/${id}`);
     expect(fetchMock.mock.calls[2][0]).toBe(`/api/v1/txs/${id}/utxos`);
     expect((fetchMock.mock.calls[2][1].headers as Headers).get('X-API-Key')).toBe('reader-key');
+  });
+
+  it('routes authenticated-map domain reads and message submission through the reviewed client', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    vi.stubGlobal('fetch', fetchMock);
+    const api = new YanoApi('/api/v1', 'reader-key');
+    await api.authenticatedMapDomain(
+      `authenticated-map/entries/products/${'6b'.repeat(3)}`, { chain: 'map/east' });
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      '/api/v1/plugins/com.bloxbean.cardano.yano.appchain.stdlib/authenticated-map/entries/'
+      + `products/${'6b'.repeat(3)}?chain=map%2Feast`);
+    expect((fetchMock.mock.calls[0][1].headers as Headers).get('X-API-Key')).toBe('reader-key');
+    await api.chainSubmitMessage('map/east', 'authenticated-map.command.v1', '830100');
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/app-chain/chains/map%2Feast/messages');
+    expect(fetchMock.mock.calls[1][1]).toEqual(expect.objectContaining({
+      method: 'POST', body: '{"topic":"authenticated-map.command.v1","bodyHex":"830100"}'
+    }));
   });
 
   it('turns browser network failures into an actionable standalone diagnostic', () => {

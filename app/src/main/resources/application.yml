@@ -24,6 +24,20 @@ quarkus:
           "X-Content-Type-Options": nosniff
           "Referrer-Policy": no-referrer
           "Cache-Control": no-store
+      # ADR-025.2 §10.5: the node-served console restricts connect-src to the
+      # host plus explicitly configured console origins. Append additional
+      # origins (space-separated) via YANO_CONSOLE_CONNECT_SRC_EXTRA, e.g.
+      # " https://other-node.example" for an explicit external connection.
+      console-security:
+        matches: /ui(?!/plugins/).*
+        header:
+          "Content-Security-Policy": >-
+            connect-src 'self'${YANO_CONSOLE_CONNECT_SRC_EXTRA:}; img-src 'self' data:;
+            object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'
+          "X-Frame-Options": DENY
+          "X-Content-Type-Options": nosniff
+          "Referrer-Policy": no-referrer
+          "Cache-Control": no-store
   native:
     resources:
       includes: META-INF/yano-api-prefix-v1

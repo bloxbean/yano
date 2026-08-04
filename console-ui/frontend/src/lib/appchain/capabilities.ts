@@ -3,6 +3,7 @@ import type { AppChainStatus } from '$lib/api/types';
 export interface ChainCapabilities {
   effects: boolean;
   eutxoExplorer: boolean;
+  authenticatedMap: boolean;
   roleApprovals: boolean;
   roleDomainBundle: string | null;
   evidenceBundles: boolean;
@@ -12,6 +13,7 @@ export interface ChainCapabilities {
 
 const ROLE_BUNDLE = 'com.bloxbean.cardano.yano.appchain.role-workflow';
 const EVIDENCE_BUNDLE = 'com.bloxbean.cardano.yano.appchain.evidence-profile';
+const AUTHENTICATED_MAP_MACHINE = 'authenticated-map';
 
 export function discoverChainCapabilities(status: AppChainStatus | null,
                                           pluginBundleIds: readonly string[] = []): ChainCapabilities {
@@ -20,13 +22,15 @@ export function discoverChainCapabilities(status: AppChainStatus | null,
   const roleDomainBundle = machine === 'role-approvals' ? ROLE_BUNDLE
     : machine === 'role-evidence' ? EVIDENCE_BUNDLE : null;
   const catalogConfirmed = roleDomainBundle !== null && pluginBundleIds.includes(roleDomainBundle);
+  const authenticatedMap = machine === AUTHENTICATED_MAP_MACHINE;
   const sources = ['app-chain core'];
   if (effects) sources.push('status:effects.enabled');
-  if (roleDomainBundle) sources.push(`status:stateMachine=${machine}`);
+  if (roleDomainBundle || authenticatedMap) sources.push(`status:stateMachine=${machine}`);
   if (catalogConfirmed) sources.push(`plugin-catalog:${roleDomainBundle}`);
   return {
     effects,
     eutxoExplorer: machine === 'eutxo-ledger',
+    authenticatedMap,
     roleApprovals: roleDomainBundle !== null,
     roleDomainBundle,
     evidenceBundles: !!status?.chainId,
