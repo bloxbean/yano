@@ -109,6 +109,9 @@ approval-consumption = [
 
 ; Hash/preimage domains:
 ; action = Blake2b-256("yano:authenticated-map:action:v1\0" || map-action)
+; approval proposal payload hash = Blake2b-256(
+;   "yano:authenticated-map:approval-payload:v1\0" ||
+;   authenticated-map-genesis-id || action-commitment)
 ; actor signature = Ed25519(
 ;   "yano:authenticated-map:actor-authorization:v1\0" || u32be(len) || statement)
 ;

@@ -66,7 +66,10 @@ record GovernancePendingIndexV1(List<Entry> entries) {
     static GovernancePendingIndexV1 decode(byte[] bytes) {
         try {
             List<co.nstant.in.cbor.model.DataItem> values =
-                    RoleWorkflowCbor.decodeArray(bytes, 2).getDataItems();
+                    RoleWorkflowCbor.decodeArray(bytes, 2,
+                            RoleWorkflowLimits.MAX_PENDING_INDEX_BYTES,
+                            RoleWorkflowLimits.MAX_PENDING_INDEX_CBOR_ITEMS)
+                            .getDataItems();
             if (RoleWorkflowCbor.uint(values.get(0)) != 1) {
                 throw new IllegalArgumentException();
             }

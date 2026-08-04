@@ -23,6 +23,9 @@ import com.bloxbean.cardano.yano.appchain.roles.contracts.OrganizationRecordV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RecordStatus;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RegistryMutationV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowKeys;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleCommandResultV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowResultCode;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.RolePendingQueriesV1;
 import com.bloxbean.cardano.yano.appchain.roles.internal.GovernedMutationProcessor;
 import com.bloxbean.cardano.yano.appchain.roles.internal.ActorGovernanceProcessor;
 import com.bloxbean.cardano.yano.appchain.roles.internal.OverlayState;
@@ -44,6 +47,8 @@ public final class DomainActorRegistryComponent implements CompositeComponent {
     public static final String QUERY_AUTHORITY = "administrator-authority";
     public static final String QUERY_AUTHORITY_CURRENT = "administrator-authority-current";
     public static final String QUERY_GOVERNANCE_MUTATION = "governance-mutation";
+    public static final String QUERY_COMMAND_RESULT = "command-result";
+    public static final String QUERY_PENDING_GOVERNANCE = "pending-governance";
 
     private final ComponentDescriptor descriptor;
     private final String chainId;
@@ -146,9 +151,18 @@ public final class DomainActorRegistryComponent implements CompositeComponent {
             actorGovernance.prepareHeight(block.height(), ownState, ownState);
             ActorGovernanceProcessor.MutationHandler handler = actorGovernanceHandler();
             for (AppMessage message : block.messages()) {
+                byte[] resultKey = RoleWorkflowKeys.commandResult(message.getMessageId());
+                if (ownState.get(resultKey).isPresent()) continue;
                 try {
-                    actorGovernance.apply(ActorGovernanceCommandV1.decode(message.getBody()),
-                            block.height(), ownState, ownState, handler);
+                    ActorGovernanceCommandV1 command =
+                            ActorGovernanceCommandV1.decode(message.getBody());
+                    RoleWorkflowResultCode result = actorGovernance.apply(
+                            command, block.height(), ownState, ownState, handler);
+                    ownState.put(resultKey, new RoleCommandResultV1(
+                            RoleCommandResultV1.KIND_REGISTRY_GOVERNANCE,
+                            command.mutationId(), result, block.height(),
+                            message.getMessageId(), RoleCommandResultV1.commandDigest(
+                            message.getBody())).encode());
                 } catch (IllegalArgumentException malformed) {
                     // Canonically malformed finalized commands are deterministic no-ops.
                 }
@@ -287,6 +301,7 @@ public final class DomainActorRegistryComponent implements CompositeComponent {
                 throw new IllegalStateException("domain actor pointer is incompatible");
             }
         }
+        ActorGovernanceProcessor.verifyPendingState(state, genesis.limits());
     }
 
     private static void requireAbsent(AppStateReader state, byte[] key) {
@@ -358,6 +373,33 @@ public final class DomainActorRegistryComponent implements CompositeComponent {
 
     @Override
     public byte[] query(String localPath, byte[] params, AppQueryContext ownState) {
+        if (QUERY_COMMAND_RESULT.equals(localPath)) {
+            if (params == null || params.length != 32) {
+                throw new AppQueryException(AppQueryException.Code.INVALID_REQUEST,
+                        "command-result query requires a 32-byte message id");
+            }
+            return ownState.get(RoleWorkflowKeys.commandResult(params))
+                    .orElse(new byte[0]);
+        }
+        if (QUERY_PENDING_GOVERNANCE.equals(localPath)) {
+            if (actorGovernance == null || genesis == null) {
+                throw new AppQueryException(AppQueryException.Code.UNSUPPORTED,
+                        "actor governance is disabled by genesis");
+            }
+            RolePendingQueriesV1.PageQuery query;
+            try {
+                query = RolePendingQueriesV1.PageQuery.decode(params);
+            } catch (IllegalArgumentException malformed) {
+                throw new AppQueryException(AppQueryException.Code.INVALID_REQUEST,
+                        "invalid pending-governance page query");
+            }
+            if (query.limit() > genesis.limits().maximumQueryPageSize()) {
+                throw new AppQueryException(AppQueryException.Code.INVALID_REQUEST,
+                        "pending-governance page exceeds genesis limit");
+            }
+            return ActorGovernanceProcessor.pendingPage(ownState, query,
+                    genesis.limits().maximumQueryPageSize()).encode();
+        }
         QueryRef ref = queryRef(params);
         if (QUERY_ORGANIZATION_CURRENT.equals(localPath)) {
             if (ref.revision != 0) throw currentQueryRevision();
@@ -452,6 +494,8 @@ public final class DomainActorRegistryComponent implements CompositeComponent {
             OrganizationRecordV1 record = put.organization();
             return record.revision() == RoleState.pointer(state,
                     RoleWorkflowKeys.organizationCurrent(record.organizationId())) + 1
+                    && state.get(RoleWorkflowKeys.organizationRevision(
+                    record.organizationId(), record.revision())).isEmpty()
                     && keepsCurrentAuthoritySatisfiable(mutation, state, height);
         }
         if (mutation instanceof RegistryMutationV1.PutActor put) {
@@ -467,6 +511,8 @@ public final class DomainActorRegistryComponent implements CompositeComponent {
             ActorRecordV1 prior = currentRevision == 0 ? null
                     : actor(state, record.actorId(), currentRevision);
             return record.revision() == currentRevision + 1
+                    && state.get(RoleWorkflowKeys.actorRevision(
+                    record.actorId(), record.revision())).isEmpty()
                     && validKeyEvolution(record, prior, put)
                     && keepsCurrentAuthoritySatisfiable(mutation, state, height);
         }
@@ -476,7 +522,9 @@ public final class DomainActorRegistryComponent implements CompositeComponent {
         AdministratorAuthorityV1 authority = put.authority();
         AdministratorAuthorityV1 current = currentAuthority(state);
         if (!authority.authorityId().equals(current.authorityId())
-                || authority.revision() != current.revision() + 1) {
+                || authority.revision() != current.revision() + 1
+                || state.get(RoleWorkflowKeys.authorityRevision(
+                authority.authorityId(), authority.revision())).isPresent()) {
             return false;
         }
         long eligible = authority.administratorActorIds().stream()

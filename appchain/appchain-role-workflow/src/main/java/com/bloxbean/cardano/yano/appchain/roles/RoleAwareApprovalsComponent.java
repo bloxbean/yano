@@ -15,6 +15,9 @@ import com.bloxbean.cardano.yano.appchain.roles.contracts.GovernedGenesisV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleApprovalStatsV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowIdentifiers;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowKeys;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.RolePendingQueriesV1;
+import com.bloxbean.cardano.yano.appchain.roles.internal.ActorApprovalProcessor;
+import com.bloxbean.cardano.yano.appchain.roles.internal.ActorGovernanceProcessor;
 import com.bloxbean.cardano.yano.appchain.roles.internal.RoleState;
 
 import java.nio.charset.StandardCharsets;
@@ -30,6 +33,9 @@ public final class RoleAwareApprovalsComponent implements CompositeComponent {
     public static final String QUERY_PROPOSAL = "proposal";
     public static final String QUERY_GOVERNANCE_MUTATION = "governance-mutation";
     public static final String QUERY_STATS = "stats";
+    public static final String QUERY_COMMAND_RESULT = "command-result";
+    public static final String QUERY_PENDING_APPROVALS = "pending-approvals";
+    public static final String QUERY_PENDING_GOVERNANCE = "pending-governance";
 
     private final ComponentDescriptor descriptor;
     private final GovernedGenesisV1 genesis;
@@ -134,6 +140,8 @@ public final class RoleAwareApprovalsComponent implements CompositeComponent {
                         "role approval policy pointer is incompatible");
             }
         }
+        ActorApprovalProcessor.verifyPendingState(state, genesis.limits());
+        ActorGovernanceProcessor.verifyPendingState(state, genesis.limits());
     }
 
     private static void requireAbsent(AppStateReader state, byte[] key) {
@@ -176,6 +184,37 @@ public final class RoleAwareApprovalsComponent implements CompositeComponent {
 
     @Override
     public byte[] query(String localPath, byte[] params, AppQueryContext ownState) {
+        if (QUERY_COMMAND_RESULT.equals(localPath)) {
+            if (params == null || params.length != 32) {
+                throw new AppQueryException(AppQueryException.Code.INVALID_REQUEST,
+                        "command-result query requires a 32-byte message id");
+            }
+            return ownState.get(RoleWorkflowKeys.commandResult(params))
+                    .orElse(new byte[0]);
+        }
+        if (QUERY_PENDING_APPROVALS.equals(localPath)
+                || QUERY_PENDING_GOVERNANCE.equals(localPath)) {
+            if (genesis == null) {
+                throw new AppQueryException(AppQueryException.Code.UNSUPPORTED,
+                        "governed pending queries are disabled by genesis");
+            }
+            RolePendingQueriesV1.PageQuery query;
+            try {
+                query = RolePendingQueriesV1.PageQuery.decode(params);
+            } catch (IllegalArgumentException malformed) {
+                throw new AppQueryException(AppQueryException.Code.INVALID_REQUEST,
+                        "invalid pending page query");
+            }
+            if (query.limit() > genesis.limits().maximumQueryPageSize()) {
+                throw new AppQueryException(AppQueryException.Code.INVALID_REQUEST,
+                        "pending page exceeds genesis limit");
+            }
+            return QUERY_PENDING_APPROVALS.equals(localPath)
+                    ? ActorApprovalProcessor.pendingPage(ownState, query,
+                    genesis.limits().maximumQueryPageSize()).encode()
+                    : ActorGovernanceProcessor.pendingPage(ownState, query,
+                    genesis.limits().maximumQueryPageSize()).encode();
+        }
         if (QUERY_STATS.equals(localPath)) {
             if (params.length != 0) throw new AppQueryException(
                     AppQueryException.Code.INVALID_REQUEST,

@@ -232,6 +232,21 @@ governance-pending-index = [
   entries: [*1024 governance-pending-entry] ; ascending mutation id
 ]
 
+approval-pending-entry = [
+  proposal-id: identifier,
+  deadline-height: uint .gt 0,
+  policy-id: identifier,
+  proposer-actor-id: identifier
+]
+
+approval-pending-index = [
+  version: 1,
+  entries: [*4096 approval-pending-entry] ; ascending proposal id
+]
+; Both pending indexes are bounded to 1,048,576 encoded bytes and 20,483
+; recursively decoded CBOR items. The item bound is the exact maximum for the
+; larger approval index; governance uses the same decoder ceiling.
+
 signed-actor-command = [
   version: 1,
   statement: bytes,
@@ -286,6 +301,58 @@ approval-stats = [
 ]
 ; created MUST equal pending + approved + rejected + cancelled + expired.
 
+role-command-result-code = 0..22
+; ACCEPTED / INVALID_PAYLOAD / UNSUPPORTED_VERSION / INVALID_SIGNATURE /
+; UNAUTHORIZED_RELAY / UNAUTHORIZED_ACTOR / UNKNOWN_RECORD / CONFLICT /
+; EXACT_REPLAY / EXPIRED / TERMINAL / ROLE_MISMATCH /
+; DISTINCTNESS_DUPLICATE / GOVERNANCE_THRESHOLD_NOT_MET /
+; GOVERNANCE_PROOF_INVALID / LIMIT_EXCEEDED / CAPACITY_EXCEEDED /
+; CRYPTO_WORK_EXCEEDED / WRONG_GENESIS / WRONG_REVISION / NOT_READY /
+; SUPERSEDED / GOVERNED_ROUTE_UNSUPPORTED
+
+role-command-result = [
+  version: 1,
+  command-kind: 0 / 1 / 2, ; registry governance / policy governance / approval
+  subject-id: identifier,
+  result-code: role-command-result-code,
+  applied-height: uint .gt 0,
+  message-id: digest32,
+  command-digest: digest32
+]
+
+pending-page-query = [
+  version: 1,
+  after-id-or-empty: tstr .size (0..63),
+  limit: 1..100
+]
+
+approval-page-entry = [
+  proposal-id: identifier,
+  deadline-height: uint .gt 0,
+  policy-id: identifier,
+  proposer-actor-id: identifier
+]
+
+approval-pending-page = [
+  version: 1,
+  entries: [*100 bytes], ; each bytes value is canonical approval-page-entry
+  next-after-id-or-empty: tstr .size (0..63)
+]
+
+governance-page-entry = [
+  mutation-id: identifier,
+  expiry-height: uint .gt 0,
+  authority-id: identifier,
+  authority-revision: uint .gt 0,
+  proposer-actor-id: identifier
+]
+
+governance-pending-page = [
+  version: 1,
+  entries: [*100 bytes], ; each bytes value is canonical governance-page-entry
+  next-after-id-or-empty: tstr .size (0..63)
+]
+
 ; Authenticated keys are raw US-ASCII bytes, not CBOR. Exact layouts:
 ; o/{id}/current, o/{id}/r/{revision}
 ; a/{id}/current, a/{id}/r/{revision}
@@ -295,8 +362,11 @@ approval-stats = [
 ; q/{proposal-id}
 ; s/proposals/v1
 ; g/{governed-mutation-id}
+; l/g/v1, l/q/v1
 ; x/g/{16-hex-height}/{mutation-id}, x/q/{16-hex-height}/{proposal-id}
 ; i/g/a/{actor-id}/{mutation-id}, i/g/h/{authority-id}/{mutation-id}
 ; i/q/a/{actor-id}/{proposal-id}, i/q/p/{policy-id}/{proposal-id}
+; r/c/{32-byte-message-id-as-lowercase-hex}
+; w/crypto/v1
 ; A */current value is exactly one positive uint64 revision in big-endian
 ; binary form. It is not CBOR.

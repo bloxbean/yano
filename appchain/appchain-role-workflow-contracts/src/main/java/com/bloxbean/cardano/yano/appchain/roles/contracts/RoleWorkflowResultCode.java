@@ -35,4 +35,11 @@ public enum RoleWorkflowResultCode {
     public int code() {
         return code;
     }
+
+    public static RoleWorkflowResultCode fromCode(int code) {
+        for (RoleWorkflowResultCode value : values()) {
+            if (value.code == code) return value;
+        }
+        throw OrganizationRecordV1.invalid();
+    }
 }

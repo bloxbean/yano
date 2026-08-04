@@ -59,10 +59,13 @@ public record RoleApprovalStatsV1(long created, long pending, long approved,
         List<co.nstant.in.cbor.model.DataItem> values =
                 RoleWorkflowCbor.decodeArray(bytes, 7).getDataItems();
         OrganizationRecordV1.requireVersion(values.getFirst());
-        return new RoleApprovalStatsV1(RoleWorkflowCbor.uint(values.get(1)),
+        RoleApprovalStatsV1 decoded = new RoleApprovalStatsV1(
+                RoleWorkflowCbor.uint(values.get(1)),
                 RoleWorkflowCbor.uint(values.get(2)), RoleWorkflowCbor.uint(values.get(3)),
                 RoleWorkflowCbor.uint(values.get(4)), RoleWorkflowCbor.uint(values.get(5)),
                 RoleWorkflowCbor.uint(values.get(6)));
+        RoleWorkflowCbor.requireCanonical(bytes, decoded.encode());
+        return decoded;
     }
 
     private static long increment(long value) {

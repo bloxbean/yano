@@ -207,6 +207,10 @@ def main(path):
     genesis_id = blake2b256(b"yano-appchain-genesis-v1\0" + genesis_bytes)
     require(genesis_id.hex() == vectors["genesis.id"], "genesis id")
     require(statement_value[3] == genesis_id, "actor genesis binding")
+    approval_payload_hash = blake2b256(
+        b"yano:authenticated-map:approval-payload:v1\0" + genesis_id + commitment)
+    require(approval_payload_hash.hex() == vectors["approval.payload-hash"],
+            "approval genesis/action payload binding")
 
     proof = exact_cbor(bytes.fromhex(vectors["genesis.key-proof"]))
     proof_unsigned = encode_cbor(proof[:5])

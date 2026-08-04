@@ -41,8 +41,10 @@ public record SignedActorCommandV1(ActorStatementV1 statement, byte[] signature)
         List<co.nstant.in.cbor.model.DataItem> values =
                 RoleWorkflowCbor.decodeArray(bytes, 3).getDataItems();
         OrganizationRecordV1.requireVersion(values.get(0));
-        return new SignedActorCommandV1(
+        SignedActorCommandV1 decoded = new SignedActorCommandV1(
                 ActorStatementV1.decode(RoleWorkflowCbor.bytes(values.get(1))),
                 RoleWorkflowCbor.bytes(values.get(2), 64));
+        RoleWorkflowCbor.requireCanonical(bytes, decoded.encode());
+        return decoded;
     }
 }

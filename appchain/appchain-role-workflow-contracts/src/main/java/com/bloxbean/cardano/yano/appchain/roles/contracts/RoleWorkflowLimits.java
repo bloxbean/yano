@@ -25,6 +25,8 @@ public final class RoleWorkflowLimits {
     public static final int MAX_EXPIRY_WORK_PER_BLOCK = 256;
     public static final int MAX_AUTHORITY_SUPERSESSION_WORK = 256;
     public static final int MAX_QUERY_PAGE_SIZE = 100;
+    public static final int MAX_PENDING_INDEX_BYTES = 1_048_576;
+    public static final int MAX_PENDING_INDEX_CBOR_ITEMS = 20_483;
     public static final int MAX_GENESIS_ORGANIZATIONS = 64;
     public static final int MAX_GENESIS_ACTORS = 128;
     public static final int MAX_GENESIS_KEYS = 256;

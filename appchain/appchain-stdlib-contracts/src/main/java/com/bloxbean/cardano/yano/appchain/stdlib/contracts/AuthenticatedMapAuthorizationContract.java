@@ -36,6 +36,9 @@ public final class AuthenticatedMapAuthorizationContract {
 
     private static final byte[] ACTION_DOMAIN =
             "yano:authenticated-map:action:v1\0".getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] APPROVAL_PAYLOAD_HASH_DOMAIN =
+            "yano:authenticated-map:approval-payload:v1\0"
+                    .getBytes(StandardCharsets.US_ASCII);
     private static final byte[] ACTOR_DOMAIN =
             "yano:authenticated-map:actor-authorization:v1\0"
                     .getBytes(StandardCharsets.US_ASCII);
@@ -84,6 +87,23 @@ public final class AuthenticatedMapAuthorizationContract {
         byte[] preimage = new byte[ACTION_DOMAIN.length + encoded.length];
         System.arraycopy(ACTION_DOMAIN, 0, preimage, 0, ACTION_DOMAIN.length);
         System.arraycopy(encoded, 0, preimage, ACTION_DOMAIN.length, encoded.length);
+        return Blake2bUtil.blake2bHash256(preimage);
+    }
+
+    /** Genesis-scoped payload hash signed by authenticated-map approval actors. */
+    public static byte[] approvalPayloadHash(
+            byte[] authenticatedMapGenesisId,
+            byte[] actionCommitment
+    ) {
+        byte[] genesisId = exact(authenticatedMapGenesisId, 32, "genesisId");
+        byte[] commitment = exact(actionCommitment, 32, "actionCommitment");
+        byte[] preimage = ByteBuffer.allocate(
+                        APPROVAL_PAYLOAD_HASH_DOMAIN.length + genesisId.length
+                                + commitment.length)
+                .put(APPROVAL_PAYLOAD_HASH_DOMAIN)
+                .put(genesisId)
+                .put(commitment)
+                .array();
         return Blake2bUtil.blake2bHash256(preimage);
     }
 
