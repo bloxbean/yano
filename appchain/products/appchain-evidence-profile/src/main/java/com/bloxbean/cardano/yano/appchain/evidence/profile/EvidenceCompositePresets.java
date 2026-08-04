@@ -116,8 +116,7 @@ public final class EvidenceCompositePresets {
                     capacity.notificationWorkflowEffects());
             CompositeWorkflow notify = new EvidenceNotifyWorkflow(
                     notifyDescriptor, participants.get(3), evidenceMachine);
-            // CompositeProfile canonicalizes workflow order by workflow id;
-            // products must be supplied in that same deterministic order.
+            // Workflow order is committed and products use that same order.
             workflowDescriptors = List.of(notifyDescriptor, releaseDescriptor);
             workflows = List.of(notify, release);
         } else {

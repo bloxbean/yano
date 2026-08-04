@@ -33,7 +33,7 @@ public final class CompositeProfileCatalog {
         }
         // Canonicalize independently of provider/catalog construction order.
         // Lifecycle initialization follows this digest order, then each
-        // profile's already-canonical component/workflow order.
+        // profile's declared, canonically encoded component/workflow order.
         List<Entry> sortedEntries = safe.stream()
                 .sorted(Comparator.comparing(entry ->
                         HexFormat.of().formatHex(entry.profile().digest())))

@@ -1,0 +1,561 @@
+package com.bloxbean.cardano.yano.appchain.stdlib;
+
+import com.bloxbean.cardano.client.crypto.KeyGenUtil;
+import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AuthScheme;
+import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
+import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
+import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipEpoch;
+import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
+import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
+import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
+import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
+import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
+import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValidatorResolver;
+import com.bloxbean.cardano.yano.api.appchain.authmap.ValidatorVerdict;
+import com.bloxbean.cardano.yano.appchain.composite.CompositeStateKeys;
+import com.bloxbean.cardano.yano.appchain.composite.CompositeStateMachine;
+import com.bloxbean.cardano.yano.appchain.config.AppChainEffectsConfig;
+import com.bloxbean.cardano.yano.appchain.roles.DomainActorRegistryComponent;
+import com.bloxbean.cardano.yano.appchain.roles.GovernedRoleApprovalWorkflow;
+import com.bloxbean.cardano.yano.appchain.roles.RoleAwareApprovalsComponent;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorKeyEpochV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorKeyProofV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorRecordV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.AdministratorAuthorityV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.ApprovalPolicyV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.DirectRolePolicyV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.GenesisActorV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.GovernedAuthorizationLimitsV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.GovernedGenesisV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.OrganizationRecordV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.RecordStatus;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowKeys;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapAuthorizationContract;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapAuthorizationContract.*;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapSchema;
+import org.junit.jupiter.api.Test;
+
+import java.math.BigInteger;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+class AuthenticatedMapCompositeAssemblyTest {
+    private static final String CHAIN_ID = "authenticated-map-assembly";
+    private static final byte[] MEMBER = repeated(0x31);
+    private static final byte[] ACTOR_SEED = repeated(0x41);
+
+    @Test
+    void basicGenesisKeepsOneSelectorAndFinalEnvelopeSemantics() {
+        AppChainConfig config = config(CHAIN_ID);
+        AuthenticatedMapContract.Genesis genesis = AuthenticatedMapGenesisFactory.mpf(
+                config, repeated(0x11), 16, 32_768,
+                List.of(new AuthenticatedMapContract.CollectionDescriptor(
+                        "products", AuthenticatedMapContract.AUTH_OWNER,
+                        true, 64, 4_096)), List.of());
+        CompositeStateMachine machine = AuthenticatedMapPreset.create(
+                context(config), genesis);
+
+        assertThat(machine.id()).isEqualTo(AuthenticatedMapContract.STATE_MACHINE_ID);
+        assertThat(machine.profile().components())
+                .extracting(component -> component.componentId())
+                .containsExactly(DomainActorRegistryComponent.COMPONENT_ID,
+                        RoleAwareApprovalsComponent.COMPONENT_ID,
+                        AuthenticatedMapComponent.COMPONENT_ID);
+        assertThat(machine.profile().components().getFirst().topics()).isEmpty();
+        assertThat(machine.profile().components().getFirst().queryPaths()).isEmpty();
+        assertThat(machine.profile().components().get(1).queryPaths()).isEmpty();
+        assertThat(machine.profile().workflows())
+                .extracting(workflow -> workflow.workflowId())
+                .containsExactly(AuthenticatedMapAuthorizationWorkflow.WORKFLOW_ID);
+
+        MemoryState state = new MemoryState();
+        machine.init(state, new AppChainInfo(CHAIN_ID, hex(MEMBER), 1));
+        byte[] applicationKey = bytes("sku-1");
+        AuthenticatedMapContract.Command mutation = AuthenticatedMapContract.Command.single(
+                AuthenticatedMapContract.Mutation.put(
+                        "products", applicationKey, bytes("metadata-v1")));
+        AppMessage finalCommand = message(AuthenticatedMapContract.DEFAULT_TOPIC, 1,
+                finalCommand(mutation, AuthenticatedMapContract.AUTH_OWNER));
+        assertThat(machine.validateForBlock(finalCommand, 1, state).isAccepted()).isTrue();
+
+        AppMessage legacyCommand = message(AuthenticatedMapContract.DEFAULT_TOPIC, 2,
+                AuthenticatedMapContract.encodeCommand(mutation));
+        assertThat(machine.validate(legacyCommand).isAccepted()).isFalse();
+
+        machine.apply(block(1, finalCommand), state);
+        state.committedHeight = 1;
+        byte[] physicalEntry = physical(AuthenticatedMapComponent.COMPONENT_ID,
+                AuthenticatedMapContract.canonicalKey("products", applicationKey));
+        assertThat(state.get(physicalEntry)).isPresent();
+        assertThat(state.get(AuthenticatedMapContract.canonicalKey(
+                "products", applicationKey))).isEmpty();
+
+        byte[] response = machine.query(AuthenticatedMapContract.POINT_QUERY_PATH,
+                AuthenticatedMapContract.encodePointQuery(
+                        AuthenticatedMapContract.PointQuery.current(
+                                "products", applicationKey)), state);
+        assertThat(AuthenticatedMapContract.decodePointResult(response).entry().value())
+                .isEqualTo(bytes("metadata-v1"));
+        assertThatThrownBy(() -> machine.query(
+                "components/domain-actors/actor", bytes("actor-a"), state))
+                .isInstanceOf(AppQueryException.class)
+                .extracting(failure -> ((AppQueryException) failure).code())
+                .isEqualTo(AppQueryException.Code.UNSUPPORTED);
+
+        machine.init(state, new AppChainInfo(CHAIN_ID, hex(MEMBER), 1));
+    }
+
+    @Test
+    void governedGenesisCommitsOrderInitializesClosureAndGatesFutureProcessors() {
+        AppChainConfig config = config(CHAIN_ID);
+        GovernedFixture fixture = governedFixture();
+        AuthenticatedMapContract.Genesis basic = AuthenticatedMapGenesisFactory.mpf(
+                config, repeated(0x12), 16, 32_768,
+                List.of(new AuthenticatedMapContract.CollectionDescriptor(
+                        "placeholder", AuthenticatedMapContract.AUTH_OPEN,
+                        false, 64, 4_096)), List.of());
+        AuthenticatedMapContract.Genesis genesis = new AuthenticatedMapContract.Genesis(
+                basic.chainId(), basic.commitmentProfileId(), basic.formatFingerprint(),
+                basic.frameworkConsensusProfileDigest(), basic.membershipCommitment(),
+                basic.anchorPolicyCommitment(), basic.maxBatchItems(), basic.maxBatchBytes(),
+                fixture.collections(), basic.validators(), basic.initialEntries(),
+                fixture.genesis());
+        CompositeStateMachine machine = AuthenticatedMapPreset.create(
+                context(config), genesis);
+
+        assertThat(machine.profile().components().getFirst().topics())
+                .containsExactly(DomainActorRegistryComponent.TOPIC);
+        assertThat(machine.profile().components().getFirst().queryPaths()).isNotEmpty();
+        assertThat(machine.profile().components().get(1).queryPaths()).isNotEmpty();
+        assertThat(machine.profile().workflows())
+                .extracting(workflow -> workflow.workflowId())
+                .containsExactly(GovernedRoleApprovalWorkflow.WORKFLOW_ID,
+                        AuthenticatedMapAuthorizationWorkflow.WORKFLOW_ID);
+
+        MemoryState state = new MemoryState();
+        machine.init(state, new AppChainInfo(CHAIN_ID, hex(MEMBER), 1));
+        machine.apply(block(1), state);
+        state.committedHeight = 1;
+
+        assertThat(state.get(physical(DomainActorRegistryComponent.COMPONENT_ID,
+                RoleWorkflowKeys.organizationRevision("operator-a", 1))))
+                .contains(fixture.organization().encode());
+        assertThat(state.get(physical(DomainActorRegistryComponent.COMPONENT_ID,
+                RoleWorkflowKeys.actorRevision("admin-a", 1))))
+                .contains(fixture.actor().encode());
+        assertThat(state.get(physical(DomainActorRegistryComponent.COMPONENT_ID,
+                RoleWorkflowKeys.authorityRevision("registry-admins", 1))))
+                .contains(fixture.authority().encode());
+        assertThat(state.get(physical(RoleAwareApprovalsComponent.COMPONENT_ID,
+                RoleWorkflowKeys.directPolicyRevision("issuer-write", 1))))
+                .contains(fixture.directPolicy().encode());
+        assertThat(state.get(physical(RoleAwareApprovalsComponent.COMPONENT_ID,
+                RoleWorkflowKeys.policyRevision("release-policy", 1))))
+                .contains(fixture.approvalPolicy().encode());
+        assertThat(machine.query("components/domain-actors/actor",
+                bytes("admin-a"), state)).isEqualTo(fixture.actor().encode());
+
+        AppMessage roleCommand = message(GovernedRoleApprovalWorkflow.TOPIC, 2,
+                new byte[]{(byte) 0x80});
+        assertThat(machine.validate(roleCommand).isAccepted()).isFalse();
+        assertThat(machine.validate(roleCommand).reason())
+                .isEqualTo("GOVERNED_ROUTE_UNSUPPORTED");
+
+        AuthenticatedMapContract.Command mutation = AuthenticatedMapContract.Command.single(
+                AuthenticatedMapContract.Mutation.put(
+                        "governed-products", bytes("sku-2"), bytes("metadata-v2")));
+        MapActionV1 action = new MapActionV1(false, mutation.mutations(),
+                List.of(new AuthorizationAssignmentV1(
+                        0, AuthenticatedMapContract.AUTH_GOVERNED_ROLE,
+                        "issuer-write", 1)));
+        MapActorAuthorizationV1 authorization = MapActorAuthorizationV1.sign(
+                repeated(0x51), CHAIN_ID, AuthenticatedMapContract.genesisId(genesis),
+                AuthenticatedMapAuthorizationContract.actionCommitment(action),
+                List.of(0), "issuer-write", 1, "admin-a", 1,
+                "admin-a-key", fixture.actor().keys().getFirst().publicKey(),
+                1, 20, ACTOR_SEED);
+        AppMessage mapCommand = message(AuthenticatedMapContract.DEFAULT_TOPIC, 3,
+                AuthenticatedMapAuthorizationContract.encodeCommand(
+                        new AuthenticatedMapCommandV1(action, List.of(authorization))));
+        assertThat(machine.validateForBlock(mapCommand, 2, state).isAccepted()).isTrue();
+        machine.apply(block(2, mapCommand), state);
+        state.committedHeight = 2;
+
+        byte[] receipt = state.get(physical(AuthenticatedMapComponent.COMPONENT_ID,
+                        AuthenticatedMapContract.receiptKey(mapCommand.getMessageId())))
+                .orElseThrow();
+        assertThat(AuthenticatedMapContract.decodeReceipt(receipt).errorCode())
+                .isEqualTo(AuthenticatedMapContract.ERROR_GOVERNED_ROUTE_UNSUPPORTED);
+        assertThat(state.get(physical(AuthenticatedMapComponent.COMPONENT_ID,
+                AuthenticatedMapContract.canonicalKey(
+                        "governed-products", bytes("sku-2"))))).isEmpty();
+
+        machine.init(state, new AppChainInfo(CHAIN_ID, hex(MEMBER), 1));
+        byte[] authorityRevision = physical(DomainActorRegistryComponent.COMPONENT_ID,
+                RoleWorkflowKeys.authorityRevision("registry-admins", 1));
+        state.put(authorityRevision, new byte[]{1});
+        assertThatThrownBy(() -> machine.init(
+                state, new AppChainInfo(CHAIN_ID, hex(MEMBER), 1)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("genesis state");
+        state.put(authorityRevision, fixture.authority().encode());
+        state.put(physical(DomainActorRegistryComponent.COMPONENT_ID,
+                        RoleWorkflowKeys.authorityCurrent("registry-admins")),
+                ByteBuffer.allocate(Long.BYTES).putLong(2).array());
+        assertThatThrownBy(() -> machine.init(
+                state, new AppChainInfo(CHAIN_ID, hex(MEMBER), 1)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("pointer is dangling");
+    }
+
+    @Test
+    void finalWorkflowRetainsCanonicalCborAndSchemaValidation() {
+        AppChainConfig config = config(CHAIN_ID);
+        AuthenticatedMapSchema.Schema schema = AuthenticatedMapSchema.of(
+                new AuthenticatedMapSchema.MapNode(List.of(
+                        new AuthenticatedMapSchema.MapField("qty", true,
+                                new AuthenticatedMapSchema.IntegerNode(
+                                        AuthenticatedMapSchema.INTEGER_UINT,
+                                        BigInteger.ZERO, BigInteger.TEN)))));
+        AuthenticatedMapContract.ValidatorDescriptor validator =
+                AuthenticatedMapContract.ValidatorDescriptor.schema(
+                        "quantity-v1", schema.definition());
+        List<AuthenticatedMapContract.CollectionDescriptor> collections = List.of(
+                new AuthenticatedMapContract.CollectionDescriptor(
+                        "canonical", AuthenticatedMapContract.AUTH_OPEN, "",
+                        false, 64, 4_096,
+                        AuthenticatedMapContract.VALUE_ENCODING_CANONICAL_CBOR, ""),
+                new AuthenticatedMapContract.CollectionDescriptor(
+                        "schema", AuthenticatedMapContract.AUTH_OPEN, "",
+                        false, 64, 4_096,
+                        AuthenticatedMapContract.VALUE_ENCODING_CANONICAL_CBOR,
+                        validator.id()));
+        AuthenticatedMapContract.Genesis genesis = AuthenticatedMapGenesisFactory.mpf(
+                config, repeated(0x14), 16, 32_768,
+                collections, List.of(validator), List.of());
+        CompositeStateMachine machine = AuthenticatedMapPreset.create(
+                context(config), genesis);
+        MemoryState state = new MemoryState();
+        machine.init(state, new AppChainInfo(CHAIN_ID, hex(MEMBER), 1));
+
+        AppMessage nonCanonical = message(AuthenticatedMapContract.DEFAULT_TOPIC, 7,
+                finalCommand(AuthenticatedMapContract.Command.single(
+                                AuthenticatedMapContract.Mutation.put(
+                                        "canonical", bytes("bad"), hexBytes("1817"))),
+                        AuthenticatedMapContract.AUTH_OPEN));
+        assertThat(machine.validate(nonCanonical).isAccepted()).isFalse();
+        machine.apply(block(1, nonCanonical), state);
+        state.committedHeight = 1;
+        assertReceiptError(state, nonCanonical,
+                AuthenticatedMapContract.ERROR_VALUE_ENCODING);
+
+        AppMessage schemaRejected = message(AuthenticatedMapContract.DEFAULT_TOPIC, 8,
+                finalCommand(AuthenticatedMapContract.Command.single(
+                                AuthenticatedMapContract.Mutation.put(
+                                        "schema", bytes("bad"),
+                                        hexBytes("a1637174790b"))),
+                        AuthenticatedMapContract.AUTH_OPEN));
+        assertThat(machine.validate(schemaRejected).isAccepted()).isFalse();
+        machine.apply(block(2, schemaRejected), state);
+        state.committedHeight = 2;
+        assertReceiptError(state, schemaRejected,
+                AuthenticatedMapContract.ERROR_VALUE_SCHEMA);
+
+        AuthenticatedMapContract.Command valid = AuthenticatedMapContract.Command.batch(
+                List.of(
+                        AuthenticatedMapContract.Mutation.put(
+                                "canonical", bytes("good"), hexBytes("a1616101")),
+                        AuthenticatedMapContract.Mutation.put(
+                                "schema", bytes("good"), hexBytes("a1637174790a"))));
+        AppMessage accepted = message(AuthenticatedMapContract.DEFAULT_TOPIC, 9,
+                finalCommand(valid, AuthenticatedMapContract.AUTH_OPEN));
+        assertThat(machine.validate(accepted).isAccepted()).isTrue();
+        machine.apply(block(3, accepted), state);
+        state.committedHeight = 3;
+        assertThat(state.get(physical(AuthenticatedMapComponent.COMPONENT_ID,
+                AuthenticatedMapContract.canonicalKey(
+                        "canonical", bytes("good"))))).isPresent();
+        assertThat(state.get(physical(AuthenticatedMapComponent.COMPONENT_ID,
+                AuthenticatedMapContract.canonicalKey(
+                        "schema", bytes("good"))))).isPresent();
+    }
+
+    @Test
+    void finalWorkflowRetainsGenesisPinnedPluginValidationAndAtomicBatches() {
+        AppChainConfig config = config(CHAIN_ID);
+        AuthenticatedMapContract.ValidatorDescriptor validator =
+                AuthenticatedMapContract.ValidatorDescriptor.plugin(
+                        "value-v1", "showcase-validator", repeated(0x61),
+                        new byte[]{(byte) 0xa0});
+        AuthenticatedMapContract.CollectionDescriptor collection =
+                new AuthenticatedMapContract.CollectionDescriptor(
+                        "records", AuthenticatedMapContract.AUTH_OPEN, "",
+                        false, 64, 4_096,
+                        AuthenticatedMapContract.VALUE_ENCODING_OPAQUE,
+                        validator.id());
+        AuthenticatedMapContract.Genesis genesis = AuthenticatedMapGenesisFactory.mpf(
+                config, repeated(0x13), 16, 32_768,
+                List.of(collection), List.of(validator), List.of());
+        AuthenticatedMapValidatorResolver resolver = (digest, init) ->
+                (collectionId, key, value) -> Arrays.equals(value, bytes("valid"))
+                        ? ValidatorVerdict.ACCEPT : ValidatorVerdict.REJECT;
+        CompositeStateMachine machine = AuthenticatedMapPreset.create(
+                context(config, resolver), genesis);
+        MemoryState state = new MemoryState();
+        machine.init(state, new AppChainInfo(CHAIN_ID, hex(MEMBER), 1));
+
+        AuthenticatedMapContract.Command invalid = AuthenticatedMapContract.Command.single(
+                AuthenticatedMapContract.Mutation.put(
+                        "records", bytes("bad"), bytes("invalid")));
+        assertThat(machine.validate(message(AuthenticatedMapContract.DEFAULT_TOPIC, 5,
+                finalCommand(invalid, AuthenticatedMapContract.AUTH_OPEN))).isAccepted())
+                .isFalse();
+
+        AuthenticatedMapContract.Command batch = AuthenticatedMapContract.Command.batch(List.of(
+                AuthenticatedMapContract.Mutation.put(
+                        "records", bytes("good"), bytes("valid")),
+                AuthenticatedMapContract.Mutation.put(
+                        "records", bytes("bad"), bytes("invalid"))));
+        AppMessage finalizedBatch = message(AuthenticatedMapContract.DEFAULT_TOPIC, 6,
+                finalCommand(batch, AuthenticatedMapContract.AUTH_OPEN));
+        machine.apply(block(1, finalizedBatch), state);
+        state.committedHeight = 1;
+
+        assertThat(state.get(physical(AuthenticatedMapComponent.COMPONENT_ID,
+                AuthenticatedMapContract.canonicalKey(
+                        "records", bytes("good"))))).isEmpty();
+        assertThat(state.get(physical(AuthenticatedMapComponent.COMPONENT_ID,
+                AuthenticatedMapContract.canonicalKey(
+                        "records", bytes("bad"))))).isEmpty();
+        assertReceiptError(state, finalizedBatch,
+                AuthenticatedMapContract.ERROR_VALUE_VALIDATOR);
+    }
+
+    private static GovernedFixture governedFixture() {
+        byte[] publicKey = KeyGenUtil.getPublicKeyFromPrivateKey(ACTOR_SEED);
+        ActorKeyEpochV1 key = new ActorKeyEpochV1(
+                "admin-a-key", publicKey, 1, 0, RecordStatus.ACTIVE);
+        ActorKeyProofV1 proof = ActorKeyProofV1.sign(
+                CHAIN_ID, "admin-a", 1, key, ACTOR_SEED);
+        OrganizationRecordV1 organization = new OrganizationRecordV1(
+                "operator-a", 1, RecordStatus.ACTIVE, new byte[0]);
+        ActorRecordV1 actor = new ActorRecordV1(
+                "admin-a", "operator-a", 1, RecordStatus.ACTIVE,
+                List.of("issuer", "registry-admin"), List.of(key), new byte[0]);
+        AdministratorAuthorityV1 authority = new AdministratorAuthorityV1(
+                "registry-admins", 1, List.of("admin-a"), 1, 1_000);
+        DirectRolePolicyV1 direct = new DirectRolePolicyV1(
+                "issuer-write", 1, RecordStatus.ACTIVE, "issuer", 100);
+        ApprovalPolicyV1 approval = new ApprovalPolicyV1(
+                "release-policy", 1, RecordStatus.ACTIVE, List.of("issuer"),
+                List.of(new ApprovalPolicyV1.RequiredClause(
+                        "issuer", "issuer", 1, ApprovalPolicyV1.DistinctBy.ACTOR)),
+                ApprovalPolicyV1.RejectionMode.ANY_ELIGIBLE, 1_000);
+        GovernedGenesisV1 genesis = new GovernedGenesisV1(
+                CHAIN_ID, authority, List.of(organization),
+                List.of(new GenesisActorV1(actor, List.of(proof))),
+                List.of(direct), List.of(approval),
+                GovernedAuthorizationLimitsV1.defaults());
+        List<AuthenticatedMapContract.CollectionDescriptor> collections = List.of(
+                new AuthenticatedMapContract.CollectionDescriptor(
+                        "governed-products", AuthenticatedMapContract.AUTH_GOVERNED_ROLE,
+                        "issuer-write", false, 64, 4_096,
+                        AuthenticatedMapContract.VALUE_ENCODING_OPAQUE, ""),
+                new AuthenticatedMapContract.CollectionDescriptor(
+                        "releases", AuthenticatedMapContract.AUTH_APPROVAL,
+                        "release-policy", false, 64, 4_096,
+                        AuthenticatedMapContract.VALUE_ENCODING_OPAQUE, ""));
+        return new GovernedFixture(genesis, organization, actor, authority,
+                direct, approval, collections);
+    }
+
+    private static AppChainConfig config(String chainId) {
+        return AppChainConfig.builder(chainId)
+                .signingKeyHex(hex(repeated(0x21)))
+                .memberKeysHex(Set.of(hex(MEMBER)))
+                .proposerKeyHex(hex(MEMBER))
+                .threshold(1)
+                .stateMachineId(AuthenticatedMapContract.STATE_MACHINE_ID)
+                .build();
+    }
+
+    private static AppStateMachineContext context(AppChainConfig config) {
+        return context(config, null);
+    }
+
+    private static AppStateMachineContext context(
+            AppChainConfig config,
+            AuthenticatedMapValidatorResolver validatorResolver
+    ) {
+        AppChainMembershipEpoch membership = new AppChainMembershipEpoch(
+                0, List.of(hex(MEMBER)), 1);
+        return new AppStateMachineContext() {
+            @Override
+            public String chainId() {
+                return config.chainId();
+            }
+
+            @Override
+            public Map<String, String> settings() {
+                return Map.of();
+            }
+
+            @Override
+            public Optional<com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfile>
+            consensusProfile() {
+                return Optional.of(AppChainEffectsConfig.from(config)
+                        .consensusProfile(config));
+            }
+
+            @Override
+            public Optional<com.bloxbean.cardano.yano.api.appchain.AppChainMembershipView>
+            membershipView() {
+                return Optional.of(height -> membership);
+            }
+
+            @Override
+            public Optional<AuthenticatedMapValidatorResolver>
+            authenticatedMapValidatorResolver() {
+                return Optional.ofNullable(validatorResolver);
+            }
+        };
+    }
+
+    private static byte[] finalCommand(
+            AuthenticatedMapContract.Command command,
+            int authorizationKind
+    ) {
+        return AuthenticatedMapAuthorizationContract.encodeCommand(
+                new AuthenticatedMapCommandV1(
+                        MapActionV1.basic(command, java.util.Collections.nCopies(
+                                command.mutations().size(), authorizationKind)),
+                        List.of()));
+    }
+
+    private static AppMessage message(String topic, int discriminator, byte[] body) {
+        return AppMessage.builder()
+                .messageId(repeated(discriminator))
+                .chainId(CHAIN_ID)
+                .topic(topic)
+                .sender(MEMBER)
+                .senderSeq(discriminator)
+                .expiresAt(4_000_000_000L)
+                .body(body)
+                .authScheme(AuthScheme.ED25519.getValue())
+                .authProof(new byte[64])
+                .build();
+    }
+
+    private static AppBlock block(long height, AppMessage... messages) {
+        return new AppBlock(AppBlock.BLOCK_VERSION, CHAIN_ID, height,
+                new byte[32], 0, new byte[0], 1_700_000_000_000L + height,
+                new byte[32], new byte[32], List.of(messages), MEMBER,
+                FinalityCert.empty());
+    }
+
+    private static byte[] physical(String componentId, byte[] localKey) {
+        return CompositeStateKeys.componentKey(componentId, localKey);
+    }
+
+    private static byte[] bytes(String value) {
+        return value.getBytes(StandardCharsets.US_ASCII);
+    }
+
+    private static byte[] hexBytes(String value) {
+        return java.util.HexFormat.of().parseHex(value);
+    }
+
+    private static void assertReceiptError(
+            MemoryState state,
+            AppMessage message,
+            int errorCode
+    ) {
+        byte[] receipt = state.get(physical(AuthenticatedMapComponent.COMPONENT_ID,
+                        AuthenticatedMapContract.receiptKey(message.getMessageId())))
+                .orElseThrow();
+        assertThat(AuthenticatedMapContract.decodeReceipt(receipt).errorCode())
+                .isEqualTo(errorCode);
+    }
+
+    private static byte[] repeated(int value) {
+        byte[] result = new byte[32];
+        Arrays.fill(result, (byte) value);
+        return result;
+    }
+
+    private static String hex(byte[] value) {
+        return java.util.HexFormat.of().formatHex(value);
+    }
+
+    private record GovernedFixture(
+            GovernedGenesisV1 genesis,
+            OrganizationRecordV1 organization,
+            ActorRecordV1 actor,
+            AdministratorAuthorityV1 authority,
+            DirectRolePolicyV1 directPolicy,
+            ApprovalPolicyV1 approvalPolicy,
+            List<AuthenticatedMapContract.CollectionDescriptor> collections
+    ) {
+    }
+
+    private static final class MemoryState implements AppStateWriter, AppQueryContext {
+        private final Map<Key, byte[]> values = new LinkedHashMap<>();
+        private long committedHeight;
+
+        @Override
+        public Optional<byte[]> get(byte[] key) {
+            byte[] value = values.get(new Key(key));
+            return value == null ? Optional.empty() : Optional.of(value.clone());
+        }
+
+        @Override
+        public byte[] stateRoot() {
+            return repeated((int) committedHeight);
+        }
+
+        @Override
+        public long committedHeight() {
+            return committedHeight;
+        }
+
+        @Override
+        public void put(byte[] key, byte[] value) {
+            values.put(new Key(key), value.clone());
+        }
+
+        @Override
+        public void delete(byte[] key) {
+            values.remove(new Key(key));
+        }
+    }
+
+    private static final class Key {
+        private final byte[] value;
+
+        private Key(byte[] value) {
+            this.value = value.clone();
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof Key key && Arrays.equals(value, key.value);
+        }
+
+        @Override
+        public int hashCode() {
+            return Arrays.hashCode(value);
+        }
+    }
+}

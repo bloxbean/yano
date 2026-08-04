@@ -21,5 +21,13 @@ public interface CompositeWorkflow {
         return AppStateMachine.AdmissionResult.accept();
     }
 
+    /** Candidate-height admission without exposing undeclared component state. */
+    default AppStateMachine.AdmissionResult validateForBlock(
+            AppMessage routedMessage,
+            long candidateHeight
+    ) {
+        return validate(routedMessage);
+    }
+
     void apply(AppBlock routedBlock, CompositeWorkflowContext context);
 }

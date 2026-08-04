@@ -16,6 +16,9 @@ import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import com.bloxbean.cardano.yano.appchain.config.AppChainEffectsConfig;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapSchema;
+import com.bloxbean.cardano.yano.appchain.composite.CompositeStateMachine;
+import com.bloxbean.cardano.yano.appchain.composite.CompositeStateKeys;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapAuthorizationContract;
 import com.bloxbean.cardano.yano.runtime.appchain.StateMachineConformance;
 import org.junit.jupiter.api.Test;
 
@@ -415,14 +418,17 @@ class AuthenticatedMapStateMachineTest {
                 .messageGenerator((height, index, random) ->
                         new StateMachineConformance.CorpusMessage(
                                 AuthenticatedMapContract.DEFAULT_TOPIC,
-                                AuthenticatedMapContract.encodeCommand(single(
+                                finalCommand(single(
                                         AuthenticatedMapContract.Mutation.put(
                                                 "records",
                                                 bytes("key-" + height + "-" + index),
                                                 new byte[]{(byte) 0x82, (byte) height,
-                                                        (byte) index})))))
-                .stateProbe("first-record", AuthenticatedMapContract.canonicalKey(
-                        "records", bytes("key-1-0")))
+                                                        (byte) index})),
+                                        AuthenticatedMapContract.AUTH_OPEN)))
+                .stateProbe("first-record", CompositeStateKeys.componentKey(
+                        AuthenticatedMapComponent.COMPONENT_ID,
+                        AuthenticatedMapContract.canonicalKey(
+                                "records", bytes("key-1-0"))))
                 .assertDeterministic();
     }
 
@@ -454,13 +460,16 @@ class AuthenticatedMapStateMachineTest {
                 .messageGenerator((height, index, random) ->
                         new StateMachineConformance.CorpusMessage(
                                 AuthenticatedMapContract.DEFAULT_TOPIC,
-                                AuthenticatedMapContract.encodeCommand(single(
+                                finalCommand(single(
                                         AuthenticatedMapContract.Mutation.put(
                                                 "records",
                                                 bytes("key-" + height + "-" + index),
-                                                bytes("value-" + random.nextInt(10_000)))))))
-                .stateProbe("first-record", AuthenticatedMapContract.canonicalKey(
-                        "records", bytes("key-1-0")))
+                                                bytes("value-" + random.nextInt(10_000)))),
+                                        AuthenticatedMapContract.AUTH_OPEN)))
+                .stateProbe("first-record", CompositeStateKeys.componentKey(
+                        AuthenticatedMapComponent.COMPONENT_ID,
+                        AuthenticatedMapContract.canonicalKey(
+                                "records", bytes("key-1-0"))))
                 .assertDeterministic();
     }
 
@@ -485,7 +494,16 @@ class AuthenticatedMapStateMachineTest {
                 new StdlibStateMachineProviders.AuthenticatedMapProvider();
         assertThat(provider.create(context(config, epoch,
                 AuthenticatedMapGenesisFactory.settings(genesis))))
-                .isInstanceOf(AuthenticatedMapStateMachine.class);
+                .isInstanceOfSatisfying(CompositeStateMachine.class, machine -> {
+                    assertThat(machine.id()).isEqualTo(AuthenticatedMapStateMachine.ID);
+                    assertThat(machine.profile().components())
+                            .extracting(component -> component.componentId())
+                            .containsExactly("domain-actors", "role-approvals",
+                                    "authenticated-map");
+                    assertThat(machine.profile().workflows())
+                            .extracting(workflow -> workflow.workflowId())
+                            .containsExactly("authenticated-map-authorization-v1");
+                });
         assertThatThrownBy(() -> provider.create(context(config, epoch, Map.of())))
                 .hasMessageContaining(
                         StdlibStateMachineProviders.AUTHENTICATED_MAP_GENESIS_SETTING);
@@ -660,6 +678,18 @@ class AuthenticatedMapStateMachineTest {
     private static AuthenticatedMapContract.Command single(
             AuthenticatedMapContract.Mutation mutation) {
         return AuthenticatedMapContract.Command.single(mutation);
+    }
+
+    private static byte[] finalCommand(
+            AuthenticatedMapContract.Command command,
+            int authorizationKind
+    ) {
+        return AuthenticatedMapAuthorizationContract.encodeCommand(
+                new AuthenticatedMapAuthorizationContract.AuthenticatedMapCommandV1(
+                        AuthenticatedMapAuthorizationContract.MapActionV1.basic(
+                                command, java.util.Collections.nCopies(
+                                        command.mutations().size(), authorizationKind)),
+                        List.of()));
     }
 
     private static AppMessage message(byte[] sender, long sequence,

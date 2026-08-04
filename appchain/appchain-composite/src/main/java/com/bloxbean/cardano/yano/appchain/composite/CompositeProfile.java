@@ -32,11 +32,9 @@ public record CompositeProfile(
         profileId = CompositeValidation.id(profileId, "profileId");
         profileVersion = CompositeValidation.printable(profileVersion, "profileVersion");
         components = List.copyOf(Objects.requireNonNull(components, "components"));
-        workflows = Objects.requireNonNull(workflows, "workflows").stream()
-                .sorted(Comparator.comparing(WorkflowDescriptor::workflowId)
-                        .thenComparingLong(WorkflowDescriptor::fromHeight)
-                        .thenComparing(WorkflowDescriptor::semanticVersion))
-                .toList();
+        // Workflow order is execution order and therefore consensus-relevant.
+        // Keep the provider-declared order in the canonical profile bytes.
+        workflows = List.copyOf(Objects.requireNonNull(workflows, "workflows"));
         queryAliases = Objects.requireNonNull(queryAliases, "queryAliases").stream()
                 .sorted(Comparator.comparing(LegacyQueryAlias::aliasPath))
                 .toList();

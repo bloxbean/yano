@@ -2,9 +2,11 @@ package com.bloxbean.cardano.yano.appchain.roles;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
+import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.appchain.composite.ComponentDescriptor;
@@ -12,7 +14,10 @@ import com.bloxbean.cardano.yano.appchain.composite.CompositeComponent;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorKeyEpochV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorKeyProofV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorRecordV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.AdministratorAuthorityV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.GenesisActorV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.GovernedMutationCommandV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.GovernedGenesisV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.OrganizationRecordV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RecordStatus;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RegistryMutationV1;
@@ -24,6 +29,7 @@ import com.bloxbean.cardano.yano.appchain.roles.internal.RoleState;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Arrays;
+import java.util.List;
 
 /** Threshold-governed, append-revision domain organization/actor/key registry. */
 public final class DomainActorRegistryComponent implements CompositeComponent {
@@ -37,15 +43,39 @@ public final class DomainActorRegistryComponent implements CompositeComponent {
     private final ComponentDescriptor descriptor;
     private final String chainId;
     private final GovernedMutationProcessor governance;
+    private final GovernedGenesisV1 genesis;
 
     public DomainActorRegistryComponent(ComponentDescriptor descriptor, String chainId,
                                         RoleWorkflowGovernanceConfig governanceConfig) {
+        this(descriptor, chainId, governanceConfig, null);
+    }
+
+    /** Genesis-bound component used by the authenticated-map composite profile. */
+    public static DomainActorRegistryComponent genesisBound(
+            ComponentDescriptor descriptor,
+            String chainId,
+            GovernedGenesisV1 genesis
+    ) {
+        return new DomainActorRegistryComponent(descriptor, chainId, null, genesis);
+    }
+
+    private DomainActorRegistryComponent(
+            ComponentDescriptor descriptor,
+            String chainId,
+            RoleWorkflowGovernanceConfig governanceConfig,
+            GovernedGenesisV1 genesis
+    ) {
         this.descriptor = java.util.Objects.requireNonNull(descriptor, "descriptor");
         this.chainId = com.bloxbean.cardano.yano.appchain.roles.contracts
-                .RoleWorkflowIdentifiers.id(chainId, "chainId");
-        this.governance = new GovernedMutationProcessor(governanceConfig);
+                .RoleWorkflowIdentifiers.chainId(chainId);
+        this.governance = governanceConfig == null
+                ? null : new GovernedMutationProcessor(governanceConfig);
+        this.genesis = genesis;
+        List<String> expectedTopics = governanceConfig != null || genesis != null
+                ? List.of(TOPIC) : List.of();
         if (!descriptor.componentId().equals(COMPONENT_ID)
-                || !descriptor.topics().equals(java.util.List.of(TOPIC))) {
+                || !descriptor.topics().equals(expectedTopics)
+                || genesis != null && !genesis.chainId().equals(this.chainId)) {
             throw new IllegalArgumentException("invalid domain actor registry descriptor");
         }
     }
@@ -53,7 +83,20 @@ public final class DomainActorRegistryComponent implements CompositeComponent {
     @Override public ComponentDescriptor descriptor() { return descriptor; }
 
     @Override
+    public void init(AppStateReader ownState, AppChainInfo chain) {
+        if (!chainId.equals(chain.chainId())) {
+            throw new IllegalStateException("domain actor registry belongs to another chain");
+        }
+        if (genesis != null && ownState.committedHeight() > 0) {
+            verifyGenesis(ownState);
+        }
+    }
+
+    @Override
     public AppStateMachine.AdmissionResult validate(AppMessage message) {
+        if (governance == null) {
+            return AppStateMachine.AdmissionResult.reject("GOVERNED_ROUTE_UNSUPPORTED");
+        }
         try {
             GovernedMutationCommandV1 command =
                     GovernedMutationCommandV1.decode(message.getBody());
@@ -68,6 +111,12 @@ public final class DomainActorRegistryComponent implements CompositeComponent {
 
     @Override
     public void apply(AppBlock block, AppStateWriter ownState, AppEffectEmitter effects) {
+        if (genesis != null) {
+            initializeOrVerify(block.height(), ownState);
+        }
+        if (governance == null) {
+            return;
+        }
         OverlayState state = new OverlayState(ownState);
         GovernedMutationProcessor.MutationHandler handler =
                 new GovernedMutationProcessor.MutationHandler() {
@@ -87,6 +136,154 @@ public final class DomainActorRegistryComponent implements CompositeComponent {
             } catch (IllegalArgumentException malformed) {
                 // Admission is repeated during apply; invalid finalized input is a no-op.
             }
+        }
+    }
+
+    private void initializeOrVerify(long height, AppStateWriter state) {
+        if (height != 1) {
+            verifyGenesis(state);
+            return;
+        }
+        AdministratorAuthorityV1 authority = genesis.administratorAuthority();
+        requireAbsent(state, RoleWorkflowKeys.authorityCurrent(authority.authorityId()));
+        requireAbsent(state, RoleWorkflowKeys.authorityRevision(
+                authority.authorityId(), authority.revision()));
+        for (OrganizationRecordV1 organization : genesis.organizations()) {
+            requireAbsent(state, RoleWorkflowKeys.organizationCurrent(
+                    organization.organizationId()));
+            requireAbsent(state, RoleWorkflowKeys.organizationRevision(
+                    organization.organizationId(), organization.revision()));
+        }
+        for (GenesisActorV1 actor : genesis.actors()) {
+            requireAbsent(state, RoleWorkflowKeys.actorCurrent(actor.actor().actorId()));
+            requireAbsent(state, RoleWorkflowKeys.actorRevision(
+                    actor.actor().actorId(), actor.actor().revision()));
+        }
+
+        state.put(RoleWorkflowKeys.authorityRevision(
+                authority.authorityId(), authority.revision()), authority.encode());
+        RoleState.pointer(state, RoleWorkflowKeys.authorityCurrent(
+                authority.authorityId()), authority.revision());
+        for (OrganizationRecordV1 organization : genesis.organizations()) {
+            state.put(RoleWorkflowKeys.organizationRevision(
+                    organization.organizationId(), organization.revision()),
+                    organization.encode());
+            RoleState.pointer(state, RoleWorkflowKeys.organizationCurrent(
+                    organization.organizationId()), organization.revision());
+        }
+        for (GenesisActorV1 actor : genesis.actors()) {
+            ActorRecordV1 record = actor.actor();
+            state.put(RoleWorkflowKeys.actorRevision(
+                    record.actorId(), record.revision()), record.encode());
+            RoleState.pointer(state, RoleWorkflowKeys.actorCurrent(
+                    record.actorId()), record.revision());
+        }
+    }
+
+    private void verifyGenesis(AppStateReader state) {
+        AdministratorAuthorityV1 authority = genesis.administratorAuthority();
+        requireExact(state, RoleWorkflowKeys.authorityRevision(
+                authority.authorityId(), authority.revision()), authority.encode());
+        long authorityRevision = requireCurrent(state,
+                RoleWorkflowKeys.authorityCurrent(authority.authorityId()));
+        AdministratorAuthorityV1 currentAuthority = decodeAuthority(state,
+                authority.authorityId(), authorityRevision);
+        if (!currentAuthority.authorityId().equals(authority.authorityId())
+                || currentAuthority.revision() != authorityRevision) {
+            throw new IllegalStateException("domain actor authority pointer is incompatible");
+        }
+        for (OrganizationRecordV1 organization : genesis.organizations()) {
+            requireExact(state, RoleWorkflowKeys.organizationRevision(
+                    organization.organizationId(), organization.revision()),
+                    organization.encode());
+            long revision = requireCurrent(state, RoleWorkflowKeys.organizationCurrent(
+                    organization.organizationId()));
+            OrganizationRecordV1 current = decodeOrganization(state,
+                    organization.organizationId(), revision);
+            if (!current.organizationId().equals(organization.organizationId())
+                    || current.revision() != revision) {
+                throw new IllegalStateException(
+                        "domain actor organization pointer is incompatible");
+            }
+        }
+        for (GenesisActorV1 actor : genesis.actors()) {
+            ActorRecordV1 record = actor.actor();
+            requireExact(state, RoleWorkflowKeys.actorRevision(
+                    record.actorId(), record.revision()), record.encode());
+            long revision = requireCurrent(state,
+                    RoleWorkflowKeys.actorCurrent(record.actorId()));
+            ActorRecordV1 current = decodeActor(state, record.actorId(), revision);
+            if (!current.actorId().equals(record.actorId())
+                    || current.revision() != revision) {
+                throw new IllegalStateException("domain actor pointer is incompatible");
+            }
+        }
+    }
+
+    private static void requireAbsent(AppStateReader state, byte[] key) {
+        if (state.get(key).isPresent()) {
+            throw new IllegalStateException("domain actor genesis state already exists");
+        }
+    }
+
+    private static void requireExact(AppStateReader state, byte[] key, byte[] expected) {
+        byte[] actual = state.get(key).orElseThrow(() ->
+                new IllegalStateException("domain actor genesis state is absent"));
+        if (!MessageDigest.isEqual(actual, expected)) {
+            throw new IllegalStateException("domain actor genesis state is incompatible");
+        }
+    }
+
+    private static long requireCurrent(AppStateReader state, byte[] key) {
+        long revision = RoleState.pointer(state, key);
+        if (revision < 1) {
+            throw new IllegalStateException("domain actor current pointer is absent");
+        }
+        return revision;
+    }
+
+    private static AdministratorAuthorityV1 decodeAuthority(
+            AppStateReader state,
+            String authorityId,
+            long revision
+    ) {
+        return decodeCurrent(state,
+                RoleWorkflowKeys.authorityRevision(authorityId, revision),
+                AdministratorAuthorityV1::decode, "authority");
+    }
+
+    private static OrganizationRecordV1 decodeOrganization(
+            AppStateReader state,
+            String organizationId,
+            long revision
+    ) {
+        return decodeCurrent(state,
+                RoleWorkflowKeys.organizationRevision(organizationId, revision),
+                OrganizationRecordV1::decode, "organization");
+    }
+
+    private static ActorRecordV1 decodeActor(
+            AppStateReader state,
+            String actorId,
+            long revision
+    ) {
+        return decodeCurrent(state, RoleWorkflowKeys.actorRevision(actorId, revision),
+                ActorRecordV1::decode, "actor");
+    }
+
+    private static <T> T decodeCurrent(
+            AppStateReader state,
+            byte[] key,
+            java.util.function.Function<byte[], T> decoder,
+            String kind
+    ) {
+        byte[] encoded = state.get(key).orElseThrow(() -> new IllegalStateException(
+                "domain actor " + kind + " current pointer is dangling"));
+        try {
+            return decoder.apply(encoded);
+        } catch (RuntimeException malformed) {
+            throw new IllegalStateException(
+                    "domain actor " + kind + " current record is corrupt", malformed);
         }
     }
 
