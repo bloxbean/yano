@@ -886,6 +886,65 @@ class AuthenticatedMapCompositeAssemblyTest {
     }
 
     @Test
+    void perDeadlineBucketBoundSaturatesIndependentlyOfGlobalCapacity() {
+        AppChainConfig config = config(CHAIN_ID);
+        ThresholdFixture base = thresholdFixture();
+        GovernedGenesisV1 governed = new GovernedGenesisV1(
+                base.genesis().chainId(), base.authority(),
+                base.genesis().organizations(), base.genesis().actors(),
+                base.genesis().directPolicies(), base.genesis().approvalPolicies(),
+                new GovernedAuthorizationLimitsV1(
+                        RoleWorkflowLimits.MAX_AUTHORIZATION_EVIDENCE_ITEMS,
+                        RoleWorkflowLimits.MAX_COVERED_MUTATION_INDEXES,
+                        RoleWorkflowLimits.MAX_GENESIS_ORGANIZATIONS,
+                        RoleWorkflowLimits.MAX_GENESIS_ACTORS,
+                        RoleWorkflowLimits.MAX_GENESIS_KEYS,
+                        RoleWorkflowLimits.MAX_GENESIS_POLICIES,
+                        RoleWorkflowLimits.MAX_GENESIS_RECORD_BYTES,
+                        2, 4, 2, 4, 2, 1, 2, 2, 10,
+                        RoleWorkflowLimits.MAX_CRYPTO_WORK_UNITS_PER_BLOCK));
+        ThresholdFixture fixture = new ThresholdFixture(
+                governed, base.actorA(), base.actorB(), base.actorC(),
+                base.authority(), base.directPolicy(), base.approvalPolicy(),
+                base.collections());
+        AuthenticatedMapContract.Genesis genesis = governedMapGenesis(
+                config, fixture, repeated(0x19));
+        CompositeStateMachine machine = AuthenticatedMapPreset.create(
+                context(config), genesis);
+        MemoryState state = new MemoryState();
+        machine.init(state, new AppChainInfo(CHAIN_ID, hex(MEMBER), 1));
+        machine.apply(block(1), state);
+        state.committedHeight = 1;
+
+        AppMessage first = approvalMessage(80, fixture, genesis, "bucket-a",
+                repeated(0x54), 10, ActorStatementV1.Action.PROPOSE,
+                fixture.actorA(), ACTOR_SEED, "");
+        AppMessage sameBucket = approvalMessage(81, fixture, genesis, "bucket-b",
+                repeated(0x55), 10, ActorStatementV1.Action.PROPOSE,
+                fixture.actorA(), ACTOR_SEED, "");
+        AppMessage otherBucket = approvalMessage(82, fixture, genesis, "bucket-c",
+                repeated(0x56), 11, ActorStatementV1.Action.PROPOSE,
+                fixture.actorA(), ACTOR_SEED, "");
+        machine.apply(block(2, first, sameBucket, otherBucket), state);
+        state.committedHeight = 2;
+
+        assertThat(RoleCommandResultV1.decode(machine.query(
+                "components/role-approvals/command-result",
+                first.getMessageId(), state)).resultCode())
+                .isEqualTo(RoleWorkflowResultCode.ACCEPTED);
+        // The second proposal shares deadline height 10: its bucket is full
+        // even though global and per-policy capacity remain open.
+        assertThat(RoleCommandResultV1.decode(machine.query(
+                "components/role-approvals/command-result",
+                sameBucket.getMessageId(), state)).resultCode())
+                .isEqualTo(RoleWorkflowResultCode.CAPACITY_EXCEEDED);
+        assertThat(RoleCommandResultV1.decode(machine.query(
+                "components/role-approvals/command-result",
+                otherBucket.getMessageId(), state)).resultCode())
+                .isEqualTo(RoleWorkflowResultCode.ACCEPTED);
+    }
+
+    @Test
     void approvalCapacityReturnsAResultAndReopensAfterAutomaticExpiry() {
         AppChainConfig config = config(CHAIN_ID);
         ThresholdFixture base = thresholdFixture();

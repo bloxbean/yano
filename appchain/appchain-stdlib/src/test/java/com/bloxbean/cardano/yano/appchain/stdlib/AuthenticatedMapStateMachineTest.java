@@ -631,6 +631,129 @@ class AuthenticatedMapStateMachineTest {
                 16, 32_768, collections, validators, List.of());
     }
 
+    @Test
+    void governedWorkloadReplayIsIdenticalAcrossRestartSnapshotAndRollbackOnBothProfiles() {
+        for (boolean mpf : new boolean[]{true, false}) {
+            String chainId = (mpf ? "mpf" : "jmt") + "-governed-conformance";
+            String member = "11".repeat(32);
+            AppChainConfig config = AppChainConfig.builder(chainId)
+                    .signingKeyHex("22".repeat(32))
+                    .memberKeysHex(Set.of(member))
+                    .proposerKeyHex(member)
+                    .maxBlockMessages(2)
+                    .stateMachineId(AuthenticatedMapStateMachine.ID)
+                    .build();
+            byte[] issuerSeed = repeated(0x5d);
+            byte[] issuerPublicKey = com.bloxbean.cardano.client.crypto.KeyGenUtil
+                    .getPublicKeyFromPrivateKey(issuerSeed);
+            var issuerKey = new com.bloxbean.cardano.yano.appchain.roles.contracts
+                    .ActorKeyEpochV1("issuer-a-k1", issuerPublicKey, 1, 0,
+                    com.bloxbean.cardano.yano.appchain.roles.contracts.RecordStatus.ACTIVE);
+            var issuer = new com.bloxbean.cardano.yano.appchain.roles.contracts
+                    .ActorRecordV1("issuer-a", "acme", 1,
+                    com.bloxbean.cardano.yano.appchain.roles.contracts.RecordStatus.ACTIVE,
+                    List.of("issuer"), List.of(issuerKey), new byte[0]);
+            var governed = new com.bloxbean.cardano.yano.appchain.roles.contracts
+                    .GovernedGenesisV1(chainId,
+                    new com.bloxbean.cardano.yano.appchain.roles.contracts
+                            .AdministratorAuthorityV1(
+                            "registry-admins", 1, List.of("issuer-a"), 1, 1_000),
+                    List.of(new com.bloxbean.cardano.yano.appchain.roles.contracts
+                            .OrganizationRecordV1("acme", 1,
+                            com.bloxbean.cardano.yano.appchain.roles.contracts
+                                    .RecordStatus.ACTIVE, new byte[0])),
+                    List.of(new com.bloxbean.cardano.yano.appchain.roles.contracts
+                            .GenesisActorV1(issuer, List.of(
+                            com.bloxbean.cardano.yano.appchain.roles.contracts
+                                    .ActorKeyProofV1.sign(
+                                    chainId, "issuer-a", 1, issuerKey, issuerSeed)))),
+                    List.of(new com.bloxbean.cardano.yano.appchain.roles.contracts
+                            .DirectRolePolicyV1("issuer-write", 1,
+                            com.bloxbean.cardano.yano.appchain.roles.contracts
+                                    .RecordStatus.ACTIVE, "issuer", 100)),
+                    List.of(),
+                    com.bloxbean.cardano.yano.appchain.roles.contracts
+                            .GovernedAuthorizationLimitsV1.defaults());
+            List<AuthenticatedMapContract.CollectionDescriptor> collections = List.of(
+                    collection("records", AuthenticatedMapContract.AUTH_OPEN, true),
+                    new AuthenticatedMapContract.CollectionDescriptor(
+                            "governed-products",
+                            AuthenticatedMapContract.AUTH_GOVERNED_ROLE, "issuer-write",
+                            false, 64, 1_024,
+                            AuthenticatedMapContract.VALUE_ENCODING_OPAQUE, ""));
+            AuthenticatedMapContract.Genesis genesis = mpf
+                    ? AuthenticatedMapGenesisFactory.mpf(config, repeated(8), 16, 32_768,
+                    collections, List.of(), List.of(), governed)
+                    : AuthenticatedMapGenesisFactory.classicJmt(config, repeated(8), 16,
+                    32_768, collections, List.of(), List.of(), governed);
+            byte[] genesisId = AuthenticatedMapContract.genesisId(genesis);
+
+            StateMachineConformance.builder(
+                            new StdlibStateMachineProviders.AuthenticatedMapProvider())
+                    .settings(AuthenticatedMapGenesisFactory.settings(genesis))
+                    .chainId(chainId)
+                    .blocks(12)
+                    .messagesPerBlock(2)
+                    .runs(3)
+                    .restartAtHeight(5)
+                    .snapshotAtHeight(7)
+                    .messageGenerator((height, index, random) -> {
+                        if (index % 2 == 0) {
+                            return new StateMachineConformance.CorpusMessage(
+                                    AuthenticatedMapContract.DEFAULT_TOPIC,
+                                    finalCommand(single(
+                                            AuthenticatedMapContract.Mutation.put(
+                                                    "records",
+                                                    bytes("key-" + height + "-" + index),
+                                                    bytes("open-" + height))),
+                                            AuthenticatedMapContract.AUTH_OPEN));
+                        }
+                        var command = single(AuthenticatedMapContract.Mutation.put(
+                                "governed-products",
+                                bytes("gov-" + height + "-" + index),
+                                bytes("issued-" + height)));
+                        var action = new AuthenticatedMapAuthorizationContract.MapActionV1(
+                                false, command.mutations(), List.of(
+                                new AuthenticatedMapAuthorizationContract
+                                        .AuthorizationAssignmentV1(
+                                        0, AuthenticatedMapContract.AUTH_GOVERNED_ROLE,
+                                        "issuer-write", 1)));
+                        byte[] authorizationId = repeated(0x5e);
+                        authorizationId[0] = (byte) height;
+                        authorizationId[1] = (byte) index;
+                        var evidence = AuthenticatedMapAuthorizationContract
+                                .MapActorAuthorizationV1.sign(authorizationId, chainId,
+                                        genesisId,
+                                        AuthenticatedMapAuthorizationContract
+                                                .actionCommitment(action),
+                                        List.of(0), "issuer-write", 1, "issuer-a", 1,
+                                        "issuer-a-k1", issuerPublicKey, 1, 95, issuerSeed);
+                        return new StateMachineConformance.CorpusMessage(
+                                AuthenticatedMapContract.DEFAULT_TOPIC,
+                                AuthenticatedMapAuthorizationContract.encodeCommand(
+                                        new AuthenticatedMapAuthorizationContract
+                                                .AuthenticatedMapCommandV1(
+                                                action, List.of(evidence))));
+                    })
+                    .stateProbe("governed-record", CompositeStateKeys.componentKey(
+                            AuthenticatedMapComponent.COMPONENT_ID,
+                            AuthenticatedMapContract.canonicalKey(
+                                    "governed-products", bytes("gov-1-1"))))
+                    .stateProbe("direct-consumption-index", CompositeStateKeys.componentKey(
+                            AuthenticatedMapComponent.COMPONENT_ID,
+                            AuthenticatedMapContract.directConsumptionKey("issuer-a",
+                                    directAuthorizationId(1, 1))))
+                    .assertDeterministic();
+        }
+    }
+
+    private static byte[] directAuthorizationId(int height, int index) {
+        byte[] authorizationId = repeated(0x5e);
+        authorizationId[0] = (byte) height;
+        authorizationId[1] = (byte) index;
+        return authorizationId;
+    }
+
     private static AuthenticatedMapContract.CollectionDescriptor collection(
             String id, int authorization, boolean restoreAllowed) {
         return new AuthenticatedMapContract.CollectionDescriptor(
