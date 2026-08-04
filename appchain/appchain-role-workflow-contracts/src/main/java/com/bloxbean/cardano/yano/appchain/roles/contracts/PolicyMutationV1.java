@@ -10,9 +10,10 @@ import java.util.List;
 
 /** Governed policy change or threshold-admin emergency cancellation. */
 public sealed interface PolicyMutationV1 permits PolicyMutationV1.PutPolicy,
-        PolicyMutationV1.CancelProposal {
+        PolicyMutationV1.CancelProposal, PolicyMutationV1.PutDirectPolicy {
     int OP_POLICY = 0;
     int OP_CANCEL_PROPOSAL = 1;
+    int OP_DIRECT_POLICY = 2;
 
     byte[] encode();
 
@@ -35,18 +36,31 @@ public sealed interface PolicyMutationV1 permits PolicyMutationV1.PutPolicy,
         }
     }
 
+    record PutDirectPolicy(DirectRolePolicyV1 policy) implements PolicyMutationV1 {
+        public PutDirectPolicy {
+            if (policy == null) throw OrganizationRecordV1.invalid();
+        }
+        @Override public byte[] encode() {
+            return encodeValue(OP_DIRECT_POLICY, policy.encode());
+        }
+    }
+
     static PolicyMutationV1 decode(byte[] bytes) {
         List<co.nstant.in.cbor.model.DataItem> values =
                 RoleWorkflowCbor.decodeArray(bytes, 3).getDataItems();
         OrganizationRecordV1.requireVersion(values.get(0));
         int operation = RoleWorkflowCbor.uintInt(values.get(1));
         byte[] payload = RoleWorkflowCbor.bytes(values.get(2));
-        return switch (operation) {
+        PolicyMutationV1 decoded = switch (operation) {
             case OP_POLICY -> new PutPolicy(ApprovalPolicyV1.decode(payload));
             case OP_CANCEL_PROPOSAL -> new CancelProposal(
                     new String(payload, java.nio.charset.StandardCharsets.US_ASCII));
+            case OP_DIRECT_POLICY -> new PutDirectPolicy(
+                    DirectRolePolicyV1.decode(payload));
             default -> throw OrganizationRecordV1.invalid();
         };
+        RoleWorkflowCbor.requireCanonical(bytes, decoded.encode());
+        return decoded;
     }
 
     private static byte[] encodeValue(int operation, byte[] payload) {

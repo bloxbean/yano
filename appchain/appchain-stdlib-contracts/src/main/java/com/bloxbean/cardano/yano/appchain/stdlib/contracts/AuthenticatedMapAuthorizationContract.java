@@ -533,6 +533,38 @@ public final class AuthenticatedMapAuthorizationContract {
         }
     }
 
+    /** Exact lookup subject for the actor-namespaced direct-consumption key. */
+    public record DirectConsumptionQueryV1(
+            String actorId,
+            byte[] authorizationId
+    ) {
+        public DirectConsumptionQueryV1 {
+            actorId = RoleWorkflowIdentifiers.id(actorId, "actorId");
+            authorizationId = exact(authorizationId, 32, "authorizationId");
+        }
+
+        @Override public byte[] authorizationId() { return authorizationId.clone(); }
+
+        public byte[] encode() {
+            Array value = new Array();
+            value.add(new UnsignedInteger(CODEC_VERSION));
+            value.add(new UnicodeString(actorId));
+            value.add(new ByteString(authorizationId));
+            return StdlibContractCbor.encode(value);
+        }
+
+        public static DirectConsumptionQueryV1 decode(byte[] bytes) {
+            List<co.nstant.in.cbor.model.DataItem> values =
+                    StdlibContractCbor.decodeArray(bytes, 3).getDataItems();
+            requireVersion(values.get(0));
+            DirectConsumptionQueryV1 decoded = new DirectConsumptionQueryV1(
+                    StdlibContractCbor.text(values.get(1)),
+                    StdlibContractCbor.bytes(values.get(2), 32));
+            requireCanonical(bytes, decoded.encode());
+            return decoded;
+        }
+    }
+
     public record ApprovalConsumptionV1(
             String proposalId,
             byte[] actionCommitment,

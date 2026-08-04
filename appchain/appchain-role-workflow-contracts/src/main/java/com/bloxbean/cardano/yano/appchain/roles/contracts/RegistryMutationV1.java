@@ -10,9 +10,10 @@ import java.util.List;
 
 /** Full-revision registry mutations governed by {@link GovernedMutationCommandV1}. */
 public sealed interface RegistryMutationV1 permits RegistryMutationV1.PutOrganization,
-        RegistryMutationV1.PutActor {
+        RegistryMutationV1.PutActor, RegistryMutationV1.PutAuthority {
     int OP_ORGANIZATION = 0;
     int OP_ACTOR = 1;
+    int OP_AUTHORITY = 2;
 
     byte[] encode();
 
@@ -43,6 +44,17 @@ public sealed interface RegistryMutationV1 permits RegistryMutationV1.PutOrganiz
         }
     }
 
+    /** Successor authority revision, always approved under the prior revision. */
+    record PutAuthority(AdministratorAuthorityV1 authority)
+            implements RegistryMutationV1 {
+        public PutAuthority {
+            if (authority == null) throw OrganizationRecordV1.invalid();
+        }
+        @Override public byte[] encode() {
+            return encodeMutation(OP_AUTHORITY, authority.encode(), List.of());
+        }
+    }
+
     static RegistryMutationV1 decode(byte[] bytes) {
         List<co.nstant.in.cbor.model.DataItem> values =
                 RoleWorkflowCbor.decodeArray(bytes, 4).getDataItems();
@@ -58,6 +70,10 @@ public sealed interface RegistryMutationV1 permits RegistryMutationV1.PutOrganiz
             case OP_ACTOR -> new PutActor(ActorRecordV1.decode(record),
                     proofs.getDataItems().stream().map(RoleWorkflowCbor::bytes)
                             .map(ActorKeyProofV1::decode).toList());
+            case OP_AUTHORITY -> {
+                if (!proofs.getDataItems().isEmpty()) throw OrganizationRecordV1.invalid();
+                yield new PutAuthority(AdministratorAuthorityV1.decode(record));
+            }
             default -> throw OrganizationRecordV1.invalid();
         };
         RoleWorkflowCbor.requireCanonical(bytes, decoded.encode());

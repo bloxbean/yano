@@ -25,7 +25,10 @@ public final class RoleAwareApprovalsComponent implements CompositeComponent {
     public static final String COMPONENT_ID = "role-approvals";
     public static final String QUERY_POLICY = "policy";
     public static final String QUERY_POLICY_CURRENT = "policy-current";
+    public static final String QUERY_DIRECT_POLICY = "direct-policy";
+    public static final String QUERY_DIRECT_POLICY_CURRENT = "direct-policy-current";
     public static final String QUERY_PROPOSAL = "proposal";
+    public static final String QUERY_GOVERNANCE_MUTATION = "governance-mutation";
     public static final String QUERY_STATS = "stats";
 
     private final ComponentDescriptor descriptor;
@@ -192,11 +195,33 @@ public final class RoleAwareApprovalsComponent implements CompositeComponent {
             return revision == 0 ? new byte[0] : ownState.get(
                     RoleWorkflowKeys.policyRevision(ref.id, revision)).orElse(new byte[0]);
         }
+        if (QUERY_DIRECT_POLICY_CURRENT.equals(localPath)) {
+            if (ref.revision != 0) throw new AppQueryException(
+                    AppQueryException.Code.INVALID_REQUEST,
+                    "current-pointer queries do not accept a revision");
+            return RoleState.pointerBytes(ownState,
+                    RoleWorkflowKeys.directPolicyCurrent(ref.id));
+        }
+        if (QUERY_DIRECT_POLICY.equals(localPath)) {
+            long revision = ref.revision != 0 ? ref.revision
+                    : RoleState.pointer(ownState,
+                    RoleWorkflowKeys.directPolicyCurrent(ref.id));
+            return revision == 0 ? new byte[0] : ownState.get(
+                    RoleWorkflowKeys.directPolicyRevision(ref.id, revision))
+                    .orElse(new byte[0]);
+        }
         if (QUERY_PROPOSAL.equals(localPath)) {
             if (ref.revision != 0) throw new AppQueryException(
                     AppQueryException.Code.INVALID_REQUEST,
                     "proposal queries do not accept a revision");
             return ownState.get(RoleWorkflowKeys.proposal(ref.id)).orElse(new byte[0]);
+        }
+        if (QUERY_GOVERNANCE_MUTATION.equals(localPath)) {
+            if (ref.revision != 0) throw new AppQueryException(
+                    AppQueryException.Code.INVALID_REQUEST,
+                    "governance-mutation queries do not accept a revision");
+            return ownState.get(RoleWorkflowKeys.governedMutation(ref.id))
+                    .orElse(new byte[0]);
         }
         throw new AppQueryException(AppQueryException.Code.UNSUPPORTED,
                 "unsupported role approval query");

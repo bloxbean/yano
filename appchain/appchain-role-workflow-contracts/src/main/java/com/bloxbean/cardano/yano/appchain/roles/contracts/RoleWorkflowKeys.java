@@ -49,6 +49,7 @@ public final class RoleWorkflowKeys {
     public static byte[] governedMutation(String id) {
         return key("g/" + RoleWorkflowIdentifiers.id(id, "mutationId"));
     }
+    public static byte[] governancePendingIndex() { return key("l/g/v1"); }
     public static byte[] governanceDeadline(long height, String id) {
         return key("x/g/" + height(height) + "/"
                 + RoleWorkflowIdentifiers.id(id, "mutationId"));
@@ -82,6 +83,7 @@ public final class RoleWorkflowKeys {
         return key("c/" + canonicalDimension + "/"
                 + RoleWorkflowIdentifiers.id(id, "pendingCountId"));
     }
+    public static byte[] cryptoWork() { return key("w/crypto/v1"); }
 
     private static long positive(long value, String name) {
         if (value < 1) throw new IllegalArgumentException(name + " must be positive");
