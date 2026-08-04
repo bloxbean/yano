@@ -235,7 +235,7 @@ public final class CompositeStateMachine implements AppStateMachine {
     public AdmissionResult validate(
             com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage message
     ) {
-        return validateAgainstRuntime(message, runtimeFor(profileBytes), 1);
+        return validateAgainstRuntime(message, runtimeFor(profileBytes), 1, false);
     }
 
     @Override
@@ -250,13 +250,14 @@ public final class CompositeStateMachine implements AppStateMachine {
         RuntimeEntry runtime = governance != null
                 ? runtimeFor(governance.profileForCandidateHeight(candidateHeight, committedState))
                 : runtimeFor(profileBytes);
-        return validateAgainstRuntime(message, runtime, candidateHeight);
+        return validateAgainstRuntime(message, runtime, candidateHeight, true);
     }
 
     private AdmissionResult validateAgainstRuntime(
             com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage message,
             RuntimeEntry runtime,
-            long candidateHeight
+            long candidateHeight,
+            boolean candidateAware
     ) {
         String topic = message.getTopic();
         if (topic != null && topic.startsWith("~")) {
@@ -280,7 +281,10 @@ public final class CompositeStateMachine implements AppStateMachine {
             }
         }
         for (WorkflowBinding workflow : workflowCandidates) {
-            AdmissionResult result = workflow.product().validate(snapshot(message));
+            AdmissionResult result = candidateAware
+                    ? workflow.product().validateForBlock(
+                    snapshot(message), candidateHeight)
+                    : workflow.product().validate(snapshot(message));
             if (!result.isAccepted()) {
                 return result;
             }

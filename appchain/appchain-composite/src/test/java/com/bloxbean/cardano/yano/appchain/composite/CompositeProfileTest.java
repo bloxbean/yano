@@ -73,6 +73,29 @@ class CompositeProfileTest {
     }
 
     @Test
+    void preservesWorkflowExecutionOrderInCanonicalIdentity() {
+        ComponentDescriptor component = descriptor("component", "component.v1", 1, 0);
+        WorkflowDescriptor laterById = new WorkflowDescriptor(
+                "z-first", "1", "z-first.v1", 1, 0,
+                List.of(component.generation()), 0);
+        WorkflowDescriptor earlierById = new WorkflowDescriptor(
+                "a-second", "1", "a-second.v1", 1, 0,
+                List.of(component.generation()), 0);
+
+        CompositeProfile declared = new CompositeProfile(1, "ordered", "1",
+                List.of(component), List.of(laterById, earlierById), List.of(),
+                AggregateQueryLimitsV1.DEFAULT);
+        CompositeProfile reversed = new CompositeProfile(1, "ordered", "1",
+                List.of(component), List.of(earlierById, laterById), List.of(),
+                AggregateQueryLimitsV1.DEFAULT);
+
+        assertThat(declared.workflows()).containsExactly(laterById, earlierById);
+        assertThat(CompositeProfileCodec.decode(declared.canonicalBytes()).workflows())
+                .containsExactly(laterById, earlierById);
+        assertThat(declared.digest()).isNotEqualTo(reversed.digest());
+    }
+
+    @Test
     void rejectsOverlappingComponentAndWorkflowRoutes() {
         ComponentDescriptor first = descriptor("first", "shared.v1", 1, 0);
         ComponentDescriptor second = descriptor("second", "shared.v1", 10, 0);

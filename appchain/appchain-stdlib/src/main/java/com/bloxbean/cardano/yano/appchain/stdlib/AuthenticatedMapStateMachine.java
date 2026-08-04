@@ -26,6 +26,8 @@ import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContr
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract.Receipt;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract.ReceiptQuery;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract.ReceiptResult;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapAuthorizationContract;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapAuthorizationContract.*;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapSchema;
 
 import java.util.ArrayList;
@@ -151,7 +153,33 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
             }
             Command command = AuthenticatedMapContract.decodeCommand(message.getBody());
             validateCommandBounds(command);
+            if (containsGovernedMutation(command)) {
+                return AdmissionResult.reject(
+                        "governed collections require the final v1 authorization envelope");
+            }
             validateCommandValues(command);
+            return AdmissionResult.accept();
+        } catch (IllegalArgumentException malformed) {
+            return AdmissionResult.reject("Malformed authenticated-map v1 command");
+        }
+    }
+
+    /** Structural admission for the final v1 action/evidence envelope. */
+    AdmissionResult validateFinal(AppMessage message) {
+        try {
+            if (!AuthenticatedMapContract.DEFAULT_TOPIC.equals(message.getTopic())) {
+                return AdmissionResult.reject("authenticated-map requires topic "
+                        + AuthenticatedMapContract.DEFAULT_TOPIC);
+            }
+            if (message.getBody() == null || message.getBody().length > genesis.maxBatchBytes()) {
+                return AdmissionResult.reject("authenticated-map command exceeds genesis byte limit");
+            }
+            AuthenticatedMapCommandV1 command =
+                    AuthenticatedMapAuthorizationContract.decodeCommand(message.getBody());
+            Command mutations = legacyCommand(command);
+            validateCommandBounds(mutations);
+            validateCommandValues(mutations);
+            validateAuthorizationAssignments(command);
             return AdmissionResult.accept();
         } catch (IllegalArgumentException malformed) {
             return AdmissionResult.reject("Malformed authenticated-map v1 command");
@@ -180,6 +208,24 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
         return AdmissionResult.accept();
     }
 
+    AdmissionResult validateFinalForBlock(AppMessage message, long candidateHeight) {
+        AdmissionResult structural = validateFinal(message);
+        if (!structural.isAccepted()) {
+            return structural;
+        }
+        AuthenticatedMapCommandV1 command =
+                AuthenticatedMapAuthorizationContract.decodeCommand(message.getBody());
+        for (Mutation mutation : command.action().mutations()) {
+            CollectionDescriptor descriptor = collections.get(mutation.collectionId());
+            if (descriptor.authorization() == AuthenticatedMapContract.AUTH_MEMBER
+                    && !isMember(message.getSender(), candidateHeight)) {
+                return AdmissionResult.reject(
+                        "authenticated-map sender is not a member at candidate height");
+            }
+        }
+        return AdmissionResult.accept();
+    }
+
     @Override
     public void apply(AppBlock block, AppStateWriter writer) {
         initializeOrVerify(block.height(), writer);
@@ -198,7 +244,61 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
             if (writer.get(receiptKey).isPresent()) {
                 continue;
             }
+            if (containsGovernedMutation(command)) {
+                Receipt receipt = Receipt.rejected(message.getMessageId(), block.height(),
+                        AuthenticatedMapContract.batchCommitment(command),
+                        AuthenticatedMapContract.ERROR_GOVERNED_ROUTE_UNSUPPORTED);
+                writer.put(receiptKey, AuthenticatedMapContract.encodeReceipt(receipt));
+                continue;
+            }
             applyCommand(block.height(), message, command, receiptKey, writer);
+        }
+    }
+
+    /** Applies the final v1 envelope inside the authenticated-map composite workflow. */
+    void applyFinal(AppBlock block, AppStateWriter writer) {
+        initializeOrVerify(block.height(), writer);
+        for (AppMessage message : block.messages()) {
+            if (!AuthenticatedMapContract.DEFAULT_TOPIC.equals(message.getTopic())) {
+                continue;
+            }
+            AuthenticatedMapCommandV1 command;
+            Command mutations;
+            try {
+                command = AuthenticatedMapAuthorizationContract.decodeCommand(message.getBody());
+                mutations = legacyCommand(command);
+                validateCommandBounds(mutations);
+            } catch (IllegalArgumentException malformed) {
+                continue;
+            }
+            byte[] receiptKey = AuthenticatedMapContract.receiptKey(message.getMessageId());
+            if (writer.get(receiptKey).isPresent()) {
+                continue;
+            }
+            byte[] actionCommitment =
+                    AuthenticatedMapAuthorizationContract.actionCommitment(command.action());
+            try {
+                validateAuthorizationAssignments(command);
+            } catch (IllegalArgumentException mismatched) {
+                Receipt receipt = Receipt.rejected(message.getMessageId(), block.height(),
+                        actionCommitment,
+                        AuthenticatedMapContract.ERROR_AUTHORIZATION_ASSIGNMENT);
+                writer.put(receiptKey, AuthenticatedMapContract.encodeReceipt(receipt));
+                continue;
+            }
+            if (command.action().authorizations().stream().anyMatch(assignment ->
+                    assignment.authorizationKind()
+                            == AuthenticatedMapContract.AUTH_GOVERNED_ROLE
+                            || assignment.authorizationKind()
+                            == AuthenticatedMapContract.AUTH_APPROVAL)) {
+                Receipt receipt = Receipt.rejected(message.getMessageId(), block.height(),
+                        actionCommitment,
+                        AuthenticatedMapContract.ERROR_GOVERNED_ROUTE_UNSUPPORTED);
+                writer.put(receiptKey, AuthenticatedMapContract.encodeReceipt(receipt));
+                continue;
+            }
+            applyCommand(block.height(), message, mutations, receiptKey, writer,
+                    actionCommitment);
         }
     }
 
@@ -322,9 +422,42 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
         }
     }
 
+    private boolean containsGovernedMutation(Command command) {
+        return command.mutations().stream()
+                .map(mutation -> collections.get(mutation.collectionId()))
+                .anyMatch(descriptor -> descriptor.authorization()
+                        == AuthenticatedMapContract.AUTH_GOVERNED_ROLE
+                        || descriptor.authorization() == AuthenticatedMapContract.AUTH_APPROVAL);
+    }
+
+    private void validateAuthorizationAssignments(AuthenticatedMapCommandV1 command) {
+        for (int index = 0; index < command.action().mutations().size(); index++) {
+            Mutation mutation = command.action().mutations().get(index);
+            CollectionDescriptor descriptor = collections.get(mutation.collectionId());
+            AuthorizationAssignmentV1 assignment =
+                    command.action().authorizations().get(index);
+            if (assignment.authorizationKind() != descriptor.authorization()
+                    || !assignment.policyId().equals(
+                    descriptor.authorizationPolicyId())) {
+                throw new IllegalArgumentException(
+                        "authorization assignment differs from collection genesis");
+            }
+        }
+    }
+
+    private static Command legacyCommand(AuthenticatedMapCommandV1 command) {
+        return new Command(command.action().batch(), command.action().mutations());
+    }
+
     private void applyCommand(long height, AppMessage message, Command command,
                               byte[] receiptKey, AppStateWriter writer) {
-        byte[] batchCommitment = AuthenticatedMapContract.batchCommitment(command);
+        applyCommand(height, message, command, receiptKey, writer,
+                AuthenticatedMapContract.batchCommitment(command));
+    }
+
+    private void applyCommand(long height, AppMessage message, Command command,
+                              byte[] receiptKey, AppStateWriter writer,
+                              byte[] batchCommitment) {
         List<PendingMutation> pending = new ArrayList<>(command.mutations().size());
         try {
             for (Mutation mutation : command.mutations()) {

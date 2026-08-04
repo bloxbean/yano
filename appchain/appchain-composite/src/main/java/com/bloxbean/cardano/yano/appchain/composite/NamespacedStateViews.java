@@ -41,6 +41,11 @@ final class NamespacedStateViews {
         public byte[] stateRoot() {
             return delegate.stateRoot().clone();
         }
+
+        @Override
+        public long committedHeight() {
+            return delegate.committedHeight();
+        }
     }
 
     private static final class Writer extends Reader implements AppStateWriter {

@@ -949,7 +949,7 @@ public final class AuthenticatedMapContract {
         public Receipt {
             messageId = require32(messageId, "messageId");
             if (height <= 0 || status < RECEIPT_APPLIED || status > RECEIPT_REJECTED
-                    || errorCode < ERROR_NONE || errorCode > ERROR_VALUE_VALIDATOR) {
+                    || errorCode < ERROR_NONE || errorCode > ERROR_WRONG_REVISION) {
                 throw new IllegalArgumentException("receipt status/height/error is invalid");
             }
             batchCommitment = require32(batchCommitment, "batchCommitment");

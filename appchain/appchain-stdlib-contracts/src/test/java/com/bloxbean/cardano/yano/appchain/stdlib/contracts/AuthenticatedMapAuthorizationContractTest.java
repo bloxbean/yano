@@ -30,6 +30,17 @@ class AuthenticatedMapAuthorizationContractTest {
     private static final byte[] ACTOR_SEED = repeated(1);
 
     @Test
+    void finalGovernedResultCodesAreValidReceiptValues() {
+        AuthenticatedMapContract.Receipt receipt = AuthenticatedMapContract.Receipt.rejected(
+                repeated(2), 1, repeated(3),
+                AuthenticatedMapContract.ERROR_GOVERNED_ROUTE_UNSUPPORTED);
+
+        byte[] encoded = AuthenticatedMapContract.encodeReceipt(receipt);
+        assertThat(AuthenticatedMapContract.encodeReceipt(
+                AuthenticatedMapContract.decodeReceipt(encoded))).isEqualTo(encoded);
+    }
+
+    @Test
     void finalGenesisRoundTripsAllFiveAuthorizationKinds() {
         AuthenticatedMapContract.Genesis genesis = genesis();
         byte[] encoded = AuthenticatedMapContract.encodeGenesis(genesis);

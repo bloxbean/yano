@@ -4,6 +4,8 @@ import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryResult;
+import com.bloxbean.cardano.yano.appchain.composite.CompositeStateKeys;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapAuthorizationContract;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
 import com.bloxbean.cardano.yano.runtime.appchain.AppChainSubsystem;
 import org.junit.jupiter.api.AfterEach;
@@ -61,14 +63,19 @@ class AuthenticatedMapRuntimeTest {
 
         AppChainSubsystem first = start(config, ledgerBase);
         byte[] applicationKey = "sku-1".getBytes(StandardCharsets.US_ASCII);
-        byte[] canonicalKey = AuthenticatedMapContract.canonicalKey(
-                "products", applicationKey);
+        byte[] canonicalKey = CompositeStateKeys.componentKey(
+                AuthenticatedMapComponent.COMPONENT_ID,
+                AuthenticatedMapContract.canonicalKey("products", applicationKey));
+        AuthenticatedMapContract.Command mutation = AuthenticatedMapContract.Command.single(
+                AuthenticatedMapContract.Mutation.put(
+                        "products", applicationKey,
+                        "metadata-v1".getBytes(StandardCharsets.US_ASCII)));
         String messageId = first.submit(AuthenticatedMapContract.DEFAULT_TOPIC,
-                AuthenticatedMapContract.encodeCommand(
-                        AuthenticatedMapContract.Command.single(
-                                AuthenticatedMapContract.Mutation.put(
-                                        "products", applicationKey,
-                                        "metadata-v1".getBytes(StandardCharsets.US_ASCII)))));
+                AuthenticatedMapAuthorizationContract.encodeCommand(
+                        new AuthenticatedMapAuthorizationContract.AuthenticatedMapCommandV1(
+                                AuthenticatedMapAuthorizationContract.MapActionV1.basic(
+                                        mutation, List.of(AuthenticatedMapContract.AUTH_OWNER)),
+                                List.of())));
         awaitTrue("authenticated-map put finalized",
                 () -> first.stateValue(canonicalKey).isPresent());
 

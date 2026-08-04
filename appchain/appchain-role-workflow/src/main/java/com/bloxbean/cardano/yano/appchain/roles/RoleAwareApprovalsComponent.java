@@ -1,17 +1,24 @@
 package com.bloxbean.cardano.yano.appchain.roles;
 
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
+import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.appchain.composite.ComponentDescriptor;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeComponent;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.ApprovalPolicyV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.DirectRolePolicyV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.GovernedGenesisV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleApprovalStatsV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowIdentifiers;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowKeys;
 import com.bloxbean.cardano.yano.appchain.roles.internal.RoleState;
 
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 
 /** State owner and exact-query surface for policy revisions and role decisions. */
 public final class RoleAwareApprovalsComponent implements CompositeComponent {
@@ -22,9 +29,18 @@ public final class RoleAwareApprovalsComponent implements CompositeComponent {
     public static final String QUERY_STATS = "stats";
 
     private final ComponentDescriptor descriptor;
+    private final GovernedGenesisV1 genesis;
 
     public RoleAwareApprovalsComponent(ComponentDescriptor descriptor) {
+        this(descriptor, null);
+    }
+
+    public RoleAwareApprovalsComponent(
+            ComponentDescriptor descriptor,
+            GovernedGenesisV1 genesis
+    ) {
         this.descriptor = java.util.Objects.requireNonNull(descriptor, "descriptor");
+        this.genesis = genesis;
         if (!descriptor.componentId().equals(COMPONENT_ID) || !descriptor.topics().isEmpty()) {
             throw new IllegalArgumentException("invalid role approvals descriptor");
         }
@@ -33,8 +49,126 @@ public final class RoleAwareApprovalsComponent implements CompositeComponent {
     @Override public ComponentDescriptor descriptor() { return descriptor; }
 
     @Override
+    public void init(AppStateReader ownState, AppChainInfo chain) {
+        if (genesis != null && ownState.committedHeight() > 0) {
+            verifyGenesis(ownState);
+        }
+    }
+
+    @Override
     public void apply(AppBlock routedBlock, AppStateWriter ownState, AppEffectEmitter ownedEffects) {
+        if (genesis != null) {
+            initializeOrVerify(routedBlock.height(), ownState);
+        }
         // Commands are owned by the declared cross-component workflow.
+    }
+
+    private void initializeOrVerify(long height, AppStateWriter state) {
+        if (height != 1) {
+            verifyGenesis(state);
+            return;
+        }
+        requireAbsent(state, RoleWorkflowKeys.approvalStats());
+        for (DirectRolePolicyV1 policy : genesis.directPolicies()) {
+            requireAbsent(state, RoleWorkflowKeys.directPolicyCurrent(policy.policyId()));
+            requireAbsent(state, RoleWorkflowKeys.directPolicyRevision(
+                    policy.policyId(), policy.revision()));
+        }
+        for (ApprovalPolicyV1 policy : genesis.approvalPolicies()) {
+            requireAbsent(state, RoleWorkflowKeys.policyCurrent(policy.policyId()));
+            requireAbsent(state, RoleWorkflowKeys.policyRevision(
+                    policy.policyId(), policy.revision()));
+        }
+
+        state.put(RoleWorkflowKeys.approvalStats(), RoleApprovalStatsV1.empty().encode());
+        for (DirectRolePolicyV1 policy : genesis.directPolicies()) {
+            state.put(RoleWorkflowKeys.directPolicyRevision(
+                    policy.policyId(), policy.revision()), policy.encode());
+            RoleState.pointer(state, RoleWorkflowKeys.directPolicyCurrent(
+                    policy.policyId()), policy.revision());
+        }
+        for (ApprovalPolicyV1 policy : genesis.approvalPolicies()) {
+            state.put(RoleWorkflowKeys.policyRevision(
+                    policy.policyId(), policy.revision()), policy.encode());
+            RoleState.pointer(state, RoleWorkflowKeys.policyCurrent(
+                    policy.policyId()), policy.revision());
+        }
+    }
+
+    private void verifyGenesis(AppStateReader state) {
+        byte[] stats = state.get(RoleWorkflowKeys.approvalStats()).orElseThrow(() ->
+                new IllegalStateException("role approval genesis state is absent"));
+        try {
+            RoleApprovalStatsV1.decode(stats);
+        } catch (RuntimeException corrupt) {
+            throw new IllegalStateException("role approval stats are corrupt", corrupt);
+        }
+        for (DirectRolePolicyV1 policy : genesis.directPolicies()) {
+            requireExact(state, RoleWorkflowKeys.directPolicyRevision(
+                    policy.policyId(), policy.revision()), policy.encode());
+            long revision = requireCurrent(state,
+                    RoleWorkflowKeys.directPolicyCurrent(policy.policyId()));
+            DirectRolePolicyV1 current = decodeCurrent(state,
+                    RoleWorkflowKeys.directPolicyRevision(policy.policyId(), revision),
+                    DirectRolePolicyV1::decode, "direct policy");
+            if (!current.policyId().equals(policy.policyId())
+                    || current.revision() != revision) {
+                throw new IllegalStateException(
+                        "role approval direct-policy pointer is incompatible");
+            }
+        }
+        for (ApprovalPolicyV1 policy : genesis.approvalPolicies()) {
+            requireExact(state, RoleWorkflowKeys.policyRevision(
+                    policy.policyId(), policy.revision()), policy.encode());
+            long revision = requireCurrent(state,
+                    RoleWorkflowKeys.policyCurrent(policy.policyId()));
+            ApprovalPolicyV1 current = decodeCurrent(state,
+                    RoleWorkflowKeys.policyRevision(policy.policyId(), revision),
+                    ApprovalPolicyV1::decode, "approval policy");
+            if (!current.policyId().equals(policy.policyId())
+                    || current.revision() != revision) {
+                throw new IllegalStateException(
+                        "role approval policy pointer is incompatible");
+            }
+        }
+    }
+
+    private static void requireAbsent(AppStateReader state, byte[] key) {
+        if (state.get(key).isPresent()) {
+            throw new IllegalStateException("role approval genesis state already exists");
+        }
+    }
+
+    private static void requireExact(AppStateReader state, byte[] key, byte[] expected) {
+        byte[] actual = state.get(key).orElseThrow(() ->
+                new IllegalStateException("role approval genesis policy is absent"));
+        if (!MessageDigest.isEqual(actual, expected)) {
+            throw new IllegalStateException("role approval genesis policy is incompatible");
+        }
+    }
+
+    private static long requireCurrent(AppStateReader state, byte[] key) {
+        long revision = RoleState.pointer(state, key);
+        if (revision < 1) {
+            throw new IllegalStateException("role approval current pointer is absent");
+        }
+        return revision;
+    }
+
+    private static <T> T decodeCurrent(
+            AppStateReader state,
+            byte[] key,
+            java.util.function.Function<byte[], T> decoder,
+            String kind
+    ) {
+        byte[] encoded = state.get(key).orElseThrow(() -> new IllegalStateException(
+                "role approval " + kind + " current pointer is dangling"));
+        try {
+            return decoder.apply(encoded);
+        } catch (RuntimeException malformed) {
+            throw new IllegalStateException(
+                    "role approval " + kind + " current record is corrupt", malformed);
+        }
     }
 
     @Override

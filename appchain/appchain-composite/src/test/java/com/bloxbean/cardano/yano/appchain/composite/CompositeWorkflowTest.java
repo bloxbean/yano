@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.appchain.composite;
 import com.bloxbean.cardano.yano.appchain.composite.contracts.AggregateQueryLimitsV1;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
@@ -118,6 +119,22 @@ class CompositeWorkflowTest {
         assertThat(evidence.resultCalls).isEqualTo(1);
     }
 
+    @Test
+    void candidateHeightAdmissionIsUsedOnlyWhenTheCallerSuppliesAHeight() {
+        PutComponent component = component("registry", "registry.v1");
+        CandidateAwareWorkflow workflow = new CandidateAwareWorkflow(
+                new WorkflowDescriptor("candidate-aware", "1", "candidate.v1", 1, 0,
+                        List.of(component.descriptor().generation()), 0));
+        CompositeStateMachine machine = machine(List.of(component), List.of(workflow));
+        AppMessage message = message("candidate.v1", "payload");
+
+        assertThat(machine.validate(message).isAccepted()).isTrue();
+        assertThat(machine.validateForBlock(message, 7, new MemoryState()).isAccepted())
+                .isTrue();
+        assertThat(machine.validateForBlock(message, 8, new MemoryState()).isAccepted())
+                .isFalse();
+    }
+
     private static CompositeStateMachine machine(
             List<CompositeComponent> components,
             List<CompositeWorkflow> workflows
@@ -218,6 +235,28 @@ class CompositeWorkflowTest {
                             ResultPolicy.CHAIN, 10, null));
                 }
             }
+        }
+    }
+
+    private record CandidateAwareWorkflow(WorkflowDescriptor descriptor)
+            implements CompositeWorkflow {
+        @Override
+        public AppStateMachine.AdmissionResult validate(AppMessage routedMessage) {
+            return AppStateMachine.AdmissionResult.accept();
+        }
+
+        @Override
+        public AppStateMachine.AdmissionResult validateForBlock(
+                AppMessage routedMessage,
+                long candidateHeight
+        ) {
+            return candidateHeight == 7
+                    ? AppStateMachine.AdmissionResult.accept()
+                    : AppStateMachine.AdmissionResult.reject("wrong candidate height");
+        }
+
+        @Override
+        public void apply(AppBlock routedBlock, CompositeWorkflowContext context) {
         }
     }
 
