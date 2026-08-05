@@ -189,6 +189,21 @@ grep -q 'already has payment-chain-l1bridge' <<< "$BRIDGE_ADD_AGAIN"
 "$ROOT/showcase.sh" prepare --instance anchor-expand --anchor \
   --http-base 19670 --server-base 19270
 ANCHOR_ROOT="$ROOT/data/showcase/anchor-expand"
+# Fresh instances anchor-ENABLE every chain by default (config-only; spending
+# starts at per-chain bootstrap).
+jq -e '.schemaVersion == 2 and (.anchor.chainIds | length == 11)' \
+  "$ANCHOR_ROOT/showcase-identity.json" >/dev/null
+# Downgrade the retained scope to the legacy workflow-only shape so the
+# additive enable migrations below keep their pre-default coverage.
+python3 - "$ANCHOR_ROOT/showcase-identity.json" <<'PY'
+import json, pathlib, sys
+marker = pathlib.Path(sys.argv[1])
+doc = json.loads(marker.read_text())
+doc["schemaVersion"] = 1
+doc["anchor"].pop("chainIds", None)
+doc["anchor"]["chainId"] = "workflow-chain"
+marker.write_text(json.dumps(doc, sort_keys=True, separators=(",", ":")) + "\n")
+PY
 mkdir -m 700 "$ANCHOR_ROOT/cluster"
 python3 - "$ANCHOR_ROOT/cluster/cluster-appchain-identity.json" <<'PY'
 import hashlib,json,pathlib,sys

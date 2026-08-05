@@ -51,8 +51,9 @@ unzip yano-showcase-*.zip -d ~/showcase && cd ~/showcase/yano-showcase-*
 
 ## 2. Start a cluster
 
-**Local devnet** (fast path; anchoring auto-enabled in script mode for
-`workflow-chain` and auto-funded from the devnet faucet):
+**Local devnet** (fast path; script anchoring is enabled for ALL chains,
+auto-funded from the devnet faucet, and auto-bootstrapped for
+`workflow-chain` — bootstrap the rest selectively, see §9):
 
 ```bash
 ./showcase.sh quickstart --profile light --nodes 3 --instance demo
@@ -358,14 +359,16 @@ java -jar $JAR authmap $API authenticated-map-jmt-chain load kv-open 100
 
 ## 9. L1 anchoring: enable, bootstrap, verify
 
-Defaults: devnet `quickstart` auto-enables script anchoring for
-**`workflow-chain` only** (auto-funded, auto-bootstrapped). Preprod requires
-the explicit flags at `up` (§2) and manual funding. Any other chain needs an
-additive scope migration first:
+Defaults: new instances anchor-ENABLE **all chains** — enabling is
+config-only and never spends: an enabled chain stays dormant (`bootstrapped:
+false`, no L1 transactions) until you bootstrap it. Spending starts at
+bootstrap (thread setup) and continues per anchor transaction afterwards, so
+bootstrap selectively. Devnet `quickstart` auto-bootstraps `workflow-chain`
+only; preprod requires the explicit flags at `up` (§2) and manual funding.
+Instances created before this default carry a narrower retained scope —
+widen them with the additive migration (no L1 cost, restarts nodes):
 
 ```bash
-# enable is a no-L1-cost identity migration (restarts nodes, reuses the key):
-./showcase.sh anchor enable authenticated-map-chain --instance preprod-anchor --confirm-public-anchor preprod
 ./showcase.sh anchor enable all --instance preprod-anchor --confirm-public-anchor preprod
 
 # bootstrap mints each chain's thread NFT — exactly once per chain, ever:
