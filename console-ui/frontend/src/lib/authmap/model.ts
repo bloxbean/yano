@@ -345,9 +345,10 @@ function encodeMutation(spec: MutationSpec): Uint8Array {
 }
 
 /**
- * Canonical authenticated-map command: [1, single|batch, [mutation...]].
- * Mirrors AuthenticatedMapContract.encodeCommand and returns lowercase hex
- * ready for POST /messages on topic authenticated-map.command.v1.
+ * Legacy plain command: [1, single|batch, [mutation...]]. Mirrors
+ * AuthenticatedMapContract.encodeCommand. The composite chain does NOT admit
+ * this on the wire; it is the `--command-hex` input the offline signing CLI
+ * consumes when assembling a governed action (§10.3).
  */
 export function encodeCommandHex(mutations: MutationSpec[], collections?: AuthMapCollection[]): string {
   if (mutations.length === 0 || mutations.length > MAX_BATCH_ITEMS) {
@@ -367,6 +368,48 @@ export function encodeCommandHex(mutations: MutationSpec[], collections?: AuthMa
   ]);
   if (encoded.length > MAX_BATCH_BYTES) throw new Error('Command exceeds the 1 MiB bound');
   return bytesToHex(encoded);
+}
+
+/**
+ * Final v1 submit envelope for basic (open/owner/member) collections:
+ * [1, bytes([1, batch, [mutation...], [assignment...]]), []] with one
+ * evidence-free assignment per mutation. This is the only encoding the
+ * composite authenticated-map chain admits on
+ * authenticated-map.command.v1; governed/approval collections instead
+ * import an externally signed envelope.
+ */
+export function encodeBasicEnvelopeHex(
+  mutations: MutationSpec[], collections: AuthMapCollection[]
+): string {
+  if (mutations.length === 0 || mutations.length > MAX_BATCH_ITEMS) {
+    throw new Error('A command requires 1-128 mutations');
+  }
+  const seen = new Set<string>();
+  const assignments: Uint8Array[] = [];
+  mutations.forEach((spec, index) => {
+    const collection = collections.find((entry) => entry.id === spec.collectionId);
+    preflightMutation(spec, collection);
+    if (!directSubmitAllowed(collection)) {
+      throw new Error('Governed and approval collections require externally signed evidence');
+    }
+    const identity = `${spec.collectionId}:${spec.keyHex}`;
+    if (seen.has(identity)) throw new Error('Batch contains a duplicate collection/key');
+    seen.add(identity);
+    assignments.push(cborArray([
+      cborUint(index), cborUint(collection!.authorization), cborText(''), cborUint(0)
+    ]));
+  });
+  const action = cborArray([
+    cborUint(STATE_MACHINE_VERSION),
+    cborUint(mutations.length === 1 ? 0 : 1),
+    cborArray(mutations.map(encodeMutation)),
+    cborArray(assignments)
+  ]);
+  const envelope = cborArray([
+    cborUint(STATE_MACHINE_VERSION), cborBytes(action), cborArray([])
+  ]);
+  if (envelope.length > MAX_BATCH_BYTES) throw new Error('Command exceeds the 1 MiB bound');
+  return bytesToHex(envelope);
 }
 
 /** Authorization modes the console may submit directly (unsigned commands). */

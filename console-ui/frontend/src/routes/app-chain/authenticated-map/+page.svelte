@@ -17,7 +17,8 @@
   import {
     ACTOR_COMMAND_TOPIC, AUTHMAP_API_VERSION, AUTHMAP_COMMAND_TOPIC,
     assertAuthMapEnvelope, assertPendingEnvelope, authorizationLabel,
-    decodeEntryRecordValue, directSubmitAllowed, encodeCommandHex, entryStatusLabel,
+    decodeEntryRecordValue, directSubmitAllowed, encodeBasicEnvelopeHex,
+    encodeCommandHex, entryStatusLabel,
     governedCliHint, isAuthenticatedMapChain, isHex, OP_COMPARE_AND_SET, OP_PUT,
     OP_PUT_IF_ABSENT, OP_RESTORE, OP_REVOKE, OP_TRANSFER_CONTROLLER, OPERATION_LABELS,
     preflightMutation, presenceLabel, receiptErrorLabel, receiptStatusLabel,
@@ -84,6 +85,7 @@
   let preflight = '';
   let preflightOk = false;
   let commandHex = '';
+  let submitHex = '';
   let importedCommand = '';
   let importedTopic = AUTHMAP_COMMAND_TOPIC;
   let submitError = '';
@@ -316,14 +318,21 @@
   }
 
   function runPreflight(): void {
-    preflight = ''; preflightOk = false; commandHex = '';
+    preflight = ''; preflightOk = false; commandHex = ''; submitHex = '';
     try {
       const spec = buildSpec();
       preflightMutation(spec, mutationDescriptor);
+      // Legacy plain command bytes: the offline CLI's --command-hex input.
       commandHex = encodeCommandHex([spec], collections);
+      if (directSubmitAllowed(mutationDescriptor)) {
+        // The chain admits only the final v1 envelope on the wire.
+        submitHex = encodeBasicEnvelopeHex([spec], collections);
+      }
       preflightOk = true;
-      preflight = `Preflight OK — canonical command is ${commandHex.length / 2} bytes on `
-        + `${AUTHMAP_COMMAND_TOPIC}.`;
+      preflight = submitHex
+        ? `Preflight OK — canonical command envelope is ${submitHex.length / 2} bytes on `
+          + `${AUTHMAP_COMMAND_TOPIC}.`
+        : 'Preflight OK — this collection requires externally signed evidence.';
     } catch (cause) {
       preflight = cause instanceof Error ? cause.message : 'Preflight failed';
     }
@@ -346,10 +355,10 @@
 
   async function submitDirect(): Promise<void> {
     submitError = '';
-    if (!api || !commandHex || !preflightOk) return;
+    if (!api || !submitHex || !preflightOk) return;
     try {
       const accepted = await api.chainSubmitMessage(
-        selectedChain, AUTHMAP_COMMAND_TOPIC, commandHex);
+        selectedChain, AUTHMAP_COMMAND_TOPIC, submitHex);
       startTracking(accepted.messageId, AUTHMAP_COMMAND_TOPIC,
         mutationCollection, asHex(mutationKeyMode, mutationKey));
     } catch (cause) {
@@ -913,9 +922,9 @@
       {#if preflight}
         <p class="mb-0 mt-3 text-sm {preflightOk ? 'text-emerald-300' : 'text-rose-300'}" role={preflightOk ? undefined : 'alert'}>{preflight}</p>
       {/if}
-      {#if preflightOk && commandHex}
-        <div class="mt-3 text-xs"><span class="text-slate-500">Canonical command</span>
-          <CopyValue value={commandHex} width={64} label="canonical command hex" /></div>
+      {#if preflightOk && submitHex}
+        <div class="mt-3 text-xs"><span class="text-slate-500">Canonical command envelope</span>
+          <CopyValue value={submitHex} width={64} label="canonical command envelope hex" /></div>
       {/if}
       {#if preflightOk && !mutationDirect && mutationDescriptor}
         <div class="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-100">

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   assertAuthMapEnvelope, assertPendingEnvelope, authorizationLabel, decodeCbor,
-  decodeEntryRecordValue, directSubmitAllowed, encodeCommandHex, governedCliHint,
+  decodeEntryRecordValue, directSubmitAllowed, encodeBasicEnvelopeHex, encodeCommandHex,
+  governedCliHint,
   hexToBytes, isAuthenticatedMapChain, OP_COMPARE_AND_SET, OP_PUT, OP_REVOKE,
   OP_TRANSFER_CONTROLLER, preflightMutation, receiptErrorLabel, utf8ToHex
 } from './model';
@@ -45,6 +46,18 @@ describe('authenticated-map canonical command encoding', () => {
       newControllerHex: '33'.repeat(32)
     })])).toBe('8301008187036b6174746163686d656e7473426b32400740'
       + '58203333333333333333333333333333333333333333333333333333333333333333');
+  });
+
+  it('matches the Java-pinned final submit envelope for basic collections', () => {
+    // Same vector as ShowcaseAuthenticatedMapConfigTest and the packaged CLI:
+    // [1, bytes([1, 0, [put], [[0, owner, "", 0]]]), []].
+    expect(encodeBasicEnvelopeHex([put()], [PRODUCTS]))
+      .toBe('830158228401008187006870726f6475637473436b6579'
+        + '4582a161160100404081840001600080');
+    expect(() => encodeBasicEnvelopeHex([put()], [{ ...PRODUCTS, authorization: 3 }]))
+      .toThrow('externally signed');
+    expect(() => encodeBasicEnvelopeHex([put({ collectionId: 'missing' })], [PRODUCTS]))
+      .toThrow('externally signed');
   });
 
   it('rejects duplicate batch keys, empty batches, and out-of-bound values', () => {
