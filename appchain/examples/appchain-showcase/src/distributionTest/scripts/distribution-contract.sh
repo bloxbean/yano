@@ -53,6 +53,7 @@ grep -q 'config show|paths|export' <<< "$HELP"
 grep -q 'chain-id: "workflow-chain"' "$ROOT/yano/config/application-appchain.yml"
 grep -q 'state-machine: showcase-composite' "$ROOT/yano/config/application-appchain.yml"
 grep -q 'chain-id: "authenticated-map-chain"' "$ROOT/yano/config/application-appchain.yml"
+grep -q 'chain-id: "authenticated-map-jmt-chain"' "$ROOT/yano/config/application-appchain.yml"
 grep -q 'state-machine: authenticated-map' "$ROOT/yano/config/application-appchain.yml"
 grep -q 'com.bloxbean.cardano.yano.appchain.authenticated-map-validators' \
   "$ROOT/yano/config/application-appchain.yml"
@@ -91,5 +92,17 @@ printf '%s' "$MAP_INFO" | jq -e '
     .id == "gtin-v1" and .kind == "plugin" and
     .providerId == "gs1-gtin-v1" and
     (.artifactClosureSha256 | test("^[0-9a-f]{64}$")))
+' >/dev/null
+[ -s "$MAP_ROOT/authenticated-map-jmt.properties" ]
+[ -s "$MAP_ROOT/authenticated-map-jmt-genesis.hex" ]
+[ "$(grep -c '^yano.app-chain.chains\[9\]\.' \
+  "$MAP_ROOT/authenticated-map-jmt.properties")" = 4 ]
+JMT_INFO="$("$ROOT/yano/yano.sh" appchain state validators \
+  --genesis-file "$MAP_ROOT/authenticated-map-jmt-genesis.hex")"
+printf '%s' "$JMT_INFO" | jq -e '
+  .chainId == "authenticated-map-jmt-chain" and
+  .profile == "jmt-blake2b256-v1" and
+  .validatorCount == 0 and
+  ([.collections[].id] | sort == ["documents", "kv-open", "notes"])
 ' >/dev/null
 echo "PASS: copied showcase ZIP is self-contained and documents every demo path"

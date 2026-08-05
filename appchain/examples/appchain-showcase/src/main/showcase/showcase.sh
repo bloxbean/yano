@@ -10,9 +10,11 @@ IDENTITY="$SHOWCASE_HOME/tools/showcase_identity.py"
 VERSION="$(tr -d '\r\n' < "$SHOWCASE_HOME/VERSION" 2>/dev/null || printf development)"
 API_KEY="${YANO_CLUSTER_API_KEY:-yano-local-cluster-full-key}"
 LIGHT_CHAINS=(orders-chain registry-chain approvals-chain balances-chain
-  documents-chain workflow-chain roles-chain payments-chain authenticated-map-chain)
+  documents-chain workflow-chain roles-chain payments-chain authenticated-map-chain
+  authenticated-map-jmt-chain)
 AUTHMAP_GENERATOR=com.bloxbean.cardano.yano.appchain.showcase.ShowcaseAuthenticatedMapConfig
 AUTHMAP_CHAIN_INDEX=8
+AUTHMAP_JMT_CHAIN_INDEX=9
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 note() { printf '%s\n' "$*"; }
@@ -38,6 +40,10 @@ NODE=0
 COUNT=""
 CONCURRENCY=20
 PAYLOAD_SIZE=128
+AUTHMAP_CHAIN="authenticated-map-chain"
+AUTHMAP_COLLECTION="governed-catalog"
+AUTHMAP_ACTOR="issuer-a"
+AUTHMAP_SEED_FILE=""
 DURATION=60
 RATE=25
 SAMPLE=5
@@ -74,6 +80,10 @@ parse() {
       --sample) SAMPLE="${2:-}"; shift 2;;
       --spread) SPREAD=true; shift;;
       --report-dir) REPORT_DIR="${2:-}"; shift 2;;
+      --chain) AUTHMAP_CHAIN="${2:-}"; shift 2;;
+      --collection) AUTHMAP_COLLECTION="${2:-}"; shift 2;;
+      --actor) AUTHMAP_ACTOR="${2:-}"; shift 2;;
+      --seed-file) AUTHMAP_SEED_FILE="${2:-}"; shift 2;;
       --follow|-f) FOLLOW=true; shift;;
       --yes) YES=true; shift;;
       --output) OUTPUT="${2:-}"; shift 2;;
@@ -147,6 +157,8 @@ outbox_dir() { printf '%s/outbox' "$(instance_root)"; }
 joined_file() { printf '%s/joined-nodes' "$(instance_root)"; }
 authenticated_map_properties() { printf '%s/authenticated-map.properties' "$(instance_root)"; }
 authenticated_map_genesis() { printf '%s/authenticated-map-genesis.hex' "$(instance_root)"; }
+authenticated_map_jmt_properties() { printf '%s/authenticated-map-jmt.properties' "$(instance_root)"; }
+authenticated_map_jmt_genesis() { printf '%s/authenticated-map-jmt-genesis.hex' "$(instance_root)"; }
 
 plugin_file() {
   local matches=("$YANO_HOME"/plugins/yano-appchain-showcase-*-bundle.jar)
@@ -156,22 +168,31 @@ plugin_file() {
 }
 
 generate_authenticated_map_candidate() {
+  generate_authmap_candidate authenticated-map-chain "$AUTHMAP_CHAIN_INDEX" mpf-blake2b256-v1
+}
+
+generate_authenticated_map_jmt_candidate() {
+  generate_authmap_candidate authenticated-map-jmt-chain "$AUTHMAP_JMT_CHAIN_INDEX" jmt-blake2b256-v1
+}
+
+generate_authmap_candidate() {
+  local chain_id="$1" chain_index="$2" expected_profile="$3"
   [ -z "${YANO_CLUSTER_MEMBER_KEY_DIR:-}" ] \
     || die "the light showcase uses deterministic demo membership; custom member keys need a custom generated profile"
   local root="$(instance_root)" members candidate
   members="$("$CLUSTER" keys "$NODES" | awk 'NR > 1 {print $3}' | paste -sd, -)"
   [ -n "$members" ] || die "could not derive authenticated-map bootstrap member keys"
-  candidate="$(mktemp "$root/.authenticated-map.properties.XXXXXX")"
+  candidate="$(mktemp "$root/.$chain_id.properties.XXXXXX")"
   chmod 600 "$candidate"
   if ! java -cp "$(plugin_file):$YANO_HOME/yano.jar" "$AUTHMAP_GENERATOR" \
       --runtime-jar "$YANO_HOME/yano.jar" \
-      --chain-id authenticated-map-chain \
+      --chain-id "$chain_id" \
       --members "$members" \
       --threshold "$THRESHOLD" > "$candidate"; then
     rm -f -- "$candidate"
     die "could not generate the release-matched authenticated-map genesis"
   fi
-  python3 - "$candidate" "$AUTHMAP_CHAIN_INDEX" <<'PY' >/dev/null || {
+  python3 - "$candidate" "$chain_index" "$expected_profile" <<'PY' >/dev/null || {
 import pathlib
 import re
 import sys
@@ -194,7 +215,7 @@ for line in path.read_text(encoding="ascii").splitlines():
     values[key] = value
 if set(values) != expected:
     raise ValueError("generated property set is incomplete")
-if values[prefix + "state.commitment-profile"] != "mpf-blake2b256-v1":
+if values[prefix + "state.commitment-profile"] != sys.argv[3]:
     raise ValueError("unexpected commitment profile")
 for name in ("state.format-fingerprint", "state.genesis-id"):
     if not re.fullmatch(r"[0-9a-f]{64}", values[prefix + name]):
@@ -210,10 +231,20 @@ PY
 }
 
 install_authenticated_map_candidate() {
-  local candidate="$1" properties="$(authenticated_map_properties)"
+  install_authmap_candidate "$1" "$(authenticated_map_properties)" \
+    "$(authenticated_map_genesis)" "$AUTHMAP_CHAIN_INDEX"
+}
+
+install_authenticated_map_jmt_candidate() {
+  install_authmap_candidate "$1" "$(authenticated_map_jmt_properties)" \
+    "$(authenticated_map_jmt_genesis)" "$AUTHMAP_JMT_CHAIN_INDEX"
+}
+
+install_authmap_candidate() {
+  local candidate="$1" properties="$2" genesis_file="$3" chain_index="$4"
   mv -f -- "$candidate" "$properties"
   chmod 600 "$properties"
-  python3 - "$properties" "$(authenticated_map_genesis)" "$AUTHMAP_CHAIN_INDEX" <<'PY'
+  python3 - "$properties" "$genesis_file" "$chain_index" <<'PY'
 import os
 import pathlib
 import sys
@@ -307,6 +338,13 @@ write_node_configs() {
       while IFS= read -r property || [ -n "$property" ]; do
         printf '%s\n' "$property"
       done < "$(authenticated_map_properties)"
+      # Legacy nine-chain instances have no JMT contrast chain; the chain add
+      # migration installs this file before it regenerates node configs.
+      if [ -f "$(authenticated_map_jmt_properties)" ]; then
+        while IFS= read -r property || [ -n "$property" ]; do
+          printf '%s\n' "$property"
+        done < "$(authenticated_map_jmt_properties)"
+      fi
     } > "$file"
     chmod 600 "$file"
   done
@@ -319,11 +357,14 @@ prepare_light() {
   if [ -e "$root" ] && [ -L "$root" ]; then die "instance root must not be a symlink"; fi
   mkdir -p "$root"; chmod 700 "$root"
   candidate="$(generate_authenticated_map_candidate)"
+  local jmt_candidate
+  jmt_candidate="$(generate_authenticated_map_jmt_candidate)" || { rm -f -- "$candidate"; return 1; }
   args=(ensure --marker "$(marker)" --version "$VERSION" --profile light
     --variant default --network "$NETWORK" --nodes "$NODES" --threshold "$THRESHOLD"
     --http-base "$HTTP_BASE" --server-base "$SERVER_BASE"
     --config "$YANO_HOME/config/application-appchain.yml" --plugin "$plugin"
-    --authenticated-map-config "$candidate")
+    --authenticated-map-config "$candidate"
+    --authenticated-map-jmt-config "$jmt_candidate")
   if [ "$ANCHOR" = true ]; then args+=(--anchor --anchor-mode "$ANCHOR_MODE"); fi
   if [ "$ANCHOR" = true ]; then
     local -a anchor_chains=()
@@ -333,10 +374,11 @@ prepare_light() {
   fi
   if [ -n "$ANCHOR_KEY_FILE" ]; then args+=(--anchor-key-file "$ANCHOR_KEY_FILE"); fi
   if ! python3 "$IDENTITY" "${args[@]}"; then
-    rm -f -- "$candidate"
+    rm -f -- "$candidate" "$jmt_candidate"
     return 1
   fi
   install_authenticated_map_candidate "$candidate"
+  install_authenticated_map_jmt_candidate "$jmt_candidate"
   write_node_configs "$NODES"
   note "Prepared light instance '$INSTANCE'"
   note "  data:    $root"
@@ -419,7 +461,10 @@ expect_authenticated_map_filtered() {
   status="$(curl -sS -o /dev/null -w '%{http_code}' \
     "http://127.0.0.1:$HTTP_BASE/api/v1/app-chain/chains/authenticated-map-chain/messages/$rejected_id")"
   [ "$status" = 404 ] || die "$label unexpectedly finalized (HTTP $status)"
-  state_key="$(python3 "$CODEC" authmap state-key "$collection" "$key")"
+  # Prove the exact composite physical key the domain API reports; the
+  # map-local state-key is not a leaf on composite chains.
+  state_key="$(curl -fsS "http://127.0.0.1:$((HTTP_BASE + NODE))/api/v1/plugins/com.bloxbean.cardano.yano.appchain.stdlib/authenticated-map/entries/$collection/$(printf '%s' "$key" | od -An -v -tx1 | tr -d ' \n')?chain=authenticated-map-chain" \
+    | jq -r .proofKey)"
   proof="$(proof_key authenticated-map-chain "$state_key")"
   printf '%s' "$proof" | jq -e \
     '.presence == "ABSENT" and .valueHex == null and (.proofWireHex | length > 0)' \
@@ -504,8 +549,9 @@ run_authenticated_map() {
   note "root-attested schema-validated product entry:"
   printf '%s' "$result" | jq '{chainId,stateMachineId,committedHeight,stateRoot,payloadHex}'
 
-  state_key="$(python3 "$CODEC" authmap state-key products "$key")"
-  note "native proof for the product collection entry:"
+  state_key="$(curl -fsS "http://127.0.0.1:$((HTTP_BASE + NODE))/api/v1/plugins/com.bloxbean.cardano.yano.appchain.stdlib/authenticated-map/entries/products/$(printf '%s' "$key" | od -An -v -tx1 | tr -d ' \n')?chain=authenticated-map-chain" \
+    | jq -r .proofKey)"
+  note "native proof for the product collection entry (composite physical key):"
   proof_key authenticated-map-chain "$state_key" \
     | jq '{chainId,committedHeight,stateRoot,valueHex,proofWireHex}'
   note "AUTHENTICATED MAP: opaque, canonical CBOR, schema, and plugin validation passed"
@@ -527,6 +573,153 @@ authmap_basic_body() {
     --action-hex "$action" --evidence-hex ''
 }
 
+# --- individual authenticated-map operations (authmap subcommands) ---------
+
+# Prints "<authorization> <policyId> <valueEncoding>" for one collection.
+authmap_collection_info() {
+  authmap_domain authenticated-map | jq -r --arg c "$1" \
+    '.record.collections[] | select(.id == $c)
+     | "\(.authorization) \(.authorizationPolicy) \(.valueEncoding)"'
+}
+
+# Encodes the user-supplied value per the collection's committed encoding:
+# opaque collections take UTF-8 text; canonical-cbor collections take hex
+# (build it with: python3 tools/showcase_codec.py authmap-value ...).
+authmap_value_hex() {
+  local encoding="$1" value="$2"
+  if [ "$encoding" = 1 ]; then
+    [[ "$value" =~ ^([0-9a-f]{2})+$ ]] \
+      || die "this collection stores canonical CBOR; pass the value as lowercase hex (see tools/showcase_codec.py authmap-value)"
+    printf '%s' "$value"
+  else
+    python3 "$CODEC" authmap-value opaque "$value"
+  fi
+}
+
+authmap_track() {
+  local id="$1"
+  note "message accepted: $id"
+  wait_message "$AUTHMAP_CHAIN" "$id" >/dev/null
+  note "finalized in a block"
+  expect_receipt_applied "$id" "authmap command"
+  authmap_domain "authenticated-map/receipts/$id" | jq -c .record
+}
+
+run_authmap_put() {
+  local collection="$1" key="$2" value="$3" info mode policy encoding kind value_hex body id
+  info="$(authmap_collection_info "$collection")"
+  [ -n "$info" ] || die "unknown collection: $collection"
+  read -r mode policy encoding <<< "$info"
+  case "$mode" in
+    0) kind=open;; 1) kind=owner;; 2) kind=member;;
+    3) die "collection '$collection' is governed-role (policy $policy); use: authmap governed-put";;
+    4) die "collection '$collection' requires the approval workflow (policy $policy); see run authenticated-map";;
+    *) die "unsupported authorization mode: $mode";;
+  esac
+  value_hex="$(authmap_value_hex "$encoding" "$value")"
+  body="$(authmap_basic_body "$kind" "$(python3 "$CODEC" authmap put "$collection" "$key" "$value_hex")")"
+  id="$(submit_hex "$AUTHMAP_CHAIN" authenticated-map.command.v1 "$body")"
+  authmap_track "$id"
+  note "entry:"
+  run_authmap_entry "$collection" "$key"
+}
+
+run_authmap_entry() {
+  local collection="$1" key="$2" key_hex
+  key_hex="$(printf '%s' "$2" | od -An -v -tx1 | tr -d ' \n')"
+  authmap_domain "authenticated-map/entries/$collection/$key_hex" \
+    | jq '{record, committedHeight, stateRoot, proofKey}'
+}
+
+run_authmap_receipt() {
+  authmap_domain "authenticated-map/receipts/$1" | jq '{record, committedHeight, stateRoot, proofKey}'
+}
+
+# End-to-end governed-role PUT that prints every offline-signing step so the
+# flow stays visible. Policy, revisions, key id, and genesis identity are all
+# discovered from the chain itself, so this works for any governed collection
+# the instance hosts. The private key: pass --seed-file <path to 64-hex raw
+# Ed25519 seed> for a real actor; without it, the deterministic demo seed for
+# the named showcase actor is derived and used via tools/showcase_signer.py.
+run_authmap_governed_put() {
+  local key="$1" value="$2" yano="$YANO_HOME/yano.sh" signer="$SHOWCASE_HOME/tools/showcase_signer.py"
+  local collection="$AUTHMAP_COLLECTION" actor="$AUTHMAP_ACTOR"
+  [ -x "$yano" ] || die "packaged yano.sh CLI is required"
+  local info mode policy encoding
+  info="$(authmap_collection_info "$collection")"
+  [ -n "$info" ] || die "unknown collection: $collection"
+  read -r mode policy encoding <<< "$info"
+  [ "$mode" = 3 ] || die "collection '$collection' is not governed-role; use: authmap put"
+
+  local policy_json revision required_role lifetime
+  policy_json="$(authmap_domain "authenticated-map/direct-policies/$policy")" \
+    || die "direct policy '$policy' not found"
+  revision="$(printf '%s' "$policy_json" | jq -r .record.revision)"
+  required_role="$(printf '%s' "$policy_json" | jq -r .record.requiredRole)"
+  lifetime="$(printf '%s' "$policy_json" | jq -r .record.maximumAuthorizationLifetimeBlocks)"
+  note "policy $policy r$revision requires role '$required_role' (lifetime ${lifetime} blocks)"
+
+  local actor_json actor_revision key_id actor_pub
+  actor_json="$(authmap_domain "actors/$actor")" || die "actor '$actor' not found"
+  actor_revision="$(printf '%s' "$actor_json" | jq -r .record.revision)"
+  printf '%s' "$actor_json" | jq -e --arg r "$required_role" \
+    '.record.roles | index($r)' >/dev/null \
+    || die "actor '$actor' does not hold required role '$required_role'"
+  key_id="$(printf '%s' "$actor_json" | jq -r \
+    '[.record.keys[] | select(.status == "ACTIVE")][0].keyId')"
+  actor_pub="$(printf '%s' "$actor_json" | jq -r \
+    '[.record.keys[] | select(.status == "ACTIVE")][0].publicKey')"
+  [ "$key_id" != null ] || die "actor '$actor' has no ACTIVE key"
+  note "actor $actor r$actor_revision signs with key $key_id"
+
+  local seed
+  if [ -n "$AUTHMAP_SEED_FILE" ]; then
+    seed="$(tr -d ' \r\n' < "$AUTHMAP_SEED_FILE")" || die "cannot read --seed-file"
+    [[ "$seed" =~ ^[0-9a-f]{64}$ ]] || die "--seed-file must contain a 64-hex raw Ed25519 seed"
+  else
+    seed="$(demo_actor_seed "$actor")"
+    note "no --seed-file given: using the deterministic DEMO seed for '$actor' (showcase-only material)"
+  fi
+  [ "$(python3 "$signer" public-key "$seed")" = "$actor_pub" ] \
+    || die "the provided seed does not match $actor's registered key $key_id; supply --seed-file with the correct raw Ed25519 seed"
+
+  local genesis_id height deadline window authz_id value_hex cmd action
+  genesis_id="$(authmap_domain authenticated-map | jq -r .record.genesisId)"
+  height="$(authmap_tip_height)"
+  window=90; [ "$lifetime" -le 90 ] && window=$((lifetime - 1))
+  deadline=$((height + window))
+  authz_id="$(python3 -c 'import secrets;print(secrets.token_hex(32))')"
+  value_hex="$(authmap_value_hex "$encoding" "$value")"
+
+  cmd="$(python3 "$CODEC" authmap put "$collection" "$key" "$value_hex")"
+  note "1. plain command:      $cmd"
+  action="$("$yano" appchain authenticated-map action \
+    --command-hex "$cmd" --assignments "0:governed-role:$policy:1")"
+  note "2. governed action:    $action"
+  local args=(--action-hex "$action" --authorization-id "$authz_id"
+    --chain "$AUTHMAP_CHAIN" --genesis-id "$genesis_id" --indexes 0
+    --policy "$policy" --policy-revision "$revision" --actor "$actor"
+    --actor-revision "$actor_revision" --key "$key_id" --public-key "$actor_pub"
+    --issued-height "$height" --deadline-height "$deadline")
+  local preimage signature evidence final id
+  preimage="$("$yano" appchain authenticated-map direct-preimage "${args[@]}")"
+  note "3. signing preimage:   $preimage"
+  signature="$(python3 "$signer" sign "$seed" "$preimage")"
+  note "4. Ed25519 signature:  $signature"
+  evidence="$("$yano" appchain authenticated-map direct-complete \
+    "${args[@]}" --signature "$signature")"
+  note "5. completed evidence: ${evidence:0:64}..."
+  final="$("$yano" appchain authenticated-map command \
+    --action-hex "$action" --evidence-hex "$evidence")"
+  note "6. final command:      ${final:0:64}..."
+  id="$(submit_hex "$AUTHMAP_CHAIN" authenticated-map.command.v1 "$final")"
+  authmap_track "$id"
+  note "direct authorization consumed exactly once:"
+  authmap_domain "authenticated-map/direct-consumptions/$actor/$authz_id" | jq -c .record
+  note "entry:"
+  run_authmap_entry "$collection" "$key"
+}
+
 # Demo-only deterministic actor seed shared with ShowcaseAuthenticatedMapConfig.
 demo_actor_seed() {
   python3 -c 'import hashlib,sys
@@ -534,11 +727,11 @@ print(hashlib.sha256(("yano-showcase-demo-actor:"+sys.argv[1]).encode()).hexdige
 }
 
 authmap_domain() {
-  curl -fsS "http://127.0.0.1:$((HTTP_BASE + NODE))/api/v1/plugins/com.bloxbean.cardano.yano.appchain.stdlib/$1?chain=authenticated-map-chain"
+  curl -fsS "http://127.0.0.1:$((HTTP_BASE + NODE))/api/v1/plugins/com.bloxbean.cardano.yano.appchain.stdlib/$1?chain=$AUTHMAP_CHAIN"
 }
 
 authmap_tip_height() {
-  curl -fsS "http://127.0.0.1:$((HTTP_BASE + NODE))/api/v1/app-chain/chains/authenticated-map-chain/tip" \
+  curl -fsS "http://127.0.0.1:$((HTTP_BASE + NODE))/api/v1/app-chain/chains/$AUTHMAP_CHAIN/tip" \
     | jq -r '.height'
 }
 
@@ -560,6 +753,7 @@ expect_receipt_applied() {
 # exercised end to end through offline CLI authoring and the demo signer. The
 # node API and console never see actor private keys.
 run_authenticated_map_governed() {
+  local AUTHMAP_CHAIN=authenticated-map-chain
   local suffix="$1" yano="$YANO_HOME/yano.sh" signer="$SHOWCASE_HOME/tools/showcase_signer.py"
   local genesis_id issuer_seed issuer_pub key value cmd action height deadline
   [ -x "$yano" ] || die "packaged yano.sh CLI is required for the governed showcase"
@@ -963,6 +1157,11 @@ activation_submit() {
       body="$(authmap_basic_body owner \
         "$(python3 "$CODEC" authmap put attachments "$suffix" "$value")")"
       submit_hex "$cid" authenticated-map.command.v1 "$body" 0;;
+    authenticated-map-jmt-chain)
+      value="$(python3 "$CODEC" authmap-value opaque "$suffix")"
+      body="$(authmap_basic_body open \
+        "$(python3 "$CODEC" authmap put kv-open "$suffix" "$value")")"
+      submit_hex "$cid" authenticated-map.command.v1 "$body" 0;;
     *) die "unsupported light-profile chain: $cid";;
   esac
 }
@@ -1228,6 +1427,8 @@ anchor_enable() {
     --config "$YANO_HOME/config/application-appchain.yml" --plugin "$(plugin_file)"
     --authenticated-map-config "$(authenticated_map_properties)"
     --anchor-mode "$ANCHOR_MODE")
+  [ ! -f "$(authenticated_map_jmt_properties)" ] || migrate+=(
+    --authenticated-map-jmt-config "$(authenticated_map_jmt_properties)")
   local -a desired_chains=()
   IFS=',' read -r -a desired_chains <<< "$desired"
   for target in "${desired_chains[@]}"; do migrate+=(--anchor-chain "$target"); done
@@ -1294,6 +1495,11 @@ Yano unified app-chain showcase
   ./showcase.sh status|ui|logs|restart|stop|reset [--instance name]
   ./showcase.sh config show|paths|export <file>
   ./showcase.sh run orders|registry|authenticated-map|approvals|balances|documents|composite|roles|eutxo|anchor|all
+  ./showcase.sh authmap put <collection> <key> <value> [--chain id]
+  ./showcase.sh authmap governed-put <key> <value> [--chain id] [--collection C] [--actor A] [--seed-file F]
+  ./showcase.sh authmap entry <collection> <key> [--chain id]
+  ./showcase.sh authmap receipt <message-id> [--chain id]
+  ./showcase.sh chain add authenticated-map-jmt-chain
   ./showcase.sh approvals propose <id> <payload> [required]
   ./showcase.sh approvals approve <id> <member-node>
   ./showcase.sh composite register-order <key> '<json>'
@@ -1434,6 +1640,43 @@ PY
         approvals) run_approvals "$suffix";; documents) run_documents "$suffix";; composite) run_composite "$suffix";;
         *) die "unsupported load scenario";; esac
     done;;
+  chain)
+    adopt_marker
+    [ "${POSITIONAL[0]:-}" = add ] || die "usage: chain add authenticated-map-jmt-chain"
+    [ "${POSITIONAL[1]:-}" = authenticated-map-jmt-chain ] \
+      || die "chain add currently supports exactly: authenticated-map-jmt-chain"
+    [ "$PROFILE" = light ] || die "chain add applies only to the light profile"
+    grep -q 'chain-id: "authenticated-map-jmt-chain"' \
+      "$YANO_HOME/config/application-appchain.yml" \
+      || die "packaged application-appchain.yml lacks the JMT chain; replace showcase.sh, tools/, yano/config/application-appchain.yml, and the plugin bundle from a newly built showcase ZIP first"
+    cluster_env; "$CLUSTER" stop || true
+    chain_add_candidate="$(generate_authenticated_map_jmt_candidate)"
+    if ! python3 "$IDENTITY" chain-add --marker "$(marker)" \
+        --config "$YANO_HOME/config/application-appchain.yml" \
+        --plugin "$(plugin_file)" \
+        --authenticated-map-config "$(authenticated_map_properties)" \
+        --authenticated-map-jmt-config "$chain_add_candidate" \
+        --cluster-marker "$(cluster_dir)/cluster-appchain-identity.json"; then
+      rm -f -- "$chain_add_candidate"
+      die "chain add migration failed; the instance identity is unchanged"
+    fi
+    install_authenticated_map_jmt_candidate "$chain_add_candidate"
+    write_node_configs "$NODES"
+    up_light
+    resume_joined_nodes
+    note "authenticated-map-jmt-chain added; verify with: ./showcase.sh status --instance $INSTANCE";;
+  authmap)
+    adopt_marker
+    case "${POSITIONAL[0]:-}" in
+      put) run_authmap_put "${POSITIONAL[1]:?collection required}" \
+        "${POSITIONAL[2]:?key required}" "${POSITIONAL[3]:?value required}";;
+      governed-put) run_authmap_governed_put \
+        "${POSITIONAL[1]:?key required}" "${POSITIONAL[2]:?value required}";;
+      entry) run_authmap_entry "${POSITIONAL[1]:?collection required}" \
+        "${POSITIONAL[2]:?key required}";;
+      receipt) run_authmap_receipt "${POSITIONAL[1]:?message id required}";;
+      *) die "usage: authmap put <collection> <key> <value> | authmap governed-put <key> <value> [--collection C] [--actor A] [--seed-file F] | authmap entry <collection> <key> | authmap receipt <message-id>";;
+    esac;;
   load-test)
     adopt_marker; run_load_test "${POSITIONAL[0]:-orders}";;
   soak-test)

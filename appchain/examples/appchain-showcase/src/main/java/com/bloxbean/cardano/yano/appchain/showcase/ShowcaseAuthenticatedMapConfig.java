@@ -37,15 +37,17 @@ import java.util.TreeMap;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
-/** Builds the release-matched authenticated-map genesis used by the light showcase. */
+/** Builds the release-matched authenticated-map geneses used by the light showcase. */
 public final class ShowcaseAuthenticatedMapConfig {
     static final String CHAIN_ID = "authenticated-map-chain";
+    static final String JMT_CHAIN_ID = "authenticated-map-jmt-chain";
     static final String VALIDATOR_BUNDLE_ID =
             "com.bloxbean.cardano.yano.appchain.authenticated-map-validators";
     static final String VALIDATOR_PROVIDER_ID = "gs1-gtin-v1";
     static final String VALIDATOR_DESCRIPTOR_ID = "gtin-v1";
     static final String CATALOG_ENTRY = "META-INF/yano-plugin-index-v1.json";
     static final String PREFIX = "yano.app-chain.chains[8].";
+    static final String JMT_PREFIX = "yano.app-chain.chains[9].";
 
     private static final String SHA256_PREFIX = "sha256:";
     private static final int MAX_CATALOG_BYTES = 1_048_576;
@@ -58,15 +60,68 @@ public final class ShowcaseAuthenticatedMapConfig {
     public static void main(String[] arguments) {
         try {
             Options options = Options.parse(arguments);
-            byte[] closureDigest = catalogArtifactClosure(
-                    options.runtimeJar(), VALIDATOR_BUNDLE_ID);
-            Map<String, String> settings = settings(
-                    options.chainId(), options.members(), options.threshold(), closureDigest);
-            settings.forEach((key, value) -> System.out.println(PREFIX + key + "=" + value));
+            Map<String, String> settings;
+            String prefix;
+            if (JMT_CHAIN_ID.equals(options.chainId())) {
+                settings = jmtSettings(
+                        options.chainId(), options.members(), options.threshold());
+                prefix = JMT_PREFIX;
+            } else {
+                byte[] closureDigest = catalogArtifactClosure(
+                        options.runtimeJar(), VALIDATOR_BUNDLE_ID);
+                settings = settings(options.chainId(), options.members(),
+                        options.threshold(), closureDigest);
+                prefix = PREFIX;
+            }
+            settings.forEach((key, value) -> System.out.println(prefix + key + "=" + value));
         } catch (IllegalArgumentException | IOException failure) {
             System.err.println("error: " + failure.getMessage());
             System.exit(2);
         }
+    }
+
+    /**
+     * The contrasting second map chain: classic-JMT backend with a basic
+     * (ungoverned) authorization profile — open, owner, and member
+     * collections and no genesis validators — so the console's basic-only
+     * views and the JMT commitment identity can be demonstrated next to the
+     * governed MPF chain.
+     */
+    static Map<String, String> jmtSettings(String chainId, List<String> members, int threshold) {
+        if (!JMT_CHAIN_ID.equals(chainId)) {
+            throw new IllegalArgumentException("unexpected authenticated-map JMT chain id");
+        }
+        List<String> normalizedMembers = normalizedMembers(members);
+        if (threshold < 1 || threshold > normalizedMembers.size()) {
+            throw new IllegalArgumentException(
+                    "authenticated-map threshold must be between 1 and the member count");
+        }
+        AppChainConfig config = AppChainConfig.builder(chainId)
+                .signingKeyHex("00".repeat(32))
+                .memberKeysHex(new LinkedHashSet<>(normalizedMembers))
+                .proposerKeyHex(normalizedMembers.getFirst())
+                .threshold(threshold)
+                .blockIntervalMs(1_000)
+                .stateMachineId(AuthenticatedMapContract.STATE_MACHINE_ID)
+                .pluginSettings(Map.of("membership.mode", "governed"))
+                .build();
+        List<AuthenticatedMapContract.CollectionDescriptor> collections = List.of(
+                collection("kv-open", AuthenticatedMapContract.AUTH_OPEN,
+                        64, 1_024, AuthenticatedMapContract.VALUE_ENCODING_OPAQUE, ""),
+                collection("documents", AuthenticatedMapContract.AUTH_OWNER,
+                        64, 8_192, AuthenticatedMapContract.VALUE_ENCODING_OPAQUE, ""),
+                collection("notes", AuthenticatedMapContract.AUTH_MEMBER,
+                        64, 2_048, AuthenticatedMapContract.VALUE_ENCODING_CANONICAL_CBOR,
+                        ""));
+        AuthenticatedMapContract.Genesis genesis = AuthenticatedMapGenesisFactory.classicJmt(
+                config,
+                new byte[32],
+                32,
+                AppChainConfig.DEFAULT_MAX_MESSAGE_BYTES,
+                collections,
+                List.of());
+        return Collections.unmodifiableMap(
+                new TreeMap<>(AuthenticatedMapGenesisFactory.settings(genesis)));
     }
 
     static Map<String, String> settings(

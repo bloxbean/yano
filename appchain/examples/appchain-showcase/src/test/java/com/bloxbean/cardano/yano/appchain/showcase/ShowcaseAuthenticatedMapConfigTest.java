@@ -132,6 +132,33 @@ class ShowcaseAuthenticatedMapConfigTest {
     }
 
     @Test
+    void buildsBasicClassicJmtGenesisForTheContrastChain() {
+        Map<String, String> settings = ShowcaseAuthenticatedMapConfig.jmtSettings(
+                ShowcaseAuthenticatedMapConfig.JMT_CHAIN_ID,
+                List.of("11".repeat(32), "22".repeat(32), "33".repeat(32)),
+                2);
+        AuthenticatedMapContract.Genesis genesis = AuthenticatedMapContract.decodeGenesis(
+                HexFormat.of().parseHex(settings.get(
+                        StdlibStateMachineProviders.AUTHENTICATED_MAP_GENESIS_SETTING)));
+        assertThat(genesis.chainId()).isEqualTo("authenticated-map-jmt-chain");
+        assertThat(genesis.commitmentProfileId()).isEqualTo("jmt-blake2b256-v1");
+        assertThat(genesis.collections())
+                .extracting(AuthenticatedMapContract.CollectionDescriptor::id)
+                .containsExactly("documents", "kv-open", "notes");
+        assertThat(genesis.collections())
+                .extracting(AuthenticatedMapContract.CollectionDescriptor::authorization)
+                .containsExactly(AuthenticatedMapContract.AUTH_OWNER,
+                        AuthenticatedMapContract.AUTH_OPEN,
+                        AuthenticatedMapContract.AUTH_MEMBER);
+        assertThat(genesis.validators()).isEmpty();
+        assertThat(genesis.governedGenesis()).isNull();
+        assertThat(settings.get("state.commitment-profile")).isEqualTo("jmt-blake2b256-v1");
+        assertThatThrownBy(() -> ShowcaseAuthenticatedMapConfig.jmtSettings(
+                "authenticated-map-chain", List.of("11".repeat(32)), 1))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void demoActorSeedsMatchTheShellDerivationContract() {
         // showcase.sh derives the identical value with:
         //   printf 'yano-showcase-demo-actor:issuer-a' | shasum -a 256
@@ -169,6 +196,11 @@ class ShowcaseAuthenticatedMapConfigTest {
                         HexFormat.of().parseHex(wrapped));
         assertThat(decoded.action().mutations()).hasSize(1);
         assertThat(decoded.evidence()).isEmpty();
+        // Cross-language golden vector shared with the console's TS encoder
+        // (console-ui .../authmap/model.test.ts) and the python codec.
+        assertThat(wrapped).isEqualTo(
+                "8301582f8401008187006b6174746163686d656e74734864656d6f2d6b65794a64656d6f2d76"
+                        + "616c756500404081840001600080");
     }
 
     @Test

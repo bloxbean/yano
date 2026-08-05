@@ -16,8 +16,10 @@ import sys
 LIGHT_CHAINS = [
     "orders-chain", "registry-chain", "approvals-chain", "balances-chain",
     "documents-chain", "workflow-chain", "roles-chain", "payments-chain",
-    "authenticated-map-chain",
+    "authenticated-map-chain", "authenticated-map-jmt-chain",
 ]
+# Instances prepared before the classic-JMT contrast chain existed.
+LEGACY_LIGHT_CHAINS = LIGHT_CHAINS[:-1]
 CHAIN_ID = re.compile(r"[A-Za-z0-9._~-]{1,128}")
 HEX_32 = re.compile(r"[0-9a-f]{64}")
 
@@ -108,6 +110,8 @@ def document(args: argparse.Namespace) -> dict:
         "pluginSha256": sha256(plugin),
         "authenticatedMapConfigSha256": sha256(
             pathlib.Path(args.authenticated_map_config).resolve()),
+        "authenticatedMapJmtConfigSha256": sha256(
+            pathlib.Path(args.authenticated_map_jmt_config).resolve()),
         "anchor": anchor_identity(
             args.anchor,
             args.anchor_mode,
@@ -214,11 +218,16 @@ def validate_deployment_identity(document: dict) -> None:
         "serverBase", "runtime", "chainIds", "configSha256", "pluginSha256", "anchor",
         "authenticatedMapConfigSha256",
     }
+    if document.get("chainIds") == LIGHT_CHAINS:
+        expected = expected | {"authenticatedMapJmtConfigSha256"}
+        if (not isinstance(document.get("authenticatedMapJmtConfigSha256"), str)
+                or not HEX_32.fullmatch(document["authenticatedMapJmtConfigSha256"])):
+            raise ValueError("showcase deployment identity is malformed")
     anchor = document.get("anchor")
     if (set(document) != expected or document.get("profile") != "light"
             or document.get("network") not in ("devnet", "preprod")
             or document.get("protocolMagic") != (1 if document.get("network") == "preprod" else 42)
-            or document.get("chainIds") != LIGHT_CHAINS
+            or document.get("chainIds") not in (LIGHT_CHAINS, LEGACY_LIGHT_CHAINS)
             or not isinstance(document.get("authenticatedMapConfigSha256"), str)
             or not HEX_32.fullmatch(document["authenticatedMapConfigSha256"])
             or type(document.get("bootstrapNodeCount")) is not int
@@ -233,7 +242,7 @@ def validate_deployment_identity(document: dict) -> None:
                     {"enabled", "mode", "chainId", "keyReference"},
                     {"enabled", "mode", "chainIds", "keyReference"})):
             raise ValueError("showcase anchor identity is malformed")
-        selected = anchor_scope(anchor, LIGHT_CHAINS)
+        selected = anchor_scope(anchor, document["chainIds"])
         if document.get("schemaVersion") != (2 if len(selected) > 1 else 1):
             raise ValueError("showcase anchor identity has an inconsistent schema")
     elif (set(anchor) != {"enabled", "mode", "chainId", "keyReference"}
@@ -338,8 +347,14 @@ def migrate_anchor(args: argparse.Namespace) -> None:
         raise ValueError("authenticated-map genesis differs from the retained showcase identity")
     configured = deployment.get("chainIds")
     if (deployment.get("profile") != "light" or not isinstance(configured, list)
-            or configured != LIGHT_CHAINS):
+            or configured not in (LIGHT_CHAINS, LEGACY_LIGHT_CHAINS)):
         raise ValueError("anchor enable is supported only for the maintained light profile")
+    if "authenticatedMapJmtConfigSha256" in deployment:
+        if (not args.authenticated_map_jmt_config
+                or sha256(pathlib.Path(args.authenticated_map_jmt_config).resolve())
+                != deployment.get("authenticatedMapJmtConfigSha256")):
+            raise ValueError(
+                "authenticated-map JMT genesis differs from the retained showcase identity")
     current_anchor = deployment.get("anchor")
     if not isinstance(current_anchor, dict):
         raise ValueError("deployment anchor identity is malformed")
@@ -396,9 +411,51 @@ def migrate_anchor(args: argparse.Namespace) -> None:
     print(",".join(selected))
 
 
+def migrate_chain_add(args: argparse.Namespace) -> None:
+    """Additive migration: adopt the classic-JMT contrast chain on a legacy
+    nine-chain instance. Re-records the packaged config/plugin digests (the
+    upgrade replaced those files) after verifying the retained
+    authenticated-map genesis is untouched."""
+    marker = pathlib.Path(args.marker)
+    deployment = parsed_identity(marker, "yano.showcase.deployment")
+    validate_deployment_identity(deployment)
+    required = (args.config, args.plugin, args.authenticated_map_config,
+                args.authenticated_map_jmt_config)
+    if not all(required):
+        raise ValueError("chain-add requires --config, --plugin, "
+                         "--authenticated-map-config, and --authenticated-map-jmt-config")
+    if (sha256(pathlib.Path(args.authenticated_map_config).resolve())
+            != deployment.get("authenticatedMapConfigSha256")):
+        raise ValueError("retained authenticated-map genesis does not match the marker; "
+                         "refusing to migrate a tampered instance")
+    jmt_sha = sha256(pathlib.Path(args.authenticated_map_jmt_config).resolve())
+    if deployment.get("chainIds") == LIGHT_CHAINS:
+        if deployment.get("authenticatedMapJmtConfigSha256") != jmt_sha:
+            raise ValueError("instance already has a different JMT chain identity")
+        print("already-migrated")
+        return
+    if deployment.get("chainIds") != LEGACY_LIGHT_CHAINS:
+        raise ValueError("chain add supports only the maintained light profile")
+    deployment["chainIds"] = list(LIGHT_CHAINS)
+    deployment["configSha256"] = sha256(pathlib.Path(args.config).resolve())
+    deployment["pluginSha256"] = sha256(pathlib.Path(args.plugin).resolve())
+    deployment["authenticatedMapJmtConfigSha256"] = jmt_sha
+    validate_deployment_identity(deployment)
+    if args.cluster_marker and pathlib.Path(args.cluster_marker).exists():
+        cluster_marker_path = pathlib.Path(args.cluster_marker)
+        cluster = parsed_identity(cluster_marker_path, "yano.cluster.appchain-identity")
+        validate_cluster_identity(cluster, LEGACY_LIGHT_CHAINS)
+        cluster["chainIds"] = list(LIGHT_CHAINS)
+        validate_cluster_identity(cluster, list(LIGHT_CHAINS))
+        write_atomic(cluster_marker_path, canonical(cluster))
+    write_atomic(marker, canonical(deployment))
+    print("migrated")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("ensure", "show", "export", "anchor-enable"))
+    parser.add_argument("action", choices=("ensure", "show", "export", "anchor-enable",
+                                           "chain-add"))
     parser.add_argument("--marker", required=True)
     parser.add_argument("--version", default="development")
     parser.add_argument("--profile", default="light")
@@ -411,6 +468,7 @@ def main() -> None:
     parser.add_argument("--config")
     parser.add_argument("--plugin")
     parser.add_argument("--authenticated-map-config")
+    parser.add_argument("--authenticated-map-jmt-config")
     parser.add_argument("--anchor", action="store_true")
     parser.add_argument("--anchor-mode", default="script")
     parser.add_argument("--anchor-chain", action="append", default=[])
@@ -424,6 +482,9 @@ def main() -> None:
         if not args.cluster_marker or not args.cluster_env:
             raise ValueError("anchor-enable requires --cluster-marker and --cluster-env")
         migrate_anchor(args)
+        return
+    if args.action == "chain-add":
+        migrate_chain_add(args)
         return
     if args.action == "show":
         parsed = json.loads(secure_existing(marker))
