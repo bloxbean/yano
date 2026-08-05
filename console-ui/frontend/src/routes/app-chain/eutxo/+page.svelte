@@ -518,6 +518,7 @@
       depositTxId = assembled.transactionId;
       depositL2Owner = build.l2OwnerAddress;
       depositMessage = `Submitted. The deposit mirrors onto the L2 after ${bridgeInfo.stabilityDepth} stable L1 blocks.`;
+      setTimeout(() => { void loadBridge(); }, 4000);
     } catch (cause) {
       const detail = cause instanceof ApiError
         ? `${cause.message} (HTTP ${cause.status})`
@@ -570,6 +571,7 @@
       l2Message = kind === 'transfer'
         ? `L2 transfer submitted (tx ${build.transactionId.slice(0, 16)}…, message ${submitted.messageId.slice(0, 16)}…).`
         : `Withdrawal claim submitted (tx ${build.transactionId.slice(0, 16)}…) — it appears under Withdrawal claims once finalized; the operator settles it on L1.`;
+      setTimeout(() => { void loadTransactions(false); void loadBridge(); }, 4000);
     } catch (cause) {
       const detail = cause instanceof ApiError
         ? `${cause.message} (HTTP ${cause.status})`
