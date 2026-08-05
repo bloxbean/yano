@@ -1,6 +1,6 @@
 <script lang="ts">
   import { base } from '$app/paths';
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { ApiError, apiFailureMessage, resolveApiBase, YanoApi } from '$lib/api/client';
   import type {
     AppChainStatus, ChainSummary, EutxoDeposit, EutxoIndexEnvelope, EutxoIndexedAccount,
@@ -44,6 +44,35 @@
   async function walletCore() {
     walletCoreModule ??= await import('@cardano-foundation/cardano-connect-with-wallet-core');
     return walletCoreModule;
+  }
+
+  /**
+   * Enumerate window.cardano ourselves, keeping the ORIGINAL key casing
+   * (connect and enable() need the exact key), and keep rescanning: wallet
+   * extensions — especially native-messaging bridges — often inject their
+   * API after this page has already activated.
+   */
+  function refreshWallets() {
+    const injected = (window as unknown as {
+      cardano?: Record<string, { enable?: unknown }>;
+    }).cardano;
+    installedWallets = injected
+      ? Object.keys(injected).filter(
+          (name) => typeof injected[name]?.enable === 'function')
+      : [];
+  }
+
+  let walletRescanTimer: ReturnType<typeof setInterval> | null = null;
+  onDestroy(() => {
+    if (walletRescanTimer) clearInterval(walletRescanTimer);
+  });
+  function ensureWalletRescan() {
+    refreshWallets();
+    if (walletRescanTimer) return;
+    walletRescanTimer = setInterval(() => {
+      if (connectedWallet || activeView !== 'bridge') return;
+      refreshWallets();
+    }, 2000);
   }
   let chains: ChainSummary[] = [];
   let selectedChain = '';
@@ -155,9 +184,7 @@
       void api.eutxoBridgeInfo(chainId, signal)
         .then((value) => (bridgeInfo = value))
         .catch(() => (bridgeInfo = null));
-      void walletCore()
-        .then((core) => (installedWallets = core.Wallet.getInstalledWalletExtensions()))
-        .catch(() => (installedWallets = []));
+      ensureWalletRescan();
       try {
         await refreshIndexStatus(signal);
         indexAvailable = true;
@@ -750,8 +777,11 @@
             <button class="rounded-lg border border-slate-700 px-3 py-2 text-xs hover:border-cyan-700"
                     onclick={() => void connectDepositWallet(walletName)}>Connect {walletName}</button>
           {:else}
-            <p class="text-sm text-slate-500">No CIP-30 wallet extension detected in this browser.</p>
+            <p class="text-sm text-slate-500">No CIP-30 wallet detected yet — extensions can inject
+              after page load; this rescans every 2s.</p>
           {/each}
+          <button class="rounded-lg border border-slate-700 px-3 py-2 text-xs hover:border-cyan-700"
+                  onclick={() => refreshWallets()}>Rescan wallets</button>
         </div>
       {:else}
         <div class="mt-3 flex flex-wrap items-center gap-2">
