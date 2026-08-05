@@ -290,3 +290,33 @@ ATTACHED round-trip through the light cluster's bridge chain —
 index READY_FULL, non-submitting node converged at the same height/root.
 This doubles as BR-M1's deferred live verification. Both hermetic contracts
 (script + distribution) pass with the 11-chain assertions.
+
+### BR-M3 — showcase bridge command group + docs (2026-08-05, branch feat/adr-utxo-008-br-m3)
+
+`./showcase.sh bridge info|run|fund|deposit|transfer|settle|verify|status`
+(light profile). Workflow verbs delegate to the packaged demo CLI in attach
+mode: first use creates `data/showcase/<instance>/bridge-workspace/` pinned
+to `http://127.0.0.1:<http-base>` with the deterministic operator seed
+(derived on the fly by the same sha256 formula, 0600 perms) and the packaged
+yml's withdrawal address — the yml is the single source of the pinned
+identities (`bridge_yml_value` reads them; nothing is duplicated in script
+constants). `run` maps to `round-trip`; `--count N` batches rounds. The
+automated verbs refuse non-devnet networks (the flow is faucet-funded);
+`bridge info` works on any network, prints vault facts + live tip, the
+datum warning, and the exact next step — devnet facade commands or the
+Java-client deposit command for public networks. `bridge status` surfaces
+the attach journal.
+
+Docs: new `docs/BRIDGE_CHAIN.md` walkthrough (custody model, automated +
+staged flows, preprod guidance, gotchas incl. the pending-epoch-needs-a-
+bridge-block rule); DEMO_SHOWCASE.md gained the chain's TOC entry, console
+row, §5 subsection, and eleven-chain counts. Contract additions pin the
+info output, the attach-mode delegation argv (setup + deposit --count), and
+the derived operator seed file.
+
+Live-verified on the BR-M2 devnet instance: facade `bridge run` drove a full
+attached round-trip (tip 5→10), `bridge info` renders reachable and
+unreachable variants, staged verbs delegate correctly. Both hermetic
+contracts pass. Noted: a transient index HTTP_409 appeared on one status
+probe immediately after a round — readiness gating inside the workflow was
+unaffected; watch during BR-M4.

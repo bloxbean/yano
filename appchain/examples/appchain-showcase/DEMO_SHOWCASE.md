@@ -1,7 +1,7 @@
 # Yano App-Chain Showcase — Full Demo Guide
 
 One guide to demonstrate every app-chain capability with the packaged
-showcase: all ten chains and their state machines, regular and bulk
+showcase: all eleven chains and their state machines, regular and bulk
 submission, deterministic effects, L1 anchoring on devnet and preprod,
 verifiable reads with historical versioning, the browser console, and the
 Java client (including a runnable fat jar).
@@ -23,6 +23,7 @@ Last verified live: 2026-08-05 on a 3-node cluster.
    - [workflow-chain — composite + effects](#workflow-chain--composite--effects)
    - [roles-chain — role approvals](#roles-chain--role-approvals)
    - [payments-chain — EUTxO ledger](#payments-chain--eutxo-ledger)
+   - [payment-chain-l1bridge — L1 custody boundary](#payment-chain-l1bridge--l1-custody-boundary)
    - [authenticated-map-chain — governed MPF map](#authenticated-map-chain--governed-mpf-map)
    - [authenticated-map-jmt-chain — basic classic-JMT map](#authenticated-map-jmt-chain--basic-classic-jmt-map)
 6. [Deterministic effects deep-dive](#6-deterministic-effects-deep-dive)
@@ -73,7 +74,7 @@ chmod 600 ./private-anchor/anchor.seed
 ```
 
 Node 0's API is `http://127.0.0.1:7070/api/v1` (`--http-base` shifts it).
-All ten chains report at `GET /api/v1/app-chain/chains`.
+All eleven chains report at `GET /api/v1/app-chain/chains`.
 
 ## 3. Everyday cluster operations
 
@@ -107,6 +108,7 @@ curl -X POST http://127.0.0.1:7070/api/v1/app-chain/chains/orders-chain/messages
 | `/ui/app-chain/?chain=<id>` | generic ops: tip, blocks, live SSE feed, capabilities, proofs |
 | `/ui/app-chain/authenticated-map/?chain=<id>` | authenticated-map console: collections, lookup+proofs, mutations, governed tabs |
 | `/ui/app-chain/eutxo/?chain=payments-chain` | EUTxO lifecycle explorer |
+| `/ui/app-chain/eutxo/?chain=payment-chain-l1bridge` | Bridge chain lifecycle explorer |
 | `/ui/status/` , `/ui/observability/` | L1 node status, Prometheus charts |
 | `/ui/plugins/` | plugin operations (privileged; needs API key) |
 
@@ -244,6 +246,28 @@ chain.
 Authorization modes on this chain: `kv-open` anyone writes; `documents`
 first writer owns the key; `notes` only current chain members write
 (height-versioned membership — rotated-out members lose access).
+
+### payment-chain-l1bridge — L1 custody boundary
+
+The same EUTxO machine in **bridge mode** (ADR-UTXO-008): no virtual
+genesis — funds enter via real devnet-L1 vault deposits and leave via
+operator-settled withdrawals. Full walkthrough: `docs/BRIDGE_CHAIN.md`.
+
+```bash
+./showcase.sh bridge info                   # vault facts + live status (any network)
+./showcase.sh bridge run                    # automated round-trip (devnet)
+./showcase.sh bridge deposit                # staged: deposits only …
+./showcase.sh bridge transfer               # … the L2 payments …
+./showcase.sh bridge settle && ./showcase.sh bridge verify   # … withdrawal + CONFIRMED
+./showcase.sh bridge run --count 2          # rounds are journaled; higher count = new activity
+# console: /ui/app-chain/eutxo/?chain=payment-chain-l1bridge
+```
+
+The vault is a single-operator-key native script over PUBLIC deterministic
+demo identities — the operator key IS custody; demo amounts only. A plain
+wallet transfer to the vault address is NOT a deposit (the observer credits
+L2 owners from the inline datum). On preprod there is no faucet: `bridge
+info` prints the Java-client command for depositing your own funds.
 
 ## 6. Deterministic effects deep-dive
 
