@@ -295,7 +295,7 @@ public final class ShowcaseEutxoClientDemo {
         // Aggregate vault deposits: no single UTxO needs to cover the claim.
         List<Utxo> vaultInputs = new ArrayList<>();
         BigInteger gathered = BigInteger.ZERO;
-        BigInteger target = amount.add(BigInteger.valueOf(1_500_000));
+        BigInteger target = amount.add(BigInteger.valueOf(1_000_000));
         for (Utxo candidate : utxoSupplier.getAll(vaultAddress)) {
             vaultInputs.add(candidate);
             gathered = gathered.add(lovelace(candidate));
@@ -307,8 +307,10 @@ public final class ShowcaseEutxoClientDemo {
             throw new IllegalStateException("vault holds " + gathered
                     + " lovelace; cannot cover the " + amount + " claim");
         }
-        BigInteger continuing = gathered.subtract(amount)
-                .subtract(BigInteger.valueOf(500_000));
+        // The vault pays out EXACTLY the claim: fees come from the
+        // operator's own wallet, so the physical vault never drifts below
+        // the chain's ledger reserve.
+        BigInteger continuing = gathered.subtract(amount);
         EutxoSettlementDatum marker = EutxoSettlementDatum.forAddress(
                 EutxoSettlementDatum.ABI_VERSION,
                 chainId,
