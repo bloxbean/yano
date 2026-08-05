@@ -1324,6 +1324,78 @@ delegate_evidence() {
   "$demo" "${args[@]}"
 }
 
+bridge_yml_value() {
+  awk -v k="$1:" '$1 == k {print $2; exit}' \
+    "$YANO_HOME/config/application-appchain.yml"
+}
+
+bridge_workspace() { printf '%s/bridge-workspace' "$(instance_root)"; }
+
+ensure_bridge_workspace() {
+  local ws seed_file
+  ws="$(bridge_workspace)"
+  [ ! -f "$ws/demo.yaml" ] || return 0
+  seed_file="$(instance_root)/bridge-operator.seed"
+  if [ ! -f "$seed_file" ]; then
+    # PUBLIC deterministic demo identity (same convention as the other
+    # showcase demo actors); never reuse outside showcase demos.
+    ( umask 077; python3 -c 'import hashlib; print(hashlib.sha256(
+        b"yano-showcase-demo-actor:bridge-operator").hexdigest())' \
+      > "$seed_file" )
+  fi
+  "$YANO_HOME/yano.sh" appchain eutxo demo setup --scenario bridge \
+    --target-base "http://127.0.0.1:$HTTP_BASE" \
+    --operator-seed-file "$seed_file" \
+    --payout-address "$(bridge_yml_value withdrawal-address)" \
+    --chain-id "$BRIDGE_CHAIN_ID" \
+    --workspace "$ws" >/dev/null
+  note "bridge workspace ready: $ws (attached to http://127.0.0.1:$HTTP_BASE)"
+}
+
+run_bridge_info() {
+  local vault hash payout depth maxdep epoch maxwd chain_status tip
+  vault="$(bridge_yml_value vault-address)"
+  hash="$(bridge_yml_value vault-script-hash)"
+  payout="$(bridge_yml_value withdrawal-address)"
+  depth="$(bridge_yml_value stability-depth)"
+  maxdep="$(bridge_yml_value max-lovelace)"
+  epoch="$(bridge_yml_value epoch)"
+  maxwd="$(bridge_yml_value max-withdrawal-lovelace)"
+  note "$BRIDGE_CHAIN_ID — Cardano L1 custody boundary (ADR-UTXO-008)"
+  note "  network               : $NETWORK"
+  note "  vault address         : $vault"
+  note "  vault script hash     : $hash"
+  note "  max deposit           : $maxdep lovelace (observer-enforced)"
+  note "  L1 stability depth    : $depth blocks before a deposit mirrors"
+  note "  withdrawal address    : $payout (the ONLY claim-forming L2 address)"
+  note "  bridge epoch / max wd : $epoch / $maxwd lovelace"
+  chain_status="$(curl -fsS --connect-timeout 2 --max-time 5 \
+    "http://127.0.0.1:$HTTP_BASE/api/v1/app-chain/chains/$BRIDGE_CHAIN_ID/status" \
+    2>/dev/null || true)"
+  if [ -n "$chain_status" ]; then
+    tip="$(printf '%s' "$chain_status" | jq -r '.tipHeight // "?"')"
+    note "  live tip height       : $tip"
+    note "  console               : http://127.0.0.1:$HTTP_BASE/ui/app-chain/eutxo/?chain=$BRIDGE_CHAIN_ID"
+  else
+    note "  live status           : cluster not reachable on port $HTTP_BASE"
+  fi
+  note "Custody note: the vault is a single-operator-key native script — the"
+  note "operator key IS custody. Demo amounts only; see docs/BRIDGE_CHAIN.md."
+  note ""
+  note "A plain wallet transfer to the vault address is NOT a deposit: the"
+  note "observer credits L2 owners from the inline vault datum. Build deposits"
+  note "with the provided tooling:"
+  if [ "$NETWORK" = devnet ]; then
+    note "  ./showcase.sh bridge run --instance $INSTANCE        # full automated round-trip"
+    note "  ./showcase.sh bridge deposit --instance $INSTANCE    # deposits only (then transfer, settle, verify)"
+  else
+    note "  # $NETWORK has no faucet; deposit YOUR OWN funds with the Java client:"
+    note "  java -jar yano-showcase-client-*-all.jar eutxo deposit \\"
+    note "    --base-url http://127.0.0.1:$HTTP_BASE --chain $BRIDGE_CHAIN_ID \\"
+    note "    --mnemonic-file <your-l1-wallet.mnemonic> --amount 5000000"
+  fi
+}
+
 delegate_eutxo() {
   local command="$1"
   case "$VARIANT" in ledger|bridge|zk) ;; default) VARIANT=ledger;; *) die "eutxo variant must be ledger, bridge, or zk";; esac
@@ -1521,6 +1593,8 @@ Yano unified app-chain showcase
   ./showcase.sh authmap entry <collection> <key> [--chain id]
   ./showcase.sh authmap receipt <message-id> [--chain id]
   ./showcase.sh chain add authenticated-map-jmt-chain
+  ./showcase.sh bridge info                          (vault facts + next steps, any network)
+  ./showcase.sh bridge run|deposit|transfer|settle|verify [--count N]   (devnet)
   ./showcase.sh ceremony            (eutxo profile, zk variant: one-time trusted setup)
   ./showcase.sh approvals propose <id> <payload> [required]
   ./showcase.sh approvals approve <id> <member-node>
@@ -1710,6 +1784,27 @@ PY
         "${POSITIONAL[2]:?key required}";;
       receipt) run_authmap_receipt "${POSITIONAL[1]:?message id required}";;
       *) die "usage: authmap put <collection> <key> <value> | authmap governed-put <key> <value> [--collection C] [--actor A] [--seed-file F] | authmap entry <collection> <key> | authmap receipt <message-id>";;
+    esac;;
+  bridge)
+    adopt_marker
+    [ "$PROFILE" = light ] || die "bridge applies to the light profile (the eutxo profile has its own scenarios)"
+    bridge_cmd="${POSITIONAL[0]:-}"
+    case "$bridge_cmd" in
+      info) run_bridge_info;;
+      status)
+        ensure_bridge_workspace
+        "$YANO_HOME/yano.sh" appchain eutxo demo status \
+          --workspace "$(bridge_workspace)";;
+      run|fund|deposit|transfer|settle|verify)
+        [ "$NETWORK" = devnet ] \
+          || die "the automated bridge flow faucet-funds demo users and exists only on devnet; on $NETWORK run: ./showcase.sh bridge info --instance $INSTANCE"
+        ensure_bridge_workspace
+        [ "$bridge_cmd" != run ] || bridge_cmd=round-trip
+        bridge_extra=()
+        [ -z "$COUNT" ] || bridge_extra=(--count "$COUNT")
+        "$YANO_HOME/yano.sh" appchain eutxo demo "$bridge_cmd" \
+          --workspace "$(bridge_workspace)" ${bridge_extra[@]+"${bridge_extra[@]}"};;
+      *) die "usage: bridge info|run|fund|deposit|transfer|settle|verify|status [--count N]";;
     esac;;
   ceremony)
     adopt_marker

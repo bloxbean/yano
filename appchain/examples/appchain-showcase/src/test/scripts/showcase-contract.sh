@@ -138,6 +138,20 @@ grep -q '^loadtest registry-chain -n 12 -c 2 -s 32 -t kv.command.v1 --kv --node 
 grep -q "^soaktest orders-chain --duration 3 --rate 4 --conc 2 -s 32 --sample 1 --out $WORK/soak --node 0$" \
   "$WORK/cluster.log"
 
+# ADR-UTXO-008: the bridge group prints pinned custody facts on any network
+# and delegates workflow verbs to the packaged demo CLI in attach mode.
+BRIDGE_INFO="$("$ROOT/showcase.sh" bridge info --instance three)"
+grep -q 'vault address         : addr_test1wpxg9ntn83pztkpw09lfkvv4uurd7pxztlx7yg0zqr0frdcuc9zzj' <<< "$BRIDGE_INFO"
+grep -q 'withdrawal address    : addr_test1vrpz48l78va55y3ewuv7p6narrtgsw2ajq3ns9xx945e0vsmpxjls' <<< "$BRIDGE_INFO"
+grep -q 'NOT a deposit' <<< "$BRIDGE_INFO"
+"$ROOT/showcase.sh" bridge deposit --count 2 --instance three
+grep -q '^yano appchain eutxo demo setup --scenario bridge --target-base http://127.0.0.1:19770 --operator-seed-file .*/bridge-operator.seed --payout-address addr_test1vrpz48l78va55y3ewuv7p6narrtgsw2ajq3ns9xx945e0vsmpxjls --chain-id payment-chain-l1bridge --workspace .*/bridge-workspace$' \
+  "$WORK/cluster.log"
+grep -q '^yano appchain eutxo demo deposit --workspace .*/bridge-workspace --count 2$' \
+  "$WORK/cluster.log"
+grep -q '^6534a9048fb12ab7237a3139dd812c8eb756d8d9d0e120f54bfc78decaefc4a4$' \
+  "$ROOT/data/showcase/three/bridge-operator.seed"
+
 if "$ROOT/showcase.sh" prepare --instance three --nodes 5 --http-base 19770 --server-base 19370 \
     >"$WORK/drift.log" 2>&1; then
   echo "identity drift was accepted" >&2; exit 1
