@@ -192,6 +192,8 @@ dependencies {
     implementation project(':appchain-eutxo-indexer-core')
     // ADR-UTXO-008 BR-M7: host-built unsigned vault deposits (EutxoBridgeResource)
     implementation project(':appchain-eutxo-contracts')
+    // L2 transfer/claim building reuses the maintained client over loopback.
+    implementation project(':appchain-eutxo-client')
     implementation libs.cardano.client.quicktx
     implementation project(':appchain-eutxo-indexer-jdbc')
     implementation project(':appchain-eutxo-zk-indexer')

@@ -442,3 +442,26 @@ Live-verified on a fresh devnet instance: marker records 11 anchor chains;
 boot with all chains enabled; workflow-chain auto-bootstrap confirmed;
 orders-chain selectively bootstrapped on the running cluster; the bridge
 and JMT chains stayed enabled-but-dormant with zero L1 activity.
+
+### Follow-up — CIP-30 L2 transfers and withdrawals in the console (2026-08-05)
+
+First real-wallet click-through (user's Yano wallet extension) surfaced and
+fixed three integration defects: one-shot wallet discovery missing
+late-injecting extensions (now: own enumeration + 2s rescan + manual
+button), keys()-based scans missing non-enumerable injections (now
+getOwnPropertyNames; the wallet side also fixed its defineProperty to
+enumerable:true), and the TypeError→CORS-hint mapping masking real failures
+(now per-step labels + server error bodies). The wallet then completed a
+REAL preprod-flow deposit end to end.
+
+Since L2 transactions are Cardano-shaped, the deposit pattern extends to
+spending: new host routes `transfer/build` and `claim/build` build unsigned
+L2 transactions (greedy selection over the chain's L2 UTxOs via the
+maintained client over loopback, fee 0, change back; claims carry the
+withdrawal datum with the payout defaulting to the sender), the existing
+`assemble` merges the CIP-30 witness set, and submission goes through the
+chain's message route (`eutxo.transactions`). The bridge tab's card now
+offers "Transfer L2" and "Withdraw to L1" for the connected wallet.
+Semantics confirmed and documented: withdrawal rights follow L2 ownership,
+not deposit history — a transferee that never deposited can withdraw to any
+L1 address, bounded by the cap and the chain-global reserve.
