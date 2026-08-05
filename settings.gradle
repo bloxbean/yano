@@ -45,6 +45,7 @@ include 'appchain-evidence-client'
 include 'appchain-evidence-profile'
 include 'appchain-evidence-demo-runner'
 include 'appchain-showcase'
+include 'appchain-showcase-client'
 include 'appchain-kafka'
 include 'appchain-objectstore-s3'
 include 'appchain-ipfs'
@@ -104,6 +105,8 @@ project(':appchain-evidence-demo-runner').projectDir =
         file('appchain/examples/appchain-evidence-demo-runner')
 project(':appchain-showcase').projectDir =
         file('appchain/examples/appchain-showcase')
+project(':appchain-showcase-client').projectDir =
+        file('appchain/examples/appchain-showcase-client')
 project(':appchain-kafka').projectDir = file('appchain/extensions/appchain-kafka')
 project(':appchain-objectstore-s3').projectDir =
         file('appchain/extensions/appchain-objectstore-s3')

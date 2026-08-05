@@ -1,0 +1,29 @@
+plugins {
+    id 'application'
+    id 'com.gradleup.shadow'
+}
+
+description = 'Demo-only Java client walkthroughs for the showcase app chains'
+
+dependencies {
+    implementation project(':appchain-client')
+    implementation project(':appchain-composite-contracts')
+    implementation project(':appchain-stdlib-contracts')
+    implementation project(':appchain-role-workflow-contracts')
+    implementation libs.cardano.client.crypto
+}
+
+application {
+    mainClass = 'com.bloxbean.cardano.yano.appchain.showcase.client.ShowcaseClientDemos'
+}
+
+shadowJar {
+    archiveBaseName = 'yano-showcase-client'
+    archiveClassifier = 'all'
+    mergeServiceFiles()
+    // Bundled dependencies carry jar signatures that are invalid once merged.
+    exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA'
+}
+
+// Demo-only example: never published as a library artifact.
+tasks.matching { it.name.startsWith('publish') }.configureEach { enabled = false }
