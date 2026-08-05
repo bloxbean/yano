@@ -210,7 +210,10 @@ public class EutxoBridgeResource {
                             .inputs(inputs)
                             .outputs(outputs)
                             .fee(BigInteger.ZERO)
-                            .ttl(REFUND_DEADLINE)
+                            // Validity is judged against the LIVE L1 slot —
+                            // a fixed devnet-scale TTL is instantly EXPIRED
+                            // on public networks.
+                            .ttl(tipSlot.getAsLong() + TTL_MARGIN_SLOTS)
                             .networkId(com.bloxbean.cardano.client.spec
                                     .NetworkId.TESTNET)
                             .build())

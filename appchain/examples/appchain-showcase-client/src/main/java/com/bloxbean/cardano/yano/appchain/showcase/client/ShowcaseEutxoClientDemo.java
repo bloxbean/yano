@@ -381,11 +381,18 @@ public final class ShowcaseEutxoClientDemo {
                     .value(Value.fromCoin(selected.subtract(needed)))
                     .build());
         }
+        long ttl;
+        try {
+            ttl = backend.getBlockService().getLatestBlock()
+                    .getValue().getSlot() + 7_200L;
+        } catch (Exception unavailable) {
+            ttl = TTL_SLOT;
+        }
         TransactionBody body = TransactionBody.builder()
                 .inputs(inputs)
                 .outputs(outputs)
                 .fee(BigInteger.ZERO)
-                .ttl(TTL_SLOT)
+                .ttl(ttl)
                 .networkId(NetworkId.TESTNET)
                 .build();
         Transaction unsigned = Transaction.builder()
