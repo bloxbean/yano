@@ -665,7 +665,15 @@
       <button type="button" class="whitespace-nowrap border-b-2 px-4 py-3 text-sm capitalize
               {activeView === view ? 'border-cyan-400 text-cyan-300' : 'border-transparent text-slate-400'}"
               aria-current={activeView === view ? 'page' : undefined}
-              onclick={() => activeView = view as View}>{view}</button>
+              onclick={() => {
+                activeView = view as View;
+                // Tab data loads at chain activation; refetch on entry so
+                // freshly finalized transactions/claims appear without a
+                // full page reload.
+                if (view === 'transactions') void loadTransactions(false);
+                else if (view === 'bridge') void loadBridge();
+                else if (view === 'validity') void loadValidity();
+              }}>{view}</button>
     {/each}
   </nav>
 
