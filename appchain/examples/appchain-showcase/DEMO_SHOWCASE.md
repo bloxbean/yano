@@ -32,6 +32,8 @@ Last verified live: 2026-08-05 on a 3-node cluster.
 10. [Historical state: read any key at any height](#10-historical-state-read-any-key-at-any-height)
 11. [Authenticated-map curl deep-dive](#11-authenticated-map-curl-deep-dive)
 12. [Cheat sheet: demo actors and seeds](#12-cheat-sheet-demo-actors-and-seeds)
+13. [Other profiles: EUTxO and evidence](#13-other-profiles-eutxo-and-evidence)
+14. [Running on non-default ports / side-by-side instances](#14-running-on-non-default-ports--side-by-side-instances)
 
 ---
 
@@ -507,3 +509,57 @@ signature is verified inside consensus against committed actor records.
 Other operations (PUT_IF_ABSENT, compare-and-set, transfer, revoke, restore)
 are built by the console's Mutations tab with the same envelope. Never run
 `anchor bootstrap` twice for a chain. `./showcase.sh stop` is the teardown.
+
+## 13. Other profiles: EUTxO and evidence
+
+The light profile keeps one out-of-box `eutxo-ledger` chain visible
+(payments-chain, §5). For the full EUTxO round-trip scenarios use the
+dedicated profile, which delegates to the maintained `yano.sh appchain eutxo
+demo` CLI (devnet-only by design; the ledger variant uses test keys and no
+real funds):
+
+```bash
+./showcase.sh quickstart --profile eutxo --variant ledger --instance ledger
+    # experimental virtual ledger: setup, round-trip transactions, verify
+./showcase.sh quickstart --profile eutxo --variant bridge --instance bridge
+    # Cardano custody/federation boundary demo
+./showcase.sh quickstart --profile eutxo --variant zk     --instance zk
+    # maintained validity (proof) flow
+
+# afterwards — the eutxo profile keeps no identity marker, so ALWAYS repeat
+# the profile/variant/instance (and non-default port) flags:
+./showcase.sh run eutxo   --profile eutxo --variant ledger --instance ledger
+./showcase.sh verify all  --profile eutxo --variant ledger --instance ledger
+./showcase.sh stop        --profile eutxo --variant ledger --instance ledger
+```
+
+The showcase maps `prepare`→`setup`, `run`→`round-trip`, and passes ports and
+member count through; for the zk variant, quickstart also runs the one-time
+trusted-setup `ceremony` automatically (existing instances:
+`./showcase.sh ceremony --profile eutxo --variant zk --instance zk`). The
+full walkthrough — what each round-trip does, workspace layout, timings,
+gotchas — is `docs/EUTXO_PROFILE.md`. The evidence profile
+(`--profile evidence`, `docs/EVIDENCE_PROFILE.md`) similarly delegates to the
+packaged evidence product demo (Kafka/S3/IPFS sinks, role lifecycle).
+
+## 14. Running on non-default ports / side-by-side instances
+
+The light and eutxo profiles accept `--http-base` and `--server-base`; node N
+listens on base+N. For the light profile, specify them once at
+`prepare`/`up`/`quickstart` — they are recorded in the instance identity and
+restored automatically by every later command via `--instance` (the eutxo
+profile keeps no marker, so repeat them on every command). The **evidence**
+profile ignores these flags entirely — its ports come from `DEMO_*`
+environment variables (`DEMO_HTTP_BASE`, `DEMO_UI_PORT`, `DEMO_KAFKA_PORT`,
+…); see `docs/EVIDENCE_PROFILE.md` §2.
+
+```bash
+./showcase.sh quickstart --profile light --nodes 3 --instance demo2 \
+  --http-base 27070 --server-base 23370
+./showcase.sh authmap put attachments k1 v1 --instance demo2   # ports adopted
+# console: http://127.0.0.1:27070/ui/app-chain/
+```
+
+This is also how to run several instances side by side (e.g. a preprod
+instance on 7070 and a devnet playground on 27070) — each instance keeps its
+own data directory, identity marker, and port range.

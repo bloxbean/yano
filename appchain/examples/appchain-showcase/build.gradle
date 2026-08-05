@@ -108,6 +108,7 @@ distributions {
         distributionBaseName = 'yano-showcase'
         contents {
             from('README.md')
+            from('DEMO_SHOWCASE.md')
             from('docs') {
                 into 'docs'
             }

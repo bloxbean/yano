@@ -1313,15 +1313,22 @@ delegate_evidence() {
 delegate_eutxo() {
   local command="$1"
   case "$VARIANT" in ledger|bridge|zk) ;; default) VARIANT=ledger;; *) die "eutxo variant must be ledger, bridge, or zk";; esac
+  local -a extra=()
   case "$command" in
     prepare) command=setup;;
-    run) command=round-trip;;
+    run)
+      command=round-trip
+      # Bridge/zk rounds are journaled and idempotent; a rerun produces new
+      # activity only with a higher round count.
+      [ -z "$COUNT" ] || extra=(--count "$COUNT");;
+    ceremony) extra=(--yes);;
     up|status|stop|verify) ;;
     *) die "unsupported EUTxO command: $command";;
   esac
   "$YANO_HOME/yano.sh" appchain eutxo demo "$command" --scenario "$VARIANT" \
     --workspace "$(instance_root)/eutxo-$VARIANT" --members "$NODES" \
-    --http-port-base "$HTTP_BASE" --server-port-base "$SERVER_BASE"
+    --http-port-base "$HTTP_BASE" --server-port-base "$SERVER_BASE" \
+    ${extra[@]+"${extra[@]}"}
 }
 
 show_config() {
@@ -1500,6 +1507,7 @@ Yano unified app-chain showcase
   ./showcase.sh authmap entry <collection> <key> [--chain id]
   ./showcase.sh authmap receipt <message-id> [--chain id]
   ./showcase.sh chain add authenticated-map-jmt-chain
+  ./showcase.sh ceremony            (eutxo profile, zk variant: one-time trusted setup)
   ./showcase.sh approvals propose <id> <payload> [required]
   ./showcase.sh approvals approve <id> <member-node>
   ./showcase.sh composite register-order <key> '<json>'
@@ -1573,7 +1581,12 @@ PY
       note "Status UI: http://127.0.0.1:$HTTP_BASE/ui/app-chain/"
     else
       case "$PROFILE" in evidence) delegate_evidence prepare; delegate_evidence up; delegate_evidence run;;
-        eutxo) delegate_eutxo prepare; delegate_eutxo up; delegate_eutxo run;; esac
+        eutxo)
+          delegate_eutxo prepare; delegate_eutxo up
+          # The zk validity flow needs its one-time (insecure, dev-only)
+          # trusted-setup ceremony before the first round-trip.
+          [ "$VARIANT" != zk ] || delegate_eutxo ceremony
+          delegate_eutxo run;; esac
     fi;;
   status)
     adopt_marker
@@ -1677,6 +1690,10 @@ PY
       receipt) run_authmap_receipt "${POSITIONAL[1]:?message id required}";;
       *) die "usage: authmap put <collection> <key> <value> | authmap governed-put <key> <value> [--collection C] [--actor A] [--seed-file F] | authmap entry <collection> <key> | authmap receipt <message-id>";;
     esac;;
+  ceremony)
+    adopt_marker
+    [ "$PROFILE" = eutxo ] || die "ceremony applies to the eutxo profile (zk variant)"
+    delegate_eutxo ceremony;;
   load-test)
     adopt_marker; run_load_test "${POSITIONAL[0]:-orders}";;
   soak-test)
