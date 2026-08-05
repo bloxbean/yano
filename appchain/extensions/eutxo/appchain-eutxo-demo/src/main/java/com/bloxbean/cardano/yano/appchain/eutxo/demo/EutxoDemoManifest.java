@@ -17,6 +17,7 @@ public record EutxoDemoManifest(
         int members,
         int httpPortBase,
         int serverPortBase,
+        String targetBase,
         List<String> memberPublicKeys,
         Map<String, String> publicIdentities,
         Map<String, String> secretReferences,
@@ -26,5 +27,10 @@ public record EutxoDemoManifest(
         memberPublicKeys = memberPublicKeys == null ? List.of() : List.copyOf(memberPublicKeys);
         publicIdentities = publicIdentities == null ? Map.of() : Map.copyOf(publicIdentities);
         secretReferences = secretReferences == null ? Map.of() : Map.copyOf(secretReferences);
+    }
+
+    /** True when this workspace drives an externally-owned cluster. */
+    public boolean attached() {
+        return targetBase != null && !targetBase.isBlank();
     }
 }

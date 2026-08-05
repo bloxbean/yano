@@ -99,6 +99,61 @@ class EutxoDemoWorkspaceTest {
     }
 
     @Test
+    void attachedWorkspaceImportsOperatorSeedAndPinsTarget() throws Exception {
+        Path seedFile = temporary.resolve("operator.seed");
+        String seedHex = "0102030405060708090a0b0c0d0e0f10"
+                + "1112131415161718191a1b1c1d1e1f20";
+        Files.writeString(seedFile, seedHex + "\n");
+        Path root = temporary.resolve("attached");
+        EutxoDemoWorkspace created = EutxoDemoWorkspace.create(
+                attachedOptions(root, "http://127.0.0.1:27070", seedFile),
+                new BridgeDemoScenarioProvider());
+
+        assertThat(created.manifest().attached()).isTrue();
+        assertThat(created.manifest().targetBase())
+                .isEqualTo("http://127.0.0.1:27070");
+        assertThat(Files.readString(
+                root.resolve("secrets/cardano/operator.seed")).trim())
+                .isEqualTo(seedHex);
+        // Deterministic seed -> deterministic vault identity: this is what
+        // lets the workspace settle against the target chain's vault.
+        assertThat(created.manifest().publicIdentities().get("vaultAddress"))
+                .startsWith("addr_test1");
+        assertThat(created.manifest().publicIdentities().get("vaultScriptHash"))
+                .matches("[0-9a-f]{56}");
+
+        EutxoDemoWorkspace reopened = EutxoDemoWorkspace.open(root);
+        assertThat(reopened.manifest()).isEqualTo(created.manifest());
+
+        Path second = temporary.resolve("attached-second");
+        EutxoDemoWorkspace againFromSameSeed = EutxoDemoWorkspace.create(
+                attachedOptions(second, "http://127.0.0.1:27070", seedFile),
+                new BridgeDemoScenarioProvider());
+        assertThat(againFromSameSeed.manifest().publicIdentities()
+                .get("vaultAddress"))
+                .isEqualTo(created.manifest().publicIdentities()
+                        .get("vaultAddress"));
+    }
+
+    @Test
+    void attachedWorkspaceRejectsMalformedOperatorSeeds() throws Exception {
+        Path malformed = temporary.resolve("bad.seed");
+        Files.writeString(malformed, "not-a-seed\n");
+        assertThatThrownBy(() -> EutxoDemoWorkspace.create(
+                attachedOptions(temporary.resolve("bad"),
+                        "http://127.0.0.1:27070", malformed),
+                new BridgeDemoScenarioProvider()))
+                .hasMessageContaining("64 lowercase hex characters");
+
+        assertThatThrownBy(() -> EutxoDemoWorkspace.create(
+                attachedOptions(temporary.resolve("missing"),
+                        "http://127.0.0.1:27070",
+                        temporary.resolve("absent.seed")),
+                new BridgeDemoScenarioProvider()))
+                .hasMessageContaining("existing regular file");
+    }
+
+    @Test
     void verifiedWorkspaceCanBeResetButMarkerCannotAuthorizeBroadTarget() throws Exception {
         EutxoDemoWorkspace workspace = EutxoDemoWorkspace.create(
                 options(temporary.resolve("resettable")), new LedgerDemoScenarioProvider());
@@ -109,6 +164,16 @@ class EutxoDemoWorkspaceTest {
     private static EutxoDemoOptions options(Path root) {
         return new EutxoDemoOptions("setup", "ledger", root,
                 "payments-eutxo", "payments-eutxo", 3, 1, 7070, 13337,
+                null, null,
+                null, null, null, 20_000_000L, null, null,
+                EutxoDemoOptions.Format.TEXT, false, false);
+    }
+
+    private static EutxoDemoOptions attachedOptions(
+            Path root, String targetBase, Path operatorSeedFile) {
+        return new EutxoDemoOptions("setup", "bridge", root,
+                "payment-chain-l1bridge", "payment-chain-l1bridge", 3, 1, 7070, 13337,
+                targetBase, operatorSeedFile,
                 null, null, null, 20_000_000L, null, null,
                 EutxoDemoOptions.Format.TEXT, false, false);
     }

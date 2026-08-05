@@ -32,16 +32,16 @@ public final class EutxoDemoCluster {
             "/api/v1/plugins/com.bloxbean.cardano.yano.appchain.eutxo.indexer"
                     + "/index/v1";
     private final EutxoDemoWorkspace workspace;
-    private final Path yanoHome;
 
     public EutxoDemoCluster(EutxoDemoWorkspace workspace) {
         this.workspace = workspace;
-        this.yanoHome = resolveYanoHome();
     }
 
     public void generateProject(
             String recipe,
             Map<String, String> answers) throws IOException, InterruptedException {
+        requireSelfManaged("generate a project");
+        Path yanoHome = resolveYanoHome();
         List<String> command = new ArrayList<>(List.of(
                 yanoHome.resolve("yano.sh").toString(),
                 "appchain", "init", "--non-interactive",
@@ -80,6 +80,7 @@ public final class EutxoDemoCluster {
     }
 
     public void start() throws IOException, InterruptedException {
+        requireSelfManaged("start the cluster");
         requireProjectScript("start");
         requirePackagedSqliteDriver();
         run(List.of(workspace.project().resolve("scripts/start").toString()),
@@ -89,6 +90,7 @@ public final class EutxoDemoCluster {
     }
 
     public void stop() throws IOException, InterruptedException {
+        requireSelfManaged("stop the cluster");
         Path script = workspace.project().resolve("scripts/stop");
         if (Files.isExecutable(script)) {
             run(List.of(script.toString()), Duration.ofSeconds(30),
@@ -96,17 +98,33 @@ public final class EutxoDemoCluster {
         }
     }
 
+    /**
+     * Node HTTP bases this workspace observes. Self-managed workspaces own one
+     * localhost port per member; attached workspaces observe exactly the one
+     * externally-owned target endpoint.
+     */
+    public List<String> nodeBases() {
+        if (workspace.manifest().attached()) {
+            return List.of(workspace.manifest().targetBase());
+        }
+        List<String> bases = new ArrayList<>();
+        for (int index = 0; index < workspace.manifest().members(); index++) {
+            bases.add("http://127.0.0.1:"
+                    + (workspace.manifest().httpPortBase() + index));
+        }
+        return List.copyOf(bases);
+    }
+
     public ClusterStatus status() {
+        List<String> bases = nodeBases();
         int ready = 0;
         HttpClient client = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(1)).build();
-        for (int index = 0; index < workspace.manifest().members(); index++) {
-            int port = workspace.manifest().httpPortBase() + index;
+        for (String base : bases) {
             try {
                 HttpResponse<Void> response = client.send(
                         HttpRequest.newBuilder(
-                                        URI.create("http://127.0.0.1:" + port
-                                                + "/q/health/ready"))
+                                        URI.create(base + "/q/health/ready"))
                                 .timeout(Duration.ofSeconds(2)).GET().build(),
                         HttpResponse.BodyHandlers.discarding());
                 if (response.statusCode() >= 200 && response.statusCode() < 300) {
@@ -119,16 +137,15 @@ public final class EutxoDemoCluster {
                 break;
             }
         }
-        return new ClusterStatus(ready, workspace.manifest().members(),
-                ready == workspace.manifest().members());
+        return new ClusterStatus(ready, bases.size(), ready == bases.size());
     }
 
     public String apiBase() {
-        return "http://127.0.0.1:" + workspace.manifest().httpPortBase() + "/api/v1";
+        return nodeBases().getFirst() + "/api/v1";
     }
 
     public String consoleUrl() {
-        return "http://127.0.0.1:" + workspace.manifest().httpPortBase()
+        return nodeBases().getFirst()
                 + "/ui/app-chain/eutxo/?chain="
                 + URLEncoder.encode(
                 workspace.manifest().chainId(), StandardCharsets.UTF_8);
@@ -138,7 +155,7 @@ public final class EutxoDemoCluster {
         List<IndexStatus> statuses = new ArrayList<>();
         HttpClient client = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(1)).build();
-        for (int node = 0; node < workspace.manifest().members(); node++) {
+        for (int node = 0; node < nodeBases().size(); node++) {
             statuses.add(indexStatus(client, node));
         }
         return List.copyOf(statuses);
@@ -147,10 +164,11 @@ public final class EutxoDemoCluster {
     public List<IndexStatus> awaitIndexReady(Duration timeout)
             throws InterruptedException {
         long deadline = System.nanoTime() + timeout.toNanos();
+        int expected = nodeBases().size();
         List<IndexStatus> latest = List.of();
         while (System.nanoTime() < deadline) {
             latest = indexStatuses();
-            if (latest.size() == workspace.manifest().members()
+            if (latest.size() == expected
                     && latest.stream().allMatch(IndexStatus::ready)) {
                 requireMatchingDigests(latest);
                 return latest;
@@ -165,7 +183,7 @@ public final class EutxoDemoCluster {
         List<IndexStatus> statuses = indexStatuses();
         Map<String, Object> summary = new LinkedHashMap<>();
         summary.put("nodes", statuses);
-        summary.put("ready", statuses.size() == workspace.manifest().members()
+        summary.put("ready", statuses.size() == nodeBases().size()
                 && statuses.stream().allMatch(IndexStatus::ready));
         summary.put("consistent", matchingDigests(statuses));
         summary.put("console", consoleUrl());
@@ -173,8 +191,7 @@ public final class EutxoDemoCluster {
     }
 
     private IndexStatus indexStatus(HttpClient client, int node) {
-        int port = workspace.manifest().httpPortBase() + node;
-        String endpoint = "http://127.0.0.1:" + port + INDEX_API
+        String endpoint = nodeBases().get(node) + INDEX_API
                 + "/status?chain=" + URLEncoder.encode(
                 workspace.manifest().chainId(), StandardCharsets.UTF_8);
         try {
@@ -218,6 +235,15 @@ public final class EutxoDemoCluster {
             return IndexStatus.unavailable(node, "INTERRUPTED");
         } catch (RuntimeException malformed) {
             return IndexStatus.unavailable(node, "INVALID_RESPONSE");
+        }
+    }
+
+    private void requireSelfManaged(String action) {
+        if (workspace.manifest().attached()) {
+            throw new IllegalStateException(
+                    "ATTACHED_WORKSPACE_LIFECYCLE: cannot " + action
+                            + "; the cluster at " + workspace.manifest().targetBase()
+                            + " is owned externally");
         }
     }
 
@@ -290,7 +316,7 @@ public final class EutxoDemoCluster {
         ProcessBuilder builder = new ProcessBuilder(command)
                 .directory(workspace.root().toFile())
                 .redirectErrorStream(true);
-        builder.environment().put("YANO_HOME", yanoHome.toString());
+        builder.environment().put("YANO_HOME", resolveYanoHome().toString());
         Process process = builder.start();
         CompletableFuture<String> output = CompletableFuture.supplyAsync(
                 () -> drain(process));

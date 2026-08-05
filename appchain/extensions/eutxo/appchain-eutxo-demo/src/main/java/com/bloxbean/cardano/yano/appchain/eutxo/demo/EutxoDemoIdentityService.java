@@ -59,6 +59,23 @@ public final class EutxoDemoIdentityService {
                 HexFormat.of().formatHex(wallet.verificationKey().getBytes()));
     }
 
+    public WalletIdentity importWallet(Path target, byte[] seed) throws IOException {
+        if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalStateException("wallet secret already exists");
+        }
+        if (seed == null || seed.length != 32) {
+            throw new IllegalArgumentException("imported wallet seed must be 32 bytes");
+        }
+        ownerDirectory(target.getParent());
+        EutxoKeyWallet wallet = EutxoKeyWallet.fromSeed(seed);
+        Files.writeString(target, HexFormat.of().formatHex(seed) + "\n",
+                StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+        ownerFile(target);
+        java.util.Arrays.fill(seed, (byte) 0);
+        return new WalletIdentity(wallet.address(),
+                HexFormat.of().formatHex(wallet.verificationKey().getBytes()));
+    }
+
     public record WalletIdentity(String address, String publicKey) {
     }
 

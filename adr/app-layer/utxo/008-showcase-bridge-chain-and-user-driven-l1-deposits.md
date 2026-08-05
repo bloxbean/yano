@@ -221,3 +221,31 @@ standard CIP-30 connect-wallet.
 - Plutus vault validators in distributions, multi-operator custody,
   federated settlement — ADR-UTXO-006/007 territory.
 - Any change to the `eutxo` profile's self-managed demo flow.
+
+## 7. Implementation log
+
+### BR-M1 — attach mode (2026-08-05, branch feat/adr-utxo-008-br-m1)
+
+Delivered as designed with one addition: attach setup requires an explicit
+`--chain-id` (the `payments-eutxo` default would silently drive the wrong
+chain on an external cluster). Shape: `setup --scenario bridge --target-base
+<url> --operator-seed-file <64-hex file> --chain-id <id> --workspace <dir>`,
+then operations directly (`round-trip`, `deposit`, …). The manifest pins
+`targetBase`; `EutxoDemoCluster.nodeBases()` observes exactly the target;
+`generateProject`/`start`/`stop` refuse on attached workspaces
+(`ATTACHED_WORKSPACE_LIFECYCLE`); provider `stop` is a safe no-op so `reset`
+works; conflicting `--target-base` against the manifest is rejected. The
+bridge and external-deposit workflows are byte-identical — they only ever
+used `cluster.apiBase()`/`status()`.
+
+Review found and fixed two defects before merge: (1) the operator seed file
+was read after the workspace marker was written, so a typo'd path left an
+unrecoverable marker-bearing directory (now read/validated before anything is
+created; regression-tested); (2) the imported operator seed array was never
+zeroed, breaking the module's secret-hygiene convention (now zeroed in
+`importWallet`).
+
+Deferred to BR-M2/M3: live attached run (needs the bridge chain on a light
+cluster) and the indexer allow-list note — `round-trip`/`verify` await index
+readiness on the target, so the light profile must allow-list
+`com.bloxbean.cardano.yano.appchain.eutxo.indexer`.
