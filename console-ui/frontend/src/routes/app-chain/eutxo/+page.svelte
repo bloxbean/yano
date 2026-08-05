@@ -56,8 +56,11 @@
     const injected = (window as unknown as {
       cardano?: Record<string, { enable?: unknown }>;
     }).cardano;
+    // getOwnPropertyNames, not Object.keys: some extensions inject their
+    // API via defineProperty with enumerable:false, which hides them from
+    // every keys()-based scan (including the CF library's own).
     installedWallets = injected
-      ? Object.keys(injected).filter(
+      ? Object.getOwnPropertyNames(injected).filter(
           (name) => typeof injected[name]?.enable === 'function')
       : [];
   }
