@@ -190,6 +190,9 @@ dependencies {
     // node-assisted existing-proof verification endpoint.
     implementation project(':appchain-client')
     implementation project(':appchain-eutxo-indexer-core')
+    // ADR-UTXO-008 BR-M7: host-built unsigned vault deposits (EutxoBridgeResource)
+    implementation project(':appchain-eutxo-contracts')
+    implementation libs.cardano.client.quicktx
     implementation project(':appchain-eutxo-indexer-jdbc')
     implementation project(':appchain-eutxo-zk-indexer')
     // Optional T3 integrations stay out of the stock artifact. Native/custom

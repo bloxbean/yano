@@ -188,6 +188,7 @@ public class AppChainApiKeyFilter implements ContainerRequestFilter {
         Class<?> resourceClass = resourceInfo != null ? resourceInfo.getResourceClass() : null;
         return resourceClass == AppChainResource.class
                 || resourceClass == AppChainResource.ChainScopedResource.class
+                || resourceClass == EutxoBridgeResource.class
                 || resourceClass == PluginDomainResource.class
                 || resourceClass == PluginOperationsResource.class;
     }
