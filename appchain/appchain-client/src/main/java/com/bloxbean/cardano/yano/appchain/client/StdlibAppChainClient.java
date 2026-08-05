@@ -163,10 +163,20 @@ public final class StdlibAppChainClient {
         return receipt;
     }
 
-    /** Phase-1 MPF proof helper for the canonical collection/key leaf. */
+    /**
+     * Root-attested proof helper for one collection/key entry. Since the
+     * ADR-025.2 Phase B assembly every authenticated-map chain commits its
+     * leaves inside the composite tree, so the proof targets the composite
+     * physical key {@code componentKey("authenticated-map", canonicalKey)} —
+     * the same key the bounded domain API reports as {@code proofKey}.
+     */
     public Optional<VerifiedState<AuthenticatedMapContract.Entry>> authenticatedMapProof(
             String collectionId, byte[] applicationKey) {
-        return verified(AuthenticatedMapContract.canonicalKey(collectionId, applicationKey),
+        return verified(com.bloxbean.cardano.yano.appchain.composite.contracts
+                        .CompositeCommitmentV1.componentKey(
+                                AuthenticatedMapContract.STATE_MACHINE_ID,
+                                AuthenticatedMapContract.canonicalKey(
+                                        collectionId, applicationKey)),
                 AuthenticatedMapContract::decodeEntry);
     }
 
