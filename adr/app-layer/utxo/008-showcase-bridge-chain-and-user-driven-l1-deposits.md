@@ -391,3 +391,37 @@ The funded deposit itself intentionally awaits the user's own preprod
 mnemonic (the client demands the user's key by design; the anchor seed is
 scoped to anchoring and was not repurposed). The handed-off command is in
 the doc and in `bridge info` output.
+
+### BR-M7 — console deposit screen (2026-08-05, branch feat/adr-utxo-008-br-m7)
+
+Host endpoint delivered as pinned in D6, plus one addition discovered during
+design: CIP-30's `signTx` returns only a witness set, so a companion
+`POST …/eutxo/bridge/deposit/assemble` merges the witnesses server-side
+(deserialize, attach vkey witnesses, serialize) — no wasm CBOR library in
+the browser. Routes: `GET …/eutxo/bridge/info` (chain bridge facts) and
+`deposit/build` (unsigned, fee-balanced via QuickTx over the node's own
+UtxoState + tracked protocol params, `additionalSignersCount(1)`,
+TTL tip+7200, inline vault datum shared from `appchain-eutxo-contracts`).
+Placement as decided: `EutxoBridgeResource` behind a more-specific locator
+(`chains/{chainId}/eutxo/bridge`) so `ChainScopedResource` stays
+machine-agnostic; settings resolved from MicroProfile Config
+(`EutxoBridgeSettingsLoader`); registered in the API-key realm at READ
+level; `NodeUtxoSupplier` widened to public for reuse. Depositor addresses
+accepted as bech32 or CIP-30 hex bytes.
+
+Console: the eutxo explorer's bridge tab gained a "Deposit with your wallet
+(CIP-30)" card using `@cardano-foundation/cardano-connect-with-wallet-core`
+(dynamic import only — the library touches browser globals at import time
+and would break prerender), wallet discovery/connect/disconnect, ADA amount
+validation (`lib/eutxo/deposit.ts` + vitest), then build → wallet signTx →
+assemble → node submit, with the L2-mirror expectation surfaced from the
+chain's stability depth.
+
+Verified: container-free unit tests for build/validation/conflict/assemble
+(fee-balanced tx decoded, CIP-30-style witness merge, txId stable), full
+:app suite (215 tests) green, console gate green (svelte-check, vitest,
+190KB/1MiB gzip budget), and a LIVE smoke on the devnet instance through
+the full JAX-RS/CDI stack: info 200 with pinned facts, non-bridge chain
+404, deposit/build 200 with a 418-byte fee-balanced unsigned tx for a
+funded address. Browser CIP-30 click-through remains MANUAL per the
+established console convention (same posture as the 025.2 console pages).

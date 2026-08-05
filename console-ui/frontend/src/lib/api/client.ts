@@ -173,6 +173,21 @@ export class YanoApi {
     return response.json() as Promise<T>;
   }
 
+  async submitTxHex(signedTxCborHex: string, signal?: AbortSignal): Promise<string> {
+    const headers = new Headers({ Accept: 'application/json', 'Content-Type': 'text/plain' });
+    if (this.apiKey) headers.set('X-API-Key', this.apiKey);
+    const response = await fetch(`${this.base}/tx/submit`, {
+      method: 'POST', headers, body: signedTxCborHex, signal, cache: 'no-store', redirect: 'error'
+    });
+    const text = await response.text();
+    if (!response.ok) throw new ApiError(response.status, text || `Request failed (${response.status})`);
+    try {
+      return (JSON.parse(text) as { txHash?: string }).txHash ?? text.trim();
+    } catch {
+      return text.trim();
+    }
+  }
+
   config(signal?: AbortSignal) { return this.json<NodeConfig>('/node/config', signal); }
   status(signal?: AbortSignal) { return this.json<NodeStatus>('/node/status', signal); }
   peers(signal?: AbortSignal) { return this.json<NodePeers>('/node/peers', signal); }
@@ -256,6 +271,26 @@ export class YanoApi {
   chainSubmitMessage(chainId: string, topic: string, bodyHex: string, signal?: AbortSignal) {
     return this.post<MessageSubmitResult>(
       `${chainPath(chainId)}/messages`, { topic, bodyHex }, signal);
+  }
+  eutxoBridgeInfo(chainId: string, signal?: AbortSignal) {
+    return this.json<import('$lib/eutxo/deposit').EutxoBridgeInfo>(
+      `${chainPath(chainId)}/eutxo/bridge/info`, signal);
+  }
+  eutxoDepositBuild(
+    chainId: string,
+    body: { depositorAddress: string; lovelace: number; l2OwnerAddress?: string },
+    signal?: AbortSignal
+  ) {
+    return this.post<import('$lib/eutxo/deposit').DepositBuildResponse>(
+      `${chainPath(chainId)}/eutxo/bridge/deposit/build`, body, signal);
+  }
+  eutxoDepositAssemble(
+    chainId: string,
+    body: { unsignedTxCborHex: string; witnessSetCborHex: string },
+    signal?: AbortSignal
+  ) {
+    return this.post<import('$lib/eutxo/deposit').DepositAssembleResponse>(
+      `${chainPath(chainId)}/eutxo/bridge/deposit/assemble`, body, signal);
   }
   l1Transaction(transactionId: string, signal?: AbortSignal) {
     return this.json<L1Transaction>(`/txs/${encodeURIComponent(transactionId)}`, signal);

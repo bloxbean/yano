@@ -65,6 +65,18 @@ public class AppChainResource {
     @Inject
     PluginCatalogView pluginCatalog;
 
+    @Inject
+    com.bloxbean.cardano.yano.api.LedgerQuery ledgerQuery;
+
+    @Inject
+    com.bloxbean.cardano.yano.api.ChainQuery chainQuery;
+
+    @Inject
+    com.bloxbean.cardano.yano.api.NodeLifecycle nodeLifecycle;
+
+    @Inject
+    org.eclipse.microprofile.config.Config runtimeConfig;
+
     @ConfigProperty(name = YanoPropertyKeys.AppChain.DX_RESOLVED_CONFIG_DIGEST)
     Optional<String> resolvedConfigDigest = Optional.empty();
 
@@ -102,6 +114,43 @@ public class AppChainResource {
                 pluginCatalog.fingerprint(),
                 resolvedConfigDigest.orElse(null),
                 releaseCatalogDigest.orElse(null)));
+    }
+
+    /**
+     * Machine-specific bridge surface (ADR-UTXO-008): more specific locator
+     * than {@code chains/{chainId}}, so bridge routes never widen the
+     * machine-agnostic {@link ChainScopedResource}.
+     */
+    @Path("chains/{chainId}/eutxo/bridge")
+    public EutxoBridgeResource eutxoBridge(@PathParam("chainId") String chainId) {
+        appChainGateways.byId(chainId)
+                .orElseThrow(() -> jsonError(Response.Status.NOT_FOUND,
+                        "Unknown app chain: " + chainId));
+        EutxoBridgeResource.BridgeSettings settings =
+                EutxoBridgeSettingsLoader.load(runtimeConfig, chainId)
+                        .orElseThrow(() -> jsonError(Response.Status.NOT_FOUND,
+                                "Chain has no bridge configuration: " + chainId));
+        return new EutxoBridgeResource(
+                chainId,
+                settings,
+                new com.bloxbean.cardano.yano.runtime.appchain.NodeUtxoSupplier(
+                        ledgerQuery::getUtxoState),
+                () -> {
+                    var tip = chainQuery.getLocalTip();
+                    if (tip == null) {
+                        return null;
+                    }
+                    int epoch = com.bloxbean.cardano.yano.app.api.EpochUtil
+                            .slotToEpoch(tip.getSlot(), nodeLifecycle.getConfig());
+                    return ledgerQuery.getProtocolParameters(epoch)
+                            .map(com.bloxbean.cardano.yano.runtime.tx
+                                    .ProtocolParamsMapper::fromSnapshot)
+                            .orElse(null);
+                },
+                () -> {
+                    var tip = chainQuery.getLocalTip();
+                    return tip == null ? 0L : tip.getSlot();
+                });
     }
 
     // ------------------------------------------------------------------

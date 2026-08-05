@@ -15,6 +15,8 @@
     indexStatusLabel, isCompleteProjection, isEutxoChain, transactionIdFromOutpoint,
     transactionTitle
   } from '$lib/eutxo/model';
+  import { adaToLovelace, validateDeposit } from '$lib/eutxo/deposit';
+  import type { EutxoBridgeInfo } from '$lib/eutxo/deposit';
 
   type View = 'overview' | 'transactions' | 'accounts' | 'bridge' | 'validity';
   type L1Detail = {
@@ -27,6 +29,22 @@
   };
 
   let api: YanoApi | null = null;
+  let bridgeInfo: EutxoBridgeInfo | null = null;
+  let installedWallets: string[] = [];
+  let connectedWallet = '';
+  let depositAmount = '5';
+  let depositBusy = false;
+  let depositMessage = '';
+  let depositTxId = '';
+  let depositL2Owner = '';
+  // The CF connect-with-wallet core touches browser globals at import time,
+  // so it must never load during prerender — dynamic import only.
+  let walletCoreModule:
+    typeof import('@cardano-foundation/cardano-connect-with-wallet-core') | null = null;
+  async function walletCore() {
+    walletCoreModule ??= await import('@cardano-foundation/cardano-connect-with-wallet-core');
+    return walletCoreModule;
+  }
   let chains: ChainSummary[] = [];
   let selectedChain = '';
   let status: AppChainStatus | null = null;
@@ -131,6 +149,15 @@
     try {
       status = await api.chainStatus(chainId, signal);
       if (!isEutxoChain(status)) return;
+      bridgeInfo = null;
+      depositTxId = '';
+      depositMessage = '';
+      void api.eutxoBridgeInfo(chainId, signal)
+        .then((value) => (bridgeInfo = value))
+        .catch(() => (bridgeInfo = null));
+      void walletCore()
+        .then((core) => (installedWallets = core.Wallet.getInstalledWalletExtensions()))
+        .catch(() => (installedWallets = []));
       try {
         await refreshIndexStatus(signal);
         indexAvailable = true;
@@ -409,6 +436,53 @@
       throw new Error('EUTxO index response identity does not match the selected chain');
     }
   }
+  async function connectDepositWallet(name: string) {
+    depositMessage = '';
+    try {
+      const core = await walletCore();
+      await core.Wallet.connect(name, core.NetworkType.TESTNET,
+        () => { connectedWallet = name; },
+        (cause) => { depositMessage = `Wallet connection failed: ${String(cause)}`; });
+    } catch (cause) {
+      depositMessage = `Wallet connection failed: ${String(cause)}`;
+    }
+  }
+
+  async function submitVaultDeposit() {
+    if (!api || !bridgeInfo || !connectedWallet || depositBusy) return;
+    const lovelace = adaToLovelace(depositAmount);
+    const problem = validateDeposit(lovelace, bridgeInfo);
+    if (problem) { depositMessage = problem; return; }
+    depositBusy = true;
+    depositTxId = '';
+    try {
+      depositMessage = 'Requesting the unsigned deposit from the node…';
+      const walletHandle = await (window as unknown as {
+        cardano: Record<string, { enable: () => Promise<{
+          getChangeAddress: () => Promise<string>;
+          signTx: (txHex: string, partial: boolean) => Promise<string>;
+        }> }>;
+      }).cardano[connectedWallet].enable();
+      const depositorAddress = await walletHandle.getChangeAddress();
+      const build = await api.eutxoDepositBuild(selectedChain, {
+        depositorAddress, lovelace: lovelace as number
+      });
+      depositMessage = 'Sign the deposit in your wallet…';
+      const witnessSetCborHex = await walletHandle.signTx(build.unsignedTxCborHex, true);
+      depositMessage = 'Assembling and submitting…';
+      const assembled = await api.eutxoDepositAssemble(selectedChain, {
+        unsignedTxCborHex: build.unsignedTxCborHex, witnessSetCborHex
+      });
+      await api.submitTxHex(assembled.signedTxCborHex);
+      depositTxId = assembled.transactionId;
+      depositL2Owner = build.l2OwnerAddress;
+      depositMessage = `Submitted. The deposit mirrors onto the L2 after ${bridgeInfo.stabilityDepth} stable L1 blocks.`;
+    } catch (cause) {
+      depositMessage = apiFailureMessage(cause, 'Deposit failed');
+    } finally {
+      depositBusy = false;
+    }
+  }
 </script>
 
 <svelte:head><title>Yano · EUTxO Explorer</title></svelte:head>
@@ -655,6 +729,51 @@
             </div>
             {:else}<p class="text-sm text-slate-500">No activity in indexed history.</p>{/each}</div>
         </div>
+      {/if}
+    </section>
+  {/if}
+
+  {#if activeView === 'bridge' && bridgeInfo}
+    <section class="card mt-4 p-4">
+      <h2 class="m-0 text-base font-semibold">Deposit with your wallet (CIP-30)</h2>
+      <p class="mt-2 text-xs text-slate-500">
+        The node builds the unsigned vault deposit with the mandatory inline
+        datum; your wallet signs it. A plain transfer to the vault address is
+        NOT a deposit. Vault
+        <span class="text-cyan-300">{bridgeInfo.vaultAddress.slice(0, 24)}…</span>
+        · cap {bridgeInfo.maxDepositLovelace / 1_000_000} ADA
+        {#if bridgeInfo.withdrawalsPaused}· withdrawals paused{/if}
+      </p>
+      {#if !connectedWallet}
+        <div class="mt-3 flex flex-wrap gap-2">
+          {#each installedWallets as walletName}
+            <button class="rounded-lg border border-slate-700 px-3 py-2 text-xs hover:border-cyan-700"
+                    onclick={() => void connectDepositWallet(walletName)}>Connect {walletName}</button>
+          {:else}
+            <p class="text-sm text-slate-500">No CIP-30 wallet extension detected in this browser.</p>
+          {/each}
+        </div>
+      {:else}
+        <div class="mt-3 flex flex-wrap items-center gap-2">
+          <span class="badge badge-ok">wallet: {connectedWallet}</span>
+          <input class="w-28 rounded-lg border border-slate-700 bg-transparent px-3 py-2 text-xs"
+                 bind:value={depositAmount} aria-label="deposit amount in ADA" />
+          <span class="text-xs text-slate-500">ADA</span>
+          <button class="rounded-lg border border-cyan-700 px-3 py-2 text-xs hover:bg-cyan-950"
+                  disabled={depositBusy}
+                  onclick={() => void submitVaultDeposit()}>
+            {depositBusy ? 'Working…' : 'Deposit'}
+          </button>
+          <button class="rounded-lg border border-slate-700 px-3 py-2 text-xs"
+                  onclick={() => { void walletCore().then((core) => core.Wallet.disconnect()); connectedWallet = ''; }}>Disconnect</button>
+        </div>
+      {/if}
+      {#if depositMessage}<p class="mt-3 text-xs text-amber-300">{depositMessage}</p>{/if}
+      {#if depositTxId}
+        <div class="mt-2 text-xs text-slate-500">L1 transaction</div>
+        <div class="text-xs text-cyan-300"><CopyValue value={depositTxId} width={40} label="deposit L1 transaction id" /></div>
+        <div class="mt-2 text-xs text-slate-500">L2 owner</div>
+        <div class="text-xs"><CopyValue value={depositL2Owner} width={40} label="deposit L2 owner address" /></div>
       {/if}
     </section>
   {/if}
