@@ -30,6 +30,9 @@ dependencies {
     testImplementation project(':appchain-role-workflow-contracts')
     testImplementation project(':appchain-config')
     testImplementation project(':appchain-eutxo-contracts')
+    // ADR-UTXO-008: golden derivation of the bridge chain's deterministic
+    // vault/payout identities uses the exact client wallet derivation.
+    testImplementation project(':appchain-eutxo-client')
     testImplementation project(':appchain-testkit')
     testImplementation libs.cbor
     testImplementation libs.cardano.client.core

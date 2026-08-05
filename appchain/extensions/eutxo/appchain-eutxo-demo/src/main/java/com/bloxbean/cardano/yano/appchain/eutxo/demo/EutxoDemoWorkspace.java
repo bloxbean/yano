@@ -119,7 +119,11 @@ public final class EutxoDemoWorkspace {
         }
         publicIdentities.put("operatorAddress", operatorWallet.address());
         publicIdentities.put("operatorPublicKey", operatorWallet.publicKey());
-        publicIdentities.put("payoutAddress", bobPayoutWallet.address());
+        // Attached workspaces must claim withdrawals to the TARGET chain's
+        // configured withdrawal address, not a freshly generated one.
+        publicIdentities.put("payoutAddress",
+                options.payoutAddress() == null
+                        ? bobPayoutWallet.address() : options.payoutAddress());
         publicIdentities.put("vaultAddress", AddressProvider.getEntAddress(
                 vaultScript, Networks.testnet()).toBech32());
         publicIdentities.put("vaultScriptHash", vaultScriptHash);

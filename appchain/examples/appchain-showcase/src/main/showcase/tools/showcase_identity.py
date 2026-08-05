@@ -17,9 +17,12 @@ LIGHT_CHAINS = [
     "orders-chain", "registry-chain", "approvals-chain", "balances-chain",
     "documents-chain", "workflow-chain", "roles-chain", "payments-chain",
     "authenticated-map-chain", "authenticated-map-jmt-chain",
+    "payment-chain-l1bridge",
 ]
+# Instances prepared before the ADR-UTXO-008 bridge chain existed.
+LIGHT_CHAINS_V10 = LIGHT_CHAINS[:-1]
 # Instances prepared before the classic-JMT contrast chain existed.
-LEGACY_LIGHT_CHAINS = LIGHT_CHAINS[:-1]
+LEGACY_LIGHT_CHAINS = LIGHT_CHAINS[:-2]
 CHAIN_ID = re.compile(r"[A-Za-z0-9._~-]{1,128}")
 HEX_32 = re.compile(r"[0-9a-f]{64}")
 
@@ -218,7 +221,7 @@ def validate_deployment_identity(document: dict) -> None:
         "serverBase", "runtime", "chainIds", "configSha256", "pluginSha256", "anchor",
         "authenticatedMapConfigSha256",
     }
-    if document.get("chainIds") == LIGHT_CHAINS:
+    if document.get("chainIds") in (LIGHT_CHAINS, LIGHT_CHAINS_V10):
         expected = expected | {"authenticatedMapJmtConfigSha256"}
         if (not isinstance(document.get("authenticatedMapJmtConfigSha256"), str)
                 or not HEX_32.fullmatch(document["authenticatedMapJmtConfigSha256"])):
@@ -227,7 +230,8 @@ def validate_deployment_identity(document: dict) -> None:
     if (set(document) != expected or document.get("profile") != "light"
             or document.get("network") not in ("devnet", "preprod")
             or document.get("protocolMagic") != (1 if document.get("network") == "preprod" else 42)
-            or document.get("chainIds") not in (LIGHT_CHAINS, LEGACY_LIGHT_CHAINS)
+            or document.get("chainIds") not in (
+                LIGHT_CHAINS, LIGHT_CHAINS_V10, LEGACY_LIGHT_CHAINS)
             or not isinstance(document.get("authenticatedMapConfigSha256"), str)
             or not HEX_32.fullmatch(document["authenticatedMapConfigSha256"])
             or type(document.get("bootstrapNodeCount")) is not int
@@ -347,7 +351,8 @@ def migrate_anchor(args: argparse.Namespace) -> None:
         raise ValueError("authenticated-map genesis differs from the retained showcase identity")
     configured = deployment.get("chainIds")
     if (deployment.get("profile") != "light" or not isinstance(configured, list)
-            or configured not in (LIGHT_CHAINS, LEGACY_LIGHT_CHAINS)):
+            or configured not in (
+                LIGHT_CHAINS, LIGHT_CHAINS_V10, LEGACY_LIGHT_CHAINS)):
         raise ValueError("anchor enable is supported only for the maintained light profile")
     if "authenticatedMapJmtConfigSha256" in deployment:
         if (not args.authenticated_map_jmt_config
@@ -429,7 +434,7 @@ def migrate_chain_add(args: argparse.Namespace) -> None:
         raise ValueError("retained authenticated-map genesis does not match the marker; "
                          "refusing to migrate a tampered instance")
     jmt_sha = sha256(pathlib.Path(args.authenticated_map_jmt_config).resolve())
-    if deployment.get("chainIds") == LIGHT_CHAINS:
+    if deployment.get("chainIds") in (LIGHT_CHAINS, LIGHT_CHAINS_V10):
         if deployment.get("authenticatedMapJmtConfigSha256") != jmt_sha:
             raise ValueError("instance already has a different JMT chain identity")
         print("already-migrated")

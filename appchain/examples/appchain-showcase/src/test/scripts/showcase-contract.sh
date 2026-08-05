@@ -104,7 +104,9 @@ grep -q '^light' <<< "$PROFILES"
 grep -q 'governance activate' <<< "$("$ROOT/showcase.sh" help)"
 "$ROOT/showcase.sh" prepare --instance three --nodes 3 --http-base 19770 --server-base 19370
 [ -f "$ROOT/data/showcase/three/showcase-identity.json" ]
-jq -e '.chainIds | length == 10' \
+jq -e '.chainIds | length == 11' \
+  "$ROOT/data/showcase/three/showcase-identity.json" >/dev/null
+jq -e '.chainIds[10] == "payment-chain-l1bridge"' \
   "$ROOT/data/showcase/three/showcase-identity.json" >/dev/null
 jq -e '.authenticatedMapConfigSha256 | test("^[0-9a-f]{64}$")' \
   "$ROOT/data/showcase/three/showcase-identity.json" >/dev/null
@@ -165,7 +167,8 @@ document = {
     "proposer": members[0],
     "chainIds": ["orders-chain", "registry-chain", "approvals-chain", "balances-chain",
                  "documents-chain", "workflow-chain", "roles-chain", "payments-chain",
-                 "authenticated-map-chain", "authenticated-map-jmt-chain"],
+                 "authenticated-map-chain", "authenticated-map-jmt-chain",
+                 "payment-chain-l1bridge"],
     "anchor": {"enabled": True, "mode": "script", "signerFingerprint": fingerprint,
                "chainId": "workflow-chain"},
 }
@@ -190,11 +193,11 @@ grep -q '^ANCHOR_CHAINS=registry-chain,workflow-chain$' \
 grep -q -- '--anchor-chain registry-chain --anchor-chain workflow-chain' "$WORK/cluster.log"
 
 "$ROOT/showcase.sh" anchor enable all --instance anchor-expand
-jq -e '.anchor.chainIds | length == 10' "$ANCHOR_ROOT/showcase-identity.json" >/dev/null
-jq -e '.anchor.chainIds | length == 10' \
+jq -e '.anchor.chainIds | length == 11' "$ANCHOR_ROOT/showcase-identity.json" >/dev/null
+jq -e '.anchor.chainIds | length == 11' \
   "$ANCHOR_ROOT/cluster/cluster-appchain-identity.json" >/dev/null
 PATH="$WORK/bin:$PATH" "$ROOT/showcase.sh" anchor bootstrap all --instance anchor-expand
-[ "$(grep -c '^anchor-bootstrap .*chain$' "$WORK/cluster.log")" = 10 ]
+[ "$(grep -c '^anchor-bootstrap .*' "$WORK/cluster.log")" = 11 ]
 
 "$ROOT/showcase.sh" prepare --instance five --nodes 5 --http-base 19870 --server-base 19470
 [ "$(find "$ROOT/data/showcase/five/node-config" -type f -name 'node*.properties' | wc -l | tr -d ' ')" = 5 ]

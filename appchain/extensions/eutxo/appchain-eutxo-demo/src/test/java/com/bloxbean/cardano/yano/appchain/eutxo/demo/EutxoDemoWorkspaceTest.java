@@ -121,6 +121,9 @@ class EutxoDemoWorkspaceTest {
                 .startsWith("addr_test1");
         assertThat(created.manifest().publicIdentities().get("vaultScriptHash"))
                 .matches("[0-9a-f]{56}");
+        assertThat(created.manifest().publicIdentities().get("payoutAddress"))
+                .isEqualTo("addr_test1vrpz48l78va55y3ewuv7p6na"
+                        + "rrtgsw2ajq3ns9xx945e0vsmpxjls");
 
         EutxoDemoWorkspace reopened = EutxoDemoWorkspace.open(root);
         assertThat(reopened.manifest()).isEqualTo(created.manifest());
@@ -164,7 +167,7 @@ class EutxoDemoWorkspaceTest {
     private static EutxoDemoOptions options(Path root) {
         return new EutxoDemoOptions("setup", "ledger", root,
                 "payments-eutxo", "payments-eutxo", 3, 1, 7070, 13337,
-                null, null,
+                null, null, null,
                 null, null, null, 20_000_000L, null, null,
                 EutxoDemoOptions.Format.TEXT, false, false);
     }
@@ -174,6 +177,7 @@ class EutxoDemoWorkspaceTest {
         return new EutxoDemoOptions("setup", "bridge", root,
                 "payment-chain-l1bridge", "payment-chain-l1bridge", 3, 1, 7070, 13337,
                 targetBase, operatorSeedFile,
+                "addr_test1vrpz48l78va55y3ewuv7p6narrtgsw2ajq3ns9xx945e0vsmpxjls",
                 null, null, null, 20_000_000L, null, null,
                 EutxoDemoOptions.Format.TEXT, false, false);
     }

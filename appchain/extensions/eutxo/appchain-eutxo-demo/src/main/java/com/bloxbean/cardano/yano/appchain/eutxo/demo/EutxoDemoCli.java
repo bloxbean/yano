@@ -44,6 +44,8 @@ public final class EutxoDemoCli {
               --operator-seed-file <file>  64-hex vault operator seed; required
                                            with --target-base so settlement can
                                            sign for the target chain's vault
+              --payout-address <address>   the target chain's configured
+                                           withdrawal address (attach setup)
               --address <Cardano address>  external L1 depositor
               --l2-address <address>       defaults to --address
               --l2-public-key <hex>        required for an external ZK user
@@ -261,6 +263,7 @@ public final class EutxoDemoCli {
         int serverPortBase = 13337;
         String targetBase = null;
         Path operatorSeedFile = null;
+        String payoutAddress = null;
         String address = null;
         String l2Address = null;
         String l2PublicKey = null;
@@ -292,6 +295,8 @@ public final class EutxoDemoCli {
                 case "--target-base" -> targetBase = targetBase(
                         required(arguments, ++index, value));
                 case "--operator-seed-file" -> operatorSeedFile = Path.of(
+                        required(arguments, ++index, value));
+                case "--payout-address" -> payoutAddress = bech32Address(
                         required(arguments, ++index, value));
                 case "--address" -> address = required(arguments, ++index, value);
                 case "--l2-address" -> l2Address = required(arguments, ++index, value);
@@ -358,15 +363,28 @@ public final class EutxoDemoCli {
             throw new Usage(
                     "--operator-seed-file is valid only with --target-base");
         }
+        if (!help && payoutAddress != null
+                && !("setup".equals(command) && targetBase != null)) {
+            throw new Usage(
+                    "--payout-address is valid only for --target-base setup");
+        }
         if (chainId == null) {
             chainId = name;
         }
         return new EutxoDemoOptions(command, scenario, workspace, name, chainId,
                 members, count, httpPortBase, serverPortBase,
-                targetBase, operatorSeedFile,
+                targetBase, operatorSeedFile, payoutAddress,
                 address, l2Address, l2PublicKey, amount, output,
                 signedTransaction,
                 format, confirmed, help);
+    }
+
+    private static String bech32Address(String value) {
+        String normalized = value.trim();
+        if (!normalized.matches("addr(_test)?1[02-9ac-hj-np-z]{20,120}")) {
+            throw new Usage("--payout-address must be a bech32 Cardano address");
+        }
+        return normalized;
     }
 
     private static String targetBase(String value) {

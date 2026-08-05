@@ -105,4 +105,17 @@ printf '%s' "$JMT_INFO" | jq -e '
   .validatorCount == 0 and
   ([.collections[].id] | sort == ["documents", "kv-open", "notes"])
 ' >/dev/null
+
+# ADR-UTXO-008: the packaged light profile carries the bridge chain with its
+# deterministic demo vault identity and the bundles its observers/routes need.
+grep -q 'chain-id: "payment-chain-l1bridge"' \
+  "$ROOT/yano/config/application-appchain.yml"
+grep -q 'com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano' \
+  "$ROOT/yano/config/application-appchain.yml"
+grep -q 'com.bloxbean.cardano.yano.appchain.eutxo.indexer' \
+  "$ROOT/yano/config/application-appchain.yml"
+grep -q 'vault-address: addr_test1wpxg9ntn83pztkpw09lfkvv4uurd7pxztlx7yg0zqr0frdcuc9zzj' \
+  "$ROOT/yano/config/application-appchain.yml"
+grep -q 'withdrawal-address: addr_test1vrpz48l78va55y3ewuv7p6narrtgsw2ajq3ns9xx945e0vsmpxjls' \
+  "$ROOT/yano/config/application-appchain.yml"
 echo "PASS: copied showcase ZIP is self-contained and documents every demo path"
