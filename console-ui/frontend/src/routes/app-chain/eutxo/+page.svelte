@@ -485,30 +485,39 @@
     if (problem) { depositMessage = problem; return; }
     depositBusy = true;
     depositTxId = '';
+    let step = 'connecting to the wallet';
     try {
-      depositMessage = 'Requesting the unsigned deposit from the node…';
       const walletHandle = await (window as unknown as {
         cardano: Record<string, { enable: () => Promise<{
           getChangeAddress: () => Promise<string>;
           signTx: (txHex: string, partial: boolean) => Promise<string>;
         }> }>;
       }).cardano[connectedWallet].enable();
+      step = 'reading the wallet change address';
       const depositorAddress = await walletHandle.getChangeAddress();
+      step = 'building the unsigned deposit on the node';
+      depositMessage = 'Requesting the unsigned deposit from the node…';
       const build = await api.eutxoDepositBuild(selectedChain, {
         depositorAddress, lovelace: lovelace as number
       });
+      step = 'signing in the wallet';
       depositMessage = 'Sign the deposit in your wallet…';
       const witnessSetCborHex = await walletHandle.signTx(build.unsignedTxCborHex, true);
+      step = 'assembling the signed transaction on the node';
       depositMessage = 'Assembling and submitting…';
       const assembled = await api.eutxoDepositAssemble(selectedChain, {
         unsignedTxCborHex: build.unsignedTxCborHex, witnessSetCborHex
       });
+      step = 'submitting to the L1';
       await api.submitTxHex(assembled.signedTxCborHex);
       depositTxId = assembled.transactionId;
       depositL2Owner = build.l2OwnerAddress;
       depositMessage = `Submitted. The deposit mirrors onto the L2 after ${bridgeInfo.stabilityDepth} stable L1 blocks.`;
     } catch (cause) {
-      depositMessage = apiFailureMessage(cause, 'Deposit failed');
+      const detail = cause instanceof ApiError
+        ? `${cause.message} (HTTP ${cause.status})`
+        : cause instanceof Error ? cause.message : JSON.stringify(cause);
+      depositMessage = `Deposit failed while ${step}: ${detail}`;
     } finally {
       depositBusy = false;
     }
