@@ -292,11 +292,22 @@ public final class ShowcaseEutxoClientDemo {
         }
         EutxoWithdrawalClaim claim = record.claim();
         BigInteger amount = claim.lovelace();
-        Utxo vaultInput = utxoSupplier.getAll(vaultAddress).stream()
-                .filter(value -> lovelace(value).compareTo(amount) > 0)
-                .findFirst().orElseThrow(() -> new IllegalStateException(
-                        "no vault UTxO can cover " + amount + " lovelace"));
-        BigInteger continuing = lovelace(vaultInput).subtract(amount)
+        // Aggregate vault deposits: no single UTxO needs to cover the claim.
+        List<Utxo> vaultInputs = new ArrayList<>();
+        BigInteger gathered = BigInteger.ZERO;
+        BigInteger target = amount.add(BigInteger.valueOf(1_500_000));
+        for (Utxo candidate : utxoSupplier.getAll(vaultAddress)) {
+            vaultInputs.add(candidate);
+            gathered = gathered.add(lovelace(candidate));
+            if (gathered.compareTo(target) >= 0) {
+                break;
+            }
+        }
+        if (gathered.compareTo(amount) <= 0) {
+            throw new IllegalStateException("vault holds " + gathered
+                    + " lovelace; cannot cover the " + amount + " claim");
+        }
+        BigInteger continuing = gathered.subtract(amount)
                 .subtract(BigInteger.valueOf(500_000));
         EutxoSettlementDatum marker = EutxoSettlementDatum.forAddress(
                 EutxoSettlementDatum.ABI_VERSION,
@@ -309,7 +320,7 @@ public final class ShowcaseEutxoClientDemo {
                 "settling %s: %d lovelace -> %s%n",
                 claimId, amount, claim.destinationAddress());
         Result<String> result = quickTx.compose(new Tx()
-                        .collectFrom(List.of(vaultInput))
+                        .collectFrom(vaultInputs)
                         .payToAddress(claim.destinationAddress(),
                                 Amount.lovelace(amount))
                         .payToContract(vaultAddress,
