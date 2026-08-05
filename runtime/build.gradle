@@ -47,6 +47,75 @@ dependencies {
     annotationProcessor libs.yaci.events.processor
 }
 
+// Since ADR-025.2 Phase E the stdlib jar registers a domain-api ServiceLoader
+// provider, and that contribution kind requires an owning bundle manifest
+// from an embedded aggregate index. Generate the index over the test runtime
+// classpath (dependency jars plus this module's own test providers, merged
+// into one artifact) so catalog-opening tests see the same
+// authoritative-input shape as packaged runtimes.
+def generatedTestPluginCatalogDir =
+        layout.buildDirectory.dir('generated/test-plugin-catalog')
+
+tasks.register('testCatalogProvidersJar', Jar) {
+    archiveClassifier = 'test-catalog-providers'
+    destinationDirectory = layout.buildDirectory.dir('generated/test-plugin-catalog-jar')
+    from sourceSets.test.output
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+tasks.register('generateTestPluginCatalogIndex', JavaExec) {
+    dependsOn project(':plugin-catalog').tasks.named('classes'),
+            tasks.named('testCatalogProvidersJar'), tasks.named('jar')
+    inputs.files(configurations.testRuntimeClasspath)
+    outputs.file(generatedTestPluginCatalogDir.map {
+        it.file('META-INF/yano-plugin-index-v1.json')
+    })
+    classpath = project(':plugin-catalog').sourceSets.main.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.catalog.PluginIndexGenerator'
+    doFirst {
+        def output = generatedTestPluginCatalogDir.get()
+                .file('META-INF/yano-plugin-index-v1.json').asFile
+        output.parentFile.mkdirs()
+        def artifacts = configurations.testRuntimeClasspath.files
+                .findAll { it.exists() && it.name.endsWith('.jar') }
+                .sort { left, right -> left.absolutePath <=> right.absolutePath }
+        def providersJar = tasks.named('testCatalogProvidersJar').get()
+                .archiveFile.get().asFile
+        def moduleJar = tasks.named('jar').get().archiveFile.get().asFile
+        args = ['--output', output.absolutePath, '--'] +
+                artifacts.collect { it.absolutePath } +
+                [moduleJar.absolutePath, providersJar.absolutePath]
+    }
+}
+
+// Catalog-semantics tests build and inject their own catalog inputs
+// (including explicit embedded indexes), so they must run WITHOUT the
+// generated classpath index — an extra index is a hard cardinality error.
+def catalogSemanticsTestClasses = [
+        '**/plugins/PluginCatalogRuntimeTest.class',
+        '**/plugins/PluginCatalogCollisionPolicyTest.class',
+]
+
+tasks.named('test') {
+    dependsOn tasks.named('generateTestPluginCatalogIndex')
+    classpath += files(generatedTestPluginCatalogDir)
+    catalogSemanticsTestClasses.each { exclude it }
+}
+
+tasks.register('pluginCatalogSemanticsTest', Test) {
+    group = 'verification'
+    description = 'Catalog-semantics tests that manage their own catalog inputs (no embedded index)'
+    useJUnitPlatform()
+    jvmArgs '--add-opens=java.base/java.lang=ALL-UNNAMED'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    catalogSemanticsTestClasses.each { include it }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('pluginCatalogSemanticsTest')
+}
+
 tasks.register('benchmarkAdr025ClassicJmtRuntime', JavaExec) {
     group = 'verification'
     description = 'Runs the ADR-025 Phase 3 durable classic-JMT runtime benchmark'

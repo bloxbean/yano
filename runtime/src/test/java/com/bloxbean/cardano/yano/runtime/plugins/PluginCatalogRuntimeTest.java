@@ -2160,7 +2160,7 @@ class PluginCatalogRuntimeTest {
 
         Thread thread = Thread.currentThread();
         ClassLoader original = thread.getContextClassLoader();
-        ClassLoader caller = new ClassLoader(getClass().getClassLoader()) { };
+        ClassLoader caller = new ClassLoader(serviceFilteringParent()) { };
         thread.setContextClassLoader(caller);
         PluginLoaderHandle handle = PluginLoaderHandle.directory(directory, caller);
         Path snapshotDirectory = handle.artifacts().getFirst().getParent();
@@ -2336,7 +2336,7 @@ class PluginCatalogRuntimeTest {
                         "com.example.ordering-second", "ordering-second", secondProvider)));
 
         PluginLoaderHandle handle = PluginLoaderHandle.directory(
-                directory, getClass().getClassLoader());
+                directory, serviceFilteringParent());
         Path snapshotDirectory = handle.artifacts().getFirst().getParent();
         try {
             List<String> capturedOrder = handle.artifacts().stream()
@@ -2393,7 +2393,7 @@ class PluginCatalogRuntimeTest {
                 "snapshot-marker.txt", "resource-v2".getBytes(StandardCharsets.UTF_8)));
 
         PluginLoaderHandle handle = PluginLoaderHandle.directory(
-                directory, getClass().getClassLoader());
+                directory, serviceFilteringParent());
         Path snapshotJar = handle.artifacts().getFirst();
         Path snapshotDirectory = snapshotJar.getParent();
         String capturedDigest = artifactDigest(snapshotJar);
@@ -5114,5 +5114,32 @@ class PluginCatalogRuntimeTest {
             }
             return super.getResources(name);
         }
+    }
+
+    /**
+     * Parent loader that resolves classes (SPI types) from the test classpath
+     * but hides its ServiceLoader registrations. Since ADR-025.2 Phase E the
+     * classpath carries a manifest-required domain-api provider (stdlib), and
+     * a directory-only catalog without an embedded index must not see it.
+     */
+    private static ClassLoader serviceFilteringParent() {
+        return new ClassLoader(PluginCatalogRuntimeTest.class.getClassLoader()) {
+            @Override
+            public java.util.Enumeration<java.net.URL> getResources(String name)
+                    throws java.io.IOException {
+                if (name.startsWith("META-INF/services/")) {
+                    return java.util.Collections.emptyEnumeration();
+                }
+                return super.getResources(name);
+            }
+
+            @Override
+            public java.net.URL getResource(String name) {
+                if (name.startsWith("META-INF/services/")) {
+                    return null;
+                }
+                return super.getResource(name);
+            }
+        };
     }
 }
