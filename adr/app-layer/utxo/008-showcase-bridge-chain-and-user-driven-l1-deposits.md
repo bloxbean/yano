@@ -346,3 +346,28 @@ account (base address): faucet-funded deposit of 8 ADA MIRRORED to the L2,
 settle → CONFIRMED, and exactly 2,000,000 lovelace received back at the
 user's own L1 address from the settlement transaction. Base-address owners
 work throughout — nothing assumes enterprise addresses.
+
+### BR-M5 — chain add payment-chain-l1bridge migration (2026-08-05, branch feat/adr-utxo-008-br-m5)
+
+New identity migration `chain-add-bridge`: V10 (JMT present) → the full
+11-chain packaged set. Config-only — no genesis generation; it verifies BOTH
+retained authenticated-map geneses are untouched, re-records the packaged
+config/plugin digests, and rewrites the cluster marker's chain list. The
+showcase dispatcher now accepts `chain add payment-chain-l1bridge`
+(idempotent: an already-migrated instance just refreshes configs and
+restarts); legacy 9-chain instances are directed to the JMT add, which
+adopts both chains. Hermetic contract coverage: prepare → downgrade markers
+to V10 → migrate → assert 11 chains + idempotent rerun.
+
+APPLIED LIVE to the user's preprod cluster
+(`/Users/satya/Downloads/yano-cluster/yano-showcase-0.1.0-pre11`, instance
+`preprod-anchor`): markers migrated 10→11, all three nodes restarted and
+converged, history retained (workflow-chain tip 49 with its bootstrapped
+anchor, JMT chain tip 6), `payment-chain-l1bridge` live at tip 0 with the
+membership epoch active, `bridge info` printing the preprod guidance path.
+Backups of the pre-migration markers + yml retained under the instance's
+`pre-bridge-backup-*` directory. Operational finding during the restart:
+two stray devnet-profile yano processes (a leftover playground batch from
+earlier in the day, one sibling of which had already crashed) were squatting
+on ports 7071/7072 and had to be terminated before the cluster could
+rebind — the port-busy diagnostic made this obvious.

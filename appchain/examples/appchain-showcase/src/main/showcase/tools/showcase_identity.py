@@ -457,10 +457,53 @@ def migrate_chain_add(args: argparse.Namespace) -> None:
     print("migrated")
 
 
+def migrate_chain_add_bridge(args: argparse.Namespace) -> None:
+    """Additive migration: adopt the ADR-UTXO-008 bridge chain on an
+    instance that already has the classic-JMT chain (10 chains). The bridge
+    chain is config-only, so no new genesis is generated; the packaged
+    config/plugin digests are re-recorded after verifying both retained
+    authenticated-map geneses are untouched."""
+    marker = pathlib.Path(args.marker)
+    deployment = parsed_identity(marker, "yano.showcase.deployment")
+    validate_deployment_identity(deployment)
+    required = (args.config, args.plugin, args.authenticated_map_config,
+                args.authenticated_map_jmt_config)
+    if not all(required):
+        raise ValueError("chain-add requires --config, --plugin, "
+                         "--authenticated-map-config, and --authenticated-map-jmt-config")
+    if (sha256(pathlib.Path(args.authenticated_map_config).resolve())
+            != deployment.get("authenticatedMapConfigSha256")):
+        raise ValueError("retained authenticated-map genesis does not match the marker; "
+                         "refusing to migrate a tampered instance")
+    if deployment.get("chainIds") == LIGHT_CHAINS:
+        print("already-migrated")
+        return
+    if deployment.get("chainIds") != LIGHT_CHAINS_V10:
+        raise ValueError("chain add payment-chain-l1bridge requires the JMT chain first; "
+                         "run: chain add authenticated-map-jmt-chain")
+    if (sha256(pathlib.Path(args.authenticated_map_jmt_config).resolve())
+            != deployment.get("authenticatedMapJmtConfigSha256")):
+        raise ValueError("retained authenticated-map JMT genesis does not match the marker; "
+                         "refusing to migrate a tampered instance")
+    deployment["chainIds"] = list(LIGHT_CHAINS)
+    deployment["configSha256"] = sha256(pathlib.Path(args.config).resolve())
+    deployment["pluginSha256"] = sha256(pathlib.Path(args.plugin).resolve())
+    validate_deployment_identity(deployment)
+    if args.cluster_marker and pathlib.Path(args.cluster_marker).exists():
+        cluster_marker_path = pathlib.Path(args.cluster_marker)
+        cluster = parsed_identity(cluster_marker_path, "yano.cluster.appchain-identity")
+        validate_cluster_identity(cluster, LIGHT_CHAINS_V10)
+        cluster["chainIds"] = list(LIGHT_CHAINS)
+        validate_cluster_identity(cluster, list(LIGHT_CHAINS))
+        write_atomic(cluster_marker_path, canonical(cluster))
+    write_atomic(marker, canonical(deployment))
+    print("migrated")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=("ensure", "show", "export", "anchor-enable",
-                                           "chain-add"))
+                                           "chain-add", "chain-add-bridge"))
     parser.add_argument("--marker", required=True)
     parser.add_argument("--version", default="development")
     parser.add_argument("--profile", default="light")
@@ -490,6 +533,9 @@ def main() -> None:
         return
     if args.action == "chain-add":
         migrate_chain_add(args)
+        return
+    if args.action == "chain-add-bridge":
+        migrate_chain_add_bridge(args)
         return
     if args.action == "show":
         parsed = json.loads(secure_existing(marker))

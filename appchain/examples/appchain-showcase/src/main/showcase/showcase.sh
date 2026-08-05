@@ -1592,7 +1592,7 @@ Yano unified app-chain showcase
   ./showcase.sh authmap governed-put <key> <value> [--chain id] [--collection C] [--actor A] [--seed-file F]
   ./showcase.sh authmap entry <collection> <key> [--chain id]
   ./showcase.sh authmap receipt <message-id> [--chain id]
-  ./showcase.sh chain add authenticated-map-jmt-chain
+  ./showcase.sh chain add authenticated-map-jmt-chain|payment-chain-l1bridge
   ./showcase.sh bridge info                          (vault facts + next steps, any network)
   ./showcase.sh bridge run|deposit|transfer|settle|verify [--count N]   (devnet)
   ./showcase.sh ceremony            (eutxo profile, zk variant: one-time trusted setup)
@@ -1743,36 +1743,61 @@ PY
     done;;
   chain)
     adopt_marker
-    [ "${POSITIONAL[0]:-}" = add ] || die "usage: chain add authenticated-map-jmt-chain"
-    [ "${POSITIONAL[1]:-}" = authenticated-map-jmt-chain ] \
-      || die "chain add currently supports exactly: authenticated-map-jmt-chain"
+    [ "${POSITIONAL[0]:-}" = add ] \
+      || die "usage: chain add authenticated-map-jmt-chain|payment-chain-l1bridge"
     [ "$PROFILE" = light ] || die "chain add applies only to the light profile"
-    grep -q 'chain-id: "authenticated-map-jmt-chain"' \
-      "$YANO_HOME/config/application-appchain.yml" \
-      || die "packaged application-appchain.yml lacks the JMT chain; replace showcase.sh, tools/, yano/config/application-appchain.yml, and the plugin bundle from a newly built showcase ZIP first"
-    cluster_env; "$CLUSTER" stop || true
-    chain_add_candidate="$(generate_authenticated_map_jmt_candidate)"
-    if ! chain_add_state="$(python3 "$IDENTITY" chain-add --marker "$(marker)" \
-        --config "$YANO_HOME/config/application-appchain.yml" \
-        --plugin "$(plugin_file)" \
-        --authenticated-map-config "$(authenticated_map_properties)" \
-        --authenticated-map-jmt-config "$chain_add_candidate" \
-        --cluster-marker "$(cluster_dir)/cluster-appchain-identity.json")"; then
-      rm -f -- "$chain_add_candidate"
-      die "chain add migration failed; the instance identity is unchanged"
-    fi
-    if [ "$chain_add_state" = already-migrated ] \
-        && [ "$(jq -r '.chainIds | length' "$(marker)")" != "${#LIGHT_CHAINS[@]}" ]; then
-      rm -f -- "$chain_add_candidate"
+    case "${POSITIONAL[1]:-}" in
+    authenticated-map-jmt-chain)
+      grep -q 'chain-id: "authenticated-map-jmt-chain"' \
+        "$YANO_HOME/config/application-appchain.yml" \
+        || die "packaged application-appchain.yml lacks the JMT chain; replace showcase.sh, tools/, yano/config/application-appchain.yml, and the plugin bundle from a newly built showcase ZIP first"
+      cluster_env; "$CLUSTER" stop || true
+      chain_add_candidate="$(generate_authenticated_map_jmt_candidate)"
+      if ! chain_add_state="$(python3 "$IDENTITY" chain-add --marker "$(marker)" \
+          --config "$YANO_HOME/config/application-appchain.yml" \
+          --plugin "$(plugin_file)" \
+          --authenticated-map-config "$(authenticated_map_properties)" \
+          --authenticated-map-jmt-config "$chain_add_candidate" \
+          --cluster-marker "$(cluster_dir)/cluster-appchain-identity.json")"; then
+        rm -f -- "$chain_add_candidate"
+        die "chain add migration failed; the instance identity is unchanged"
+      fi
+      if [ "$chain_add_state" = already-migrated ] \
+          && [ "$(jq -r '.chainIds | length' "$(marker)")" != "${#LIGHT_CHAINS[@]}" ]; then
+        rm -f -- "$chain_add_candidate"
+        up_light
+        resume_joined_nodes
+        die "instance already has the JMT chain but predates payment-chain-l1bridge; run: ./showcase.sh chain add payment-chain-l1bridge --instance $INSTANCE"
+      fi
+      install_authenticated_map_jmt_candidate "$chain_add_candidate"
+      write_node_configs "$NODES"
       up_light
       resume_joined_nodes
-      die "instance already has the JMT chain but predates payment-chain-l1bridge; run: ./showcase.sh chain add payment-chain-l1bridge --instance $INSTANCE"
-    fi
-    install_authenticated_map_jmt_candidate "$chain_add_candidate"
-    write_node_configs "$NODES"
-    up_light
-    resume_joined_nodes
-    note "authenticated-map-jmt-chain added; verify with: ./showcase.sh status --instance $INSTANCE";;
+      note "authenticated-map-jmt-chain added; verify with: ./showcase.sh status --instance $INSTANCE";;
+    "$BRIDGE_CHAIN_ID")
+      grep -q 'chain-id: "payment-chain-l1bridge"' \
+        "$YANO_HOME/config/application-appchain.yml" \
+        || die "packaged application-appchain.yml lacks the bridge chain; replace showcase.sh, tools/, yano/config/application-appchain.yml, and the plugin bundle from a newly built showcase ZIP first"
+      [ -f "$(authenticated_map_jmt_properties)" ] \
+        || die "this instance predates the JMT chain; run: ./showcase.sh chain add authenticated-map-jmt-chain --instance $INSTANCE (it adopts the bridge chain too)"
+      cluster_env; "$CLUSTER" stop || true
+      if ! bridge_add_state="$(python3 "$IDENTITY" chain-add-bridge --marker "$(marker)" \
+          --config "$YANO_HOME/config/application-appchain.yml" \
+          --plugin "$(plugin_file)" \
+          --authenticated-map-config "$(authenticated_map_properties)" \
+          --authenticated-map-jmt-config "$(authenticated_map_jmt_properties)" \
+          --cluster-marker "$(cluster_dir)/cluster-appchain-identity.json")"; then
+        die "chain add migration failed; the instance identity is unchanged"
+      fi
+      [ "$bridge_add_state" != already-migrated ] \
+        || note "instance already has $BRIDGE_CHAIN_ID; refreshing configs and restarting"
+      write_node_configs "$NODES"
+      up_light
+      resume_joined_nodes
+      note "$BRIDGE_CHAIN_ID added (config-only, no funds until the first deposit)"
+      note "verify with: ./showcase.sh bridge info --instance $INSTANCE";;
+    *) die "chain add currently supports: authenticated-map-jmt-chain, payment-chain-l1bridge";;
+    esac;;
   authmap)
     adopt_marker
     case "${POSITIONAL[0]:-}" in
