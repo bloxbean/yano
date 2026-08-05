@@ -11,10 +11,12 @@ VERSION="$(tr -d '\r\n' < "$SHOWCASE_HOME/VERSION" 2>/dev/null || printf develop
 API_KEY="${YANO_CLUSTER_API_KEY:-yano-local-cluster-full-key}"
 LIGHT_CHAINS=(orders-chain registry-chain approvals-chain balances-chain
   documents-chain workflow-chain roles-chain payments-chain authenticated-map-chain
-  authenticated-map-jmt-chain)
+  authenticated-map-jmt-chain payment-chain-l1bridge)
 AUTHMAP_GENERATOR=com.bloxbean.cardano.yano.appchain.showcase.ShowcaseAuthenticatedMapConfig
 AUTHMAP_CHAIN_INDEX=8
 AUTHMAP_JMT_CHAIN_INDEX=9
+BRIDGE_CHAIN_ID=payment-chain-l1bridge
+BRIDGE_CHAIN_INDEX=10
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 note() { printf '%s\n' "$*"; }
@@ -1162,6 +1164,13 @@ activation_submit() {
       body="$(authmap_basic_body open \
         "$(python3 "$CODEC" authmap put kv-open "$suffix" "$value")")"
       submit_hex "$cid" authenticated-map.command.v1 "$body" 0;;
+    "$BRIDGE_CHAIN_ID")
+      # The bridge chain admits only eutxo transactions and proposer-injected
+      # L1 observations; it has no funds until the first vault deposit, so
+      # there is nothing valid to submit here. It bootstraps with its
+      # membership epoch active; a pending epoch (e.g. after member changes)
+      # activates on the next bridge block — drive one with a deposit.
+      printf 'skip';;
     *) die "unsupported light-profile chain: $cid";;
   esac
 }
@@ -1179,9 +1188,13 @@ governance_activate() {
         "http://127.0.0.1:$HTTP_BASE/api/v1/app-chain/chains/$cid/status")" \
         || die "cannot inspect governed epoch on $cid"
       if [ "$(printf '%s' "$status" | jq -r '.membershipEpochActive // false')" != true ]; then
-        pending=$((pending + 1))
         suffix="activate-$round-$(date +%s)"
         id="$(activation_submit "$cid" "$suffix")"
+        if [ "$id" = skip ]; then
+          note "note: $cid has a pending membership epoch; it activates on the next bridge block (run: ./showcase.sh bridge deposit --instance $INSTANCE)"
+          continue
+        fi
+        pending=$((pending + 1))
         submitted_chains+=("$cid")
         submitted_ids+=("$id")
       fi
@@ -1203,7 +1216,8 @@ governance_activate() {
     submitted_ids+=("$id")
   done
   for ((index=0;index<${#LIGHT_CHAINS[@]};index++)); do
-    wait_message "${LIGHT_CHAINS[$index]}" "${submitted_ids[$index]}" >/dev/null
+    [ "${submitted_ids[$index]}" = skip ] \
+      || wait_message "${LIGHT_CHAINS[$index]}" "${submitted_ids[$index]}" >/dev/null
     status="$(curl -fsS --connect-timeout 2 --max-time 5 \
       "http://127.0.0.1:$HTTP_BASE/api/v1/app-chain/chains/${LIGHT_CHAINS[$index]}/status")"
     printf '%s' "$status" | jq -e \
@@ -1664,14 +1678,21 @@ PY
       || die "packaged application-appchain.yml lacks the JMT chain; replace showcase.sh, tools/, yano/config/application-appchain.yml, and the plugin bundle from a newly built showcase ZIP first"
     cluster_env; "$CLUSTER" stop || true
     chain_add_candidate="$(generate_authenticated_map_jmt_candidate)"
-    if ! python3 "$IDENTITY" chain-add --marker "$(marker)" \
+    if ! chain_add_state="$(python3 "$IDENTITY" chain-add --marker "$(marker)" \
         --config "$YANO_HOME/config/application-appchain.yml" \
         --plugin "$(plugin_file)" \
         --authenticated-map-config "$(authenticated_map_properties)" \
         --authenticated-map-jmt-config "$chain_add_candidate" \
-        --cluster-marker "$(cluster_dir)/cluster-appchain-identity.json"; then
+        --cluster-marker "$(cluster_dir)/cluster-appchain-identity.json")"; then
       rm -f -- "$chain_add_candidate"
       die "chain add migration failed; the instance identity is unchanged"
+    fi
+    if [ "$chain_add_state" = already-migrated ] \
+        && [ "$(jq -r '.chainIds | length' "$(marker)")" != "${#LIGHT_CHAINS[@]}" ]; then
+      rm -f -- "$chain_add_candidate"
+      up_light
+      resume_joined_nodes
+      die "instance already has the JMT chain but predates payment-chain-l1bridge; run: ./showcase.sh chain add payment-chain-l1bridge --instance $INSTANCE"
     fi
     install_authenticated_map_jmt_candidate "$chain_add_candidate"
     write_node_configs "$NODES"

@@ -15,6 +15,7 @@ public record EutxoDemoOptions(
         int serverPortBase,
         String targetBase,
         Path operatorSeedFile,
+        String payoutAddress,
         String address,
         String l2Address,
         String l2PublicKey,

@@ -249,3 +249,44 @@ Deferred to BR-M2/M3: live attached run (needs the bridge chain on a light
 cluster) and the indexer allow-list note — `round-trip`/`verify` await index
 readiness on the target, so the light profile must allow-list
 `com.bloxbean.cardano.yano.appchain.eutxo.indexer`.
+
+### BR-M2 — payment-chain-l1bridge in the light profile (2026-08-05, branch feat/adr-utxo-008-br-m2)
+
+`chains[10]` shipped as designed: `eutxo-ledger` with profile
+`yano-eutxo-v2-plutus-v3` (the bridge recipe's profile), `l1.stability-depth
+2`, the full `machines.eutxo.bridge.*` block, both `observers.*` blocks, no
+virtual genesis. Deterministic PUBLIC demo identities (seed =
+sha256("yano-showcase-demo-actor:" + actor)): operator `bridge-operator` →
+vault `addr_test1wpxg9ntn83pztkpw09lfkvv4uurd7pxztlx7yg0zqr0frdcuc9zzj`
+(script hash `4c82cd733c4225d82e797e9b3195e706df04c25fcde221e200de91b7`),
+payout `bridge-payout` →
+`addr_test1vrpz48l78va55y3ewuv7p6narrtgsw2ajq3ns9xx945e0vsmpxjls`, all pinned
+by golden test `ShowcaseBridgeChainConfigTest` re-deriving them from the
+formula. Allow-list gained `…eutxo.bridge.cardano` (observers) and
+`…eutxo.indexer` (index domain routes; the lifecycle indexer itself was
+already on by default host-side).
+
+Findings recorded during implementation:
+- The chain's `withdrawal-address` is THE single L2 address whose outputs
+  become claims, so attach workspaces must adopt it — attach setup gained
+  `--payout-address` (public value, no secret) overriding the workspace's
+  generated payout identity.
+- The bridge chain admits only eutxo transactions and proposer-injected L1
+  observations and holds no funds at genesis, so the generic
+  `governance activate` proof-block loop cannot submit to it. It bootstraps
+  with its membership epoch active; the activation flow now skips it with a
+  note, and a LATER pending epoch (member changes) activates on the next
+  bridge block — drive one with a deposit. Documented as a demo-cluster
+  gotcha.
+- JMT `chain add` on a legacy 9-chain instance now migrates directly to the
+  full 11-chain packaged set (the bridge chain is config-only and additive);
+  a 10-chain instance is told to run `chain add payment-chain-l1bridge`
+  (BR-M5).
+
+Live-verified on a fresh devnet instance built from the updated zip
+(3 nodes, side ports): 11-chain boot, governance activation, and a FULL
+ATTACHED round-trip through the light cluster's bridge chain —
+`EUTXO_BRIDGE_DEMO_ROUND_TRIP_PASS`, deposits mirrored, claim CONFIRMED,
+index READY_FULL, non-submitting node converged at the same height/root.
+This doubles as BR-M1's deferred live verification. Both hermetic contracts
+(script + distribution) pass with the 11-chain assertions.
