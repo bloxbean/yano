@@ -33,7 +33,9 @@ SERVER_BASE=13337
 ANCHOR=false
 ANCHOR_MODE="script"
 ANCHOR_KEY_FILE=""
-ANCHOR_CHAINS="workflow-chain"
+# All chains are anchor-ENABLED by default (config-only, no L1 spend);
+# bootstrap stays selective and per-chain — that is where spending starts.
+ANCHOR_CHAINS="$(IFS=,; printf '%s' "${LIGHT_CHAINS[*]}")"
 ANCHOR_MODE_EXPLICIT=false
 ANCHOR_KEY_EXPLICIT=false
 PUBLIC_CONFIRM=""

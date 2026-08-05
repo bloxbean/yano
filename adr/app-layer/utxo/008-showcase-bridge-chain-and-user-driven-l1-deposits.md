@@ -425,3 +425,20 @@ the full JAX-RS/CDI stack: info 200 with pinned facts, non-bridge chain
 404, deposit/build 200 with a 418-byte fee-balanced unsigned tx for a
 funded address. Browser CIP-30 click-through remains MANUAL per the
 established console convention (same posture as the 025.2 console pages).
+
+### Follow-up — anchor-enable all chains by default (2026-08-05, branch feat/adr-utxo-008-anchor-default-all)
+
+User-requested default change: new instances anchor-ENABLE every chain
+(schemaVersion 2 marker, `anchor.chainIds` = all 11). Enabling is
+config-only and spends nothing — an enabled chain is dormant
+(`bootstrapped: false`, no L1 transactions) until its one-time per-chain
+bootstrap, which is where costs begin. Devnet quickstart still
+auto-bootstraps `workflow-chain` only. The additive `anchor enable`
+migration is retained for pre-default instances (contract now downgrades a
+fresh marker to the legacy workflow-only shape to keep that coverage) and
+`anchor enable all` remains the upgrade path for existing clusters.
+
+Live-verified on a fresh devnet instance: marker records 11 anchor chains;
+boot with all chains enabled; workflow-chain auto-bootstrap confirmed;
+orders-chain selectively bootstrapped on the running cluster; the bridge
+and JMT chains stayed enabled-but-dormant with zero L1 activity.
