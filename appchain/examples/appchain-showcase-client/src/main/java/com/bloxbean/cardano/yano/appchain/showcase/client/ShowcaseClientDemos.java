@@ -21,6 +21,7 @@ public final class ShowcaseClientDemos {
         String[] forwarded = Arrays.copyOfRange(arguments, 1, arguments.length);
         switch (arguments[0]) {
             case "authmap" -> ShowcaseAuthMapClientDemo.main(forwarded);
+            case "eutxo" -> ShowcaseEutxoClientDemo.main(forwarded);
             default -> {
                 usage();
                 System.exit(2);
@@ -32,6 +33,8 @@ public final class ShowcaseClientDemos {
         System.err.println("""
                 usage: java -jar yano-showcase-client-all.jar <demo> [args]
                   authmap <base-url> <chain-id> <scenario> [args]
-                          scenarios: basic-put | governed-put | reads | verified-entry | load""");
+                          scenarios: basic-put | governed-put | reads | verified-entry | load
+                  eutxo   <base-url> <chain-id> <scenario> [args]
+                          scenarios: deposit | utxos | transfer | claim | receipt | settle""");
     }
 }

@@ -1,7 +1,8 @@
 # Showcase Java Client Demo
 
-Demo-only walkthrough of the release-matched Java client
-(`appchain-client`) against a running showcase authenticated-map chain. It
+Demo-only walkthroughs of the release-matched Java client
+(`appchain-client`) against a running showcase cluster: the
+authenticated-map chains and the EUTxO bridge chain. It
 shows exactly what an integrating Java application does: build canonical
 commands with the contract classes, submit through `StdlibAppChainClient`,
 poll the root-attested receipt, read exact entries, and decode state only
@@ -83,6 +84,51 @@ Each write prints the four §10.3 trust levels as they happen: HTTP accepted
 for sequencing → finalized → state-machine APPLIED/REJECTED (with the
 receipt's error code) → the re-read entry state. The governed scenario also
 prints the one-time `(actor, authorizationId)` consumption record.
+
+## EUTxO bridge chain (ADR-UTXO-008)
+
+The `eutxo` demo drives `payment-chain-l1bridge`: deposit YOUR OWN L1 funds
+into the chain's vault (with the mandatory inline datum — a plain wallet
+transfer to the vault address is NOT a deposit), operate on the L2, create a
+withdrawal claim, and settle it as the operator. Every call — L1 UTxO
+queries, protocol parameters, submission, L2 reads — goes through the same
+Yano node's Blockfrost-compatible API.
+
+```bash
+# user role: mnemonic via file (0600) or interactive prompt, never argv
+(umask 077; printf '%s\n' 'word1 word2 … word24' > user.mnemonic)
+
+java -jar yano-showcase-client-<version>-all.jar eutxo \
+  http://127.0.0.1:7070 payment-chain-l1bridge \
+  deposit --mnemonic-file user.mnemonic --amount 8000000
+# → stages, pays the vault with the inline datum, waits for the L2 mirror
+
+… eutxo http://127.0.0.1:7070 payment-chain-l1bridge utxos --mnemonic-file user.mnemonic
+… eutxo … transfer --mnemonic-file user.mnemonic --to <l2-address> --amount 1000000
+… eutxo … claim --mnemonic-file user.mnemonic --amount 2000000
+# → prints the chain-assigned claim id and the operator command
+
+# operator role (vault keyholder; on devnet the PUBLIC showcase demo seed):
+… eutxo … settle --operator-seed-file operator.seed --claim-id <id>
+# → pays the claim's L1 payout address and waits for CONFIRMED
+
+… eutxo … receipt --tx <l2-transaction-id>
+```
+
+Notes:
+
+- On a devnet instance, fund the depositor first:
+  `curl -X POST http://127.0.0.1:7070/api/v1/devnet/fund -H 'Content-Type: application/json' -d '{"address":"<addr>","ada":50}'`.
+  On preprod, use your own funded test wallet — and remember the showcase
+  vault identities are PUBLIC deterministic demo keys (the operator key IS
+  custody): only demo amounts.
+- The claim's payout defaults to your own L1 address
+  (`--payout-address` overrides); the L2 owner defaults to your own address
+  (`--l2-owner-address` overrides).
+- Defaults target the showcase's deterministic vault/withdrawal identities;
+  `--vault-address` / `--withdrawal-address` support other bridge chains.
+- The claim id embeds a chain-assigned sequence, so the client resolves it
+  by probing the withdrawal snapshot after finality.
 
 ## What to read next
 

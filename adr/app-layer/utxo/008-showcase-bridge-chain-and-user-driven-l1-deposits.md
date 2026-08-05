@@ -320,3 +320,29 @@ unreachable variants, staged verbs delegate correctly. Both hermetic
 contracts pass. Noted: a transient index HTTP_409 appeared on one status
 probe immediately after a round — readiness gating inside the workflow was
 unaffected; watch during BR-M4.
+
+### BR-M4 — showcase-client eutxo demo (2026-08-05, branch feat/adr-utxo-008-br-m4)
+
+`ShowcaseClientDemos` gained the `eutxo` demo (`ShowcaseEutxoClientDemo`):
+user role `deposit` (mnemonic via file or prompt, never argv; stage → vault
+payment with the inline datum → poll the L2 mirror), `utxos`, `transfer`,
+`claim`, `receipt`; operator role `settle` (vault unlock + payout + await
+CONFIRMED). One backend for everything: the node's Blockfrost-compatible API
+plus the app-chain routes. Defaults resolve the showcase's deterministic
+vault/withdrawal identities with override flags for other bridge chains;
+`--l2-owner-address` and `--payout-address` default to the depositor's own
+address (one identity across layers, as designed in D5).
+
+Implementation finding: a withdrawal claim's id embeds the CHAIN-ASSIGNED
+settlement sequence, so a client cannot print it from local knowledge — the
+demo resolves it by probing candidate sequences against
+`withdrawal/snapshot` after finality (the client-chosen nonce makes the id
+unique). Recorded as a candidate product improvement: a lookup route from
+withdrawal outpoint → claim id would remove the probe.
+
+Live-verified end to end on the BR-M2 devnet instance with a real mnemonic
+account (base address): faucet-funded deposit of 8 ADA MIRRORED to the L2,
+1 ADA L2 transfer (height 12), 2 ADA claim (height 14, probed id), operator
+settle → CONFIRMED, and exactly 2,000,000 lovelace received back at the
+user's own L1 address from the settlement transaction. Base-address owners
+work throughout — nothing assumes enterprise addresses.

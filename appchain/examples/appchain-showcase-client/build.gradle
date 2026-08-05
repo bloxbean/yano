@@ -10,6 +10,13 @@ dependencies {
     implementation project(':appchain-composite-contracts')
     implementation project(':appchain-stdlib-contracts')
     implementation project(':appchain-role-workflow-contracts')
+    // ADR-UTXO-008 BR-M4: eutxo demo — L1 deposit building against the
+    // node's Blockfrost-compatible API plus L2 reads/spends.
+    implementation project(':appchain-eutxo-client')
+    implementation project(':appchain-eutxo-contracts')
+    implementation libs.cardano.client.lib
+    implementation libs.cardano.client.backend.blockfrost
+    implementation libs.cardano.client.quicktx
     implementation libs.cardano.client.crypto
 }
 
