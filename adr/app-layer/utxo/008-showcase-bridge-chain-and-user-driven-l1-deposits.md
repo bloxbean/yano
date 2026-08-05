@@ -371,3 +371,23 @@ two stray devnet-profile yano processes (a leftover playground batch from
 earlier in the day, one sibling of which had already crashed) were squatting
 on ports 7071/7072 and had to be terminated before the cluster could
 rebind — the port-busy diagnostic made this obvious.
+
+### BR-M6 — preprod guided run (2026-08-05, branch feat/adr-utxo-008-br-m6)
+
+Executed against the user's migrated preprod cluster. `bridge info` on
+preprod prints the guidance path (vault facts, datum warning, the exact
+Java-client deposit command). The BF-endpoint question left open in the
+milestone plan is ANSWERED live: the preprod-connected node serves
+`/addresses/{addr}/utxos` from a real populated index (probed with the
+preprod faucet address — 20 UTxOs returned) and
+`/epochs/latest/parameters`, so client deposits need no external provider —
+D5's "the client talks to the same node for L1 and L2" holds on public
+networks. BRIDGE_CHAIN.md §5 now carries the live-verified copy-paste
+sequence, the ~40s stability expectation at preprod block times, and the
+note that the deterministic operator address must hold fee funds before
+settlement.
+
+The funded deposit itself intentionally awaits the user's own preprod
+mnemonic (the client demands the user's key by design; the anchor seed is
+scoped to anchoring and was not repurposed). The handed-off command is in
+the doc and in `bridge info` output.

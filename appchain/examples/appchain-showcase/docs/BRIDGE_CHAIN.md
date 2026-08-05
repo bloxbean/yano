@@ -111,12 +111,35 @@ round), exactly like the eutxo profile's staged flow.
 ## 5. Public networks (preprod): your own funds
 
 There is no faucet on preprod, so the automated flow refuses to run there —
-instead `bridge info` prints the vault facts plus the exact next step: the
-showcase Java client's `eutxo deposit` scenario, which builds the correct
-datum-bearing deposit from **your own funded mnemonic** through the node's
-Blockfrost-compatible API, then polls the L2 until the mirror appears. See
-`../appchain-showcase-client/README.md` once BR-M4 lands; `bridge info`
-always prints the current copy-paste command.
+you deposit **your own funds** with the showcase Java client instead. This
+path is live-verified against a preprod-connected instance: the node's
+Blockfrost-compatible API serves address UTxOs and protocol parameters
+directly, so the client needs no external provider.
+
+```bash
+# your own funded preprod wallet (test ADA), 0600, or omit the flag for an
+# interactive prompt — the mnemonic never appears in argv:
+(umask 077; printf '%s\n' 'word1 word2 … word24' > user.mnemonic)
+
+java -jar yano-showcase-client-<version>-all.jar eutxo \
+  http://127.0.0.1:7070 payment-chain-l1bridge \
+  deposit --mnemonic-file user.mnemonic --amount 5000000
+# expect ~40s before MIRRORED (stability depth 2 at preprod block times)
+
+java -jar … eutxo http://127.0.0.1:7070 payment-chain-l1bridge \
+  utxos --mnemonic-file user.mnemonic
+java -jar … eutxo http://127.0.0.1:7070 payment-chain-l1bridge \
+  claim --mnemonic-file user.mnemonic --amount 2000000
+# the claim pays out to YOUR address by default; the printed settle command
+# is the operator's step
+```
+
+Settlement on preprod: the operator role signs with the PUBLIC deterministic
+demo seed, and the operator address
+(`addr_test1vrtrcvnxkm5rwf9mzf0v8aatp9mvjrc2enqjrlzyanaw79guu9kr0`) must
+hold a little test ADA for fees before `settle` can run. See
+`../appchain-showcase-client/README.md` for the full scenario reference;
+`bridge info` always prints the current copy-paste command.
 
 Custody reminder: on a public network the deterministic demo operator key is
 still PUBLIC — anyone can derive it and take the vault funds. Preprod demos
