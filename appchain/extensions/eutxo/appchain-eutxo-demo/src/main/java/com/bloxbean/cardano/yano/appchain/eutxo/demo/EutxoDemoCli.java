@@ -37,6 +37,13 @@ public final class EutxoDemoCli {
               --count <round-trips>        default 1, maximum 16
               --http-port-base <port>      default 7070
               --server-port-base <port>    default 13337
+              --target-base <url>          attach to an externally-owned cluster
+                                           (bridge scenario only; the workspace
+                                           keeps wallets/journal/artifacts and
+                                           never starts or stops the target)
+              --operator-seed-file <file>  64-hex vault operator seed; required
+                                           with --target-base so settlement can
+                                           sign for the target chain's vault
               --address <Cardano address>  external L1 depositor
               --l2-address <address>       defaults to --address
               --l2-public-key <hex>        required for an external ZK user
@@ -129,6 +136,11 @@ public final class EutxoDemoCli {
             throw new IllegalArgumentException(
                     "requested scenario conflicts with the workspace manifest");
         }
+        if (options.targetBase() != null
+                && !options.targetBase().equals(workspace.manifest().targetBase())) {
+            throw new IllegalArgumentException(
+                    "requested --target-base conflicts with the workspace manifest");
+        }
         EutxoDemoScenarioProvider provider =
                 scenarios.require(workspace.manifest().scenario());
         if ("status".equals(options.command())) {
@@ -141,7 +153,15 @@ public final class EutxoDemoCli {
                 throw new Usage("reset requires --yes");
             }
             if (provider.operations().contains("stop")) {
-                provider.execute("stop", workspace, options);
+                try {
+                    provider.execute("stop", workspace, options);
+                } catch (IllegalStateException lifecycle) {
+                    if (!workspace.manifest().attached()) {
+                        throw lifecycle;
+                    }
+                    // Externally-owned cluster: nothing to stop locally, and a
+                    // lifecycle refusal must never block workspace removal.
+                }
             }
             Path removed = workspace.root();
             workspace.reset();
@@ -179,13 +199,20 @@ public final class EutxoDemoCli {
     private static EutxoDemoResult ready(EutxoDemoWorkspace workspace) {
         Map<String, Object> fields = common(workspace);
         fields.put("network", workspace.manifest().network());
-        fields.put("nodes", workspace.manifest().members());
-        fields.put("ports", workspace.manifest().httpPortBase() + "-"
-                + (workspace.manifest().httpPortBase()
-                + workspace.manifest().members() - 1));
-        fields.put("secrets", "disposable development identities");
-        fields.put("next", "./yano.sh appchain eutxo demo start --workspace "
-                + workspace.root());
+        if (workspace.manifest().attached()) {
+            fields.put("targetBase", workspace.manifest().targetBase());
+            fields.put("secrets", "disposable development identities");
+            fields.put("next", "./yano.sh appchain eutxo demo round-trip --workspace "
+                    + workspace.root());
+        } else {
+            fields.put("nodes", workspace.manifest().members());
+            fields.put("ports", workspace.manifest().httpPortBase() + "-"
+                    + (workspace.manifest().httpPortBase()
+                    + workspace.manifest().members() - 1));
+            fields.put("secrets", "disposable development identities");
+            fields.put("next", "./yano.sh appchain eutxo demo start --workspace "
+                    + workspace.root());
+        }
         return EutxoDemoResult.of("EUTXO_DEMO_READY", fields);
     }
 
@@ -232,6 +259,8 @@ public final class EutxoDemoCli {
         int count = 1;
         int httpPortBase = 7070;
         int serverPortBase = 13337;
+        String targetBase = null;
+        Path operatorSeedFile = null;
         String address = null;
         String l2Address = null;
         String l2PublicKey = null;
@@ -260,6 +289,10 @@ public final class EutxoDemoCli {
                         required(arguments, ++index, value), value, 1024, 65533);
                 case "--server-port-base" -> serverPortBase = integer(
                         required(arguments, ++index, value), value, 1024, 65533);
+                case "--target-base" -> targetBase = targetBase(
+                        required(arguments, ++index, value));
+                case "--operator-seed-file" -> operatorSeedFile = Path.of(
+                        required(arguments, ++index, value));
                 case "--address" -> address = required(arguments, ++index, value);
                 case "--l2-address" -> l2Address = required(arguments, ++index, value);
                 case "--l2-public-key" ->
@@ -302,16 +335,50 @@ public final class EutxoDemoCli {
         }
         if (scenario == null && ("setup".equals(command)
                 || "scenarios".equals(command))) {
-            scenario = "ledger";
+            scenario = targetBase == null ? "ledger" : "bridge";
+        }
+        if (!help && targetBase != null) {
+            if ("setup".equals(command) && !"bridge".equals(scenario)) {
+                throw new Usage("--target-base requires --scenario bridge");
+            }
+            if ("setup".equals(command) && operatorSeedFile == null) {
+                throw new Usage("--target-base setup requires --operator-seed-file"
+                        + " (the target chain's vault operator seed)");
+            }
+            if ("setup".equals(command) && chainId == null) {
+                throw new Usage("--target-base setup requires --chain-id"
+                        + " (the bridge chain id on the target cluster)");
+            }
+            if (List.of("start", "up", "stop").contains(command)) {
+                throw new Usage("attached workspaces never manage the cluster;"
+                        + " run setup once, then operations directly");
+            }
+        }
+        if (!help && operatorSeedFile != null && targetBase == null) {
+            throw new Usage(
+                    "--operator-seed-file is valid only with --target-base");
         }
         if (chainId == null) {
             chainId = name;
         }
         return new EutxoDemoOptions(command, scenario, workspace, name, chainId,
                 members, count, httpPortBase, serverPortBase,
+                targetBase, operatorSeedFile,
                 address, l2Address, l2PublicKey, amount, output,
                 signedTransaction,
                 format, confirmed, help);
+    }
+
+    private static String targetBase(String value) {
+        String normalized = value.trim();
+        while (normalized.endsWith("/")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        if (!normalized.matches("https?://[A-Za-z0-9.\\[\\]:-]+")) {
+            throw new Usage("--target-base must be an http(s) URL like"
+                    + " http://127.0.0.1:7070");
+        }
+        return normalized;
     }
 
     private static Path defaultWorkspace() {

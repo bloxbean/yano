@@ -13,6 +13,8 @@ public record EutxoDemoOptions(
         int count,
         int httpPortBase,
         int serverPortBase,
+        String targetBase,
+        Path operatorSeedFile,
         String address,
         String l2Address,
         String l2PublicKey,

@@ -90,6 +90,90 @@ class EutxoDemoCliTest {
     }
 
     @Test
+    void attachModeValidatesOptionsAndPinsTargetInManifest() throws Exception {
+        Path seedFile = temporary.resolve("operator.seed");
+        Files.writeString(seedFile, "0102030405060708090a0b0c0d0e0f10"
+                + "1112131415161718191a1b1c1d1e1f20\n");
+        Path workspace = temporary.resolve("attached");
+        String target = "http://127.0.0.1:27991";
+
+        Invocation wrongScenario = invoke("setup", "--scenario", "ledger",
+                "--target-base", target,
+                "--operator-seed-file", seedFile.toString(),
+                "--workspace", workspace.toString());
+        assertThat(wrongScenario.exit()).isEqualTo(EutxoDemoCli.EXIT_USAGE);
+        assertThat(wrongScenario.err()).contains("requires --scenario bridge");
+
+        Invocation missingSeed = invoke("setup", "--target-base", target,
+                "--workspace", workspace.toString());
+        assertThat(missingSeed.exit()).isEqualTo(EutxoDemoCli.EXIT_USAGE);
+        assertThat(missingSeed.err()).contains("--operator-seed-file");
+
+        Invocation orphanSeed = invoke("status",
+                "--operator-seed-file", seedFile.toString(),
+                "--workspace", workspace.toString());
+        assertThat(orphanSeed.exit()).isEqualTo(EutxoDemoCli.EXIT_USAGE);
+        assertThat(orphanSeed.err()).contains("valid only with --target-base");
+
+        Invocation lifecycle = invoke("up", "--target-base", target,
+                "--workspace", workspace.toString());
+        assertThat(lifecycle.exit()).isEqualTo(EutxoDemoCli.EXIT_USAGE);
+        assertThat(lifecycle.err()).contains("never manage the cluster");
+
+        Invocation badUrl = invoke("setup", "--target-base", "ftp://x",
+                "--operator-seed-file", seedFile.toString(),
+                "--chain-id", "payment-chain-l1bridge",
+                "--workspace", workspace.toString());
+        assertThat(badUrl.exit()).isEqualTo(EutxoDemoCli.EXIT_USAGE);
+        assertThat(badUrl.err()).contains("http(s) URL");
+
+        Invocation missingChain = invoke("setup", "--target-base", target,
+                "--operator-seed-file", seedFile.toString(),
+                "--workspace", workspace.toString());
+        assertThat(missingChain.exit()).isEqualTo(EutxoDemoCli.EXIT_USAGE);
+        assertThat(missingChain.err()).contains("requires --chain-id");
+
+        // A bad seed file must fail BEFORE any workspace content exists, so
+        // the same directory remains usable for the corrected retry.
+        Invocation badSeed = invoke("setup", "--target-base", target,
+                "--operator-seed-file", temporary.resolve("absent.seed").toString(),
+                "--chain-id", "payment-chain-l1bridge",
+                "--workspace", workspace.toString());
+        assertThat(badSeed.exit()).isEqualTo(EutxoDemoCli.EXIT_INVALID);
+        assertThat(workspace).doesNotExist();
+
+        Invocation setup = invoke("setup", "--target-base", target + "/",
+                "--operator-seed-file", seedFile.toString(),
+                "--chain-id", "payment-chain-l1bridge",
+                "--workspace", workspace.toString(), "--format", "json");
+        assertThat(setup.exit()).isZero();
+        assertThat(setup.out())
+                .contains("\"status\":\"EUTXO_DEMO_READY\"")
+                .contains("\"scenario\":\"bridge\"")
+                .contains("\"targetBase\":\"" + target + "\"")
+                .doesNotContain("ports");
+
+        Invocation conflicting = invoke("status",
+                "--target-base", "http://127.0.0.1:28992",
+                "--workspace", workspace.toString());
+        assertThat(conflicting.exit()).isEqualTo(EutxoDemoCli.EXIT_INVALID);
+        assertThat(conflicting.err()).contains("conflicts with the workspace manifest");
+
+        Invocation up = invoke("up", "--workspace", workspace.toString());
+        assertThat(up.exit()).isEqualTo(EutxoDemoCli.EXIT_INVALID);
+        assertThat(up.err()).contains("owned externally");
+
+        Invocation stop = invoke("stop", "--workspace", workspace.toString());
+        assertThat(stop.exit()).isZero();
+        assertThat(stop.out()).contains("EUTXO_BRIDGE_DEMO_ATTACHED_STOP_NOOP");
+
+        Invocation reset = invoke("reset", "--yes",
+                "--workspace", workspace.toString());
+        assertThat(reset.exit()).isZero();
+        assertThat(workspace).doesNotExist();
+    }
+
+    @Test
     void countIsBoundedBeforeWorkspaceOrNetworkAccess() {
         Invocation zero = invoke("round-trip", "--count", "0");
         assertThat(zero.exit()).isEqualTo(EutxoDemoCli.EXIT_USAGE);

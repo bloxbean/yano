@@ -36,6 +36,10 @@ public final class EutxoDemoWorkspace {
     public static EutxoDemoWorkspace create(
             EutxoDemoOptions options,
             EutxoDemoScenarioProvider provider) throws IOException {
+        // Read user-supplied input before creating anything: a bad seed file
+        // must not leave a marker-bearing, manifest-less directory behind.
+        byte[] importedOperatorSeed = options.operatorSeedFile() == null
+                ? null : readSeedFile(options.operatorSeedFile());
         Path root = safeRoot(options.workspace());
         if (Files.exists(root, LinkOption.NOFOLLOW_LINKS)) {
             if (Files.isSymbolicLink(root)) {
@@ -74,7 +78,12 @@ public final class EutxoDemoWorkspace {
         EutxoDemoIdentityService.WalletIdentity bobPayoutWallet =
                 identities.generateWallet(root.resolve("secrets/cardano/payout.seed"));
         EutxoDemoIdentityService.WalletIdentity operatorWallet =
-                identities.generateWallet(root.resolve("secrets/cardano/operator.seed"));
+                importedOperatorSeed == null
+                        ? identities.generateWallet(
+                        root.resolve("secrets/cardano/operator.seed"))
+                        : identities.importWallet(
+                        root.resolve("secrets/cardano/operator.seed"),
+                        importedOperatorSeed);
         Map<String, String> secretReferences = new LinkedHashMap<>();
         for (int index = 0; index < options.members(); index++) {
             secretReferences.put("member" + index,
@@ -129,6 +138,7 @@ public final class EutxoDemoWorkspace {
                 options.members(),
                 options.httpPortBase(),
                 options.serverPortBase(),
+                options.targetBase(),
                 memberKeys,
                 publicIdentities,
                 secretReferences,
@@ -213,6 +223,21 @@ public final class EutxoDemoWorkspace {
         } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
             Files.move(temporary, target);
         }
+    }
+
+    private static byte[] readSeedFile(Path file) throws IOException {
+        Path path = file.toAbsolutePath().normalize();
+        if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)
+                || Files.isSymbolicLink(path)) {
+            throw new IllegalArgumentException(
+                    "operator seed file must be an existing regular file");
+        }
+        String value = Files.readString(path).trim();
+        if (!value.matches("[0-9a-f]{64}")) {
+            throw new IllegalArgumentException(
+                    "operator seed file must hold 64 lowercase hex characters");
+        }
+        return HexFormat.of().parseHex(value);
     }
 
     private static Path safeRoot(Path requested) {

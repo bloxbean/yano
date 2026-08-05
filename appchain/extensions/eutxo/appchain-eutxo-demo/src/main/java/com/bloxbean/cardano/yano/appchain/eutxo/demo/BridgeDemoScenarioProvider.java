@@ -23,6 +23,12 @@ public final class BridgeDemoScenarioProvider implements EutxoDemoScenarioProvid
     @Override
     public void setup(EutxoDemoWorkspace workspace, EutxoDemoOptions options)
             throws Exception {
+        if (workspace.manifest().attached()) {
+            // The target cluster already carries the bridge chain and its
+            // vault configuration; the workspace only holds wallets, journal,
+            // and artifacts.
+            return;
+        }
         Map<String, String> identities = workspace.manifest().publicIdentities();
         new EutxoDemoCluster(workspace).generateProject(recipe(), Map.of(
                 "bridgeVaultAddress", identities.get("vaultAddress"),
@@ -46,6 +52,12 @@ public final class BridgeDemoScenarioProvider implements EutxoDemoScenarioProvid
                 yield status("EUTXO_BRIDGE_DEMO_CLUSTER_STARTED", workspace, cluster);
             }
             case "stop" -> {
+                if (workspace.manifest().attached()) {
+                    yield EutxoDemoResult.of(
+                            "EUTXO_BRIDGE_DEMO_ATTACHED_STOP_NOOP",
+                            Map.of("targetBase", workspace.manifest().targetBase(),
+                                    "note", "externally-owned cluster left running"));
+                }
                 cluster.stop();
                 yield status("EUTXO_BRIDGE_DEMO_CLUSTER_STOPPED", workspace, cluster);
             }
