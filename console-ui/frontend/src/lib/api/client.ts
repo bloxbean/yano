@@ -169,7 +169,16 @@ export class YanoApi {
       method: 'POST', headers, body: body === undefined ? undefined : JSON.stringify(body),
       signal, cache: 'no-store', redirect: 'error'
     });
-    if (!response.ok) throw new ApiError(response.status, `Request failed (${response.status})`);
+    if (!response.ok) {
+      let detail = '';
+      try {
+        detail = ((await response.json()) as { error?: string }).error ?? '';
+      } catch {
+        // Non-JSON error body; the status alone must do.
+      }
+      throw new ApiError(response.status,
+        detail || `Request failed (${response.status})`);
+    }
     return response.json() as Promise<T>;
   }
 
