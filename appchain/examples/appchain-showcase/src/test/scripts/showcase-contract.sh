@@ -158,6 +158,31 @@ if "$ROOT/showcase.sh" prepare --instance three --nodes 5 --http-base 19770 --se
 fi
 grep -q 'differs from retained showcase identity' "$WORK/drift.log"
 
+# ADR-UTXO-008 BR-M5: chain add payment-chain-l1bridge migrates a retained
+# 10-chain (V10) instance to the packaged 11-chain set without touching the
+# retained authenticated-map geneses.
+python3 - "$ROOT/data/showcase/three/showcase-identity.json" \
+  "$ROOT/data/showcase/three/cluster/cluster-appchain-identity.json" <<'PY'
+import json, pathlib, sys
+marker = pathlib.Path(sys.argv[1])
+doc = json.loads(marker.read_text())
+assert doc["chainIds"][-1] == "payment-chain-l1bridge"
+doc["chainIds"] = doc["chainIds"][:-1]
+marker.write_text(json.dumps(doc, sort_keys=True, separators=(",", ":")) + "\n")
+cluster = pathlib.Path(sys.argv[2])
+if cluster.exists():
+    cdoc = json.loads(cluster.read_text())
+    cdoc["chainIds"] = cdoc["chainIds"][:-1]
+    cluster.write_text(json.dumps(cdoc, sort_keys=True, separators=(",", ":")) + "\n")
+PY
+"$ROOT/showcase.sh" chain add payment-chain-l1bridge --instance three
+jq -e '.chainIds | length == 11' \
+  "$ROOT/data/showcase/three/showcase-identity.json" >/dev/null
+jq -e '.chainIds[10] == "payment-chain-l1bridge"' \
+  "$ROOT/data/showcase/three/showcase-identity.json" >/dev/null
+BRIDGE_ADD_AGAIN="$("$ROOT/showcase.sh" chain add payment-chain-l1bridge --instance three)"
+grep -q 'already has payment-chain-l1bridge' <<< "$BRIDGE_ADD_AGAIN"
+
 # Anchoring is an additive retained-identity migration. Start with the default
 # workflow scope, add one existing chain, then expand to all chains without
 # replacing app-chain data or changing the signer.
