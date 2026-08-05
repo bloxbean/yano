@@ -37,6 +37,11 @@
   let depositMessage = '';
   let depositTxId = '';
   let depositL2Owner = '';
+  let l2To = '';
+  let l2Amount = '2';
+  let l2Payout = '';
+  let l2Busy = false;
+  let l2Message = '';
   // The CF connect-with-wallet core touches browser globals at import time,
   // so it must never load during prerender — dynamic import only.
   let walletCoreModule:
@@ -522,6 +527,58 @@
       depositBusy = false;
     }
   }
+  async function submitL2(kind: 'transfer' | 'claim') {
+    if (!api || !bridgeInfo || !connectedWallet || l2Busy) return;
+    const lovelace = adaToLovelace(l2Amount);
+    if (lovelace === null || lovelace < 1) {
+      l2Message = 'Enter an ADA amount like 2 or 2.5';
+      return;
+    }
+    if (kind === 'transfer' && !l2To.trim()) {
+      l2Message = 'Enter the destination L2 address';
+      return;
+    }
+    l2Busy = true;
+    let step = 'connecting to the wallet';
+    try {
+      const walletHandle = await (window as unknown as {
+        cardano: Record<string, { enable: () => Promise<{
+          getChangeAddress: () => Promise<string>;
+          signTx: (txHex: string, partial: boolean) => Promise<string>;
+        }> }>;
+      }).cardano[connectedWallet].enable();
+      step = 'reading the wallet change address';
+      const fromAddress = await walletHandle.getChangeAddress();
+      step = 'building the unsigned L2 transaction on the node';
+      l2Message = 'Building the L2 transaction…';
+      const build = kind === 'transfer'
+        ? await api.eutxoL2TransferBuild(selectedChain, {
+            fromAddress, toAddress: l2To.trim(), lovelace })
+        : await api.eutxoL2ClaimBuild(selectedChain, {
+            fromAddress, lovelace,
+            ...(l2Payout.trim() ? { payoutAddress: l2Payout.trim() } : {}) });
+      step = 'signing in the wallet';
+      l2Message = 'Sign the L2 transaction in your wallet…';
+      const witnessSetCborHex = await walletHandle.signTx(build.unsignedTxCborHex, true);
+      step = 'assembling the signed transaction';
+      const assembled = await api.eutxoDepositAssemble(selectedChain, {
+        unsignedTxCborHex: build.unsignedTxCborHex, witnessSetCborHex
+      });
+      step = 'submitting to the chain';
+      const submitted = await api.chainSubmitMessage(
+        selectedChain, build.submitTopic, assembled.signedTxCborHex);
+      l2Message = kind === 'transfer'
+        ? `L2 transfer submitted (tx ${build.transactionId.slice(0, 16)}…, message ${submitted.messageId.slice(0, 16)}…).`
+        : `Withdrawal claim submitted (tx ${build.transactionId.slice(0, 16)}…) — it appears under Withdrawal claims once finalized; the operator settles it on L1.`;
+    } catch (cause) {
+      const detail = cause instanceof ApiError
+        ? `${cause.message} (HTTP ${cause.status})`
+        : cause instanceof Error ? cause.message : JSON.stringify(cause);
+      l2Message = `Failed while ${step}: ${detail}`;
+    } finally {
+      l2Busy = false;
+    }
+  }
 </script>
 
 <svelte:head><title>Yano · EUTxO Explorer</title></svelte:head>
@@ -808,6 +865,34 @@
           </button>
           <button class="rounded-lg border border-slate-700 px-3 py-2 text-xs"
                   onclick={() => { void walletCore().then((core) => core.Wallet.disconnect()); connectedWallet = ''; }}>Disconnect</button>
+        </div>
+      {/if}
+      {#if connectedWallet}
+        <div class="mt-4 border-t border-slate-800 pt-3">
+          <h3 class="m-0 text-sm font-semibold">Spend on the L2 with the same wallet</h3>
+          <div class="mt-2 flex flex-wrap items-center gap-2">
+            <input class="w-72 rounded-lg border border-slate-700 bg-transparent px-3 py-2 text-xs"
+                   bind:value={l2To} placeholder="destination L2 address"
+                   aria-label="L2 transfer destination address" />
+            <input class="w-24 rounded-lg border border-slate-700 bg-transparent px-3 py-2 text-xs"
+                   bind:value={l2Amount} aria-label="L2 amount in ADA" />
+            <span class="text-xs text-slate-500">ADA</span>
+            <button class="rounded-lg border border-cyan-700 px-3 py-2 text-xs hover:bg-cyan-950"
+                    disabled={l2Busy}
+                    onclick={() => void submitL2('transfer')}>Transfer L2</button>
+          </div>
+          <div class="mt-2 flex flex-wrap items-center gap-2">
+            <input class="w-72 rounded-lg border border-slate-700 bg-transparent px-3 py-2 text-xs"
+                   bind:value={l2Payout} placeholder="L1 payout address (default: your address)"
+                   aria-label="withdrawal L1 payout address" />
+            <button class="rounded-lg border border-amber-700 px-3 py-2 text-xs hover:bg-amber-950"
+                    disabled={l2Busy}
+                    onclick={() => void submitL2('claim')}>Withdraw to L1</button>
+          </div>
+          <p class="mt-2 text-xs text-slate-500">Withdrawals create an irrevocable
+            claim{bridgeInfo.withdrawalsPaused ? ' (currently paused)' : ''}; the
+            operator settles it on the L1 to the payout address.</p>
+          {#if l2Message}<p class="mt-2 text-xs text-amber-300">{l2Message}</p>{/if}
         </div>
       {/if}
       {#if depositMessage}<p class="mt-3 text-xs text-amber-300">{depositMessage}</p>{/if}

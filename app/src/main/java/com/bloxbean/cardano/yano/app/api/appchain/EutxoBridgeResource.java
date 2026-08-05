@@ -16,7 +16,9 @@ import com.bloxbean.cardano.client.transaction.spec.TransactionWitnessSet;
 import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2KeyBinding;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoOutpoint;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoRecord;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoVaultDatum;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalDatum;
 import io.quarkus.runtime.annotations.RegisterForReflection;
 
 import jakarta.ws.rs.Consumes;
@@ -83,23 +85,173 @@ public class EutxoBridgeResource {
     ) {
     }
 
+    public record L2TransferRequest(
+            String fromAddress, String toAddress, long lovelace) {
+    }
+
+    public record L2ClaimRequest(
+            String fromAddress, long lovelace, String payoutAddress) {
+    }
+
     private final String chainId;
     private final BridgeSettings settings;
     private final UtxoSupplier utxoSupplier;
     private final Supplier<ProtocolParams> protocolParams;
     private final LongSupplier tipSlot;
+    private final java.util.function.Function<String, List<EutxoRecord>> l2Utxos;
 
     EutxoBridgeResource(
             String chainId,
             BridgeSettings settings,
             UtxoSupplier utxoSupplier,
             Supplier<ProtocolParams> protocolParams,
-            LongSupplier tipSlot) {
+            LongSupplier tipSlot,
+            java.util.function.Function<String, List<EutxoRecord>> l2Utxos) {
         this.chainId = chainId;
         this.settings = settings;
         this.utxoSupplier = utxoSupplier;
         this.protocolParams = protocolParams;
         this.tipSlot = tipSlot;
+        this.l2Utxos = l2Utxos;
+    }
+
+    @POST
+    @Path("transfer/build")
+    @AppChainAccess(AppChainAccess.Level.READ)
+    public Response transferBuild(L2TransferRequest request) {
+        if (request == null || isBlank(request.fromAddress())
+                || isBlank(request.toAddress())) {
+            throw error(Response.Status.BAD_REQUEST,
+                    "fromAddress and toAddress are required");
+        }
+        String to = bech32(request.toAddress(), "toAddress");
+        return l2Spend(request.fromAddress(), to, request.lovelace(), null);
+    }
+
+    @POST
+    @Path("claim/build")
+    @AppChainAccess(AppChainAccess.Level.READ)
+    public Response claimBuild(L2ClaimRequest request) {
+        if (request == null || isBlank(request.fromAddress())) {
+            throw error(Response.Status.BAD_REQUEST, "fromAddress is required");
+        }
+        if (settings.withdrawalAddress().isBlank()) {
+            throw error(Response.Status.CONFLICT,
+                    "this chain has withdrawals disabled");
+        }
+        String from = bech32(request.fromAddress(), "fromAddress");
+        String payout = request.payoutAddress() == null
+                || request.payoutAddress().isBlank()
+                ? from : bech32(request.payoutAddress(), "payoutAddress");
+        byte[] nonce = new byte[32];
+        new java.security.SecureRandom().nextBytes(nonce);
+        EutxoWithdrawalDatum datum = new EutxoWithdrawalDatum(
+                EutxoWithdrawalDatum.ABI_VERSION,
+                chainId, settings.bridgeEpoch(), payout, nonce);
+        return l2Spend(request.fromAddress(),
+                settings.withdrawalAddress(), request.lovelace(), datum);
+    }
+
+    /** Unsigned L2 spend: fee 0, testnet id, greedy selection, change back. */
+    private Response l2Spend(
+            String fromRaw, String to, long lovelace, EutxoWithdrawalDatum datum) {
+        if (lovelace < 1L) {
+            throw error(Response.Status.BAD_REQUEST, "lovelace must be positive");
+        }
+        String from = bech32(fromRaw, "fromAddress");
+        List<EutxoRecord> records;
+        try {
+            records = l2Utxos.apply(from);
+        } catch (RuntimeException failure) {
+            throw error(Response.Status.SERVICE_UNAVAILABLE,
+                    "cannot read L2 UTxOs: " + safe(failure));
+        }
+        java.util.List<com.bloxbean.cardano.client.transaction.spec
+                .TransactionInput> inputs = new java.util.ArrayList<>();
+        BigInteger selected = BigInteger.ZERO;
+        BigInteger needed = BigInteger.valueOf(lovelace);
+        for (EutxoRecord record : records) {
+            inputs.add(new com.bloxbean.cardano.client.transaction.spec
+                    .TransactionInput(record.outpoint().transactionId(),
+                    record.outpoint().index()));
+            selected = selected.add(recordLovelace(record));
+            if (selected.compareTo(needed) >= 0) {
+                break;
+            }
+        }
+        if (selected.compareTo(needed) < 0) {
+            throw error(Response.Status.CONFLICT,
+                    "insufficient L2 balance at " + from + ": have "
+                            + selected + ", need " + needed);
+        }
+        try {
+            java.util.List<com.bloxbean.cardano.client.transaction.spec
+                    .TransactionOutput> outputs = new java.util.ArrayList<>();
+            var paid = com.bloxbean.cardano.client.transaction.spec
+                    .TransactionOutput.builder()
+                    .address(to)
+                    .value(com.bloxbean.cardano.client.transaction.spec
+                            .Value.fromCoin(needed));
+            if (datum != null) {
+                paid.inlineDatum(PlutusData.deserialize(datum.encode()));
+            }
+            outputs.add(paid.build());
+            if (selected.compareTo(needed) > 0) {
+                outputs.add(com.bloxbean.cardano.client.transaction.spec
+                        .TransactionOutput.builder()
+                        .address(from)
+                        .value(com.bloxbean.cardano.client.transaction.spec
+                                .Value.fromCoin(selected.subtract(needed)))
+                        .build());
+            }
+            Transaction unsigned = Transaction.builder()
+                    .body(com.bloxbean.cardano.client.transaction.spec
+                            .TransactionBody.builder()
+                            .inputs(inputs)
+                            .outputs(outputs)
+                            .fee(BigInteger.ZERO)
+                            .ttl(REFUND_DEADLINE)
+                            .networkId(com.bloxbean.cardano.client.spec
+                                    .NetworkId.TESTNET)
+                            .build())
+                    .witnessSet(new TransactionWitnessSet())
+                    .isValid(true)
+                    .build();
+            byte[] cbor = unsigned.serialize();
+            Map<String, Object> fields = new LinkedHashMap<>();
+            fields.put("chainId", chainId);
+            fields.put("unsignedTxCborHex", HexFormat.of().formatHex(cbor));
+            fields.put("transactionId", TransactionUtil.getTxHash(cbor));
+            fields.put("fromAddress", from);
+            fields.put("toAddress", to);
+            fields.put("lovelace", lovelace);
+            fields.put("submitTopic",
+                    com.bloxbean.cardano.yano.appchain.eutxo.contracts
+                            .EutxoContract.TRANSACTION_TOPIC);
+            if (datum != null) {
+                fields.put("payoutAddress", datum.destinationAddress());
+                fields.put("bridgeEpoch", settings.bridgeEpoch());
+            }
+            return Response.ok(fields).build();
+        } catch (WebApplicationException failure) {
+            throw failure;
+        } catch (Exception failure) {
+            throw error(Response.Status.INTERNAL_SERVER_ERROR,
+                    "cannot build the L2 transaction: " + safe(failure));
+        }
+    }
+
+    private static BigInteger recordLovelace(EutxoRecord record) {
+        try {
+            return com.bloxbean.cardano.client.transaction.spec
+                    .TransactionOutput.deserialize(
+                            (co.nstant.in.cbor.model.Array)
+                                    CborSerializationUtil.deserialize(
+                                            record.outputCbor()))
+                    .getValue().getCoin();
+        } catch (Exception failure) {
+            throw new IllegalStateException("cannot decode an L2 output", failure);
+        }
     }
 
     @GET

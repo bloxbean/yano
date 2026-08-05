@@ -182,6 +182,22 @@ export class YanoApi {
     return response.json() as Promise<T>;
   }
 
+  eutxoL2TransferBuild(
+    chainId: string,
+    body: { fromAddress: string; toAddress: string; lovelace: number },
+    signal?: AbortSignal
+  ) {
+    return this.post<{ unsignedTxCborHex: string; transactionId: string; submitTopic: string }>(
+      `${chainPath(chainId)}/eutxo/bridge/transfer/build`, body, signal);
+  }
+  eutxoL2ClaimBuild(
+    chainId: string,
+    body: { fromAddress: string; lovelace: number; payoutAddress?: string },
+    signal?: AbortSignal
+  ) {
+    return this.post<{ unsignedTxCborHex: string; transactionId: string; submitTopic: string; payoutAddress: string }>(
+      `${chainPath(chainId)}/eutxo/bridge/claim/build`, body, signal);
+  }
   async submitTxHex(signedTxCborHex: string, signal?: AbortSignal): Promise<string> {
     const headers = new Headers({ Accept: 'application/json', 'Content-Type': 'text/plain' });
     if (this.apiKey) headers.set('X-API-Key', this.apiKey);

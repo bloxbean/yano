@@ -77,6 +77,9 @@ public class AppChainResource {
     @Inject
     org.eclipse.microprofile.config.Config runtimeConfig;
 
+    @org.eclipse.microprofile.config.inject.ConfigProperty(name = "quarkus.http.port")
+    int httpPort;
+
     @ConfigProperty(name = YanoPropertyKeys.AppChain.DX_RESOLVED_CONFIG_DIGEST)
     Optional<String> resolvedConfigDigest = Optional.empty();
 
@@ -150,7 +153,13 @@ public class AppChainResource {
                 () -> {
                     var tip = chainQuery.getLocalTip();
                     return tip == null ? 0L : tip.getSlot();
-                });
+                },
+                address -> new com.bloxbean.cardano.yano.appchain.eutxo.client
+                        .EutxoClient(com.bloxbean.cardano.yano.appchain.client
+                        .AppChainClient.builder(
+                                "http://127.0.0.1:" + httpPort + "/api/v1")
+                        .chainId(chainId).build())
+                        .utxos(address));
     }
 
     // ------------------------------------------------------------------

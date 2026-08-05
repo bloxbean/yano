@@ -60,7 +60,7 @@ class EutxoBridgeResourceTest {
         };
         return new EutxoBridgeResource(
                 CHAIN, settings, supplier, EutxoBridgeResourceTest::params,
-                () -> 5_000L);
+                () -> 5_000L, EutxoBridgeResourceTest::l2Utxos);
     }
 
     private static Utxo utxo(int index, long lovelace) {
@@ -150,6 +150,66 @@ class EutxoBridgeResourceTest {
         assertThatThrownBy(() -> resource.depositBuild(
                 new EutxoBridgeResource.DepositBuildRequest(
                         DEPOSITOR.address(), 8_000_000L, null)))
+                .isInstanceOf(WebApplicationException.class)
+                .hasMessageContaining("409");
+    }
+
+    private static java.util.List<
+            com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoRecord>
+    l2Utxos(String address) {
+        if (!DEPOSITOR.address().equals(address)) {
+            return List.of();
+        }
+        try {
+            byte[] outputCbor = CborSerializationUtil.serialize(
+                    com.bloxbean.cardano.client.transaction.spec.TransactionOutput
+                            .builder()
+                            .address(DEPOSITOR.address())
+                            .value(com.bloxbean.cardano.client.transaction.spec
+                                    .Value.fromCoin(BigInteger.valueOf(8_000_000L)))
+                            .build().serialize());
+            return List.of(new com.bloxbean.cardano.yano.appchain.eutxo.contracts
+                    .EutxoRecord(
+                    new com.bloxbean.cardano.yano.appchain.eutxo.contracts
+                            .EutxoOutpoint("22".repeat(32), 0),
+                    DEPOSITOR.address(), outputCbor,
+                    com.bloxbean.cardano.yano.appchain.eutxo.contracts
+                            .EutxoRecord.Origin.L1_DEPOSIT));
+        } catch (Exception failure) {
+            throw new IllegalStateException(failure);
+        }
+    }
+
+    @Test
+    void buildsL2TransferAndClaimWithChangeAndDatum() throws Exception {
+        EutxoBridgeResource resource = resource(List.of());
+        Map<?, ?> transfer = (Map<?, ?>) resource.transferBuild(
+                new EutxoBridgeResource.L2TransferRequest(
+                        DEPOSITOR.address(), settings.vaultAddress(), 3_000_000L))
+                .getEntity();
+        Transaction spend = Transaction.deserialize(HexFormat.of().parseHex(
+                (String) transfer.get("unsignedTxCborHex")));
+        assertThat(spend.getBody().getFee()).isEqualTo(BigInteger.ZERO);
+        assertThat(spend.getBody().getOutputs()).hasSize(2);
+        assertThat(spend.getBody().getOutputs().get(1).getValue().getCoin())
+                .isEqualTo(BigInteger.valueOf(5_000_000L));
+        assertThat(transfer.get("submitTopic")).isEqualTo("eutxo.transactions");
+
+        Map<?, ?> claim = (Map<?, ?>) resource.claimBuild(
+                new EutxoBridgeResource.L2ClaimRequest(
+                        DEPOSITOR.address(), 2_000_000L, null))
+                .getEntity();
+        Transaction claimTx = Transaction.deserialize(HexFormat.of().parseHex(
+                (String) claim.get("unsignedTxCborHex")));
+        assertThat(claimTx.getBody().getOutputs().getFirst().getAddress())
+                .isEqualTo(settings.withdrawalAddress());
+        assertThat(claimTx.getBody().getOutputs().getFirst().getInlineDatum())
+                .isNotNull();
+        assertThat(claim.get("payoutAddress")).isEqualTo(DEPOSITOR.address());
+
+        assertThatThrownBy(() -> resource.transferBuild(
+                new EutxoBridgeResource.L2TransferRequest(
+                        DEPOSITOR.address(), settings.vaultAddress(), 50_000_000L)))
                 .isInstanceOf(WebApplicationException.class)
                 .hasMessageContaining("409");
     }
