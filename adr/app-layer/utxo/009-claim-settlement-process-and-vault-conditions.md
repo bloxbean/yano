@@ -584,3 +584,27 @@ to resolve there: the framework has NO deterministic per-effect owner
 election — the settlement executor + cosign leader must be pinned to a
 single owner node (config-designated like `anchor.enabled`), which the
 exactly-once E2E gate exists to prove.
+
+#### SP-M3 execution plane — progress (2026-08-06)
+
+Two foundational libraries built and unit-tested:
+- `EutxoBatchSettlementMarker` (contracts) — the continuing-vault datum,
+  byte-exact twin of the SP-M2 on-chain marker.
+- `BatchSettlementTransactionBuilder` (bridge-cardano) — the unsigned Settle
+  transaction the SP-M2 vault accepts (positional payouts, marker,
+  bounty-to-executor, fee-from-executor, root reference input, shard spend,
+  threshold-witness slot). Tested: exact outputs, marker round-trip,
+  remainder/bounty math, unfunded/mixed-epoch rejection.
+
+Still remaining (needs a running v3 devnet to validate end to end, so it
+lands with SP-M6's showcase v3 chain): BatchSettlementExecutor +
+AppEffectExecutorFactory (scheme eutxo-settlement, reuse SettlementJournal/
+CardanoSettlementBackend, key on effect.idHash()); SettlementCosignService
+cloning ScriptAnchorService's ~anchor/sign|sig round on a new
+~bridge/settlement/sig diffusion prefix; batch-aware
+WithdrawalConfirmationObserver decoding the batch marker and emitting N
+positional confirmations (the per-claim confirmation ABI already carries
+payoutIndex, so no ABI bump — confirmWithdrawal already decrements per
+claim); the SP-M2-deferred deploy artifacts; the single-owner pinning
+(effects.result.signers + config-designated executor/cosign leader); and the
+multi-claim + mid-flight-restart E2E gate.
