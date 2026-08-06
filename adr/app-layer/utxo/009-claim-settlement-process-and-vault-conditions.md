@@ -498,3 +498,51 @@ Learned: metadata entries are owner-descriptor-scoped (params keys live in
 the ledger group); the release acceptance index demands evidence per
 capability; catalog/metadata/acceptance digests are golden-pinned in
 metadata.sha256 and the zk preview release contract.
+
+### SP-M2 — V1 on-chain validators + ex-unit budgets (2026-08-06, feat/adr009-sp-m2)
+
+Three validators, all julc-VM conformance-tested against real off-chain
+`MpfTrie` fixtures:
+
+- **MPF library** copied from julc-examples as a repackaged `@OnchainLibrary`
+  (`mpf/MerklePatriciaForestry`,`ProofStep`,`Neighbor`) — the maintained,
+  tested `including`/`excluding`/`has`/`miss`; the same proof serves
+  exclusion, post-insert root, and inclusion (§7.1). Replaces an initial
+  hand-port.
+- **SettlementVaultValidator**: dual `Settle`/`Exit` redeemer. Settle checks
+  the federation threshold against member keys carried on the root-thread
+  reference input; Exit is armed only when `now − updatedAtSlot >
+  fallbackDelay` and proves each claim's v2 commitment present under the
+  accepted state root. Both: positional payouts (output[i]=claim[i]), paired
+  nullifier-shard spend, remainder conservation (continuing =
+  Σinputs − Σ(payout+bounty)), batch marker with ordered claim ids.
+- **NullifierShardValidator**: k=16 shards (shard = claim id's last nibble),
+  chained non-membership+insert per claim, paired vault spend.
+- **SettlementRootValidator**: FederatedRoot + `updatedAtSlot` bound to the
+  validity range + governed `fallbackDelaySlots`.
+- **Commitment ABI v2**: `EutxoWithdrawalCommitment` binds the bounty into
+  its digest preimage (review fix — claimId-only binding let a cranker
+  inflate the bounty and skim the remainder).
+
+Measured budgets (10B cpu / 14M mem tx limits) → tier-1 caps frozen in the
+V3 profile digest (recomputed `71d7d744…`; goldens re-pinned):
+`V3_MAX_SETTLE_BATCH=16` (settle 8 claims = 487M cpu / 1.73M mem; O(1)
+threshold amortizes), `V3_MAX_EXIT_BATCH=6` (exit ~80M cpu per MPF
+inclusion; 3 claims = 336M cpu). The vault enforces both as deploy `@Param`
+byte caps. Full consumer sweep green (contracts, ledger, bridge-cardano,
+demo, devtools, app).
+
+julc constraints learned and recorded for the campaign: mixed-type
+while-loop accumulators holding a list — or a record with a list field —
+emit an ill-typed `MkCons`; use recursion or index iteration with
+primitive/byte[] state (member keys are carried as a concatenated byte[],
+not a `list<data>` field). Sealed-variant and nested-`JulcList` redeemers
+must be record-wrapped. Prefer stdlib (`ByteStringLib`/`CryptoLib`) over
+`Builtins` byte ops — `Builtins.sliceByteString` mistyped a sliced key and
+`ByteStringLib.slice` fixed it. No cross-class statics — shared code is an
+`@OnchainLibrary` or inlined.
+
+Deferred into SP-M3 (where they are first exercised end to end on a devnet):
+checked-in `META-INF/plutus/*.plutus.json` artifacts + address resolver and
+the 16-shard/root/vault bootstrap transaction builder. The validators,
+their budgets, and the frozen caps are complete and tested here.

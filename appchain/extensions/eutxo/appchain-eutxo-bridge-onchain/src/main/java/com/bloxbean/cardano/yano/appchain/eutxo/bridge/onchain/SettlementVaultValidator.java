@@ -55,6 +55,13 @@ public final class SettlementVaultValidator {
     @Param
     static byte[] claimDomain;
 
+    /** Tier-1 frozen batch caps (single byte each), supplied at deploy. */
+    @Param
+    static byte[] maxSettleBatch;
+
+    @Param
+    static byte[] maxExitBatch;
+
     record Claim(
             BigInteger bridgeEpoch,
             BigInteger sequence,
@@ -126,7 +133,8 @@ public final class SettlementVaultValidator {
             JulcList<Claim> claims, Root root, TxInfo txInfo,
             JulcList<TxOut> outputs, BigInteger inSum, byte[] ownHash) {
         long count = claims.size();
-        if (count < 1 || count >= outputs.size()
+        if (count < 1 || count > Builtins.indexByteString(maxSettleBatch, 0)
+                || count >= outputs.size()
                 || !claimsPositional(
                 claims, root.bridgeEpoch(), outputs, 0)) {
             return false;
@@ -142,7 +150,8 @@ public final class SettlementVaultValidator {
             JulcList<ExitClaim> exits, Root root, TxInfo txInfo,
             JulcList<TxOut> outputs, BigInteger inSum, byte[] ownHash) {
         long count = exits.size();
-        if (count < 1 || count >= outputs.size()
+        if (count < 1 || count > Builtins.indexByteString(maxExitBatch, 0)
+                || count >= outputs.size()
                 || !exitsPositional(
                 exits, root.bridgeEpoch(), root.chainId(),
                 root.stateRoot(), outputs, 0)) {

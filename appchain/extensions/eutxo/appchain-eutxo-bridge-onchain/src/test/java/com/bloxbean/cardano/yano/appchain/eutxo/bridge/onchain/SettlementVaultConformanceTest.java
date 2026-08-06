@@ -72,7 +72,9 @@ class SettlementVaultConformanceTest extends ContractTest {
                             PlutusData.bytes(new byte[0]),
                             PlutusData.bytes(SHARD_SCRIPT),
                             PlutusData.bytes(KEY_PREFIX),
-                            PlutusData.bytes(CLAIM_DOMAIN));
+                            PlutusData.bytes(CLAIM_DOMAIN),
+                            PlutusData.bytes(new byte[] {(byte) 16}),
+                            PlutusData.bytes(new byte[] {(byte) 6}));
         }
         return program;
     }

@@ -82,7 +82,7 @@ class EutxoContractCodecTest {
                 "8cd4adb72def2c31dc8551a02f67429ea468bb2024dbe85a1dc7300590c9d1bf");
         // ADR-UTXO-009: v3 digest also freezes the tier-1 settlement bounds.
         assertThat(EutxoProfile.V3.digestHex()).isEqualTo(
-                "da8643dbb998329cd668363822d0d18e77790a4c5d110526f784946b4bc3f3e4");
+                "71d7d7445118ef5c4761c847836075f3e5011a1336c5e8f2bfb3517ad8598f47");
     }
 
     @Test
