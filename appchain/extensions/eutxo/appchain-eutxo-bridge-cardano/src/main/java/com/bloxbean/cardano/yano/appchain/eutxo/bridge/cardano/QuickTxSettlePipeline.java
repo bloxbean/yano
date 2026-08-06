@@ -160,8 +160,13 @@ final class QuickTxSettlePipeline {
                 ListPlutusData.of(inserts.toArray(new PlutusData[0])));
 
         // --- vault inventory + root reference ----------------------------
+        // Spend the ENTIRE vault inventory: consolidation keeps custody in
+        // one continuing UTxO, and — critically — guarantees the spent set
+        // includes TRACKED deposit outpoints (a settle can only follow a
+        // deposit), which the ledger's custody gate requires; the bootstrap
+        // genesis fund alone is not tracked custody.
         List<Utxo> vaultInventory = lovelaceOnly(
-                view.getUtxosByAddress(wiring.vaultAddress(), 0, 100));
+                view.getUtxosByAddress(wiring.vaultAddress(), 1, 100));
         var rootThread = tokenUtxo(view, wiring.rootAddress(), wiring.rootUnit());
 
         BigInteger payoutTotal = BigInteger.ZERO;
@@ -171,14 +176,10 @@ final class QuickTxSettlePipeline {
             bountyTotal = bountyTotal.add(claim.bounty());
         }
         BigInteger outflow = payoutTotal.add(bountyTotal);
-        List<Utxo> selected = new ArrayList<>();
+        List<Utxo> selected = new ArrayList<>(vaultInventory);
         BigInteger gathered = BigInteger.ZERO;
-        for (Utxo vault : vaultInventory) {
-            selected.add(vault);
+        for (Utxo vault : selected) {
             gathered = gathered.add(lovelace(vault));
-            if (gathered.compareTo(outflow.add(BigInteger.valueOf(2_000_000L))) >= 0) {
-                break;
-            }
         }
         BigInteger remainder = gathered.subtract(outflow);
         if (remainder.signum() <= 0) {
@@ -220,6 +221,10 @@ final class QuickTxSettlePipeline {
                 .feePayer(wiring.operatorAddress())
                 .collateralPayer(wiring.operatorAddress())
                 .withRequiredSigners(requiredSigners.toArray(new byte[0][]))
+                // Fee must budget the witnesses added AFTER build: one vkey
+                // witness per federation member (the co-sign round) plus the
+                // operator wallet witness.
+                .additionalSignersCount(requiredSigners.size() + 1)
                 .build();
 
         // --- co-sign, operator witness, submit, confirm ------------------
@@ -274,7 +279,7 @@ final class QuickTxSettlePipeline {
     private static Utxo tokenUtxo(
             com.bloxbean.cardano.yano.api.utxo.UtxoState view,
             String address, String unit) {
-        for (var utxo : view.getUtxosByAddress(address, 0, 100)) {
+        for (var utxo : view.getUtxosByAddress(address, 1, 100)) {
             Utxo converted = CclNodeAdapters.convert(utxo);
             for (Amount amount : converted.getAmount()) {
                 if (unit.equals(amount.getUnit())) {

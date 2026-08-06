@@ -71,6 +71,7 @@ public final class EutxoSettlementExecutorFactory
         QuickTxBuilder quickTxBuilder = new QuickTxBuilder(
                 CclNodeAdapters.utxoSupplier(context.l1UtxoView()),
                 CclNodeAdapters.protocolParamsSupplier(context.protocolParams()),
+                CclNodeAdapters.scriptSupplier(context.l1UtxoView()),
                 CclNodeAdapters.transactionProcessor(
                         context::submitTx, context::txEvaluation));
         QuickTxSettlePipeline pipeline = new QuickTxSettlePipeline(

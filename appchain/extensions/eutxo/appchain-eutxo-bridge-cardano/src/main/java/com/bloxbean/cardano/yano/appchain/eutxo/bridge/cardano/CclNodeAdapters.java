@@ -48,7 +48,8 @@ final class CclNodeAdapters {
                     return List.of();
                 }
                 int size = nrOfItems != null ? nrOfItems : 100;
-                int pageNumber = page != null ? page : 0;
+                // CCL pages are 0-based; the node's UtxoState is 1-based.
+                int pageNumber = (page != null ? page : 0) + 1;
                 List<Utxo> converted = new ArrayList<>();
                 for (var utxo : state.getUtxosByAddress(
                         address, pageNumber, size)) {
@@ -66,6 +67,28 @@ final class CclNodeAdapters {
                 return state.getUtxo(txHash, index)
                         .map(CclNodeAdapters::convert);
             }
+        };
+    }
+
+    /** Reference-script lookup over the node's view (none in the settle flow). */
+    static com.bloxbean.cardano.client.api.ScriptSupplier scriptSupplier(
+            Supplier<UtxoState> view) {
+        Objects.requireNonNull(view, "view");
+        return scriptHash -> {
+            if (scriptHash == null || scriptHash.isBlank()) {
+                return Optional.empty();
+            }
+            UtxoState state = view.get();
+            if (state == null) {
+                return Optional.empty();
+            }
+            return state.getScriptRefBytesByHash(scriptHash)
+                    .map(bytes -> (com.bloxbean.cardano.client.plutus.spec
+                            .PlutusScript) com.bloxbean.cardano.client.plutus
+                            .spec.PlutusV3Script.builder()
+                            .type("PlutusScriptV3")
+                            .cborHex(java.util.HexFormat.of().formatHex(bytes))
+                            .build());
         };
     }
 

@@ -244,6 +244,7 @@ dependencies {
     testImplementation project(':appchain-eutxo-client')
     testImplementation project(':appchain-eutxo-bridge-onchain')
     testImplementation project(':appchain-eutxo-demo')
+    testImplementation project(':appchain-eutxo-testkit')
     testImplementation project(':appchain-eutxo-zk-onchain')
     testImplementation project(':appchain-eutxo-zk-zeroj')
     testImplementation libs.cardano.client.lib

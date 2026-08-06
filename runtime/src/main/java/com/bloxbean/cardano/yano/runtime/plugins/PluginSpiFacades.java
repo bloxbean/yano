@@ -1639,9 +1639,25 @@ final class PluginSpiFacades {
 
         @Override
         public List<AppEffectExecutor> create(String chainId, Map<String, String> config) {
+            return createProducts(() -> delegate.create(chainId, config));
+        }
+
+        @Override
+        public List<AppEffectExecutor> create(
+                String chainId, Map<String, String> config,
+                com.bloxbean.cardano.yano.api.appchain.effects
+                        .AppChainEffectContext context) {
+            // Context-aware creation (ADR-UTXO-009 SP-M6) must reach the
+            // DELEGATE's override — routing through the 2-arg form would
+            // silently trigger the interface default and lose the context.
+            return createProducts(() -> delegate.create(chainId, config, context));
+        }
+
+        private List<AppEffectExecutor> createProducts(
+                java.util.function.Supplier<List<AppEffectExecutor>> invocation) {
             return activation.call("create effect-executor products", () -> callbacks.call(() -> {
                 List<AppEffectExecutor> values = PluginThreadContext.call(
-                        loader, () -> delegate.create(chainId, config));
+                        loader, invocation::get);
                 if (values == null) {
                     return null;
                 }

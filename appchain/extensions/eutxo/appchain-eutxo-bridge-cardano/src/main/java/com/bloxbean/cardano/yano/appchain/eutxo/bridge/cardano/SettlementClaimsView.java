@@ -26,8 +26,8 @@ import java.util.function.BiFunction;
  * node's committed view.
  */
 final class SettlementClaimsView {
-    /** Matches the machine's max-pending-withdrawals ceiling. */
-    private static final int PAGE_LIMIT = 1_024;
+    /** The machine's lifecycle-page ceiling. */
+    private static final int PAGE_LIMIT = 50;
 
     private final BiFunction<String, byte[], byte[]> query;
 
@@ -140,11 +140,26 @@ final class SettlementClaimsView {
                 : EutxoQueryCodec.decodeOptionalWithdrawalRecord(response);
     }
 
+    /**
+     * Every withdrawal record, aggregated across lifecycle pages: the
+     * machine serves up to 50 records per page walking DOWN from index
+     * {@code before − 1}, so iterate from the total count.
+     */
     private List<EutxoWithdrawalRecord> lifecyclePage() {
-        byte[] response = query.apply(
-                EutxoQueryCodec.WITHDRAWALS_PATH,
-                EutxoQueryCodec.lifecyclePageRequest(0, PAGE_LIMIT));
-        return response == null ? List.of()
-                : EutxoQueryCodec.decodeWithdrawalRecords(response);
+        byte[] countResponse = query.apply(
+                EutxoQueryCodec.WITHDRAWAL_COUNT_PATH, new byte[0]);
+        long count = countResponse == null ? 0
+                : EutxoQueryCodec.decodeCount(countResponse);
+        List<EutxoWithdrawalRecord> records = new ArrayList<>();
+        for (long high = count; high > 0; high -= PAGE_LIMIT) {
+            byte[] response = query.apply(
+                    EutxoQueryCodec.WITHDRAWALS_PATH,
+                    EutxoQueryCodec.lifecyclePageRequest(high + 1, PAGE_LIMIT));
+            if (response == null) {
+                break;
+            }
+            records.addAll(EutxoQueryCodec.decodeWithdrawalRecords(response));
+        }
+        return records;
     }
 }
