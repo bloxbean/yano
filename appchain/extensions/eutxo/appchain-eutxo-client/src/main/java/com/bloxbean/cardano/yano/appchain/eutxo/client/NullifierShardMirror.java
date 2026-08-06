@@ -62,7 +62,7 @@ public final class NullifierShardMirror {
     }
 
     public byte[] root(int shard) {
-        return shards[checkShard(shard)].getRootHash();
+        return normalizedRoot(shards[checkShard(shard)]);
     }
 
     public boolean contains(int shard, byte[] claimId) {
@@ -97,7 +97,7 @@ public final class NullifierShardMirror {
         checkShard(shard);
         Objects.requireNonNull(newClaimIds, "newClaimIds");
         MpfTrie trie = shards[shard];
-        byte[] priorRoot = trie.getRootHash();
+        byte[] priorRoot = normalizedRoot(trie);
         List<PlannedInsert> planned = new ArrayList<>(newClaimIds.size());
         for (byte[] claimId : newClaimIds) {
             if (shardOf(claimId) != shard) {
@@ -114,7 +114,7 @@ public final class NullifierShardMirror {
             planned.add(new PlannedInsert(claimId.clone(), proofWire));
             trie.put(claimId.clone(), claimId.clone());
         }
-        return new InsertPlan(shard, planned, priorRoot, trie.getRootHash());
+        return new InsertPlan(shard, planned, priorRoot, normalizedRoot(trie));
     }
 
     /**
@@ -127,12 +127,22 @@ public final class NullifierShardMirror {
         for (byte[] claimId : Objects.requireNonNull(claimIdsForShard, "claimIds")) {
             trie.put(claimId.clone(), claimId.clone());
         }
-        return trie.getRootHash();
+        return normalizedRoot(trie);
     }
 
-    /** The root of an empty shard — the value shard threads are bootstrapped with. */
+    /**
+     * The root of an empty shard — the value shard threads are bootstrapped
+     * with. The on-chain MPF library's null hash (32 zero bytes);
+     * {@code MpfTrie.getRootHash()} reports an empty trie as {@code null}, so
+     * every root read normalizes through this convention.
+     */
     public static byte[] emptyRoot() {
-        return new MpfTrie(new InMemoryNodeStore()).getRootHash();
+        return new byte[32];
+    }
+
+    private static byte[] normalizedRoot(MpfTrie trie) {
+        byte[] root = trie.getRootHash();
+        return root == null ? emptyRoot() : root;
     }
 
     /** Verify a served membership proof (settled id) against a shard root. */
