@@ -796,10 +796,25 @@ bounds). Surfaced fix: `MpfTrie.getRootHash()` reports an empty trie as
 normalizes every root read to the on-chain convention.
 `BRIDGE_CHAIN.md` gained the §8 v2-settlement preview section.
 
-REMAINING for SP-M6: the bootstrap mint transactions + devnet run (the plan
-is ready; submitting the two one-shot mints and the genesis outputs is the
-E2E's first step); the `InsertBatch` redeemer at witness assembly (full
-Plutus tx assembly, devnet-gated) and multi-shard batches;
+**Devnet E2E — bootstrap + live A2 settle PASSING (0bbc78c3, 1e7fd791).**
+`EutxoSettlementBootstrapDevnetE2ETest` (app, `:app:e2eTest`) runs on a
+disposable devnet: (1) both one-shot Plutus mints execute on-chain
+(AnchorThreadPolicy root NFT + ShardThreadPolicy's exact 16 tokens — first
+live execution), the threads land at the resolved addresses with the plan's
+genesis datums byte-for-byte; (2) a REAL A2 batch settle spends the vault +
+shard 0 in one transaction — SettlementVaultValidator phase-2 (positional
+payouts, remainder conservation under the marker, federation threshold via
+required signers against the root-thread reference input, thread-token
+pairing) and NullifierShardValidator phase-2 (chained InsertBatch with the
+SP-M4 mirror's non-membership proofs) — advancing the on-chain shard root
+FROM THE EMPTY ROOT to exactly the mirror's post-insert root. That closes
+the core of the SP-M4 gate (mirror == on-chain after settlement) and proves
+the deploy plane + both validators + marker + empty-root convention live.
+Learned: CCL `PlutusData.deserialize` normalizes MPF wire tags 121/122/123
+to constr 0/1/2 (proof wires are directly redeemer-usable); quicktx
+preserves output declaration order; the bounty floats to change.
+
+REMAINING for SP-M6: multi-shard batches;
 `AppEffectExecutorFactory` (scheme eutxo-settlement) + host wiring of the
 executor collaborators; `SettlementCosignService` on ~bridge/settlement/sig;
 single-owner pinning; showcase v3 bridge chain + console fee/bounty +
