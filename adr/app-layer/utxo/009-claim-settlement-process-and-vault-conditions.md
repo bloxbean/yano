@@ -51,7 +51,12 @@ committed payout already nets the fee.
 
 ## 3. Settlement process options (A)
 
-### A1 — receiver-builds, operator co-signs (proposed next tier)
+### A1 — receiver-builds, operator co-signs (REJECTED 2026-08-06)
+
+Decision: skip this tier and go straight to A2+A3 on V1. Its motivation
+(receiver-funded fees) is subsumed by the claim-creation bounty (§6), and
+its wallet-in-the-loop contention window is the worst of the options.
+Retained below for the record.
 
 The receiver constructs the settlement: vault UTxOs covering the claim PLUS
 one of their own UTxOs for the fee; outputs = exact claim amount to the
@@ -155,15 +160,23 @@ per chain, not key rollovers.
 
 ## 6. Fee model in detail (Q1 resolved direction)
 
-**Charge the fee at CLAIM CREATION on the L2, not at settlement.** The
-claim ABI (v2) carries `{requestedLovelace, withdrawalFee}` and commits a
-payout of `requested - fee`; the fee is credited inside the L2 ledger to an
-operator/cranker fee account (itself withdrawable via a normal claim).
-Because the fee never appears on the L1 side, the settlement invariant
-stays "exact committed amount leaves the vault" — the V1 vault script and
-the confirmation observer are untouched by fee changes, and the vault
-script hash (= vault address = chain identity) never churns over fee
-policy. This also gives A3 crankers a declared incentive for free.
+**Charge the fee at CLAIM CREATION on the L2, commit it in the claim as
+the EXECUTOR BOUNTY.** The claim ABI (v2) commits `{payout, bounty}`: the
+withdrawer requests X, pays the governed fee f at creation, and the claim
+commits payout = X − f and bounty = f. The L2 reserve decreases by payout
+PLUS bounty at creation, so the physical vault and the ledger reserve stay
+equal permanently. On L1, the vault script's conservation rule is: every
+payout output exact; the batch's TOTAL bounty may go to one output of the
+settlement executor's choosing; remainder back to the vault. One rule
+serves both paths — the federation's executor collects bounties in A2,
+whoever cranks collects them in A3 — so settlement incentives are uniform
+and pre-funded by the withdrawer, never by the vault's other depositors.
+
+**Schedule shape (decided): flat first, bps-ready.** The governed schedule
+is `{flat, bps}` with `bps = 0` at genesis (flat 2 ADA for public demos, 0
+allowed for closed demos). Claims always commit the RESOLVED lovelace
+amount, so activating basis-points later is a tier-2 parameter change with
+no state-machine logic change and no ABI churn.
 
 **Genesis vs governance — both, in tiers:**
 - The fee FIELD (ABI) and the fee BOUNDS (min 0, hard max — e.g. a small
@@ -197,6 +210,14 @@ except WHO authorizes the spend.
   over settled claim ids). Spending a shard requires, in the same tx, a
   paired vault spend plus a NON-membership proof of each settled claimId
   and the datum's root updated by inserting them. One shard per tx.
+  **No check/update lag exists**: the non-membership check and the root
+  insert are one atomic L1 transaction, and two settlements of the same
+  claim need the SAME shard UTxO — the ledger lets exactly one spend it,
+  and the loser's rebuilt proof fails against the inserted id. Double
+  settlement is prevented by UTxO exclusivity, not timeliness. (The
+  accepted STATE root is the only lagging artifact; its staleness merely
+  delays when a young claim becomes provable — it can never enable
+  double-pay.)
 - **Batch settlement marker**: the continuing vault output's datum carries
   the ORDERED claim-id list; payout output[i] pays claim[i] exactly
   (positional matching for the confirmation observer, per §3-A2).
@@ -210,12 +231,33 @@ root thread reference input's memberSetHash), positional exact payouts,
 continuing output preserves `inputs − Σ amounts`, nullifier shard insert
 for every claim id, batch size ≤ the profile's hard cap.
 
+**The signer is NOT today's single operator wallet.** The settle path
+demands the federation threshold (member-set keys verified against the
+root thread's memberSetHash). Compromise analysis under V1: stolen keys —
+even a full quorum — can only produce valid settlements of real pending
+claims to their committed addresses; the script forbids redirection, so
+key compromise buys CENSORSHIP at worst, and censorship arms A3 after
+fallbackDelay. Keys degrade from custody to liveness; a compromised fee
+wallet loses only its float.
+
+**Execution via the effect system (proposed, replacing an external
+scheduler).** The batch trigger (N pending claims or T elapsed) is
+state-machine logic, so the bridge machine EMITS an `l1.settlement` effect
+— journaled, exactly-once, owner-assigned like the showcase outbox and the
+evidence sinks. The owning executor builds the settlement transaction;
+member nodes contribute partial threshold signatures (as effect results or
+app messages); the owner assembles and submits; the EXISTING withdrawal
+confirmation observer closes the loop to CONFIRMED. Single effect
+ownership prevents duplicate submissions; effect retries handle L1
+hiccups; the executor's collected bounty (§6) funds its fee wallet.
+
 Pros: O(1) signature verification regardless of batch size → large batches
 (ex-unit budget spent on output/datum checks only); no UTxO contention (the
 federation serializes itself); prompt latency under the N-or-T trigger;
-fee-amortized. Cons: liveness and censorship rest on the federation (why A3
-must exist); federation signing infrastructure (threshold/HSM) is the
-operational cost; batch ABI + observer change required.
+fee-amortized; chain-scheduled execution reuses shipped effect machinery.
+Cons: liveness and censorship rest on the federation (why A3 must exist);
+threshold signature collection across members is the new engineering;
+batch ABI + observer change required.
 
 ### 7.3 A3 — permissionless proof exit, fallback path
 
@@ -225,8 +267,13 @@ when `now − updatedAtSlot > fallbackDelay` (the ADR-007 trigger: the
 federation stopped rooting/settling); each claim proven present under the
 accepted `stateRoot` at its claims key; nullifier shard non-membership +
 insert; exact payouts and remainder preservation as in A2. Anyone may
-build and submit ("cranking"); the claim-creation fee (§6) pays the
-cranker, so third parties are incentivized to batch strangers' exits.
+build and submit ("cranking"), and the cranker is paid ON L1 from the
+claims themselves: each claim's committed bounty (§6) is spendable to one
+cranker-chosen output in the settling transaction — pre-funded by the
+withdrawer at creation, bounded by the frozen fee cap, identical to how
+the A2 executor is paid. A flat 2 ADA bounty makes batch-cranking
+strangers' exits profitable after the L1 fee; a 0 bounty (demo) means
+operator-run cranking only.
 
 Pros: trustless escape hatch — funds recoverable without any operator,
 which is the entire point of the tier; same vault, same invariants, no
@@ -296,17 +343,28 @@ tracked protocol parameters. A batch is additionally bounded by
 `maxTxSize`/ex-units at build time against LIVE L1 parameters — tier-1
 caps are ceilings, the builder computes the real bound per transaction.
 
-## 9. Open questions (narrowed)
+## 9. Open questions (narrowed 2026-08-06)
 
 - Governed-parameter transport: reuse the existing governed-admin message
   path vs a dedicated `bridge.params.v1` topic (leaning: reuse).
-- Shard count k and fallbackDelay defaults; rooting cadence economics.
-- Fee shape: flat vs basis-points vs `max(flat, bps)` (leaning: max(flat,
-  bps) with both bounded in tier 1).
-- Whether A1 (receiver-builds co-sign) is still worth shipping en route,
-  or the effort goes straight to A2+A3 on V1 (leaning: straight to A2+A3;
-  A1's fee motivation is subsumed by the claim-creation fee).
+- Shard count k, fallbackDelay default, rooting cadence economics.
+- Threshold-signature collection mechanics for the settlement effect
+  (partial sigs as effect results vs app messages; HSM signer-mode
+  integration).
+- Initial flat bounty default for public demos (leaning 2 ADA; 0
+  permitted).
 
-## 10. Decision
+## 10. Decisions so far (2026-08-06 review)
 
-Deferred — finalize after review of §6–§8 directions.
+- A1 rejected; effort goes straight to A2+A3 as two authorization paths on
+  one V1 vault.
+- Fee = per-claim committed executor bounty, charged at claim creation;
+  schedule `{flat, bps}` governed with bps=0 at genesis; bounds frozen.
+- A2 signer = federation threshold (never a single operator key); V1
+  scripts bound compromise to censorship; A3 is the censorship answer.
+- A2 execution rides the effect system (`l1.settlement` effect,
+  owner-assigned; the confirmation observer closes the loop).
+- Nullifier safety is atomic-by-construction (same-tx check+insert on an
+  exclusive shard UTxO); no timing window exists.
+
+Final ratification pending §9.
