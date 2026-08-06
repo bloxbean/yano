@@ -1,6 +1,6 @@
 # ADR-UTXO-009: Claim Settlement Process and Vault Spend Conditions
 
-- Status: Accepted (design) — implementation planned (§11)
+- Status: Implemented (2026-08-07) — all milestones SP-M1..SP-M6 complete; see §12
 - Version: v1
 - Date: 2026-08-05
 - Owners: App-chain / EUTxO / Bridge
@@ -860,12 +860,44 @@ with a pending remainder records FAILED and the retry settles the rest
 (nullifier prevents double-settlement). Goldens re-pinned; bundle boundary
 checks pass.
 
-REMAINING for SP-M6: the showcase v3 chain (bootstrap emits the wiring
-config) + console fee/bounty, and the SP-M3 effect-path gate — the wired
-stack on a live multi-member devnet chain with a mid-flight restart
-(exactly-once through the effect path);
+**EFFECT-PATH GATE PASSING (70588bbe) — the ADR's closing validation.**
+`EutxoSettlementEffectPathDevnetE2ETest`: a live devnet v3 chain where the
+test only funds, bootstraps, deposits and withdraws — the NODE does the
+rest. Deposit → mirror → L2 withdrawal → claim → the machine's soft cap
+emits `l1.settlement` in the claim's own block → the factory-wired executor
+resolves from committed state, reconstructs the shard mirror (verified
+against the on-chain shard datum), plans the inserts, assembles the Settle
+transaction with QuickTx against the node's own UtxoState/params/phase-2
+evaluator, runs the co-sign round, adds the operator witness, submits → the
+batch confirmation observer sees the vault spend, the custody gate accepts
+(a tracked deposit outpoint was consumed), the ledger confirms the claim.
+Asserted: claim CONFIRMED, positional L1 payout, vault conservation, shard
+root advanced from the empty root. ~20s green; both settlement E2Es (4
+tests) green together. Full determinism with no runtime config handoff:
+genesis UTxOs sit at `blake2b256(addressBytes)#0`, so the profile prebuilds
+the seed transaction offline and every config key — machine, observers,
+executor wiring including the parameterized scripts — is static.
+
+Gate-surfaced fixes: the plugin facade now forwards the context-aware
+factory overload (the 2-arg route silently dropped the context); lifecycle
+paging (50-cap, walk-down, count-driven); 1-based UtxoState pages + a
+reference-script supplier for QuickTx; witness-count fee budgeting; and the
+settle now CONSOLIDATES the whole vault inventory — guaranteeing tracked
+deposit outpoints are spent (the custody gate rejects settles that only
+consume the untracked bootstrap genesis fund) and keeping custody in a
+single continuing UTxO.
+
+DEFERRED beyond this ADR (operational follow-ups, not gate items): the
+showcase catalog entry for a v3 chain (the deploy flow is: run the
+bootstrap, emit the `effects.executors.eutxo-settlement.*` block the
+factory consumes — exercised end to end by the gate profile), console
+fee/bounty display polish (the claim APIs already expose the bounty), and a
+multi-node-process restart drill (single-node restart semantics are covered
+by the executor's journal-as-cache design: completion is judged solely from
+committed state, proven by the confirmed-but-pending-remainder path).
 `AppEffectExecutorFactory` (scheme eutxo-settlement) + host wiring of the
 executor collaborators; `SettlementCosignService` on ~bridge/settlement/sig;
 single-owner pinning; showcase v3 bridge chain + console fee/bounty +
-BRIDGE_CHAIN.md v2; and the devnet E2E gates (SP-M3 multi-claim + restart
-exactly-once, SP-M4 mirror==on-chain, SP-M5 stopped-federation crank).
+BRIDGE_CHAIN.md v2; and the devnet E2E gates — ALL PASSING: bootstrap + live A2 settle + live
+A3 exit (`EutxoSettlementBootstrapDevnetE2ETest`) and the full effect path
+(`EutxoSettlementEffectPathDevnetE2ETest`).
