@@ -129,12 +129,15 @@ class EutxoBridgeSettlementMachineTest {
                 .isEqualTo(BigInteger.valueOf(total));
 
         // v3 settles in batches; a size-1 batch confirmation clears the claim.
+        // It must SPEND tracked vault custody (the deposit's accepted
+        // outpoint) — the authenticity anchor.
         EutxoBatchWithdrawalConfirmation confirmation =
                 new EutxoBatchWithdrawalConfirmation(
                         1,
                         "eutxo-test",
                         7,
                         "77".repeat(32),
+                        List.of(new EutxoOutpoint("22".repeat(32), 1)),
                         new EutxoOutpoint("77".repeat(32), 1),
                         BigInteger.valueOf(500_000L),
                         200,
@@ -468,6 +471,7 @@ class EutxoBridgeSettlementMachineTest {
         EutxoBatchWithdrawalConfirmation confirmation =
                 new EutxoBatchWithdrawalConfirmation(
                         1, "eutxo-test", 7, "88".repeat(32),
+                        List.of(new EutxoOutpoint("40" + "22".repeat(31), 1)),
                         new EutxoOutpoint("88".repeat(32), entries.size()),
                         BigInteger.valueOf(1_000_000L), 250, fill(32, 8), entries);
         L1Observation observation = new L1Observation(
@@ -490,6 +494,46 @@ class EutxoBridgeSettlementMachineTest {
                 .hasValueSatisfying(bytes ->
                         assertThat(new BigInteger(bytes)).isZero());
         assertThat(state.get(EutxoStateKeys.bridgeHalt())).isEmpty();
+    }
+
+    @Test
+    void fabricatedConfirmationWithoutAVaultSpendHaltsTheBridge() throws Exception {
+        EutxoStateMachine machine = v3Machine(2);
+        MemoryAppState state = new MemoryAppState();
+        long height = createWithdrawal(machine, state, 1, 5_000_000L, 0x48);
+        EutxoWithdrawalClaim claim = EutxoQueryCodec.decodeWithdrawalRecords(
+                machine.query(EutxoQueryCodec.WITHDRAWALS_PATH,
+                        EutxoQueryCodec.lifecyclePageRequest(0, 10), state))
+                .getFirst().claim();
+
+        // Attacker pays the claim's real destination its real amount out of
+        // pocket and attaches a well-formed marker — but the transaction
+        // spends NO tracked vault outpoint, so custody proves it fake.
+        EutxoBatchWithdrawalConfirmation forged =
+                new EutxoBatchWithdrawalConfirmation(
+                        1, "eutxo-test", 7, "99".repeat(32),
+                        List.of(new EutxoOutpoint("ee".repeat(32), 0)),
+                        new EutxoOutpoint("99".repeat(32), 1),
+                        BigInteger.valueOf(2_000_000L), 260, fill(32, 9),
+                        List.of(new EutxoBatchWithdrawalConfirmation.Entry(
+                                claim.claimId(), 0, claim.destinationAddress(),
+                                claim.lovelace())));
+        L1Observation observation = new L1Observation(
+                "bridge-withdrawals", HexFormat.of().parseHex("99".repeat(32)),
+                260, fill(32, 9), forged.encode());
+        machine.apply(block(height, observationMessage(0xB7, observation)),
+                state, new CapturingEmitter(height));
+
+        // Bridge halts; the claim stays PENDING; the reserve is untouched.
+        assertThat(state.get(EutxoStateKeys.bridgeHalt())).isPresent();
+        EutxoWithdrawalRecord record = EutxoQueryCodec.decodeWithdrawalRecords(
+                machine.query(EutxoQueryCodec.WITHDRAWALS_PATH,
+                        EutxoQueryCodec.lifecyclePageRequest(0, 10), state))
+                .getFirst();
+        assertThat(record.status()).isEqualTo(EutxoWithdrawalRecord.Status.PENDING);
+        assertThat(EutxoReserve.decode(state.get(
+                        EutxoStateKeys.reserve(EutxoReserve.LOVELACE)).orElseThrow())
+                .pendingWithdrawals()).isEqualTo(claim.totalLovelace());
     }
 
     private long createWithdrawal(

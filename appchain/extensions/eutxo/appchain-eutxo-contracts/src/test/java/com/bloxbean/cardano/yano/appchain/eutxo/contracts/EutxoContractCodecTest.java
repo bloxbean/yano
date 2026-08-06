@@ -157,6 +157,9 @@ class EutxoContractCodecTest {
                 new EutxoBatchWithdrawalConfirmation(
                         1, "payments", 7,
                         "ab".repeat(32),
+                        // Deliberately unsorted: canonical sorting is applied.
+                        List.of(new EutxoOutpoint("99".repeat(32), 0),
+                                new EutxoOutpoint("55".repeat(32), 2)),
                         new EutxoOutpoint("cd".repeat(32), 3),
                         BigInteger.valueOf(18_000_000L),
                         123_456L,
@@ -173,6 +176,10 @@ class EutxoContractCodecTest {
                 EutxoBatchWithdrawalConfirmation.decode(confirmation.encode());
         assertThat(back).isEqualTo(confirmation);
         assertThat(back.count()).isEqualTo(2);
+        // Spent outpoints are canonically sorted regardless of input order.
+        assertThat(back.spentOutpoints()).containsExactly(
+                new EutxoOutpoint("55".repeat(32), 2),
+                new EutxoOutpoint("99".repeat(32), 0));
 
         // Each entry expands into a self-consistent single-claim confirmation
         // sharing the settlement's L1 identity.
@@ -193,12 +200,24 @@ class EutxoContractCodecTest {
         // transaction's dense positional payouts.
         assertThatThrownBy(() -> new EutxoBatchWithdrawalConfirmation(
                 1, "payments", 7, "ab".repeat(32),
+                List.of(new EutxoOutpoint("99".repeat(32), 0)),
                 new EutxoOutpoint("cd".repeat(32), 3),
                 BigInteger.ZERO, 1L, HexFormat.of().parseHex("ef".repeat(32)),
                 List.of(new EutxoBatchWithdrawalConfirmation.Entry(
                         "11".repeat(32), 5, DESTINATION, BigInteger.ONE))))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("positional");
+
+        // No spent inputs = no authenticity anchor: rejected.
+        assertThatThrownBy(() -> new EutxoBatchWithdrawalConfirmation(
+                1, "payments", 7, "ab".repeat(32),
+                List.of(),
+                new EutxoOutpoint("cd".repeat(32), 3),
+                BigInteger.ZERO, 1L, HexFormat.of().parseHex("ef".repeat(32)),
+                List.of(new EutxoBatchWithdrawalConfirmation.Entry(
+                        "11".repeat(32), 0, DESTINATION, BigInteger.ONE))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("spent outpoints");
     }
 
     @Test

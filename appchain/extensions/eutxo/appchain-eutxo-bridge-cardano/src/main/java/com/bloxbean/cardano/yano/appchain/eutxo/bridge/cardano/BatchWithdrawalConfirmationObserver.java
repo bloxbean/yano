@@ -61,8 +61,17 @@ final class BatchWithdrawalConfirmationObserver implements L1Observer {
         }
         List<L1Observation> observations = new ArrayList<>();
         for (TransactionBody transaction : block.getTransactionBodies()) {
-            EutxoBatchWithdrawalConfirmation confirmation =
-                    confirmation(slot, blockHash, transaction);
+            EutxoBatchWithdrawalConfirmation confirmation;
+            try {
+                confirmation = confirmation(slot, blockHash, transaction);
+            } catch (RuntimeException structurallyInvalid) {
+                // Anyone can pay the vault address with an arbitrary inline
+                // datum. A structurally invalid "settlement" cannot be a
+                // genuine vault spend (the on-chain validator guarantees the
+                // real shape), so SKIP it deterministically — throwing would
+                // let one crafted output drop the whole block's observations.
+                continue;
+            }
             if (confirmation != null) {
                 observations.add(new L1Observation(
                         observerId,
@@ -138,11 +147,25 @@ final class BatchWithdrawalConfirmationObserver implements L1Observer {
             entries.add(new EutxoBatchWithdrawalConfirmation.Entry(
                     claimIds.get(index), index, payout.getAddress(), lovelace));
         }
+        // The spent inputs bind authenticity: the ledger accepts this
+        // settlement only if it consumed a KNOWN vault outpoint. Sorted —
+        // the L1 model reports inputs as an unordered set.
+        if (transaction.getInputs() == null || transaction.getInputs().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "batch settlement has no spent inputs");
+        }
+        List<EutxoOutpoint> spentOutpoints = new ArrayList<>();
+        for (var input : transaction.getInputs()) {
+            spentOutpoints.add(new EutxoOutpoint(
+                    input.getTransactionId(), input.getIndex()));
+        }
+        spentOutpoints.sort(null);
         return new EutxoBatchWithdrawalConfirmation(
                 EutxoBatchWithdrawalConfirmation.ABI_VERSION,
                 chainId,
                 bridgeEpoch,
                 transaction.getTxHash(),
+                spentOutpoints,
                 new EutxoOutpoint(transaction.getTxHash(), continuingVaultIndex),
                 continuingVaultLovelace,
                 slot,

@@ -116,6 +116,17 @@ public final class EutxoStateKeys {
                 acceptedOutpoint, "acceptedOutpoint"));
     }
 
+    /**
+     * A LIVE L1 vault UTxO (v3 settlement profile): present while the
+     * outpoint is spendable vault custody. Settlement confirmations must
+     * consume one of these — the authenticity anchor that a marker output
+     * alone cannot fabricate (ADR-UTXO-009 SP-M6 review fix).
+     */
+    public static byte[] bridgeVaultOutpoint(EutxoOutpoint outpoint) {
+        return bytes(PREFIX + "bridge/vault-utxo/" + Objects.requireNonNull(
+                outpoint, "outpoint"));
+    }
+
     /** Immutable deposit record in canonical acceptance order. */
     public static byte[] depositIndex(long sequence) {
         return indexedKey(PREFIX + "bridge/deposit/index/", sequence);

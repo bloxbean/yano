@@ -25,6 +25,7 @@ public record EutxoBatchWithdrawalConfirmation(
         String chainId,
         long bridgeEpoch,
         String settlementTransactionId,
+        List<EutxoOutpoint> spentOutpoints,
         EutxoOutpoint continuingVaultOutpoint,
         BigInteger continuingVaultLovelace,
         long l1Slot,
@@ -33,6 +34,7 @@ public record EutxoBatchWithdrawalConfirmation(
 ) {
     public static final int ABI_VERSION = 1;
     private static final int MAX_ENTRIES = 1_024;
+    private static final int MAX_SPENT_OUTPOINTS = 512;
 
     public EutxoBatchWithdrawalConfirmation {
         if (abiVersion != ABI_VERSION) {
@@ -46,6 +48,26 @@ public record EutxoBatchWithdrawalConfirmation(
         }
         settlementTransactionId = canonicalHash(
                 settlementTransactionId, "settlementTransactionId");
+        // The transaction's spent inputs — the authenticity anchor: the
+        // ledger only accepts a settlement that consumed a KNOWN vault
+        // outpoint, so a fabricated marker output cannot confirm claims.
+        // Canonically sorted (the L1 model reports inputs as a set).
+        Objects.requireNonNull(spentOutpoints, "spentOutpoints");
+        if (spentOutpoints.isEmpty()
+                || spentOutpoints.size() > MAX_SPENT_OUTPOINTS) {
+            throw new IllegalArgumentException(
+                    "batch confirmation must carry 1-" + MAX_SPENT_OUTPOINTS
+                            + " spent outpoints");
+        }
+        List<EutxoOutpoint> sortedSpent = new ArrayList<>(spentOutpoints);
+        sortedSpent.sort(null);
+        for (int index = 1; index < sortedSpent.size(); index++) {
+            if (sortedSpent.get(index).equals(sortedSpent.get(index - 1))) {
+                throw new IllegalArgumentException(
+                        "batch confirmation spent outpoints must be distinct");
+            }
+        }
+        spentOutpoints = List.copyOf(sortedSpent);
         Objects.requireNonNull(continuingVaultOutpoint, "continuingVaultOutpoint");
         continuingVaultLovelace = nonNegative(
                 continuingVaultLovelace, "continuingVaultLovelace");
@@ -115,6 +137,7 @@ public record EutxoBatchWithdrawalConfirmation(
                 && chainId.equals(confirmation.chainId)
                 && bridgeEpoch == confirmation.bridgeEpoch
                 && settlementTransactionId.equals(confirmation.settlementTransactionId)
+                && spentOutpoints.equals(confirmation.spentOutpoints)
                 && continuingVaultOutpoint.equals(confirmation.continuingVaultOutpoint)
                 && continuingVaultLovelace.equals(confirmation.continuingVaultLovelace)
                 && l1Slot == confirmation.l1Slot
@@ -126,7 +149,8 @@ public record EutxoBatchWithdrawalConfirmation(
     public int hashCode() {
         int result = Objects.hash(
                 abiVersion, chainId, bridgeEpoch, settlementTransactionId,
-                continuingVaultOutpoint, continuingVaultLovelace, l1Slot, entries);
+                spentOutpoints, continuingVaultOutpoint, continuingVaultLovelace,
+                l1Slot, entries);
         return 31 * result + java.util.Arrays.hashCode(l1BlockHash);
     }
 
