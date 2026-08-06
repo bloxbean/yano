@@ -826,7 +826,23 @@ validityStartInterval when validFrom == 0 → lower bound NegInf →
 `finiteLowerBound` = −1 → disarmed at evaluation; floor the slot at 1.
 All three devnet gates green in one ~19s `:app:e2eTest` run.
 
-REMAINING for SP-M6: multi-shard batches;
+**Co-sign host wiring (9ac6c63f).** New `~bridge/*` diffusion-only channel
+(core-api `BridgeDiffusionHandler` SPI; the subsystem routes first-sighting
+envelopes to the handler registered per chain — the anchor route pattern,
+extension-registerable). `SettlementCosignService` (bridge-cardano)
+implements the executor's `ThresholdCosigner` over it: the owner broadcasts
+the unsigned body on `~bridge/settlement/sign`, members verify the body
+against their own view (injected custody gate) and reply signatures over the
+canonical body hash on `~bridge/settlement/sig`; forged/non-member replies
+drop; assembly delegates to `SettlementCosigner`'s fail-closed core. Four
+round tests (witnessed assembly, rejecting member fails closed, forged reply
+tolerated, non-leader refuses rounds).
+
+REMAINING for SP-M6: the construction-site wiring in the host (build the
+settlement executor stack — BatchResolver + member body-verifier over the
+live v3 machine state, register the diffusion handler + executor,
+single-owner config flag), the showcase v3 chain + console fee/bounty, the
+SP-M3 effect-path restart gate on that chain, and multi-shard batches;
 `AppEffectExecutorFactory` (scheme eutxo-settlement) + host wiring of the
 executor collaborators; `SettlementCosignService` on ~bridge/settlement/sig;
 single-owner pinning; showcase v3 bridge chain + console fee/bounty +
