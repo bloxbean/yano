@@ -47,6 +47,7 @@ class SettlementVaultConformanceTest extends ContractTest {
     private static final byte[] ROOT_POLICY = filled(0x51, 28);
     private static final byte[] ROOT_SCRIPT = filled(0x52, 28);
     private static final byte[] SHARD_SCRIPT = filled(0x53, 28);
+    private static final byte[] SHARD_POLICY = filled(0x71, 28);
     private static final byte[] VAULT_SCRIPT = filled(0x54, 28);
     private static final byte[] CHAIN_ID = "payments".getBytes(StandardCharsets.UTF_8);
     private static final byte[] CLAIM_DOMAIN =
@@ -70,7 +71,7 @@ class SettlementVaultConformanceTest extends ContractTest {
                     .applyParams(
                             PlutusData.bytes(ROOT_POLICY),
                             PlutusData.bytes(new byte[0]),
-                            PlutusData.bytes(SHARD_SCRIPT),
+                            PlutusData.bytes(SHARD_POLICY),
                             PlutusData.bytes(KEY_PREFIX),
                             PlutusData.bytes(CLAIM_DOMAIN),
                             PlutusData.bytes(new byte[] {(byte) 16}),
@@ -117,6 +118,9 @@ class SettlementVaultConformanceTest extends ContractTest {
         assertFailure(evaluate(program(), exitContext(batch, false)));
         // Exit with a payout reordered against the claim order.
         assertFailure(evaluate(program(), exitReorderedContext(batch)));
+        // Fully signed settle whose "shard" input carries NO thread token —
+        // the paired-shard requirement is token-based (deploy ordering fix).
+        assertFailure(evaluate(program(), tokenlessShardContext(batch)));
     }
 
     // ------------------------------------------------------------------
@@ -128,6 +132,14 @@ class SettlementVaultConformanceTest extends ContractTest {
             for (byte[] key : MEMBER_KEYS) {
                 builder.signer(new PubKeyHash(Blake2bUtil.blake2bHash224(key)));
             }
+        }
+        return builder.buildPlutusData();
+    }
+
+    private PlutusData tokenlessShardContext(Batch batch) {
+        var builder = baseBuilder(batch, 0, false, 0L, false, true);
+        for (byte[] key : MEMBER_KEYS) {
+            builder.signer(new PubKeyHash(Blake2bUtil.blake2bHash224(key)));
         }
         return builder.buildPlutusData();
     }
@@ -145,11 +157,17 @@ class SettlementVaultConformanceTest extends ContractTest {
 
     private com.bloxbean.cardano.julc.testkit.ScriptContextTestBuilder baseBuilder(
             Batch batch, int mode, boolean skim, long now) {
-        return baseBuilder(batch, mode, skim, now, false);
+        return baseBuilder(batch, mode, skim, now, false, false);
     }
 
     private com.bloxbean.cardano.julc.testkit.ScriptContextTestBuilder baseBuilder(
             Batch batch, int mode, boolean skim, long now, boolean reorderPayouts) {
+        return baseBuilder(batch, mode, skim, now, reorderPayouts, false);
+    }
+
+    private com.bloxbean.cardano.julc.testkit.ScriptContextTestBuilder baseBuilder(
+            Batch batch, int mode, boolean skim, long now, boolean reorderPayouts,
+            boolean tokenlessShard) {
         Address vaultAddress = scriptAddress(VAULT_SCRIPT);
         Address rootAddress = scriptAddress(ROOT_SCRIPT);
         Address shardAddress = scriptAddress(SHARD_SCRIPT);
@@ -170,8 +188,10 @@ class SettlementVaultConformanceTest extends ContractTest {
                         Optional.empty())))
                 .input(new TxInInfo(shardRef, new TxOut(
                         shardAddress,
-                        threadedValue(BigInteger.valueOf(2_000_000), filled(0x71, 28),
-                                new byte[] {0x00}),
+                        tokenlessShard
+                                ? Value.lovelace(BigInteger.valueOf(2_000_000))
+                                : threadedValue(BigInteger.valueOf(2_000_000),
+                                SHARD_POLICY, new byte[] {0x00}),
                         new OutputDatum.OutputDatumInline(PlutusData.UNIT),
                         Optional.empty())))
                 .referenceInput(new TxInInfo(rootRef, new TxOut(
