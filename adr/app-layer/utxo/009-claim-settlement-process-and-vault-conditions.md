@@ -785,10 +785,21 @@ appends the continuing shard output (token at +1, inline datum with
 single-shard batches; the multi-shard settle (one shard input/output per
 distinct nibble) remains devnet-gated.
 
-REMAINING for SP-M6: bootstrap transaction builder (seed → policies → root
-thread + 16 shard threads + vault genesis); the `InsertBatch` redeemer at
-witness assembly (full Plutus tx assembly, devnet-gated) and multi-shard
-batches;
+**Deploy plane (0f9e9679).** `SettlementScriptArtifacts` (demo module)
+resolves the deploy identity from the checked-in templates via julc param
+application, and `SettlementBootstrapPlan` is the deterministic pure function
+from (two one-shot seeds, bridge config) to every script/hash/address plus
+the genesis root datum and 16 empty-root shard datums — with config
+validation (sorted distinct members, threshold, tier-1 fallback-delay
+bounds). Surfaced fix: `MpfTrie.getRootHash()` reports an empty trie as
+`null` while the on-chain null hash is 32 zero bytes — the mirror now
+normalizes every root read to the on-chain convention.
+`BRIDGE_CHAIN.md` gained the §8 v2-settlement preview section.
+
+REMAINING for SP-M6: the bootstrap mint transactions + devnet run (the plan
+is ready; submitting the two one-shot mints and the genesis outputs is the
+E2E's first step); the `InsertBatch` redeemer at witness assembly (full
+Plutus tx assembly, devnet-gated) and multi-shard batches;
 `AppEffectExecutorFactory` (scheme eutxo-settlement) + host wiring of the
 executor collaborators; `SettlementCosignService` on ~bridge/settlement/sig;
 single-owner pinning; showcase v3 bridge chain + console fee/bounty +
