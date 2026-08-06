@@ -467,3 +467,34 @@ before any non-demo funds; ex-unit budget checks wired into CI.
 Dependencies: SP-M1 ∥ SP-M2 (shared golden vectors) → SP-M3 → SP-M4 →
 SP-M5 → SP-M6. Each milestone lands on a feature branch with its
 implementation-log entry here, mirroring the ADR-008 campaign process.
+
+## 12. Implementation log
+
+### SP-M1 — claim ABI v2 + governed parameters (2026-08-06, feat/adr009-sp-m1)
+
+Delivered: EutxoProfile V3 `yano-eutxo-v3-bridge-settlement` (digest
+`da8643db…`, tier-1 constants digest-bound; batch caps join in SP-M2);
+claim ABI v2 `{payout, bounty}` (v1 bytes/ids frozen — golden-tested;
+bounty in v2 identity; `totalLovelace()`); `EutxoBridgeParams` (+`{flat,
+bps}` schedule, `resolveBounty`) and `EutxoBridgeParamsGovernanceV1`
+(`~governance/eutxo-bridge-params`, exact-bytes approval accumulation);
+machine: genesis params init, per-block activation sweep, membership-gated
+threshold approvals with recorded activation heights, v3 fee split at
+claim creation (BRIDGE_WITHDRAWAL_MINIMUM guard), reserve release by
+payout+bounty; privileged-submission override; provider v3 selection +
+`machines.eutxo.bridge.params.*` genesis settings; capability
+`profile:eutxo-bridge-settlement`, first-party metadata (ledger-owned),
+acceptance evidence, golden digests, indexer JSON bounty.
+
+Tests: 4 codec goldens (incl. v1-id freeze + bounty-in-id), 6 machine tests
+(bounty lifecycle with total-reserve reconciliation, governed change
+end-to-end incl. outsider/duplicate rejection and post-activation fee, min
+guard, privileged admission, from-scratch replay equality, conformance
+restart+snapshot determinism over a governance corpus). Full consumer
+sweep green (contracts, ledger, indexer, bridge-cardano, demo, client,
+devtools, app).
+
+Learned: metadata entries are owner-descriptor-scoped (params keys live in
+the ledger group); the release acceptance index demands evidence per
+capability; catalog/metadata/acceptance digests are golden-pinned in
+metadata.sha256 and the zk preview release contract.

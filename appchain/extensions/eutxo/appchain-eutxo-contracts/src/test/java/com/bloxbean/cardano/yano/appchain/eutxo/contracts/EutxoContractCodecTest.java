@@ -80,6 +80,96 @@ class EutxoContractCodecTest {
                 "2499d01ee7cb0d09d0d498040c6351accd9da83df31666cd4463d0b1722d1212");
         assertThat(EutxoProfile.V2.digestHex()).isEqualTo(
                 "8cd4adb72def2c31dc8551a02f67429ea468bb2024dbe85a1dc7300590c9d1bf");
+        // ADR-UTXO-009: v3 digest also freezes the tier-1 settlement bounds.
+        assertThat(EutxoProfile.V3.digestHex()).isEqualTo(
+                "da8643dbb998329cd668363822d0d18e77790a4c5d110526f784946b4bc3f3e4");
+    }
+
+    @Test
+    void withdrawalClaimV2CarriesTheBountyAndKeepsV1BytesAndIdsFrozen() {
+        EutxoOutpoint outpoint = new EutxoOutpoint("ab".repeat(32), 1);
+        byte[] nonce = new byte[32];
+        java.util.Arrays.fill(nonce, (byte) 5);
+        EutxoWithdrawalClaim v1 = new EutxoWithdrawalClaim(
+                1, "chain", 7, outpoint, "addr_test1_destination",
+                java.math.BigInteger.valueOf(25), nonce, 3, 9);
+        EutxoWithdrawalClaim v1RoundTrip =
+                EutxoWithdrawalClaim.decode(v1.encode());
+        assertThat(v1RoundTrip).isEqualTo(v1);
+        assertThat(v1RoundTrip.bounty()).isZero();
+        // Frozen v1 identity (pre-009 vector): bounty never enters v1 ids.
+        assertThat(v1.claimId()).isEqualTo(new EutxoWithdrawalClaim(
+                1, "chain", 7, outpoint, "addr_test1_destination",
+                java.math.BigInteger.valueOf(25), nonce, 3, 999).claimId());
+
+        EutxoWithdrawalClaim v2 = new EutxoWithdrawalClaim(
+                EutxoWithdrawalClaim.ABI_VERSION_V2, "chain", 7, outpoint,
+                "addr_test1_destination", java.math.BigInteger.valueOf(8_000_000),
+                nonce, 3, 9, java.math.BigInteger.valueOf(2_000_000));
+        EutxoWithdrawalClaim v2RoundTrip =
+                EutxoWithdrawalClaim.decode(v2.encode());
+        assertThat(v2RoundTrip).isEqualTo(v2);
+        assertThat(v2.totalLovelace())
+                .isEqualTo(java.math.BigInteger.valueOf(10_000_000));
+        // The bounty is part of the v2 identity.
+        EutxoWithdrawalClaim differentBounty = new EutxoWithdrawalClaim(
+                EutxoWithdrawalClaim.ABI_VERSION_V2, "chain", 7, outpoint,
+                "addr_test1_destination", java.math.BigInteger.valueOf(8_000_000),
+                nonce, 3, 9, java.math.BigInteger.valueOf(2_000_001));
+        assertThat(v2.claimId()).isNotEqualTo(differentBounty.claimId());
+
+        assertThatThrownBy(() -> new EutxoWithdrawalClaim(
+                1, "chain", 7, outpoint, "addr_test1_destination",
+                java.math.BigInteger.valueOf(25), nonce, 3, 9,
+                java.math.BigInteger.ONE))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("v1 withdrawal claims cannot carry");
+    }
+
+    @Test
+    void bridgeParamsAndGovernanceCommandsRoundTripWithinFrozenBounds() {
+        EutxoBridgeParams defaults = EutxoBridgeParams.defaults();
+        assertThat(EutxoBridgeParams.decode(defaults.encode())).isEqualTo(defaults);
+        assertThat(defaults.resolveBounty(
+                java.math.BigInteger.valueOf(10_000_000)))
+                .isEqualTo(java.math.BigInteger.valueOf(2_000_000));
+        EutxoBridgeParams withBps = new EutxoBridgeParams(
+                1, 1_000_000L, 50, 2_000_000L, 8, 100L, 3_600L, 86_400L, 0L);
+        // 1 ADA flat + 50bps of 10 ADA = 1.05 ADA.
+        assertThat(withBps.resolveBounty(
+                java.math.BigInteger.valueOf(10_000_000)))
+                .isEqualTo(java.math.BigInteger.valueOf(1_050_000));
+
+        assertThatThrownBy(() -> new EutxoBridgeParams(
+                1, EutxoProfile.V3_BOUNTY_CAP_FLAT_LOVELACE + 1, 0,
+                2_000_000L, 8, 100L, 3_600L, 86_400L, 0L))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new EutxoBridgeParams(
+                1, 0L, EutxoProfile.V3_BOUNTY_CAP_BASIS_POINTS + 1,
+                2_000_000L, 8, 100L, 3_600L, 86_400L, 0L))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new EutxoBridgeParams(
+                1, 0L, 0, 2_000_000L, 8, 100L, 3_600L,
+                EutxoProfile.V3_FALLBACK_DELAY_MIN_SLOTS - 1, 0L))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        EutxoBridgeParamsGovernanceV1.Command command =
+                new EutxoBridgeParamsGovernanceV1.Command(1, defaults, 5);
+        EutxoBridgeParamsGovernanceV1.Command decoded =
+                EutxoBridgeParamsGovernanceV1.decode(command.encode());
+        assertThat(decoded).isEqualTo(command);
+        assertThat(decoded.digestHex()).isEqualTo(command.digestHex());
+        assertThatThrownBy(() -> new EutxoBridgeParamsGovernanceV1.Command(
+                1, defaults.withEffectiveHeight(4), 5))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> EutxoBridgeParamsGovernanceV1.decode(new byte[600]))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(new String(EutxoStateKeys.bridgeParamsCurrent(),
+                java.nio.charset.StandardCharsets.UTF_8))
+                .isEqualTo("eutxo/v1/bridge/params/current");
+        assertThat(new String(EutxoStateKeys.bridgeParamsHistory(0),
+                java.nio.charset.StandardCharsets.UTF_8))
+                .isEqualTo("eutxo/v1/bridge/params/history/00000000000000000000");
     }
 
     @Test

@@ -203,13 +203,24 @@ final class EutxoCbor {
         array.add(new ByteString(claim.nonce()));
         array.add(uint(claim.settlementSequence()));
         array.add(uint(claim.requestedHeight()));
+        if (claim.abiVersion() >= EutxoWithdrawalClaim.ABI_VERSION_V2) {
+            array.add(uint(claim.bounty()));
+        }
         return encode(array);
     }
 
     static EutxoWithdrawalClaim decodeWithdrawalClaim(byte[] bytes) {
-        List<DataItem> fields = array(item(bytes), 10, "withdrawal claim");
+        // v1 claims are 10 fields (byte-identical to pre-009); v2 appends
+        // the bounty as an 11th. Peek the ABI version before pinning arity.
+        List<DataItem> peek = array(item(bytes), -1, "withdrawal claim");
+        if (peek.isEmpty()) {
+            throw new IllegalArgumentException("withdrawal claim must contain fields");
+        }
+        int abiVersion = integer(peek.get(0), "ABI version");
+        int expected = abiVersion >= EutxoWithdrawalClaim.ABI_VERSION_V2 ? 11 : 10;
+        List<DataItem> fields = array(item(bytes), expected, "withdrawal claim");
         return new EutxoWithdrawalClaim(
-                integer(fields.get(0), "ABI version"),
+                abiVersion,
                 string(fields.get(1), "chain id"),
                 longInteger(fields.get(2), "bridge epoch"),
                 outpoint(fields.get(3), fields.get(4)),
@@ -217,7 +228,10 @@ final class EutxoCbor {
                 bigInteger(fields.get(6), "lovelace"),
                 bytes(fields.get(7), "withdrawal nonce"),
                 longInteger(fields.get(8), "settlement sequence"),
-                longInteger(fields.get(9), "requested height"));
+                longInteger(fields.get(9), "requested height"),
+                expected == 11
+                        ? bigInteger(fields.get(10), "bounty")
+                        : java.math.BigInteger.ZERO);
     }
 
     static byte[] encodeWithdrawalRecord(EutxoWithdrawalRecord record) {
