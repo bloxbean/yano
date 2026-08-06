@@ -153,18 +153,160 @@ useful; A1 and V1 are orthogonal and can land in either order. Vault
 identity changes (V0→V1 script hash/address) are chain-config migrations
 per chain, not key rollovers.
 
-## 6. Open questions (to finalize)
+## 6. Fee model in detail (Q1 resolved direction)
 
-- Fee model end-state: receiver input (A1) vs explicit L2 withdrawal fee
-  field in the claim (works for A2/A3 too) — the fee field also gives the
-  operator/cranker a declared incentive.
-- Reservation owner: operator service vs node build-endpoint, and TTL.
-- Whether A1 lands in the showcase (receiver builds + `co-sign` client
-  command; the deposit assemble machinery is most of the plumbing) or waits
-  for V1.
-- Batch size / min-ADA interactions for A2; nullifier state layout for A3.
+**Charge the fee at CLAIM CREATION on the L2, not at settlement.** The
+claim ABI (v2) carries `{requestedLovelace, withdrawalFee}` and commits a
+payout of `requested - fee`; the fee is credited inside the L2 ledger to an
+operator/cranker fee account (itself withdrawable via a normal claim).
+Because the fee never appears on the L1 side, the settlement invariant
+stays "exact committed amount leaves the vault" — the V1 vault script and
+the confirmation observer are untouched by fee changes, and the vault
+script hash (= vault address = chain identity) never churns over fee
+policy. This also gives A3 crankers a declared incentive for free.
 
-## 7. Decision
+**Genesis vs governance — both, in tiers:**
+- The fee FIELD (ABI) and the fee BOUNDS (min 0, hard max — e.g. a small
+  absolute cap or basis-point ceiling) are consensus-frozen in the
+  immutable profile: governance can never rug withdrawals by fee.
+- The EFFECTIVE fee rate is a governed L2 parameter: genesis sets the
+  initial value; later changes ride a membership-threshold governance
+  message (the same governed-admin machinery membership/threshold changes
+  already use), take effect at a recorded height, and need no restart and
+  no config migration. Static per-node config for a consensus-relevant fee
+  is explicitly rejected — divergent node configs would fork validation.
 
-Deferred — this ADR is the discussion record; finalize option selection and
-milestones after review.
+## 7. A2 and A3 as contract-enforced paths — detailed exploration (Q2)
+
+Direction: **one V1 vault, two authorization paths** on the same script and
+the same nullifier machinery — batched federation settlement (A2) as the
+fast path, permissionless proof exit (A3) as the fallback. This is
+ADR-UTXO-007's architecture made concrete; the paths share everything
+except WHO authorizes the spend.
+
+### 7.1 Shared machinery
+
+- **Accepted-root thread** (`FederatedRootValidator`): one UTxO holding
+  `{height, stateRoot, memberSetHash, membershipEpoch, updatedAtSlot}`.
+  Updates require the L2 membership threshold signature; membership
+  rotation is honored via the governed epoch already tracked on-chain.
+  Exits consume it as a REFERENCE INPUT — reference inputs do not consume
+  UTxOs, so the root is never a contention point.
+- **Nullifier shards** (`NullifierStateValidator`): k thread UTxOs, shard =
+  `claimId mod k`. Datum = `{shardIndex, nullifierRoot}` (an MPF/JMT root
+  over settled claim ids). Spending a shard requires, in the same tx, a
+  paired vault spend plus a NON-membership proof of each settled claimId
+  and the datum's root updated by inserting them. One shard per tx.
+- **Batch settlement marker**: the continuing vault output's datum carries
+  the ORDERED claim-id list; payout output[i] pays claim[i] exactly
+  (positional matching for the confirmation observer, per §3-A2).
+
+### 7.2 A2 — batched settlement, signer path
+
+Redeemer: `Settle { claimIds[], federationSig }` where the threshold
+signature covers `digest(claimIds ‖ vaultInputs ‖ outputs ‖ shardRoot')`.
+Script checks: threshold signature against the CURRENT member set (via the
+root thread reference input's memberSetHash), positional exact payouts,
+continuing output preserves `inputs − Σ amounts`, nullifier shard insert
+for every claim id, batch size ≤ the profile's hard cap.
+
+Pros: O(1) signature verification regardless of batch size → large batches
+(ex-unit budget spent on output/datum checks only); no UTxO contention (the
+federation serializes itself); prompt latency under the N-or-T trigger;
+fee-amortized. Cons: liveness and censorship rest on the federation (why A3
+must exist); federation signing infrastructure (threshold/HSM) is the
+operational cost; batch ABI + observer change required.
+
+### 7.3 A3 — permissionless proof exit, fallback path
+
+Redeemer: `Exit { claimIds[], claimProofs[], nonMembershipProofs[] }`.
+Script checks: root thread referenced and STALE — fallback is armed only
+when `now − updatedAtSlot > fallbackDelay` (the ADR-007 trigger: the
+federation stopped rooting/settling); each claim proven present under the
+accepted `stateRoot` at its claims key; nullifier shard non-membership +
+insert; exact payouts and remainder preservation as in A2. Anyone may
+build and submit ("cranking"); the claim-creation fee (§6) pays the
+cranker, so third parties are incentivized to batch strangers' exits.
+
+Pros: trustless escape hatch — funds recoverable without any operator,
+which is the entire point of the tier; same vault, same invariants, no
+second custody surface. Cons: per-claim proof verification is ex-unit
+expensive → small batches (single-digit claims per tx with MPF proofs);
+UTxO contention is real and must be engineered (below); exits only as
+fresh as the last accepted root (claims made after the federation died
+need the root thread's final update — bounded loss window = rooting
+cadence, a parameter worth governing tightly).
+
+**Contention handling in A3** (the hard part, honestly):
+1. **Reference-input root** removes the biggest global choke point.
+2. **Sharded nullifiers (k threads)** divide nullifier contention by k;
+   k is a genesis-time structural choice (changing it later is a
+   migration), sized generously (e.g. 16) since idle shards cost only
+   min-ADA.
+3. **Vault sharding is natural** — deposits stay as many UTxOs; exit
+   builders select disjoint vault inputs. First-seen wins; losers rebuild.
+4. **Cranker batching absorbs races**: in a fallback scenario the rational
+   pattern is a few crankers each draining a shard queue for fees, not
+   thousands of users racing — economically A3 converges to
+   permissionless A2.
+5. **Accepted residual**: fallback mode is an emergency exit, not a
+   throughput product; occasional rebuild-on-conflict is acceptable there
+   in a way it is not for A1's wallet-signing loop (no human re-signing —
+   crankers rebuild mechanically).
+An intent-queue two-phase design (post exit-intent, complete later) was
+considered and rejected for v1: it adds latency and a second contended
+structure for marginal gain over shards + cranker batching.
+
+### 7.4 Comparison
+
+| | A2 signer path | A3 proof path |
+|---|---|---|
+| Trust for liveness | federation | none (cranker economics) |
+| Trust for safety | V1 script (same) | V1 script (same) |
+| Ex-unit profile | O(1) sig + O(n) outputs → big batches | O(n) proofs → small batches |
+| Contention | none (self-serialized) | shard-managed, cranker-absorbed |
+| Latency | trigger-bounded (seconds–minutes) | fallbackDelay-gated (hours) |
+| Censorship resistance | none alone | full, once armed |
+
+**Recommendation:** build them together on the shared vault — A2 without
+A3 is custodial liveness; A3 without A2 is a poor everyday product.
+
+## 8. Parameter tiers and changeability (Q3 resolved direction)
+
+Three tiers, stated per parameter so "can it change later?" always has one
+answer:
+
+1. **Immutable (profile-frozen at genesis):** claim/settlement ABIs, fee
+   hard bounds, max claims per settlement tx (sized to worst-case
+   ex-units), nullifier shard count k, fallbackDelay bounds. Changing any
+   of these is a new profile digest — a chain migration, deliberately.
+2. **Governed L2 parameters (genesis initial value; changed by
+   membership-threshold governance messages at a recorded height; no
+   restart):** effective withdrawal fee, minimum withdrawal, operational
+   (soft) batch cap ≤ tier-1 hard cap, rooting cadence, fallbackDelay
+   within its bounds.
+3. **Operator policy (freely changeable, zero consensus impact):** batch
+   trigger N and T, reservation TTL (A1), cranker scheduling.
+
+**min-ADA is not ours to set** — it is a Cardano L1 protocol parameter that
+can move under Cardano governance. Every payout output must satisfy it, so
+the tier-2 "minimum withdrawal" is enforced at claim creation as
+`max(governedMinimum, live L1 minUTxO + margin)`, read from the node's
+tracked protocol parameters. A batch is additionally bounded by
+`maxTxSize`/ex-units at build time against LIVE L1 parameters — tier-1
+caps are ceilings, the builder computes the real bound per transaction.
+
+## 9. Open questions (narrowed)
+
+- Governed-parameter transport: reuse the existing governed-admin message
+  path vs a dedicated `bridge.params.v1` topic (leaning: reuse).
+- Shard count k and fallbackDelay defaults; rooting cadence economics.
+- Fee shape: flat vs basis-points vs `max(flat, bps)` (leaning: max(flat,
+  bps) with both bounded in tier 1).
+- Whether A1 (receiver-builds co-sign) is still worth shipping en route,
+  or the effort goes straight to A2+A3 on V1 (leaning: straight to A2+A3;
+  A1's fee motivation is subsumed by the claim-creation fee).
+
+## 10. Decision
+
+Deferred — finalize after review of §6–§8 directions.
