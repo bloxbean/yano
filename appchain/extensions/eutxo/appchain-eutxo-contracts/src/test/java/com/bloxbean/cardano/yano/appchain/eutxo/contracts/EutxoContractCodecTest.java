@@ -127,6 +127,31 @@ class EutxoContractCodecTest {
     }
 
     @Test
+    void batchSettlementMarkerAndBatchPayloadRoundTrip() {
+        java.util.List<String> ids = java.util.List.of(
+                "aa".repeat(32), "bb".repeat(32), "cc".repeat(32));
+        EutxoBatchSettlementMarker marker =
+                new EutxoBatchSettlementMarker(1, ids);
+        EutxoBatchSettlementMarker back =
+                EutxoBatchSettlementMarker.decode(marker.encode());
+        assertThat(back).isEqualTo(marker);
+        assertThat(back.count()).isEqualTo(3);
+        assertThat(back.claimIds()).containsExactlyElementsOf(ids);
+        assertThatThrownBy(() -> new EutxoBatchSettlementMarker(
+                1, java.util.List.of("short")))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        EutxoSettlementBatch batch = new EutxoSettlementBatch(
+                1, "payments", 7, 3, 8, 16);
+        EutxoSettlementBatch decoded =
+                EutxoSettlementBatch.decode(batch.encode());
+        assertThat(decoded).isEqualTo(batch);
+        assertThat(decoded.claimCount()).isEqualTo(8);
+        assertThatThrownBy(() -> new EutxoSettlementBatch(1, "c", 0, 0, 5, 5))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void bridgeParamsAndGovernanceCommandsRoundTripWithinFrozenBounds() {
         EutxoBridgeParams defaults = EutxoBridgeParams.defaults();
         assertThat(EutxoBridgeParams.decode(defaults.encode())).isEqualTo(defaults);
