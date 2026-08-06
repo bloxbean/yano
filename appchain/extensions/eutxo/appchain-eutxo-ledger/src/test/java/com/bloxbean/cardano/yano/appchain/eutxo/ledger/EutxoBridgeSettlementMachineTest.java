@@ -18,6 +18,7 @@ import com.bloxbean.cardano.yano.api.appchain.effects.EffectOutcome;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoSettlementBatch;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoBatchWithdrawalConfirmation;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoBridgeParams;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoBridgeParamsGovernanceV1;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoDepositClaim;
@@ -127,19 +128,20 @@ class EutxoBridgeSettlementMachineTest {
         assertThat(reserved.pendingWithdrawals())
                 .isEqualTo(BigInteger.valueOf(total));
 
-        EutxoWithdrawalConfirmation confirmation = new EutxoWithdrawalConfirmation(
-                1,
-                "eutxo-test",
-                7,
-                claim.claimId(),
-                "77".repeat(32),
-                0,
-                ALICE.address(),
-                BigInteger.valueOf(8_000_000L),
-                new EutxoOutpoint("77".repeat(32), 1),
-                BigInteger.ZERO,
-                200,
-                fill(32, 7));
+        // v3 settles in batches; a size-1 batch confirmation clears the claim.
+        EutxoBatchWithdrawalConfirmation confirmation =
+                new EutxoBatchWithdrawalConfirmation(
+                        1,
+                        "eutxo-test",
+                        7,
+                        "77".repeat(32),
+                        new EutxoOutpoint("77".repeat(32), 1),
+                        BigInteger.valueOf(500_000L),
+                        200,
+                        fill(32, 7),
+                        List.of(new EutxoBatchWithdrawalConfirmation.Entry(
+                                claim.claimId(), 0, ALICE.address(),
+                                BigInteger.valueOf(8_000_000L))));
         L1Observation observation = new L1Observation(
                 "bridge-withdrawals",
                 HexFormat.of().parseHex("77".repeat(32)),
@@ -432,6 +434,62 @@ class EutxoBridgeSettlementMachineTest {
         machine.apply(block(height + 3), state, refired);
         assertThat(refired.batches()).hasSize(1);
         assertThat(refired.batches().getFirst().fromSequence()).isZero();
+    }
+
+    @Test
+    void batchConfirmationClearsEveryClaimAndReconcilesReserve() throws Exception {
+        EutxoStateMachine machine = v3Machine(2);
+        MemoryAppState state = new MemoryAppState();
+        long height = 1;
+        height = createWithdrawal(machine, state, height, 5_000_000L, 0x40);
+        height = createWithdrawal(machine, state, height, 6_000_000L, 0x41);
+        height = createWithdrawal(machine, state, height, 7_000_000L, 0x42);
+
+        List<EutxoWithdrawalRecord> pending = EutxoQueryCodec.decodeWithdrawalRecords(
+                machine.query(EutxoQueryCodec.WITHDRAWALS_PATH,
+                        EutxoQueryCodec.lifecyclePageRequest(0, 10), state));
+        assertThat(pending).hasSize(3);
+        assertThat(pending).allMatch(record ->
+                record.status() == EutxoWithdrawalRecord.Status.PENDING);
+        BigInteger reservedTotal = pending.stream()
+                .map(record -> record.claim().totalLovelace())
+                .reduce(BigInteger.ZERO, BigInteger::add);
+        assertThat(EutxoReserve.decode(state.get(
+                        EutxoStateKeys.reserve(EutxoReserve.LOVELACE)).orElseThrow())
+                .pendingWithdrawals()).isEqualTo(reservedTotal);
+
+        // One batch confirmation carries every settled claim positionally.
+        List<EutxoBatchWithdrawalConfirmation.Entry> entries = new ArrayList<>();
+        for (int index = 0; index < pending.size(); index++) {
+            EutxoWithdrawalClaim c = pending.get(index).claim();
+            entries.add(new EutxoBatchWithdrawalConfirmation.Entry(
+                    c.claimId(), index, c.destinationAddress(), c.lovelace()));
+        }
+        EutxoBatchWithdrawalConfirmation confirmation =
+                new EutxoBatchWithdrawalConfirmation(
+                        1, "eutxo-test", 7, "88".repeat(32),
+                        new EutxoOutpoint("88".repeat(32), entries.size()),
+                        BigInteger.valueOf(1_000_000L), 250, fill(32, 8), entries);
+        L1Observation observation = new L1Observation(
+                "bridge-withdrawals", HexFormat.of().parseHex("88".repeat(32)),
+                250, fill(32, 8), confirmation.encode());
+        machine.apply(block(height, observationMessage(0xB1, observation)),
+                state, new CapturingEmitter(height));
+
+        List<EutxoWithdrawalRecord> after = EutxoQueryCodec.decodeWithdrawalRecords(
+                machine.query(EutxoQueryCodec.WITHDRAWALS_PATH,
+                        EutxoQueryCodec.lifecyclePageRequest(0, 10), state));
+        assertThat(after).hasSize(3);
+        assertThat(after).allMatch(record ->
+                record.status() == EutxoWithdrawalRecord.Status.CONFIRMED);
+        EutxoReserve reconciled = EutxoReserve.decode(state.get(
+                EutxoStateKeys.reserve(EutxoReserve.LOVELACE)).orElseThrow());
+        assertThat(reconciled.pendingWithdrawals()).isZero();
+        assertThat(reconciled.confirmedWithdrawals()).isEqualTo(reservedTotal);
+        assertThat(state.get(EutxoStateKeys.pendingWithdrawalCount()))
+                .hasValueSatisfying(bytes ->
+                        assertThat(new BigInteger(bytes)).isZero());
+        assertThat(state.get(EutxoStateKeys.bridgeHalt())).isEmpty();
     }
 
     private long createWithdrawal(
