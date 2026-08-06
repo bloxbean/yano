@@ -25,4 +25,18 @@ public interface AppEffectExecutorFactory {
      * across chains, calls, or factories.
      */
     List<AppEffectExecutor> create(String chainId, Map<String, String> config);
+
+    /**
+     * Context-aware creation (ADR-UTXO-009 SP-M6): node-coupled executor
+     * stacks (co-sign rounds, L1 views, committed-state queries) override
+     * this overload; the host invokes it when building a chain's executors.
+     * The default delegates to the config-only form, so existing factories
+     * are unaffected. The same contract applies: return an empty list to
+     * decline, and never reuse an executor across chains or calls.
+     */
+    default List<AppEffectExecutor> create(
+            String chainId, Map<String, String> config,
+            AppChainEffectContext context) {
+        return create(chainId, config);
+    }
 }

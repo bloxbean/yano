@@ -138,6 +138,46 @@ public final class SettlementCosignService
         }
     }
 
+    /**
+     * Co-sign a FULL unsigned transaction (script witnesses, redeemers and
+     * datums intact — the Plutus assembly path): the round runs over the
+     * transaction's BODY exactly as {@link #cosign(byte[], List)}, and the
+     * collected member witnesses are assembled INTO the given transaction so
+     * its script witness set (committed by the body's script-data hash)
+     * survives.
+     */
+    public byte[] cosignTransaction(byte[] fullUnsignedTxCbor) throws Exception {
+        if (!leader) {
+            throw new IllegalStateException(
+                    "settlement co-sign rounds start only on the owner node");
+        }
+        Transaction transaction = Transaction.deserialize(fullUnsignedTxCbor);
+        byte[] unsignedBodyCbor = CborSerializationUtil.serialize(
+                transaction.getBody().serialize());
+        byte[] bodyHash = bodyHash(unsignedBodyCbor);
+        String roundKey = HexUtil.encodeHexString(bodyHash);
+        Set<String> members = normalizedMembers();
+        PendingRound round = new PendingRound(bodyHash, members);
+        rounds.put(roundKey, round);
+        try {
+            round.accept(memberSigner.publicKeyHex().toLowerCase(Locale.ROOT),
+                    memberSigner.sign(bodyHash));
+            diffuser.accept(TOPIC_SIGN, encodeSignRequest(unsignedBodyCbor));
+            Map<String, byte[]> gathered;
+            try {
+                gathered = round.future.get(
+                        roundTimeout.toMillis(), TimeUnit.MILLISECONDS);
+            } catch (TimeoutException timeout) {
+                gathered = Map.copyOf(round.signatures);
+            }
+            return SettlementCosigner.assemble(
+                    transaction, bodyHash, gathered, members,
+                    thresholdSupplier.getAsInt(), signingProvider);
+        } finally {
+            rounds.remove(roundKey);
+        }
+    }
+
     // ------------------------------------------------------------------
     // Diffusion receiver: member sign-requests + owner signature replies.
     // ------------------------------------------------------------------

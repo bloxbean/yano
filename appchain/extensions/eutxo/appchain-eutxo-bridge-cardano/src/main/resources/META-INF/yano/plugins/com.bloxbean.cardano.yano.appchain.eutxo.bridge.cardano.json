@@ -25,6 +25,11 @@
       "kind": "l1-observer",
       "name": "eutxo-batch-withdrawal-confirmation-v1",
       "provider": "com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano.CardanoBatchWithdrawalConfirmationObserverProvider"
+    },
+    {
+      "kind": "effect-executor",
+      "name": "eutxo-settlement",
+      "provider": "com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano.EutxoSettlementExecutorFactory"
     }
   ]
 }
