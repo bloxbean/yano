@@ -83,6 +83,14 @@ public record EutxoProfile(
     public static final int V3_NULLIFIER_SHARDS = 16;
     public static final long V3_FALLBACK_DELAY_MIN_SLOTS = 21_600L;
     public static final long V3_FALLBACK_DELAY_MAX_SLOTS = 2_592_000L;
+    /**
+     * Tier-1 max claims per settlement transaction, measured in SP-M2 on the
+     * julc VM: the A2 signer path amortizes an O(1) threshold check so it
+     * batches wide (16 claims well under the 10B cpu / 14M mem tx limits);
+     * the A3 proof path pays ~80M cpu per MPF inclusion so it batches narrow.
+     */
+    public static final int V3_MAX_SETTLE_BATCH = 16;
+    public static final int V3_MAX_EXIT_BATCH = 6;
 
     /**
      * ADR-UTXO-009 bridge-settlement profile: V2's script surface plus the
@@ -150,7 +158,9 @@ public record EutxoProfile(
                     + '\n' + V3_BOUNTY_CAP_BASIS_POINTS
                     + '\n' + V3_NULLIFIER_SHARDS
                     + '\n' + V3_FALLBACK_DELAY_MIN_SLOTS
-                    + '\n' + V3_FALLBACK_DELAY_MAX_SLOTS;
+                    + '\n' + V3_FALLBACK_DELAY_MAX_SLOTS
+                    + '\n' + V3_MAX_SETTLE_BATCH
+                    + '\n' + V3_MAX_EXIT_BATCH;
         }
         try {
             return HexFormat.of().formatHex(

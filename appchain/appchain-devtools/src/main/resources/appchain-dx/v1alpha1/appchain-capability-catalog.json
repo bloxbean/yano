@@ -953,7 +953,7 @@
       "secretReferences": {},
       "properties": {
         "machines.eutxo.profile": "yano-eutxo-v3-bridge-settlement",
-        "machines.eutxo.expected-profile-digest": "da8643dbb998329cd668363822d0d18e77790a4c5d110526f784946b4bc3f3e4"
+        "machines.eutxo.expected-profile-digest": "71d7d7445118ef5c4761c847836075f3e5011a1336c5e8f2bfb3517ad8598f47"
       },
       "documentation": "appchain/extensions/eutxo/README.md",
       "acceptanceScenario": "experimental-eutxo-plutus-v3-profile"
