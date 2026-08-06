@@ -48,6 +48,31 @@ public final class BatchSettlementTransactionBuilder {
             long ttlSlots,
             ExecutionInputs execution
     ) {
+        return build(claims, vaultInventory, vaultAddress, bountyAddress, fee,
+                minimumContinuingLovelace, currentSlot, ttlSlots, execution, null);
+    }
+
+    /**
+     * Full SP-M6 form: additionally emits the CONTINUING nullifier-shard
+     * output the {@code NullifierShardValidator} requires — the thread token
+     * plus the post-insert datum (root advanced by the batch's
+     * {@code planInserts} proof chain). When {@code shardContinuation} is
+     * null the body carries the shard spend only (SP-M3 compatibility for
+     * tests; a real settlement always continues the shard).
+     */
+    public static Plan build(
+            List<EutxoWithdrawalClaim> claims,
+            List<VaultInput> vaultInventory,
+            String vaultAddress,
+            String bountyAddress,
+            BigInteger fee,
+            BigInteger minimumContinuingLovelace,
+            long currentSlot,
+            long ttlSlots,
+            ExecutionInputs execution,
+            com.bloxbean.cardano.yano.appchain.eutxo.contracts
+                    .EutxoShardContinuation shardContinuation
+    ) {
         Objects.requireNonNull(claims, "claims");
         Objects.requireNonNull(vaultInventory, "vaultInventory");
         Objects.requireNonNull(execution, "execution");
@@ -76,6 +101,18 @@ public final class BatchSettlementTransactionBuilder {
             bountyTotal = bountyTotal.add(claim.bounty());
         }
         BigInteger vaultOutflow = payoutTotal.add(bountyTotal);
+        if (shardContinuation != null) {
+            // Every claim in a single-shard batch must belong to the
+            // continued shard (a shard only validates its own nibble).
+            for (EutxoWithdrawalClaim claim : claims) {
+                byte[] id = java.util.HexFormat.of().parseHex(claim.claimId());
+                if ((id[31] & 0x0F) != shardContinuation.shardIndex()) {
+                    throw new IllegalArgumentException(
+                            "claim does not belong to the continued shard "
+                                    + shardContinuation.shardIndex());
+                }
+            }
+        }
 
         // Vault inputs must cover the outflow plus the continuing minimum. Fee
         // and bounty come from the executor's own inputs, so the vault side
@@ -119,6 +156,31 @@ public final class BatchSettlementTransactionBuilder {
                 outputs.add(TransactionOutput.builder()
                         .address(normalizedBounty)
                         .value(Value.fromCoin(bountyTotal))
+                        .build());
+            }
+            if (shardContinuation != null) {
+                outputs.add(TransactionOutput.builder()
+                        .address(shardContinuation.shardAddress())
+                        .value(new Value(
+                                shardContinuation.lovelace(),
+                                List.of(com.bloxbean.cardano.client.transaction
+                                        .spec.MultiAsset.builder()
+                                        .policyId(shardContinuation
+                                                .shardThreadPolicyIdHex())
+                                        .assets(List.of(
+                                                com.bloxbean.cardano.client
+                                                        .transaction.spec.Asset
+                                                        .builder()
+                                                        .name("0x" + java.util
+                                                                .HexFormat.of()
+                                                                .formatHex(
+                                                                shardContinuation
+                                                                .threadTokenName()))
+                                                        .value(BigInteger.ONE)
+                                                        .build()))
+                                        .build())))
+                        .inlineDatum(PlutusData.deserialize(
+                                shardContinuation.datum().encode()))
                         .build());
             }
             List<TransactionInput> inputs = new ArrayList<>();

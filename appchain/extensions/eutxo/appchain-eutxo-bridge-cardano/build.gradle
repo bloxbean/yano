@@ -7,10 +7,13 @@ dependencies {
     implementation(project(':appchain-eutxo-contracts')) {
         transitive = false
     }
+    // SP-M4 nullifier mirror (MPF trie) for the wired settle pipeline.
+    implementation project(':appchain-eutxo-client')
     compileOnly libs.yaci.core
     compileOnly libs.cardano.client.core
     compileOnly libs.cardano.client.address
     compileOnly libs.cardano.client.common
+    compileOnly libs.cardano.client.quicktx
     compileOnly libs.cbor
 
     testImplementation project(':core-api')
@@ -19,6 +22,7 @@ dependencies {
     testImplementation libs.cardano.client.core
     testImplementation libs.cardano.client.address
     testImplementation libs.cardano.client.common
+    testImplementation libs.cardano.client.quicktx
     testImplementation libs.cbor
     testImplementation libs.junit.jupiter.api
     testRuntimeOnly libs.junit.jupiter.engine

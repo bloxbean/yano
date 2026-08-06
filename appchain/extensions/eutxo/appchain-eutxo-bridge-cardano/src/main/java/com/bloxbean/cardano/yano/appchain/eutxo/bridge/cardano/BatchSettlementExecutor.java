@@ -114,8 +114,16 @@ public final class BatchSettlementExecutor implements AppEffectExecutor {
             }
             case PENDING, UNKNOWN -> new EffectExecution.Submitted(
                     submission.transactionId().getBytes(StandardCharsets.UTF_8));
-            case REJECTED -> new EffectExecution.Failed(
-                    "L1 settlement rejected: " + submission.detail(), true);
+            case REJECTED -> {
+                // Mark the attempt FAILED so the next retry REBUILDS with
+                // fresh inputs instead of probing the dead transaction —
+                // rejection (e.g. vault-input contention) is routine.
+                journal.save(new BatchSettlementJournal.Entry(
+                        journalKey, BatchSettlementJournal.Stage.FAILED,
+                        submission.transactionId()));
+                yield new EffectExecution.Failed(
+                        "L1 settlement rejected: " + submission.detail(), true);
+            }
         };
     }
 
@@ -134,8 +142,15 @@ public final class BatchSettlementExecutor implements AppEffectExecutor {
             }
             case PENDING, UNKNOWN -> new EffectExecution.Submitted(
                     transactionId.getBytes(StandardCharsets.UTF_8));
-            case REJECTED -> new EffectExecution.Failed(
-                    "settled transaction was rejected on the L1", true);
+            case REJECTED -> {
+                // The probed transaction is dead: record FAILED so the next
+                // attempt rebuilds rather than re-probing forever.
+                journal.save(new BatchSettlementJournal.Entry(
+                        entry.effectKey(), BatchSettlementJournal.Stage.FAILED,
+                        transactionId));
+                yield new EffectExecution.Failed(
+                        "settled transaction was rejected on the L1", true);
+            }
         };
     }
 

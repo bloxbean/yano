@@ -316,6 +316,13 @@ final class EutxoCbor {
         array.add(text(confirmation.chainId()));
         array.add(uint(confirmation.bridgeEpoch()));
         array.add(text(confirmation.settlementTransactionId()));
+        Array spent = new Array();
+        for (EutxoOutpoint spentOutpoint : confirmation.spentOutpoints()) {
+            Array item = new Array();
+            outpoint(item, spentOutpoint);
+            spent.add(item);
+        }
+        array.add(spent);
         outpoint(array, confirmation.continuingVaultOutpoint());
         array.add(uint(confirmation.continuingVaultLovelace()));
         array.add(uint(confirmation.l1Slot()));
@@ -337,9 +344,14 @@ final class EutxoCbor {
             byte[] bytes
     ) {
         List<DataItem> fields = array(
-                item(bytes), 10, "batch withdrawal confirmation");
+                item(bytes), 11, "batch withdrawal confirmation");
+        List<EutxoOutpoint> spentOutpoints = new ArrayList<>();
+        for (DataItem value : array(fields.get(4), -1, "spent outpoints")) {
+            List<DataItem> spent = array(value, 2, "spent outpoint");
+            spentOutpoints.add(outpoint(spent.get(0), spent.get(1)));
+        }
         List<EutxoBatchWithdrawalConfirmation.Entry> entries = new ArrayList<>();
-        for (DataItem value : array(fields.get(9), -1, "batch confirmation entries")) {
+        for (DataItem value : array(fields.get(10), -1, "batch confirmation entries")) {
             List<DataItem> entry = array(value, 4, "batch confirmation entry");
             entries.add(new EutxoBatchWithdrawalConfirmation.Entry(
                     string(entry.get(0), "claim id"),
@@ -352,10 +364,11 @@ final class EutxoCbor {
                 string(fields.get(1), "chain id"),
                 longInteger(fields.get(2), "bridge epoch"),
                 string(fields.get(3), "settlement transaction id"),
-                outpoint(fields.get(4), fields.get(5)),
-                bigInteger(fields.get(6), "continuing vault lovelace"),
-                longInteger(fields.get(7), "L1 slot"),
-                bytes(fields.get(8), "L1 block hash"),
+                spentOutpoints,
+                outpoint(fields.get(5), fields.get(6)),
+                bigInteger(fields.get(7), "continuing vault lovelace"),
+                longInteger(fields.get(8), "L1 slot"),
+                bytes(fields.get(9), "L1 block hash"),
                 entries);
     }
 

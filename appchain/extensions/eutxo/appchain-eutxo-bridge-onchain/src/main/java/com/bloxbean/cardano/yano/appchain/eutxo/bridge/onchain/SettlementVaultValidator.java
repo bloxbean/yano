@@ -46,8 +46,16 @@ public final class SettlementVaultValidator {
     @Param
     static byte[] rootThreadAssetName;
 
+    /**
+     * The nullifier shards are identified by their one-shot THREAD TOKEN
+     * policy, not by script hash — the vault and shard scripts would
+     * otherwise each need the other's hash at parameterization (circular).
+     * Deploy order: mint policies → vault(shardThreadPolicyId) →
+     * shard(vaultScriptHash). Spending a thread-token input necessarily
+     * invokes the shard validator, which enforces the insert rules.
+     */
     @Param
-    static byte[] shardScriptHash;
+    static byte[] shardThreadPolicyId;
 
     @Param
     static byte[] withdrawalKeyPrefix;
@@ -321,13 +329,8 @@ public final class SettlementVaultValidator {
     private static boolean shardIsSpent(ScriptContext context) {
         boolean found = false;
         for (var input : context.txInfo().inputs()) {
-            PlutusData credential =
-                    input.resolved().address().credential().toPlutusData();
-            if (Builtins.constrTag(credential) == 1
-                    && Builtins.equalsByteString(
-                    Builtins.unBData(Builtins.headList(
-                            Builtins.constrFields(credential))),
-                    shardScriptHash)) {
+            if (ValuesLib.containsPolicy(
+                    input.resolved().value(), shardThreadPolicyId)) {
                 found = true;
                 break;
             }

@@ -157,6 +157,9 @@ class EutxoContractCodecTest {
                 new EutxoBatchWithdrawalConfirmation(
                         1, "payments", 7,
                         "ab".repeat(32),
+                        // Deliberately unsorted: canonical sorting is applied.
+                        List.of(new EutxoOutpoint("99".repeat(32), 0),
+                                new EutxoOutpoint("55".repeat(32), 2)),
                         new EutxoOutpoint("cd".repeat(32), 3),
                         BigInteger.valueOf(18_000_000L),
                         123_456L,
@@ -173,6 +176,10 @@ class EutxoContractCodecTest {
                 EutxoBatchWithdrawalConfirmation.decode(confirmation.encode());
         assertThat(back).isEqualTo(confirmation);
         assertThat(back.count()).isEqualTo(2);
+        // Spent outpoints are canonically sorted regardless of input order.
+        assertThat(back.spentOutpoints()).containsExactly(
+                new EutxoOutpoint("55".repeat(32), 2),
+                new EutxoOutpoint("99".repeat(32), 0));
 
         // Each entry expands into a self-consistent single-claim confirmation
         // sharing the settlement's L1 identity.
@@ -193,12 +200,24 @@ class EutxoContractCodecTest {
         // transaction's dense positional payouts.
         assertThatThrownBy(() -> new EutxoBatchWithdrawalConfirmation(
                 1, "payments", 7, "ab".repeat(32),
+                List.of(new EutxoOutpoint("99".repeat(32), 0)),
                 new EutxoOutpoint("cd".repeat(32), 3),
                 BigInteger.ZERO, 1L, HexFormat.of().parseHex("ef".repeat(32)),
                 List.of(new EutxoBatchWithdrawalConfirmation.Entry(
                         "11".repeat(32), 5, DESTINATION, BigInteger.ONE))))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("positional");
+
+        // No spent inputs = no authenticity anchor: rejected.
+        assertThatThrownBy(() -> new EutxoBatchWithdrawalConfirmation(
+                1, "payments", 7, "ab".repeat(32),
+                List.of(),
+                new EutxoOutpoint("cd".repeat(32), 3),
+                BigInteger.ZERO, 1L, HexFormat.of().parseHex("ef".repeat(32)),
+                List.of(new EutxoBatchWithdrawalConfirmation.Entry(
+                        "11".repeat(32), 0, DESTINATION, BigInteger.ONE))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("spent outpoints");
     }
 
     @Test
@@ -530,5 +549,33 @@ class EutxoContractCodecTest {
         byte[] bytes = new byte[size];
         java.util.Arrays.fill(bytes, (byte) value);
         return bytes;
+    }
+
+    @Test
+    void shardDatumRoundTripsAndMatchesTheOnChainShape() throws Exception {
+        byte[] root = HexFormat.of().parseHex("ab".repeat(32));
+        EutxoShardDatum datum = new EutxoShardDatum(1, "payments", 7, 9, root);
+        assertThat(EutxoShardDatum.decode(datum.encode())).isEqualTo(datum);
+        assertThat(datum.threadTokenName()).containsExactly(0x09);
+        assertThat(datum.withRoot(HexFormat.of().parseHex("cd".repeat(32)))
+                .nullifierRoot()).containsExactly(
+                HexFormat.of().parseHex("cd".repeat(32)));
+
+        // Byte-exact twin of the on-chain conformance fixture:
+        // Constr0[version, chainId, bridgeEpoch, shardIndex, root].
+        com.bloxbean.cardano.client.plutus.spec.ConstrPlutusData expected =
+                com.bloxbean.cardano.client.plutus.spec.ConstrPlutusData.of(0,
+                        com.bloxbean.cardano.client.plutus.spec.BigIntPlutusData.of(1),
+                        com.bloxbean.cardano.client.plutus.spec.BytesPlutusData.of(
+                                "payments".getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                        com.bloxbean.cardano.client.plutus.spec.BigIntPlutusData.of(7),
+                        com.bloxbean.cardano.client.plutus.spec.BigIntPlutusData.of(9),
+                        com.bloxbean.cardano.client.plutus.spec.BytesPlutusData.of(root));
+        assertThat(datum.encode()).isEqualTo(expected.serializeToBytes());
+
+        assertThatThrownBy(() -> new EutxoShardDatum(1, "payments", 7, 16, root))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new EutxoShardDatum(1, "payments", 7, 3, new byte[16]))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 }

@@ -183,6 +183,7 @@ class PluginCatalogPackagingTest {
             assertEquals(expectedSinks, Set.copyOf(
                     environment.providers().names(FinalizedStreamSinkFactory.class)));
             Set<String> expectedExecutors = new java.util.HashSet<>();
+            expectedExecutors.add("eutxo-settlement");
             if (optionalIncluded) {
                 expectedExecutors.addAll(Set.of("cardano", "kafka", "objectstore-s3", "ipfs"));
             }

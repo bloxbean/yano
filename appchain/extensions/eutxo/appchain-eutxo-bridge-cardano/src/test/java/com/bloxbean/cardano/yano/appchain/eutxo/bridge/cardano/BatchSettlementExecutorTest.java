@@ -128,6 +128,32 @@ class BatchSettlementExecutorTest {
     }
 
     @Test
+    void rejectedSubmissionRebuildsOnTheNextAttemptInsteadOfProbing()
+            throws Exception {
+        InMemoryJournal journal = new InMemoryJournal();
+        RecordingBackend backend = new RecordingBackend(
+                CardanoSettlementBackend.Status.REJECTED, "utxo already spent");
+        CountingCosigner cosigner = new CountingCosigner();
+        BatchSettlementExecutor executor = new BatchSettlementExecutor(
+                "eutxo-settlement", fixedResolver(), cosigner, backend, journal);
+
+        // First attempt: rejected — journal must record FAILED, not stay
+        // SUBMITTED (which would trap every retry in probe()).
+        EffectExecution first = executor.execute(context(), effect(0, 3));
+        assertThat(first).isInstanceOf(EffectExecution.Failed.class);
+        assertThat(journal.find(keyOf(effect(0, 3))))
+                .get()
+                .extracting(BatchSettlementJournal.Entry::stage)
+                .isEqualTo(BatchSettlementJournal.Stage.FAILED);
+
+        // Second attempt: rebuilds and resubmits with fresh inputs.
+        executor.execute(context(), effect(0, 3));
+        assertThat(cosigner.calls.get()).isEqualTo(2);
+        assertThat(backend.submitCalls.get()).isEqualTo(2);
+        assertThat(backend.statusCalls.get()).isZero();
+    }
+
+    @Test
     void emptyResolvedRangeShortCircuitsToConfirmed() throws Exception {
         RecordingBackend backend = new RecordingBackend(
                 CardanoSettlementBackend.Status.CONFIRMED, "ok");

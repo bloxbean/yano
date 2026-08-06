@@ -123,6 +123,20 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     /** Script anchors (008.4). Every ledger member gets one (co-sign verifier);
      *  only the anchor.enabled node runs it in leader mode. */
     private volatile ScriptAnchorService scriptAnchorService;
+    /** ADR-UTXO-009: registered ~bridge/* diffusion receiver (settlement co-sign). */
+    private volatile com.bloxbean.cardano.yano.api.appchain.l1view
+            .BridgeDiffusionHandler bridgeDiffusionHandler;
+
+    /**
+     * Register the {@code ~bridge/*} diffusion handler for this chain (one
+     * per chain; last registration wins). Host wiring calls this when the
+     * settlement executor stack is built.
+     */
+    public void registerBridgeDiffusionHandler(
+            com.bloxbean.cardano.yano.api.appchain.l1view
+                    .BridgeDiffusionHandler handler) {
+        this.bridgeDiffusionHandler = handler;
+    }
     /** L1 observations (008.4 I3.2): all members recompute; the scheduled
      *  proposer injects. Null when no observers are configured. */
     private volatile L1ObservationService observationService;
@@ -997,6 +1011,14 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         this.utxoStateSupplier = utxoStateSupplier;
     }
 
+    private volatile com.bloxbean.cardano.yano.api.TxEvaluationGateway txEvaluation;
+
+    /** Wire the node's phase-2 evaluator for script-executor tx assembly. */
+    public void wireTxEvaluation(
+            com.bloxbean.cardano.yano.api.TxEvaluationGateway evaluation) {
+        this.txEvaluation = evaluation;
+    }
+
     /**
      * Server-side agent factory for inbound peer sessions; install into the
      * NodeServer via {@code ServeSubsystem.enableAppLayer(...)}.
@@ -1183,6 +1205,24 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 }
                 continue;
             }
+            // ~bridge/* (ADR-UTXO-009): diffusion-only settlement co-signing
+            // traffic — same contract as ~anchor/*: relayed, never
+            // pooled/sequenced; first-sighting delivery to the registered
+            // extension handler.
+            if (topic.startsWith(AppChainSystemTopics.BRIDGE_DIFFUSION_PREFIX)) {
+                relay(message);
+                var handler = bridgeDiffusionHandler;
+                if (handler != null) {
+                    try {
+                        handler.onBridgeMessage(message);
+                    } catch (Throwable failure) {
+                        LifecycleFailures.rethrowIfProcessFatal(failure);
+                        log.warn("Bridge diffusion handler failed (errorType={})",
+                                failure.getClass().getName());
+                    }
+                }
+                continue;
+            }
             route(message, ReceivedAppMessage.Source.PEER);
             relay(message);
         }
@@ -1314,6 +1354,91 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                         e.getClass().getName());
             }
         }
+    }
+
+    /**
+     * The node-coupled surface for context-aware executor factories
+     * (ADR-UTXO-009 SP-M6) — every capability scoped to THIS chain.
+     * Suppliers re-read live fields so factories built before L1 wiring
+     * still see the eventual tx submitter / UTxO view.
+     */
+    private com.bloxbean.cardano.yano.api.appchain.effects.AppChainEffectContext
+            effectContext() {
+        return new com.bloxbean.cardano.yano.api.appchain.effects
+                .AppChainEffectContext() {
+            @Override
+            public String chainId() {
+                return config.chainId();
+            }
+
+            @Override
+            public void diffuse(String topic, byte[] body) {
+                buildAndDiffuse(topic, body, 120);
+            }
+
+            @Override
+            public com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider
+                    memberSigner() {
+                return signer;
+            }
+
+            @Override
+            public java.util.function.Supplier<Set<String>> members() {
+                return group::members;
+            }
+
+            @Override
+            public java.util.function.IntSupplier threshold() {
+                return group::threshold;
+            }
+
+            @Override
+            public com.bloxbean.cardano.yano.api.appchain.AppQueryResult query(
+                    String path, byte[] request) {
+                return AppChainSubsystem.this.query(path, request);
+            }
+
+            @Override
+            public java.util.function.Supplier<
+                    com.bloxbean.cardano.yano.api.utxo.UtxoState> l1UtxoView() {
+                return () -> {
+                    var supplier = utxoStateSupplier;
+                    return supplier != null ? supplier.get() : null;
+                };
+            }
+
+            @Override
+            public String submitTx(byte[] transactionCbor) {
+                var submitter = txSubmitter;
+                if (submitter == null) {
+                    throw new IllegalStateException(
+                            "L1 transaction submission is not wired yet");
+                }
+                return submitter.apply(transactionCbor);
+            }
+
+            @Override
+            public java.util.function.Supplier<
+                    com.bloxbean.cardano.client.api.model.ProtocolParams>
+                    protocolParams() {
+                return () -> {
+                    var supplier = anchorProtocolParamsSupplier;
+                    return supplier != null ? supplier.get() : null;
+                };
+            }
+
+            @Override
+            public com.bloxbean.cardano.yano.api.TxEvaluationGateway txEvaluation() {
+                return txEvaluation;
+            }
+
+            @Override
+            public void registerBridgeDiffusionHandler(
+                    com.bloxbean.cardano.yano.api.appchain.l1view
+                            .BridgeDiffusionHandler handler) {
+                AppChainSubsystem.this.registerBridgeDiffusionHandler(handler);
+            }
+        };
     }
 
     /** Build and sign an envelope on the given topic — NOT yet diffused. */
@@ -4203,7 +4328,9 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                                         + "' (available: "
                                         + pluginProviders.names(AppEffectExecutorFactory.class) + ")"));
                 List<com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutor> created =
-                        Objects.requireNonNull(factory.create(config.chainId(), executorConfig),
+                        Objects.requireNonNull(
+                                factory.create(config.chainId(), executorConfig,
+                                        effectContext()),
                                 "AppEffectExecutorFactory.create returned null");
                 // Pre-own the complete fresh batch before invoking id() on
                 // any product. This guarantees exact rollback even when a

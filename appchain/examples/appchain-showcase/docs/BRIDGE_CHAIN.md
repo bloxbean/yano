@@ -172,3 +172,52 @@ are for walking the flow with test-ADA amounts you are willing to lose.
 - `docs/EUTXO_PROFILE.md` — the self-managed eutxo profile (ledger, bridge
   with its own devnet, zk ceremony).
 - ADR-UTXO-006 / 007 — hardened custody beyond the single-key demo vault.
+
+## 8. v2: federated batch settlement (ADR-UTXO-009, preview)
+
+The chain above settles each withdrawal with a single operator-key vault
+spend (V0). ADR-UTXO-009 hardens custody with a **script vault** and two
+authorization paths, implemented behind the v3 machine profile
+`yano-eutxo-v3-bridge-settlement` (digest `71d7d744…`):
+
+- **A2 — federated batch settlement.** Withdrawals accumulate; the machine
+  emits an `l1.settlement` effect when a batch cap or a rooting window is
+  reached. The owner node builds ONE L1 transaction paying every claim in the
+  batch positionally, collects the federation threshold's signatures over the
+  body hash, and submits. Claims carry a governed **bounty** on top of the
+  payout (`~governance/eutxo-bridge-params` sets the flat/bps fee schedule);
+  Σbounty pays the executor, and the L1 fee never comes from the vault.
+- **A3 — permissionless exit.** If the federation stops rooting, the
+  accepted-root thread goes stale; past its governed `fallbackDelaySlots`
+  ANYONE can build an exit for provable claims (MPF inclusion in the accepted
+  state root) and earn the committed bounties. No federation signature —
+  arming plus proofs authorize it.
+- **Nullifiers.** 16 shard threads (a claim's shard = its id's last nibble)
+  each hold an MPF root of settled ids; every settlement/exit spends a shard
+  and inserts its claim ids with non-membership proof chains, so a claim can
+  never settle twice. L2 nodes mirror the tries from L1 history; anyone can
+  reconstruct them offline:
+
+  ```bash
+  ./yano.sh appchain eutxo nullifier reconstruct --ids settled-ids.txt \
+      --shard 5 --expected-root <on-chain-root-hex>
+  ./yano.sh appchain eutxo nullifier proof <claim-id-hex> --ids settled-ids.txt
+  ```
+
+- **Confirmation authenticity.** The batch confirmation observer only trusts
+  a settlement that actually SPENT tracked vault custody — a marker output
+  alone (which anyone can pay to the vault address) confirms nothing.
+
+Deploy order is linear (thread-token pairing): mint the root NFT and the 16
+shard tokens from one-shot seed UTxOs → parameterize the vault with the
+SHARD-THREAD-POLICY id → parameterize the shard validator with the VAULT
+hash. `SettlementBootstrapPlan` (appchain-eutxo-demo) resolves the whole
+identity — scripts, addresses, genesis root datum, 16 empty-root shard
+datums — deterministically from the seeds and the checked-in artifact
+templates (`appchain-eutxo-bridge-onchain` `META-INF/plutus/`).
+
+The showcase's v3 settlement chain (deterministic demo federation), its
+console fee/bounty display, and the crank walkthrough land together with the
+devnet end-to-end run; until then this profile is exercised by the julc VM
+conformance suites and the module tests. Design + implementation log:
+`adr/app-layer/utxo/009-claim-settlement-process-and-vault-conditions.md`.

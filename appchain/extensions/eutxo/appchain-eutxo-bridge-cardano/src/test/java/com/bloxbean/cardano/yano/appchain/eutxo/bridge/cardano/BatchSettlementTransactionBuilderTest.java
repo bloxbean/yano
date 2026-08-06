@@ -87,6 +87,90 @@ class BatchSettlementTransactionBuilderTest {
     }
 
     @Test
+    void shardContinuationEmitsTheThreadTokenOutputWithThePostInsertDatum()
+            throws Exception {
+        // Gather claims that share one shard (claim ids are hash-derived).
+        List<EutxoWithdrawalClaim> sameShard = new java.util.ArrayList<>();
+        int shard = -1;
+        for (int seed = 0; seed < 512 && sameShard.size() < 2; seed++) {
+            EutxoWithdrawalClaim candidate = claim(seed % 64,
+                    5_000_000L + seed, 2_000_000L);
+            int nibble = java.util.HexFormat.of()
+                    .parseHex(candidate.claimId())[31] & 0x0F;
+            if (shard < 0) {
+                shard = nibble;
+                sameShard.add(candidate);
+            } else if (nibble == shard) {
+                sameShard.add(candidate);
+            }
+        }
+        assertThat(sameShard).hasSize(2);
+        final int shardIndex = shard;
+
+        byte[] nextRoot = fill(32, 0x5A);
+        com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoShardDatum datum =
+                new com.bloxbean.cardano.yano.appchain.eutxo.contracts
+                        .EutxoShardDatum(1, "payments", 7, shard, nextRoot);
+        com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoShardContinuation
+                continuation = new com.bloxbean.cardano.yano.appchain.eutxo
+                .contracts.EutxoShardContinuation(
+                VAULT /* stand-in shard address */,
+                java.util.HexFormat.of().formatHex(fill(28, 0x71)),
+                BigInteger.valueOf(2_000_000L),
+                datum);
+
+        BatchSettlementTransactionBuilder.Plan plan =
+                BatchSettlementTransactionBuilder.build(
+                        sameShard,
+                        List.of(new BatchSettlementTransactionBuilder.VaultInput(
+                                outpoint(0x11), BigInteger.valueOf(40_000_000L))),
+                        VAULT, BOUNTY, BigInteger.valueOf(300_000L),
+                        BigInteger.valueOf(2_000_000L), 1_000L, 7_200L,
+                        execution(), continuation);
+
+        TransactionBody body = TransactionBody.deserialize(
+                (co.nstant.in.cbor.model.Map) CborSerializationUtil.deserialize(
+                        plan.unsignedBodyCbor()));
+        // 2 payouts + continuing vault + bounty + continuing shard.
+        assertThat(body.getOutputs()).hasSize(5);
+        var shardOut = body.getOutputs().get(4);
+        assertThat(shardOut.getValue().getCoin())
+                .isEqualTo(BigInteger.valueOf(2_000_000L));
+        assertThat(shardOut.getValue().getMultiAssets()).hasSize(1);
+        var multiAsset = shardOut.getValue().getMultiAssets().getFirst();
+        assertThat(multiAsset.getPolicyId())
+                .isEqualTo(java.util.HexFormat.of().formatHex(fill(28, 0x71)));
+        assertThat(multiAsset.getAssets()).singleElement().satisfies(asset -> {
+            assertThat(asset.getNameAsBytes())
+                    .containsExactly((byte) shardIndex);
+            assertThat(asset.getValue()).isEqualTo(BigInteger.ONE);
+        });
+        assertThat(com.bloxbean.cardano.yano.appchain.eutxo.contracts
+                .EutxoShardDatum.decode(
+                        shardOut.getInlineDatum().serializeToBytes()))
+                .isEqualTo(datum);
+
+        // A claim outside the continued shard is refused.
+        com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoShardContinuation
+                wrongShard = new com.bloxbean.cardano.yano.appchain.eutxo
+                .contracts.EutxoShardContinuation(
+                VAULT, java.util.HexFormat.of().formatHex(fill(28, 0x71)),
+                BigInteger.valueOf(2_000_000L),
+                new com.bloxbean.cardano.yano.appchain.eutxo.contracts
+                        .EutxoShardDatum(1, "payments", 7,
+                        (shard + 1) % 16, nextRoot));
+        assertThatThrownBy(() -> BatchSettlementTransactionBuilder.build(
+                sameShard,
+                List.of(new BatchSettlementTransactionBuilder.VaultInput(
+                        outpoint(0x11), BigInteger.valueOf(40_000_000L))),
+                VAULT, BOUNTY, BigInteger.valueOf(300_000L),
+                BigInteger.valueOf(2_000_000L), 1_000L, 7_200L,
+                execution(), wrongShard))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("does not belong to the continued shard");
+    }
+
+    @Test
     void rejectsUnfundedVaultAndMixedEpochs() {
         List<EutxoWithdrawalClaim> claims = List.of(
                 claim(0, 8_000_000L, 2_000_000L));

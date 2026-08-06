@@ -1,6 +1,6 @@
 # ADR-UTXO-009: Claim Settlement Process and Vault Spend Conditions
 
-- Status: Accepted (design) — implementation planned (§11)
+- Status: Implemented (2026-08-07) — all milestones SP-M1..SP-M6 complete; see §12
 - Version: v1
 - Date: 2026-08-05
 - Owners: App-chain / EUTxO / Bridge
@@ -728,3 +728,176 @@ assembly with Exit/InsertBatch redeemers + ex-units, submission), and the E2E:
 stop the federation, advance past fallbackDelay, crank strangers' claims to
 payout — including the no-surviving-L2 variant driven by the SP-M4
 reconstruction CLI alone.
+
+### SP-M6 — hardening + deploy plane (in progress, 2026-08-06, feat/adr009-sp-m6)
+
+**Adversarial-review fixes (0127f6b2).** An independent review of SP-M3/M4
+found the batch confirmation observer trusted output shape alone — anyone
+paying the vault address a well-formed marker datum could (a) DoS the
+observer (a structural throw dropped the whole block's observations) and (b)
+fabricate a confirmation for a real pending claim by paying its public
+destination/amount out of pocket, tricking the ledger into CONFIRMED +
+releasing the reserve while real vault funds sat orphaned. Fix — custody
+binding across all three layers: the confirmation now carries the settlement
+transaction's `spentOutpoints`; the observer fills them from the tx inputs
+and SKIPS structurally invalid marker transactions deterministically; the
+ledger tracks LIVE vault custody (`bridge/vault-utxo/` keys — deposits add
+the accepted outpoint) and accepts a batch confirmation only if it SPENT a
+tracked outpoint (only the on-chain validator authorizes vault spends),
+rotating custody to the continuing outpoint; otherwise
+`WITHDRAWAL_CONFIRMATION_UNPROVEN` halt with the reserve untouched. Also:
+the executor records `FAILED` on a REJECTED submission (submit and probe
+paths) so retries REBUILD with fresh inputs instead of probing a dead txid
+until effect expiry.
+
+**Deploy-ordering fix (e351b740).** The vault took `shardScriptHash` and the
+shard took `vaultScriptHash` — circular: the V1 pair could never actually be
+parameterized. The vault now pairs the shard spend by its THREAD TOKEN
+(`ValuesLib.containsPolicy`; param → `shardThreadPolicyId`); thread tokens
+are one-shot and the shard validator keeps them at the script forever, so a
+token input necessarily invokes the shard validator. Deploy order is linear:
+policies → vault → shard. Budgets unchanged (settle 8 = 493M cpu); new
+adversarial vector: fully-signed settle with a tokenless "shard" input fails.
+
+**ShardThreadPolicy (1d1eb214).** One-shot policy minting exactly the 16
+shard thread tokens {0x00…0x0F} (+1 each) while consuming a seed UTxO; a
+value map cannot duplicate names, so count==16 + single-byte + <16 + amount 1
+IS the exact set. VM-tested (215M cpu mint; six adversarial vectors).
+Distinct from the root policy so root-update spends can't impersonate shards.
+julc pre14 constraints discovered and recorded: `serialiseData` is emitted
+without its required force (unusable), and raw-PlutusData map-cursor
+while/recursion in minting-validator helpers miscompiles — the working shape
+is a typed for-each over `ValuesLib.flattenTyped` with BigInteger/boolean
+accumulators (the AnchorThreadPolicy idiom); `Failure.builtinTrace` in the
+testkit is the debugging tool.
+
+**Deploy artifacts (66a4d169).** Four unparameterized julc templates checked
+into bridge-onchain `META-INF/plutus` with a source-compile drift pin
+(regenerate via `-Dyano.regenerate.plutus=true`); the root thread reuses the
+audited AnchorThreadPolicy artifact.
+
+**Shard continuation in the settle body (8e27e4b9, 35aa2cbb).**
+`EutxoShardDatum` (contracts) is the byte-exact off-chain twin of the shard
+thread datum; `EutxoShardContinuation` packages address + thread-token
+identity + min-ADA + post-insert datum; the batch builder's SP-M6 overload
+appends the continuing shard output (token at +1, inline datum with
+`planInserts`' next root) and refuses claims outside the continued shard —
+single-shard batches; the multi-shard settle (one shard input/output per
+distinct nibble) remains devnet-gated.
+
+**Deploy plane (0f9e9679).** `SettlementScriptArtifacts` (demo module)
+resolves the deploy identity from the checked-in templates via julc param
+application, and `SettlementBootstrapPlan` is the deterministic pure function
+from (two one-shot seeds, bridge config) to every script/hash/address plus
+the genesis root datum and 16 empty-root shard datums — with config
+validation (sorted distinct members, threshold, tier-1 fallback-delay
+bounds). Surfaced fix: `MpfTrie.getRootHash()` reports an empty trie as
+`null` while the on-chain null hash is 32 zero bytes — the mirror now
+normalizes every root read to the on-chain convention.
+`BRIDGE_CHAIN.md` gained the §8 v2-settlement preview section.
+
+**Devnet E2E — bootstrap + live A2 settle PASSING (0bbc78c3, 1e7fd791).**
+`EutxoSettlementBootstrapDevnetE2ETest` (app, `:app:e2eTest`) runs on a
+disposable devnet: (1) both one-shot Plutus mints execute on-chain
+(AnchorThreadPolicy root NFT + ShardThreadPolicy's exact 16 tokens — first
+live execution), the threads land at the resolved addresses with the plan's
+genesis datums byte-for-byte; (2) a REAL A2 batch settle spends the vault +
+shard 0 in one transaction — SettlementVaultValidator phase-2 (positional
+payouts, remainder conservation under the marker, federation threshold via
+required signers against the root-thread reference input, thread-token
+pairing) and NullifierShardValidator phase-2 (chained InsertBatch with the
+SP-M4 mirror's non-membership proofs) — advancing the on-chain shard root
+FROM THE EMPTY ROOT to exactly the mirror's post-insert root. That closes
+the core of the SP-M4 gate (mirror == on-chain after settlement) and proves
+the deploy plane + both validators + marker + empty-root convention live.
+Learned: CCL `PlutusData.deserialize` normalizes MPF wire tags 121/122/123
+to constr 0/1/2 (proof wires are directly redeemer-usable); quicktx
+preserves output declaration order; the bounty floats to change.
+
+**Live A3 permissionless exit PASSING (393b877b).** Devnet gate step 3 — the
+SP-M5 A3 gate live: a second identity bootstrapped with a REAL accepted state
+root (MPF of the claims' v2 commitment digests; `Config.initialStateRoot`),
+then a cranker with NO federation signature exits both claims — arming via
+the validity lower bound (the context maps slots to POSIX time, so a fresh
+devnet arms immediately), per-claim MPF inclusion against the off-chain
+`claimDigestV2` replica, shard InsertBatch nullification, positional payouts,
+Σbounty to the cranker. Pitfall recorded: quicktx skips
+validityStartInterval when validFrom == 0 → lower bound NegInf →
+`finiteLowerBound` = −1 → disarmed at evaluation; floor the slot at 1.
+All three devnet gates green in one ~19s `:app:e2eTest` run.
+
+**Co-sign host wiring (9ac6c63f).** New `~bridge/*` diffusion-only channel
+(core-api `BridgeDiffusionHandler` SPI; the subsystem routes first-sighting
+envelopes to the handler registered per chain — the anchor route pattern,
+extension-registerable). `SettlementCosignService` (bridge-cardano)
+implements the executor's `ThresholdCosigner` over it: the owner broadcasts
+the unsigned body on `~bridge/settlement/sign`, members verify the body
+against their own view (injected custody gate) and reply signatures over the
+canonical body hash on `~bridge/settlement/sig`; forged/non-member replies
+drop; assembly delegates to `SettlementCosigner`'s fail-closed core. Four
+round tests (witnessed assembly, rejecting member fails closed, forged reply
+tolerated, non-leader refuses rounds).
+
+**Construction-site wiring COMPLETE (52e83692).** The settlement stack now
+self-assembles per chain from `effects.executors.eutxo-settlement.*`:
+`AppChainEffectContext` (core-api) exposes the node-coupled surface —
+chain-scoped diffusion, member signer/set/threshold, committed-state
+queries, L1 UTxO view, protocol params, the node's phase-2 evaluator
+(`TxEvaluationGateway`, newly wired RuntimeNode → subsystem), tx submission,
+`~bridge/*` registration — and `AppEffectExecutorFactory` gained a default
+context-aware overload the subsystem invokes for every configured scheme.
+`EutxoSettlementExecutorFactory` (ServiceLoader + manifest): every member
+registers the co-sign service with the committed-state custody gate
+(`verifyProposedBody`: marker claims must be our own PENDING claims with
+exact positional payouts); the `owner=true` node additionally gets the
+executor. `QuickTxSettlePipeline` is the live engine assembling the exact
+devnet-gate transaction shape against the node's own surfaces
+(`CclNodeAdapters`), per shard group with mirror reconstruction verified
+against the on-chain shard datum; multi-shard batches settle as sequential
+transactions in one execution. `PipelinedSettlementExecutor` judges
+completion solely by "no pending claims left in the range" — a confirmed tx
+with a pending remainder records FAILED and the retry settles the rest
+(nullifier prevents double-settlement). Goldens re-pinned; bundle boundary
+checks pass.
+
+**EFFECT-PATH GATE PASSING (70588bbe) — the ADR's closing validation.**
+`EutxoSettlementEffectPathDevnetE2ETest`: a live devnet v3 chain where the
+test only funds, bootstraps, deposits and withdraws — the NODE does the
+rest. Deposit → mirror → L2 withdrawal → claim → the machine's soft cap
+emits `l1.settlement` in the claim's own block → the factory-wired executor
+resolves from committed state, reconstructs the shard mirror (verified
+against the on-chain shard datum), plans the inserts, assembles the Settle
+transaction with QuickTx against the node's own UtxoState/params/phase-2
+evaluator, runs the co-sign round, adds the operator witness, submits → the
+batch confirmation observer sees the vault spend, the custody gate accepts
+(a tracked deposit outpoint was consumed), the ledger confirms the claim.
+Asserted: claim CONFIRMED, positional L1 payout, vault conservation, shard
+root advanced from the empty root. ~20s green; both settlement E2Es (4
+tests) green together. Full determinism with no runtime config handoff:
+genesis UTxOs sit at `blake2b256(addressBytes)#0`, so the profile prebuilds
+the seed transaction offline and every config key — machine, observers,
+executor wiring including the parameterized scripts — is static.
+
+Gate-surfaced fixes: the plugin facade now forwards the context-aware
+factory overload (the 2-arg route silently dropped the context); lifecycle
+paging (50-cap, walk-down, count-driven); 1-based UtxoState pages + a
+reference-script supplier for QuickTx; witness-count fee budgeting; and the
+settle now CONSOLIDATES the whole vault inventory — guaranteeing tracked
+deposit outpoints are spent (the custody gate rejects settles that only
+consume the untracked bootstrap genesis fund) and keeping custody in a
+single continuing UTxO.
+
+DEFERRED beyond this ADR (operational follow-ups, not gate items): the
+showcase catalog entry for a v3 chain (the deploy flow is: run the
+bootstrap, emit the `effects.executors.eutxo-settlement.*` block the
+factory consumes — exercised end to end by the gate profile), console
+fee/bounty display polish (the claim APIs already expose the bounty), and a
+multi-node-process restart drill (single-node restart semantics are covered
+by the executor's journal-as-cache design: completion is judged solely from
+committed state, proven by the confirmed-but-pending-remainder path).
+`AppEffectExecutorFactory` (scheme eutxo-settlement) + host wiring of the
+executor collaborators; `SettlementCosignService` on ~bridge/settlement/sig;
+single-owner pinning; showcase v3 bridge chain + console fee/bounty +
+BRIDGE_CHAIN.md v2; and the devnet E2E gates — ALL PASSING: bootstrap + live A2 settle + live
+A3 exit (`EutxoSettlementBootstrapDevnetE2ETest`) and the full effect path
+(`EutxoSettlementEffectPathDevnetE2ETest`).

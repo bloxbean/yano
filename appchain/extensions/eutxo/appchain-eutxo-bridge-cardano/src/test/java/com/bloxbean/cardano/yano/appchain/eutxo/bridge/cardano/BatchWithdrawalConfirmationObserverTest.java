@@ -92,11 +92,14 @@ class BatchWithdrawalConfirmationObserverTest {
     }
 
     @Test
-    void misplacedContinuingVaultFailsClosed() {
+    void structurallyInvalidMarkerTransactionsAreSkippedNotThrown() {
         EutxoBatchSettlementMarker marker =
                 new EutxoBatchSettlementMarker(1, CLAIM_IDS.subList(0, 2));
         // Marker claims 2 payouts but the continuing vault sits at index 1,
-        // not at the payout boundary (index 2).
+        // not at the payout boundary (index 2). Anyone can craft this by
+        // paying the vault address — it must be SKIPPED (a genuine
+        // settlement is always well-formed), never thrown: a throw would
+        // let one crafted output drop the whole block's observations.
         Block block = block(List.of(
                 output(EutxoTestWallet.fromSeed(fill(32, 0x80)).address(),
                         8_000_000L, null),
@@ -104,9 +107,52 @@ class BatchWithdrawalConfirmationObserverTest {
                 output(EutxoTestWallet.fromSeed(fill(32, 0x81)).address(),
                         5_000_000L, null)));
 
-        assertThatThrownBy(() -> observer().observe(1_000L, fill(32, 9), block))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("payout boundary");
+        assertThat(observer().observe(1_000L, fill(32, 9), block)).isEmpty();
+    }
+
+    @Test
+    void aCraftedMarkerCannotSuppressAGenuineSettlementInTheSameBlock() {
+        // Transaction 1: attacker's garbage marker (lone vault output).
+        EutxoBatchSettlementMarker garbage =
+                new EutxoBatchSettlementMarker(1, List.of("dd".repeat(32)));
+        TransactionBody crafted = TransactionBody.builder()
+                .txHash("22".repeat(32))
+                .inputs(java.util.Set.of(
+                        com.bloxbean.cardano.yaci.core.model.TransactionInput
+                                .builder()
+                                .transactionId("cc".repeat(32)).index(0).build()))
+                .outputs(List.of(output(VAULT, 2_000_000L, garbage.encode())))
+                .build();
+        // Transaction 2: a genuine, well-formed settlement.
+        String destination = EutxoTestWallet.fromSeed(fill(32, 0x80)).address();
+        EutxoBatchSettlementMarker marker =
+                new EutxoBatchSettlementMarker(1, CLAIM_IDS.subList(0, 1));
+        TransactionBody genuine = TransactionBody.builder()
+                .txHash("33".repeat(32))
+                .inputs(java.util.Set.of(
+                        com.bloxbean.cardano.yaci.core.model.TransactionInput
+                                .builder()
+                                .transactionId("aa".repeat(32)).index(1).build()))
+                .outputs(List.of(
+                        output(destination, 8_000_000L, null),
+                        output(VAULT, 18_000_000L, marker.encode()),
+                        output(BOUNTY, 6_000_000L, null)))
+                .build();
+        Block block = Block.builder()
+                .transactionBodies(List.of(crafted, genuine))
+                .build();
+
+        List<L1Observation> observations =
+                observer().observe(1_000L, fill(32, 9), block);
+        assertThat(observations).singleElement().satisfies(observation -> {
+            EutxoBatchWithdrawalConfirmation confirmation =
+                    EutxoBatchWithdrawalConfirmation.decode(observation.claim());
+            assertThat(confirmation.settlementTransactionId())
+                    .isEqualTo("33".repeat(32));
+            assertThat(confirmation.spentOutpoints()).containsExactly(
+                    new com.bloxbean.cardano.yano.appchain.eutxo.contracts
+                            .EutxoOutpoint("aa".repeat(32), 1));
+        });
     }
 
     @Test
@@ -142,6 +188,17 @@ class BatchWithdrawalConfirmationObserverTest {
         return Block.builder()
                 .transactionBodies(List.of(TransactionBody.builder()
                         .txHash("11".repeat(32))
+                        .inputs(java.util.Set.of(
+                                com.bloxbean.cardano.yaci.core.model.TransactionInput
+                                        .builder()
+                                        .transactionId("aa".repeat(32))
+                                        .index(1)
+                                        .build(),
+                                com.bloxbean.cardano.yaci.core.model.TransactionInput
+                                        .builder()
+                                        .transactionId("bb".repeat(32))
+                                        .index(0)
+                                        .build()))
                         .outputs(new ArrayList<>(outputs))
                         .build()))
                 .build();

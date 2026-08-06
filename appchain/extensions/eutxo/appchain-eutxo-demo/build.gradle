@@ -7,6 +7,11 @@ dependencies {
     api project(':appchain-eutxo-contracts')
     implementation project(':appchain-eutxo-client')
     implementation project(':appchain-eutxo-bridge-cardano')
+    // Deploy tooling: bundled unparameterized validator artifacts (resources
+    // only — validator classes are never loaded) + julc param application.
+    implementation project(':appchain-eutxo-bridge-onchain')
+    implementation project(':appchain-anchor-onchain')
+    implementation "com.bloxbean.cardano:julc-cardano-client-lib:${libs.versions.julc.get()}"
     implementation libs.cardano.client.backend.blockfrost
     implementation libs.cardano.client.quicktx
     implementation libs.cardano.client.core

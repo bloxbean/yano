@@ -217,9 +217,13 @@ public final class EutxoStateMachine implements AppStateMachine {
                 if (settlementProfile()) {
                     // v3 (A2 batch) settlement: one observation confirms the
                     // whole batch; clear each positional claim in order.
-                    for (EutxoWithdrawalConfirmation confirmation :
-                            batchWithdrawalConfirmation(message).confirmations()) {
-                        confirmWithdrawal(confirmation, block.height(), writer);
+                    EutxoBatchWithdrawalConfirmation batch =
+                            batchWithdrawalConfirmation(message);
+                    if (applyVaultCustody(batch, writer)) {
+                        for (EutxoWithdrawalConfirmation confirmation :
+                                batch.confirmations()) {
+                            confirmWithdrawal(confirmation, block.height(), writer);
+                        }
                     }
                 } else {
                     confirmWithdrawal(
@@ -995,6 +999,12 @@ public final class EutxoStateMachine implements AppStateMachine {
         writer.put(EutxoStateKeys.depositIndex(depositSequence), expected.encode());
         writer.put(EutxoStateKeys.depositCount(), longBytes(depositSequence));
         writer.put(reserveKey, reserve.encode());
+        if (settlementProfile()) {
+            // Track the accepted L1 outpoint as LIVE vault custody: batch
+            // settlement confirmations must consume a tracked outpoint.
+            writer.put(EutxoStateKeys.bridgeVaultOutpoint(
+                    claim.acceptedOutpoint()), new byte[] {1});
+        }
     }
 
     private void importL2KeyBinding(
@@ -1097,6 +1107,40 @@ public final class EutxoStateMachine implements AppStateMachine {
                     "withdrawal confirmation does not match its configured identity");
         }
         return confirmation;
+    }
+
+    /**
+     * Authenticity gate for a batch settlement (ADR-UTXO-009 review fix):
+     * the confirmed transaction must have SPENT a tracked live vault
+     * outpoint. Anyone can pay the vault address with a fabricated marker
+     * output, but only a genuine Settle/Exit spend consumes vault custody —
+     * which only the on-chain validator authorizes. On success the custody
+     * set rotates: matched outpoints leave, the continuing output enters.
+     * Returns false (and halts the bridge) when no tracked outpoint was
+     * spent.
+     */
+    private boolean applyVaultCustody(
+            EutxoBatchWithdrawalConfirmation confirmation,
+            AppStateWriter writer
+    ) {
+        if (writer.get(EutxoStateKeys.bridgeHalt()).isPresent()) {
+            return false;
+        }
+        boolean spendsVault = false;
+        for (var spent : confirmation.spentOutpoints()) {
+            byte[] key = EutxoStateKeys.bridgeVaultOutpoint(spent);
+            if (writer.get(key).isPresent()) {
+                spendsVault = true;
+                writer.delete(key);
+            }
+        }
+        if (!spendsVault) {
+            haltBridge(writer, "WITHDRAWAL_CONFIRMATION_UNPROVEN");
+            return false;
+        }
+        writer.put(EutxoStateKeys.bridgeVaultOutpoint(
+                confirmation.continuingVaultOutpoint()), new byte[] {1});
+        return true;
     }
 
     private EutxoBatchWithdrawalConfirmation batchWithdrawalConfirmation(
