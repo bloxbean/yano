@@ -11,6 +11,12 @@ import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipEpoch;
 import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipView;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectId;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectIntent;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectOutcome;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoSettlementBatch;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoBridgeParams;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoBridgeParamsGovernanceV1;
@@ -33,6 +39,7 @@ import org.junit.jupiter.api.Test;
 import java.math.BigInteger;
 import java.util.Arrays;
 import java.util.HexFormat;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -360,6 +367,155 @@ class EutxoBridgeSettlementMachineTest {
                 .run();
         assertThat(result.deterministic())
                 .as(result.describeDivergence()).isTrue();
+    }
+
+    @Test
+    void settlementFiresOnCapAndAdvancesTheCursorExactlyOnce() throws Exception {
+        // softBatchCap defaults to 8; create 8 pending claims by depositing +
+        // withdrawing, then the trigger emits one batch [0,8).
+        EutxoStateMachine machine = v3Machine(2);
+        MemoryAppState state = new MemoryAppState();
+        long height = 1;
+        for (int i = 0; i < 7; i++) {
+            height = createWithdrawal(machine, state, height, 5_000_000L, 0x50 + i);
+        }
+        // The 8th claim reaches softBatchCap and fires the batch in-block.
+        CapturingEmitter emitter = new CapturingEmitter(height + 1);
+        height = createWithdrawal(machine, state, height, 5_000_000L, 0x57, emitter);
+        assertThat(emitter.batches()).hasSize(1);
+        EutxoSettlementBatch batch = emitter.batches().getFirst();
+        assertThat(batch.fromSequence()).isZero();
+        assertThat(batch.toSequence()).isEqualTo(8);
+        assertThat(batch.batchSeq()).isZero();
+        // Cursor advanced; a follow-up block does NOT re-emit the same range.
+        CapturingEmitter again = new CapturingEmitter(height + 1);
+        machine.apply(block(height + 1), state, again);
+        assertThat(again.batches()).isEmpty();
+    }
+
+    @Test
+    void settlementFiresOnElapsedRootingBlocksBelowCap() throws Exception {
+        EutxoStateMachine machine = v3Machine(2);
+        MemoryAppState state = new MemoryAppState();
+        // 2 pending claims (< cap 8); the window must fire after rootingBlocks
+        // (default 100) elapse.
+        long height = createWithdrawal(machine, state, 1, 5_000_000L, 0x60);
+        height = createWithdrawal(machine, state, height, 5_000_000L, 0x61);
+        CapturingEmitter early = new CapturingEmitter(height + 1);
+        machine.apply(block(height + 1), state, early);
+        assertThat(early.batches()).isEmpty();
+        CapturingEmitter fired = new CapturingEmitter(height + 200);
+        machine.apply(block(height + 200), state, fired);
+        assertThat(fired.batches()).hasSize(1);
+        assertThat(fired.batches().getFirst().toSequence()).isEqualTo(2);
+    }
+
+    @Test
+    void terminalFailureRewindsTheCursorForRebatching() throws Exception {
+        EutxoStateMachine machine = v3Machine(2);
+        MemoryAppState state = new MemoryAppState();
+        long height = 1;
+        for (int i = 0; i < 7; i++) {
+            height = createWithdrawal(machine, state, height, 5_000_000L, 0x70 + i);
+        }
+        CapturingEmitter emitter = new CapturingEmitter(height + 1);
+        height = createWithdrawal(machine, state, height, 5_000_000L, 0x77, emitter);
+        assertThat(emitter.batches()).hasSize(1);
+        // A FAILED result rewinds the cursor; the window reopens and re-fires.
+        EffectResult failed = new EffectResult(
+                new EffectId("eutxo-test", height + 1, 0),
+                EutxoStateMachine.SETTLEMENT_EFFECT_TYPE,
+                "bridge/settlement/7/0",
+                EffectOutcome.FAILED, new byte[0], null, height + 2);
+        machine.onEffectResult(block(height + 2), failed, state);
+        CapturingEmitter refired = new CapturingEmitter(height + 3);
+        machine.apply(block(height + 3), state, refired);
+        assertThat(refired.batches()).hasSize(1);
+        assertThat(refired.batches().getFirst().fromSequence()).isZero();
+    }
+
+    private long createWithdrawal(
+            EutxoStateMachine machine, MemoryAppState state, long height,
+            long total, int nonceByte) throws Exception {
+        return createWithdrawal(machine, state, height, total, nonceByte,
+                new CapturingEmitter(height + 1));
+    }
+
+    private long createWithdrawal(
+            EutxoStateMachine machine, MemoryAppState state, long height,
+            long total, int nonceByte, CapturingEmitter withdrawalEmitter)
+            throws Exception {
+        applyDepositAt(machine, state, total, height, nonceByte);
+        EutxoWithdrawalDatum datum = new EutxoWithdrawalDatum(
+                1, "eutxo-test", 7, ALICE.address(), fill(32, nonceByte));
+        Transaction withdrawal = EutxoTransactionFixtures.signedOutputs(
+                mirroredOutpoint(machine, state),
+                ALICE,
+                List.of(TransactionOutput.builder()
+                        .address(withdrawalAddress())
+                        .value(Value.fromCoin(BigInteger.valueOf(total)))
+                        .inlineDatum(PlutusData.deserialize(datum.encode()))
+                        .build()),
+                0, 0);
+        machine.apply(block(height + 1, message(0x90 + nonceByte, withdrawal)),
+                state, withdrawalEmitter);
+        return height + 2;
+    }
+
+    private static void applyDepositAt(
+            EutxoStateMachine machine, MemoryAppState state, long lovelace,
+            long height, int nonceByte) throws Exception {
+        EutxoDepositClaim claim = depositClaimNonce(BigInteger.valueOf(lovelace), nonceByte);
+        L1Observation observation = new L1Observation(
+                "bridge-deposits",
+                HexFormat.of().parseHex(claim.acceptedOutpoint().transactionId()),
+                claim.l1Slot(), claim.l1BlockHash(), claim.encode());
+        machine.apply(block(height, observationMessage(0xA0 + nonceByte, observation)),
+                state, new CapturingEmitter(height));
+    }
+
+    private static EutxoDepositClaim depositClaimNonce(BigInteger lovelace, int nonceByte)
+            throws Exception {
+        TransactionOutput mirroredOutput = TransactionOutput.builder()
+                .address(ALICE.address())
+                .value(Value.fromCoin(lovelace))
+                .build();
+        byte[] outputCbor = com.bloxbean.cardano.client.common.cbor
+                .CborSerializationUtil.serialize(mirroredOutput.serialize());
+        String hex = String.format("%02x", nonceByte & 0xFF);
+        return new EutxoDepositClaim(
+                EutxoDepositClaim.ABI_VERSION, "eutxo-test",
+                new EutxoOutpoint(hex + "22".repeat(31), 1),
+                100, fill(32, nonceByte), VAULT, VAULT_HASH, outputCbor,
+                ALICE.address(), outputCbor, fill(32, nonceByte),
+                new EutxoOutpoint(hex + "33".repeat(31), 0), 1_000);
+    }
+
+    private static final class CapturingEmitter implements AppEffectEmitter {
+        private final long height;
+        private final List<EutxoSettlementBatch> batches = new ArrayList<>();
+        private int ordinal;
+
+        private CapturingEmitter(long height) {
+            this.height = height;
+        }
+
+        @Override
+        public EffectId emit(EffectIntent intent) {
+            if (EutxoStateMachine.SETTLEMENT_EFFECT_TYPE.equals(intent.type())) {
+                batches.add(EutxoSettlementBatch.decode(intent.payload()));
+            }
+            return new EffectId("eutxo-test", height, ordinal++);
+        }
+
+        @Override
+        public long pendingCount() {
+            return 0;
+        }
+
+        List<EutxoSettlementBatch> batches() {
+            return batches;
+        }
     }
 
     private List<AppBlock> settlementCorpus() throws Exception {

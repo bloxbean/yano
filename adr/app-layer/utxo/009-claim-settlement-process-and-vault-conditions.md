@@ -546,3 +546,41 @@ Deferred into SP-M3 (where they are first exercised end to end on a devnet):
 checked-in `META-INF/plutus/*.plutus.json` artifacts + address resolver and
 the 16-shard/root/vault bootstrap transaction builder. The validators,
 their budgets, and the frozen caps are complete and tested here.
+
+### SP-M3 — effect emission (consensus core) (2026-08-06, feat/adr009-sp-m3)
+
+Consensus half delivered and tested: `EutxoStateMachine` now overrides the
+3-arg `apply(block, writer, effects)` (2-arg delegates to a rejecting
+emitter) and emits one `l1.settlement` CHAIN effect per batch when
+`softBatchCap` claims are unsettled OR `rootingBlocks` have elapsed since
+the window opened. A monotone per-epoch settlement cursor
+(`bridge/{epoch}/settlement/cursor`) batches each claim exactly once; the
+payload is an `EutxoSettlementBatch` range `[from,to)` (O(1), executor
+resolves claims via the query API). `onEffectResult` rewinds the cursor to
+the persisted batch start on terminal FAILED/EXPIRED (re-batch) and is a
+no-op on CONFIRMED (the confirmation observer closes each claim). Emission
+is a pure function of committed state; tests cover cap-trigger + exactly-once
+advance, elapsed-rooting-blocks trigger, and terminal-failure rewind.
+
+Safe to merge inert: only `settlementProfile()` (v3) chains emit, and none
+exist in any deployment until the SP-M6 showcase v3 chain — so no running
+chain sees an unresolved effect.
+
+REMAINING in SP-M3 (execution plane, next session): `BatchSettlementTransactionBuilder`
+matching the SP-M2 vault Settle ABI (positional payouts + bounty + batch
+marker + paired shard spend + root reference input + threshold witness);
+`BatchSettlementExecutor` + `AppEffectExecutorFactory` (scheme
+`eutxo-settlement`) reusing `SettlementJournal`/`CardanoSettlementBackend`,
+keyed on `effect.idHash()`; `SettlementCosignService` cloning
+`ScriptAnchorService`'s `~anchor/sign`/`~anchor/sig` round on a new
+`~bridge/settlement/sig` diffusion prefix for partial threshold signatures;
+batch-aware `WithdrawalConfirmationObserver` + `EutxoWithdrawalConfirmation`
+ABI v2 (positional claim[i]->output[i], batch handle); the deferred SP-M2
+deploy artifacts (checked-in `META-INF/plutus`, address resolver, 16-shard
+bootstrap builder); and the devnet E2E gate (multi-claim batch incl.
+duplicate address+amount + mid-flight restart proving single-owner +
+idHash idempotency + first-`~fx/result`-wins). The one genuine design point
+to resolve there: the framework has NO deterministic per-effect owner
+election — the settlement executor + cosign leader must be pinned to a
+single owner node (config-designated like `anchor.enabled`), which the
+exactly-once E2E gate exists to prove.

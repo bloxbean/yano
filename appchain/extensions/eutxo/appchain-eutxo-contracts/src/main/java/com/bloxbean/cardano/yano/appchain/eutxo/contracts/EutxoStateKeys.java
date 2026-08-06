@@ -125,6 +125,39 @@ public final class EutxoStateKeys {
         return bytes(PREFIX + "bridge/deposit/count");
     }
 
+    /** Next unsettled withdrawal sequence in an epoch (A2 batch cursor). */
+    public static byte[] settlementCursor(long bridgeEpoch) {
+        if (bridgeEpoch < 0) {
+            throw new IllegalArgumentException("bridge epoch cannot be negative");
+        }
+        return bytes(PREFIX + "bridge/" + bridgeEpoch + "/settlement/cursor");
+    }
+
+    /** Height at which the current settlement window opened (0 = closed). */
+    public static byte[] settlementWindowOpen(long bridgeEpoch) {
+        if (bridgeEpoch < 0) {
+            throw new IllegalArgumentException("bridge epoch cannot be negative");
+        }
+        return bytes(PREFIX + "bridge/" + bridgeEpoch + "/settlement/window");
+    }
+
+    /** Monotonic settlement batch sequence within an epoch. */
+    public static byte[] settlementBatchSeq(long bridgeEpoch) {
+        if (bridgeEpoch < 0) {
+            throw new IllegalArgumentException("bridge epoch cannot be negative");
+        }
+        return bytes(PREFIX + "bridge/" + bridgeEpoch + "/settlement/batch-seq");
+    }
+
+    /** Start sequence of a dispatched batch (for terminal-failure rewind). */
+    public static byte[] settlementBatchStart(long bridgeEpoch, long batchSeq) {
+        if (bridgeEpoch < 0 || batchSeq < 0) {
+            throw new IllegalArgumentException("epoch and batch seq must be >= 0");
+        }
+        return bytes(PREFIX + "bridge/" + bridgeEpoch
+                + "/settlement/start/" + batchSeq);
+    }
+
     public static byte[] reserve(String assetId) {
         Objects.requireNonNull(assetId, "assetId");
         if (assetId.isBlank() || assetId.length() > 120) {

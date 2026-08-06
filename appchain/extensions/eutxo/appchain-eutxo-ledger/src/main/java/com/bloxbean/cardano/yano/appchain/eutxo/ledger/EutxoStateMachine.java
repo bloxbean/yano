@@ -26,7 +26,13 @@ import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoContract;
 import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipEpoch;
 import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipView;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoBridgeParams;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectIntent;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
+import com.bloxbean.cardano.yano.api.appchain.effects.FinalityGate;
+import com.bloxbean.cardano.yano.api.appchain.effects.ResultPolicy;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoBridgeParamsGovernanceV1;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoSettlementBatch;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalClaim;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalCommitment;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalConfirmation;
@@ -178,6 +184,13 @@ public final class EutxoStateMachine implements AppStateMachine {
 
     @Override
     public void apply(AppBlock block, AppStateWriter writer) {
+        apply(block, writer, AppEffectEmitter.rejecting(
+                "EUTxO settlement effects require the 3-arg apply"));
+    }
+
+    @Override
+    public void apply(AppBlock block, AppStateWriter writer,
+                      AppEffectEmitter effects) {
         ensureGenesis(writer);
         if (settlementProfile()) {
             activateScheduledParams(block.height(), writer);
@@ -255,6 +268,99 @@ public final class EutxoStateMachine implements AppStateMachine {
             ordinal++;
         }
         writer.put(EutxoStateKeys.summaryCount(), longBytes(summarySequence));
+        if (settlementProfile() && bridge.withdrawalsEnabled()) {
+            maybeEmitSettlement(block, writer, effects);
+        }
+    }
+
+    /**
+     * A2 N-or-T trigger (ADR-UTXO-009 §7.2): a settlement window opens at the
+     * first unsettled claim and fires an {@code l1.settlement} effect once
+     * {@code softBatchCap} claims are pending OR {@code rootingBlocks} have
+     * elapsed. The cursor advances by the batched range, so each claim is
+     * batched exactly once; deterministic and a pure function of committed
+     * state.
+     */
+    private void maybeEmitSettlement(
+            AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
+        long epoch = bridge.bridgeEpoch();
+        long created = writer.get(EutxoStateKeys.totalWithdrawalCount(epoch))
+                .map(EutxoStateMachine::longValue).orElse(0L);
+        long cursor = writer.get(EutxoStateKeys.settlementCursor(epoch))
+                .map(EutxoStateMachine::longValue).orElse(0L);
+        long unsettled = created - cursor;
+        if (unsettled <= 0) {
+            writer.delete(EutxoStateKeys.settlementWindowOpen(epoch));
+            return;
+        }
+        long windowOpen = writer.get(EutxoStateKeys.settlementWindowOpen(epoch))
+                .map(EutxoStateMachine::longValue).orElse(0L);
+        if (windowOpen == 0) {
+            windowOpen = block.height();
+            writer.put(EutxoStateKeys.settlementWindowOpen(epoch),
+                    longBytes(windowOpen));
+        }
+        EutxoBridgeParams params = currentParams(writer);
+        boolean capReached = unsettled >= params.softBatchCap();
+        boolean elapsed = block.height() - windowOpen >= params.rootingBlocks();
+        if (!capReached && !elapsed) {
+            return;
+        }
+        long batchSize = Math.min(unsettled, params.softBatchCap());
+        long batchSeq = writer.get(EutxoStateKeys.settlementBatchSeq(epoch))
+                .map(EutxoStateMachine::longValue).orElse(0L);
+        EutxoSettlementBatch batchPayload = new EutxoSettlementBatch(
+                EutxoSettlementBatch.VERSION, bridge.chainId(), epoch,
+                batchSeq, cursor, cursor + batchSize);
+        effects.emit(EffectIntent.of(SETTLEMENT_EFFECT_TYPE, batchPayload.encode())
+                .scope(settlementScope(epoch, batchSeq))
+                .gate(FinalityGate.APP_FINAL)
+                .result(ResultPolicy.CHAIN)
+                .expiryBlocks(settlementExpiryBlocks(params))
+                .build());
+        writer.put(EutxoStateKeys.settlementBatchStart(epoch, batchSeq),
+                longBytes(cursor));
+        writer.put(EutxoStateKeys.settlementCursor(epoch),
+                longBytes(cursor + batchSize));
+        writer.put(EutxoStateKeys.settlementBatchSeq(epoch),
+                longBytes(batchSeq + 1));
+        writer.delete(EutxoStateKeys.settlementWindowOpen(epoch));
+    }
+
+    @Override
+    public void onEffectResult(AppBlock block, EffectResult result,
+                               AppStateWriter writer) {
+        if (!settlementProfile()
+                || !SETTLEMENT_EFFECT_TYPE.equals(result.type())
+                || !result.scope().startsWith(SETTLEMENT_SCOPE_PREFIX)) {
+            return;
+        }
+        // A terminal non-success (FAILED/EXPIRED) rolls the cursor back to the
+        // batch start so the claims re-batch on a later window; CONFIRMED needs
+        // no state change here (the confirmation observer closes each claim).
+        if (result.confirmed()) {
+            return;
+        }
+        long epoch = bridge.bridgeEpoch();
+        long batchSeq = settlementScopeBatch(result.scope());
+        byte[] cursorKey = EutxoStateKeys.settlementCursor(epoch);
+        long cursor = writer.get(cursorKey)
+                .map(EutxoStateMachine::longValue).orElse(0L);
+        long currentBatchSeq = writer.get(EutxoStateKeys.settlementBatchSeq(epoch))
+                .map(EutxoStateMachine::longValue).orElse(0L);
+        // Only roll back if this was the most recent batch and nothing newer
+        // has advanced past it (keeps the cursor monotone across interleavings).
+        if (batchSeq == currentBatchSeq - 1) {
+            long start = writer.get(
+                    EutxoStateKeys.settlementBatchStart(epoch, batchSeq))
+                    .map(EutxoStateMachine::longValue).orElse(cursor);
+            // Rewind the cursor to the batch start so its claims re-batch, and
+            // reopen the window so a later block re-triggers.
+            writer.put(cursorKey, longBytes(Math.min(cursor, start)));
+            writer.delete(EutxoStateKeys.settlementBatchStart(epoch, batchSeq));
+            writer.put(EutxoStateKeys.settlementWindowOpen(epoch),
+                    longBytes(block.height()));
+        }
     }
 
     @Override
@@ -1237,6 +1343,28 @@ public final class EutxoStateMachine implements AppStateMachine {
         } catch (Exception failure) {
             throw new IllegalStateException("cannot encode params proposals", failure);
         }
+    }
+
+    static final String SETTLEMENT_EFFECT_TYPE = "l1.settlement";
+    private static final String SETTLEMENT_SCOPE_PREFIX = "bridge/settlement/";
+
+    private static String settlementScope(long epoch, long batchSeq) {
+        return SETTLEMENT_SCOPE_PREFIX + epoch + "/" + batchSeq;
+    }
+
+    private static long settlementScopeBatch(String scope) {
+        int slash = scope.lastIndexOf('/');
+        try {
+            return Long.parseLong(scope.substring(slash + 1));
+        } catch (RuntimeException invalid) {
+            return -1;
+        }
+    }
+
+    /** Bound the CHAIN result window to the rooting cadence, min 8 blocks. */
+    private static int settlementExpiryBlocks(EutxoBridgeParams params) {
+        long blocks = Math.max(8, params.rootingBlocks() * 4);
+        return (int) Math.min(blocks, 512);
     }
 
     private static void haltBridge(AppStateWriter writer, String reason) {
