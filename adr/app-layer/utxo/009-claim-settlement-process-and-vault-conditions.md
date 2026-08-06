@@ -776,10 +776,19 @@ into bridge-onchain `META-INF/plutus` with a source-compile drift pin
 (regenerate via `-Dyano.regenerate.plutus=true`); the root thread reuses the
 audited AnchorThreadPolicy artifact.
 
+**Shard continuation in the settle body (8e27e4b9, 35aa2cbb).**
+`EutxoShardDatum` (contracts) is the byte-exact off-chain twin of the shard
+thread datum; `EutxoShardContinuation` packages address + thread-token
+identity + min-ADA + post-insert datum; the batch builder's SP-M6 overload
+appends the continuing shard output (token at +1, inline datum with
+`planInserts`' next root) and refuses claims outside the continued shard —
+single-shard batches; the multi-shard settle (one shard input/output per
+distinct nibble) remains devnet-gated.
+
 REMAINING for SP-M6: bootstrap transaction builder (seed → policies → root
-thread + 16 shard threads + vault genesis); batch-builder shard-insert
-integration (`NullifierShardMirror.planInserts` → `InsertBatch` redeemer +
-continuing shard output, one shard per distinct nibble in a batch);
+thread + 16 shard threads + vault genesis); the `InsertBatch` redeemer at
+witness assembly (full Plutus tx assembly, devnet-gated) and multi-shard
+batches;
 `AppEffectExecutorFactory` (scheme eutxo-settlement) + host wiring of the
 executor collaborators; `SettlementCosignService` on ~bridge/settlement/sig;
 single-owner pinning; showcase v3 bridge chain + console fee/bounty +
