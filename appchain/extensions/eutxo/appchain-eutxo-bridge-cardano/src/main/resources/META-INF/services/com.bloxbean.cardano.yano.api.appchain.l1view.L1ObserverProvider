@@ -1,2 +1,3 @@
 com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano.CardanoBridgeObserverProvider
 com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano.CardanoWithdrawalConfirmationObserverProvider
+com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano.CardanoBatchWithdrawalConfirmationObserverProvider

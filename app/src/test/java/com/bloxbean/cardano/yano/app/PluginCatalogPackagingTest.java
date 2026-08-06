@@ -198,7 +198,8 @@ class PluginCatalogPackagingTest {
                     environment.providers().names(SequencerModeProvider.class)));
             Set<String> expectedObservers = new java.util.HashSet<>(Set.of(
                     "eutxo-vault-deposit-v1",
-                    "eutxo-withdrawal-confirmation-v1"));
+                    "eutxo-withdrawal-confirmation-v1",
+                    "eutxo-batch-withdrawal-confirmation-v1"));
             if (conformanceIncluded) {
                 expectedObservers.add("conformance-observer");
             }

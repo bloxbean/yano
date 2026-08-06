@@ -596,15 +596,47 @@ Two foundational libraries built and unit-tested:
   threshold-witness slot). Tested: exact outputs, marker round-trip,
   remainder/bounty math, unfunded/mixed-epoch rejection.
 
+The executor and the L1→L2 confirmation loop are now built and unit-tested:
+
+- `BatchSettlementExecutor` + `BatchSettlementJournal` (bridge-cardano) — the
+  owner node's body for one `l1.settlement` effect: decode
+  `EutxoSettlementBatch` → resolve claims/vault/inputs (injected
+  `BatchResolver`) → build the unsigned Settle tx → federation-threshold
+  co-sign (injected `ThresholdCosigner`) → submit via
+  `CardanoSettlementBackend`. Idempotent on `effect.idHash()` via a WAL keyed
+  by that hash: once a batch reaches the L1 the executor only re-probes its
+  status, never rebuilds/resubmits. Maps L1 status to
+  Confirmed/Submitted/Failed; empty resolved range short-circuits to
+  Confirmed. Five conformance tests (each status, idempotent re-run, empty
+  range). Collaborators are injected so the ServiceLoader factory + host
+  wiring can land with the SP-M6 devnet.
+
+- **Batch confirmation loop.** The framework keys observations by
+  `observerId/txHash/slot` (`L1Observation.key()`), so N observations from
+  one settlement transaction would collide and only the last would survive
+  follower verification. The plan's "emit N positional confirmations" is
+  therefore unsafe as stated; the correct shape is **one** observation per
+  settlement tx carrying a batch payload. Built:
+  `EutxoBatchWithdrawalConfirmation` (contracts) — shared L1 identity + an
+  ordered, dense-positional list of `{claimId, payoutIndex, destination,
+  lovelace}` entries mirroring the positional payouts; expands to per-claim
+  `EutxoWithdrawalConfirmation`s so the ledger reuses `confirmWithdrawal`
+  unchanged. `BatchWithdrawalConfirmationObserver` + provider decodes the
+  `EutxoBatchSettlementMarker` on the continuing vault output, asserts the
+  vault sits at the payout boundary (index == count), reads each positional
+  payout, and emits that single observation. `EutxoStateMachine` branches on
+  `settlementProfile()` (v3): the confirmation topic decodes as a batch and
+  loops `confirmWithdrawal` per entry (each clears its claim + decrements the
+  reserve/pending count). v3 is now batch-only — the pre-existing v3
+  single-claim confirmation test was migrated to a size-1 batch, and a new
+  test clears three claims with one batch confirmation and reconciles the
+  reserve to zero.
+
 Still remaining (needs a running v3 devnet to validate end to end, so it
-lands with SP-M6's showcase v3 chain): BatchSettlementExecutor +
-AppEffectExecutorFactory (scheme eutxo-settlement, reuse SettlementJournal/
-CardanoSettlementBackend, key on effect.idHash()); SettlementCosignService
-cloning ScriptAnchorService's ~anchor/sign|sig round on a new
-~bridge/settlement/sig diffusion prefix; batch-aware
-WithdrawalConfirmationObserver decoding the batch marker and emitting N
-positional confirmations (the per-claim confirmation ABI already carries
-payoutIndex, so no ABI bump — confirmWithdrawal already decrements per
-claim); the SP-M2-deferred deploy artifacts; the single-owner pinning
-(effects.result.signers + config-designated executor/cosign leader); and the
-multi-claim + mid-flight-restart E2E gate.
+lands with SP-M6's showcase v3 chain): the `AppEffectExecutorFactory` (scheme
+eutxo-settlement) + host wiring of the executor's real collaborators;
+`SettlementCosignService` cloning ScriptAnchorService's ~anchor/sign|sig
+round on a new ~bridge/settlement/sig diffusion prefix (the concrete
+`ThresholdCosigner`); the SP-M2-deferred deploy artifacts; the single-owner
+pinning (effects.result.signers + config-designated executor/cosign leader);
+and the multi-claim + mid-flight-restart E2E gate.

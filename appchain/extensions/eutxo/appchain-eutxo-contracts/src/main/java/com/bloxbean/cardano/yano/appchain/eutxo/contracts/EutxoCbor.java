@@ -308,6 +308,57 @@ final class EutxoCbor {
                 bytes(fields.get(12), "L1 block hash"));
     }
 
+    static byte[] encodeBatchWithdrawalConfirmation(
+            EutxoBatchWithdrawalConfirmation confirmation
+    ) {
+        Array array = new Array();
+        array.add(uint(confirmation.abiVersion()));
+        array.add(text(confirmation.chainId()));
+        array.add(uint(confirmation.bridgeEpoch()));
+        array.add(text(confirmation.settlementTransactionId()));
+        outpoint(array, confirmation.continuingVaultOutpoint());
+        array.add(uint(confirmation.continuingVaultLovelace()));
+        array.add(uint(confirmation.l1Slot()));
+        array.add(new ByteString(confirmation.l1BlockHash()));
+        Array entries = new Array();
+        for (EutxoBatchWithdrawalConfirmation.Entry entry : confirmation.entries()) {
+            Array item = new Array();
+            item.add(text(entry.claimId()));
+            item.add(uint(entry.payoutIndex()));
+            item.add(text(entry.destinationAddress()));
+            item.add(uint(entry.lovelace()));
+            entries.add(item);
+        }
+        array.add(entries);
+        return encode(array);
+    }
+
+    static EutxoBatchWithdrawalConfirmation decodeBatchWithdrawalConfirmation(
+            byte[] bytes
+    ) {
+        List<DataItem> fields = array(
+                item(bytes), 10, "batch withdrawal confirmation");
+        List<EutxoBatchWithdrawalConfirmation.Entry> entries = new ArrayList<>();
+        for (DataItem value : array(fields.get(9), -1, "batch confirmation entries")) {
+            List<DataItem> entry = array(value, 4, "batch confirmation entry");
+            entries.add(new EutxoBatchWithdrawalConfirmation.Entry(
+                    string(entry.get(0), "claim id"),
+                    integer(entry.get(1), "payout index"),
+                    string(entry.get(2), "destination address"),
+                    bigInteger(entry.get(3), "lovelace")));
+        }
+        return new EutxoBatchWithdrawalConfirmation(
+                integer(fields.get(0), "ABI version"),
+                string(fields.get(1), "chain id"),
+                longInteger(fields.get(2), "bridge epoch"),
+                string(fields.get(3), "settlement transaction id"),
+                outpoint(fields.get(4), fields.get(5)),
+                bigInteger(fields.get(6), "continuing vault lovelace"),
+                longInteger(fields.get(7), "L1 slot"),
+                bytes(fields.get(8), "L1 block hash"),
+                entries);
+    }
+
     private static Array recordItem(EutxoRecord record) {
         Array array = new Array();
         array.add(uint(VERSION));

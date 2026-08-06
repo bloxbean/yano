@@ -152,6 +152,56 @@ class EutxoContractCodecTest {
     }
 
     @Test
+    void batchWithdrawalConfirmationRoundTripsAndExpandsPerClaim() {
+        EutxoBatchWithdrawalConfirmation confirmation =
+                new EutxoBatchWithdrawalConfirmation(
+                        1, "payments", 7,
+                        "ab".repeat(32),
+                        new EutxoOutpoint("cd".repeat(32), 3),
+                        BigInteger.valueOf(18_000_000L),
+                        123_456L,
+                        HexFormat.of().parseHex("ef".repeat(32)),
+                        List.of(
+                                new EutxoBatchWithdrawalConfirmation.Entry(
+                                        "11".repeat(32), 0, DESTINATION,
+                                        BigInteger.valueOf(8_000_000L)),
+                                new EutxoBatchWithdrawalConfirmation.Entry(
+                                        "22".repeat(32), 1, DESTINATION,
+                                        BigInteger.valueOf(5_000_000L))));
+
+        EutxoBatchWithdrawalConfirmation back =
+                EutxoBatchWithdrawalConfirmation.decode(confirmation.encode());
+        assertThat(back).isEqualTo(confirmation);
+        assertThat(back.count()).isEqualTo(2);
+
+        // Each entry expands into a self-consistent single-claim confirmation
+        // sharing the settlement's L1 identity.
+        List<EutxoWithdrawalConfirmation> expanded = back.confirmations();
+        assertThat(expanded).hasSize(2);
+        assertThat(expanded.get(0).claimId()).isEqualTo("11".repeat(32));
+        assertThat(expanded.get(0).payoutIndex()).isZero();
+        assertThat(expanded.get(0).lovelace())
+                .isEqualTo(BigInteger.valueOf(8_000_000L));
+        assertThat(expanded.get(1).claimId()).isEqualTo("22".repeat(32));
+        assertThat(expanded.get(1).payoutIndex()).isEqualTo(1);
+        assertThat(expanded.get(0).settlementTransactionId())
+                .isEqualTo("ab".repeat(32));
+        assertThat(expanded.get(0).continuingVaultLovelace())
+                .isEqualTo(BigInteger.valueOf(18_000_000L));
+
+        // Non-positional entries are rejected: the claim must mirror the
+        // transaction's dense positional payouts.
+        assertThatThrownBy(() -> new EutxoBatchWithdrawalConfirmation(
+                1, "payments", 7, "ab".repeat(32),
+                new EutxoOutpoint("cd".repeat(32), 3),
+                BigInteger.ZERO, 1L, HexFormat.of().parseHex("ef".repeat(32)),
+                List.of(new EutxoBatchWithdrawalConfirmation.Entry(
+                        "11".repeat(32), 5, DESTINATION, BigInteger.ONE))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("positional");
+    }
+
+    @Test
     void bridgeParamsAndGovernanceCommandsRoundTripWithinFrozenBounds() {
         EutxoBridgeParams defaults = EutxoBridgeParams.defaults();
         assertThat(EutxoBridgeParams.decode(defaults.encode())).isEqualTo(defaults);

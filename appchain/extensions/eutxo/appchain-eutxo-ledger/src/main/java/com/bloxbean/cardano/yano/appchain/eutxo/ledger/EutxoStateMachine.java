@@ -35,6 +35,7 @@ import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoBridgeParamsGover
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoSettlementBatch;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalClaim;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalCommitment;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoBatchWithdrawalConfirmation;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalConfirmation;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalDatum;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalRecord;
@@ -213,8 +214,17 @@ public final class EutxoStateMachine implements AppStateMachine {
             }
             if (bridge.withdrawalsEnabled()
                     && bridge.confirmationTopic().equals(message.getTopic())) {
-                confirmWithdrawal(
-                        withdrawalConfirmation(message), block.height(), writer);
+                if (settlementProfile()) {
+                    // v3 (A2 batch) settlement: one observation confirms the
+                    // whole batch; clear each positional claim in order.
+                    for (EutxoWithdrawalConfirmation confirmation :
+                            batchWithdrawalConfirmation(message).confirmations()) {
+                        confirmWithdrawal(confirmation, block.height(), writer);
+                    }
+                } else {
+                    confirmWithdrawal(
+                            withdrawalConfirmation(message), block.height(), writer);
+                }
                 ordinal++;
                 continue;
             }
@@ -1085,6 +1095,33 @@ public final class EutxoStateMachine implements AppStateMachine {
                 confirmation.l1BlockHash(), observation.blockHash())) {
             throw new IllegalArgumentException(
                     "withdrawal confirmation does not match its configured identity");
+        }
+        return confirmation;
+    }
+
+    private EutxoBatchWithdrawalConfirmation batchWithdrawalConfirmation(
+            AppMessage message
+    ) {
+        L1Observation observation = L1Observation.decode(message.getBody());
+        if (observation == null
+                || !bridge.confirmationTopic().equals(observation.topic())
+                || !bridge.confirmationObserverId().equals(observation.observerId())) {
+            throw new IllegalArgumentException(
+                    "invalid bridge batch withdrawal confirmation envelope");
+        }
+        EutxoBatchWithdrawalConfirmation confirmation =
+                EutxoBatchWithdrawalConfirmation.decode(observation.claim());
+        String observedTransactionId =
+                java.util.HexFormat.of().formatHex(observation.txHash());
+        if (!bridge.chainId().equals(confirmation.chainId())
+                || bridge.bridgeEpoch() != confirmation.bridgeEpoch()
+                || !observedTransactionId.equals(
+                confirmation.settlementTransactionId())
+                || confirmation.l1Slot() != observation.slot()
+                || !java.util.Arrays.equals(
+                confirmation.l1BlockHash(), observation.blockHash())) {
+            throw new IllegalArgumentException(
+                    "batch withdrawal confirmation does not match its configured identity");
         }
         return confirmation;
     }
