@@ -728,3 +728,60 @@ assembly with Exit/InsertBatch redeemers + ex-units, submission), and the E2E:
 stop the federation, advance past fallbackDelay, crank strangers' claims to
 payout — including the no-surviving-L2 variant driven by the SP-M4
 reconstruction CLI alone.
+
+### SP-M6 — hardening + deploy plane (in progress, 2026-08-06, feat/adr009-sp-m6)
+
+**Adversarial-review fixes (0127f6b2).** An independent review of SP-M3/M4
+found the batch confirmation observer trusted output shape alone — anyone
+paying the vault address a well-formed marker datum could (a) DoS the
+observer (a structural throw dropped the whole block's observations) and (b)
+fabricate a confirmation for a real pending claim by paying its public
+destination/amount out of pocket, tricking the ledger into CONFIRMED +
+releasing the reserve while real vault funds sat orphaned. Fix — custody
+binding across all three layers: the confirmation now carries the settlement
+transaction's `spentOutpoints`; the observer fills them from the tx inputs
+and SKIPS structurally invalid marker transactions deterministically; the
+ledger tracks LIVE vault custody (`bridge/vault-utxo/` keys — deposits add
+the accepted outpoint) and accepts a batch confirmation only if it SPENT a
+tracked outpoint (only the on-chain validator authorizes vault spends),
+rotating custody to the continuing outpoint; otherwise
+`WITHDRAWAL_CONFIRMATION_UNPROVEN` halt with the reserve untouched. Also:
+the executor records `FAILED` on a REJECTED submission (submit and probe
+paths) so retries REBUILD with fresh inputs instead of probing a dead txid
+until effect expiry.
+
+**Deploy-ordering fix (e351b740).** The vault took `shardScriptHash` and the
+shard took `vaultScriptHash` — circular: the V1 pair could never actually be
+parameterized. The vault now pairs the shard spend by its THREAD TOKEN
+(`ValuesLib.containsPolicy`; param → `shardThreadPolicyId`); thread tokens
+are one-shot and the shard validator keeps them at the script forever, so a
+token input necessarily invokes the shard validator. Deploy order is linear:
+policies → vault → shard. Budgets unchanged (settle 8 = 493M cpu); new
+adversarial vector: fully-signed settle with a tokenless "shard" input fails.
+
+**ShardThreadPolicy (1d1eb214).** One-shot policy minting exactly the 16
+shard thread tokens {0x00…0x0F} (+1 each) while consuming a seed UTxO; a
+value map cannot duplicate names, so count==16 + single-byte + <16 + amount 1
+IS the exact set. VM-tested (215M cpu mint; six adversarial vectors).
+Distinct from the root policy so root-update spends can't impersonate shards.
+julc pre14 constraints discovered and recorded: `serialiseData` is emitted
+without its required force (unusable), and raw-PlutusData map-cursor
+while/recursion in minting-validator helpers miscompiles — the working shape
+is a typed for-each over `ValuesLib.flattenTyped` with BigInteger/boolean
+accumulators (the AnchorThreadPolicy idiom); `Failure.builtinTrace` in the
+testkit is the debugging tool.
+
+**Deploy artifacts (66a4d169).** Four unparameterized julc templates checked
+into bridge-onchain `META-INF/plutus` with a source-compile drift pin
+(regenerate via `-Dyano.regenerate.plutus=true`); the root thread reuses the
+audited AnchorThreadPolicy artifact.
+
+REMAINING for SP-M6: bootstrap transaction builder (seed → policies → root
+thread + 16 shard threads + vault genesis); batch-builder shard-insert
+integration (`NullifierShardMirror.planInserts` → `InsertBatch` redeemer +
+continuing shard output, one shard per distinct nibble in a batch);
+`AppEffectExecutorFactory` (scheme eutxo-settlement) + host wiring of the
+executor collaborators; `SettlementCosignService` on ~bridge/settlement/sig;
+single-owner pinning; showcase v3 bridge chain + console fee/bounty +
+BRIDGE_CHAIN.md v2; and the devnet E2E gates (SP-M3 multi-claim + restart
+exactly-once, SP-M4 mirror==on-chain, SP-M5 stopped-federation crank).
