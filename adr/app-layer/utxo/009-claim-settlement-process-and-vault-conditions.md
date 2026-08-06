@@ -814,6 +814,18 @@ Learned: CCL `PlutusData.deserialize` normalizes MPF wire tags 121/122/123
 to constr 0/1/2 (proof wires are directly redeemer-usable); quicktx
 preserves output declaration order; the bounty floats to change.
 
+**Live A3 permissionless exit PASSING (393b877b).** Devnet gate step 3 — the
+SP-M5 A3 gate live: a second identity bootstrapped with a REAL accepted state
+root (MPF of the claims' v2 commitment digests; `Config.initialStateRoot`),
+then a cranker with NO federation signature exits both claims — arming via
+the validity lower bound (the context maps slots to POSIX time, so a fresh
+devnet arms immediately), per-claim MPF inclusion against the off-chain
+`claimDigestV2` replica, shard InsertBatch nullification, positional payouts,
+Σbounty to the cranker. Pitfall recorded: quicktx skips
+validityStartInterval when validFrom == 0 → lower bound NegInf →
+`finiteLowerBound` = −1 → disarmed at evaluation; floor the slot at 1.
+All three devnet gates green in one ~19s `:app:e2eTest` run.
+
 REMAINING for SP-M6: multi-shard batches;
 `AppEffectExecutorFactory` (scheme eutxo-settlement) + host wiring of the
 executor collaborators; `SettlementCosignService` on ~bridge/settlement/sig;
