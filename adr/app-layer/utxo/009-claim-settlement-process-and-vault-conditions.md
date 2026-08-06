@@ -838,11 +838,32 @@ drop; assembly delegates to `SettlementCosigner`'s fail-closed core. Four
 round tests (witnessed assembly, rejecting member fails closed, forged reply
 tolerated, non-leader refuses rounds).
 
-REMAINING for SP-M6: the construction-site wiring in the host (build the
-settlement executor stack — BatchResolver + member body-verifier over the
-live v3 machine state, register the diffusion handler + executor,
-single-owner config flag), the showcase v3 chain + console fee/bounty, the
-SP-M3 effect-path restart gate on that chain, and multi-shard batches;
+**Construction-site wiring COMPLETE (52e83692).** The settlement stack now
+self-assembles per chain from `effects.executors.eutxo-settlement.*`:
+`AppChainEffectContext` (core-api) exposes the node-coupled surface —
+chain-scoped diffusion, member signer/set/threshold, committed-state
+queries, L1 UTxO view, protocol params, the node's phase-2 evaluator
+(`TxEvaluationGateway`, newly wired RuntimeNode → subsystem), tx submission,
+`~bridge/*` registration — and `AppEffectExecutorFactory` gained a default
+context-aware overload the subsystem invokes for every configured scheme.
+`EutxoSettlementExecutorFactory` (ServiceLoader + manifest): every member
+registers the co-sign service with the committed-state custody gate
+(`verifyProposedBody`: marker claims must be our own PENDING claims with
+exact positional payouts); the `owner=true` node additionally gets the
+executor. `QuickTxSettlePipeline` is the live engine assembling the exact
+devnet-gate transaction shape against the node's own surfaces
+(`CclNodeAdapters`), per shard group with mirror reconstruction verified
+against the on-chain shard datum; multi-shard batches settle as sequential
+transactions in one execution. `PipelinedSettlementExecutor` judges
+completion solely by "no pending claims left in the range" — a confirmed tx
+with a pending remainder records FAILED and the retry settles the rest
+(nullifier prevents double-settlement). Goldens re-pinned; bundle boundary
+checks pass.
+
+REMAINING for SP-M6: the showcase v3 chain (bootstrap emits the wiring
+config) + console fee/bounty, and the SP-M3 effect-path gate — the wired
+stack on a live multi-member devnet chain with a mid-flight restart
+(exactly-once through the effect path);
 `AppEffectExecutorFactory` (scheme eutxo-settlement) + host wiring of the
 executor collaborators; `SettlementCosignService` on ~bridge/settlement/sig;
 single-owner pinning; showcase v3 bridge chain + console fee/bounty +
