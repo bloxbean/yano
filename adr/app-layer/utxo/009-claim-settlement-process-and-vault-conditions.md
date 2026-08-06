@@ -1,6 +1,6 @@
 # ADR-UTXO-009: Claim Settlement Process and Vault Spend Conditions
 
-- Status: Proposed — discussion (finalize after review)
+- Status: Accepted (design) — implementation planned (§11)
 - Version: v1
 - Date: 2026-08-05
 - Owners: App-chain / EUTxO / Bridge
@@ -357,28 +357,103 @@ tracked protocol parameters. A batch is additionally bounded by
 `maxTxSize`/ex-units at build time against LIVE L1 parameters — tier-1
 caps are ceilings, the builder computes the real bound per transaction.
 
-## 9. Open questions (narrowed 2026-08-06)
+## 9. Resolved defaults (ratified 2026-08-06)
 
-- Governed-parameter transport: reuse the existing governed-admin message
-  path vs a dedicated `bridge.params.v1` topic (leaning: reuse).
-- Shard count k, fallbackDelay default, rooting cadence economics.
-- Threshold-signature collection mechanics for the settlement effect
-  (partial sigs as effect results vs app messages; HSM signer-mode
-  integration).
-- Initial flat bounty default for public demos (leaning 2 ADA; 0
-  permitted).
+- **Parameter transport:** reuse the governed-admin message path (no new
+  topic); bridge parameters become one governed record with recorded
+  effective heights.
+- **Shard count k = 16** (structural, tier-1; idle shards cost min-ADA).
+- **fallbackDelay default 86,400 L1 slots (~24h)**, governed within
+  tier-1 bounds [6h, 30d]. **Rooting cadence:** every 100 L2 blocks or 1
+  hour, whichever first (governed) — the bounded-loss window for
+  post-federation-death claims.
+- **Partial-signature collection: app messages** on
+  `bridge.settlement.sig.v1` — consensus-ordered, replayable, and visible
+  to every member; the `l1.settlement` effect carries the batch digest to
+  sign, the owning executor assembles the threshold from finalized
+  messages. (Effect-result transport rejected: results are per-executor,
+  and signatures must be collected ACROSS members.)
+- **Bounty default: flat 2 ADA** (`{flat: 2_000_000, bps: 0}`) for public
+  demos; 0 permitted for closed demos. Tier-1 cap: 5 ADA or 100 bps,
+  whichever is greater.
 
-## 10. Decisions so far (2026-08-06 review)
+## 10. Decisions (final)
 
-- A1 rejected; effort goes straight to A2+A3 as two authorization paths on
-  one V1 vault.
-- Fee = per-claim committed executor bounty, charged at claim creation;
-  schedule `{flat, bps}` governed with bps=0 at genesis; bounds frozen.
-- A2 signer = federation threshold (never a single operator key); V1
-  scripts bound compromise to censorship; A3 is the censorship answer.
-- A2 execution rides the effect system (`l1.settlement` effect,
-  owner-assigned; the confirmation observer closes the loop).
-- Nullifier safety is atomic-by-construction (same-tx check+insert on an
-  exclusive shard UTxO); no timing window exists.
+- One V1 vault, two authorization paths: A2 federation-threshold batched
+  settlement (fast path) + A3 fallbackDelay-armed permissionless proof
+  exit. A1 rejected.
+- Fee = per-claim committed executor bounty charged at claim creation;
+  reserve decreases by payout+bounty; one L1 conservation rule pays A2
+  executor and A3 cranker identically.
+- Settlement execution rides the effect system; signatures ride app
+  messages; the existing confirmation observer closes the loop.
+- Nullifiers: k=16 L1 shard threads holding roots only; atomic
+  check+insert per settlement; L2 mirrors the tries from L1 observations
+  and serves proofs; anyone can reconstruct from L1 history.
+- Parameters in three tiers (immutable profile / governed L2 / operator
+  policy); min-ADA folded live from L1 params into the governed minimum
+  withdrawal.
 
-Final ratification pending §9.
+## 11. Implementation plan
+
+New machine profile version (the L2 validation changes are
+consensus-relevant): `yano-eutxo-v3-bridge-settlement`, new digest;
+existing bridge chains migrate by chain-config migration (new vault
+address = new chain identity fields), or new chains adopt it directly —
+the showcase will add a v2 bridge chain rather than mutate
+`payment-chain-l1bridge` history.
+
+**SP-M1 — L2 machinery: claim ABI v2 + governed bridge parameters.**
+Claim `{payout, bounty}` (ABI v2), fee resolved at creation from the
+governed `{flat, bps}` schedule, reserve accounting payout+bounty,
+governed parameter record (fee schedule, min withdrawal =
+max(governed, live L1 minUTxO + margin), soft batch cap, rooting cadence,
+fallbackDelay) updated via governed-admin messages at recorded heights.
+Tests: replay/restart determinism of parameter changes; claim-creation
+validation golden vectors; reserve == vault invariant property test.
+
+**SP-M2 — V1 on-chain scripts + budgets.** Adapt
+`appchain-eutxo-bridge-onchain` (julc) to this spec: VaultValidator with
+Settle (threshold over batch digest vs root-thread memberSetHash) and
+Exit (stale-root arming, per-claim MPF inclusion under stateRoot) paths;
+NullifierStateValidator (non-membership + computed post-insert root,
+proof-chained for batches); FederatedRootValidator (threshold root
+updates, membership-epoch aware). Deliverables: measured ex-unit budgets
+→ tier-1 max batch sizes for BOTH paths; golden vectors shared with SP-M1;
+deploy tooling (V1 vault address derivation, shard-thread bootstrap
+transaction builder). Gate: property tests incl. adversarial (redirected
+payout, skimmed remainder, replayed claim, forged threshold).
+
+**SP-M3 — A2 settlement effect.** `l1.settlement` effect emitted on the
+N-or-T trigger (machine logic), owner-assigned executor builds the batch
+(positional payouts, batch marker with ordered claim ids, bounty output),
+partial signatures via `bridge.settlement.sig.v1` app messages, assemble
++ submit, batch-aware confirmation observer (positional matching, marker
+ABI bump). Devnet E2E gate: multi-claim batch (incl. duplicate
+address+amount claims) settles to CONFIRMED end-to-end through the effect
+path with a node restart mid-flight (exactly-once proof).
+
+**SP-M4 — nullifier mirror + proof serving.** Shard-trie mirror in bridge
+state driven by the same L1 observations as claim status; domain route
+`bridge/nullifier/{shard}/proof`; standalone reconstruction CLI (rebuild
+any shard from L1 spend history, verify against on-chain root). Gate:
+mirror root == on-chain root after randomized settlement sequences +
+restart.
+
+**SP-M5 — A3 cranker path.** Permissionless `crank` client command (scan
+provable pending claims for a shard, build exit with proofs from SP-M4 or
+self-reconstruction, collect bounties). Devnet E2E gate: stop the
+federation (no rooting/settling), advance past fallbackDelay, crank
+strangers' claims to payout — the no-surviving-L2 variant uses the
+reconstruction CLI only.
+
+**SP-M6 — migration, showcase, console.** Showcase adds the v3-profile
+bridge chain (deterministic demo federation), `chain add` tier, console:
+fee/bounty display at claim creation, settlement/batch status, cranker
+guidance in `bridge info`; docs (BRIDGE_CHAIN.md v2 section); ADR-008
+cross-references. Public-network posture per recipe gates: custody review
+before any non-demo funds; ex-unit budget checks wired into CI.
+
+Dependencies: SP-M1 ∥ SP-M2 (shared golden vectors) → SP-M3 → SP-M4 →
+SP-M5 → SP-M6. Each milestone lands on a feature branch with its
+implementation-log entry here, mirroring the ADR-008 campaign process.
