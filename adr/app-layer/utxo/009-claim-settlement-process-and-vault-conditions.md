@@ -218,6 +218,20 @@ except WHO authorizes the spend.
   accepted STATE root is the only lagging artifact; its staleness merely
   delays when a young claim becomes provable — it can never enable
   double-pay.)
+  **Trie maintenance:** L1 holds ONLY the per-shard root; the script needs
+  proofs, not the tree — an MPF/JMT non-membership path also lets it
+  COMPUTE the post-insert root, so batch inserts verify as a proof chain
+  (R0→R1→…). The full trie data is maintained off-chain: L2 nodes mirror
+  it deterministically from the same L1 observations that drive claim
+  status (each shard spend names its inserted ids; the shard's UTxO chain
+  is a linear history, so mirrors cannot diverge), and serve proofs to the
+  settlement-effect executor and to crankers via a domain route. The
+  mirror is a cache, not a trust dependency: anyone can reconstruct any
+  shard trie from the L1 spend history alone and verify it against the
+  on-chain root — essential for A3 when no L2 node survives. Shard
+  threads are created at vault deployment with the empty-trie root, and
+  the validator admits no transition except paired with a valid vault
+  spend.
 - **Batch settlement marker**: the continuing vault output's datum carries
   the ORDERED claim-id list; payout output[i] pays claim[i] exactly
   (positional matching for the confirmation observer, per §3-A2).
