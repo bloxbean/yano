@@ -31,17 +31,32 @@ public record EutxoWithdrawalCommitment(
         long settlementSequence,
         byte[] claimId,
         byte[] destinationPlutusData,
-        BigInteger lovelace
+        BigInteger lovelace,
+        BigInteger bounty
 ) {
     public static final int ABI_VERSION = 1;
+    /** ADR-UTXO-009: v2 binds the executor bounty into the digest preimage. */
+    public static final int ABI_VERSION_V2 = 2;
     public static final int PLUTUS_CONSTR = 3;
     public static final byte[] DOMAIN =
             "yano-eutxo-withdrawal-v1".getBytes(StandardCharsets.US_ASCII);
+    public static final byte[] DOMAIN_V2 =
+            "yano-eutxo-withdrawal-v2".getBytes(StandardCharsets.US_ASCII);
 
     public EutxoWithdrawalCommitment {
-        if (abiVersion != ABI_VERSION) {
+        if (abiVersion != ABI_VERSION && abiVersion != ABI_VERSION_V2) {
             throw new IllegalArgumentException(
                     "unsupported EUTxO withdrawal commitment ABI");
+        }
+        bounty = Objects.requireNonNull(bounty, "bounty");
+        if (abiVersion == ABI_VERSION && bounty.signum() != 0) {
+            throw new IllegalArgumentException(
+                    "v1 withdrawal commitments cannot carry a bounty");
+        }
+        if (bounty.signum() < 0
+                || bounty.compareTo(BigInteger.valueOf(Long.MAX_VALUE)) > 0) {
+            throw new IllegalArgumentException(
+                    "commitment bounty must fit a non-negative signed 64-bit integer");
         }
         chainId = Objects.requireNonNull(chainId, "chainId").clone();
         if (chainId.length < 1 || chainId.length > 128) {
@@ -68,19 +83,46 @@ public record EutxoWithdrawalCommitment(
             EutxoWithdrawalClaim claim
     ) {
         Objects.requireNonNull(claim, "claim");
+        boolean v2 = claim.abiVersion() >= EutxoWithdrawalClaim.ABI_VERSION_V2;
         return new EutxoWithdrawalCommitment(
-                ABI_VERSION,
+                v2 ? ABI_VERSION_V2 : ABI_VERSION,
                 claim.chainId().getBytes(StandardCharsets.UTF_8),
                 claim.bridgeEpoch(),
                 claim.settlementSequence(),
                 HexFormat.of().parseHex(claim.claimId()),
                 plutusAddress(claim.destinationAddress()).serializeToBytes(),
-                claim.lovelace());
+                claim.lovelace(),
+                claim.bounty());
+    }
+
+    /** Legacy v1 construction (zero bounty). */
+    public EutxoWithdrawalCommitment(
+            int abiVersion,
+            byte[] chainId,
+            long bridgeEpoch,
+            long settlementSequence,
+            byte[] claimId,
+            byte[] destinationPlutusData,
+            BigInteger lovelace
+    ) {
+        this(abiVersion, chainId, bridgeEpoch, settlementSequence, claimId,
+                destinationPlutusData, lovelace, BigInteger.ZERO);
     }
 
     public PlutusData toPlutusData() {
         try {
-            return ConstrPlutusData.of(
+            return abiVersion >= ABI_VERSION_V2
+                    ? ConstrPlutusData.of(
+                    PLUTUS_CONSTR,
+                    BigIntPlutusData.of(abiVersion),
+                    BytesPlutusData.of(chainId),
+                    BigIntPlutusData.of(bridgeEpoch),
+                    BigIntPlutusData.of(settlementSequence),
+                    BytesPlutusData.of(claimId),
+                    PlutusData.deserialize(destinationPlutusData),
+                    BigIntPlutusData.of(lovelace),
+                    BigIntPlutusData.of(bounty))
+                    : ConstrPlutusData.of(
                     PLUTUS_CONSTR,
                     BigIntPlutusData.of(abiVersion),
                     BytesPlutusData.of(chainId),
@@ -101,16 +143,21 @@ public record EutxoWithdrawalCommitment(
 
     public byte[] digest() {
         byte[] destination = destinationFingerprint(destinationPlutusData);
+        boolean v2 = abiVersion >= ABI_VERSION_V2;
+        byte[] domain = v2 ? DOMAIN_V2 : DOMAIN;
         ByteBuffer fields = ByteBuffer.allocate(
-                DOMAIN.length + 32 + Long.BYTES + Long.BYTES
-                        + 32 + 32 + Long.BYTES);
-        fields.put(DOMAIN);
+                domain.length + 32 + Long.BYTES + Long.BYTES
+                        + 32 + 32 + Long.BYTES + (v2 ? Long.BYTES : 0));
+        fields.put(domain);
         fields.put(Blake2bUtil.blake2bHash256(chainId));
         fields.putLong(bridgeEpoch);
         fields.putLong(settlementSequence);
         fields.put(claimId);
         fields.put(destination);
         fields.putLong(lovelace.longValueExact());
+        if (v2) {
+            fields.putLong(bounty.longValueExact());
+        }
         return Blake2bUtil.blake2bHash256(fields.array());
     }
 
