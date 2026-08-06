@@ -656,3 +656,42 @@ diffusion prefix (leader builds/requests, members reply, leader collects);
 the SP-M2-deferred deploy artifacts; the single-owner pinning
 (effects.result.signers + config-designated executor/cosign leader); and the
 multi-claim + mid-flight-restart E2E gate.
+
+### SP-M4 — nullifier mirror + proof serving + reconstruction CLI (2026-08-06, feat/adr009-sp-m4)
+
+`NullifierShardMirror` (appchain-eutxo-client) — the off-chain nullifier
+mirror: k=16 `MpfTrie` shards (`cardano-client-merkle-patricia-forestry`,
+reached transitively through `appchain-client`), one per nibble
+(`claimId[31] & 0x0F`), value = the claim id itself, so each shard root is
+byte-equal to the on-chain `NullifierShardValidator` root by construction (the
+SP-M2 conformance test already pins the validator to `trie.getRootHash()`).
+API: `insert`, `root(shard)`, `contains`, `proofWire`, `verifyMembership`/
+`verifyAbsence`, `reconstructShardRoot(ids)`, and `planInserts(shard, newIds)`
+— the batch-insert proof chain that mirrors the on-chain `foldInserts`
+exactly (the non-membership proof at the running root, then the insert). This
+`planInserts` output is what the SP-M6 builder feeds into the continuing
+shard output + `InsertBatch` redeemer (which the SP-M3 body builder currently
+only *spends* the shard for).
+
+Reconstruction is the trust anchor: the MPF root is a pure function of the
+settled-id set, so a cranker with no surviving L2 node rebuilds any shard from
+L1 spend history and gets the same root. The standalone CLI (`EutxoCli`,
+node-free) delivers this: `nullifier reconstruct --ids <file> [--shard N]
+[--expected-root <hex>]` rebuilds and (optionally) compares to the on-chain
+root; `nullifier proof <claim-id> --ids <file>` emits and self-verifies the
+MPF wire proof (membership if settled, non-membership otherwise).
+
+Gate met (11 tests): shard routing + isolation, order-independent
+reconstruction equal to the live mirror, restart reproduces every root,
+per-shard reconstruction equals the live roots, membership/non-membership
+proofs verify against the shard root, `planInserts` fold replay reproduces the
+next root, adversarial wrong-shard/already-settled rejection; CLI match/
+mismatch/usage exit codes and verified proof emission.
+
+Deferred to SP-M6 (needs the live v3 settlement flow to feed the mirror, so it
+lands with the devnet wiring): the node-side `bridge/nullifier/{shard}/proof`
+domain route (a `DomainApiProvider` route backed by a mirror read model fed by
+confirmed settlements), and the builder integration that emits the continuing
+shard output(s) + `InsertBatch` redeemer from `planInserts` (one shard input/
+output per distinct nibble in a batch — the vault requires only that *a* shard
+is spent, each shard validates its own nibble's inserts).
