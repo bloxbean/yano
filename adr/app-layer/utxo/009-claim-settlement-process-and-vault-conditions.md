@@ -206,8 +206,17 @@ except WHO authorizes the spend.
   Exits consume it as a REFERENCE INPUT — reference inputs do not consume
   UTxOs, so the root is never a contention point.
 - **Nullifier shards** (`NullifierStateValidator`): k thread UTxOs, shard =
-  `claimId mod k`. Datum = `{shardIndex, nullifierRoot}` (an MPF/JMT root
-  over settled claim ids). Spending a shard requires, in the same tx, a
+  `claimId mod k`. Datum = `{shardIndex, nullifierRoot}` — an **MPF root**
+  (`mpf-blake2b256-v1`; decided 2026-08-06: MPF over JMT for the nullifier
+  tries). Rationale: MPF is the proof system with a maintained,
+  cost-profiled Cardano ON-CHAIN verifier (the merkle-patricia-forestry
+  lineage already used by the julc anchor validators), its insertion
+  proofs let the script compute post-insert roots cheaply, and the eutxo
+  machine's state/claim proofs are ALREADY MPF — so claim-inclusion and
+  nullifier non-membership verify through ONE verifier in the vault
+  script: smaller script, one budget profile, one audit surface. JMT has
+  no maintained Cardano on-chain verifier and stays an L2-side commitment
+  option only. Spending a shard requires, in the same tx, a
   paired vault spend plus a NON-membership proof of each settled claimId
   and the datum's root updated by inserting them. One shard per tx.
   **No check/update lag exists**: the non-membership check and the root
@@ -219,7 +228,7 @@ except WHO authorizes the spend.
   delays when a young claim becomes provable — it can never enable
   double-pay.)
   **Trie maintenance:** L1 holds ONLY the per-shard root; the script needs
-  proofs, not the tree — an MPF/JMT non-membership path also lets it
+  proofs, not the tree — an MPF non-membership path also lets it
   COMPUTE the post-insert root, so batch inserts verify as a proof chain
   (R0→R1→…). The full trie data is maintained off-chain: L2 nodes mirror
   it deterministically from the same L1 observations that drive claim
@@ -416,8 +425,9 @@ validation golden vectors; reserve == vault invariant property test.
 `appchain-eutxo-bridge-onchain` (julc) to this spec: VaultValidator with
 Settle (threshold over batch digest vs root-thread memberSetHash) and
 Exit (stale-root arming, per-claim MPF inclusion under stateRoot) paths;
-NullifierStateValidator (non-membership + computed post-insert root,
-proof-chained for batches); FederatedRootValidator (threshold root
+NullifierStateValidator (MPF non-membership + computed post-insert root,
+proof-chained for batches — same MPF verifier as the Exit path's claim
+inclusion, per §7.1); FederatedRootValidator (threshold root
 updates, membership-epoch aware). Deliverables: measured ex-unit budgets
 → tier-1 max batch sizes for BOTH paths; golden vectors shared with SP-M1;
 deploy tooling (V1 vault address derivation, shard-thread bootstrap
