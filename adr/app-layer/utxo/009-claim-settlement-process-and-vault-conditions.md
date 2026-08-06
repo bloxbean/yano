@@ -632,11 +632,27 @@ The executor and the L1→L2 confirmation loop are now built and unit-tested:
   test clears three claims with one batch confirmation and reconciles the
   reserve to zero.
 
+The federation-threshold co-signer's verification/assembly heart is also
+built and unit-tested: `SettlementCosigner` (bridge-cardano) implements
+`ThresholdCosigner`. The SP-M2 vault counts approving members via
+`ContextsLib.signedBy` over the root-thread member keys, so the built body
+already lists exactly those members in `required_signers`; the cosigner
+attaches one **verified** Ed25519 vkey witness per required signer and refuses
+a partially-witnessed transaction — every required signer must witness (a
+ledger invariant), the count must meet the governed threshold, non-member /
+malformed / forged signatures are dropped, and a post-assembly txid check
+guards against body drift (witnesses sign the body hash, so attaching them
+must not change it). The p2p round that gathers those signatures over the app
+channel is the injected `PartialSignatureCollector` seam. Four tests: happy
+assembly + witness verification + hash preservation, extra non-member sig
+ignored, missing required signer fails closed, forged signature rejected.
+
 Still remaining (needs a running v3 devnet to validate end to end, so it
 lands with SP-M6's showcase v3 chain): the `AppEffectExecutorFactory` (scheme
 eutxo-settlement) + host wiring of the executor's real collaborators;
-`SettlementCosignService` cloning ScriptAnchorService's ~anchor/sign|sig
-round on a new ~bridge/settlement/sig diffusion prefix (the concrete
-`ThresholdCosigner`); the SP-M2-deferred deploy artifacts; the single-owner
-pinning (effects.result.signers + config-designated executor/cosign leader);
-and the multi-claim + mid-flight-restart E2E gate.
+`SettlementCosignService` — the concrete `PartialSignatureCollector` cloning
+ScriptAnchorService's ~anchor/sign|sig round onto a new ~bridge/settlement/sig
+diffusion prefix (leader builds/requests, members reply, leader collects);
+the SP-M2-deferred deploy artifacts; the single-owner pinning
+(effects.result.signers + config-designated executor/cosign leader); and the
+multi-claim + mid-flight-restart E2E gate.
