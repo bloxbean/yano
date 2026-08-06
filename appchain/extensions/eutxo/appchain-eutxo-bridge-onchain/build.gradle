@@ -12,7 +12,7 @@ dependencies {
     testImplementation "com.bloxbean.cardano:julc-ledger-api:${libs.versions.julc.get()}"
     testImplementation "com.bloxbean.cardano:julc-testkit:${libs.versions.julc.get()}"
     testImplementation "com.bloxbean.cardano:julc-compiler:${libs.versions.julc.get()}"
-    testRuntimeOnly "com.bloxbean.cardano:julc-vm-java:${libs.versions.julc.get()}"
+    testImplementation "com.bloxbean.cardano:julc-vm-java:${libs.versions.julc.get()}"
     testImplementation project(':appchain-eutxo-contracts')
     testImplementation project(':appchain-eutxo-client')
     testImplementation libs.cardano.client.crypto
