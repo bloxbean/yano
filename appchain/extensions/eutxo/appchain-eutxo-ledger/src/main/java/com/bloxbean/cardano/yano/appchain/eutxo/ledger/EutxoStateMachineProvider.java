@@ -32,6 +32,7 @@ public final class EutxoStateMachineProvider implements AppStateMachineProvider 
         EutxoProfile profile = switch (configuredProfile) {
             case "yano-eutxo-v1" -> EutxoProfile.V1;
             case "yano-eutxo-v2-plutus-v3" -> EutxoProfile.V2;
+            case "yano-eutxo-v3-bridge-settlement" -> EutxoProfile.V3;
             default -> throw new IllegalArgumentException(
                     "unsupported EUTxO profile: " + configuredProfile);
         };
@@ -62,6 +63,53 @@ public final class EutxoStateMachineProvider implements AppStateMachineProvider 
                 EutxoBridgeConfig.from(context.chainId(), context.settings()),
                 validity,
                 context.chainId(),
-                network);
+                network,
+                context.membershipView().orElse(null),
+                initialBridgeParams(context.settings()));
+    }
+
+    /**
+     * Genesis values for the governed bridge parameters (ADR-UTXO-009 tier
+     * 2). Config supplies only the INITIAL record; later values activate
+     * through governance, never through config.
+     */
+    private static com.bloxbean.cardano.yano.appchain.eutxo.contracts
+            .EutxoBridgeParams initialBridgeParams(
+            java.util.Map<String, String> settings) {
+        var defaults = com.bloxbean.cardano.yano.appchain.eutxo.contracts
+                .EutxoBridgeParams.defaults();
+        String prefix = "machines.eutxo.bridge.params.";
+        return new com.bloxbean.cardano.yano.appchain.eutxo.contracts
+                .EutxoBridgeParams(
+                com.bloxbean.cardano.yano.appchain.eutxo.contracts
+                        .EutxoBridgeParams.VERSION,
+                longSetting(settings, prefix + "fee-flat-lovelace",
+                        defaults.feeFlatLovelace()),
+                (int) longSetting(settings, prefix + "fee-basis-points",
+                        defaults.feeBasisPoints()),
+                longSetting(settings, prefix + "min-withdrawal-lovelace",
+                        defaults.minWithdrawalLovelace()),
+                (int) longSetting(settings, prefix + "soft-batch-cap",
+                        defaults.softBatchCap()),
+                longSetting(settings, prefix + "rooting-blocks",
+                        defaults.rootingBlocks()),
+                longSetting(settings, prefix + "rooting-seconds",
+                        defaults.rootingSeconds()),
+                longSetting(settings, prefix + "fallback-delay-slots",
+                        defaults.fallbackDelaySlots()),
+                0L);
+    }
+
+    private static long longSetting(
+            java.util.Map<String, String> settings, String key, long fallback) {
+        String value = settings.get(key);
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        try {
+            return Long.parseLong(value.trim());
+        } catch (NumberFormatException invalid) {
+            throw new IllegalArgumentException(key + " must be an integer");
+        }
     }
 }

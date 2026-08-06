@@ -1,0 +1,579 @@
+package com.bloxbean.cardano.yano.appchain.eutxo.ledger;
+
+import com.bloxbean.cardano.client.plutus.spec.PlutusData;
+import com.bloxbean.cardano.client.transaction.spec.Transaction;
+import com.bloxbean.cardano.client.transaction.spec.TransactionOutput;
+import com.bloxbean.cardano.client.transaction.spec.Value;
+import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
+import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
+import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipEpoch;
+import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipView;
+import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
+import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoBridgeParams;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoBridgeParamsGovernanceV1;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoDepositClaim;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoOutpoint;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoProfile;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoQueryCodec;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReceipt;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReserve;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoStateKeys;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalClaim;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalConfirmation;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalDatum;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalRecord;
+import com.bloxbean.cardano.yano.appchain.eutxo.testkit.EutxoTestWallet;
+import com.bloxbean.cardano.yano.appchain.eutxo.testkit.EutxoTransactionFixtures;
+import com.bloxbean.cardano.yano.appchain.eutxo.testkit.MemoryAppState;
+import org.junit.jupiter.api.Test;
+
+import java.math.BigInteger;
+import java.util.Arrays;
+import java.util.HexFormat;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * ADR-UTXO-009 SP-M1: v3 bridge-settlement machine semantics — claim ABI v2
+ * with the committed executor bounty resolved from governed parameters, and
+ * the threshold-governed parameter lifecycle at recorded heights.
+ */
+class EutxoBridgeSettlementMachineTest {
+    private static final EutxoTestWallet ALICE = wallet(1);
+    private static final String MEMBER_ONE = "aa".repeat(32);
+    private static final String MEMBER_TWO = "bb".repeat(32);
+    private static final String OUTSIDER = "cc".repeat(32);
+    private static final String VAULT = "addr_test1_bridge_vault";
+    private static final String VAULT_HASH = "11".repeat(28);
+
+    @Test
+    void v3WithdrawalSplitsPayoutAndBountyAndReconcilesTotalReserve()
+            throws Exception {
+        EutxoStateMachine machine = v3Machine(2);
+        MemoryAppState state = new MemoryAppState();
+        long total = 10_000_000L;
+        applyDeposit(machine, state, total);
+
+        EutxoWithdrawalDatum datum = new EutxoWithdrawalDatum(
+                1, "eutxo-test", 7, ALICE.address(), fill(32, 6));
+        Transaction withdrawal = EutxoTransactionFixtures.signedOutputs(
+                new EutxoOutpoint("44".repeat(32), 0),
+                ALICE,
+                List.of(TransactionOutput.builder()
+                        .address(ALICE.address())
+                        .value(Value.fromCoin(BigInteger.valueOf(total)))
+                        .inlineDatum(PlutusData.deserialize(datum.encode()))
+                        .build()),
+                0,
+                0);
+        // Rebuild the spend against the actual mirrored outpoint.
+        withdrawal = EutxoTransactionFixtures.signedOutputs(
+                mirroredOutpoint(machine, state),
+                ALICE,
+                List.of(TransactionOutput.builder()
+                        .address(withdrawalAddress())
+                        .value(Value.fromCoin(BigInteger.valueOf(total)))
+                        .inlineDatum(PlutusData.deserialize(datum.encode()))
+                        .build()),
+                0,
+                0);
+        String withdrawalTxId = TransactionUtil.getTxHash(
+                EutxoTransactionFixtures.serialize(withdrawal));
+        AppMessage withdrawalMessage = message(62, withdrawal);
+        machine.apply(block(2, withdrawalMessage), state);
+        assertThat(receiptStatus(machine, state, withdrawalMessage))
+                .isEqualTo(EutxoReceipt.Status.ACCEPTED);
+
+        // Flat 2 ADA fee (bps 0): payout 8 ADA, bounty 2 ADA, ABI v2.
+        EutxoWithdrawalClaim claim = new EutxoWithdrawalClaim(
+                EutxoWithdrawalClaim.ABI_VERSION_V2,
+                "eutxo-test",
+                7,
+                new EutxoOutpoint(withdrawalTxId, 0),
+                ALICE.address(),
+                BigInteger.valueOf(8_000_000L),
+                datum.nonce(),
+                0,
+                2,
+                BigInteger.valueOf(2_000_000L));
+        EutxoWithdrawalRecord pending = EutxoQueryCodec.decodeOptionalWithdrawalRecord(
+                machine.query(
+                        EutxoQueryCodec.WITHDRAWAL_PATH,
+                        EutxoQueryCodec.withdrawalRequest(claim.claimId()),
+                        state));
+        assertThat(pending.status()).isEqualTo(EutxoWithdrawalRecord.Status.PENDING);
+        assertThat(pending.claim().abiVersion())
+                .isEqualTo(EutxoWithdrawalClaim.ABI_VERSION_V2);
+        assertThat(pending.claim().lovelace())
+                .isEqualTo(BigInteger.valueOf(8_000_000L));
+        assertThat(pending.claim().bounty())
+                .isEqualTo(BigInteger.valueOf(2_000_000L));
+        EutxoReserve reserved = EutxoReserve.decode(
+                state.get(EutxoStateKeys.reserve(EutxoReserve.LOVELACE)).orElseThrow());
+        // The FULL output (payout + bounty) is reserved.
+        assertThat(reserved.pendingWithdrawals())
+                .isEqualTo(BigInteger.valueOf(total));
+
+        EutxoWithdrawalConfirmation confirmation = new EutxoWithdrawalConfirmation(
+                1,
+                "eutxo-test",
+                7,
+                claim.claimId(),
+                "77".repeat(32),
+                0,
+                ALICE.address(),
+                BigInteger.valueOf(8_000_000L),
+                new EutxoOutpoint("77".repeat(32), 1),
+                BigInteger.ZERO,
+                200,
+                fill(32, 7));
+        L1Observation observation = new L1Observation(
+                "bridge-withdrawals",
+                HexFormat.of().parseHex("77".repeat(32)),
+                200,
+                fill(32, 7),
+                confirmation.encode());
+        machine.apply(block(3, observationMessage(63, observation)), state);
+
+        EutxoReserve reconciled = EutxoReserve.decode(
+                state.get(EutxoStateKeys.reserve(EutxoReserve.LOVELACE)).orElseThrow());
+        assertThat(reconciled.pendingWithdrawals()).isZero();
+        // Total outflow (payout + bounty) leaves the reserve on confirmation.
+        assertThat(reconciled.confirmedWithdrawals())
+                .isEqualTo(BigInteger.valueOf(total));
+        assertThat(state.get(EutxoStateKeys.bridgeHalt())).isEmpty();
+    }
+
+    @Test
+    void payoutBelowGovernedMinimumRejectsTheTransaction() throws Exception {
+        EutxoStateMachine machine = v3Machine(2);
+        MemoryAppState state = new MemoryAppState();
+        // 3.5 ADA total - 2 ADA fee = 1.5 ADA payout < 2 ADA governed minimum.
+        applyDeposit(machine, state, 3_500_000L);
+        EutxoWithdrawalDatum datum = new EutxoWithdrawalDatum(
+                1, "eutxo-test", 7, ALICE.address(), fill(32, 6));
+        Transaction withdrawal = EutxoTransactionFixtures.signedOutputs(
+                mirroredOutpoint(machine, state),
+                ALICE,
+                List.of(TransactionOutput.builder()
+                        .address(withdrawalAddress())
+                        .value(Value.fromCoin(BigInteger.valueOf(3_500_000L)))
+                        .inlineDatum(PlutusData.deserialize(datum.encode()))
+                        .build()),
+                0,
+                0);
+        AppMessage withdrawalMessage = message(65, withdrawal);
+        machine.apply(block(2, withdrawalMessage), state);
+        assertThat(receiptStatus(machine, state, withdrawalMessage))
+                .isEqualTo(EutxoReceipt.Status.REJECTED);
+        EutxoReserve reserve = EutxoReserve.decode(
+                state.get(EutxoStateKeys.reserve(EutxoReserve.LOVELACE)).orElseThrow());
+        assertThat(reserve.pendingWithdrawals()).isZero();
+    }
+
+    @Test
+    void governedParameterChangeNeedsThresholdAndActivatesAtRecordedHeight()
+            throws Exception {
+        EutxoStateMachine machine = v3Machine(2);
+        MemoryAppState state = new MemoryAppState();
+        machine.apply(block(1), state);
+        EutxoBridgeParams initial = EutxoBridgeParams.decode(
+                state.get(EutxoStateKeys.bridgeParamsCurrent()).orElseThrow());
+        assertThat(initial.feeFlatLovelace()).isEqualTo(2_000_000L);
+        assertThat(initial.effectiveHeight()).isZero();
+
+        EutxoBridgeParamsGovernanceV1.Command command =
+                new EutxoBridgeParamsGovernanceV1.Command(
+                        1,
+                        new EutxoBridgeParams(
+                                1, 3_000_000L, 0, 2_000_000L, 8,
+                                100L, 3_600L, 86_400L, 0L),
+                        2);
+        // Outsider approval is skipped deterministically.
+        machine.apply(block(2, paramsMessage(70, OUTSIDER, command)), state);
+        assertThat(state.get(EutxoStateKeys.bridgeParamsProposals())).isEmpty();
+        assertThat(state.get(EutxoStateKeys.bridgeParamsPending())).isEmpty();
+
+        machine.apply(block(3, paramsMessage(71, MEMBER_ONE, command)), state);
+        assertThat(state.get(EutxoStateKeys.bridgeParamsProposals())).isPresent();
+        assertThat(state.get(EutxoStateKeys.bridgeParamsPending())).isEmpty();
+
+        // Duplicate approval by the same member does not schedule.
+        machine.apply(block(4, paramsMessage(72, MEMBER_ONE, command)), state);
+        assertThat(state.get(EutxoStateKeys.bridgeParamsPending())).isEmpty();
+
+        machine.apply(block(5, paramsMessage(73, MEMBER_TWO, command)), state);
+        assertThat(state.get(EutxoStateKeys.bridgeParamsPending())).isPresent();
+        assertThat(state.get(EutxoStateKeys.bridgeParamsProposals())).isEmpty();
+        // Not yet active.
+        assertThat(EutxoBridgeParams.decode(
+                state.get(EutxoStateKeys.bridgeParamsCurrent()).orElseThrow())
+                .feeFlatLovelace()).isEqualTo(2_000_000L);
+
+        machine.apply(block(6), state);
+        machine.apply(block(7), state);
+        EutxoBridgeParams active = EutxoBridgeParams.decode(
+                state.get(EutxoStateKeys.bridgeParamsCurrent()).orElseThrow());
+        assertThat(active.feeFlatLovelace()).isEqualTo(3_000_000L);
+        assertThat(active.effectiveHeight()).isEqualTo(7L);
+        assertThat(state.get(EutxoStateKeys.bridgeParamsPending())).isEmpty();
+        assertThat(state.get(EutxoStateKeys.bridgeParamsHistory(7L))).isPresent();
+
+        // The NEW fee governs subsequent claims: 10 ADA -> payout 7 ADA.
+        applyDeposit(machine, state, 10_000_000L);
+        EutxoWithdrawalDatum datum = new EutxoWithdrawalDatum(
+                1, "eutxo-test", 7, ALICE.address(), fill(32, 9));
+        Transaction withdrawal = EutxoTransactionFixtures.signedOutputs(
+                mirroredOutpoint(machine, state),
+                ALICE,
+                List.of(TransactionOutput.builder()
+                        .address(withdrawalAddress())
+                        .value(Value.fromCoin(BigInteger.valueOf(10_000_000L)))
+                        .inlineDatum(PlutusData.deserialize(datum.encode()))
+                        .build()),
+                0,
+                0);
+        AppMessage withdrawalMessage = message(74, withdrawal);
+        machine.apply(block(9, withdrawalMessage), state);
+        assertThat(receiptStatus(machine, state, withdrawalMessage))
+                .isEqualTo(EutxoReceipt.Status.ACCEPTED);
+        EutxoWithdrawalRecord record = EutxoQueryCodec.decodeWithdrawalRecords(
+                machine.query(
+                        EutxoQueryCodec.WITHDRAWALS_PATH,
+                        EutxoQueryCodec.lifecyclePageRequest(0, 10),
+                        state)).getFirst();
+        assertThat(record.claim().lovelace())
+                .isEqualTo(BigInteger.valueOf(7_000_000L));
+        assertThat(record.claim().bounty())
+                .isEqualTo(BigInteger.valueOf(3_000_000L));
+    }
+
+    @Test
+    void privilegedSubmissionAdmitsOnlyValidParamsCommandsOnV3() {
+        EutxoStateMachine v3 = v3Machine(2);
+        EutxoBridgeParamsGovernanceV1.Command command =
+                new EutxoBridgeParamsGovernanceV1.Command(
+                        1, EutxoBridgeParams.defaults(), 1);
+        assertThat(v3.validatePrivilegedSystemSubmission(
+                EutxoBridgeParamsGovernanceV1.TOPIC, command.encode())
+                .isAccepted()).isTrue();
+        assertThat(v3.validatePrivilegedSystemSubmission(
+                EutxoBridgeParamsGovernanceV1.TOPIC, new byte[] {1})
+                .isAccepted()).isFalse();
+        assertThat(v3.validatePrivilegedSystemSubmission(
+                "~governance/other", command.encode()).isAccepted()).isFalse();
+
+        EutxoStateMachine v2 = (EutxoStateMachine) new EutxoStateMachineProvider()
+                .create(context(Map.of(
+                        "machines.eutxo.profile", EutxoProfile.V2.id(),
+                        "machines.eutxo.genesis.address", ALICE.address(),
+                        "machines.eutxo.genesis.lovelace", "1000000"), 2));
+        assertThat(v2.validatePrivilegedSystemSubmission(
+                EutxoBridgeParamsGovernanceV1.TOPIC, command.encode())
+                .isAccepted()).isFalse();
+    }
+
+    @Test
+    void replayFromScratchReproducesIdenticalRootsAcrossGovernanceAndClaims()
+            throws Exception {
+        // Same block sequence applied to two fresh states must agree bit-for-
+        // bit (the conformance-harness property, exercised directly here with
+        // governance + bounty claims in the corpus).
+        List<AppBlock> blocks = settlementCorpus();
+        MemoryAppState first = new MemoryAppState();
+        MemoryAppState second = new MemoryAppState();
+        EutxoStateMachine one = v3Machine(2);
+        EutxoStateMachine two = v3Machine(2);
+        for (AppBlock block : blocks) {
+            one.apply(block, first);
+        }
+        for (AppBlock block : blocks) {
+            two.apply(block, second);
+        }
+        assertThat(first.sameState(second)).isTrue();
+        assertThat(EutxoBridgeParams.decode(
+                first.get(EutxoStateKeys.bridgeParamsCurrent()).orElseThrow())
+                .feeFlatLovelace()).isEqualTo(4_000_000L);
+    }
+
+    @Test
+    void governedParamsSurviveRestartAndSnapshotDeterministically() {
+        // The conformance harness's membership epoch is a single member
+        // ("11" * 32) with threshold 1, so each command schedules directly.
+        Map<String, String> settings = Map.of(
+                "machines.eutxo.profile", EutxoProfile.V3.id(),
+                "machines.eutxo.expected-profile-digest",
+                EutxoProfile.V3.digestHex(),
+                "machines.eutxo.genesis.address", ALICE.address(),
+                "machines.eutxo.genesis.lovelace", "100");
+        List<com.bloxbean.cardano.yano.runtime.appchain.StateMachineConformance
+                .CorpusMessage> corpus = List.of(
+                new com.bloxbean.cardano.yano.runtime.appchain
+                        .StateMachineConformance.CorpusMessage(
+                        EutxoBridgeParamsGovernanceV1.TOPIC,
+                        new EutxoBridgeParamsGovernanceV1.Command(
+                                1,
+                                new EutxoBridgeParams(1, 3_000_000L, 25,
+                                        2_000_000L, 8, 100L, 3_600L,
+                                        86_400L, 0L),
+                                1).encode()),
+                new com.bloxbean.cardano.yano.runtime.appchain
+                        .StateMachineConformance.CorpusMessage(
+                        EutxoBridgeParamsGovernanceV1.TOPIC,
+                        new byte[] {0x01}),
+                new com.bloxbean.cardano.yano.runtime.appchain
+                        .StateMachineConformance.CorpusMessage(
+                        EutxoBridgeParamsGovernanceV1.TOPIC,
+                        new EutxoBridgeParamsGovernanceV1.Command(
+                                1,
+                                new EutxoBridgeParams(1, 1_500_000L, 0,
+                                        2_000_000L, 4, 50L, 1_800L,
+                                        86_400L, 0L),
+                                2).encode()),
+                new com.bloxbean.cardano.yano.runtime.appchain
+                        .StateMachineConformance.CorpusMessage(
+                        EutxoBridgeParamsGovernanceV1.TOPIC,
+                        new EutxoBridgeParamsGovernanceV1.Command(
+                                1,
+                                new EutxoBridgeParams(1, 500_000L, 10,
+                                        2_000_000L, 8, 100L, 3_600L,
+                                        86_400L, 0L),
+                                1).encode()));
+        com.bloxbean.cardano.yano.runtime.appchain.StateMachineConformance.Result
+                result = com.bloxbean.cardano.yano.runtime.appchain
+                .StateMachineConformance.builder(new EutxoStateMachineProvider())
+                .chainId("eutxo-conformance")
+                .settings(settings)
+                .blocks(corpus.size())
+                .messagesPerBlock(1)
+                .runs(3)
+                .restartAtHeight(2)
+                .snapshotAtHeight(3)
+                .messageGenerator((height, index, random) ->
+                        corpus.get(Math.toIntExact(height - 1)))
+                .run();
+        assertThat(result.deterministic())
+                .as(result.describeDivergence()).isTrue();
+    }
+
+    private List<AppBlock> settlementCorpus() throws Exception {
+        EutxoBridgeParamsGovernanceV1.Command command =
+                new EutxoBridgeParamsGovernanceV1.Command(
+                        1,
+                        new EutxoBridgeParams(
+                                1, 4_000_000L, 50, 2_000_000L, 4,
+                                50L, 1_800L, 86_400L, 0L),
+                        1);
+        EutxoDepositClaim deposit = depositClaim(BigInteger.valueOf(20_000_000L));
+        L1Observation observation = new L1Observation(
+                "bridge-deposits",
+                HexFormat.of().parseHex(deposit.acceptedOutpoint().transactionId()),
+                deposit.l1Slot(),
+                deposit.l1BlockHash(),
+                deposit.encode());
+        EutxoWithdrawalDatum datum = new EutxoWithdrawalDatum(
+                1, "eutxo-test", 7, ALICE.address(), fill(32, 8));
+        Transaction withdrawal = EutxoTransactionFixtures.signedOutputs(
+                deposit.mirroredOutpoint(),
+                ALICE,
+                List.of(TransactionOutput.builder()
+                        .address(withdrawalAddress())
+                        .value(Value.fromCoin(BigInteger.valueOf(20_000_000L)))
+                        .inlineDatum(PlutusData.deserialize(datum.encode()))
+                        .build()),
+                0,
+                0);
+        return List.of(
+                block(1, observationMessage(81, observation)),
+                block(2, paramsMessage(82, MEMBER_ONE, command)),
+                block(3, paramsMessage(83, MEMBER_TWO, command)),
+                block(4),
+                block(5, message(84, withdrawal)));
+    }
+
+    // ------------------------------------------------------------------
+
+    private static String withdrawalAddress() {
+        return wallet(2).address();
+    }
+
+    private static EutxoStateMachine v3Machine(int threshold) {
+        Map<String, String> settings = Map.ofEntries(
+                Map.entry("machines.eutxo.profile", EutxoProfile.V3.id()),
+                Map.entry("machines.eutxo.expected-profile-digest",
+                        EutxoProfile.V3.digestHex()),
+                Map.entry("machines.eutxo.bridge.observer-id", "bridge-deposits"),
+                Map.entry("machines.eutxo.bridge.vault-address", VAULT),
+                Map.entry("machines.eutxo.bridge.vault-script-hash", VAULT_HASH),
+                Map.entry("machines.eutxo.bridge.confirmation-observer-id",
+                        "bridge-withdrawals"),
+                Map.entry("machines.eutxo.bridge.withdrawal-address",
+                        withdrawalAddress()),
+                Map.entry("machines.eutxo.bridge.epoch", "7"),
+                Map.entry("machines.eutxo.bridge.max-withdrawal-lovelace",
+                        "100000000"),
+                Map.entry("machines.eutxo.bridge.max-pending-withdrawals", "16"),
+                Map.entry("machines.eutxo.bridge.withdrawals-paused", "false"));
+        return (EutxoStateMachine) new EutxoStateMachineProvider()
+                .create(context(settings, threshold));
+    }
+
+    private static AppStateMachineContext context(
+            Map<String, String> settings, int threshold) {
+        AppChainMembershipView view = height -> new AppChainMembershipEpoch(
+                0, List.of(MEMBER_ONE, MEMBER_TWO), threshold);
+        return new AppStateMachineContext() {
+            @Override
+            public String chainId() {
+                return "eutxo-test";
+            }
+
+            @Override
+            public Map<String, String> settings() {
+                return settings;
+            }
+
+            @Override
+            public Optional<AppChainMembershipView> membershipView() {
+                return Optional.of(view);
+            }
+        };
+    }
+
+    private static void applyDeposit(
+            EutxoStateMachine machine, MemoryAppState state, long lovelace)
+            throws Exception {
+        EutxoDepositClaim claim = depositClaim(BigInteger.valueOf(lovelace));
+        L1Observation observation = new L1Observation(
+                "bridge-deposits",
+                HexFormat.of().parseHex(claim.acceptedOutpoint().transactionId()),
+                claim.l1Slot(),
+                claim.l1BlockHash(),
+                claim.encode());
+        machine.apply(block(1, observationMessage(61, observation)), state);
+    }
+
+    private static EutxoOutpoint mirroredOutpoint(
+            EutxoStateMachine machine, MemoryAppState state) {
+        return EutxoQueryCodec.decodeRecords(machine.query(
+                        EutxoQueryCodec.ADDRESS_PATH,
+                        EutxoQueryCodec.addressRequest(ALICE.address()),
+                        state))
+                .getFirst().outpoint();
+    }
+
+    private static EutxoDepositClaim depositClaim(BigInteger lovelace)
+            throws Exception {
+        TransactionOutput mirroredOutput = TransactionOutput.builder()
+                .address(ALICE.address())
+                .value(Value.fromCoin(lovelace))
+                .build();
+        byte[] outputCbor = com.bloxbean.cardano.client.common.cbor
+                .CborSerializationUtil.serialize(mirroredOutput.serialize());
+        return new EutxoDepositClaim(
+                EutxoDepositClaim.ABI_VERSION,
+                "eutxo-test",
+                new EutxoOutpoint("22".repeat(32), 1),
+                100,
+                fill(32, 3),
+                VAULT,
+                VAULT_HASH,
+                outputCbor,
+                ALICE.address(),
+                outputCbor,
+                fill(32, 4),
+                new EutxoOutpoint("33".repeat(32), 0),
+                1_000);
+    }
+
+    private static EutxoReceipt.Status receiptStatus(
+            EutxoStateMachine machine, MemoryAppState state, AppMessage message) {
+        return EutxoQueryCodec.decodeOptionalReceipt(machine.query(
+                        EutxoQueryCodec.ATTEMPT_PATH,
+                        EutxoQueryCodec.attemptRequest(message.getMessageId()),
+                        state))
+                .status();
+    }
+
+    private static AppMessage paramsMessage(
+            int idByte, String senderHex,
+            EutxoBridgeParamsGovernanceV1.Command command) {
+        return AppMessage.builder()
+                .version(1)
+                .messageId(fill(32, idByte))
+                .chainId("eutxo-test")
+                .topic(EutxoBridgeParamsGovernanceV1.TOPIC)
+                .sender(HexFormat.of().parseHex(senderHex))
+                .senderSeq(idByte)
+                .expiresAt(Long.MAX_VALUE)
+                .body(command.encode())
+                .authScheme(0)
+                .authProof(new byte[64])
+                .build();
+    }
+
+    private static AppMessage observationMessage(
+            int idByte, L1Observation observation) {
+        return AppMessage.builder()
+                .version(1)
+                .messageId(fill(32, idByte))
+                .chainId("eutxo-test")
+                .topic(observation.topic())
+                .sender(new byte[32])
+                .senderSeq(idByte)
+                .expiresAt(Long.MAX_VALUE)
+                .body(observation.encode())
+                .authScheme(0)
+                .authProof(new byte[64])
+                .build();
+    }
+
+    private static AppMessage message(int idByte, Transaction transaction) {
+        return AppMessage.builder()
+                .version(1)
+                .messageId(fill(32, idByte))
+                .chainId("eutxo-test")
+                .topic(EutxoStateMachine.TOPIC)
+                .sender(new byte[32])
+                .senderSeq(idByte)
+                .expiresAt(Long.MAX_VALUE)
+                .body(EutxoTransactionFixtures.serialize(transaction))
+                .authScheme(0)
+                .authProof(new byte[64])
+                .build();
+    }
+
+    private static AppBlock block(long height, AppMessage... messages) {
+        return new AppBlock(
+                AppBlock.BLOCK_VERSION,
+                "eutxo-test",
+                height,
+                new byte[32],
+                0,
+                new byte[0],
+                height,
+                new byte[32],
+                new byte[32],
+                List.of(messages),
+                new byte[32],
+                FinalityCert.empty());
+    }
+
+    private static EutxoTestWallet wallet(int fill) {
+        byte[] seed = new byte[32];
+        Arrays.fill(seed, (byte) fill);
+        return EutxoTestWallet.fromSeed(seed);
+    }
+
+    private static byte[] fill(int length, int value) {
+        byte[] bytes = new byte[length];
+        Arrays.fill(bytes, (byte) value);
+        return bytes;
+    }
+}

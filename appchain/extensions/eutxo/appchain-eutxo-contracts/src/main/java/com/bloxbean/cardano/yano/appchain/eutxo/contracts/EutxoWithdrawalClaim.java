@@ -17,13 +17,43 @@ public record EutxoWithdrawalClaim(
         BigInteger lovelace,
         byte[] nonce,
         long settlementSequence,
-        long requestedHeight
+        long requestedHeight,
+        BigInteger bounty
 ) {
     public static final int ABI_VERSION = 1;
+    /** ADR-UTXO-009: {payout, bounty} claims with a committed executor bounty. */
+    public static final int ABI_VERSION_V2 = 2;
+
+    /** Legacy v1 claim (zero bounty); byte- and id-compatible with pre-009. */
+    public EutxoWithdrawalClaim(
+            int abiVersion,
+            String chainId,
+            long bridgeEpoch,
+            EutxoOutpoint withdrawalOutpoint,
+            String destinationAddress,
+            BigInteger lovelace,
+            byte[] nonce,
+            long settlementSequence,
+            long requestedHeight
+    ) {
+        this(abiVersion, chainId, bridgeEpoch, withdrawalOutpoint,
+                destinationAddress, lovelace, nonce, settlementSequence,
+                requestedHeight, BigInteger.ZERO);
+    }
 
     public EutxoWithdrawalClaim {
-        if (abiVersion != ABI_VERSION) {
+        if (abiVersion != ABI_VERSION && abiVersion != ABI_VERSION_V2) {
             throw new IllegalArgumentException("unsupported EUTxO withdrawal claim ABI");
+        }
+        bounty = Objects.requireNonNull(bounty, "bounty");
+        if (abiVersion == ABI_VERSION && bounty.signum() != 0) {
+            throw new IllegalArgumentException(
+                    "v1 withdrawal claims cannot carry a bounty");
+        }
+        if (bounty.signum() < 0
+                || bounty.compareTo(BigInteger.valueOf(Long.MAX_VALUE)) > 0) {
+            throw new IllegalArgumentException(
+                    "withdrawal bounty must fit a non-negative signed 64-bit integer");
         }
         chainId = text(chainId, "chainId", 128);
         if (bridgeEpoch < 0 || settlementSequence < 0 || requestedHeight < 0) {
@@ -53,8 +83,19 @@ public record EutxoWithdrawalClaim(
         String identity = abiVersion + "\n" + chainId + "\n" + bridgeEpoch + "\n"
                 + withdrawalOutpoint + "\n" + destinationAddress + "\n" + lovelace
                 + "\n" + HexFormat.of().formatHex(nonce) + "\n" + settlementSequence;
+        if (abiVersion >= ABI_VERSION_V2) {
+            // Appended (never inserted): v1 identities stay byte-identical,
+            // and the leading abiVersion makes cross-version collisions
+            // impossible.
+            identity += "\n" + bounty;
+        }
         return HexFormat.of().formatHex(
                 Blake2bUtil.blake2bHash256(identity.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    /** Total reserve outflow this claim commits: payout plus bounty. */
+    public BigInteger totalLovelace() {
+        return lovelace.add(bounty);
     }
 
     public byte[] encode() {
@@ -76,14 +117,16 @@ public record EutxoWithdrawalClaim(
                 && lovelace.equals(claim.lovelace)
                 && java.util.Arrays.equals(nonce, claim.nonce)
                 && settlementSequence == claim.settlementSequence
-                && requestedHeight == claim.requestedHeight;
+                && requestedHeight == claim.requestedHeight
+                && bounty.equals(claim.bounty);
     }
 
     @Override
     public int hashCode() {
         int result = Objects.hash(
                 abiVersion, chainId, bridgeEpoch, withdrawalOutpoint,
-                destinationAddress, lovelace, settlementSequence, requestedHeight);
+                destinationAddress, lovelace, settlementSequence, requestedHeight,
+                bounty);
         return 31 * result + java.util.Arrays.hashCode(nonce);
     }
 

@@ -23,6 +23,10 @@ import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2ParameterSnapsh
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoL2Transaction;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoTransactionSummary;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoContract;
+import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipEpoch;
+import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipView;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoBridgeParams;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoBridgeParamsGovernanceV1;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalClaim;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalCommitment;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalConfirmation;
@@ -49,6 +53,8 @@ public final class EutxoStateMachine implements AppStateMachine {
     public static final String TOPIC = EutxoContract.TRANSACTION_TOPIC;
 
     private final EutxoProfile profile;
+    private final AppChainMembershipView membershipView;
+    private final EutxoBridgeParams initialBridgeParams;
     private final EutxoGenesis genesis;
     private final UtxoTransitionEngine transitionEngine;
     private final EutxoBridgeConfig bridge;
@@ -62,7 +68,7 @@ public final class EutxoStateMachine implements AppStateMachine {
             UtxoTransitionEngine transitionEngine
     ) {
         this(profile, genesis, transitionEngine, EutxoBridgeConfig.disabled(), null,
-                "local-eutxo", "devnet");
+                "local-eutxo", "devnet", null, null);
     }
 
     EutxoStateMachine(
@@ -72,7 +78,7 @@ public final class EutxoStateMachine implements AppStateMachine {
             EutxoBridgeConfig bridge
     ) {
         this(profile, genesis, transitionEngine, bridge, null,
-                "local-eutxo", "devnet");
+                "local-eutxo", "devnet", null, null);
     }
 
     EutxoStateMachine(
@@ -83,7 +89,7 @@ public final class EutxoStateMachine implements AppStateMachine {
             EutxoValidityCommitmentEngine validityEngine
     ) {
         this(profile, genesis, transitionEngine, bridge, validityEngine,
-                "local-eutxo", "devnet");
+                "local-eutxo", "devnet", null, null);
     }
 
     EutxoStateMachine(
@@ -95,6 +101,24 @@ public final class EutxoStateMachine implements AppStateMachine {
             String chainId,
             String network
     ) {
+        this(profile, genesis, transitionEngine, bridge, validityEngine,
+                chainId, network, null, null);
+    }
+
+    EutxoStateMachine(
+            EutxoProfile profile,
+            EutxoGenesis genesis,
+            UtxoTransitionEngine transitionEngine,
+            EutxoBridgeConfig bridge,
+            EutxoValidityCommitmentEngine validityEngine,
+            String chainId,
+            String network,
+            AppChainMembershipView membershipView,
+            EutxoBridgeParams initialBridgeParams
+    ) {
+        this.membershipView = membershipView;
+        this.initialBridgeParams = initialBridgeParams != null
+                ? initialBridgeParams : EutxoBridgeParams.defaults();
         this.profile = Objects.requireNonNull(profile, "profile");
         this.genesis = Objects.requireNonNull(genesis, "genesis");
         this.transitionEngine = Objects.requireNonNull(transitionEngine, "transitionEngine");
@@ -155,11 +179,20 @@ public final class EutxoStateMachine implements AppStateMachine {
     @Override
     public void apply(AppBlock block, AppStateWriter writer) {
         ensureGenesis(writer);
+        if (settlementProfile()) {
+            activateScheduledParams(block.height(), writer);
+        }
         int ordinal = 0;
         long summarySequence = writer.get(EutxoStateKeys.summaryCount())
                 .map(EutxoStateMachine::longValue)
                 .orElse(0L);
         for (AppMessage message : block.messages()) {
+            if (settlementProfile() && EutxoBridgeParamsGovernanceV1.TOPIC
+                    .equals(message.getTopic())) {
+                processParamsCommand(message, block.height(), writer);
+                ordinal++;
+                continue;
+            }
             if (bridge.enabled() && bridge.topic().equals(message.getTopic())) {
                 importDeposit(acceptedDeposit(message), block.height(), writer);
                 ordinal++;
@@ -410,6 +443,12 @@ public final class EutxoStateMachine implements AppStateMachine {
         byte[] existingProfile = writer.get(EutxoStateKeys.profile()).orElse(null);
         if (existingProfile != null && !java.util.Arrays.equals(existingProfile, expectedProfile)) {
             throw new IllegalStateException("retained EUTxO profile digest differs from configured profile");
+        }
+        if (settlementProfile()
+                && writer.get(EutxoStateKeys.bridgeParamsCurrent()).isEmpty()) {
+            byte[] initial = initialBridgeParams.encode();
+            writer.put(EutxoStateKeys.bridgeParamsCurrent(), initial);
+            writer.put(EutxoStateKeys.bridgeParamsHistory(0L), initial);
         }
         if (writer.get(EutxoStateKeys.genesis()).isPresent()) {
             ensureValidityState(writer, false);
@@ -671,16 +710,47 @@ public final class EutxoStateMachine implements AppStateMachine {
                         "BRIDGE_WITHDRAWAL_IDENTITY",
                         "withdrawal targets another chain or bridge epoch");
             }
-            EutxoWithdrawalClaim claim = new EutxoWithdrawalClaim(
-                    EutxoWithdrawalClaim.ABI_VERSION,
-                    bridge.chainId(),
-                    bridge.bridgeEpoch(),
-                    record.outpoint(),
-                    datum.destinationAddress(),
-                    output.lovelace(),
-                    datum.nonce(),
-                    totalCount,
-                    height);
+            EutxoWithdrawalClaim claim;
+            if (settlementProfile()) {
+                // ADR-UTXO-009: the withdrawer's output funds BOTH the payout
+                // and the committed executor bounty; the fee resolves from
+                // the governed schedule at creation and is frozen in the
+                // claim (and its id) forever.
+                EutxoBridgeParams params = currentParams(state);
+                java.math.BigInteger total = output.lovelace();
+                java.math.BigInteger fee = params.resolveBounty(total);
+                java.math.BigInteger payout = total.subtract(fee);
+                if (payout.signum() <= 0 || payout.compareTo(
+                        java.math.BigInteger.valueOf(
+                                params.minWithdrawalLovelace())) < 0) {
+                    throw new WithdrawalFailure(
+                            "BRIDGE_WITHDRAWAL_MINIMUM",
+                            "withdrawal payout after the executor bounty is "
+                                    + "below the governed minimum");
+                }
+                claim = new EutxoWithdrawalClaim(
+                        EutxoWithdrawalClaim.ABI_VERSION_V2,
+                        bridge.chainId(),
+                        bridge.bridgeEpoch(),
+                        record.outpoint(),
+                        datum.destinationAddress(),
+                        payout,
+                        datum.nonce(),
+                        totalCount,
+                        height,
+                        fee);
+            } else {
+                claim = new EutxoWithdrawalClaim(
+                        EutxoWithdrawalClaim.ABI_VERSION,
+                        bridge.chainId(),
+                        bridge.bridgeEpoch(),
+                        record.outpoint(),
+                        datum.destinationAddress(),
+                        output.lovelace(),
+                        datum.nonce(),
+                        totalCount,
+                        height);
+            }
             try {
                 EutxoWithdrawalCommitment.fromClaim(claim);
             } catch (IllegalArgumentException failure) {
@@ -965,7 +1035,7 @@ public final class EutxoStateMachine implements AppStateMachine {
             return;
         }
         try {
-            reserve = reserve.confirmWithdrawal(claim.lovelace());
+            reserve = reserve.confirmWithdrawal(claim.totalLovelace());
         } catch (IllegalArgumentException mismatch) {
             haltBridge(writer, "WITHDRAWAL_RESERVE_MISMATCH");
             return;
@@ -974,6 +1044,199 @@ public final class EutxoStateMachine implements AppStateMachine {
         writer.put(reserveKey, reserve.encode());
         writer.put(EutxoStateKeys.pendingWithdrawalCount(),
                 longBytes(pendingCount - 1));
+    }
+
+    private boolean settlementProfile() {
+        return profile.version() >= 3;
+    }
+
+    private EutxoBridgeParams currentParams(AppStateReader state) {
+        return state.get(EutxoStateKeys.bridgeParamsCurrent())
+                .map(EutxoBridgeParams::decode)
+                .orElse(initialBridgeParams);
+    }
+
+    @Override
+    public AdmissionResult validatePrivilegedSystemSubmission(String topic, byte[] body) {
+        if (!settlementProfile()
+                || !EutxoBridgeParamsGovernanceV1.TOPIC.equals(topic)) {
+            return AdmissionResult.reject(
+                    "unsupported privileged EUTxO system topic");
+        }
+        try {
+            EutxoBridgeParamsGovernanceV1.decode(body);
+            return AdmissionResult.accept();
+        } catch (IllegalArgumentException failure) {
+            return AdmissionResult.reject(
+                    "invalid bridge params command: " + failure.getMessage());
+        }
+    }
+
+    /**
+     * Deterministic governed parameter change: approvals accumulate on the
+     * EXACT command bytes from distinct membership-epoch members; the
+     * threshold schedules the record at {@code height + max(1, lag)}.
+     * Malformed or unauthorized inputs are skipped deterministically —
+     * privileged admission already screened local submissions.
+     */
+    private void processParamsCommand(
+            AppMessage message, long height, AppStateWriter writer) {
+        if (membershipView == null) {
+            return;
+        }
+        EutxoBridgeParamsGovernanceV1.Command command;
+        try {
+            command = EutxoBridgeParamsGovernanceV1.decode(message.getBody());
+        } catch (IllegalArgumentException malformed) {
+            return;
+        }
+        byte[] senderKey = message.getSender();
+        if (senderKey == null || senderKey.length != 32) {
+            return;
+        }
+        String sender = java.util.HexFormat.of().formatHex(senderKey);
+        AppChainMembershipEpoch epoch = membershipView.epochAt(height);
+        if (epoch == null || !epoch.members().contains(sender)) {
+            return;
+        }
+        if (writer.get(EutxoStateKeys.bridgeParamsPending()).isPresent()) {
+            // One scheduled change at a time; later proposals wait for it.
+            return;
+        }
+        java.util.TreeMap<String, ParamsProposal> proposals =
+                decodeProposals(writer);
+        String digest = command.digestHex();
+        ParamsProposal proposal = proposals.computeIfAbsent(digest,
+                ignored -> new ParamsProposal(
+                        command.encode(), new java.util.TreeSet<>()));
+        if (!proposal.approvers().add(sender)) {
+            return;
+        }
+        if (proposal.approvers().size() >= epoch.threshold()) {
+            long activation = Math.addExact(
+                    height, Math.max(1L, command.activationLag()));
+            writer.put(EutxoStateKeys.bridgeParamsPending(),
+                    encodePending(activation,
+                            command.params().withEffectiveHeight(activation)));
+            // A scheduled change voids every open proposal.
+            writer.delete(EutxoStateKeys.bridgeParamsProposals());
+            return;
+        }
+        writer.put(EutxoStateKeys.bridgeParamsProposals(),
+                encodeProposals(proposals));
+    }
+
+    private void activateScheduledParams(long height, AppStateWriter writer) {
+        byte[] pending = writer.get(
+                EutxoStateKeys.bridgeParamsPending()).orElse(null);
+        if (pending == null) {
+            return;
+        }
+        PendingParams scheduled = decodePending(pending);
+        if (height < scheduled.activationHeight()) {
+            return;
+        }
+        writer.put(EutxoStateKeys.bridgeParamsCurrent(),
+                scheduled.params().encode());
+        writer.put(EutxoStateKeys.bridgeParamsHistory(
+                scheduled.activationHeight()), scheduled.params().encode());
+        writer.delete(EutxoStateKeys.bridgeParamsPending());
+    }
+
+    private record ParamsProposal(
+            byte[] commandBytes, java.util.TreeSet<String> approvers) {
+    }
+
+    private record PendingParams(long activationHeight, EutxoBridgeParams params) {
+    }
+
+    private static byte[] encodePending(long activation, EutxoBridgeParams params) {
+        try {
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            new co.nstant.in.cbor.CborEncoder(out).encode(
+                    new co.nstant.in.cbor.CborBuilder()
+                            .addArray()
+                            .add(new co.nstant.in.cbor.model.UnsignedInteger(activation))
+                            .add(new co.nstant.in.cbor.model.ByteString(params.encode()))
+                            .end()
+                            .build());
+            return out.toByteArray();
+        } catch (Exception failure) {
+            throw new IllegalStateException("cannot encode pending params", failure);
+        }
+    }
+
+    private static PendingParams decodePending(byte[] bytes) {
+        try {
+            var items = new co.nstant.in.cbor.CborDecoder(
+                    new java.io.ByteArrayInputStream(bytes)).decode();
+            var array = (co.nstant.in.cbor.model.Array) items.getFirst();
+            var fields = array.getDataItems();
+            long activation = ((co.nstant.in.cbor.model.UnsignedInteger)
+                    fields.get(0)).getValue().longValueExact();
+            EutxoBridgeParams params = EutxoBridgeParams.decode(
+                    ((co.nstant.in.cbor.model.ByteString) fields.get(1)).getBytes());
+            return new PendingParams(activation, params);
+        } catch (Exception failure) {
+            throw new IllegalStateException("malformed pending params", failure);
+        }
+    }
+
+    private java.util.TreeMap<String, ParamsProposal> decodeProposals(
+            AppStateReader state) {
+        java.util.TreeMap<String, ParamsProposal> proposals = new java.util.TreeMap<>();
+        byte[] retained = state.get(
+                EutxoStateKeys.bridgeParamsProposals()).orElse(null);
+        if (retained == null) {
+            return proposals;
+        }
+        try {
+            var items = new co.nstant.in.cbor.CborDecoder(
+                    new java.io.ByteArrayInputStream(retained)).decode();
+            var array = (co.nstant.in.cbor.model.Array) items.getFirst();
+            for (var item : array.getDataItems()) {
+                var entry = ((co.nstant.in.cbor.model.Array) item).getDataItems();
+                byte[] commandBytes = ((co.nstant.in.cbor.model.ByteString)
+                        entry.get(0)).getBytes();
+                java.util.TreeSet<String> approvers = new java.util.TreeSet<>();
+                for (var approver : ((co.nstant.in.cbor.model.Array)
+                        entry.get(1)).getDataItems()) {
+                    approvers.add(java.util.HexFormat.of().formatHex(
+                            ((co.nstant.in.cbor.model.ByteString) approver)
+                                    .getBytes()));
+                }
+                proposals.put(EutxoBridgeParamsGovernanceV1
+                        .decode(commandBytes).digestHex(),
+                        new ParamsProposal(commandBytes, approvers));
+            }
+        } catch (Exception failure) {
+            throw new IllegalStateException("malformed params proposals", failure);
+        }
+        return proposals;
+    }
+
+    private static byte[] encodeProposals(
+            java.util.TreeMap<String, ParamsProposal> proposals) {
+        try {
+            var root = new co.nstant.in.cbor.model.Array();
+            for (ParamsProposal proposal : proposals.values()) {
+                var entry = new co.nstant.in.cbor.model.Array();
+                entry.add(new co.nstant.in.cbor.model.ByteString(
+                        proposal.commandBytes()));
+                var approvers = new co.nstant.in.cbor.model.Array();
+                for (String approver : proposal.approvers()) {
+                    approvers.add(new co.nstant.in.cbor.model.ByteString(
+                            java.util.HexFormat.of().parseHex(approver)));
+                }
+                entry.add(approvers);
+                root.add(entry);
+            }
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            new co.nstant.in.cbor.CborEncoder(out).encode(root);
+            return out.toByteArray();
+        } catch (Exception failure) {
+            throw new IllegalStateException("cannot encode params proposals", failure);
+        }
     }
 
     private static void haltBridge(AppStateWriter writer, String reason) {

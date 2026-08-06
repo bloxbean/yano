@@ -12,6 +12,30 @@ public final class EutxoStateKeys {
     private static final byte[] WITHDRAWAL_COMMITMENT_PREFIX =
             bytes(PREFIX + "wc/");
 
+    /** Active governed bridge parameters (ADR-UTXO-009, v3 profiles). */
+    public static byte[] bridgeParamsCurrent() {
+        return bytes(PREFIX + "bridge/params/current");
+    }
+
+    /** Threshold-scheduled parameters awaiting their activation height. */
+    public static byte[] bridgeParamsPending() {
+        return bytes(PREFIX + "bridge/params/pending");
+    }
+
+    /** Open parameter proposals (approval accumulation by command digest). */
+    public static byte[] bridgeParamsProposals() {
+        return bytes(PREFIX + "bridge/params/proposals");
+    }
+
+    /** Historical parameter record activated at {@code height} (0 = genesis). */
+    public static byte[] bridgeParamsHistory(long height) {
+        if (height < 0) {
+            throw new IllegalArgumentException("history height cannot be negative");
+        }
+        return bytes(PREFIX + "bridge/params/history/"
+                + String.format(java.util.Locale.ROOT, "%020d", height));
+    }
+
     private EutxoStateKeys() {
     }
 

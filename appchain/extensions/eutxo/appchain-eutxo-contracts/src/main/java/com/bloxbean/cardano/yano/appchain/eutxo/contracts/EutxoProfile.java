@@ -74,10 +74,45 @@ public record EutxoProfile(
             14_000_000,
             10_000_000_000L);
 
+    // ADR-UTXO-009 tier-1 (consensus-frozen) bridge-settlement bounds. They
+    // are digest-bound for version >= 3; changing any of them is a new
+    // profile. Batch-size caps join the digest in SP-M2 once ex-unit
+    // budgets are measured.
+    public static final long V3_BOUNTY_CAP_FLAT_LOVELACE = 5_000_000L;
+    public static final int V3_BOUNTY_CAP_BASIS_POINTS = 100;
+    public static final int V3_NULLIFIER_SHARDS = 16;
+    public static final long V3_FALLBACK_DELAY_MIN_SLOTS = 21_600L;
+    public static final long V3_FALLBACK_DELAY_MAX_SLOTS = 2_592_000L;
+
+    /**
+     * ADR-UTXO-009 bridge-settlement profile: V2's script surface plus the
+     * governed-settlement machine semantics (claim ABI v2 with committed
+     * executor bounty, governed bridge parameters, nullifier shards).
+     */
+    public static final EutxoProfile V3 = new EutxoProfile(
+            "yano-eutxo-v3-bridge-settlement",
+            3,
+            64 * 1024,
+            64,
+            0,
+            64,
+            1_024,
+            16 * 1024,
+            true,
+            "plutus-v3-spend",
+            "0.18.2",
+            "96a3f80d3bff533febc37d367e293f7a4004a63655d99294536d1b39918441fe",
+            16,
+            32,
+            16,
+            14_000_000,
+            10_000_000_000L);
+
     public EutxoProfile {
         boolean v1 = "yano-eutxo-v1".equals(id) && version == 1;
         boolean v2 = "yano-eutxo-v2-plutus-v3".equals(id) && version == 2;
-        if (!v1 && !v2) {
+        boolean v3 = "yano-eutxo-v3-bridge-settlement".equals(id) && version == 3;
+        if (!v1 && !v2 && !v3) {
             throw new IllegalArgumentException("unsupported EUTxO profile");
         }
         if (maxTransactionBytes < 1 || maxInputs < 1 || maxOutputs < 1
@@ -109,6 +144,13 @@ public record EutxoProfile(
             canonical += '\n' + scriptFamily + '\n' + scalusVersion + '\n'
                     + protocolParametersDigest + '\n' + maxScripts + '\n' + maxDatums + '\n'
                     + maxRedeemers + '\n' + maxExecutionMemory + '\n' + maxExecutionSteps;
+        }
+        if (version >= 3) {
+            canonical += "\nbridge-settlement\n" + V3_BOUNTY_CAP_FLAT_LOVELACE
+                    + '\n' + V3_BOUNTY_CAP_BASIS_POINTS
+                    + '\n' + V3_NULLIFIER_SHARDS
+                    + '\n' + V3_FALLBACK_DELAY_MIN_SLOTS
+                    + '\n' + V3_FALLBACK_DELAY_MAX_SLOTS;
         }
         try {
             return HexFormat.of().formatHex(

@@ -395,6 +395,8 @@ public final class EutxoLocalReadModel
                 + string(value.claim().lovelace().toString())
                 + ",\"requestedHeight\":"
                 + value.claim().requestedHeight()
+                + ",\"bounty\":"
+                + value.claim().bounty()
                 + ",\"settlementTransactionId\":"
                 + string(value.settlementTransactionId())
                 + ",\"confirmedSlot\":" + value.confirmedSlot()

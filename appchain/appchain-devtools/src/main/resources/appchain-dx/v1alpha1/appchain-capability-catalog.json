@@ -1,341 +1,2203 @@
 {
   "schemaVersion": "v1alpha1",
   "artifacts": [
-    {"id":"yano-runtime","availability":"BUNDLED","bundleId":"builtin:yano-runtime","nativePosture":"bundled","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
-    {"id":"appchain-stdlib","availability":"BUNDLED","bundleId":"com.bloxbean.cardano.yano.appchain.stdlib","nativePosture":"bundled","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
-    {"id":"appchain-evidence-registry","availability":"BUNDLED","bundleId":"com.bloxbean.cardano.yano.appchain.evidence-registry","nativePosture":"bundled","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
-    {"id":"appchain-composite","availability":"BUNDLED","bundleId":"library:appchain-composite","nativePosture":"bundled","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
-    {"id":"appchain-role-workflow","availability":"BUNDLED","bundleId":"com.bloxbean.cardano.yano.appchain.role-workflow","nativePosture":"bundled","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
-    {"id":"appchain-evidence-profile","availability":"BUNDLED","bundleId":"com.bloxbean.cardano.yano.appchain.evidence-profile","nativePosture":"bundled","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
-    {"id":"appchain-kafka","availability":"FIRST_PARTY_OPTIONAL","bundleId":"com.bloxbean.cardano.yano.appchain.kafka","nativePosture":"build-time-only","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
-    {"id":"appchain-objectstore-s3","availability":"FIRST_PARTY_OPTIONAL","bundleId":"com.bloxbean.cardano.yano.appchain.objectstore.s3","nativePosture":"build-time-only","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
-    {"id":"appchain-ipfs","availability":"FIRST_PARTY_OPTIONAL","bundleId":"com.bloxbean.cardano.yano.appchain.ipfs","nativePosture":"build-time-only","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
-    {"id":"appchain-effects-cardano","availability":"FIRST_PARTY_OPTIONAL","bundleId":"com.bloxbean.cardano.yano.appchain.effects.cardano","nativePosture":"build-time-only","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
-    {"id":"appchain-zk","availability":"EXPERIMENTAL","bundleId":"com.bloxbean.cardano.yano.appchain.zk","nativePosture":"build-time-only","runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"]},
-    {"id":"appchain-eutxo-ledger","availability":"BUNDLED","bundleId":"com.bloxbean.cardano.yano.appchain.eutxo","nativePosture":"unsupported","runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"]},
-    {"id":"appchain-eutxo-indexer-core","availability":"BUNDLED","bundleId":"com.bloxbean.cardano.yano.appchain.eutxo.indexer","nativePosture":"unsupported","runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"]},
-    {"id":"appchain-eutxo-indexer-jdbc","availability":"BUNDLED","bundleId":"library:appchain-eutxo-indexer-jdbc","nativePosture":"unsupported","runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"]},
-    {"id":"appchain-eutxo-bridge-cardano","availability":"BUNDLED","bundleId":"com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano","nativePosture":"unsupported","runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"]},
-    {"id":"appchain-eutxo-zk-zeroj","availability":"BUNDLED","bundleId":"library:appchain-eutxo-zk-zeroj","nativePosture":"unsupported","runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"]},
-    {"id":"appchain-eutxo-zk-runtime","availability":"BUNDLED","bundleId":"library:appchain-eutxo-zk-runtime","nativePosture":"unsupported","runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"]},
-    {"id":"appchain-eutxo-zk-lifecycle","availability":"BUNDLED","bundleId":"library:appchain-eutxo-zk-lifecycle","nativePosture":"unsupported","runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"]}
+    {
+      "id": "yano-runtime",
+      "availability": "BUNDLED",
+      "bundleId": "builtin:yano-runtime",
+      "nativePosture": "bundled",
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ]
+    },
+    {
+      "id": "appchain-stdlib",
+      "availability": "BUNDLED",
+      "bundleId": "com.bloxbean.cardano.yano.appchain.stdlib",
+      "nativePosture": "bundled",
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ]
+    },
+    {
+      "id": "appchain-evidence-registry",
+      "availability": "BUNDLED",
+      "bundleId": "com.bloxbean.cardano.yano.appchain.evidence-registry",
+      "nativePosture": "bundled",
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ]
+    },
+    {
+      "id": "appchain-composite",
+      "availability": "BUNDLED",
+      "bundleId": "library:appchain-composite",
+      "nativePosture": "bundled",
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ]
+    },
+    {
+      "id": "appchain-role-workflow",
+      "availability": "BUNDLED",
+      "bundleId": "com.bloxbean.cardano.yano.appchain.role-workflow",
+      "nativePosture": "bundled",
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ]
+    },
+    {
+      "id": "appchain-evidence-profile",
+      "availability": "BUNDLED",
+      "bundleId": "com.bloxbean.cardano.yano.appchain.evidence-profile",
+      "nativePosture": "bundled",
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ]
+    },
+    {
+      "id": "appchain-kafka",
+      "availability": "FIRST_PARTY_OPTIONAL",
+      "bundleId": "com.bloxbean.cardano.yano.appchain.kafka",
+      "nativePosture": "build-time-only",
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ]
+    },
+    {
+      "id": "appchain-objectstore-s3",
+      "availability": "FIRST_PARTY_OPTIONAL",
+      "bundleId": "com.bloxbean.cardano.yano.appchain.objectstore.s3",
+      "nativePosture": "build-time-only",
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ]
+    },
+    {
+      "id": "appchain-ipfs",
+      "availability": "FIRST_PARTY_OPTIONAL",
+      "bundleId": "com.bloxbean.cardano.yano.appchain.ipfs",
+      "nativePosture": "build-time-only",
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ]
+    },
+    {
+      "id": "appchain-effects-cardano",
+      "availability": "FIRST_PARTY_OPTIONAL",
+      "bundleId": "com.bloxbean.cardano.yano.appchain.effects.cardano",
+      "nativePosture": "build-time-only",
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ]
+    },
+    {
+      "id": "appchain-zk",
+      "availability": "EXPERIMENTAL",
+      "bundleId": "com.bloxbean.cardano.yano.appchain.zk",
+      "nativePosture": "build-time-only",
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ]
+    },
+    {
+      "id": "appchain-eutxo-ledger",
+      "availability": "BUNDLED",
+      "bundleId": "com.bloxbean.cardano.yano.appchain.eutxo",
+      "nativePosture": "unsupported",
+      "runtimeTypes": [
+        "jvm"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ]
+    },
+    {
+      "id": "appchain-eutxo-indexer-core",
+      "availability": "BUNDLED",
+      "bundleId": "com.bloxbean.cardano.yano.appchain.eutxo.indexer",
+      "nativePosture": "unsupported",
+      "runtimeTypes": [
+        "jvm"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ]
+    },
+    {
+      "id": "appchain-eutxo-indexer-jdbc",
+      "availability": "BUNDLED",
+      "bundleId": "library:appchain-eutxo-indexer-jdbc",
+      "nativePosture": "unsupported",
+      "runtimeTypes": [
+        "jvm"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ]
+    },
+    {
+      "id": "appchain-eutxo-bridge-cardano",
+      "availability": "BUNDLED",
+      "bundleId": "com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano",
+      "nativePosture": "unsupported",
+      "runtimeTypes": [
+        "jvm"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ]
+    },
+    {
+      "id": "appchain-eutxo-zk-zeroj",
+      "availability": "BUNDLED",
+      "bundleId": "library:appchain-eutxo-zk-zeroj",
+      "nativePosture": "unsupported",
+      "runtimeTypes": [
+        "jvm"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ]
+    },
+    {
+      "id": "appchain-eutxo-zk-runtime",
+      "availability": "BUNDLED",
+      "bundleId": "library:appchain-eutxo-zk-runtime",
+      "nativePosture": "unsupported",
+      "runtimeTypes": [
+        "jvm"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ]
+    },
+    {
+      "id": "appchain-eutxo-zk-lifecycle",
+      "availability": "BUNDLED",
+      "bundleId": "library:appchain-eutxo-zk-lifecycle",
+      "nativePosture": "unsupported",
+      "runtimeTypes": [
+        "jvm"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ]
+    }
   ],
   "capabilities": [
     {
-      "id":"state:ordered-log","name":"Ordered audit log","category":"state","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,
-      "trustStatement":"Built into the Yano runtime and covered by packaged-runtime acceptance.","description":"Append-only ordered application messages.",
-      "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
-      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{"state-machine":"ordered-log"},
-      "documentation":"docs/appchain/state-machines/ordered-log.md","acceptanceScenario":"stock-ordered-log"
+      "id": "state:ordered-log",
+      "name": "Ordered audit log",
+      "category": "state",
+      "availability": "BUNDLED",
+      "maturity": "stable",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "Built into the Yano runtime and covered by packaged-runtime acceptance.",
+      "description": "Append-only ordered application messages.",
+      "provides": [
+        "state-machine"
+      ],
+      "requires": [],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime"
+      ],
+      "nativePosture": "bundled",
+      "externalPrerequisites": [],
+      "bootstrapRequirements": [],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {
+        "state-machine": "ordered-log"
+      },
+      "documentation": "docs/appchain/state-machines/ordered-log.md",
+      "acceptanceScenario": "stock-ordered-log"
     },
     {
-      "id":"state:kv-registry","name":"Owned key/value registry","category":"state","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,
-      "trustStatement":"First-party standard-library state machine bundled in every named distribution.","description":"First-writer-owned mutable key/value records with committed proofs.",
-      "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-stdlib"],"nativePosture":"bundled",
-      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{"state-machine":"kv-registry","machines.kv-registry.value-format":"utf8"},
-      "documentation":"docs/appchain/state-machines/kv-registry.md","acceptanceScenario":"stock-kv-registry"
+      "id": "state:kv-registry",
+      "name": "Owned key/value registry",
+      "category": "state",
+      "availability": "BUNDLED",
+      "maturity": "stable",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "First-party standard-library state machine bundled in every named distribution.",
+      "description": "First-writer-owned mutable key/value records with committed proofs.",
+      "provides": [
+        "state-machine"
+      ],
+      "requires": [],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime",
+        "appchain-stdlib"
+      ],
+      "nativePosture": "bundled",
+      "externalPrerequisites": [],
+      "bootstrapRequirements": [],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {
+        "state-machine": "kv-registry",
+        "machines.kv-registry.value-format": "utf8"
+      },
+      "documentation": "docs/appchain/state-machines/kv-registry.md",
+      "acceptanceScenario": "stock-kv-registry"
     },
     {
-      "id":"state:authenticated-map","name":"Authenticated map","category":"state","availability":"BUNDLED","maturity":"preview","scope":"chain","selectable":true,
-      "trustStatement":"First-party standard-library state machine with genesis-bound collections, commitment profile, encodings, validators, governed actor registry, policies, and bounded domain API.","description":"Multi-collection authenticated records with basic, direct-role, and approval authorization plus optional canonical-CBOR and schema validation.",
-      "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-stdlib","appchain-role-workflow"],"nativePosture":"bundled",
-      "externalPrerequisites":[],"bootstrapRequirements":["pin-all-genesis-member-identities"],"nonSecretAnswers":[],"secretReferences":{},"properties":{"state-machine":"authenticated-map"},
-      "documentation":"docs/appchain/state-machines/authenticated-map.md","acceptanceScenario":"authenticated-map-schema-blueprint"
+      "id": "state:authenticated-map",
+      "name": "Authenticated map",
+      "category": "state",
+      "availability": "BUNDLED",
+      "maturity": "preview",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "First-party standard-library state machine with genesis-bound collections, commitment profile, encodings, validators, governed actor registry, policies, and bounded domain API.",
+      "description": "Multi-collection authenticated records with basic, direct-role, and approval authorization plus optional canonical-CBOR and schema validation.",
+      "provides": [
+        "state-machine"
+      ],
+      "requires": [],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime",
+        "appchain-stdlib",
+        "appchain-role-workflow"
+      ],
+      "nativePosture": "bundled",
+      "externalPrerequisites": [],
+      "bootstrapRequirements": [
+        "pin-all-genesis-member-identities"
+      ],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {
+        "state-machine": "authenticated-map"
+      },
+      "documentation": "docs/appchain/state-machines/authenticated-map.md",
+      "acceptanceScenario": "authenticated-map-schema-blueprint"
     },
     {
-      "id":"state:approval-workflow","name":"Threshold approval workflow","category":"state","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,
-      "trustStatement":"First-party standard-library state machine bundled in every named distribution.","description":"Validator-member proposals, votes, and terminal threshold decisions.",
-      "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-stdlib"],"nativePosture":"bundled",
-      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{"state-machine":"approvals"},
-      "documentation":"docs/appchain/state-machines/approvals.md","acceptanceScenario":"stock-approvals"
+      "id": "state:approval-workflow",
+      "name": "Threshold approval workflow",
+      "category": "state",
+      "availability": "BUNDLED",
+      "maturity": "stable",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "First-party standard-library state machine bundled in every named distribution.",
+      "description": "Validator-member proposals, votes, and terminal threshold decisions.",
+      "provides": [
+        "state-machine"
+      ],
+      "requires": [],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime",
+        "appchain-stdlib"
+      ],
+      "nativePosture": "bundled",
+      "externalPrerequisites": [],
+      "bootstrapRequirements": [],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {
+        "state-machine": "approvals"
+      },
+      "documentation": "docs/appchain/state-machines/approvals.md",
+      "acceptanceScenario": "stock-approvals"
     },
     {
-      "id":"state:balances","name":"Member balances","category":"state","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,
-      "trustStatement":"First-party standard-library state machine bundled in every named distribution.","description":"Member-authorized mint and transfer accounts for bounded application balances.",
-      "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-stdlib"],"nativePosture":"bundled",
-      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{"state-machine":"balances"},
-      "documentation":"docs/appchain/state-machines/balances.md","acceptanceScenario":"stock-balances"
+      "id": "state:balances",
+      "name": "Member balances",
+      "category": "state",
+      "availability": "BUNDLED",
+      "maturity": "stable",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "First-party standard-library state machine bundled in every named distribution.",
+      "description": "Member-authorized mint and transfer accounts for bounded application balances.",
+      "provides": [
+        "state-machine"
+      ],
+      "requires": [],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime",
+        "appchain-stdlib"
+      ],
+      "nativePosture": "bundled",
+      "externalPrerequisites": [],
+      "bootstrapRequirements": [],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {
+        "state-machine": "balances"
+      },
+      "documentation": "docs/appchain/state-machines/balances.md",
+      "acceptanceScenario": "stock-balances"
     },
     {
-      "id":"state:doc-trail","name":"Document trail","category":"state","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,
-      "trustStatement":"First-party standard-library state machine bundled in every named distribution.","description":"Append-only per-entity document and event hash trails.",
-      "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-stdlib"],"nativePosture":"bundled",
-      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{"state-machine":"doc-trail"},
-      "documentation":"docs/appchain/state-machines/doc-trail.md","acceptanceScenario":"stock-doc-trail"
+      "id": "state:doc-trail",
+      "name": "Document trail",
+      "category": "state",
+      "availability": "BUNDLED",
+      "maturity": "stable",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "First-party standard-library state machine bundled in every named distribution.",
+      "description": "Append-only per-entity document and event hash trails.",
+      "provides": [
+        "state-machine"
+      ],
+      "requires": [],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime",
+        "appchain-stdlib"
+      ],
+      "nativePosture": "bundled",
+      "externalPrerequisites": [],
+      "bootstrapRequirements": [],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {
+        "state-machine": "doc-trail"
+      },
+      "documentation": "docs/appchain/state-machines/doc-trail.md",
+      "acceptanceScenario": "stock-doc-trail"
     },
     {
-      "id":"state:evidence-registry","name":"Evidence registry","category":"state","availability":"BUNDLED","maturity":"preview","scope":"chain","selectable":true,
-      "trustStatement":"First-party preview domain product; it proves recorded evidence claims, not real-world truth.","description":"Inspection and compliance evidence records with exact committed query proofs.",
-      "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-evidence-registry"],"nativePosture":"bundled",
-      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{"state-machine":"evidence-registry"},
-      "documentation":"docs/appchain/tutorials/04-evidence-publication.md","acceptanceScenario":"evidence-registry-proof"
+      "id": "state:evidence-registry",
+      "name": "Evidence registry",
+      "category": "state",
+      "availability": "BUNDLED",
+      "maturity": "preview",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "First-party preview domain product; it proves recorded evidence claims, not real-world truth.",
+      "description": "Inspection and compliance evidence records with exact committed query proofs.",
+      "provides": [
+        "state-machine"
+      ],
+      "requires": [],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime",
+        "appchain-evidence-registry"
+      ],
+      "nativePosture": "bundled",
+      "externalPrerequisites": [],
+      "bootstrapRequirements": [],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {
+        "state-machine": "evidence-registry"
+      },
+      "documentation": "docs/appchain/tutorials/04-evidence-publication.md",
+      "acceptanceScenario": "evidence-registry-proof"
     },
     {
-      "id":"state:role-approvals","name":"Role-gated payload approvals","category":"state","availability":"BUNDLED","maturity":"preview","scope":"chain","selectable":true,
-      "trustStatement":"First-party generic role product; applications retain responsibility for interpreting approved payload hashes.","description":"Governed organizations, actors, policies, and signed approvals for arbitrary payload hashes.",
-      "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-composite","appchain-role-workflow"],"nativePosture":"bundled",
-      "externalPrerequisites":[],"bootstrapRequirements":["governed-organizations","governed-actors","governed-policies"],"nonSecretAnswers":[],"secretReferences":{},
-      "properties":{"state-machine":"role-approvals","machines.composite.preset":"role-approvals-v1","machines.composite.profile-mode":"fixed","machines.composite.profile-governance.min-activation-lag":"20","machines.composite.profile-governance.proposal-ttl-blocks":"600","machines.composite.profile-governance.max-epochs":"1024","machines.composite.roles.maximum-mutation-lifetime-blocks":"1000"},
-      "documentation":"docs/appchain/tutorials/05-domain-role-approvals.md","acceptanceScenario":"generic-role-approval"
+      "id": "state:role-approvals",
+      "name": "Role-gated payload approvals",
+      "category": "state",
+      "availability": "BUNDLED",
+      "maturity": "preview",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "First-party generic role product; applications retain responsibility for interpreting approved payload hashes.",
+      "description": "Governed organizations, actors, policies, and signed approvals for arbitrary payload hashes.",
+      "provides": [
+        "state-machine"
+      ],
+      "requires": [],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime",
+        "appchain-composite",
+        "appchain-role-workflow"
+      ],
+      "nativePosture": "bundled",
+      "externalPrerequisites": [],
+      "bootstrapRequirements": [
+        "governed-organizations",
+        "governed-actors",
+        "governed-policies"
+      ],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {
+        "state-machine": "role-approvals",
+        "machines.composite.preset": "role-approvals-v1",
+        "machines.composite.profile-mode": "fixed",
+        "machines.composite.profile-governance.min-activation-lag": "20",
+        "machines.composite.profile-governance.proposal-ttl-blocks": "600",
+        "machines.composite.profile-governance.max-epochs": "1024",
+        "machines.composite.roles.maximum-mutation-lifetime-blocks": "1000"
+      },
+      "documentation": "docs/appchain/tutorials/05-domain-role-approvals.md",
+      "acceptanceScenario": "generic-role-approval"
     },
     {
-      "id":"state:role-evidence","name":"Role-aware evidence workflow","category":"state","availability":"BUNDLED","maturity":"preview","scope":"chain","selectable":true,
-      "trustStatement":"First-party preview evidence profile; external publication requires separately selected ready executors.","description":"Evidence registration combined with governed domain actors and role-aware release approval.",
-      "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-stdlib","appchain-evidence-registry","appchain-composite","appchain-role-workflow","appchain-evidence-profile"],"nativePosture":"bundled",
-      "externalPrerequisites":[],"bootstrapRequirements":["governed-organizations","governed-actors","governed-policies"],"nonSecretAnswers":[],"secretReferences":{},
-      "properties":{"state-machine":"role-evidence","block.max-messages":"100","effects.enabled":"true","effects.max-per-block":"200","effects.max-payload-bytes":"16384","effects.max-expiry-blocks":"100000","effects.result-window-blocks":"100000","effects.default-gate":"app-final","effects.outcome-commitment":"per-effect","effects.strict-reserved-prefix":"true","machines.kv-registry.value-format":"raw","machines.composite.preset":"role-evidence-v1","machines.composite.evidence-capacity-per-block":"8","machines.composite.profile-mode":"fixed","machines.composite.profile-governance.min-activation-lag":"20","machines.composite.profile-governance.proposal-ttl-blocks":"600","machines.composite.profile-governance.max-epochs":"1024","machines.composite.roles.maximum-mutation-lifetime-blocks":"1000","machines.evidence-registry.storage-gate":"app-final","machines.evidence-registry.storage-expiry-blocks":"0","machines.evidence-registry.notification-expiry-blocks":"0"},
-      "documentation":"docs/appchain/tutorials/04-evidence-publication.md","acceptanceScenario":"role-evidence-ledger"
+      "id": "state:role-evidence",
+      "name": "Role-aware evidence workflow",
+      "category": "state",
+      "availability": "BUNDLED",
+      "maturity": "preview",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "First-party preview evidence profile; external publication requires separately selected ready executors.",
+      "description": "Evidence registration combined with governed domain actors and role-aware release approval.",
+      "provides": [
+        "state-machine"
+      ],
+      "requires": [],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime",
+        "appchain-stdlib",
+        "appchain-evidence-registry",
+        "appchain-composite",
+        "appchain-role-workflow",
+        "appchain-evidence-profile"
+      ],
+      "nativePosture": "bundled",
+      "externalPrerequisites": [],
+      "bootstrapRequirements": [
+        "governed-organizations",
+        "governed-actors",
+        "governed-policies"
+      ],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {
+        "state-machine": "role-evidence",
+        "block.max-messages": "100",
+        "effects.enabled": "true",
+        "effects.max-per-block": "200",
+        "effects.max-payload-bytes": "16384",
+        "effects.max-expiry-blocks": "100000",
+        "effects.result-window-blocks": "100000",
+        "effects.default-gate": "app-final",
+        "effects.outcome-commitment": "per-effect",
+        "effects.strict-reserved-prefix": "true",
+        "machines.kv-registry.value-format": "raw",
+        "machines.composite.preset": "role-evidence-v1",
+        "machines.composite.evidence-capacity-per-block": "8",
+        "machines.composite.profile-mode": "fixed",
+        "machines.composite.profile-governance.min-activation-lag": "20",
+        "machines.composite.profile-governance.proposal-ttl-blocks": "600",
+        "machines.composite.profile-governance.max-epochs": "1024",
+        "machines.composite.roles.maximum-mutation-lifetime-blocks": "1000",
+        "machines.evidence-registry.storage-gate": "app-final",
+        "machines.evidence-registry.storage-expiry-blocks": "0",
+        "machines.evidence-registry.notification-expiry-blocks": "0"
+      },
+      "documentation": "docs/appchain/tutorials/04-evidence-publication.md",
+      "acceptanceScenario": "role-evidence-ledger"
     },
     {
-      "id":"state:custom-plugin","name":"Custom JVM plugin state machine","category":"custom-plugin","availability":"REFERENCE","maturity":"experimental","scope":"chain","selectable":true,
-      "trustStatement":"Operator-owned advanced path; Yano does not trust or install the plugin automatically.","description":"Project boundary for a separately reviewed custom state-machine bundle.",
-      "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"unsupported",
-      "externalPrerequisites":["reviewed-custom-plugin-bundle"],"bootstrapRequirements":["plugin-metadata-trust-review"],"nonSecretAnswers":["stateMachine"],"secretReferences":{},"properties":{"state-machine":"${stateMachine}"},
-      "documentation":"docs/appchain/tutorials/08-plugins-and-composites.md","acceptanceScenario":"custom-plugin-boundary"
+      "id": "state:custom-plugin",
+      "name": "Custom JVM plugin state machine",
+      "category": "custom-plugin",
+      "availability": "REFERENCE",
+      "maturity": "experimental",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "Operator-owned advanced path; Yano does not trust or install the plugin automatically.",
+      "description": "Project boundary for a separately reviewed custom state-machine bundle.",
+      "provides": [
+        "state-machine"
+      ],
+      "requires": [],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime"
+      ],
+      "nativePosture": "unsupported",
+      "externalPrerequisites": [
+        "reviewed-custom-plugin-bundle"
+      ],
+      "bootstrapRequirements": [
+        "plugin-metadata-trust-review"
+      ],
+      "nonSecretAnswers": [
+        "stateMachine"
+      ],
+      "secretReferences": {},
+      "properties": {
+        "state-machine": "${stateMachine}"
+      },
+      "documentation": "docs/appchain/tutorials/08-plugins-and-composites.md",
+      "acceptanceScenario": "custom-plugin-boundary"
     },
     {
-      "id":"state:zk-gate","name":"Zero-knowledge proof gate","category":"state","availability":"EXPERIMENTAL","maturity":"experimental","scope":"chain","selectable":true,
-      "trustStatement":"Experimental ZeroJ integration; circuit and verification-key governance remain operator responsibilities.","description":"Verifies configured Groth16 or Plonk proofs during deterministic state transition.",
-      "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-zk"],"nativePosture":"build-time-only",
-      "externalPrerequisites":["reviewed-verification-key-file"],"bootstrapRequirements":["identical-verification-key-on-every-member"],"nonSecretAnswers":["circuitId","verificationKeyFile","verificationKeyHash","proofSystem","curve"],"secretReferences":{},
-      "properties":{"state-machine":"zk-gate","zk.circuits[0].id":"${circuitId}","zk.circuits[0].vk-file":"${verificationKeyFile}","zk.circuits[0].vk-hash":"${verificationKeyHash}","zk.circuits[0].proof-system":"${proofSystem}","zk.circuits[0].curve":"${curve}"},
-      "documentation":"appchain/extensions/appchain-zk/README.md","acceptanceScenario":"experimental-zk-gate"
+      "id": "state:zk-gate",
+      "name": "Zero-knowledge proof gate",
+      "category": "state",
+      "availability": "EXPERIMENTAL",
+      "maturity": "experimental",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "Experimental ZeroJ integration; circuit and verification-key governance remain operator responsibilities.",
+      "description": "Verifies configured Groth16 or Plonk proofs during deterministic state transition.",
+      "provides": [
+        "state-machine"
+      ],
+      "requires": [],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime",
+        "appchain-zk"
+      ],
+      "nativePosture": "build-time-only",
+      "externalPrerequisites": [
+        "reviewed-verification-key-file"
+      ],
+      "bootstrapRequirements": [
+        "identical-verification-key-on-every-member"
+      ],
+      "nonSecretAnswers": [
+        "circuitId",
+        "verificationKeyFile",
+        "verificationKeyHash",
+        "proofSystem",
+        "curve"
+      ],
+      "secretReferences": {},
+      "properties": {
+        "state-machine": "zk-gate",
+        "zk.circuits[0].id": "${circuitId}",
+        "zk.circuits[0].vk-file": "${verificationKeyFile}",
+        "zk.circuits[0].vk-hash": "${verificationKeyHash}",
+        "zk.circuits[0].proof-system": "${proofSystem}",
+        "zk.circuits[0].curve": "${curve}"
+      },
+      "documentation": "appchain/extensions/appchain-zk/README.md",
+      "acceptanceScenario": "experimental-zk-gate"
     },
     {
-      "id":"state:zk-membership","name":"Anonymous ZK membership","category":"state","availability":"EXPERIMENTAL","maturity":"experimental","scope":"chain","selectable":true,
-      "trustStatement":"Experimental ZeroJ integration; circuit and verification-key governance remain operator responsibilities.","description":"Membership authorization using a configured zero-knowledge circuit and nullifier deduplication.",
-      "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-zk"],"nativePosture":"build-time-only",
-      "externalPrerequisites":["reviewed-membership-verification-key-file"],"bootstrapRequirements":["identical-verification-key-on-every-member"],"nonSecretAnswers":["circuitId","verificationKeyFile","verificationKeyHash","proofSystem","curve"],"secretReferences":{},
-      "properties":{"state-machine":"zk-membership","zk.circuits[0].id":"${circuitId}","zk.circuits[0].vk-file":"${verificationKeyFile}","zk.circuits[0].vk-hash":"${verificationKeyHash}","zk.circuits[0].proof-system":"${proofSystem}","zk.circuits[0].curve":"${curve}"},
-      "documentation":"appchain/extensions/appchain-zk/README.md","acceptanceScenario":"experimental-zk-membership"
+      "id": "state:zk-membership",
+      "name": "Anonymous ZK membership",
+      "category": "state",
+      "availability": "EXPERIMENTAL",
+      "maturity": "experimental",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "Experimental ZeroJ integration; circuit and verification-key governance remain operator responsibilities.",
+      "description": "Membership authorization using a configured zero-knowledge circuit and nullifier deduplication.",
+      "provides": [
+        "state-machine"
+      ],
+      "requires": [],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime",
+        "appchain-zk"
+      ],
+      "nativePosture": "build-time-only",
+      "externalPrerequisites": [
+        "reviewed-membership-verification-key-file"
+      ],
+      "bootstrapRequirements": [
+        "identical-verification-key-on-every-member"
+      ],
+      "nonSecretAnswers": [
+        "circuitId",
+        "verificationKeyFile",
+        "verificationKeyHash",
+        "proofSystem",
+        "curve"
+      ],
+      "secretReferences": {},
+      "properties": {
+        "state-machine": "zk-membership",
+        "zk.circuits[0].id": "${circuitId}",
+        "zk.circuits[0].vk-file": "${verificationKeyFile}",
+        "zk.circuits[0].vk-hash": "${verificationKeyHash}",
+        "zk.circuits[0].proof-system": "${proofSystem}",
+        "zk.circuits[0].curve": "${curve}"
+      },
+      "documentation": "appchain/extensions/appchain-zk/README.md",
+      "acceptanceScenario": "experimental-zk-membership"
     },
     {
-      "id":"state:credential-registry","name":"BBS credential registry","category":"state","availability":"EXPERIMENTAL","maturity":"experimental","scope":"chain","selectable":true,
-      "trustStatement":"Experimental ZeroJ integration; issuer key governance remains an application responsibility.","description":"Registry for selectively disclosed BBS credential statements from configured issuers.",
-      "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-zk"],"nativePosture":"build-time-only",
-      "externalPrerequisites":[],"bootstrapRequirements":["reviewed-bbs-issuer-public-key"],"nonSecretAnswers":["issuerId","issuerPublicKey"],"secretReferences":{},
-      "properties":{"state-machine":"credential-registry","zk.bbs.issuers[0].id":"${issuerId}","zk.bbs.issuers[0].public-key":"${issuerPublicKey}"},
-      "documentation":"appchain/extensions/appchain-zk/README.md","acceptanceScenario":"experimental-credential-registry"
+      "id": "state:credential-registry",
+      "name": "BBS credential registry",
+      "category": "state",
+      "availability": "EXPERIMENTAL",
+      "maturity": "experimental",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "Experimental ZeroJ integration; issuer key governance remains an application responsibility.",
+      "description": "Registry for selectively disclosed BBS credential statements from configured issuers.",
+      "provides": [
+        "state-machine"
+      ],
+      "requires": [],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime",
+        "appchain-zk"
+      ],
+      "nativePosture": "build-time-only",
+      "externalPrerequisites": [],
+      "bootstrapRequirements": [
+        "reviewed-bbs-issuer-public-key"
+      ],
+      "nonSecretAnswers": [
+        "issuerId",
+        "issuerPublicKey"
+      ],
+      "secretReferences": {},
+      "properties": {
+        "state-machine": "credential-registry",
+        "zk.bbs.issuers[0].id": "${issuerId}",
+        "zk.bbs.issuers[0].public-key": "${issuerPublicKey}"
+      },
+      "documentation": "appchain/extensions/appchain-zk/README.md",
+      "acceptanceScenario": "experimental-credential-registry"
     },
     {
-      "id":"state:eutxo-ledger","name":"Scalus-backed EUTxO ledger engine","category":"state","availability":"FIRST_PARTY_OPTIONAL","maturity":"experimental","scope":"chain","selectable":false,
-      "trustStatement":"Experimental reusable EUTxO state-machine engine. A selectable immutable ledger profile defines its admitted transaction behavior; the engine alone is not a Cardano bridge, custody product, or rollup.",
-      "description":"Deterministic Cardano-shaped EUTxO state, root-fixed receipts, address indexes, and MPF-proven outputs under one explicitly selected ledger profile.",
-      "provides":["state-machine"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-eutxo-ledger"],"nativePosture":"unsupported",
-      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},
-      "properties":{"state-machine":"eutxo-ledger"},
-      "documentation":"appchain/extensions/eutxo/README.md","acceptanceScenario":"experimental-eutxo-ledger"
+      "id": "state:eutxo-ledger",
+      "name": "Scalus-backed EUTxO ledger engine",
+      "category": "state",
+      "availability": "FIRST_PARTY_OPTIONAL",
+      "maturity": "experimental",
+      "scope": "chain",
+      "selectable": false,
+      "trustStatement": "Experimental reusable EUTxO state-machine engine. A selectable immutable ledger profile defines its admitted transaction behavior; the engine alone is not a Cardano bridge, custody product, or rollup.",
+      "description": "Deterministic Cardano-shaped EUTxO state, root-fixed receipts, address indexes, and MPF-proven outputs under one explicitly selected ledger profile.",
+      "provides": [
+        "state-machine"
+      ],
+      "requires": [],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime",
+        "appchain-eutxo-ledger"
+      ],
+      "nativePosture": "unsupported",
+      "externalPrerequisites": [],
+      "bootstrapRequirements": [],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {
+        "state-machine": "eutxo-ledger"
+      },
+      "documentation": "appchain/extensions/eutxo/README.md",
+      "acceptanceScenario": "experimental-eutxo-ledger"
     },
     {
-      "id":"profile:eutxo-plutus-v3","name":"Bounded EUTxO Plutus V3 profile","category":"profile","availability":"FIRST_PARTY_OPTIONAL","maturity":"experimental","scope":"chain","selectable":true,
-      "trustStatement":"Experimental EUTxO profile v2. It admits key-controlled ADA transfers and bounded witnessed Plutus V3 spending through Scalus 0.18.2; unsupported Cardano fields remain rejected.",
-      "description":"Pins the immutable yano-eutxo-v2-plutus-v3 ledger profile and every consensus-relevant bound.",
-      "provides":["eutxo-ledger-profile"],"requires":["state:eutxo-ledger"],"implies":[],"conflicts":[],"runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-eutxo-ledger"],"nativePosture":"unsupported",
-      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},
-      "properties":{"machines.eutxo.profile":"yano-eutxo-v2-plutus-v3","machines.eutxo.expected-profile-digest":"8cd4adb72def2c31dc8551a02f67429ea468bb2024dbe85a1dc7300590c9d1bf"},
-      "documentation":"appchain/extensions/eutxo/README.md","acceptanceScenario":"experimental-eutxo-plutus-v3-profile"
+      "id": "profile:eutxo-plutus-v3",
+      "name": "Bounded EUTxO Plutus V3 profile",
+      "category": "profile",
+      "availability": "FIRST_PARTY_OPTIONAL",
+      "maturity": "experimental",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "Experimental EUTxO profile v2. It admits key-controlled ADA transfers and bounded witnessed Plutus V3 spending through Scalus 0.18.2; unsupported Cardano fields remain rejected.",
+      "description": "Pins the immutable yano-eutxo-v2-plutus-v3 ledger profile and every consensus-relevant bound.",
+      "provides": [
+        "eutxo-ledger-profile"
+      ],
+      "requires": [
+        "state:eutxo-ledger"
+      ],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime",
+        "appchain-eutxo-ledger"
+      ],
+      "nativePosture": "unsupported",
+      "externalPrerequisites": [],
+      "bootstrapRequirements": [],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {
+        "machines.eutxo.profile": "yano-eutxo-v2-plutus-v3",
+        "machines.eutxo.expected-profile-digest": "8cd4adb72def2c31dc8551a02f67429ea468bb2024dbe85a1dc7300590c9d1bf"
+      },
+      "documentation": "appchain/extensions/eutxo/README.md",
+      "acceptanceScenario": "experimental-eutxo-plutus-v3-profile"
     },
     {
-      "id":"profile:eutxo-key-payments","name":"Restricted EUTxO key-payment profile","category":"profile","availability":"FIRST_PARTY_OPTIONAL","maturity":"experimental","scope":"chain","selectable":true,
-      "trustStatement":"Experimental key-controlled, ADA-only, zero-fee EUTxO profile. Scripts and unsupported Cardano transaction purposes are rejected.",
-      "description":"Pins the immutable yano-eutxo-v1 ledger profile used by the current bounded ZeroJ validity circuit.",
-      "provides":["eutxo-ledger-profile"],"requires":["state:eutxo-ledger"],"implies":[],"conflicts":[],"runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-eutxo-ledger"],"nativePosture":"unsupported",
-      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},
-      "properties":{"machines.eutxo.profile":"yano-eutxo-v1","machines.eutxo.expected-profile-digest":"2499d01ee7cb0d09d0d498040c6351accd9da83df31666cd4463d0b1722d1212"},
-      "documentation":"appchain/extensions/eutxo/README.md","acceptanceScenario":"experimental-eutxo-key-payment-profile"
+      "id": "profile:eutxo-bridge-settlement",
+      "name": "Governed bridge-settlement EUTxO profile",
+      "category": "profile",
+      "availability": "FIRST_PARTY_OPTIONAL",
+      "maturity": "experimental",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "Experimental EUTxO profile v3: V2 script surface plus governed bridge settlement \u2014 claims commit an executor bounty resolved from governed parameters; tier-1 bounds are digest-frozen.",
+      "description": "Pins the immutable yano-eutxo-v3-bridge-settlement ledger profile (ADR-UTXO-009) and every consensus-relevant bound.",
+      "provides": [
+        "eutxo-ledger-profile"
+      ],
+      "requires": [
+        "state:eutxo-ledger"
+      ],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime",
+        "appchain-eutxo-ledger"
+      ],
+      "nativePosture": "unsupported",
+      "externalPrerequisites": [],
+      "bootstrapRequirements": [],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {
+        "machines.eutxo.profile": "yano-eutxo-v3-bridge-settlement",
+        "machines.eutxo.expected-profile-digest": "da8643dbb998329cd668363822d0d18e77790a4c5d110526f784946b4bc3f3e4"
+      },
+      "documentation": "appchain/extensions/eutxo/README.md",
+      "acceptanceScenario": "experimental-eutxo-plutus-v3-profile"
     },
     {
-      "id":"funding:eutxo-genesis","name":"Virtual EUTxO genesis allocation","category":"funding","availability":"FIRST_PARTY_OPTIONAL","maturity":"experimental","scope":"chain","selectable":true,
-      "trustStatement":"Creates virtual test value inside the app-chain only. It represents no Cardano funds and cannot be combined with the federated bridge.",
-      "description":"Bootstraps one explicit ADA-only virtual allocation for no-real-funds testing.",
-      "provides":["eutxo-genesis-funding"],"requires":["state:eutxo-ledger"],"implies":[],"conflicts":["bridge:cardano-federated"],"runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-eutxo-ledger"],"nativePosture":"unsupported",
-      "externalPrerequisites":[],"bootstrapRequirements":["use-test-keys-and-no-real-funds"],"nonSecretAnswers":["eutxoGenesisAddress","eutxoGenesisLovelace"],"secretReferences":{},
-      "properties":{"machines.eutxo.genesis.address":"${eutxoGenesisAddress}","machines.eutxo.genesis.lovelace":"${eutxoGenesisLovelace}"},
-      "documentation":"appchain/extensions/eutxo/README.md","acceptanceScenario":"experimental-eutxo-genesis"
+      "id": "profile:eutxo-key-payments",
+      "name": "Restricted EUTxO key-payment profile",
+      "category": "profile",
+      "availability": "FIRST_PARTY_OPTIONAL",
+      "maturity": "experimental",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "Experimental key-controlled, ADA-only, zero-fee EUTxO profile. Scripts and unsupported Cardano transaction purposes are rejected.",
+      "description": "Pins the immutable yano-eutxo-v1 ledger profile used by the current bounded ZeroJ validity circuit.",
+      "provides": [
+        "eutxo-ledger-profile"
+      ],
+      "requires": [
+        "state:eutxo-ledger"
+      ],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime",
+        "appchain-eutxo-ledger"
+      ],
+      "nativePosture": "unsupported",
+      "externalPrerequisites": [],
+      "bootstrapRequirements": [],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {
+        "machines.eutxo.profile": "yano-eutxo-v1",
+        "machines.eutxo.expected-profile-digest": "2499d01ee7cb0d09d0d498040c6351accd9da83df31666cd4463d0b1722d1212"
+      },
+      "documentation": "appchain/extensions/eutxo/README.md",
+      "acceptanceScenario": "experimental-eutxo-key-payment-profile"
     },
     {
-      "id":"bridge:cardano-federated","name":"Federated Cardano EUTxO bridge","category":"bridge","availability":"EXPERIMENTAL","maturity":"experimental","scope":"chain","selectable":true,
-      "trustStatement":"Experimental federated custody path. Stable deposits and withdrawals depend either on the configured external threshold/HSM signer or on a threshold-accepted MPF root plus reviewed proof/nullifier contracts. The root threshold can fabricate a root. It is not production-funds ready and has no ZeroJ dependency.",
-      "description":"Observes exact accepted vault deposits and settles irrevocable bounded claims through either exact external signing or permissionless current-root MPF proofs with an on-chain replay nullifier.",
-      "provides":["cardano-federated-bridge"],"requires":["state:eutxo-ledger","l1:slot-feed"],"implies":[],"conflicts":["funding:eutxo-genesis"],"runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-eutxo-ledger","appchain-eutxo-bridge-cardano"],"nativePosture":"unsupported",
-      "externalPrerequisites":["reviewed-staging-vault-root-nullifier-and-proof-contract-identities","stable-cardano-l1-feed","federated-vault-and-root-operators","external-threshold-or-hsm-settlement-signer-for-signer-mode"],"bootstrapRequirements":["configure-durable-settlement-journal-for-signer-mode","pin-current-root-nullifier-and-proof-contract-identities-for-proof-mode","complete-real-funds-custody-review"],"nonSecretAnswers":["bridgeVaultAddress","bridgeVaultScriptHash","bridgeMaxDepositLovelace","bridgeWithdrawalAddress","bridgeEpoch","bridgeMaxWithdrawalLovelace","bridgeMaxPendingWithdrawals"],"secretReferences":{},
-      "properties":{"l1.stability-depth":"2","machines.eutxo.bridge.observer-id":"bridge-deposits","machines.eutxo.bridge.vault-address":"${bridgeVaultAddress}","machines.eutxo.bridge.vault-script-hash":"${bridgeVaultScriptHash}","machines.eutxo.bridge.confirmation-observer-id":"bridge-withdrawals","machines.eutxo.bridge.withdrawal-address":"${bridgeWithdrawalAddress}","machines.eutxo.bridge.epoch":"${bridgeEpoch}","machines.eutxo.bridge.max-withdrawal-lovelace":"${bridgeMaxWithdrawalLovelace}","machines.eutxo.bridge.max-pending-withdrawals":"${bridgeMaxPendingWithdrawals}","machines.eutxo.bridge.withdrawals-paused":"false","observers.bridge-deposits.type":"eutxo-vault-deposit-v1","observers.bridge-deposits.chain-id":"${chainId}","observers.bridge-deposits.vault-address":"${bridgeVaultAddress}","observers.bridge-deposits.vault-script-hash":"${bridgeVaultScriptHash}","observers.bridge-deposits.max-lovelace":"${bridgeMaxDepositLovelace}","observers.bridge-withdrawals.type":"eutxo-withdrawal-confirmation-v1","observers.bridge-withdrawals.chain-id":"${chainId}","observers.bridge-withdrawals.bridge-epoch":"${bridgeEpoch}","observers.bridge-withdrawals.vault-address":"${bridgeVaultAddress}"},
-      "documentation":"appchain/extensions/eutxo/README.md","acceptanceScenario":"experimental-eutxo-federated-bridge"
+      "id": "funding:eutxo-genesis",
+      "name": "Virtual EUTxO genesis allocation",
+      "category": "funding",
+      "availability": "FIRST_PARTY_OPTIONAL",
+      "maturity": "experimental",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "Creates virtual test value inside the app-chain only. It represents no Cardano funds and cannot be combined with the federated bridge.",
+      "description": "Bootstraps one explicit ADA-only virtual allocation for no-real-funds testing.",
+      "provides": [
+        "eutxo-genesis-funding"
+      ],
+      "requires": [
+        "state:eutxo-ledger"
+      ],
+      "implies": [],
+      "conflicts": [
+        "bridge:cardano-federated"
+      ],
+      "runtimeTypes": [
+        "jvm"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime",
+        "appchain-eutxo-ledger"
+      ],
+      "nativePosture": "unsupported",
+      "externalPrerequisites": [],
+      "bootstrapRequirements": [
+        "use-test-keys-and-no-real-funds"
+      ],
+      "nonSecretAnswers": [
+        "eutxoGenesisAddress",
+        "eutxoGenesisLovelace"
+      ],
+      "secretReferences": {},
+      "properties": {
+        "machines.eutxo.genesis.address": "${eutxoGenesisAddress}",
+        "machines.eutxo.genesis.lovelace": "${eutxoGenesisLovelace}"
+      },
+      "documentation": "appchain/extensions/eutxo/README.md",
+      "acceptanceScenario": "experimental-eutxo-genesis"
     },
     {
-      "id":"settlement:zeroj-validity","name":"ZeroJ EUTxO validity settlement","category":"settlement","availability":"EXPERIMENTAL","maturity":"experimental","scope":"chain","selectable":true,
-      "trustStatement":"Restricted ZeroJ Groth16 validity profile for development and testnet use only. Its zeroj-jubjub-dev-v1 authorization requires a trusted prover, host-only point validation and disposable test funds. It is not malicious-prover secure or production-funds ready; a hardened circuit requires new ceremony, proving-key, verification-key and validator identities.",
-      "description":"Adds a Yano L2 envelope with a Cardano-compatible body, registered Jubjub session-key authorization, optional Poseidon validity commitment, durable proving interfaces, proof-bound Cardano root advancement, bounded aggregate withdrawal and canonical L1 batch publication.",
-      "provides":["zeroj-validity-settlement"],"requires":["profile:eutxo-key-payments"],"implies":[],"conflicts":[],"runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"],"supportedNetworks":["devnet","preview","preprod"],"artifacts":["yano-runtime","appchain-eutxo-zk-zeroj","appchain-eutxo-zk-runtime","appchain-eutxo-zk-lifecycle"],"nativePosture":"unsupported",
-      "externalPrerequisites":["zeroj-0.1.0-pre10","julc-0.1.0-pre14","development-or-reviewed-ceremony-bundle","deployed-pinned-validity-root-vault-and-data-availability-contracts"],"bootstrapRequirements":["pin-profile-circuit-verification-key-ceremony-and-validator-identities","trusted-proof-submitter-required","use-disposable-test-funds-only"],"nonSecretAnswers":["eutxoL2Address","eutxoL2PublicKey"],"secretReferences":{},
-      "properties":{"machines.eutxo.network":"${network}","machines.eutxo.genesis.l2-address":"${eutxoL2Address}","machines.eutxo.genesis.l2-public-key":"${eutxoL2PublicKey}","machines.eutxo.genesis.l2-key-epoch":"1","machines.eutxo.validity.enabled":"true","machines.eutxo.validity.provider":"zeroj-poseidon-v1","machines.eutxo.validity.transaction-format":"yano-eutxo-l2-envelope-v1","machines.eutxo.validity.profile":"yano-eutxo-zk-z3","machines.eutxo.validity.expected-profile-digest":"cfe1767761cbe05c7e2b82f951222fbb9df34afa5eb1f39fb8a5c1cc2af87d45","machines.eutxo.validity.batch-profile":"cardano-payment-b16","machines.eutxo.validity.batch-profile-digest":"bd0835736116cb6338a82069e913f3815547008e4994508f110065c5dfc64747","machines.eutxo.validity.circuit-id":"eutxo-jubjub-batch-dev-b16-v4","machines.eutxo.validity.proof-system":"groth16","machines.eutxo.validity.curve":"bls12-381","machines.eutxo.validity.zeroj-version":"0.1.0-pre10","machines.eutxo.validity.julc-version":"0.1.0-pre14","machines.eutxo.validity.authorization-profile":"zeroj-jubjub-dev-v1","machines.eutxo.validity.authorization-profile-digest":"d4d23eb620057fa280616f8e117aa7b38f7895fc3be2626566a3fd06444cb035","machines.eutxo.validity.authorization-trusted-prover-required":"true","machines.eutxo.validity.authorization-point-checks":"host-only-development","machines.eutxo.validity.funds-policy":"disposable-test-funds-only"},
-      "documentation":"appchain/extensions/eutxo-zk/README.md","acceptanceScenario":"experimental-eutxo-zeroj-validity"
+      "id": "bridge:cardano-federated",
+      "name": "Federated Cardano EUTxO bridge",
+      "category": "bridge",
+      "availability": "EXPERIMENTAL",
+      "maturity": "experimental",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "Experimental federated custody path. Stable deposits and withdrawals depend either on the configured external threshold/HSM signer or on a threshold-accepted MPF root plus reviewed proof/nullifier contracts. The root threshold can fabricate a root. It is not production-funds ready and has no ZeroJ dependency.",
+      "description": "Observes exact accepted vault deposits and settles irrevocable bounded claims through either exact external signing or permissionless current-root MPF proofs with an on-chain replay nullifier.",
+      "provides": [
+        "cardano-federated-bridge"
+      ],
+      "requires": [
+        "state:eutxo-ledger",
+        "l1:slot-feed"
+      ],
+      "implies": [],
+      "conflicts": [
+        "funding:eutxo-genesis"
+      ],
+      "runtimeTypes": [
+        "jvm"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime",
+        "appchain-eutxo-ledger",
+        "appchain-eutxo-bridge-cardano"
+      ],
+      "nativePosture": "unsupported",
+      "externalPrerequisites": [
+        "reviewed-staging-vault-root-nullifier-and-proof-contract-identities",
+        "stable-cardano-l1-feed",
+        "federated-vault-and-root-operators",
+        "external-threshold-or-hsm-settlement-signer-for-signer-mode"
+      ],
+      "bootstrapRequirements": [
+        "configure-durable-settlement-journal-for-signer-mode",
+        "pin-current-root-nullifier-and-proof-contract-identities-for-proof-mode",
+        "complete-real-funds-custody-review"
+      ],
+      "nonSecretAnswers": [
+        "bridgeVaultAddress",
+        "bridgeVaultScriptHash",
+        "bridgeMaxDepositLovelace",
+        "bridgeWithdrawalAddress",
+        "bridgeEpoch",
+        "bridgeMaxWithdrawalLovelace",
+        "bridgeMaxPendingWithdrawals"
+      ],
+      "secretReferences": {},
+      "properties": {
+        "l1.stability-depth": "2",
+        "machines.eutxo.bridge.observer-id": "bridge-deposits",
+        "machines.eutxo.bridge.vault-address": "${bridgeVaultAddress}",
+        "machines.eutxo.bridge.vault-script-hash": "${bridgeVaultScriptHash}",
+        "machines.eutxo.bridge.confirmation-observer-id": "bridge-withdrawals",
+        "machines.eutxo.bridge.withdrawal-address": "${bridgeWithdrawalAddress}",
+        "machines.eutxo.bridge.epoch": "${bridgeEpoch}",
+        "machines.eutxo.bridge.max-withdrawal-lovelace": "${bridgeMaxWithdrawalLovelace}",
+        "machines.eutxo.bridge.max-pending-withdrawals": "${bridgeMaxPendingWithdrawals}",
+        "machines.eutxo.bridge.withdrawals-paused": "false",
+        "observers.bridge-deposits.type": "eutxo-vault-deposit-v1",
+        "observers.bridge-deposits.chain-id": "${chainId}",
+        "observers.bridge-deposits.vault-address": "${bridgeVaultAddress}",
+        "observers.bridge-deposits.vault-script-hash": "${bridgeVaultScriptHash}",
+        "observers.bridge-deposits.max-lovelace": "${bridgeMaxDepositLovelace}",
+        "observers.bridge-withdrawals.type": "eutxo-withdrawal-confirmation-v1",
+        "observers.bridge-withdrawals.chain-id": "${chainId}",
+        "observers.bridge-withdrawals.bridge-epoch": "${bridgeEpoch}",
+        "observers.bridge-withdrawals.vault-address": "${bridgeVaultAddress}"
+      },
+      "documentation": "appchain/extensions/eutxo/README.md",
+      "acceptanceScenario": "experimental-eutxo-federated-bridge"
     },
     {
-      "id":"rollup:zeroj-cardano","name":"ZeroJ Cardano EUTxO rollup label","category":"product-label","availability":"EXPERIMENTAL","maturity":"experimental","scope":"chain","selectable":false,
-      "trustStatement":"Readiness label only. It remains unavailable until independent reconstruction, operational L1 data retention, external audits, production MPC ceremony and accountable production-funds approval are recorded.",
-      "description":"Graduation label for a separately approved ZeroJ validity product; it does not add runtime behavior.",
-      "provides":["zeroj-cardano-rollup-label"],"requires":["settlement:zeroj-validity"],"implies":[],"conflicts":[],"runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"],"supportedNetworks":["devnet","preview","preprod"],"artifacts":["yano-runtime","appchain-eutxo-ledger","appchain-eutxo-zk-zeroj"],"nativePosture":"unsupported",
-      "externalPrerequisites":["all-adr-utxo-001-z5-z6-gates-passed"],"bootstrapRequirements":["separate-production-readiness-decision"],"nonSecretAnswers":[],"secretReferences":{},"properties":{},
-      "documentation":"appchain/extensions/eutxo-zk/Z6_PRODUCTION_HARDENING.md","acceptanceScenario":"nonselectable-eutxo-rollup-label"
+      "id": "settlement:zeroj-validity",
+      "name": "ZeroJ EUTxO validity settlement",
+      "category": "settlement",
+      "availability": "EXPERIMENTAL",
+      "maturity": "experimental",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "Restricted ZeroJ Groth16 validity profile for development and testnet use only. Its zeroj-jubjub-dev-v1 authorization requires a trusted prover, host-only point validation and disposable test funds. It is not malicious-prover secure or production-funds ready; a hardened circuit requires new ceremony, proving-key, verification-key and validator identities.",
+      "description": "Adds a Yano L2 envelope with a Cardano-compatible body, registered Jubjub session-key authorization, optional Poseidon validity commitment, durable proving interfaces, proof-bound Cardano root advancement, bounded aggregate withdrawal and canonical L1 batch publication.",
+      "provides": [
+        "zeroj-validity-settlement"
+      ],
+      "requires": [
+        "profile:eutxo-key-payments"
+      ],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "supportedNetworks": [
+        "devnet",
+        "preview",
+        "preprod"
+      ],
+      "artifacts": [
+        "yano-runtime",
+        "appchain-eutxo-zk-zeroj",
+        "appchain-eutxo-zk-runtime",
+        "appchain-eutxo-zk-lifecycle"
+      ],
+      "nativePosture": "unsupported",
+      "externalPrerequisites": [
+        "zeroj-0.1.0-pre10",
+        "julc-0.1.0-pre14",
+        "development-or-reviewed-ceremony-bundle",
+        "deployed-pinned-validity-root-vault-and-data-availability-contracts"
+      ],
+      "bootstrapRequirements": [
+        "pin-profile-circuit-verification-key-ceremony-and-validator-identities",
+        "trusted-proof-submitter-required",
+        "use-disposable-test-funds-only"
+      ],
+      "nonSecretAnswers": [
+        "eutxoL2Address",
+        "eutxoL2PublicKey"
+      ],
+      "secretReferences": {},
+      "properties": {
+        "machines.eutxo.network": "${network}",
+        "machines.eutxo.genesis.l2-address": "${eutxoL2Address}",
+        "machines.eutxo.genesis.l2-public-key": "${eutxoL2PublicKey}",
+        "machines.eutxo.genesis.l2-key-epoch": "1",
+        "machines.eutxo.validity.enabled": "true",
+        "machines.eutxo.validity.provider": "zeroj-poseidon-v1",
+        "machines.eutxo.validity.transaction-format": "yano-eutxo-l2-envelope-v1",
+        "machines.eutxo.validity.profile": "yano-eutxo-zk-z3",
+        "machines.eutxo.validity.expected-profile-digest": "cfe1767761cbe05c7e2b82f951222fbb9df34afa5eb1f39fb8a5c1cc2af87d45",
+        "machines.eutxo.validity.batch-profile": "cardano-payment-b16",
+        "machines.eutxo.validity.batch-profile-digest": "bd0835736116cb6338a82069e913f3815547008e4994508f110065c5dfc64747",
+        "machines.eutxo.validity.circuit-id": "eutxo-jubjub-batch-dev-b16-v4",
+        "machines.eutxo.validity.proof-system": "groth16",
+        "machines.eutxo.validity.curve": "bls12-381",
+        "machines.eutxo.validity.zeroj-version": "0.1.0-pre10",
+        "machines.eutxo.validity.julc-version": "0.1.0-pre14",
+        "machines.eutxo.validity.authorization-profile": "zeroj-jubjub-dev-v1",
+        "machines.eutxo.validity.authorization-profile-digest": "d4d23eb620057fa280616f8e117aa7b38f7895fc3be2626566a3fd06444cb035",
+        "machines.eutxo.validity.authorization-trusted-prover-required": "true",
+        "machines.eutxo.validity.authorization-point-checks": "host-only-development",
+        "machines.eutxo.validity.funds-policy": "disposable-test-funds-only"
+      },
+      "documentation": "appchain/extensions/eutxo-zk/README.md",
+      "acceptanceScenario": "experimental-eutxo-zeroj-validity"
     },
     {
-      "id":"indexer:eutxo-lifecycle","name":"EUTxO lifecycle indexer","category":"indexer","availability":"FIRST_PARTY_OPTIONAL","maturity":"preview","scope":"node","selectable":false,
-      "trustStatement":"Derived node-local SQLite projection. It is rebuildable and never participates in transaction validation, state roots, finality, bridge authorization, proof verification, or settlement.",
-      "description":"Indexes finalized EUTxO transactions, accounts, bridge lifecycle records, and optional validity batches for bounded APIs and the unified console.",
-      "provides":["eutxo-lifecycle-index"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-eutxo-indexer-core","appchain-eutxo-indexer-jdbc"],"nativePosture":"unsupported",
-      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{},
-      "documentation":"appchain/extensions/eutxo/INDEXER_OPERATIONS.md","acceptanceScenario":"eutxo-lifecycle-indexer"
+      "id": "rollup:zeroj-cardano",
+      "name": "ZeroJ Cardano EUTxO rollup label",
+      "category": "product-label",
+      "availability": "EXPERIMENTAL",
+      "maturity": "experimental",
+      "scope": "chain",
+      "selectable": false,
+      "trustStatement": "Readiness label only. It remains unavailable until independent reconstruction, operational L1 data retention, external audits, production MPC ceremony and accountable production-funds approval are recorded.",
+      "description": "Graduation label for a separately approved ZeroJ validity product; it does not add runtime behavior.",
+      "provides": [
+        "zeroj-cardano-rollup-label"
+      ],
+      "requires": [
+        "settlement:zeroj-validity"
+      ],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "supportedNetworks": [
+        "devnet",
+        "preview",
+        "preprod"
+      ],
+      "artifacts": [
+        "yano-runtime",
+        "appchain-eutxo-ledger",
+        "appchain-eutxo-zk-zeroj"
+      ],
+      "nativePosture": "unsupported",
+      "externalPrerequisites": [
+        "all-adr-utxo-001-z5-z6-gates-passed"
+      ],
+      "bootstrapRequirements": [
+        "separate-production-readiness-decision"
+      ],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {},
+      "documentation": "appchain/extensions/eutxo-zk/Z6_PRODUCTION_HARDENING.md",
+      "acceptanceScenario": "nonselectable-eutxo-rollup-label"
     },
     {
-      "id":"sequencer:fixed","name":"Fixed sequencer","category":"sequencer","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,
-      "trustStatement":"Built into the Yano runtime and covered by multi-node acceptance.","description":"One declared member proposes application blocks.",
-      "provides":["sequencer"],"requires":[],"implies":[],"conflicts":["sequencer:rotating"],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
-      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{"sequencer.mode":"fixed","sequencer.proposer":"${proposer}"},
-      "documentation":"docs/appchain/README.md","acceptanceScenario":"fixed-sequencer"
+      "id": "indexer:eutxo-lifecycle",
+      "name": "EUTxO lifecycle indexer",
+      "category": "indexer",
+      "availability": "FIRST_PARTY_OPTIONAL",
+      "maturity": "preview",
+      "scope": "node",
+      "selectable": false,
+      "trustStatement": "Derived node-local SQLite projection. It is rebuildable and never participates in transaction validation, state roots, finality, bridge authorization, proof verification, or settlement.",
+      "description": "Indexes finalized EUTxO transactions, accounts, bridge lifecycle records, and optional validity batches for bounded APIs and the unified console.",
+      "provides": [
+        "eutxo-lifecycle-index"
+      ],
+      "requires": [],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime",
+        "appchain-eutxo-indexer-core",
+        "appchain-eutxo-indexer-jdbc"
+      ],
+      "nativePosture": "unsupported",
+      "externalPrerequisites": [],
+      "bootstrapRequirements": [],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {},
+      "documentation": "appchain/extensions/eutxo/INDEXER_OPERATIONS.md",
+      "acceptanceScenario": "eutxo-lifecycle-indexer"
     },
     {
-      "id":"sequencer:rotating","name":"L1-window rotating sequencer","category":"sequencer","availability":"BUNDLED","maturity":"experimental","scope":"chain","selectable":true,
-      "trustStatement":"Built-in experimental policy whose proposer schedule depends on the local stable L1 slot view.","description":"Rotates proposership across members using bounded L1 slot windows.",
-      "provides":["sequencer"],"requires":[],"implies":["l1:slot-feed"],"conflicts":["sequencer:fixed"],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
-      "externalPrerequisites":["synchronized-l1-slot-view"],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{"sequencer.mode":"rotating","sequencer.window-slots":"10"},
-      "documentation":"docs/appchain/README.md","acceptanceScenario":"rotating-sequencer"
+      "id": "sequencer:fixed",
+      "name": "Fixed sequencer",
+      "category": "sequencer",
+      "availability": "BUNDLED",
+      "maturity": "stable",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "Built into the Yano runtime and covered by multi-node acceptance.",
+      "description": "One declared member proposes application blocks.",
+      "provides": [
+        "sequencer"
+      ],
+      "requires": [],
+      "implies": [],
+      "conflicts": [
+        "sequencer:rotating"
+      ],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime"
+      ],
+      "nativePosture": "bundled",
+      "externalPrerequisites": [],
+      "bootstrapRequirements": [],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {
+        "sequencer.mode": "fixed",
+        "sequencer.proposer": "${proposer}"
+      },
+      "documentation": "docs/appchain/README.md",
+      "acceptanceScenario": "fixed-sequencer"
     },
     {
-      "id":"membership:static","name":"Static membership","category":"membership","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,
-      "trustStatement":"Built into the Yano runtime; changing members requires a new reviewed configuration.","description":"Pins the initial member set as the active set.",
-      "provides":["membership"],"requires":[],"implies":[],"conflicts":["membership:governed"],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
-      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{"membership.mode":"static"},
-      "documentation":"docs/appchain/README.md","acceptanceScenario":"static-membership"
+      "id": "sequencer:rotating",
+      "name": "L1-window rotating sequencer",
+      "category": "sequencer",
+      "availability": "BUNDLED",
+      "maturity": "experimental",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "Built-in experimental policy whose proposer schedule depends on the local stable L1 slot view.",
+      "description": "Rotates proposership across members using bounded L1 slot windows.",
+      "provides": [
+        "sequencer"
+      ],
+      "requires": [],
+      "implies": [
+        "l1:slot-feed"
+      ],
+      "conflicts": [
+        "sequencer:fixed"
+      ],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime"
+      ],
+      "nativePosture": "bundled",
+      "externalPrerequisites": [
+        "synchronized-l1-slot-view"
+      ],
+      "bootstrapRequirements": [],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {
+        "sequencer.mode": "rotating",
+        "sequencer.window-slots": "10"
+      },
+      "documentation": "docs/appchain/README.md",
+      "acceptanceScenario": "rotating-sequencer"
     },
     {
-      "id":"membership:governed","name":"Governed membership","category":"membership","availability":"BUNDLED","maturity":"preview","scope":"chain","selectable":true,
-      "trustStatement":"Built into the Yano runtime; member changes require threshold-governed activation.","description":"Allows authenticated member epochs to evolve through replicated governance.",
-      "provides":["membership"],"requires":[],"implies":[],"conflicts":["membership:static"],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
-      "externalPrerequisites":[],"bootstrapRequirements":["governance-operator-runbook"],"nonSecretAnswers":[],"secretReferences":{},"properties":{"membership.mode":"governed"},
-      "documentation":"docs/appchain/README.md","acceptanceScenario":"governed-membership"
+      "id": "membership:static",
+      "name": "Static membership",
+      "category": "membership",
+      "availability": "BUNDLED",
+      "maturity": "stable",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "Built into the Yano runtime; changing members requires a new reviewed configuration.",
+      "description": "Pins the initial member set as the active set.",
+      "provides": [
+        "membership"
+      ],
+      "requires": [],
+      "implies": [],
+      "conflicts": [
+        "membership:governed"
+      ],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime"
+      ],
+      "nativePosture": "bundled",
+      "externalPrerequisites": [],
+      "bootstrapRequirements": [],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {
+        "membership.mode": "static"
+      },
+      "documentation": "docs/appchain/README.md",
+      "acceptanceScenario": "static-membership"
     },
     {
-      "id":"l1:slot-feed","name":"L1 slot feed","category":"l1","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,
-      "trustStatement":"Uses the local Yano L1 view; it does not introduce a remote oracle.","description":"Supplies stable local Cardano slot observations to slot-aware app-chain behavior.",
-      "provides":["l1-slot-feed"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
-      "externalPrerequisites":["synchronized-l1-view"],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{},
-      "documentation":"docs/appchain/README.md","acceptanceScenario":"l1-slot-feed"
+      "id": "membership:governed",
+      "name": "Governed membership",
+      "category": "membership",
+      "availability": "BUNDLED",
+      "maturity": "preview",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "Built into the Yano runtime; member changes require threshold-governed activation.",
+      "description": "Allows authenticated member epochs to evolve through replicated governance.",
+      "provides": [
+        "membership"
+      ],
+      "requires": [],
+      "implies": [],
+      "conflicts": [
+        "membership:static"
+      ],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime"
+      ],
+      "nativePosture": "bundled",
+      "externalPrerequisites": [],
+      "bootstrapRequirements": [
+        "governance-operator-runbook"
+      ],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {
+        "membership.mode": "governed"
+      },
+      "documentation": "docs/appchain/README.md",
+      "acceptanceScenario": "governed-membership"
     },
     {
-      "id":"anchor:metadata","name":"Cardano metadata anchors","category":"anchor","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,
-      "trustStatement":"Built-in Cardano transaction anchoring; wallet custody and funding remain operator-owned.","description":"Commits finalized app-chain roots in Cardano transaction metadata.",
-      "provides":["anchor"],"requires":["l1:slot-feed"],"implies":[],"conflicts":["anchor:script"],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
-      "externalPrerequisites":["funded-anchor-wallet"],"bootstrapRequirements":["anchor-wallet-custody-review"],"nonSecretAnswers":[],"secretReferences":{"anchor.signing-key":"YANO_APPCHAIN_ANCHOR_SIGNING_KEY"},"properties":{"anchor.enabled":"true","anchor.mode":"metadata"},
-      "documentation":"docs/appchain/tutorials/07-anchors-and-verification.md","acceptanceScenario":"metadata-anchor"
+      "id": "l1:slot-feed",
+      "name": "L1 slot feed",
+      "category": "l1",
+      "availability": "BUNDLED",
+      "maturity": "stable",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "Uses the local Yano L1 view; it does not introduce a remote oracle.",
+      "description": "Supplies stable local Cardano slot observations to slot-aware app-chain behavior.",
+      "provides": [
+        "l1-slot-feed"
+      ],
+      "requires": [],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime"
+      ],
+      "nativePosture": "bundled",
+      "externalPrerequisites": [
+        "synchronized-l1-view"
+      ],
+      "bootstrapRequirements": [],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {},
+      "documentation": "docs/appchain/README.md",
+      "acceptanceScenario": "l1-slot-feed"
     },
     {
-      "id":"anchor:script","name":"Cardano threshold-script anchors","category":"anchor","availability":"BUNDLED","maturity":"preview","scope":"chain","selectable":true,
-      "trustStatement":"Built-in script anchoring; script artifacts, thread policy, wallet custody, and funding remain operator-owned.","description":"Advances an app-chain anchor thread through a reviewed Cardano script.",
-      "provides":["anchor"],"requires":["l1:slot-feed"],"implies":[],"conflicts":["anchor:metadata"],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
-      "externalPrerequisites":["funded-anchor-wallet","reviewed-anchor-script"],"bootstrapRequirements":["script-anchor-thread-bootstrap"],"nonSecretAnswers":["anchorValidator","anchorThreadPolicy"],"secretReferences":{"anchor.signing-key":"YANO_APPCHAIN_ANCHOR_SIGNING_KEY"},
-      "properties":{"anchor.enabled":"true","anchor.mode":"script","anchor.script.validator":"${anchorValidator}","anchor.script.thread-policy":"${anchorThreadPolicy}"},
-      "documentation":"docs/appchain/tutorials/07-anchors-and-verification.md","acceptanceScenario":"script-anchor"
+      "id": "anchor:metadata",
+      "name": "Cardano metadata anchors",
+      "category": "anchor",
+      "availability": "BUNDLED",
+      "maturity": "stable",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "Built-in Cardano transaction anchoring; wallet custody and funding remain operator-owned.",
+      "description": "Commits finalized app-chain roots in Cardano transaction metadata.",
+      "provides": [
+        "anchor"
+      ],
+      "requires": [
+        "l1:slot-feed"
+      ],
+      "implies": [],
+      "conflicts": [
+        "anchor:script"
+      ],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime"
+      ],
+      "nativePosture": "bundled",
+      "externalPrerequisites": [
+        "funded-anchor-wallet"
+      ],
+      "bootstrapRequirements": [
+        "anchor-wallet-custody-review"
+      ],
+      "nonSecretAnswers": [],
+      "secretReferences": {
+        "anchor.signing-key": "YANO_APPCHAIN_ANCHOR_SIGNING_KEY"
+      },
+      "properties": {
+        "anchor.enabled": "true",
+        "anchor.mode": "metadata"
+      },
+      "documentation": "docs/appchain/tutorials/07-anchors-and-verification.md",
+      "acceptanceScenario": "metadata-anchor"
     },
     {
-      "id":"observer:address-deposit","name":"Address deposit observer","category":"l1-observer","availability":"BUNDLED","maturity":"preview","scope":"chain","selectable":true,
-      "trustStatement":"Built-in deterministic L1 observation; applications must define how deposit claims affect domain state.","description":"Creates stable observations for lovelace paid to one configured Cardano address.",
-      "provides":["l1-observer:address-deposit"],"requires":["l1:slot-feed"],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
-      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":["depositAddress"],"secretReferences":{},"properties":{"observers.deposits.type":"address-deposit","observers.deposits.address":"${depositAddress}"},
-      "documentation":"docs/appchain/README.md","acceptanceScenario":"address-deposit-observer"
+      "id": "anchor:script",
+      "name": "Cardano threshold-script anchors",
+      "category": "anchor",
+      "availability": "BUNDLED",
+      "maturity": "preview",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "Built-in script anchoring; script artifacts, thread policy, wallet custody, and funding remain operator-owned.",
+      "description": "Advances an app-chain anchor thread through a reviewed Cardano script.",
+      "provides": [
+        "anchor"
+      ],
+      "requires": [
+        "l1:slot-feed"
+      ],
+      "implies": [],
+      "conflicts": [
+        "anchor:metadata"
+      ],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime"
+      ],
+      "nativePosture": "bundled",
+      "externalPrerequisites": [
+        "funded-anchor-wallet",
+        "reviewed-anchor-script"
+      ],
+      "bootstrapRequirements": [
+        "script-anchor-thread-bootstrap"
+      ],
+      "nonSecretAnswers": [
+        "anchorValidator",
+        "anchorThreadPolicy"
+      ],
+      "secretReferences": {
+        "anchor.signing-key": "YANO_APPCHAIN_ANCHOR_SIGNING_KEY"
+      },
+      "properties": {
+        "anchor.enabled": "true",
+        "anchor.mode": "script",
+        "anchor.script.validator": "${anchorValidator}",
+        "anchor.script.thread-policy": "${anchorThreadPolicy}"
+      },
+      "documentation": "docs/appchain/tutorials/07-anchors-and-verification.md",
+      "acceptanceScenario": "script-anchor"
     },
     {
-      "id":"observer:metadata-label","name":"Metadata label observer","category":"l1-observer","availability":"BUNDLED","maturity":"preview","scope":"chain","selectable":true,
-      "trustStatement":"Built-in deterministic L1 observation; observed metadata remains an external claim, not proof of real-world truth.","description":"Creates stable observations for one configured Cardano transaction metadata label.",
-      "provides":["l1-observer:metadata-label"],"requires":["l1:slot-feed"],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
-      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":["metadataLabel"],"secretReferences":{},"properties":{"observers.metadata.type":"metadata-label","observers.metadata.label":"${metadataLabel}"},
-      "documentation":"docs/appchain/README.md","acceptanceScenario":"metadata-label-observer"
+      "id": "observer:address-deposit",
+      "name": "Address deposit observer",
+      "category": "l1-observer",
+      "availability": "BUNDLED",
+      "maturity": "preview",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "Built-in deterministic L1 observation; applications must define how deposit claims affect domain state.",
+      "description": "Creates stable observations for lovelace paid to one configured Cardano address.",
+      "provides": [
+        "l1-observer:address-deposit"
+      ],
+      "requires": [
+        "l1:slot-feed"
+      ],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime"
+      ],
+      "nativePosture": "bundled",
+      "externalPrerequisites": [],
+      "bootstrapRequirements": [],
+      "nonSecretAnswers": [
+        "depositAddress"
+      ],
+      "secretReferences": {},
+      "properties": {
+        "observers.deposits.type": "address-deposit",
+        "observers.deposits.address": "${depositAddress}"
+      },
+      "documentation": "docs/appchain/README.md",
+      "acceptanceScenario": "address-deposit-observer"
     },
     {
-      "id":"effects:runtime","name":"Deterministic effects runtime","category":"effects-runtime","availability":"BUNDLED","maturity":"preview","scope":"chain","selectable":true,
-      "trustStatement":"Effect intents and outcome reports are committed; external mutation remains executor-owned and at-least-once.","description":"Enables deterministic effect intents, gates, result incorporation, and proofs.",
-      "provides":["effects-runtime"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
-      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{"effects.enabled":"true"},
-      "documentation":"docs/appchain/tutorials/06-webhook-effects.md","acceptanceScenario":"effects-runtime"
+      "id": "observer:metadata-label",
+      "name": "Metadata label observer",
+      "category": "l1-observer",
+      "availability": "BUNDLED",
+      "maturity": "preview",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "Built-in deterministic L1 observation; observed metadata remains an external claim, not proof of real-world truth.",
+      "description": "Creates stable observations for one configured Cardano transaction metadata label.",
+      "provides": [
+        "l1-observer:metadata-label"
+      ],
+      "requires": [
+        "l1:slot-feed"
+      ],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime"
+      ],
+      "nativePosture": "bundled",
+      "externalPrerequisites": [],
+      "bootstrapRequirements": [],
+      "nonSecretAnswers": [
+        "metadataLabel"
+      ],
+      "secretReferences": {},
+      "properties": {
+        "observers.metadata.type": "metadata-label",
+        "observers.metadata.label": "${metadataLabel}"
+      },
+      "documentation": "docs/appchain/README.md",
+      "acceptanceScenario": "metadata-label-observer"
     },
     {
-      "id":"effects:on-approved","name":"Generic on-approved effect","category":"effect-emission","availability":"BUNDLED","maturity":"preview","scope":"chain","selectable":true,
-      "trustStatement":"The approval machine emits the configured typed payload after threshold approval; the external target remains executor-owned.","description":"Emits one typed chain-result effect when a stock approval reaches its threshold.",
-      "provides":["effect-emission:on-approved"],"requires":["state:approval-workflow","effects:runtime"],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-stdlib"],"nativePosture":"bundled",
-      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":["effectType"],"secretReferences":{},
-      "properties":{"machines.approvals.on-approved-effect.enabled":"true","machines.approvals.on-approved-effect.type":"${effectType}","machines.approvals.on-approved-effect.gate":"chain-default","machines.approvals.on-approved-effect.expiry-blocks":"0","machines.approvals.activations.on-approved-effect":"1"},
-      "documentation":"docs/appchain/state-machines/approvals.md","acceptanceScenario":"approval-effect-emission"
+      "id": "effects:runtime",
+      "name": "Deterministic effects runtime",
+      "category": "effects-runtime",
+      "availability": "BUNDLED",
+      "maturity": "preview",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "Effect intents and outcome reports are committed; external mutation remains executor-owned and at-least-once.",
+      "description": "Enables deterministic effect intents, gates, result incorporation, and proofs.",
+      "provides": [
+        "effects-runtime"
+      ],
+      "requires": [],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime"
+      ],
+      "nativePosture": "bundled",
+      "externalPrerequisites": [],
+      "bootstrapRequirements": [],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {
+        "effects.enabled": "true"
+      },
+      "documentation": "docs/appchain/tutorials/06-webhook-effects.md",
+      "acceptanceScenario": "effects-runtime"
     },
     {
-      "id":"executor:webhook","name":"Webhook effect executor","category":"effect-executor","availability":"BUNDLED","maturity":"preview","scope":"node","selectable":true,
-      "trustStatement":"Built-in at-least-once HTTP executor; receivers must deduplicate with the supplied idempotency key.","description":"Executes webhook.post effects against one node-local configured URL.",
-      "provides":["effect-executor:webhook"],"requires":["effects:runtime"],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
-      "externalPrerequisites":["idempotent-webhook-target"],"bootstrapRequirements":[],"nonSecretAnswers":["webhookUrl"],"secretReferences":{},
-      "properties":{"effects.executor.enabled":"true","effects.executors.webhook.url":"${webhookUrl}"},
-      "documentation":"docs/appchain/tutorials/06-webhook-effects.md","acceptanceScenario":"webhook-effect-executor"
+      "id": "effects:on-approved",
+      "name": "Generic on-approved effect",
+      "category": "effect-emission",
+      "availability": "BUNDLED",
+      "maturity": "preview",
+      "scope": "chain",
+      "selectable": true,
+      "trustStatement": "The approval machine emits the configured typed payload after threshold approval; the external target remains executor-owned.",
+      "description": "Emits one typed chain-result effect when a stock approval reaches its threshold.",
+      "provides": [
+        "effect-emission:on-approved"
+      ],
+      "requires": [
+        "state:approval-workflow",
+        "effects:runtime"
+      ],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime",
+        "appchain-stdlib"
+      ],
+      "nativePosture": "bundled",
+      "externalPrerequisites": [],
+      "bootstrapRequirements": [],
+      "nonSecretAnswers": [
+        "effectType"
+      ],
+      "secretReferences": {},
+      "properties": {
+        "machines.approvals.on-approved-effect.enabled": "true",
+        "machines.approvals.on-approved-effect.type": "${effectType}",
+        "machines.approvals.on-approved-effect.gate": "chain-default",
+        "machines.approvals.on-approved-effect.expiry-blocks": "0",
+        "machines.approvals.activations.on-approved-effect": "1"
+      },
+      "documentation": "docs/appchain/state-machines/approvals.md",
+      "acceptanceScenario": "approval-effect-emission"
     },
     {
-      "id":"sink:webhook","name":"Finalized webhook sink","category":"finalized-sink","availability":"BUNDLED","maturity":"stable","scope":"node","selectable":true,
-      "trustStatement":"Built-in at-least-once finalized-block delivery; receivers own authentication and deduplication.","description":"Posts finalized application blocks to one configured node-local webhook endpoint.",
-      "provides":["finalized-sink:webhook"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
-      "externalPrerequisites":["idempotent-finalized-webhook-target"],"bootstrapRequirements":[],"nonSecretAnswers":["webhookSinkUrl"],"secretReferences":{},"properties":{"webhooks":"${webhookSinkUrl}"},
-      "documentation":"docs/appchain/README.md","acceptanceScenario":"finalized-webhook-sink"
+      "id": "executor:webhook",
+      "name": "Webhook effect executor",
+      "category": "effect-executor",
+      "availability": "BUNDLED",
+      "maturity": "preview",
+      "scope": "node",
+      "selectable": true,
+      "trustStatement": "Built-in at-least-once HTTP executor; receivers must deduplicate with the supplied idempotency key.",
+      "description": "Executes webhook.post effects against one node-local configured URL.",
+      "provides": [
+        "effect-executor:webhook"
+      ],
+      "requires": [
+        "effects:runtime"
+      ],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime"
+      ],
+      "nativePosture": "bundled",
+      "externalPrerequisites": [
+        "idempotent-webhook-target"
+      ],
+      "bootstrapRequirements": [],
+      "nonSecretAnswers": [
+        "webhookUrl"
+      ],
+      "secretReferences": {},
+      "properties": {
+        "effects.executor.enabled": "true",
+        "effects.executors.webhook.url": "${webhookUrl}"
+      },
+      "documentation": "docs/appchain/tutorials/06-webhook-effects.md",
+      "acceptanceScenario": "webhook-effect-executor"
     },
     {
-      "id":"executor:kafka","name":"Kafka effect executor","category":"effect-executor","availability":"FIRST_PARTY_OPTIONAL","maturity":"preview","scope":"node","selectable":true,
-      "trustStatement":"First-party optional bundle; broker identity, transport security, credentials, topic policy, and delivery operations remain operator-owned.","description":"Executes kafka.publish intents through allowlisted node-local Kafka targets.",
-      "provides":["effect-executor:kafka"],"requires":["effects:runtime"],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-kafka"],"nativePosture":"build-time-only",
-      "externalPrerequisites":["kafka-cluster","allowlisted-topic","node-local-kafka-security-profile"],"bootstrapRequirements":["install-appchain-kafka-bundle","provide-node-local-kafka-configuration"],"nonSecretAnswers":[],"secretReferences":{},"properties":{},
-      "documentation":"appchain/extensions/appchain-kafka/README.md","acceptanceScenario":"optional-kafka-effect"
+      "id": "sink:webhook",
+      "name": "Finalized webhook sink",
+      "category": "finalized-sink",
+      "availability": "BUNDLED",
+      "maturity": "stable",
+      "scope": "node",
+      "selectable": true,
+      "trustStatement": "Built-in at-least-once finalized-block delivery; receivers own authentication and deduplication.",
+      "description": "Posts finalized application blocks to one configured node-local webhook endpoint.",
+      "provides": [
+        "finalized-sink:webhook"
+      ],
+      "requires": [],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime"
+      ],
+      "nativePosture": "bundled",
+      "externalPrerequisites": [
+        "idempotent-finalized-webhook-target"
+      ],
+      "bootstrapRequirements": [],
+      "nonSecretAnswers": [
+        "webhookSinkUrl"
+      ],
+      "secretReferences": {},
+      "properties": {
+        "webhooks": "${webhookSinkUrl}"
+      },
+      "documentation": "docs/appchain/README.md",
+      "acceptanceScenario": "finalized-webhook-sink"
     },
     {
-      "id":"sink:kafka","name":"Kafka finalized sink","category":"finalized-sink","availability":"FIRST_PARTY_OPTIONAL","maturity":"preview","scope":"node","selectable":true,
-      "trustStatement":"First-party optional bundle; broker identity, credentials, topic retention, and downstream processing remain operator-owned.","description":"Publishes finalized application blocks to a configured Kafka topic.",
-      "provides":["finalized-sink:kafka"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-kafka"],"nativePosture":"build-time-only",
-      "externalPrerequisites":["kafka-cluster","finalized-block-topic","node-local-kafka-security-profile"],"bootstrapRequirements":["install-appchain-kafka-bundle","provide-node-local-kafka-sink-configuration"],"nonSecretAnswers":[],"secretReferences":{},"properties":{},
-      "documentation":"appchain/extensions/appchain-kafka/README.md","acceptanceScenario":"optional-kafka-sink"
+      "id": "executor:kafka",
+      "name": "Kafka effect executor",
+      "category": "effect-executor",
+      "availability": "FIRST_PARTY_OPTIONAL",
+      "maturity": "preview",
+      "scope": "node",
+      "selectable": true,
+      "trustStatement": "First-party optional bundle; broker identity, transport security, credentials, topic policy, and delivery operations remain operator-owned.",
+      "description": "Executes kafka.publish intents through allowlisted node-local Kafka targets.",
+      "provides": [
+        "effect-executor:kafka"
+      ],
+      "requires": [
+        "effects:runtime"
+      ],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime",
+        "appchain-kafka"
+      ],
+      "nativePosture": "build-time-only",
+      "externalPrerequisites": [
+        "kafka-cluster",
+        "allowlisted-topic",
+        "node-local-kafka-security-profile"
+      ],
+      "bootstrapRequirements": [
+        "install-appchain-kafka-bundle",
+        "provide-node-local-kafka-configuration"
+      ],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {},
+      "documentation": "appchain/extensions/appchain-kafka/README.md",
+      "acceptanceScenario": "optional-kafka-effect"
     },
     {
-      "id":"executor:objectstore-s3","name":"S3-compatible object executor","category":"effect-executor","availability":"FIRST_PARTY_OPTIONAL","maturity":"preview","scope":"node","selectable":true,
-      "trustStatement":"First-party optional bundle; storage credentials, bucket policy, versioning, encryption, and retention remain operator-owned.","description":"Executes immutable object.put promotion against allowlisted S3-compatible targets.",
-      "provides":["effect-executor:objectstore-s3"],"requires":["effects:runtime"],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-objectstore-s3"],"nativePosture":"build-time-only",
-      "externalPrerequisites":["versioned-s3-compatible-buckets","node-local-storage-credentials"],"bootstrapRequirements":["install-appchain-objectstore-s3-bundle","provide-node-local-objectstore-configuration"],"nonSecretAnswers":[],"secretReferences":{},"properties":{},
-      "documentation":"appchain/extensions/appchain-objectstore-s3/README.md","acceptanceScenario":"optional-objectstore-effect"
+      "id": "sink:kafka",
+      "name": "Kafka finalized sink",
+      "category": "finalized-sink",
+      "availability": "FIRST_PARTY_OPTIONAL",
+      "maturity": "preview",
+      "scope": "node",
+      "selectable": true,
+      "trustStatement": "First-party optional bundle; broker identity, credentials, topic retention, and downstream processing remain operator-owned.",
+      "description": "Publishes finalized application blocks to a configured Kafka topic.",
+      "provides": [
+        "finalized-sink:kafka"
+      ],
+      "requires": [],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime",
+        "appchain-kafka"
+      ],
+      "nativePosture": "build-time-only",
+      "externalPrerequisites": [
+        "kafka-cluster",
+        "finalized-block-topic",
+        "node-local-kafka-security-profile"
+      ],
+      "bootstrapRequirements": [
+        "install-appchain-kafka-bundle",
+        "provide-node-local-kafka-sink-configuration"
+      ],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {},
+      "documentation": "appchain/extensions/appchain-kafka/README.md",
+      "acceptanceScenario": "optional-kafka-sink"
     },
     {
-      "id":"executor:ipfs","name":"IPFS pin executor","category":"effect-executor","availability":"FIRST_PARTY_OPTIONAL","maturity":"preview","scope":"node","selectable":true,
-      "trustStatement":"First-party optional bundle; Kubo identity, authentication, pin durability, and replication policy remain operator-owned.","description":"Executes reconciled ipfs.pin intents against allowlisted Kubo targets.",
-      "provides":["effect-executor:ipfs"],"requires":["effects:runtime"],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-ipfs"],"nativePosture":"build-time-only",
-      "externalPrerequisites":["kubo-api","node-local-ipfs-security-profile"],"bootstrapRequirements":["install-appchain-ipfs-bundle","provide-node-local-ipfs-configuration"],"nonSecretAnswers":[],"secretReferences":{},"properties":{},
-      "documentation":"appchain/extensions/appchain-ipfs/README.md","acceptanceScenario":"optional-ipfs-effect"
+      "id": "executor:objectstore-s3",
+      "name": "S3-compatible object executor",
+      "category": "effect-executor",
+      "availability": "FIRST_PARTY_OPTIONAL",
+      "maturity": "preview",
+      "scope": "node",
+      "selectable": true,
+      "trustStatement": "First-party optional bundle; storage credentials, bucket policy, versioning, encryption, and retention remain operator-owned.",
+      "description": "Executes immutable object.put promotion against allowlisted S3-compatible targets.",
+      "provides": [
+        "effect-executor:objectstore-s3"
+      ],
+      "requires": [
+        "effects:runtime"
+      ],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime",
+        "appchain-objectstore-s3"
+      ],
+      "nativePosture": "build-time-only",
+      "externalPrerequisites": [
+        "versioned-s3-compatible-buckets",
+        "node-local-storage-credentials"
+      ],
+      "bootstrapRequirements": [
+        "install-appchain-objectstore-s3-bundle",
+        "provide-node-local-objectstore-configuration"
+      ],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {},
+      "documentation": "appchain/extensions/appchain-objectstore-s3/README.md",
+      "acceptanceScenario": "optional-objectstore-effect"
     },
     {
-      "id":"executor:cardano-payment","name":"Cardano payment executor","category":"effect-executor","availability":"FIRST_PARTY_OPTIONAL","maturity":"preview","scope":"node","selectable":true,
-      "trustStatement":"Privileged first-party optional bundle; payer-key custody, funding, transaction caps, backend trust, and reconciliation remain operator-owned.","description":"Executes bounded cardano.payment intents from an operator-controlled payer wallet.",
-      "provides":["effect-executor:cardano-payment"],"requires":["effects:runtime"],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-effects-cardano"],"nativePosture":"build-time-only",
-      "externalPrerequisites":["funded-cardano-payer-wallet","trusted-cardano-backend"],"bootstrapRequirements":["install-appchain-effects-cardano-bundle","complete-material-funds-readiness-review","provide-node-local-cardano-executor-configuration"],"nonSecretAnswers":[],"secretReferences":{},"properties":{},
-      "documentation":"appchain/extensions/appchain-effects-cardano/README.md","acceptanceScenario":"optional-cardano-payment"
+      "id": "executor:ipfs",
+      "name": "IPFS pin executor",
+      "category": "effect-executor",
+      "availability": "FIRST_PARTY_OPTIONAL",
+      "maturity": "preview",
+      "scope": "node",
+      "selectable": true,
+      "trustStatement": "First-party optional bundle; Kubo identity, authentication, pin durability, and replication policy remain operator-owned.",
+      "description": "Executes reconciled ipfs.pin intents against allowlisted Kubo targets.",
+      "provides": [
+        "effect-executor:ipfs"
+      ],
+      "requires": [
+        "effects:runtime"
+      ],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime",
+        "appchain-ipfs"
+      ],
+      "nativePosture": "build-time-only",
+      "externalPrerequisites": [
+        "kubo-api",
+        "node-local-ipfs-security-profile"
+      ],
+      "bootstrapRequirements": [
+        "install-appchain-ipfs-bundle",
+        "provide-node-local-ipfs-configuration"
+      ],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {},
+      "documentation": "appchain/extensions/appchain-ipfs/README.md",
+      "acceptanceScenario": "optional-ipfs-effect"
     },
     {
-      "id":"runtime:composite","name":"Composite state-machine framework","category":"distribution","availability":"BUNDLED","maturity":"preview","scope":"distribution","selectable":false,
-      "trustStatement":"Generic framework library bundled for first-party profiles; arbitrary YAML composition is not supported.","description":"Deterministic component, workflow, profile, query, quota, and profile-governance framework.",
-      "provides":["composite-framework"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["appchain-composite"],"nativePosture":"bundled",
-      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{},
-      "documentation":"docs/appchain/tutorials/08-plugins-and-composites.md","acceptanceScenario":"composite-framework-packaging"
+      "id": "executor:cardano-payment",
+      "name": "Cardano payment executor",
+      "category": "effect-executor",
+      "availability": "FIRST_PARTY_OPTIONAL",
+      "maturity": "preview",
+      "scope": "node",
+      "selectable": true,
+      "trustStatement": "Privileged first-party optional bundle; payer-key custody, funding, transaction caps, backend trust, and reconciliation remain operator-owned.",
+      "description": "Executes bounded cardano.payment intents from an operator-controlled payer wallet.",
+      "provides": [
+        "effect-executor:cardano-payment"
+      ],
+      "requires": [
+        "effects:runtime"
+      ],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime",
+        "appchain-effects-cardano"
+      ],
+      "nativePosture": "build-time-only",
+      "externalPrerequisites": [
+        "funded-cardano-payer-wallet",
+        "trusted-cardano-backend"
+      ],
+      "bootstrapRequirements": [
+        "install-appchain-effects-cardano-bundle",
+        "complete-material-funds-readiness-review",
+        "provide-node-local-cardano-executor-configuration"
+      ],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {},
+      "documentation": "appchain/extensions/appchain-effects-cardano/README.md",
+      "acceptanceScenario": "optional-cardano-payment"
     },
     {
-      "id":"ui:console","name":"Embedded node console","category":"distribution","availability":"BUNDLED","maturity":"preview","scope":"node","selectable":false,
-      "trustStatement":"Read-only and privileged runtime-console behavior is governed separately by ADR-028.","description":"Embedded operational app-chain status console derived from the selected Yano distribution.",
-      "provides":["runtime-console"],"requires":[],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
-      "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"secretReferences":{},"properties":{},
-      "documentation":"adr/028-unified-console-ui-module.md","acceptanceScenario":"embedded-console-packaging"
+      "id": "runtime:composite",
+      "name": "Composite state-machine framework",
+      "category": "distribution",
+      "availability": "BUNDLED",
+      "maturity": "preview",
+      "scope": "distribution",
+      "selectable": false,
+      "trustStatement": "Generic framework library bundled for first-party profiles; arbitrary YAML composition is not supported.",
+      "description": "Deterministic component, workflow, profile, query, quota, and profile-governance framework.",
+      "provides": [
+        "composite-framework"
+      ],
+      "requires": [],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "appchain-composite"
+      ],
+      "nativePosture": "bundled",
+      "externalPrerequisites": [],
+      "bootstrapRequirements": [],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {},
+      "documentation": "docs/appchain/tutorials/08-plugins-and-composites.md",
+      "acceptanceScenario": "composite-framework-packaging"
     },
     {
-      "id":"observability:prometheus","name":"Prometheus observability companion","category":"distribution","availability":"FIRST_PARTY_OPTIONAL","maturity":"preview","scope":"distribution","selectable":false,
-      "trustStatement":"First-party local companion with pinned Prometheus image, bounded retention, loopback query access, and explicit lifecycle; production access control remains operator-owned.","description":"Optional one-command durable metrics history for the unified console.",
-      "provides":["durable-metrics-history"],"requires":["ui:console"],"implies":[],"conflicts":[],"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
-      "externalPrerequisites":["docker-compose-v2"],"bootstrapRequirements":["run-yano-observability-start"],"nonSecretAnswers":[],"secretReferences":{},"properties":{},
-      "documentation":"docs/console-ui.md","acceptanceScenario":"observability-launcher-contract"
+      "id": "ui:console",
+      "name": "Embedded node console",
+      "category": "distribution",
+      "availability": "BUNDLED",
+      "maturity": "preview",
+      "scope": "node",
+      "selectable": false,
+      "trustStatement": "Read-only and privileged runtime-console behavior is governed separately by ADR-028.",
+      "description": "Embedded operational app-chain status console derived from the selected Yano distribution.",
+      "provides": [
+        "runtime-console"
+      ],
+      "requires": [],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime"
+      ],
+      "nativePosture": "bundled",
+      "externalPrerequisites": [],
+      "bootstrapRequirements": [],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {},
+      "documentation": "adr/028-unified-console-ui-module.md",
+      "acceptanceScenario": "embedded-console-packaging"
+    },
+    {
+      "id": "observability:prometheus",
+      "name": "Prometheus observability companion",
+      "category": "distribution",
+      "availability": "FIRST_PARTY_OPTIONAL",
+      "maturity": "preview",
+      "scope": "distribution",
+      "selectable": false,
+      "trustStatement": "First-party local companion with pinned Prometheus image, bounded retention, loopback query access, and explicit lifecycle; production access control remains operator-owned.",
+      "description": "Optional one-command durable metrics history for the unified console.",
+      "provides": [
+        "durable-metrics-history"
+      ],
+      "requires": [
+        "ui:console"
+      ],
+      "implies": [],
+      "conflicts": [],
+      "runtimeTypes": [
+        "jvm",
+        "native"
+      ],
+      "deploymentTargets": [
+        "host",
+        "docker-compose"
+      ],
+      "artifacts": [
+        "yano-runtime"
+      ],
+      "nativePosture": "bundled",
+      "externalPrerequisites": [
+        "docker-compose-v2"
+      ],
+      "bootstrapRequirements": [
+        "run-yano-observability-start"
+      ],
+      "nonSecretAnswers": [],
+      "secretReferences": {},
+      "properties": {},
+      "documentation": "docs/console-ui.md",
+      "acceptanceScenario": "observability-launcher-contract"
     }
   ]
 }
