@@ -695,3 +695,36 @@ confirmed settlements), and the builder integration that emits the continuing
 shard output(s) + `InsertBatch` redeemer from `planInserts` (one shard input/
 output per distinct nibble in a batch — the vault requires only that *a* shard
 is spent, each shard validates its own nibble's inserts).
+
+### SP-M5 — permissionless crank (A3), client plane (2026-08-06, feat/adr009-sp-m5)
+
+`ExitTransactionBuilder` (appchain-eutxo-client) — the unsigned A3 Exit body
+the SP-M2 vault Exit path accepts: Settle's exact shape (positional payouts,
+continuing vault `Σinputs − Σ(payout+bounty)` under the batch marker, shard
+spend, root reference input) minus required signers, with Σbounty paid to the
+CRANKER's own output and the L1 fee from the cranker's inputs. Refuses to
+build unless armed: `currentSlot − rootUpdatedAtSlot > fallbackDelaySlots`
+must hold strictly (mirroring the on-chain `finiteLowerBound(validRange)`
+check), the batch must drain a SINGLE nullifier shard (claim-id last nibble),
+respect the governed `maxExitBatch`, and not mix bridge epochs.
+
+`CrankPlanner` — deterministic claim selection for one shard: armed-gate,
+shard filter, skip-already-nullified (an injected predicate the cranker backs
+with a `NullifierShardMirror` it maintains or reconstructs from L1 — SP-M4),
+governed batch cap with a `capped` flag for remaining work, total-bounty
+report. `plan.claims()` feeds `ExitTransactionBuilder.build` directly.
+
+Tests (8): armed exit with positional payouts + marker + cranker bounty +
+no-required-signers + arming interval encoded; boundary-slot refusal (not
+strictly past the delay); mixed-shard and oversize batch refusal; unfunded
+vault refusal; planner armed-gate, shard/nullified filtering + bounty sum,
+governed cap with capped-flag, and planner→builder hand-off equality. Claim
+fixtures derive real claim ids (hash-derived), grouped by their actual shard
+nibble.
+
+Devnet-gated (lands with SP-M6's v3 chain, per the SP-M5 gate): the live
+`crank` command (node queries for owed claims + root staleness, Plutus witness
+assembly with Exit/InsertBatch redeemers + ex-units, submission), and the E2E:
+stop the federation, advance past fallbackDelay, crank strangers' claims to
+payout — including the no-surviving-L2 variant driven by the SP-M4
+reconstruction CLI alone.
