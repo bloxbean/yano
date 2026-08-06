@@ -123,6 +123,20 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     /** Script anchors (008.4). Every ledger member gets one (co-sign verifier);
      *  only the anchor.enabled node runs it in leader mode. */
     private volatile ScriptAnchorService scriptAnchorService;
+    /** ADR-UTXO-009: registered ~bridge/* diffusion receiver (settlement co-sign). */
+    private volatile com.bloxbean.cardano.yano.api.appchain.l1view
+            .BridgeDiffusionHandler bridgeDiffusionHandler;
+
+    /**
+     * Register the {@code ~bridge/*} diffusion handler for this chain (one
+     * per chain; last registration wins). Host wiring calls this when the
+     * settlement executor stack is built.
+     */
+    public void registerBridgeDiffusionHandler(
+            com.bloxbean.cardano.yano.api.appchain.l1view
+                    .BridgeDiffusionHandler handler) {
+        this.bridgeDiffusionHandler = handler;
+    }
     /** L1 observations (008.4 I3.2): all members recompute; the scheduled
      *  proposer injects. Null when no observers are configured. */
     private volatile L1ObservationService observationService;
@@ -1180,6 +1194,24 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 ScriptAnchorService currentScriptAnchor = scriptAnchorService;
                 if (currentScriptAnchor != null) {
                     currentScriptAnchor.onAnchorMessage(message);
+                }
+                continue;
+            }
+            // ~bridge/* (ADR-UTXO-009): diffusion-only settlement co-signing
+            // traffic — same contract as ~anchor/*: relayed, never
+            // pooled/sequenced; first-sighting delivery to the registered
+            // extension handler.
+            if (topic.startsWith(AppChainSystemTopics.BRIDGE_DIFFUSION_PREFIX)) {
+                relay(message);
+                var handler = bridgeDiffusionHandler;
+                if (handler != null) {
+                    try {
+                        handler.onBridgeMessage(message);
+                    } catch (Throwable failure) {
+                        LifecycleFailures.rethrowIfProcessFatal(failure);
+                        log.warn("Bridge diffusion handler failed (errorType={})",
+                                failure.getClass().getName());
+                    }
                 }
                 continue;
             }
