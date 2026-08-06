@@ -66,8 +66,19 @@ public record SettlementBootstrapPlan(
             List<String> memberKeysHex,
             int threshold,
             long updatedAtSlot,
-            long fallbackDelaySlots
+            long fallbackDelaySlots,
+            byte[] initialStateRoot
     ) {
+        /** Genesis with an empty (all-zero) accepted state root. */
+        public Config(
+                String chainId, long bridgeEpoch, Network network,
+                byte[] rootThreadAssetName, List<String> memberKeysHex,
+                int threshold, long updatedAtSlot, long fallbackDelaySlots) {
+            this(chainId, bridgeEpoch, network, rootThreadAssetName,
+                    memberKeysHex, threshold, updatedAtSlot,
+                    fallbackDelaySlots, new byte[32]);
+        }
+
         public Config {
             chainId = Objects.requireNonNull(chainId, "chainId").trim();
             if (chainId.isEmpty() || chainId.length() > 128) {
@@ -114,6 +125,12 @@ public record SettlementBootstrapPlan(
                     || fallbackDelaySlots > EutxoProfile.V3_FALLBACK_DELAY_MAX_SLOTS) {
                 throw new IllegalArgumentException(
                         "fallback delay must respect the tier-1 profile bounds");
+            }
+            initialStateRoot = Objects.requireNonNull(
+                    initialStateRoot, "initialStateRoot").clone();
+            if (initialStateRoot.length != 32) {
+                throw new IllegalArgumentException(
+                        "initial state root must be 32 bytes");
             }
         }
     }
@@ -200,7 +217,7 @@ public record SettlementBootstrapPlan(
                                     .getBytes(StandardCharsets.UTF_8)),
                             BigIntPlutusData.of(config.bridgeEpoch()),
                             BigIntPlutusData.of(0),
-                            BytesPlutusData.of(new byte[32]),
+                            BytesPlutusData.of(config.initialStateRoot()),
                             ListPlutusData.of(members.toArray(
                                     new com.bloxbean.cardano.client.plutus
                                             .spec.PlutusData[0])),
