@@ -901,3 +901,59 @@ single-owner pinning; showcase v3 bridge chain + console fee/bounty +
 BRIDGE_CHAIN.md v2; and the devnet E2E gates — ALL PASSING: bootstrap + live A2 settle + live
 A3 exit (`EutxoSettlementBootstrapDevnetE2ETest`) and the full effect path
 (`EutxoSettlementEffectPathDevnetE2ETest`).
+
+## 13. Follow-ups (open, tracked beyond the implemented scope)
+
+### 13.1 Enforce the fallback-delay floor ON-CHAIN (open)
+
+**Gap.** The tier-1 `fallbackDelaySlots` floor (`V3_FALLBACK_DELAY_MIN_SLOTS`)
+is enforced only OFF-chain — by `EutxoBridgeParams`/`EutxoStateMachine`
+validation and by the bootstrap plan's config checks. The Plutus side does
+not check it: `SettlementRootValidator.baseProfileValid` requires merely
+`fallbackDelaySlots.signum() > 0`, and `SettlementVaultValidator`'s Exit arming
+reads whatever the root datum carries. So the floor protects against operator
+MISCONFIGURATION, not against a federation that deliberately bootstraps (or
+migrates to) a root datum with a tiny delay — which would let its own
+"cranker" exit depositor funds almost immediately instead of after the
+governed waiting period.
+
+**Why it was acceptable for this ADR.** The V1 vault ships for demo and
+devnet custody, where the federation IS the operator; and the practical
+attack (a federation racing its own depositors) is strictly weaker than the
+custody the V0 baseline already grants (a single operator key). The bound is
+consensus-visible off-chain: the floor is folded into the profile digest, so
+every member agrees on it and a divergent build cannot join.
+
+**Fix.** Bind the floor into the scripts as a deploy `@Param` (a single byte-
+or integer-encoded slot count on `SettlementRootValidator`, mirrored on
+`SettlementVaultValidator`'s Exit path), so a root datum below the floor is
+unspendable rather than merely unsupported. Costs: new checked-in artifacts,
+one more deploy parameter in `SettlementScriptArtifacts` /
+`SettlementBootstrapPlan`, a budget re-measure, and re-pinned goldens.
+
+**Trigger.** REQUIRED before any deployment holding non-demo funds, together
+with the §9 custody review. Not required for devnet/demo profiles.
+
+### 13.2 Network-scoped profiles (in progress)
+
+Demoing the A3 permissionless exit needs an armed root thread, and the
+production floor (21,600 slots) is deliberately too long for a live demo. The
+floor therefore moves from a static constant into a PROFILE FIELD
+(`fallbackDelayMinSlots`), with a second constant
+`yano-eutxo-v3-bridge-settlement-devnet` carrying a relaxed floor.
+
+The relaxation is pinned to profile identity — NOT to the operator-settable
+`machines.eutxo.network` setting — precisely because a safety bound must not
+hinge on a config string: a chain settling real funds could otherwise declare
+itself "devnet" and legally run a 12-second fallback. Distinct id ⇒ distinct
+digest ⇒ the config handshake and the retained-state check both reject
+cross-profile joins, and the relaxed profile additionally refuses to
+construct on a non-devnet network. Production's canonical digest string is
+unchanged (the field carries the same 21,600), so `71d7d744…` and its goldens
+stand.
+
+Layering note: with a per-profile floor, `EutxoBridgeParams` keeps only the
+STRUCTURAL bound (positive, within the frozen maximum) and the machine —
+which knows its profile — enforces the policy floor at genesis and on
+governed activation. §13.1 remains open regardless: an on-chain floor would
+be per-profile too, taken from the same field at deploy time.
