@@ -285,6 +285,9 @@ public final class LedgerStateSubsystem implements Subsystem {
         }
         accountHistorySubsystem.reinitializeAndReconcileAfterSnapshotRestore(rocksAccess);
         accountHistoryStore = accountHistorySubsystem.store();
+        if (accountHistoryStore != null) {
+            accountHistoryStore.setUtxoState(utxoStateSupplier.get());
+        }
     }
 
     public boolean isAccountHistoryPruneServiceRunning() {
@@ -460,6 +463,18 @@ public final class LedgerStateSubsystem implements Subsystem {
 
         accountHistorySubsystem.initialize(rocksAccess, epochParamProvider);
         this.accountHistoryStore = accountHistorySubsystem.store();
+        if (accountHistoryStore != null) {
+            // Input-side address resolution for the address-tx index (ADR-033 M2).
+            accountHistoryStore.setUtxoState(utxoStateSupplier.get());
+            // Reward-history hook: must wire HERE — the calculator is created in
+            // wireDefaultAccountStateStore, which runs before this store exists.
+            if (accountHistoryStore.isRewardsHistoryEnabled()
+                    && accountStateStore instanceof DefaultAccountStateStore defaultStore
+                    && defaultStore.getRewardCalculator() != null) {
+                defaultStore.getRewardCalculator().setRewardHistoryStore(accountHistoryStore);
+                log.info("Per-epoch reward history enabled (ADR-033 M2)");
+            }
+        }
 
         this.accountStateEventHandler = new AccountStateEventHandler(eventBus, accountStateStore);
         log.info("Account state store initialized ({}); event handler registered",

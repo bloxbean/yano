@@ -264,6 +264,11 @@ yano:
       protocol-parameters-file: config/network/devnet/protocol-param.json
     account-state:
       enabled: true
+    # Wallet APIs (ADR-033 M2) on by default in devnet so e2e/probe exercise them.
+    account-history:
+      enabled: true
+      address-tx-enabled: true
+      rewards-enabled: true
     epoch-snapshot:
       amounts-enabled: true           # UTXO balance aggregation in snapshots
     adapot:
@@ -388,6 +393,28 @@ yano:
       alonzo-genesis-file: config/network/sanchonet/alonzo-genesis.json
       conway-genesis-file: config/network/sanchonet/conway-genesis.json
       protocol-parameters-file: config/network/sanchonet/protocol-param.json
+
+# Wallet-serving node profile (ADR-033): relay defaults plus every index the
+# desktop wallet needs — address/account tx history, reward history, UTXO
+# indexing by address hash AND payment credential.
+# Activate with -Dquarkus.profile=wallet[,preprod|mainnet|preview].
+"%wallet":
+  yano:
+    account-state:
+      enabled: true
+    account-history:
+      enabled: true
+      tx-events-enabled: true
+      address-tx-enabled: true
+      rewards-enabled: true
+    adapot:
+      enabled: true
+    rewards:
+      enabled: true
+    epoch-params:
+      tracking-enabled: true
+    governance:
+      enabled: true
 
 "%test":
   yaci:

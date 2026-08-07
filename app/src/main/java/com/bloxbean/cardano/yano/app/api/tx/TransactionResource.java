@@ -7,6 +7,7 @@ import com.bloxbean.cardano.yaci.core.model.serializers.BlockSerializer;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.ChainQuery;
 import com.bloxbean.cardano.yano.api.LedgerQuery;
+import com.bloxbean.cardano.yano.api.TxGateway;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.api.utxo.model.AssetAmount;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
@@ -14,6 +15,7 @@ import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
 import com.bloxbean.cardano.yano.app.api.tx.dto.TxAmountDto;
 import com.bloxbean.cardano.yano.app.api.tx.dto.TxDto;
 import com.bloxbean.cardano.yano.app.api.tx.dto.TxInputsOutputsDto;
+import com.bloxbean.cardano.yano.app.api.tx.dto.TxStatusDto;
 import com.bloxbean.cardano.yano.app.api.tx.dto.TxUtxoDto;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
@@ -37,6 +39,68 @@ public class TransactionResource {
 
     @Inject
     LedgerQuery ledgerQuery;
+
+    @Inject
+    TxGateway txGateway;
+
+    /**
+     * Wallet-facing status: {@code in_block} (with confirmations), {@code pending}
+     * (in this node's mempool), or {@code unknown}. Always 200 for a well-formed
+     * hash so clients poll a single endpoint instead of interpreting 404s.
+     */
+    @GET
+    @Path("/{txHash}/status")
+    public Response getTxStatus(@PathParam("txHash") String txHash) {
+        if (txHash == null || !txHash.matches("[0-9a-fA-F]{64}")) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("error", "Invalid transaction hash"))
+                    .build();
+        }
+        String normalized = txHash.toLowerCase();
+
+        UtxoState utxoState = ledgerQuery.getUtxoState();
+        if (utxoState != null && utxoState.isEnabled()) {
+            List<Utxo> outputs = utxoState.getOutputsByTxHash(normalized);
+            if (!outputs.isEmpty()) {
+                try {
+                    long blockNumber = outputs.get(0).blockNumber();
+                    var tip = chainQuery != null ? chainQuery.getLocalTip() : null;
+                    // Depth-style, consistent with BlockResource: tip block = 0.
+                    long confirmations = tip != null ? Math.max(0, tip.getBlockNumber() - blockNumber) : 0;
+                    BlockHeaderRef header = resolveBlockHeader(blockNumber);
+                    return Response.ok(TxStatusDto.inBlock(normalized, blockNumber, header.blockHash(),
+                            header.slot(), ledgerQuery.slotToUnixTime(header.slot()), confirmations)).build();
+                } catch (Exception e) {
+                    log.warn("Failed to resolve block for tx status {}: {}", normalized, e.getMessage());
+                    return Response.ok(TxStatusDto.inBlock(normalized, outputs.get(0).blockNumber(),
+                            null, 0, 0, 0)).build();
+                }
+            }
+        }
+
+        if (txGateway.isTransactionInMemPool(normalized)) {
+            return Response.ok(TxStatusDto.pending(normalized)).build();
+        }
+        return Response.ok(TxStatusDto.unknown(normalized)).build();
+    }
+
+    /** Loads a block header's slot and hash from local chain storage. */
+    private BlockHeaderRef resolveBlockHeader(long blockNumber) {
+        long slot = 0;
+        String blockHash = null;
+        byte[] blockCbor = chainQuery != null ? chainQuery.getBlockByNumber(blockNumber) : null;
+        if (blockCbor != null) {
+            Block block = BlockSerializer.INSTANCE.deserialize(blockCbor);
+            if (block != null && block.getHeader() != null && block.getHeader().getHeaderBody() != null) {
+                slot = block.getHeader().getHeaderBody().getSlot();
+                blockHash = block.getHeader().getHeaderBody().getBlockHash();
+            }
+        }
+        return new BlockHeaderRef(slot, blockHash);
+    }
+
+    private record BlockHeaderRef(long slot, String blockHash) {
+    }
 
     @GET
     @Path("/{txHash}")

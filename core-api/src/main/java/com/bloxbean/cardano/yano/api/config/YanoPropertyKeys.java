@@ -267,6 +267,8 @@ public final class YanoPropertyKeys {
         public static final String ENABLED = "yano.account-history.enabled";
         public static final String TX_EVENTS_ENABLED = "yano.account-history.tx-events-enabled";
         public static final String REWARDS_ENABLED = "yano.account-history.rewards-enabled";
+        /** Index address/payment-cred/stake-cred → tx history (ADR-033 M2 wallet APIs). */
+        public static final String ADDRESS_TX_ENABLED = "yano.account-history.address-tx-enabled";
         public static final String RETENTION_EPOCHS = "yano.account-history.retention-epochs";
         public static final String PRUNE_INTERVAL_SECONDS =
                 "yano.account-history.prune-interval-seconds";

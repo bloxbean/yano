@@ -332,6 +332,8 @@ public class YanoProducer {
     boolean accountHistoryTxEventsEnabled;
     @ConfigProperty(name = YanoPropertyKeys.AccountHistory.REWARDS_ENABLED, defaultValue = "false")
     boolean accountHistoryRewardsEnabled;
+    @ConfigProperty(name = YanoPropertyKeys.AccountHistory.ADDRESS_TX_ENABLED, defaultValue = "false")
+    boolean accountHistoryAddressTxEnabled;
     @ConfigProperty(name = YanoPropertyKeys.AccountHistory.RETENTION_EPOCHS, defaultValue = "0")
     int accountHistoryRetentionEpochs;
     @ConfigProperty(name = YanoPropertyKeys.AccountHistory.PRUNE_INTERVAL_SECONDS, defaultValue = "300")
@@ -725,6 +727,7 @@ public class YanoProducer {
         globals.put(YanoPropertyKeys.AccountHistory.ENABLED, accountHistoryEnabled);
         globals.put(YanoPropertyKeys.AccountHistory.TX_EVENTS_ENABLED, accountHistoryTxEventsEnabled);
         globals.put(YanoPropertyKeys.AccountHistory.REWARDS_ENABLED, accountHistoryRewardsEnabled);
+        globals.put(YanoPropertyKeys.AccountHistory.ADDRESS_TX_ENABLED, accountHistoryAddressTxEnabled);
         globals.put(YanoPropertyKeys.AccountHistory.RETENTION_EPOCHS, accountHistoryRetentionEpochs);
         globals.put(YanoPropertyKeys.AccountHistory.PRUNE_INTERVAL_SECONDS, accountHistoryPruneIntervalSeconds);
         globals.put(YanoPropertyKeys.AccountHistory.PRUNE_BATCH_SIZE, accountHistoryPruneBatchSize);
@@ -816,6 +819,13 @@ public class YanoProducer {
     @ApplicationScoped
     public TxEvaluationGateway createTxEvaluationGateway() {
         return ensureYano().txEvaluationGateway();
+    }
+
+    @Produces
+    @ApplicationScoped
+    public com.bloxbean.cardano.yano.api.events.stream.NodeEventStream createNodeEventStream() {
+        return ensureYano().eventStream()
+                .orElse(com.bloxbean.cardano.yano.api.events.stream.NodeEventStream.UNAVAILABLE);
     }
 
     @Produces
