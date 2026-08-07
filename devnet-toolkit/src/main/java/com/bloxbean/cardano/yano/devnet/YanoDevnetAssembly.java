@@ -234,6 +234,11 @@ public final class YanoDevnetAssembly {
         }
 
         @Override
+        public Optional<com.bloxbean.cardano.yano.api.events.stream.NodeEventStream> eventStream() {
+            return delegate.eventStream();
+        }
+
+        @Override
         public Optional<DevnetRuntime> devnetRuntime() {
             if (delegate instanceof DevnetRuntimeProvider provider) {
                 return provider.devnetRuntime();

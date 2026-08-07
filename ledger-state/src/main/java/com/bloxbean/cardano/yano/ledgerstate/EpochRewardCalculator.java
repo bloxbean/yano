@@ -62,6 +62,9 @@ public class EpochRewardCalculator {
     private org.rocksdb.WriteBatch rewardBatch;
     private List<DefaultAccountStateStore.DeltaOp> rewardDeltaOps;
     private DefaultAccountStateStore.BatchStateOverlay rewardStateOverlay;
+    // Reward history rows (ADR-033 M2), flushed atomically with the batch.
+    private AccountHistoryStore rewardHistoryStore;
+    private List<AccountHistoryStore.RewardHistoryEntry> pendingRewardHistory;
 
     public EpochRewardCalculator(RocksDB db, ColumnFamilyHandle cfState,
                                  ColumnFamilyHandle cfEpochSnapshot, boolean enabled) {
@@ -107,6 +110,14 @@ public class EpochRewardCalculator {
         this.accountStateStore = store;
     }
 
+    /**
+     * Enables per-epoch reward history (ADR-033 M2): every creditReward is
+     * buffered and flushed into the boundary batch on commit.
+     */
+    public void setRewardHistoryStore(AccountHistoryStore rewardHistoryStore) {
+        this.rewardHistoryStore = rewardHistoryStore;
+    }
+
     public void setEraProvider(EraProvider eraProvider) {
         this.eraProvider = eraProvider;
     }
@@ -123,6 +134,7 @@ public class EpochRewardCalculator {
         this.rewardBatch = new org.rocksdb.WriteBatch();
         this.rewardDeltaOps = new ArrayList<>();
         this.rewardStateOverlay = new DefaultAccountStateStore.BatchStateOverlay();
+        this.pendingRewardHistory = new ArrayList<>();
     }
 
     /**
@@ -146,12 +158,18 @@ public class EpochRewardCalculator {
     void commitRewardBatch(long boundarySlot, byte phase) throws RocksDBException {
         if (rewardBatch == null) return;
         try (var wo = new org.rocksdb.WriteOptions()) {
+            if (rewardHistoryStore != null && pendingRewardHistory != null && !pendingRewardHistory.isEmpty()) {
+                // Same WriteBatch: reward history rows commit atomically with the credits.
+                // The phase scopes the row keys (PHASE_REWARDS vs PHASE_POOLREAP share a boundary slot).
+                rewardHistoryStore.appendRewardRows(rewardBatch, boundarySlot, phase, pendingRewardHistory);
+            }
             accountStateStore.commitBoundaryDelta(boundarySlot, phase, rewardBatch, rewardDeltaOps);
             db.write(wo, rewardBatch);
         } finally {
             rewardBatch.close();
             rewardBatch = null;
             rewardDeltaOps = null;
+            pendingRewardHistory = null;
             if (rewardStateOverlay != null) {
                 rewardStateOverlay.clear();
             }
@@ -735,6 +753,12 @@ public class EpochRewardCalculator {
                 earnedEpoch, rewardType.ordinal(), amount, poolHash);
         accountStateStore.putStateWithDelta(rewardKey,
                 AccountStateCborCodec.encodeAccumulatedReward(reward), rewardBatch, rewardDeltaOps, rewardStateOverlay);
+
+        if (rewardHistoryStore != null && rewardHistoryStore.isRewardsHistoryEnabled()
+                && pendingRewardHistory != null) {
+            pendingRewardHistory.add(new AccountHistoryStore.RewardHistoryEntry(
+                    credType, credHash, amount, earnedEpoch, rewardType.name(), poolHash));
+        }
     }
 
     /**
@@ -810,8 +834,10 @@ public class EpochRewardCalculator {
             }
 
             try {
+                // A deposit refund is not leader income — type it as REFUND so
+                // reward history (and the accumulated-reward record) label it correctly.
                 creditReward(credType, credHash, deposit, epoch,
-                        com.bloxbean.cardano.yano.api.account.RewardType.LEADER, pool.poolHash());
+                        com.bloxbean.cardano.yano.api.account.RewardType.REFUND, pool.poolHash());
                 totalRefunded = totalRefunded.add(deposit);
                 log.info("Pool {} deposit refund {} credited to {} at epoch {}",
                         pool.poolHash(), deposit, credKey, epoch);

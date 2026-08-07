@@ -13,6 +13,7 @@ import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
+import com.bloxbean.cardano.yano.api.util.AddressKeyUtil;
 import com.bloxbean.cardano.yano.api.util.StoredBlockUtil;
 import com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore;
 import org.rocksdb.*;
@@ -29,10 +30,20 @@ public final class AccountHistoryStore implements AccountHistoryProvider, Rollba
     static final byte TYPE_DELEGATION = 0x02;
     static final byte TYPE_REGISTRATION = 0x03;
     static final byte TYPE_MIR = 0x04;
+    // Address/payment-cred/stake-cred → tx rows (ADR-033 M2); the key's credType
+    // byte carries the AccountHistoryProvider.ADDR_SCOPE_* value.
+    static final byte TYPE_ADDRESS_TX = 0x05;
+    // Per-epoch reward rows written at the epoch boundary (ADR-033 M2).
+    static final byte TYPE_REWARD = 0x06;
     private static final int HISTORY_PREFIX_LEN = 1 + 1 + 28;
     private static final int HISTORY_KEY_LEN = HISTORY_PREFIX_LEN + 8 + 4 + 4;
     private static final byte[] META_LAST_APPLIED_SLOT = new byte[]{0x00, 'l', 'a', 's', 't', '_', 's', 'l', 'o', 't'};
     private static final byte[] META_LAST_APPLIED_BLOCK = new byte[]{0x00, 'l', 'a', 's', 't', '_', 'b', 'l', 'o', 'c', 'k'};
+    // Per-family cursors: tx-events (certs/withdrawals/MIRs) and address-tx can be
+    // enabled at different times; each family reconciles from ITS OWN cursor so a
+    // later-enabled family backfills instead of being skipped by the shared cursor.
+    private static final byte[] META_TXEVENTS_LAST_BLOCK = new byte[]{0x00, 't', 'x', 'e', '_', 'b', 'l', 'k'};
+    private static final byte[] META_ADDRTX_LAST_BLOCK = new byte[]{0x00, 'a', 't', 'x', '_', 'b', 'l', 'k'};
 
     private RocksDB db;
     private ColumnFamilyHandle cfHistory;
@@ -40,7 +51,15 @@ public final class AccountHistoryStore implements AccountHistoryProvider, Rollba
     private final Logger log;
     private final boolean enabled;
     private final boolean txEventsEnabled;
+    private final boolean addressTxEnabled;
     private final boolean rewardsHistoryEnabled;
+    /**
+     * Resolves the addresses of consumed inputs. The UTXO store applies each
+     * block before this store (listener order 100 vs 112), so at apply time a
+     * spent output is still resolvable. Nullable: without it only output-side
+     * address activity is indexed.
+     */
+    private volatile com.bloxbean.cardano.yano.api.utxo.UtxoState utxoState;
     private final int retentionEpochs;
     private final int pruneBatchSize;
     private final long rollbackSafetySlots;
@@ -63,6 +82,7 @@ public final class AccountHistoryStore implements AccountHistoryProvider, Rollba
         this.log = log;
         this.enabled = getBool(config, YanoPropertyKeys.AccountHistory.ENABLED, false);
         this.txEventsEnabled = getBool(config, YanoPropertyKeys.AccountHistory.TX_EVENTS_ENABLED, true);
+        this.addressTxEnabled = getBool(config, YanoPropertyKeys.AccountHistory.ADDRESS_TX_ENABLED, false);
         this.rewardsHistoryEnabled = getBool(config, YanoPropertyKeys.AccountHistory.REWARDS_ENABLED, false);
         this.retentionEpochs = getInt(config, YanoPropertyKeys.AccountHistory.RETENTION_EPOCHS, 0);
         this.pruneBatchSize = getInt(config, YanoPropertyKeys.AccountHistory.PRUNE_BATCH_SIZE, 50_000);
@@ -101,6 +121,15 @@ public final class AccountHistoryStore implements AccountHistoryProvider, Rollba
         return txEventsEnabled;
     }
 
+    @Override
+    public boolean isAddressTxEnabled() {
+        return addressTxEnabled;
+    }
+
+    public void setUtxoState(com.bloxbean.cardano.yano.api.utxo.UtxoState utxoState) {
+        this.utxoState = utxoState;
+    }
+
     public boolean isRewardsHistoryEnabled() {
         return rewardsHistoryEnabled;
     }
@@ -110,7 +139,7 @@ public final class AccountHistoryStore implements AccountHistoryProvider, Rollba
     }
 
     public synchronized void applyBlock(BlockAppliedEvent event) {
-        if (!enabled || !txEventsEnabled || event == null || event.block() == null) return;
+        if (!enabled || (!txEventsEnabled && !addressTxEnabled) || event == null || event.block() == null) return;
 
         Block block = event.block();
         long slot = event.slot();
@@ -132,25 +161,31 @@ public final class AccountHistoryStore implements AccountHistoryProvider, Rollba
                     TransactionBody tx = txs.get(txIdx);
                     String txHash = tx.getTxHash();
 
-                    Map<String, BigInteger> withdrawals = tx.getWithdrawals();
-                    if (withdrawals != null && !withdrawals.isEmpty()) {
-                        int withdrawalIdx = 0;
-                        for (var entry : withdrawals.entrySet()) {
-                            StakeCred cred = rewardAccountCred(entry.getKey());
-                            if (cred != null && entry.getValue() != null && entry.getValue().signum() > 0) {
-                                indexWithdrawal(cred, txHash, entry.getValue(), slot, blockNo,
-                                        txIdx, withdrawalIdx, batch, insertedKeys);
+                    if (txEventsEnabled) {
+                        Map<String, BigInteger> withdrawals = tx.getWithdrawals();
+                        if (withdrawals != null && !withdrawals.isEmpty()) {
+                            int withdrawalIdx = 0;
+                            for (var entry : withdrawals.entrySet()) {
+                                StakeCred cred = rewardAccountCred(entry.getKey());
+                                if (cred != null && entry.getValue() != null && entry.getValue().signum() > 0) {
+                                    indexWithdrawal(cred, txHash, entry.getValue(), slot, blockNo,
+                                            txIdx, withdrawalIdx, batch, insertedKeys);
+                                }
+                                withdrawalIdx++;
                             }
-                            withdrawalIdx++;
+                        }
+
+                        List<Certificate> certs = tx.getCertificates();
+                        if (certs != null) {
+                            for (int certIdx = 0; certIdx < certs.size(); certIdx++) {
+                                indexCertificate(certs.get(certIdx), event.era(), currentEpoch, slot, blockNo,
+                                        txIdx, certIdx, txHash, batch, insertedKeys);
+                            }
                         }
                     }
 
-                    List<Certificate> certs = tx.getCertificates();
-                    if (certs != null) {
-                        for (int certIdx = 0; certIdx < certs.size(); certIdx++) {
-                            indexCertificate(certs.get(certIdx), event.era(), currentEpoch, slot, blockNo,
-                                    txIdx, certIdx, txHash, batch, insertedKeys);
-                        }
+                    if (addressTxEnabled) {
+                        indexAddressTxs(tx, txHash, slot, blockNo, txIdx, batch, insertedKeys);
                     }
                 }
             }
@@ -330,6 +365,10 @@ public final class AccountHistoryStore implements AccountHistoryProvider, Rollba
                 } else {
                     batch.delete(cfHistory, META_LAST_APPLIED_BLOCK);
                 }
+                // Per-family cursors move back with the shared cursor: the rollback
+                // removed rows of BOTH families beyond the target slot.
+                clampFamilyCursor(batch, META_TXEVENTS_LAST_BLOCK, latestDeltaBlock);
+                clampFamilyCursor(batch, META_ADDRTX_LAST_BLOCK, latestDeltaBlock);
             }
             db.write(wo, batch);
         }
@@ -372,7 +411,12 @@ public final class AccountHistoryStore implements AccountHistoryProvider, Rollba
             it.seekToFirst();
             while (it.isValid() && deleted < pruneBatchSize) {
                 byte[] key = it.key();
-                if (cutoffSlot > 0 && key.length == HISTORY_KEY_LEN && slotFromHistoryKey(key) < cutoffSlot) {
+                // retention-epochs bounds STAKING history (certs/withdrawals/MIRs).
+                // Address-tx and reward rows are the wallet's FULL history — never
+                // retention-pruned (rollback still removes them by slot).
+                if (cutoffSlot > 0 && key.length == HISTORY_KEY_LEN
+                        && key[0] != TYPE_ADDRESS_TX && key[0] != TYPE_REWARD
+                        && slotFromHistoryKey(key) < cutoffSlot) {
                     batch.delete(cfHistory, Arrays.copyOf(key, key.length));
                     deleted++;
                 }
@@ -402,21 +446,20 @@ public final class AccountHistoryStore implements AccountHistoryProvider, Rollba
     }
 
     public synchronized void reconcile(ChainState chainState) {
-        if (!enabled || !txEventsEnabled || chainState == null) return;
+        if (!enabled || (!txEventsEnabled && !addressTxEnabled) || chainState == null) return;
 
         ChainTip tip = chainState.getTip();
         if (tip == null) return;
         long tipBlock = tip.getBlockNumber();
-        long lastAppliedBlock = getLastAppliedBlock();
-
-        if (lastAppliedBlock == tipBlock) return;
-
-        if (lastAppliedBlock > tipBlock) {
+        if (getLastAppliedBlock() > tipBlock) {
             rollbackToSlot(tip.getSlot());
             log.info("Account history reconciled: rolled back from block {} to tip block {}",
-                    lastAppliedBlock, tipBlock);
+                    getLastAppliedBlock(), tipBlock);
             return;
         }
+
+        long lastAppliedBlock = reconcileFloorBlock();
+        if (lastAppliedBlock >= tipBlock) return;
 
         byte[] tipBlockBytes = chainState.getBlockByNumber(tipBlock);
         if (lastAppliedBlock == 0
@@ -509,6 +552,79 @@ public final class AccountHistoryStore implements AccountHistoryProvider, Rollba
     public List<AccountHistoryProvider.MirRecord> getMirs(int credType, String credHash, int page, int count, String order) {
         return listByCredential(TYPE_MIR, credType, credHash, page, count, order,
                 AccountHistoryCborCodec::decodeMir);
+    }
+
+    @Override
+    public List<AccountHistoryProvider.AddressTxRecord> getAddressTransactions(int scope, String hash28Hex,
+                                                                               int page, int count, String order) {
+        if (!addressTxEnabled) return List.of();
+        return listByCredential(TYPE_ADDRESS_TX, scope, hash28Hex, page, count, order,
+                AccountHistoryCborCodec::decodeAddressTx);
+    }
+
+    @Override
+    public boolean isAddressUsed(int scope, String hash28Hex) {
+        if (!addressTxEnabled) return false;
+        return !getAddressTransactions(scope, hash28Hex, 1, 1, "asc").isEmpty();
+    }
+
+    /** One reward credit, buffered by the reward calculator until boundary commit. */
+    public record RewardHistoryEntry(int credType, String credHash, BigInteger amount,
+                                     int earnedEpoch, String type, String poolHash) {}
+
+    /**
+     * Adds reward rows to the calculator's boundary WriteBatch so they commit
+     * atomically with the reward credits. Rows are keyed by the boundary slot;
+     * a rollback past that slot removes them via the slot-scan path. No
+     * per-block delta entry is written here — the boundary block's own
+     * applyBlock owns that delta key.
+     *
+     * <p>Fail-open: reward history is an optional index — a failure here marks
+     * the store unhealthy but must never abort the epoch-boundary reward
+     * commit. The {@code phase} scopes the per-call sequence into the key's
+     * eventIdx so PHASE_REWARDS and PHASE_POOLREAP rows at the same boundary
+     * slot cannot collide.
+     */
+    public synchronized void appendRewardRows(WriteBatch batch, long boundarySlot, byte phase,
+                                              List<RewardHistoryEntry> entries) {
+        if (!enabled || !rewardsHistoryEnabled || batch == null || entries == null || entries.isEmpty()) {
+            return;
+        }
+        try {
+            int seq = 0;
+            for (RewardHistoryEntry entry : entries) {
+                int eventIdx = ((phase & 0xFF) << 20) | (seq++ & 0xFFFFF);
+                byte[] key = historyKey(TYPE_REWARD, entry.credType(), entry.credHash(),
+                        boundarySlot, 0, eventIdx);
+                byte[] value = AccountHistoryCborCodec.encodeReward(
+                        entry.amount(), entry.earnedEpoch(), entry.type(), entry.poolHash(), boundarySlot);
+                batch.put(cfHistory, key, value);
+            }
+        } catch (Exception e) {
+            healthy = false;
+            log.error("Reward history append failed at boundary slot {} (index marked unhealthy; "
+                    + "reward crediting proceeds): {}", boundarySlot, e.toString(), e);
+        }
+    }
+
+    @Override
+    public List<AccountHistoryProvider.RewardRecord> getRewards(int credType, String credHash,
+                                                                int page, int count, String order) {
+        if (!rewardsHistoryEnabled) return List.of();
+        return listByCredential(TYPE_REWARD, credType, credHash, page, count, order,
+                AccountHistoryCborCodec::decodeReward);
+    }
+
+    @Override
+    public List<AccountHistoryProvider.AddressTxRecord> getAddressTransactionsForAddress(
+            String address, boolean usePaymentCred, int page, int count, String order) {
+        if (!addressTxEnabled || address == null || address.isBlank()) return List.of();
+        byte[] hash = usePaymentCred
+                ? AddressKeyUtil.paymentCred28(address)
+                : AddressKeyUtil.addrHash28(address);
+        if (hash == null || hash.length != 28) return List.of();
+        int scope = usePaymentCred ? ADDR_SCOPE_PAYMENT_CRED : ADDR_SCOPE_ADDRESS;
+        return getAddressTransactions(scope, HexUtil.encodeHexString(hash), page, count, order);
     }
 
     public long countByType(byte type) {
@@ -630,6 +746,48 @@ public final class AccountHistoryStore implements AccountHistoryProvider, Rollba
         }
     }
 
+    /**
+     * One row per (scope, credential, tx) for every address the transaction
+     * touched — outputs directly, inputs by resolving the consumed output in
+     * the UTXO store. Input resolution during a deep replay can miss rows once
+     * spent outputs are pruned past the UTXO store's retention window; within
+     * the normal apply path (and any replay inside the rollback window)
+     * resolution is complete.
+     */
+    private void indexAddressTxs(TransactionBody tx, String txHash, long slot, long blockNo, int txIdx,
+                                 WriteBatch batch, List<byte[]> insertedKeys) throws RocksDBException {
+        Set<AddressKeyUtil.ScopedHash> touched = new LinkedHashSet<>();
+        if (tx.getOutputs() != null) {
+            for (var out : tx.getOutputs()) {
+                collectAddressScopes(out.getAddress(), touched);
+            }
+        }
+        var utxos = utxoState;
+        if (utxos != null && utxos.isEnabled() && tx.getInputs() != null) {
+            for (var input : tx.getInputs()) {
+                utxos.getUtxoSpentOrUnspent(
+                                new com.bloxbean.cardano.yano.api.utxo.model.Outpoint(
+                                        input.getTransactionId(), input.getIndex()))
+                        .ifPresent(consumed -> collectAddressScopes(consumed.address(), touched));
+            }
+        }
+
+        byte[] value = touched.isEmpty()
+                ? null
+                : AccountHistoryCborCodec.encodeAddressTx(txHash, slot, blockNo, txIdx);
+        for (AddressKeyUtil.ScopedHash cred : touched) {
+            byte[] key = historyKey(TYPE_ADDRESS_TX, cred.scope(), cred.hash28Hex(), slot, txIdx, 0);
+            batch.put(cfHistory, key, value);
+            insertedKeys.add(key);
+        }
+    }
+
+    private void collectAddressScopes(String address, Set<AddressKeyUtil.ScopedHash> touched) {
+        if (address == null || address.isBlank()) return;
+        // Single parse per address — this runs per touched address on block apply.
+        touched.addAll(AddressKeyUtil.deriveScopes(address));
+    }
+
     private static StakeCred rewardAccountCred(String rewardAddrHex) {
         try {
             byte[] addrBytes = HexUtil.decodeHexString(rewardAddrHex);
@@ -741,6 +899,50 @@ public final class AccountHistoryStore implements AccountHistoryProvider, Rollba
     private void putLastApplied(WriteBatch batch, long slot, long blockNo) throws RocksDBException {
         batch.put(cfHistory, META_LAST_APPLIED_SLOT, longBytes(slot));
         batch.put(cfHistory, META_LAST_APPLIED_BLOCK, longBytes(blockNo));
+        if (txEventsEnabled) {
+            batch.put(cfHistory, META_TXEVENTS_LAST_BLOCK, longBytes(blockNo));
+        }
+        if (addressTxEnabled) {
+            batch.put(cfHistory, META_ADDRTX_LAST_BLOCK, longBytes(blockNo));
+        }
+    }
+
+    /**
+     * The block from which reconcile must replay: the LOWEST cursor over the
+     * enabled families. A family enabled later than the other starts at its own
+     * (missing → 0) cursor, so it backfills; replay re-puts the other family's
+     * rows idempotently (same keys, same values).
+     *
+     * <p>Migration: stores written before per-family cursors carry only the
+     * legacy cursor, which was advanced exclusively by tx-events (address-tx
+     * did not exist yet) — tx-events may fall back to it. If the address-tx
+     * cursor EXISTS, the store was written by per-family-aware code, so a
+     * missing tx-events cursor means tx-events never ran → floor 0.
+     */
+    long reconcileFloorBlock() {
+        Long txEventsCursor = readLongMeta(META_TXEVENTS_LAST_BLOCK);
+        Long addressTxCursor = readLongMeta(META_ADDRTX_LAST_BLOCK);
+        long floor = Long.MAX_VALUE;
+        if (txEventsEnabled) {
+            long txEventsFloor = txEventsCursor != null
+                    ? txEventsCursor
+                    : (addressTxCursor != null ? 0 : Math.max(0, getLastAppliedBlock()));
+            floor = Math.min(floor, txEventsFloor);
+        }
+        if (addressTxEnabled) {
+            floor = Math.min(floor, addressTxCursor != null ? addressTxCursor : 0);
+        }
+        return floor == Long.MAX_VALUE ? Math.max(0, getLastAppliedBlock()) : Math.max(0, floor);
+    }
+
+    private void clampFamilyCursor(WriteBatch batch, byte[] cursorKey, long maxBlock) throws RocksDBException {
+        Long current = readLongMeta(cursorKey);
+        if (current == null) return;
+        if (maxBlock > 0) {
+            batch.put(cfHistory, cursorKey, longBytes(Math.min(current, maxBlock)));
+        } else {
+            batch.delete(cfHistory, cursorKey);
+        }
     }
 
     private Long readLongMeta(byte[] key) {

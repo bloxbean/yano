@@ -113,6 +113,42 @@ final class AccountHistoryCborCodec {
                 common.txHash(), pot, amount, earnedEpoch, common.slot(), common.blockNo(), common.txIdx(), certIdx);
     }
 
+    static byte[] encodeAddressTx(String txHash, long slot, long blockNo, int txIdx) {
+        return CborSerializationUtil.serialize(baseRecord(txHash, slot, blockNo, txIdx), true);
+    }
+
+    static byte[] encodeReward(BigInteger amount, int earnedEpoch, String type, String poolHash, long slot) {
+        Map map = baseRecord(null, slot, 0, 0);
+        map.put(new UnsignedInteger(10), new UnsignedInteger(amount));
+        map.put(new UnsignedInteger(17), new UnsignedInteger(earnedEpoch));
+        map.put(new UnsignedInteger(16), new ByteString(type.getBytes(StandardCharsets.UTF_8)));
+        if (poolHash != null && !poolHash.isBlank()) {
+            map.put(new UnsignedInteger(11), new ByteString(HexUtil.decodeHexString(poolHash)));
+        }
+        return CborSerializationUtil.serialize(map, true);
+    }
+
+    static AccountHistoryProvider.RewardRecord decodeReward(byte[] bytes) {
+        Map map = (Map) CborSerializationUtil.deserializeOne(bytes);
+        CommonRecord common = commonRecord(map);
+        BigInteger amount = CborSerializationUtil.toBigInteger(map.get(new UnsignedInteger(10)));
+        int earnedEpoch = toInt(map, 17);
+        String type = new String(((ByteString) map.get(new UnsignedInteger(16))).getBytes(), StandardCharsets.UTF_8);
+        String poolHash = null;
+        var poolItem = map.get(new UnsignedInteger(11));
+        if (poolItem instanceof ByteString bs) {
+            poolHash = HexUtil.encodeHexString(bs.getBytes());
+        }
+        return new AccountHistoryProvider.RewardRecord(earnedEpoch, amount, type, poolHash, common.slot());
+    }
+
+    static AccountHistoryProvider.AddressTxRecord decodeAddressTx(byte[] bytes) {
+        Map map = (Map) CborSerializationUtil.deserializeOne(bytes);
+        CommonRecord common = commonRecord(map);
+        return new AccountHistoryProvider.AddressTxRecord(
+                common.txHash(), common.slot(), common.blockNo(), common.txIdx());
+    }
+
     private static Map baseRecord(String txHash, long slot, long blockNo, int txIdx) {
         Map map = new Map();
         if (txHash != null) {

@@ -194,6 +194,14 @@ final class RuntimeYano implements Yano, DevnetRuntimeProvider {
     }
 
     @Override
+    public Optional<com.bloxbean.cardano.yano.api.events.stream.NodeEventStream> eventStream() {
+        // The runtime node behind the gateway interfaces also fans out L1 events.
+        return txGateway instanceof com.bloxbean.cardano.yano.api.events.stream.NodeEventStream stream
+                ? Optional.of(stream)
+                : Optional.empty();
+    }
+
+    @Override
     public void close() {
         if (nodeLifecycle instanceof RuntimeKernelProvider && closeable != null) {
             try {

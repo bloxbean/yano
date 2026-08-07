@@ -165,7 +165,8 @@ import java.util.function.Supplier;
  */
 @Slf4j
 public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGateway, TxEvaluationGateway,
-        ProducerControl, AutoCloseable, DebugLedgerStateAccess, RuntimeKernelProvider, DevnetRuntimeProvider {
+        ProducerControl, AutoCloseable, DebugLedgerStateAccess, RuntimeKernelProvider, DevnetRuntimeProvider,
+        com.bloxbean.cardano.yano.api.events.stream.NodeEventStream {
     // Configuration
     private final YanoConfig config;
 
@@ -216,6 +217,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     private final RuntimeOptions runtimeOptions;
     private final BodyValidator bodyValidator;
     private final EventBus eventBus;
+    private final com.bloxbean.cardano.yano.runtime.events.L1EventFanout l1EventFanout;
     private PluginManager pluginManager;
     private final UtxoSubsystem utxoSubsystem;
     private final LedgerStateSubsystem ledgerStateSubsystem;
@@ -317,6 +319,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         // Event bus
         EventsOptions ev = this.runtimeOptions.events();
         this.eventBus = ev.enabled() ? new PropagatingEventBus() : new NoopEventBus();
+        this.l1EventFanout = new com.bloxbean.cardano.yano.runtime.events.L1EventFanout(
+                ev.enabled() ? this.eventBus : null);
         this.txSubsystem = new TxSubsystem(eventBus, scheduler, this.runtimeOptions, this::getUtxoState, log);
         AtomicReference<Supplier<List<PeerStoreEntry>>> peerStoreSupplierRef =
                 new AtomicReference<>(List::of);
@@ -2322,6 +2326,22 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         return txSubsystem.submitTransaction(
                 txCbor,
                 (txHash, acceptedTxCbor) -> syncSubsystem.submitTxBytes(txHash, acceptedTxCbor, TxBodyType.CONWAY));
+    }
+
+    @Override
+    public boolean isTransactionInMemPool(String txHash) {
+        return txSubsystem != null && txSubsystem.containsTransaction(txHash);
+    }
+
+    @Override
+    public com.bloxbean.cardano.yano.api.events.stream.NodeEventStream.Subscription subscribe(
+            java.util.Set<String> topics) {
+        return l1EventFanout.subscribe(topics);
+    }
+
+    @Override
+    public boolean isAvailable() {
+        return l1EventFanout.isAvailable();
     }
 
     @Override
