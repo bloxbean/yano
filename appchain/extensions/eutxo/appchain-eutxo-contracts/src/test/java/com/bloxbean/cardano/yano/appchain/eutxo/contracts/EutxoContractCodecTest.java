@@ -83,6 +83,25 @@ class EutxoContractCodecTest {
         // ADR-UTXO-009: v3 digest also freezes the tier-1 settlement bounds.
         assertThat(EutxoProfile.V3.digestHex()).isEqualTo(
                 "71d7d7445118ef5c4761c847836075f3e5011a1336c5e8f2bfb3517ad8598f47");
+
+        // §13.2: the devnet twin differs ONLY in the fallback-delay floor —
+        // which is enough to give it a distinct identity, so it can never
+        // silently join a production settlement chain.
+        assertThat(EutxoProfile.V3_DEVNET.id())
+                .isEqualTo("yano-eutxo-v3-bridge-settlement-devnet");
+        assertThat(EutxoProfile.V3_DEVNET.digestHex())
+                .isNotEqualTo(EutxoProfile.V3.digestHex());
+        assertThat(EutxoProfile.V3.fallbackDelayMinSlots()).isEqualTo(21_600L);
+        assertThat(EutxoProfile.V3_DEVNET.fallbackDelayMinSlots()).isEqualTo(60L);
+        assertThat(EutxoProfile.V3_DEVNET.devnetOnly()).isTrue();
+        assertThat(EutxoProfile.V3.devnetOnly()).isFalse();
+        assertThat(EutxoProfile.V3.settlement()).isTrue();
+        assertThat(EutxoProfile.V2.settlement()).isFalse();
+        // Every other consensus field is identical — only id + floor differ.
+        assertThat(EutxoProfile.V3_DEVNET.maxExecutionSteps())
+                .isEqualTo(EutxoProfile.V3.maxExecutionSteps());
+        assertThat(EutxoProfile.V3_DEVNET.scriptFamily())
+                .isEqualTo(EutxoProfile.V3.scriptFamily());
     }
 
     @Test
@@ -242,10 +261,20 @@ class EutxoContractCodecTest {
                 1, 0L, EutxoProfile.V3_BOUNTY_CAP_BASIS_POINTS + 1,
                 2_000_000L, 8, 100L, 3_600L, 86_400L, 0L))
                 .isInstanceOf(IllegalArgumentException.class);
+        // §13.2: the RECORD keeps only the structural bound — zero and
+        // above-ceiling are rejected here; the per-profile FLOOR is enforced
+        // by the state machine (a data record cannot know its profile), so a
+        // sub-floor-but-positive value decodes fine at this layer.
+        assertThatThrownBy(() -> new EutxoBridgeParams(
+                1, 0L, 0, 2_000_000L, 8, 100L, 3_600L, 0L, 0L))
+                .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new EutxoBridgeParams(
                 1, 0L, 0, 2_000_000L, 8, 100L, 3_600L,
-                EutxoProfile.V3_FALLBACK_DELAY_MIN_SLOTS - 1, 0L))
+                EutxoProfile.V3_FALLBACK_DELAY_MAX_SLOTS + 1, 0L))
                 .isInstanceOf(IllegalArgumentException.class);
+        assertThat(new EutxoBridgeParams(1, 0L, 0, 2_000_000L, 8, 100L,
+                3_600L, EutxoProfile.V3_DEVNET_FALLBACK_DELAY_MIN_SLOTS, 0L)
+                .fallbackDelaySlots()).isEqualTo(60L);
 
         EutxoBridgeParamsGovernanceV1.Command command =
                 new EutxoBridgeParamsGovernanceV1.Command(1, defaults, 5);

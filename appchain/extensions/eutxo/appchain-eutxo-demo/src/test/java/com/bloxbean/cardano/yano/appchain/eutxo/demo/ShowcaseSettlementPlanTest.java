@@ -36,10 +36,12 @@ class ShowcaseSettlementPlanTest {
                         .fromSeed(ShowcaseSettlementPlan.WITHDRAWAL_L2_SEED)
                         .address(),
                 ShowcaseSettlementPlan.OPERATOR_ADDRESS,
-                ShowcaseSettlementPlan.OPERATOR_SEED);
+                ShowcaseSettlementPlan.OPERATOR_SEED,
+                "devnet");
         assertThat(config)
                 .containsEntry("machines.eutxo.profile",
-                        "yano-eutxo-v3-bridge-settlement")
+                        "yano-eutxo-v3-bridge-settlement-devnet")
+                .containsEntry("machines.eutxo.network", "devnet")
                 .containsEntry("observers.bridge-withdrawals.type",
                         "eutxo-batch-withdrawal-confirmation-v1")
                 .containsEntry("effects.executors.eutxo-settlement.owner",

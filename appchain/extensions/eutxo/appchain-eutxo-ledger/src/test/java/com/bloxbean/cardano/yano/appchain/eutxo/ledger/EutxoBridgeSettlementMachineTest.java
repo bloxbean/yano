@@ -536,6 +536,46 @@ class EutxoBridgeSettlementMachineTest {
                 .pendingWithdrawals()).isEqualTo(claim.totalLovelace());
     }
 
+    @Test
+    void governedFallbackDelayBelowTheProfileFloorIsRejected() throws Exception {
+        // ADR-UTXO-009 §13.2: the FLOOR lives on the profile and is enforced
+        // by the machine (the params record only bounds structure). A
+        // sub-floor proposal must never accumulate approvals on any member.
+        EutxoStateMachine machine = v3Machine(2);
+        MemoryAppState state = new MemoryAppState();
+        machine.apply(block(1), state);
+
+        EutxoBridgeParamsGovernanceV1.Command subFloor =
+                new EutxoBridgeParamsGovernanceV1.Command(
+                        1,
+                        new EutxoBridgeParams(1, 2_000_000L, 0, 2_000_000L, 8,
+                                100L, 3_600L,
+                                EutxoProfile.V3.fallbackDelayMinSlots() - 1, 0L),
+                        2);
+        machine.apply(block(2, paramsMessage(90, MEMBER_ONE, subFloor)), state);
+        machine.apply(block(3, paramsMessage(91, MEMBER_TWO, subFloor)), state);
+        // Dropped before it becomes a proposal — nothing scheduled, nothing
+        // recorded, current params untouched.
+        assertThat(state.get(EutxoStateKeys.bridgeParamsProposals())).isEmpty();
+        assertThat(state.get(EutxoStateKeys.bridgeParamsPending())).isEmpty();
+        assertThat(EutxoBridgeParams.decode(state.get(
+                        EutxoStateKeys.bridgeParamsCurrent()).orElseThrow())
+                .fallbackDelaySlots())
+                .isEqualTo(EutxoBridgeParams.defaults().fallbackDelaySlots());
+
+        // At the floor exactly, the same flow schedules normally.
+        EutxoBridgeParamsGovernanceV1.Command atFloor =
+                new EutxoBridgeParamsGovernanceV1.Command(
+                        1,
+                        new EutxoBridgeParams(1, 2_000_000L, 0, 2_000_000L, 8,
+                                100L, 3_600L,
+                                EutxoProfile.V3.fallbackDelayMinSlots(), 0L),
+                        4);
+        machine.apply(block(4, paramsMessage(92, MEMBER_ONE, atFloor)), state);
+        machine.apply(block(5, paramsMessage(93, MEMBER_TWO, atFloor)), state);
+        assertThat(state.get(EutxoStateKeys.bridgeParamsPending())).isPresent();
+    }
+
     private long createWithdrawal(
             EutxoStateMachine machine, MemoryAppState state, long height,
             long total, int nonceByte) throws Exception {

@@ -87,7 +87,15 @@ public final class ShowcaseSettlementPlan {
     public static final String SEED_TX_ID =
             TransactionUtil.getTxHash(SEED_TX_BYTES);
 
-    /** The packaged showcase plan (devnet). */
+    /**
+     * The showcase fallback delay: the DEVNET profile's relaxed floor
+     * (ADR-UTXO-009 §13.2), so the permissionless A3 exit arms within a
+     * demo — ~12 seconds at the devnet's 0.2s slots.
+     */
+    public static final long FALLBACK_DELAY_SLOTS =
+            EutxoProfile.V3_DEVNET_FALLBACK_DELAY_MIN_SLOTS;
+
+    /** The packaged showcase plan (devnet-only profile). */
     public static final SettlementBootstrapPlan PLAN =
             SettlementBootstrapPlan.plan(
                     new EutxoOutpoint(SEED_TX_ID, 0),
@@ -95,7 +103,8 @@ public final class ShowcaseSettlementPlan {
                     new SettlementBootstrapPlan.Config(
                             CHAIN_ID, 0, Networks.testnet(),
                             ROOT_TOKEN.getBytes(StandardCharsets.UTF_8),
-                            CLUSTER_MEMBERS, THRESHOLD, 0, 86_400));
+                            CLUSTER_MEMBERS, THRESHOLD, 0,
+                            FALLBACK_DELAY_SLOTS, EutxoProfile.V3_DEVNET));
 
     private ShowcaseSettlementPlan() {
     }
@@ -112,11 +121,14 @@ public final class ShowcaseSettlementPlan {
     public static Map<String, String> configProperties(
             SettlementBootstrapPlan plan, String chainId,
             String withdrawalL2Address, String operatorAddress,
-            byte[] operatorSeed) {
+            byte[] operatorSeed, String networkName) {
         Map<String, String> config = new LinkedHashMap<>();
-        config.put("machines.eutxo.profile", EutxoProfile.V3.id());
+        config.put("machines.eutxo.profile", plan.profile().id());
         config.put("machines.eutxo.expected-profile-digest",
-                EutxoProfile.V3.digestHex());
+                plan.profile().digestHex());
+        config.put("machines.eutxo.network", networkName);
+        config.put("machines.eutxo.bridge.params.fallback-delay-slots",
+                Long.toString(plan.profile().fallbackDelayMinSlots()));
         config.put("machines.eutxo.bridge.observer-id", "bridge-deposits");
         config.put("machines.eutxo.bridge.vault-address", plan.vaultAddress());
         config.put("machines.eutxo.bridge.vault-script-hash",

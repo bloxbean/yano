@@ -29,7 +29,15 @@ public record EutxoProfile(
         int maxDatums,
         int maxRedeemers,
         long maxExecutionMemory,
-        long maxExecutionSteps
+        long maxExecutionSteps,
+        /**
+         * ADR-UTXO-009 §13.2: the tier-1 floor for a chain's governed
+         * {@code fallbackDelaySlots}. A PROFILE field, not a global
+         * constant, so a relaxed devnet profile is a distinct identity
+         * (distinct digest) rather than an operator-settable switch.
+         * Ignored for version &lt; 3.
+         */
+        long fallbackDelayMinSlots
 ) {
     public static final EutxoProfile V1 = new EutxoProfile(
             "yano-eutxo-v1",
@@ -44,6 +52,7 @@ public record EutxoProfile(
             "none",
             "none",
             "none",
+            0,
             0,
             0,
             0,
@@ -72,7 +81,8 @@ public record EutxoProfile(
             32,
             16,
             14_000_000,
-            10_000_000_000L);
+            10_000_000_000L,
+            0);
 
     // ADR-UTXO-009 tier-1 (consensus-frozen) bridge-settlement bounds. They
     // are digest-bound for version >= 3; changing any of them is a new
@@ -114,14 +124,53 @@ public record EutxoProfile(
             32,
             16,
             14_000_000,
-            10_000_000_000L);
+            10_000_000_000L,
+            V3_FALLBACK_DELAY_MIN_SLOTS);
+
+    /**
+     * ADR-UTXO-009 §13.2: the DEVNET-ONLY settlement profile — identical to
+     * {@link #V3} except for a relaxed fallback-delay floor, so the
+     * permissionless A3 exit arms within a demo's attention span. Its
+     * distinct id yields a distinct digest, so it can never silently join a
+     * production settlement chain, and the machine refuses to construct it
+     * on a non-devnet network. NEVER for real funds.
+     */
+    public static final long V3_DEVNET_FALLBACK_DELAY_MIN_SLOTS = 60L;
+
+    public static final EutxoProfile V3_DEVNET = new EutxoProfile(
+            "yano-eutxo-v3-bridge-settlement-devnet",
+            3,
+            64 * 1024,
+            64,
+            0,
+            64,
+            1_024,
+            16 * 1024,
+            true,
+            "plutus-v3-spend",
+            "0.18.2",
+            "96a3f80d3bff533febc37d367e293f7a4004a63655d99294536d1b39918441fe",
+            16,
+            32,
+            16,
+            14_000_000,
+            10_000_000_000L,
+            V3_DEVNET_FALLBACK_DELAY_MIN_SLOTS);
 
     public EutxoProfile {
         boolean v1 = "yano-eutxo-v1".equals(id) && version == 1;
         boolean v2 = "yano-eutxo-v2-plutus-v3".equals(id) && version == 2;
         boolean v3 = "yano-eutxo-v3-bridge-settlement".equals(id) && version == 3;
-        if (!v1 && !v2 && !v3) {
+        boolean v3Devnet = "yano-eutxo-v3-bridge-settlement-devnet".equals(id)
+                && version == 3;
+        if (!v1 && !v2 && !v3 && !v3Devnet) {
             throw new IllegalArgumentException("unsupported EUTxO profile");
+        }
+        if (version >= 3 && (fallbackDelayMinSlots < 1
+                || fallbackDelayMinSlots > V3_FALLBACK_DELAY_MAX_SLOTS)) {
+            throw new IllegalArgumentException(
+                    "settlement profile fallback-delay floor must be within the"
+                            + " frozen maximum");
         }
         if (maxTransactionBytes < 1 || maxInputs < 1 || maxOutputs < 1
                 || maxAddressUtxos < 1 || maxOutputCborBytes < 1) {
@@ -143,6 +192,16 @@ public record EutxoProfile(
         }
     }
 
+    /** Settlement (version >= 3) profiles carry the bridge-settlement semantics. */
+    public boolean settlement() {
+        return version >= 3;
+    }
+
+    /** True for the relaxed devnet-only settlement profile (§13.2). */
+    public boolean devnetOnly() {
+        return "yano-eutxo-v3-bridge-settlement-devnet".equals(id);
+    }
+
     /** Digest of every consensus-relevant profile field. */
     public String digestHex() {
         String canonical = id + '\n' + version + '\n' + maxTransactionBytes + '\n'
@@ -157,7 +216,7 @@ public record EutxoProfile(
             canonical += "\nbridge-settlement\n" + V3_BOUNTY_CAP_FLAT_LOVELACE
                     + '\n' + V3_BOUNTY_CAP_BASIS_POINTS
                     + '\n' + V3_NULLIFIER_SHARDS
-                    + '\n' + V3_FALLBACK_DELAY_MIN_SLOTS
+                    + '\n' + fallbackDelayMinSlots
                     + '\n' + V3_FALLBACK_DELAY_MAX_SLOTS
                     + '\n' + V3_MAX_SETTLE_BATCH
                     + '\n' + V3_MAX_EXIT_BATCH;

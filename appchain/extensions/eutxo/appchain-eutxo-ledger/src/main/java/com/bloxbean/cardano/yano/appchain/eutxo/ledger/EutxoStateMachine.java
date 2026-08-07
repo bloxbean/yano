@@ -566,6 +566,7 @@ public final class EutxoStateMachine implements AppStateMachine {
         }
         if (settlementProfile()
                 && writer.get(EutxoStateKeys.bridgeParamsCurrent()).isEmpty()) {
+            requireFallbackFloor(initialBridgeParams);
             byte[] initial = initialBridgeParams.encode();
             writer.put(EutxoStateKeys.bridgeParamsCurrent(), initial);
             writer.put(EutxoStateKeys.bridgeParamsHistory(0L), initial);
@@ -1233,6 +1234,18 @@ public final class EutxoStateMachine implements AppStateMachine {
                 longBytes(pendingCount - 1));
     }
 
+    /**
+     * Genesis guard for the per-profile fallback floor (ADR-UTXO-009 §13.2):
+     * a settlement chain cannot start below its profile's floor.
+     */
+    private void requireFallbackFloor(EutxoBridgeParams params) {
+        if (params.fallbackDelaySlots() < profile.fallbackDelayMinSlots()) {
+            throw new IllegalStateException(
+                    "genesis bridge params fall below the settlement profile's"
+                            + " fallback-delay floor");
+        }
+    }
+
     private boolean settlementProfile() {
         return profile.version() >= 3;
     }
@@ -1275,6 +1288,14 @@ public final class EutxoStateMachine implements AppStateMachine {
         try {
             command = EutxoBridgeParamsGovernanceV1.decode(message.getBody());
         } catch (IllegalArgumentException malformed) {
+            return;
+        }
+        // ADR-UTXO-009 §13.2: the tier-1 fallback floor is per-PROFILE, so
+        // the machine enforces it here (the params record only carries the
+        // structural bound). A sub-floor proposal is dropped deterministically
+        // — it never accumulates approvals on any member.
+        if (command.params().fallbackDelaySlots()
+                < profile.fallbackDelayMinSlots()) {
             return;
         }
         byte[] senderKey = message.getSender();

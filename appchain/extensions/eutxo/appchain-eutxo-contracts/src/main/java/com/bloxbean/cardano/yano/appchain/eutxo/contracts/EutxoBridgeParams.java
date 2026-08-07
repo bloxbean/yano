@@ -57,7 +57,11 @@ public record EutxoBridgeParams(
             throw new IllegalArgumentException(
                     "rooting cadence values must be positive");
         }
-        if (fallbackDelaySlots < EutxoProfile.V3_FALLBACK_DELAY_MIN_SLOTS
+        // STRUCTURAL bound only (ADR-UTXO-009 §13.2): the tier-1 FLOOR is
+        // per-profile, so the state machine — which knows its profile —
+        // enforces it at genesis and on governed activation. A data record
+        // cannot know which settlement profile it belongs to.
+        if (fallbackDelaySlots < 1
                 || fallbackDelaySlots > EutxoProfile.V3_FALLBACK_DELAY_MAX_SLOTS) {
             throw new IllegalArgumentException(
                     "fallback delay is outside the profile's frozen bounds");

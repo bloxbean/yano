@@ -33,6 +33,7 @@ public final class EutxoStateMachineProvider implements AppStateMachineProvider 
             case "yano-eutxo-v1" -> EutxoProfile.V1;
             case "yano-eutxo-v2-plutus-v3" -> EutxoProfile.V2;
             case "yano-eutxo-v3-bridge-settlement" -> EutxoProfile.V3;
+            case "yano-eutxo-v3-bridge-settlement-devnet" -> EutxoProfile.V3_DEVNET;
             default -> throw new IllegalArgumentException(
                     "unsupported EUTxO profile: " + configuredProfile);
         };
@@ -45,6 +46,14 @@ public final class EutxoStateMachineProvider implements AppStateMachineProvider 
         }
         String network = context.settings().getOrDefault(
                 "machines.eutxo.network", "devnet");
+        // ADR-UTXO-009 §13.2: the relaxed settlement profile exists ONLY for
+        // demos. Refuse to construct it anywhere but devnet, so a chain
+        // holding real funds can never run a sub-production fallback floor.
+        if (profile.devnetOnly() && !"devnet".equals(network)) {
+            throw new IllegalArgumentException(
+                    "profile " + profile.id() + " is devnet-only but the chain"
+                            + " is configured for network '" + network + "'");
+        }
         EutxoValidityCommitmentEngine validity =
                 EutxoValidityEngines.discover(
                         context.chainId(), profile, context.settings());

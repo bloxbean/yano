@@ -50,7 +50,8 @@ public record SettlementBootstrapPlan(
         PlutusV3Script shardThreadPolicy,
         PlutusV3Script vaultScript,
         PlutusV3Script shardScript,
-        PlutusV3Script rootScript
+        PlutusV3Script rootScript,
+        EutxoProfile profile
 ) {
     /** The default withdrawal-commitment key prefix (matches SP-M2 vectors). */
     public static final byte[] DEFAULT_KEY_PREFIX = new byte[] {0x01, 0x03};
@@ -67,16 +68,39 @@ public record SettlementBootstrapPlan(
             int threshold,
             long updatedAtSlot,
             long fallbackDelaySlots,
-            byte[] initialStateRoot
+            byte[] initialStateRoot,
+            EutxoProfile profile
     ) {
-        /** Genesis with an empty (all-zero) accepted state root. */
+        /** Genesis with an empty state root, on the PRODUCTION v3 profile. */
         public Config(
                 String chainId, long bridgeEpoch, Network network,
                 byte[] rootThreadAssetName, List<String> memberKeysHex,
                 int threshold, long updatedAtSlot, long fallbackDelaySlots) {
             this(chainId, bridgeEpoch, network, rootThreadAssetName,
                     memberKeysHex, threshold, updatedAtSlot,
-                    fallbackDelaySlots, new byte[32]);
+                    fallbackDelaySlots, new byte[32], EutxoProfile.V3);
+        }
+
+        /** Explicit accepted state root, on the PRODUCTION v3 profile. */
+        public Config(
+                String chainId, long bridgeEpoch, Network network,
+                byte[] rootThreadAssetName, List<String> memberKeysHex,
+                int threshold, long updatedAtSlot, long fallbackDelaySlots,
+                byte[] initialStateRoot) {
+            this(chainId, bridgeEpoch, network, rootThreadAssetName,
+                    memberKeysHex, threshold, updatedAtSlot,
+                    fallbackDelaySlots, initialStateRoot, EutxoProfile.V3);
+        }
+
+        /** Genesis with an empty state root on an explicit profile. */
+        public Config(
+                String chainId, long bridgeEpoch, Network network,
+                byte[] rootThreadAssetName, List<String> memberKeysHex,
+                int threshold, long updatedAtSlot, long fallbackDelaySlots,
+                EutxoProfile profile) {
+            this(chainId, bridgeEpoch, network, rootThreadAssetName,
+                    memberKeysHex, threshold, updatedAtSlot,
+                    fallbackDelaySlots, new byte[32], profile);
         }
 
         public Config {
@@ -121,7 +145,14 @@ public record SettlementBootstrapPlan(
                 throw new IllegalArgumentException(
                         "updatedAtSlot cannot be negative");
             }
-            if (fallbackDelaySlots < EutxoProfile.V3_FALLBACK_DELAY_MIN_SLOTS
+            profile = Objects.requireNonNull(profile, "profile");
+            if (!profile.settlement()) {
+                throw new IllegalArgumentException(
+                        "a settlement bootstrap needs a v3 profile");
+            }
+            // The FLOOR is per-profile (ADR-UTXO-009 §13.2); the ceiling stays
+            // globally frozen.
+            if (fallbackDelaySlots < profile.fallbackDelayMinSlots()
                     || fallbackDelaySlots > EutxoProfile.V3_FALLBACK_DELAY_MAX_SLOTS) {
                 throw new IllegalArgumentException(
                         "fallback delay must respect the tier-1 profile bounds");
@@ -194,7 +225,8 @@ public record SettlementBootstrapPlan(
                 SettlementScriptArtifacts.scriptHash(root),
                 genesisRootDatum(config),
                 List.copyOf(shardDatums),
-                rootPolicy, shardPolicy, vault, shard, root);
+                rootPolicy, shardPolicy, vault, shard, root,
+                config.profile());
     }
 
     /**
