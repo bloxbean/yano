@@ -100,6 +100,15 @@ public final class EutxoDemoCli {
         }
     }
 
+    private static String requireTarget(EutxoDemoOptions options) {
+        String base = options.targetBase();
+        if (base == null || base.isBlank()) {
+            throw new IllegalArgumentException(
+                    "settlement commands need --target-base");
+        }
+        return base;
+    }
+
     private EutxoDemoResult command(EutxoDemoOptions options) throws Exception {
         if ("scenarios".equals(options.command())) {
             List<Map<String, Object>> inventory = scenarios.all().stream()
@@ -147,6 +156,19 @@ public final class EutxoDemoCli {
                     ShowcaseSettlementPlan.OPERATOR_ADDRESS);
             payload.put("scriptDirectory", scriptDir.toString());
             return EutxoDemoResult.of("EUTXO_SETTLEMENT_BOOTSTRAP", payload);
+        }
+        if ("settlement-deposit".equals(options.command())) {
+            return EutxoDemoResult.of("EUTXO_SETTLEMENT_DEPOSIT",
+                    ShowcaseSettlementDemo.deposit(
+                            requireTarget(options), options.amount()));
+        }
+        if ("settlement-withdraw".equals(options.command())) {
+            return EutxoDemoResult.of("EUTXO_SETTLEMENT_WITHDRAW",
+                    ShowcaseSettlementDemo.withdraw(requireTarget(options)));
+        }
+        if ("settlement-status".equals(options.command())) {
+            return EutxoDemoResult.of("EUTXO_SETTLEMENT_STATUS",
+                    ShowcaseSettlementDemo.status(requireTarget(options)));
         }
         if ("settlement-info".equals(options.command())) {
             Map<String, Object> payload = new LinkedHashMap<>();
@@ -391,7 +413,9 @@ public final class EutxoDemoCli {
                     "prove", "settle", "withdraw", "reconcile", "verify",
                     "ceremony", "round-trip", "deposit-build",
                     "deposit-submit",
-                    "settlement-bootstrap", "settlement-info").contains(command)) {
+                    "settlement-bootstrap", "settlement-info",
+                    "settlement-deposit", "settlement-withdraw",
+                    "settlement-status").contains(command)) {
                 throw new Usage("unknown EUTxO demo command: " + command);
             }
         }

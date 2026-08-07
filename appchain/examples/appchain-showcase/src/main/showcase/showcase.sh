@@ -1589,6 +1589,7 @@ Yano unified app-chain showcase
   ./showcase.sh chain add authenticated-map-jmt-chain|payment-chain-settlement
   ./showcase.sh settlement info                      (vault/shard/root facts + next steps)
   ./showcase.sh settlement bootstrap                 (deploy the L1 settlement identity, devnet)
+  ./showcase.sh settlement deposit|withdraw|status   (L1 deposit, L2 claim, autonomous settlement)
   ./showcase.sh ceremony            (eutxo profile, zk variant: one-time trusted setup)
   ./showcase.sh approvals propose <id> <payload> [required]
   ./showcase.sh approvals approve <id> <member-node>
@@ -1810,8 +1811,19 @@ PY
     case "${POSITIONAL[0]:-}" in
       info) run_settlement_info;;
       bootstrap) run_settlement_bootstrap;;
-      deposit|withdraw|status)
-        die "not yet wired in this build — use: ./showcase.sh settlement info --instance $INSTANCE";;
+      deposit)
+        [ "$NETWORK" = devnet ] \
+          || die "the packaged deposit uses the devnet demo operator; on $NETWORK deposit your own funds (docs/SETTLEMENT_CHAIN.md)"
+        "$YANO_HOME/yano.sh" appchain eutxo demo settlement-deposit \
+          --target-base "http://127.0.0.1:$HTTP_BASE";;
+      withdraw)
+        "$YANO_HOME/yano.sh" appchain eutxo demo settlement-withdraw \
+          --target-base "http://127.0.0.1:$HTTP_BASE"
+        note "claim created — the federation settles it on its own; watch with:"
+        note "  ./showcase.sh settlement status --instance $INSTANCE";;
+      status)
+        "$YANO_HOME/yano.sh" appchain eutxo demo settlement-status \
+          --target-base "http://127.0.0.1:$HTTP_BASE";;
       *) die "usage: settlement info|bootstrap|deposit|withdraw|status";;
     esac;;
   ceremony)

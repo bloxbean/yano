@@ -23,7 +23,7 @@ Last verified live: 2026-08-05 on a 3-node cluster.
    - [workflow-chain — composite + effects](#workflow-chain--composite--effects)
    - [roles-chain — role approvals](#roles-chain--role-approvals)
    - [payments-chain — EUTxO ledger](#payments-chain--eutxo-ledger)
-   - [payment-chain-l1bridge — L1 custody boundary](#payment-chain-l1bridge--l1-custody-boundary)
+   - [payment-chain-settlement — L1 custody boundary](#payment-chain-settlement--l1-custody-boundary)
    - [authenticated-map-chain — governed MPF map](#authenticated-map-chain--governed-mpf-map)
    - [authenticated-map-jmt-chain — basic classic-JMT map](#authenticated-map-jmt-chain--basic-classic-jmt-map)
 6. [Deterministic effects deep-dive](#6-deterministic-effects-deep-dive)
@@ -109,7 +109,7 @@ curl -X POST http://127.0.0.1:7070/api/v1/app-chain/chains/orders-chain/messages
 | `/ui/app-chain/?chain=<id>` | generic ops: tip, blocks, live SSE feed, capabilities, proofs |
 | `/ui/app-chain/authenticated-map/?chain=<id>` | authenticated-map console: collections, lookup+proofs, mutations, governed tabs |
 | `/ui/app-chain/eutxo/?chain=payments-chain` | EUTxO lifecycle explorer |
-| `/ui/app-chain/eutxo/?chain=payment-chain-l1bridge` | Bridge chain lifecycle explorer |
+| `/ui/app-chain/eutxo/?chain=payment-chain-settlement` | Settlement chain lifecycle explorer |
 | `/ui/status/` , `/ui/observability/` | L1 node status, Prometheus charts |
 | `/ui/plugins/` | plugin operations (privileged; needs API key) |
 
@@ -248,27 +248,36 @@ Authorization modes on this chain: `kv-open` anyone writes; `documents`
 first writer owns the key; `notes` only current chain members write
 (height-versioned membership — rotated-out members lose access).
 
-### payment-chain-l1bridge — L1 custody boundary
+### payment-chain-settlement — L1 custody boundary
 
-The same EUTxO machine in **bridge mode** (ADR-UTXO-008): no virtual
-genesis — funds enter via real devnet-L1 vault deposits and leave via
-operator-settled withdrawals. Full walkthrough: `docs/BRIDGE_CHAIN.md`.
+The same EUTxO machine in **settlement mode** (ADR-UTXO-009): no virtual
+genesis — funds enter via real devnet-L1 deposits into a **Plutus vault**,
+and withdrawal claims are settled back out by the **federation itself**.
+Full walkthrough: `docs/SETTLEMENT_CHAIN.md`.
 
 ```bash
-./showcase.sh bridge info                   # vault facts + live status (any network)
-./showcase.sh bridge run                    # automated round-trip (devnet)
-./showcase.sh bridge deposit                # staged: deposits only …
-./showcase.sh bridge transfer               # … the L2 payments …
-./showcase.sh bridge settle && ./showcase.sh bridge verify   # … withdrawal + CONFIRMED
-./showcase.sh bridge run --count 2          # rounds are journaled; higher count = new activity
-# console: /ui/app-chain/eutxo/?chain=payment-chain-l1bridge
+./showcase.sh settlement bootstrap          # deploy the L1 identity (once, devnet)
+./showcase.sh restart                       # executor picks up the validators
+./showcase.sh settlement deposit            # L1 deposit -> mirrored L2 funds
+./showcase.sh settlement withdraw           # L2 claim … then just watch
+./showcase.sh settlement status             # PENDING -> CONFIRMED, no operator step
+./showcase.sh settlement info               # identity, deploy state, live tip
+# console: /ui/app-chain/eutxo/?chain=payment-chain-settlement
 ```
 
-The vault is a single-operator-key native script over PUBLIC deterministic
-demo identities — the operator key IS custody; demo amounts only. A plain
-wallet transfer to the vault address is NOT a deposit (the observer credits
-L2 owners from the inline datum). On preprod there is no faucet: `bridge
-info` prints the Java-client command for depositing your own funds.
+**There is no `settle` command — that is the point.** Once a claim exists the
+chain emits an `l1.settlement` effect, the owner node builds the batch, the
+members co-sign it over `~bridge/settlement/*`, and the transaction lands on
+the L1 on its own. Custody is the federation threshold plus on-chain
+nullifier shards (a claim can never settle twice), with a permissionless exit
+if the federation stops rooting — not a single operator key (that was the
+retired `payment-chain-l1bridge`).
+
+The demo runs the DEVNET-ONLY machine profile, whose relaxed fallback-delay
+floor exists so the exit path is demoable; identities are PUBLIC and derived
+from a published formula, demo amounts only. A plain wallet transfer to the
+vault address is NOT a deposit (the observer credits L2 owners from the
+inline datum). For preprod, see §4 of `docs/SETTLEMENT_CHAIN.md`.
 
 ## 6. Deterministic effects deep-dive
 

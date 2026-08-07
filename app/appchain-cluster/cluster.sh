@@ -79,6 +79,9 @@ APPCHAIN_IDENTITY_MARKER="${YANO_CLUSTER_APPCHAIN_IDENTITY_MARKER:-}"
 [ -z "$ANCHOR_CHAIN" ] || ENABLE_ANCHOR=1
 
 # Deterministic demo member identities: node i uses seed = byte(i+1) x32.
+# ADR-UTXO-009: the chain whose settlement executor node 0 owns.
+SETTLEMENT_OWNER_CHAIN="${YANO_CLUSTER_SETTLEMENT_CHAIN:-payment-chain-settlement}"
+
 # Precomputed Ed25519 public keys (standard Ed25519 == Yano app-chain keys).
 # Covers up to 16 nodes without any crypto tooling; beyond that we derive live.
 PUBKEYS=(
@@ -2514,6 +2517,15 @@ chain_props() {
     props+=("-Dyano.app-chain.chains[$idx].peers=$peers")
     # Injected for every chain; rotating chains ignore it (sequencer.mode wins).
     props+=("-Dyano.app-chain.chains[$idx].sequencer.proposer=$proposer")
+    # ADR-UTXO-009 single-owner pinning: exactly ONE node runs the
+    # settlement executor (builds and submits batches, leads the co-sign
+    # round). Every other member still registers the co-sign service and
+    # answers sign requests — they just never drive a settlement.
+    # Scoped to the settlement chain: the key names an executor scheme, and
+    # a chain without the rest of that scheme's config would fail to start.
+    if [ "$i" -eq 0 ] && [ "$cid" = "$SETTLEMENT_OWNER_CHAIN" ]; then
+      props+=("-Dyano.app-chain.chains[$idx].effects.executors.eutxo-settlement.owner=true")
+    fi
     if [ "$ENABLE_ANCHOR" = "1" ] && [ "$i" -eq 0 ] \
         && anchor_chain_selected "$cid"; then
       props+=("-Dyano.app-chain.chains[$idx].anchor.enabled=true")
