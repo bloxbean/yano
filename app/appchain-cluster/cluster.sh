@@ -1661,7 +1661,11 @@ chain_indices() {
 # Chain ids in authored order, ignoring commented lines.
 chain_ids() {
   [ -f "$CONFIG_FILE" ] || die "config not found: $CONFIG_FILE"
-  grep -vE '^[[:space:]]*#' "$CONFIG_FILE" | grep -oE 'chain-id:[[:space:]]*"[^"]+"' | sed -E 's/.*"([^"]+)".*/\1/'
+  # Anchored to the 6-space chain-entry indent: nested blocks (e.g. an
+  # executor's observers) repeat their parent's chain-id and would otherwise
+  # be counted as extra chains.
+  grep -vE '^[[:space:]]*#' "$CONFIG_FILE" \
+    | sed -nE 's/^ {6}chain-id:[[:space:]]*"([^"]+)".*/\1/p; s/^ {6}chain-id:[[:space:]]*([^"[:space:]]+).*/\1/p'
 }
 
 chain_id_for_index() {

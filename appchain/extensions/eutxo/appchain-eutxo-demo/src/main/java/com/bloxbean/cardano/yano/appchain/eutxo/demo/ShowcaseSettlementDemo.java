@@ -22,6 +22,7 @@ import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
 import com.bloxbean.cardano.yano.appchain.eutxo.client.EutxoClient;
 import com.bloxbean.cardano.yano.appchain.eutxo.client.EutxoKeyWallet;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoOutpoint;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoReceipt;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoRecord;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoVaultDatum;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalDatum;
@@ -46,7 +47,6 @@ import java.util.Map;
  */
 public final class ShowcaseSettlementDemo {
     private static final long DEPOSIT_LOVELACE = 12_000_000L;
-    private static final long WITHDRAWAL_LOVELACE = 12_000_000L;
     private static final long POLL_MILLIS = 1_000;
 
     private ShowcaseSettlementDemo() {
@@ -107,6 +107,10 @@ public final class ShowcaseSettlementDemo {
                     "no mirrored L2 funds — run: settlement deposit first");
         }
         EutxoRecord source = funds.getFirst();
+        // The L2 ledger conserves value EXACTLY (no fees), so the claim must
+        // carry the whole mirrored UTxO — never a second hardcoded amount that
+        // has to be kept in step with the deposit's.
+        BigInteger claimLovelace = lovelaceOf(source);
         String withdrawalAddress = EutxoKeyWallet.fromSeed(
                 ShowcaseSettlementPlan.WITHDRAWAL_L2_SEED).address();
         EutxoWithdrawalDatum datum = new EutxoWithdrawalDatum(
@@ -114,15 +118,16 @@ public final class ShowcaseSettlementDemo {
                 ShowcaseSettlementPlan.CHAIN_ID,
                 0,
                 ShowcaseSettlementPlan.PAYOUT_ADDRESS,
-                nonce("withdrawal", System.identityHashCode(source)));
+                // A source UTxO is spendable once, so its outpoint is a
+                // unique — and, unlike an identity hash, reproducible — nonce.
+                nonce("withdrawal", source.outpoint().toString()));
         TransactionBody body = TransactionBody.builder()
                 .inputs(List.of(new TransactionInput(
                         source.outpoint().transactionId(),
                         source.outpoint().index())))
                 .outputs(List.of(TransactionOutput.builder()
                         .address(withdrawalAddress)
-                        .value(Value.fromCoin(
-                                BigInteger.valueOf(WITHDRAWAL_LOVELACE)))
+                        .value(Value.fromCoin(claimLovelace))
                         .inlineDatum(PlutusData.deserialize(datum.encode()))
                         .build()))
                 .fee(BigInteger.ZERO)
@@ -136,9 +141,14 @@ public final class ShowcaseSettlementDemo {
                 depositor.signingKey());
         byte[] cbor = signed.serialize();
         eutxo.submit(cbor);
+        // Submission only means the message was sequenced. The claim exists
+        // only once the machine ACCEPTS it — surface a rejection here instead
+        // of reporting success and leaving 'status' mysteriously empty.
+        awaitAccepted(eutxo, TransactionUtil.getTxHash(cbor));
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("chainId", ShowcaseSettlementPlan.CHAIN_ID);
         payload.put("l2Transaction", TransactionUtil.getTxHash(cbor));
+        payload.put("lovelace", claimLovelace);
         payload.put("payoutAddress", ShowcaseSettlementPlan.PAYOUT_ADDRESS);
         payload.put("note", "the claim is now pending; the federation settles"
                 + " it autonomously — poll: settlement status");
@@ -197,8 +207,42 @@ public final class ShowcaseSettlementDemo {
                 .build());
     }
 
+    /** Block until the machine has ruled on {@code transactionId}. */
+    private static void awaitAccepted(EutxoClient eutxo, String transactionId)
+            throws Exception {
+        long deadline = System.currentTimeMillis() + 60_000;
+        while (System.currentTimeMillis() < deadline) {
+            var receipt = eutxo.transaction(transactionId);
+            if (receipt.isPresent()) {
+                var value = receipt.get();
+                if (value.status() == EutxoReceipt.Status.ACCEPTED) {
+                    return;
+                }
+                throw new IllegalStateException("withdrawal rejected by the "
+                        + "settlement machine: " + value.code()
+                        + (value.detail() == null || value.detail().isBlank()
+                        ? "" : " (" + value.detail() + ")"));
+            }
+            Thread.sleep(POLL_MILLIS);
+        }
+        throw new IllegalStateException(
+                "withdrawal " + transactionId + " was never ruled on");
+    }
+
     private static byte[] nonce(String label, long salt) throws Exception {
+        return nonce(label, Long.toString(salt));
+    }
+
+    private static byte[] nonce(String label, String salt) throws Exception {
         return MessageDigest.getInstance("SHA-256").digest(
                 (label + ':' + salt).getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** The committed lovelace of a mirrored L2 record. */
+    private static BigInteger lovelaceOf(EutxoRecord record) throws Exception {
+        return TransactionOutput.deserialize(
+                        com.bloxbean.cardano.client.common.cbor.CborSerializationUtil
+                                .deserialize(record.outputCbor()))
+                .getValue().getCoin();
     }
 }

@@ -63,7 +63,9 @@ public final class EutxoSettlementExecutorFactory
                 wiring.roundTimeout());
         context.registerBridgeDiffusionHandler(cosign);
         if (!wiring.owner()) {
-            return List.of();
+            // Co-sign only. A product is still required — a chain with
+            // effects.executor.enabled=true and none fails activation.
+            return List.of(new CosignOnlySettlementExecutor(SCHEME));
         }
 
         NodeSettlementBackend backend = new NodeSettlementBackend(

@@ -64,6 +64,18 @@ class ShowcaseSettlementChainConfigTest {
     }
 
     @Test
+    void packagedValidatorsMatchThePlanSoNodesStartBeforeBootstrap() throws Exception {
+        // The chain config points at these files, and a node must start its
+        // settlement chain BEFORE the L1 bootstrap has run — so they ship
+        // with the distribution rather than being written at bootstrap time.
+        Path dir = Path.of("src/main/showcase/config/settlement");
+        assertThat(Files.readString(dir.resolve("settlement-vault.script")).trim())
+                .isEqualTo(ShowcaseSettlementPlan.PLAN.vaultScript().getCborHex());
+        assertThat(Files.readString(dir.resolve("settlement-shard.script")).trim())
+                .isEqualTo(ShowcaseSettlementPlan.PLAN.shardScript().getCborHex());
+    }
+
+    @Test
     void theDemoProfileIsDevnetOnlyAndCannotHoldRealFunds() {
         assertThat(ShowcaseSettlementPlan.PLAN.profile().devnetOnly()).isTrue();
         assertThat(ShowcaseSettlementPlan.PLAN.profile().fallbackDelayMinSlots())

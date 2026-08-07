@@ -1327,13 +1327,28 @@ delegate_evidence() {
 }
 
 settlement_yml_value() {
-  # nested chain yaml: match "  key: value" and strip the quotes the
-  # generator writes.
-  awk -v k="$1:" '$1 == k {gsub(/^"|"$/, "", $2); print $2; exit}' \
-    "$YANO_HOME/config/application-appchain.yml"
+  # Scoped to the settlement chain block: keys like "profile" also appear on
+  # other chains, so a whole-file match would read the wrong one. Values are
+  # quoted by the block generator.
+  awk -v cid="$SETTLEMENT_CHAIN_ID" -v k="$1:" '
+    index($0, "chain-id: \"" cid "\"") { inblock = 1; next }
+    inblock && /^    chains\[/ { inblock = 0 }
+    inblock && $1 == k { gsub(/^"|"$/, "", $2); print $2; exit }
+  ' "$YANO_HOME/config/application-appchain.yml"
 }
 
 settlement_script_dir() { printf '%s/config/settlement' "$YANO_HOME"; }
+
+# True when the one-shot root thread token is present at the root address —
+# the single authoritative signal that the L1 identity is deployed.
+settlement_root_thread_live() {
+  local unit
+  unit="$(settlement_yml_value root-unit)"
+  [ -n "$unit" ] || return 1
+  curl -fsS --connect-timeout 2 --max-time 8 \
+    "http://127.0.0.1:$HTTP_BASE/api/v1/addresses/$1/utxos" 2>/dev/null \
+    | grep -q "$unit"
+}
 
 run_settlement_info() {
   local vault shard root payout profile delay chain_status tip
@@ -1351,8 +1366,11 @@ run_settlement_info() {
   note "  accepted-root thread  : $root"
   note "  withdrawal address    : $payout (the ONLY claim-forming L2 address)"
   note "  fallback delay        : $delay slots (arms the permissionless exit)"
-  if [ -d "$(settlement_script_dir)" ]; then
-    note "  L1 deploy             : bootstrapped (validators in $(settlement_script_dir))"
+  # Bootstrapped = the root thread token actually sits at the root address on
+  # L1. The validators ship with the distribution, so their presence proves
+  # nothing about the deploy.
+  if settlement_root_thread_live "$root"; then
+    note "  L1 deploy             : bootstrapped (root thread live at the root address)"
   else
     note "  L1 deploy             : NOT bootstrapped — run: ./showcase.sh settlement bootstrap --instance $INSTANCE"
   fi
@@ -1386,8 +1404,10 @@ run_settlement_bootstrap() {
   "$YANO_HOME/yano.sh" appchain eutxo demo settlement-bootstrap \
     --target-base "http://127.0.0.1:$HTTP_BASE" \
     --output "$(settlement_script_dir)"
-  note "bootstrap complete; restart so the executor picks up the validators:"
-  note "  ./showcase.sh restart --instance $INSTANCE"
+  # No restart: the devnet plan is deterministic and its validators ship with
+  # the distribution, so the executor was already wired at startup.
+  note "bootstrap complete — the settlement executor is live. Next:"
+  note "  ./showcase.sh settlement deposit --instance $INSTANCE"
 }
 
 delegate_eutxo() {

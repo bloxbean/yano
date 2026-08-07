@@ -141,6 +141,12 @@ distributions {
                     permissions { unix('755') }
                 }
             }
+            // ADR-UTXO-009: the settlement chain's parameterized validators
+            // are derived from the packaged plan and must be present before
+            // the L1 bootstrap runs, or the chain cannot start.
+            from('src/main/showcase/config/settlement') {
+                into 'yano/config/settlement'
+            }
             from('src/main/showcase/config/application-appchain.yml') {
                 into 'yano/config'
             }
