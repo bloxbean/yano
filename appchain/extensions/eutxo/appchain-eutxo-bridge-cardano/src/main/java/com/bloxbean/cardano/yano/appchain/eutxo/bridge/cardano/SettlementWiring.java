@@ -69,11 +69,37 @@ record SettlementWiring(
                 config.get("shard-thread-policy-id"),
                 config.get("operator-address"),
                 parseHex(config.get("operator-seed"), "operator-seed"),
-                config.get("vault-script"),
-                config.get("shard-script"),
+                scriptHex(config, "vault-script"),
+                scriptHex(config, "shard-script"),
                 Long.parseLong(config.getOrDefault("ttl-slots", "7200")),
                 Duration.ofMillis(Long.parseLong(
                         config.getOrDefault("round-timeout-ms", "30000"))));
+    }
+
+    /**
+     * A parameterized validator, either inline as {@code <key>} hex or — so
+     * chain config stays readable — from a file named by {@code <key>-file}
+     * (the deploy bootstrap writes those next to the instance's config).
+     */
+    private static String scriptHex(Map<String, String> config, String key) {
+        String inline = config.get(key);
+        if (inline != null && !inline.isBlank()) {
+            return inline;
+        }
+        String path = config.get(key + "-file");
+        if (path == null || path.isBlank()) {
+            throw new IllegalArgumentException(
+                    "effects.executors.eutxo-settlement." + key + " (or "
+                            + key + "-file) is required");
+        }
+        try {
+            return java.nio.file.Files.readString(
+                    java.nio.file.Path.of(path.trim())).trim();
+        } catch (java.io.IOException failure) {
+            throw new IllegalArgumentException(
+                    "cannot read effects.executors.eutxo-settlement." + key
+                            + "-file: " + path, failure);
+        }
     }
 
     private static String required(String value, String key) {

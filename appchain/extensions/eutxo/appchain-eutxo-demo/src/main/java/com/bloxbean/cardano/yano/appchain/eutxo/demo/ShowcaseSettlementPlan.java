@@ -121,7 +121,7 @@ public final class ShowcaseSettlementPlan {
     public static Map<String, String> configProperties(
             SettlementBootstrapPlan plan, String chainId,
             String withdrawalL2Address, String operatorAddress,
-            byte[] operatorSeed, String networkName) {
+            byte[] operatorSeed, String networkName, String scriptDir) {
         Map<String, String> config = new LinkedHashMap<>();
         config.put("machines.eutxo.profile", plan.profile().id());
         config.put("machines.eutxo.expected-profile-digest",
@@ -171,10 +171,48 @@ public final class ShowcaseSettlementPlan {
         config.put(executor + "operator-address", operatorAddress);
         config.put(executor + "operator-seed",
                 HexFormat.of().formatHex(operatorSeed));
-        config.put(executor + "vault-script", plan.vaultScript().getCborHex());
-        config.put(executor + "shard-script", plan.shardScript().getCborHex());
+        if (scriptDir == null || scriptDir.isBlank()) {
+            config.put(executor + "vault-script",
+                    plan.vaultScript().getCborHex());
+            config.put(executor + "shard-script",
+                    plan.shardScript().getCborHex());
+        } else {
+            // Keep chain config readable: the parameterized validators are
+            // ~22 KB of hex, so the bootstrap writes them beside the config
+            // and the wiring reads them from there.
+            config.put(executor + "vault-script-file",
+                    scriptDir + "/settlement-vault.script");
+            config.put(executor + "shard-script-file",
+                    scriptDir + "/settlement-shard.script");
+        }
         config.put(executor + "round-timeout-ms", "15000");
         return config;
+    }
+
+    /** Inline-script variant (tests, small configs). */
+    public static Map<String, String> configProperties(
+            SettlementBootstrapPlan plan, String chainId,
+            String withdrawalL2Address, String operatorAddress,
+            byte[] operatorSeed, String networkName) {
+        return configProperties(plan, chainId, withdrawalL2Address,
+                operatorAddress, operatorSeed, networkName, null);
+    }
+
+    /**
+     * Write the parameterized validators next to a chain's config, for the
+     * {@code *-script-file} wiring keys. Returns the directory.
+     */
+    public static java.nio.file.Path writeScripts(
+            SettlementBootstrapPlan plan, java.nio.file.Path directory)
+            throws java.io.IOException {
+        java.nio.file.Files.createDirectories(directory);
+        java.nio.file.Files.writeString(
+                directory.resolve("settlement-vault.script"),
+                plan.vaultScript().getCborHex());
+        java.nio.file.Files.writeString(
+                directory.resolve("settlement-shard.script"),
+                plan.shardScript().getCborHex());
+        return directory;
     }
 
     /** Render the properties as a YAML fragment under a chains[index] block. */
