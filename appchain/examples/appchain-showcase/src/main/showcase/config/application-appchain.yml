@@ -10,9 +10,10 @@ yaci:
       - com.bloxbean.cardano.yano.appchain.authenticated-map-validators
       - com.bloxbean.cardano.yano.appchain.role-workflow
       - com.bloxbean.cardano.yano.appchain.eutxo
-      # ADR-UTXO-008: L1 vault-deposit + withdrawal-confirmation observers
-      # for payment-chain-l1bridge, and the lifecycle-index domain routes
-      # used by the eutxo console explorer and the bridge demo tooling.
+      # ADR-UTXO-009: L1 vault-deposit + BATCH withdrawal-confirmation
+      # observers and the eutxo-settlement effect executor for
+      # payment-chain-settlement, plus the lifecycle-index domain routes
+      # used by the eutxo console explorer and the settlement tooling.
       - com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano
       - com.bloxbean.cardano.yano.appchain.eutxo.indexer
       - com.bloxbean.cardano.yano.appchain.showcase
@@ -133,45 +134,73 @@ yano:
       block:
         interval-ms: 1000
 
-    # ADR-UTXO-008: L1 custody boundary demo. Deposits into the vault script
-    # mirror into this chain through stability-gated L1 observation, and
-    # withdrawal claims settle back out to the fixed payout address. The
-    # vault operator and payout identities are PUBLIC deterministic demo
-    # keys (seed = sha256("yano-showcase-demo-actor:bridge-operator") and
-    # ...":bridge-payout") — the operator key IS custody. Demo amounts only;
-    # no virtual genesis: every L2 fund enters via an L1 deposit.
+    # ADR-UTXO-009: the L1 custody boundary demo, on the hardened SCRIPT
+    # vault. Deposits into the vault mirror into this chain through
+    # stability-gated L1 observation; withdrawal claims are settled back out
+    # by the FEDERATION — the node emits an l1.settlement effect, members
+    # co-sign over ~bridge/settlement/*, and the batch lands on L1 without
+    # any operator command. Custody is the threshold + the nullifier shards,
+    # not a single key (that was the retired v2 bridge chain).
+    #
+    # The addresses below are a pure function of the deterministic devnet
+    # bootstrap (ShowcaseSettlementPlan); regenerate this block with:
+    #   ./gradlew :appchain-eutxo-demo:test --tests '*EmitShowcaseYamlTest'
+    # The parameterized validators are written to config/settlement/ by
+    # ./showcase.sh settlement bootstrap. PUBLIC demo keys; demo amounts only.
+    # DEVNET-ONLY profile (relaxed fallback floor) — never for real funds.
     chains[10]:
-      chain-id: "payment-chain-l1bridge"
-      state-machine: eutxo-ledger
+      chain-id: "payment-chain-settlement"
+      state-machine: "eutxo-ledger"
       membership:
-        mode: governed
+        mode: "governed"
       block:
-        interval-ms: 1000
+        interval-ms: "1000"
       l1:
-        stability-depth: 2
+        stability-depth: "2"
       machines:
         eutxo:
-          profile: yano-eutxo-v2-plutus-v3
-          expected-profile-digest: 8cd4adb72def2c31dc8551a02f67429ea468bb2024dbe85a1dc7300590c9d1bf
+          profile: "yano-eutxo-v3-bridge-settlement-devnet"
+          expected-profile-digest: "12880861e62bf4cb750a6bbfdd818c2ba2370a1d2cc0952fcba16c4e6da38e3a"
+          network: "devnet"
           bridge:
-            observer-id: bridge-deposits
-            vault-address: addr_test1wpxg9ntn83pztkpw09lfkvv4uurd7pxztlx7yg0zqr0frdcuc9zzj
-            vault-script-hash: 4c82cd733c4225d82e797e9b3195e706df04c25fcde221e200de91b7
-            confirmation-observer-id: bridge-withdrawals
-            withdrawal-address: addr_test1vrpz48l78va55y3ewuv7p6narrtgsw2ajq3ns9xx945e0vsmpxjls
-            epoch: 1
-            max-withdrawal-lovelace: 50000000
-            max-pending-withdrawals: 100
-            withdrawals-paused: false
+            params:
+              fallback-delay-slots: "60"
+              soft-batch-cap: "1"
+            observer-id: "bridge-deposits"
+            vault-address: "addr_test1wp5kwkyukh0h6vyj6g2vc250gnjy4hhswhwfauv0m349mugukf2cf"
+            vault-script-hash: "6967589cb5df7d3092d214cc2a8f44e44adef075dc9ef18fdc6a5df1"
+            confirmation-observer-id: "bridge-withdrawals"
+            withdrawal-address: "addr_test1vrf4896s3htkc8pzytgvvm07c2e489rtcg42f23zk5r2mjs8ge5ef"
+            epoch: "0"
+            max-withdrawal-lovelace: "50000000"
+            max-pending-withdrawals: "100"
+            withdrawals-paused: "false"
       observers:
         bridge-deposits:
-          type: eutxo-vault-deposit-v1
-          chain-id: payment-chain-l1bridge
-          vault-address: addr_test1wpxg9ntn83pztkpw09lfkvv4uurd7pxztlx7yg0zqr0frdcuc9zzj
-          vault-script-hash: 4c82cd733c4225d82e797e9b3195e706df04c25fcde221e200de91b7
-          max-lovelace: 100000000
+          type: "eutxo-vault-deposit-v1"
+          chain-id: "payment-chain-settlement"
+          vault-address: "addr_test1wp5kwkyukh0h6vyj6g2vc250gnjy4hhswhwfauv0m349mugukf2cf"
+          vault-script-hash: "6967589cb5df7d3092d214cc2a8f44e44adef075dc9ef18fdc6a5df1"
+          max-lovelace: "100000000"
         bridge-withdrawals:
-          type: eutxo-withdrawal-confirmation-v1
-          chain-id: payment-chain-l1bridge
-          bridge-epoch: 1
-          vault-address: addr_test1wpxg9ntn83pztkpw09lfkvv4uurd7pxztlx7yg0zqr0frdcuc9zzj
+          type: "eutxo-batch-withdrawal-confirmation-v1"
+          chain-id: "payment-chain-settlement"
+          bridge-epoch: "0"
+          vault-address: "addr_test1wp5kwkyukh0h6vyj6g2vc250gnjy4hhswhwfauv0m349mugukf2cf"
+      effects:
+        enabled: "true"
+        executor:
+          enabled: "true"
+        executors:
+          eutxo-settlement:
+            owner: "false"
+            vault-address: "addr_test1wp5kwkyukh0h6vyj6g2vc250gnjy4hhswhwfauv0m349mugukf2cf"
+            shard-address: "addr_test1wzf40zzylfag4jxuqky9r4m65eslvjh2mw8q8gwawk5w77qzyg439"
+            root-address: "addr_test1wqr20zh95ngrteg2n5kcafcrc6ykz5c97wvtjkrnvj7mp7cwnfhhg"
+            root-unit: "e3fd503a4bc35777425ffdf8a804ed2c74cf8a6c5574f710328a565959616e6f536574746c65526f6f74"
+            shard-thread-policy-id: "f31a3e218309d7a8b055150d55ef930a96c096072ad8ce31e758edec"
+            operator-address: "addr_test1vq2p8rmdp8p70auqjg0vzu59793575jqegfuwejrk5mu42czwm8wp"
+            operator-seed: "9166d2a27e522e201ff90f5f24d9d18f5f0a7999886c006e0d2653946c40af79"
+            vault-script-file: "${yano.home}/config/settlement/settlement-vault.script"
+            shard-script-file: "${yano.home}/config/settlement/settlement-shard.script"
+            round-timeout-ms: "15000"

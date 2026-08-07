@@ -215,21 +215,63 @@ public final class ShowcaseSettlementPlan {
         return directory;
     }
 
-    /** Render the properties as a YAML fragment under a chains[index] block. */
+    /**
+     * Render the properties as a chains[index] YAML block, NESTED on the
+     * dots so it reads like every other chain in the packaged config (and
+     * so it cannot depend on how the config layer treats dotted keys).
+     */
     public static String yamlBlock(int chainIndex, String chainId,
                                    Map<String, String> properties) {
+        Map<String, Object> tree = new java.util.LinkedHashMap<>();
+        tree.put("chain-id", chainId);
+        tree.put("state-machine", "eutxo-ledger");
+        tree.put("membership", new java.util.LinkedHashMap<>(
+                Map.of("mode", "governed")));
+        tree.put("block", new java.util.LinkedHashMap<>(
+                Map.of("interval-ms", 1000)));
+        tree.put("l1", new java.util.LinkedHashMap<>(
+                Map.of("stability-depth", 2)));
+        for (Map.Entry<String, String> entry : properties.entrySet()) {
+            insert(tree, entry.getKey().split("\\."), 0, entry.getValue());
+        }
         StringBuilder yaml = new StringBuilder();
         yaml.append("    chains[").append(chainIndex).append("]:\n");
-        yaml.append("      chain-id: \"").append(chainId).append("\"\n");
-        yaml.append("      state-machine: eutxo-ledger\n");
-        yaml.append("      membership:\n        mode: governed\n");
-        yaml.append("      block:\n        interval-ms: 1000\n");
-        yaml.append("      l1:\n        stability-depth: 2\n");
-        for (Map.Entry<String, String> entry : properties.entrySet()) {
-            yaml.append("      ").append(entry.getKey())
-                    .append(": \"").append(entry.getValue()).append("\"\n");
-        }
+        render(yaml, tree, "      ");
         return yaml.toString();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void insert(Map<String, Object> node, String[] path,
+                               int index, String value) {
+        String key = path[index];
+        if (index == path.length - 1) {
+            node.put(key, value);
+            return;
+        }
+        Object child = node.computeIfAbsent(key,
+                ignored -> new java.util.LinkedHashMap<String, Object>());
+        if (!(child instanceof Map)) {
+            throw new IllegalStateException(
+                    "settlement config key collides with a scalar: " + key);
+        }
+        insert((Map<String, Object>) child, path, index + 1, value);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void render(StringBuilder yaml, Map<String, Object> node,
+                               String indent) {
+        for (Map.Entry<String, Object> entry : node.entrySet()) {
+            String key = entry.getKey();
+            // Keys with a '[' (none today) or a leading '~' would need
+            // quoting; plain config keys do not.
+            if (entry.getValue() instanceof Map<?, ?> child) {
+                yaml.append(indent).append(key).append(":\n");
+                render(yaml, (Map<String, Object>) child, indent + "  ");
+            } else {
+                yaml.append(indent).append(key).append(": \"")
+                        .append(entry.getValue()).append("\"\n");
+            }
+        }
     }
 
     static byte[] actorSeed(String actor) {

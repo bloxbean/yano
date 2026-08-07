@@ -115,6 +115,62 @@ public final class EutxoDemoCli {
             return EutxoDemoResult.of("EUTXO_DEMO_SCENARIOS",
                     Map.of("scenarios", inventory));
         }
+        // ADR-UTXO-009: deploy the showcase settlement identity on the L1 —
+        // the two one-shot mints plus the genesis threads — and drop the
+        // parameterized validators where the chain config expects them.
+        // Idempotent: a live root thread short-circuits.
+        if ("settlement-bootstrap".equals(options.command())) {
+            String base = options.targetBase();
+            if (base == null || base.isBlank()) {
+                throw new IllegalArgumentException(
+                        "settlement-bootstrap needs --target-base");
+            }
+            java.nio.file.Path scriptDir = options.output();
+            if (scriptDir == null) {
+                throw new IllegalArgumentException(
+                        "settlement-bootstrap needs --output <config/settlement dir>");
+            }
+            String transaction = SettlementBootstrapWorkflow
+                    .bootstrapShowcaseDevnet(base + "/api/v1/");
+            ShowcaseSettlementPlan.writeScripts(
+                    ShowcaseSettlementPlan.PLAN, scriptDir);
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("chainId", ShowcaseSettlementPlan.CHAIN_ID);
+            payload.put("bootstrapTransaction", transaction);
+            payload.put("vaultAddress",
+                    ShowcaseSettlementPlan.PLAN.vaultAddress());
+            payload.put("shardAddress",
+                    ShowcaseSettlementPlan.PLAN.shardAddress());
+            payload.put("rootAddress",
+                    ShowcaseSettlementPlan.PLAN.rootAddress());
+            payload.put("operatorAddress",
+                    ShowcaseSettlementPlan.OPERATOR_ADDRESS);
+            payload.put("scriptDirectory", scriptDir.toString());
+            return EutxoDemoResult.of("EUTXO_SETTLEMENT_BOOTSTRAP", payload);
+        }
+        if ("settlement-info".equals(options.command())) {
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("chainId", ShowcaseSettlementPlan.CHAIN_ID);
+            payload.put("profile",
+                    ShowcaseSettlementPlan.PLAN.profile().id());
+            payload.put("profileDigest",
+                    ShowcaseSettlementPlan.PLAN.profile().digestHex());
+            payload.put("fallbackDelaySlots",
+                    ShowcaseSettlementPlan.FALLBACK_DELAY_SLOTS);
+            payload.put("vaultAddress",
+                    ShowcaseSettlementPlan.PLAN.vaultAddress());
+            payload.put("shardAddress",
+                    ShowcaseSettlementPlan.PLAN.shardAddress());
+            payload.put("rootAddress",
+                    ShowcaseSettlementPlan.PLAN.rootAddress());
+            payload.put("operatorAddress",
+                    ShowcaseSettlementPlan.OPERATOR_ADDRESS);
+            payload.put("payoutAddress",
+                    ShowcaseSettlementPlan.PAYOUT_ADDRESS);
+            payload.put("members", ShowcaseSettlementPlan.CLUSTER_MEMBERS);
+            payload.put("threshold", ShowcaseSettlementPlan.THRESHOLD);
+            return EutxoDemoResult.of("EUTXO_SETTLEMENT_INFO", payload);
+        }
         if ("setup".equals(options.command())) {
             EutxoDemoScenarioProvider provider = scenarios.require(options.scenario());
             EutxoDemoWorkspace workspace = EutxoDemoWorkspace.create(options, provider);
@@ -334,7 +390,8 @@ public final class EutxoDemoCli {
                     "start", "up", "stop", "fund", "deposit", "transfer",
                     "prove", "settle", "withdraw", "reconcile", "verify",
                     "ceremony", "round-trip", "deposit-build",
-                    "deposit-submit").contains(command)) {
+                    "deposit-submit",
+                    "settlement-bootstrap", "settlement-info").contains(command)) {
                 throw new Usage("unknown EUTxO demo command: " + command);
             }
         }
