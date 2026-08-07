@@ -106,7 +106,7 @@ grep -q 'governance activate' <<< "$("$ROOT/showcase.sh" help)"
 [ -f "$ROOT/data/showcase/three/showcase-identity.json" ]
 jq -e '.chainIds | length == 11' \
   "$ROOT/data/showcase/three/showcase-identity.json" >/dev/null
-jq -e '.chainIds[10] == "payment-chain-l1bridge"' \
+jq -e '.chainIds[10] == "payment-chain-settlement"' \
   "$ROOT/data/showcase/three/showcase-identity.json" >/dev/null
 jq -e '.authenticatedMapConfigSha256 | test("^[0-9a-f]{64}$")' \
   "$ROOT/data/showcase/three/showcase-identity.json" >/dev/null
@@ -138,19 +138,15 @@ grep -q '^loadtest registry-chain -n 12 -c 2 -s 32 -t kv.command.v1 --kv --node 
 grep -q "^soaktest orders-chain --duration 3 --rate 4 --conc 2 -s 32 --sample 1 --out $WORK/soak --node 0$" \
   "$WORK/cluster.log"
 
-# ADR-UTXO-008: the bridge group prints pinned custody facts on any network
-# and delegates workflow verbs to the packaged demo CLI in attach mode.
-BRIDGE_INFO="$("$ROOT/showcase.sh" bridge info --instance three)"
-grep -q 'vault address         : addr_test1wpxg9ntn83pztkpw09lfkvv4uurd7pxztlx7yg0zqr0frdcuc9zzj' <<< "$BRIDGE_INFO"
-grep -q 'withdrawal address    : addr_test1vrpz48l78va55y3ewuv7p6narrtgsw2ajq3ns9xx945e0vsmpxjls' <<< "$BRIDGE_INFO"
-grep -q 'NOT a deposit' <<< "$BRIDGE_INFO"
-"$ROOT/showcase.sh" bridge deposit --count 2 --instance three
-grep -q '^yano appchain eutxo demo setup --scenario bridge --target-base http://127.0.0.1:19770 --operator-seed-file .*/bridge-operator.seed --payout-address addr_test1vrpz48l78va55y3ewuv7p6narrtgsw2ajq3ns9xx945e0vsmpxjls --chain-id payment-chain-l1bridge --workspace .*/bridge-workspace$' \
-  "$WORK/cluster.log"
-grep -q '^yano appchain eutxo demo deposit --workspace .*/bridge-workspace --count 2$' \
-  "$WORK/cluster.log"
-grep -q '^6534a9048fb12ab7237a3139dd812c8eb756d8d9d0e120f54bfc78decaefc4a4$' \
-  "$ROOT/data/showcase/three/bridge-operator.seed"
+# ADR-UTXO-009: the settlement group prints the pinned deploy identity on
+# any network. The chain settles autonomously, so there is no operator
+# "settle" verb to exercise here.
+SETTLEMENT_INFO="$("$ROOT/showcase.sh" settlement info --instance three)"
+grep -q 'federated L1 settlement' <<< "$SETTLEMENT_INFO"
+grep -q 'machine profile       : yano-eutxo-v3-bridge-settlement-devnet' <<< "$SETTLEMENT_INFO"
+grep -q 'nullifier shards' <<< "$SETTLEMENT_INFO"
+grep -q 'No single key is custody' <<< "$SETTLEMENT_INFO"
+grep -q 'NOT bootstrapped' <<< "$SETTLEMENT_INFO"
 
 if "$ROOT/showcase.sh" prepare --instance three --nodes 5 --http-base 19770 --server-base 19370 \
     >"$WORK/drift.log" 2>&1; then
@@ -158,7 +154,7 @@ if "$ROOT/showcase.sh" prepare --instance three --nodes 5 --http-base 19770 --se
 fi
 grep -q 'differs from retained showcase identity' "$WORK/drift.log"
 
-# ADR-UTXO-008 BR-M5: chain add payment-chain-l1bridge migrates a retained
+# ADR-UTXO-009: chain add payment-chain-settlement migrates a retained
 # 10-chain (V10) instance to the packaged 11-chain set without touching the
 # retained authenticated-map geneses.
 python3 - "$ROOT/data/showcase/three/showcase-identity.json" \
@@ -166,7 +162,7 @@ python3 - "$ROOT/data/showcase/three/showcase-identity.json" \
 import json, pathlib, sys
 marker = pathlib.Path(sys.argv[1])
 doc = json.loads(marker.read_text())
-assert doc["chainIds"][-1] == "payment-chain-l1bridge"
+assert doc["chainIds"][-1] == "payment-chain-settlement"
 doc["chainIds"] = doc["chainIds"][:-1]
 marker.write_text(json.dumps(doc, sort_keys=True, separators=(",", ":")) + "\n")
 cluster = pathlib.Path(sys.argv[2])
@@ -175,13 +171,13 @@ if cluster.exists():
     cdoc["chainIds"] = cdoc["chainIds"][:-1]
     cluster.write_text(json.dumps(cdoc, sort_keys=True, separators=(",", ":")) + "\n")
 PY
-"$ROOT/showcase.sh" chain add payment-chain-l1bridge --instance three
+"$ROOT/showcase.sh" chain add payment-chain-settlement --instance three
 jq -e '.chainIds | length == 11' \
   "$ROOT/data/showcase/three/showcase-identity.json" >/dev/null
-jq -e '.chainIds[10] == "payment-chain-l1bridge"' \
+jq -e '.chainIds[10] == "payment-chain-settlement"' \
   "$ROOT/data/showcase/three/showcase-identity.json" >/dev/null
-BRIDGE_ADD_AGAIN="$("$ROOT/showcase.sh" chain add payment-chain-l1bridge --instance three)"
-grep -q 'already has payment-chain-l1bridge' <<< "$BRIDGE_ADD_AGAIN"
+SETTLEMENT_ADD_AGAIN="$("$ROOT/showcase.sh" chain add payment-chain-settlement --instance three)"
+grep -q 'already has payment-chain-settlement' <<< "$SETTLEMENT_ADD_AGAIN"
 
 # Anchoring is an additive retained-identity migration. Start with the default
 # workflow scope, add one existing chain, then expand to all chains without
@@ -222,7 +218,7 @@ document = {
     "chainIds": ["orders-chain", "registry-chain", "approvals-chain", "balances-chain",
                  "documents-chain", "workflow-chain", "roles-chain", "payments-chain",
                  "authenticated-map-chain", "authenticated-map-jmt-chain",
-                 "payment-chain-l1bridge"],
+                 "payment-chain-settlement"],
     "anchor": {"enabled": True, "mode": "script", "signerFingerprint": fingerprint,
                "chainId": "workflow-chain"},
 }

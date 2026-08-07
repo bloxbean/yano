@@ -33,6 +33,9 @@ dependencies {
     // ADR-UTXO-008: golden derivation of the bridge chain's deterministic
     // vault/payout identities uses the exact client wallet derivation.
     testImplementation project(':appchain-eutxo-client')
+    // ADR-UTXO-009: the settlement chain block is generated from the demo
+    // module's deterministic plan; the golden test re-derives it.
+    testImplementation project(':appchain-eutxo-demo')
     testImplementation project(':appchain-testkit')
     testImplementation libs.cbor
     testImplementation libs.cardano.client.core

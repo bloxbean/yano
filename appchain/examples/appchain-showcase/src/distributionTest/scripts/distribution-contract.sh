@@ -108,7 +108,7 @@ printf '%s' "$JMT_INFO" | jq -e '
 
 # ADR-UTXO-008: the packaged light profile carries the bridge chain with its
 # deterministic demo vault identity and the bundles its observers/routes need.
-grep -q 'chain-id: "payment-chain-l1bridge"' \
+grep -q 'chain-id: "payment-chain-settlement"' \
   "$ROOT/yano/config/application-appchain.yml"
 grep -q 'com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano' \
   "$ROOT/yano/config/application-appchain.yml"

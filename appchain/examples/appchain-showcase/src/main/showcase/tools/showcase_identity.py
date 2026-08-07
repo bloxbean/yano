@@ -17,9 +17,9 @@ LIGHT_CHAINS = [
     "orders-chain", "registry-chain", "approvals-chain", "balances-chain",
     "documents-chain", "workflow-chain", "roles-chain", "payments-chain",
     "authenticated-map-chain", "authenticated-map-jmt-chain",
-    "payment-chain-l1bridge",
+    "payment-chain-settlement",
 ]
-# Instances prepared before the ADR-UTXO-008 bridge chain existed.
+# Instances prepared before the ADR-UTXO-009 settlement chain existed.
 LIGHT_CHAINS_V10 = LIGHT_CHAINS[:-1]
 # Instances prepared before the classic-JMT contrast chain existed.
 LEGACY_LIGHT_CHAINS = LIGHT_CHAINS[:-2]
@@ -457,10 +457,11 @@ def migrate_chain_add(args: argparse.Namespace) -> None:
     print("migrated")
 
 
-def migrate_chain_add_bridge(args: argparse.Namespace) -> None:
-    """Additive migration: adopt the ADR-UTXO-008 bridge chain on an
-    instance that already has the classic-JMT chain (10 chains). The bridge
-    chain is config-only, so no new genesis is generated; the packaged
+def migrate_chain_add_settlement(args: argparse.Namespace) -> None:
+    """Additive migration: adopt the ADR-UTXO-009 settlement chain on an
+    instance that already has the classic-JMT chain (10 chains). The chain
+    is config-only (its L1 identity is deployed separately by
+    `settlement bootstrap`), so no new genesis is generated; the packaged
     config/plugin digests are re-recorded after verifying both retained
     authenticated-map geneses are untouched."""
     marker = pathlib.Path(args.marker)
@@ -479,7 +480,7 @@ def migrate_chain_add_bridge(args: argparse.Namespace) -> None:
         print("already-migrated")
         return
     if deployment.get("chainIds") != LIGHT_CHAINS_V10:
-        raise ValueError("chain add payment-chain-l1bridge requires the JMT chain first; "
+        raise ValueError("chain add payment-chain-settlement requires the JMT chain first; "
                          "run: chain add authenticated-map-jmt-chain")
     if (sha256(pathlib.Path(args.authenticated_map_jmt_config).resolve())
             != deployment.get("authenticatedMapJmtConfigSha256")):
@@ -503,7 +504,7 @@ def migrate_chain_add_bridge(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=("ensure", "show", "export", "anchor-enable",
-                                           "chain-add", "chain-add-bridge"))
+                                           "chain-add", "chain-add-settlement"))
     parser.add_argument("--marker", required=True)
     parser.add_argument("--version", default="development")
     parser.add_argument("--profile", default="light")
@@ -534,8 +535,8 @@ def main() -> None:
     if args.action == "chain-add":
         migrate_chain_add(args)
         return
-    if args.action == "chain-add-bridge":
-        migrate_chain_add_bridge(args)
+    if args.action == "chain-add-settlement":
+        migrate_chain_add_settlement(args)
         return
     if args.action == "show":
         parsed = json.loads(secure_existing(marker))

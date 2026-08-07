@@ -11,12 +11,12 @@ VERSION="$(tr -d '\r\n' < "$SHOWCASE_HOME/VERSION" 2>/dev/null || printf develop
 API_KEY="${YANO_CLUSTER_API_KEY:-yano-local-cluster-full-key}"
 LIGHT_CHAINS=(orders-chain registry-chain approvals-chain balances-chain
   documents-chain workflow-chain roles-chain payments-chain authenticated-map-chain
-  authenticated-map-jmt-chain payment-chain-l1bridge)
+  authenticated-map-jmt-chain payment-chain-settlement)
 AUTHMAP_GENERATOR=com.bloxbean.cardano.yano.appchain.showcase.ShowcaseAuthenticatedMapConfig
 AUTHMAP_CHAIN_INDEX=8
 AUTHMAP_JMT_CHAIN_INDEX=9
-BRIDGE_CHAIN_ID=payment-chain-l1bridge
-BRIDGE_CHAIN_INDEX=10
+SETTLEMENT_CHAIN_ID=payment-chain-settlement
+SETTLEMENT_CHAIN_INDEX=10
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 note() { printf '%s\n' "$*"; }
@@ -1166,12 +1166,12 @@ activation_submit() {
       body="$(authmap_basic_body open \
         "$(python3 "$CODEC" authmap put kv-open "$suffix" "$value")")"
       submit_hex "$cid" authenticated-map.command.v1 "$body" 0;;
-    "$BRIDGE_CHAIN_ID")
-      # The bridge chain admits only eutxo transactions and proposer-injected
+    "$SETTLEMENT_CHAIN_ID")
+      # The settlement chain admits only eutxo transactions and proposer-injected
       # L1 observations; it has no funds until the first vault deposit, so
       # there is nothing valid to submit here. It bootstraps with its
       # membership epoch active; a pending epoch (e.g. after member changes)
-      # activates on the next bridge block — drive one with a deposit.
+      # activates on the next settlement block — drive one with a deposit.
       printf 'skip';;
     *) die "unsupported light-profile chain: $cid";;
   esac
@@ -1193,7 +1193,7 @@ governance_activate() {
         suffix="activate-$round-$(date +%s)"
         id="$(activation_submit "$cid" "$suffix")"
         if [ "$id" = skip ]; then
-          note "note: $cid has a pending membership epoch; it activates on the next bridge block (run: ./showcase.sh bridge deposit --instance $INSTANCE)"
+          note "note: $cid has a pending membership epoch; it activates on the next settlement block (run: ./showcase.sh settlement deposit --instance $INSTANCE)"
           continue
         fi
         pending=$((pending + 1))
@@ -1326,76 +1326,68 @@ delegate_evidence() {
   "$demo" "${args[@]}"
 }
 
-bridge_yml_value() {
-  awk -v k="$1:" '$1 == k {print $2; exit}' \
+settlement_yml_value() {
+  # nested chain yaml: match "  key: value" and strip the quotes the
+  # generator writes.
+  awk -v k="$1:" '$1 == k {gsub(/^"|"$/, "", $2); print $2; exit}' \
     "$YANO_HOME/config/application-appchain.yml"
 }
 
-bridge_workspace() { printf '%s/bridge-workspace' "$(instance_root)"; }
+settlement_script_dir() { printf '%s/config/settlement' "$YANO_HOME"; }
 
-ensure_bridge_workspace() {
-  local ws seed_file
-  ws="$(bridge_workspace)"
-  [ ! -f "$ws/demo.yaml" ] || return 0
-  seed_file="$(instance_root)/bridge-operator.seed"
-  if [ ! -f "$seed_file" ]; then
-    # PUBLIC deterministic demo identity (same convention as the other
-    # showcase demo actors); never reuse outside showcase demos.
-    ( umask 077; python3 -c 'import hashlib; print(hashlib.sha256(
-        b"yano-showcase-demo-actor:bridge-operator").hexdigest())' \
-      > "$seed_file" )
-  fi
-  "$YANO_HOME/yano.sh" appchain eutxo demo setup --scenario bridge \
-    --target-base "http://127.0.0.1:$HTTP_BASE" \
-    --operator-seed-file "$seed_file" \
-    --payout-address "$(bridge_yml_value withdrawal-address)" \
-    --chain-id "$BRIDGE_CHAIN_ID" \
-    --workspace "$ws" >/dev/null
-  note "bridge workspace ready: $ws (attached to http://127.0.0.1:$HTTP_BASE)"
-}
-
-run_bridge_info() {
-  local vault hash payout depth maxdep epoch maxwd chain_status tip
-  vault="$(bridge_yml_value vault-address)"
-  hash="$(bridge_yml_value vault-script-hash)"
-  payout="$(bridge_yml_value withdrawal-address)"
-  depth="$(bridge_yml_value stability-depth)"
-  maxdep="$(bridge_yml_value max-lovelace)"
-  epoch="$(bridge_yml_value epoch)"
-  maxwd="$(bridge_yml_value max-withdrawal-lovelace)"
-  note "$BRIDGE_CHAIN_ID — Cardano L1 custody boundary (ADR-UTXO-008)"
+run_settlement_info() {
+  local vault shard root payout profile delay chain_status tip
+  vault="$(settlement_yml_value vault-address)"
+  shard="$(settlement_yml_value shard-address)"
+  root="$(settlement_yml_value root-address)"
+  payout="$(settlement_yml_value withdrawal-address)"
+  profile="$(settlement_yml_value profile)"
+  delay="$(settlement_yml_value fallback-delay-slots)"
+  note "$SETTLEMENT_CHAIN_ID — federated L1 settlement (ADR-UTXO-009)"
   note "  network               : $NETWORK"
-  note "  vault address         : $vault"
-  note "  vault script hash     : $hash"
-  note "  max deposit           : $maxdep lovelace (observer-enforced)"
-  note "  L1 stability depth    : $depth blocks before a deposit mirrors"
+  note "  machine profile       : $profile"
+  note "  vault (script)        : $vault"
+  note "  nullifier shards      : $shard (16 threads)"
+  note "  accepted-root thread  : $root"
   note "  withdrawal address    : $payout (the ONLY claim-forming L2 address)"
-  note "  bridge epoch / max wd : $epoch / $maxwd lovelace"
+  note "  fallback delay        : $delay slots (arms the permissionless exit)"
+  if [ -d "$(settlement_script_dir)" ]; then
+    note "  L1 deploy             : bootstrapped (validators in $(settlement_script_dir))"
+  else
+    note "  L1 deploy             : NOT bootstrapped — run: ./showcase.sh settlement bootstrap --instance $INSTANCE"
+  fi
   chain_status="$(curl -fsS --connect-timeout 2 --max-time 5 \
-    "http://127.0.0.1:$HTTP_BASE/api/v1/app-chain/chains/$BRIDGE_CHAIN_ID/status" \
+    "http://127.0.0.1:$HTTP_BASE/api/v1/app-chain/chains/$SETTLEMENT_CHAIN_ID/status" \
     2>/dev/null || true)"
   if [ -n "$chain_status" ]; then
     tip="$(printf '%s' "$chain_status" | jq -r '.tipHeight // "?"')"
     note "  live tip height       : $tip"
-    note "  console               : http://127.0.0.1:$HTTP_BASE/ui/app-chain/eutxo/?chain=$BRIDGE_CHAIN_ID"
+    note "  console               : http://127.0.0.1:$HTTP_BASE/ui/app-chain/eutxo/?chain=$SETTLEMENT_CHAIN_ID"
   else
     note "  live status           : cluster not reachable on port $HTTP_BASE"
   fi
-  note "Custody note: the vault is a single-operator-key native script — the"
-  note "operator key IS custody. Demo amounts only; see docs/BRIDGE_CHAIN.md."
   note ""
-  note "A plain wallet transfer to the vault address is NOT a deposit: the"
-  note "observer credits L2 owners from the inline vault datum. Build deposits"
-  note "with the provided tooling:"
-  if [ "$NETWORK" = devnet ]; then
-    note "  ./showcase.sh bridge run --instance $INSTANCE        # full automated round-trip"
-    note "  ./showcase.sh bridge deposit --instance $INSTANCE    # deposits only (then transfer, settle, verify)"
-  else
-    note "  # $NETWORK has no faucet; deposit YOUR OWN funds with the Java client:"
-    note "  java -jar yano-showcase-client-*-all.jar eutxo deposit \\"
-    note "    --base-url http://127.0.0.1:$HTTP_BASE --chain $BRIDGE_CHAIN_ID \\"
-    note "    --mnemonic-file <your-l1-wallet.mnemonic> --amount 5000000"
-  fi
+  note "Custody: a Plutus vault released by the FEDERATION THRESHOLD, with"
+  note "nullifier shards preventing double settlement and a permissionless"
+  note "exit if the federation stops rooting. No single key is custody."
+  note "The node settles on its own — there is no operator 'settle' command."
+  note ""
+  note "  ./showcase.sh settlement bootstrap --instance $INSTANCE   # deploy the L1 identity (once)"
+  note "  ./showcase.sh settlement deposit   --instance $INSTANCE   # L1 deposit -> mirrored L2 funds"
+  note "  ./showcase.sh settlement withdraw  --instance $INSTANCE   # L2 claim -> watch the node settle"
+  note "  ./showcase.sh settlement status    --instance $INSTANCE   # claims and their settlement state"
+  note "DEVNET-ONLY demo profile (relaxed fallback floor); PUBLIC demo keys."
+}
+
+run_settlement_bootstrap() {
+  [ "$NETWORK" = devnet ] \
+    || die "the packaged settlement identity is devnet-deterministic; on $NETWORK bootstrap with your own funded seeds (see docs/SETTLEMENT_CHAIN.md)"
+  note "deploying the settlement identity on the devnet L1 (idempotent)..."
+  "$YANO_HOME/yano.sh" appchain eutxo demo settlement-bootstrap \
+    --target-base "http://127.0.0.1:$HTTP_BASE" \
+    --output "$(settlement_script_dir)"
+  note "bootstrap complete; restart so the executor picks up the validators:"
+  note "  ./showcase.sh restart --instance $INSTANCE"
 }
 
 delegate_eutxo() {
@@ -1594,9 +1586,9 @@ Yano unified app-chain showcase
   ./showcase.sh authmap governed-put <key> <value> [--chain id] [--collection C] [--actor A] [--seed-file F]
   ./showcase.sh authmap entry <collection> <key> [--chain id]
   ./showcase.sh authmap receipt <message-id> [--chain id]
-  ./showcase.sh chain add authenticated-map-jmt-chain|payment-chain-l1bridge
-  ./showcase.sh bridge info                          (vault facts + next steps, any network)
-  ./showcase.sh bridge run|deposit|transfer|settle|verify [--count N]   (devnet)
+  ./showcase.sh chain add authenticated-map-jmt-chain|payment-chain-settlement
+  ./showcase.sh settlement info                      (vault/shard/root facts + next steps)
+  ./showcase.sh settlement bootstrap                 (deploy the L1 settlement identity, devnet)
   ./showcase.sh ceremony            (eutxo profile, zk variant: one-time trusted setup)
   ./showcase.sh approvals propose <id> <payload> [required]
   ./showcase.sh approvals approve <id> <member-node>
@@ -1746,7 +1738,7 @@ PY
   chain)
     adopt_marker
     [ "${POSITIONAL[0]:-}" = add ] \
-      || die "usage: chain add authenticated-map-jmt-chain|payment-chain-l1bridge"
+      || die "usage: chain add authenticated-map-jmt-chain|payment-chain-settlement"
     [ "$PROFILE" = light ] || die "chain add applies only to the light profile"
     case "${POSITIONAL[1]:-}" in
     authenticated-map-jmt-chain)
@@ -1769,21 +1761,21 @@ PY
         rm -f -- "$chain_add_candidate"
         up_light
         resume_joined_nodes
-        die "instance already has the JMT chain but predates payment-chain-l1bridge; run: ./showcase.sh chain add payment-chain-l1bridge --instance $INSTANCE"
+        die "instance already has the JMT chain but predates payment-chain-settlement; run: ./showcase.sh chain add payment-chain-settlement --instance $INSTANCE"
       fi
       install_authenticated_map_jmt_candidate "$chain_add_candidate"
       write_node_configs "$NODES"
       up_light
       resume_joined_nodes
       note "authenticated-map-jmt-chain added; verify with: ./showcase.sh status --instance $INSTANCE";;
-    "$BRIDGE_CHAIN_ID")
-      grep -q 'chain-id: "payment-chain-l1bridge"' \
+    "$SETTLEMENT_CHAIN_ID")
+      grep -q 'chain-id: "payment-chain-settlement"' \
         "$YANO_HOME/config/application-appchain.yml" \
-        || die "packaged application-appchain.yml lacks the bridge chain; replace showcase.sh, tools/, yano/config/application-appchain.yml, and the plugin bundle from a newly built showcase ZIP first"
+        || die "packaged application-appchain.yml lacks the settlement chain; replace showcase.sh, tools/, yano/config/application-appchain.yml, and the plugin bundle from a newly built showcase ZIP first"
       [ -f "$(authenticated_map_jmt_properties)" ] \
-        || die "this instance predates the JMT chain; run: ./showcase.sh chain add authenticated-map-jmt-chain --instance $INSTANCE (it adopts the bridge chain too)"
+        || die "this instance predates the JMT chain; run: ./showcase.sh chain add authenticated-map-jmt-chain --instance $INSTANCE (it adopts the settlement chain too)"
       cluster_env; "$CLUSTER" stop || true
-      if ! bridge_add_state="$(python3 "$IDENTITY" chain-add-bridge --marker "$(marker)" \
+      if ! settlement_add_state="$(python3 "$IDENTITY" chain-add-settlement --marker "$(marker)" \
           --config "$YANO_HOME/config/application-appchain.yml" \
           --plugin "$(plugin_file)" \
           --authenticated-map-config "$(authenticated_map_properties)" \
@@ -1791,14 +1783,14 @@ PY
           --cluster-marker "$(cluster_dir)/cluster-appchain-identity.json")"; then
         die "chain add migration failed; the instance identity is unchanged"
       fi
-      [ "$bridge_add_state" != already-migrated ] \
-        || note "instance already has $BRIDGE_CHAIN_ID; refreshing configs and restarting"
+      [ "$settlement_add_state" != already-migrated ] \
+        || note "instance already has $SETTLEMENT_CHAIN_ID; refreshing configs and restarting"
       write_node_configs "$NODES"
       up_light
       resume_joined_nodes
-      note "$BRIDGE_CHAIN_ID added (config-only, no funds until the first deposit)"
-      note "verify with: ./showcase.sh bridge info --instance $INSTANCE";;
-    *) die "chain add currently supports: authenticated-map-jmt-chain, payment-chain-l1bridge";;
+      note "$SETTLEMENT_CHAIN_ID added (config-only; bootstrap the L1 identity next)"
+      note "next: ./showcase.sh settlement bootstrap --instance $INSTANCE";;
+    *) die "chain add currently supports: authenticated-map-jmt-chain, payment-chain-settlement";;
     esac;;
   authmap)
     adopt_marker
@@ -1812,26 +1804,15 @@ PY
       receipt) run_authmap_receipt "${POSITIONAL[1]:?message id required}";;
       *) die "usage: authmap put <collection> <key> <value> | authmap governed-put <key> <value> [--collection C] [--actor A] [--seed-file F] | authmap entry <collection> <key> | authmap receipt <message-id>";;
     esac;;
-  bridge)
+  settlement)
     adopt_marker
-    [ "$PROFILE" = light ] || die "bridge applies to the light profile (the eutxo profile has its own scenarios)"
-    bridge_cmd="${POSITIONAL[0]:-}"
-    case "$bridge_cmd" in
-      info) run_bridge_info;;
-      status)
-        ensure_bridge_workspace
-        "$YANO_HOME/yano.sh" appchain eutxo demo status \
-          --workspace "$(bridge_workspace)";;
-      run|fund|deposit|transfer|settle|verify)
-        [ "$NETWORK" = devnet ] \
-          || die "the automated bridge flow faucet-funds demo users and exists only on devnet; on $NETWORK run: ./showcase.sh bridge info --instance $INSTANCE"
-        ensure_bridge_workspace
-        [ "$bridge_cmd" != run ] || bridge_cmd=round-trip
-        bridge_extra=()
-        [ -z "$COUNT" ] || bridge_extra=(--count "$COUNT")
-        "$YANO_HOME/yano.sh" appchain eutxo demo "$bridge_cmd" \
-          --workspace "$(bridge_workspace)" ${bridge_extra[@]+"${bridge_extra[@]}"};;
-      *) die "usage: bridge info|run|fund|deposit|transfer|settle|verify|status [--count N]";;
+    [ "$PROFILE" = light ] || die "settlement applies to the light profile (the eutxo profile has its own scenarios)"
+    case "${POSITIONAL[0]:-}" in
+      info) run_settlement_info;;
+      bootstrap) run_settlement_bootstrap;;
+      deposit|withdraw|status)
+        die "not yet wired in this build — use: ./showcase.sh settlement info --instance $INSTANCE";;
+      *) die "usage: settlement info|bootstrap|deposit|withdraw|status";;
     esac;;
   ceremony)
     adopt_marker
