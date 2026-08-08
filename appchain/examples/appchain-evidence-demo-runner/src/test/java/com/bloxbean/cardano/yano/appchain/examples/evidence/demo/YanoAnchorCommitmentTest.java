@@ -177,7 +177,8 @@ class YanoAnchorCommitmentTest {
     private static AnchorDatumV1 datum(String chain, long height,
                                        byte[] blockHash, byte[] stateRoot,
                                        Set<String> members, int threshold) {
-        return new AnchorDatumV1(chain, height, blockHash, stateRoot,
+        return new AnchorDatumV1(chain, filled(0x31), "evidence-profile",
+                "mpf-blake2b256-v1", filled(0x32), height, blockHash, stateRoot,
                 members.stream().map(HexFormat.of()::parseHex).toList(), threshold);
     }
 

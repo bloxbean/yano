@@ -26,6 +26,7 @@ public record StateCommitmentIdentity(
     public static final String PROFILE_SETTING = "state.commitment-profile";
     public static final String FINGERPRINT_SETTING = "state.format-fingerprint";
     public static final String GENESIS_ID_SETTING = "state.genesis-id";
+    public static final String L1_PROOF_REQUIRED_SETTING = "state.l1-proof-consumption-required";
 
     private static final byte[] DIGEST_DOMAIN =
             "yano-state-commitment-identity-v1\0".getBytes(StandardCharsets.US_ASCII);
@@ -85,7 +86,18 @@ public record StateCommitmentIdentity(
         boolean anyConfigured = source.containsKey(PROFILE_SETTING)
                 || source.containsKey(FINGERPRINT_SETTING)
                 || source.containsKey(GENESIS_ID_SETTING);
+        String l1RequiredValue = normalized(source.get(L1_PROOF_REQUIRED_SETTING));
+        if (l1RequiredValue != null
+                && !"true".equals(l1RequiredValue) && !"false".equals(l1RequiredValue)) {
+            throw new IllegalArgumentException(
+                    L1_PROOF_REQUIRED_SETTING + " must be true or false");
+        }
+        boolean l1ProofRequired = "true".equals(l1RequiredValue);
         if (!anyConfigured) {
+            if (l1ProofRequired) {
+                throw new IllegalArgumentException(
+                        "L1 proof consumption requires an explicit MPF commitment identity");
+            }
             return legacyMpf();
         }
         String profileId = normalized(source.get(PROFILE_SETTING));
@@ -96,6 +108,11 @@ public record StateCommitmentIdentity(
                     "state commitment profile, fingerprint, and genesis id must be configured together");
         }
         StateCommitmentProfile profile = StateCommitmentProfiles.require(profileId);
+        if (l1ProofRequired && profile.backendFamily()
+                != StateCommitmentProfile.BackendFamily.MPF) {
+            throw new IllegalArgumentException(
+                    "L1 state-proof consumption is supported only by MPF");
+        }
         byte[] fingerprint = parseCanonicalHex(fingerprintHex, 32, FINGERPRINT_SETTING);
         if (!Arrays.equals(fingerprint, profile.formatFingerprint())) {
             throw new IllegalArgumentException(

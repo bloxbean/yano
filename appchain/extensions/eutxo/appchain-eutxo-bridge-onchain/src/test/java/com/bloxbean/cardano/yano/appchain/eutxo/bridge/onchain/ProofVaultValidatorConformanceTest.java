@@ -4,8 +4,8 @@ import com.bloxbean.cardano.client.crypto.Bech32;
 import com.bloxbean.cardano.vds.core.api.NodeStore;
 import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
-import com.bloxbean.cardano.yano.appchain.eutxo.client.EutxoMpfProofConverter;
-import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoMpfProof;
+import com.bloxbean.cardano.yano.appchain.client.MpfProofConverter;
+import com.bloxbean.cardano.yano.appchain.proofs.MpfNormalizedProof;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoOutpoint;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoStateKeys;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalClaim;
@@ -316,7 +316,7 @@ class ProofVaultValidatorConformanceTest extends ContractTest {
                 HexFormat.of().formatHex(value),
                 42L,
                 42L);
-        EutxoMpfProof proof = EutxoMpfProofConverter.convert(wire);
+        MpfNormalizedProof proof = MpfProofConverter.convert(wire);
         AppChainClient.Proof unrelatedWire = new AppChainClient.Proof(
                 HexFormat.of().formatHex(unrelatedKey),
                 "payments",
@@ -326,8 +326,8 @@ class ProofVaultValidatorConformanceTest extends ContractTest {
                 HexFormat.of().formatHex(value),
                 42L,
                 42L);
-        EutxoMpfProof unrelatedProof =
-                EutxoMpfProofConverter.convert(unrelatedWire);
+        MpfNormalizedProof unrelatedProof =
+                MpfProofConverter.convert(unrelatedWire);
         com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoProofWithdrawal withdrawal =
                 new com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoProofWithdrawal(
                         1, commitment, proof);
@@ -355,7 +355,7 @@ class ProofVaultValidatorConformanceTest extends ContractTest {
 
     private static PlutusData proofData(
             PlutusData claimData,
-            EutxoMpfProof proof
+            MpfNormalizedProof proof
     ) {
         PlutusData folds = PlutusData.list(proof.folds().stream()
                 .map(ProofVaultValidatorConformanceTest::foldData)
@@ -370,7 +370,7 @@ class ProofVaultValidatorConformanceTest extends ContractTest {
                 folds);
     }
 
-    private static PlutusData foldData(EutxoMpfProof.FoldStep fold) {
+    private static PlutusData foldData(MpfNormalizedProof.FoldStep fold) {
         List<byte[]> neighbors = fold.neighbors();
         return PlutusData.constr(
                 0,
@@ -447,7 +447,7 @@ class ProofVaultValidatorConformanceTest extends ContractTest {
     private record Fixture(
             EutxoWithdrawalCommitment commitment,
             com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoProofWithdrawal withdrawal,
-            EutxoMpfProof proof,
+            MpfNormalizedProof proof,
             Address destination,
             PlutusData proofData,
             PlutusData unrelatedKeyProofData

@@ -10,7 +10,8 @@ import java.util.List;
 /**
  * Off-chain codec for the anchor datum (ABI:
  * {@code core-api/src/main/cddl/appchain/anchor-v1.cddl}). Wire format is
- * {@code Constr(0, [version, chain-id, height, block-hash, state-root,
+ * {@code Constr(0, [version, chain-id, chain-genesis-id, application-id,
+ * commitment-profile-id, format-fingerprint, height, block-hash, state-root,
  * member-keys, threshold])} — the same encoding the julc record codec and
  * Aiken types produce, and what the conformance vectors pin down.
  */
@@ -29,6 +30,10 @@ final class AnchorDatumCodec {
      */
     record AnchorDatum(long version,
                        String chainId,
+                       byte[] chainGenesisId,
+                       String applicationId,
+                       String commitmentProfileId,
+                       byte[] formatFingerprint,
                        long height,
                        byte[] blockHash,
                        byte[] stateRoot,
@@ -43,9 +48,10 @@ final class AnchorDatumCodec {
         if (datum.version() != ABI_VERSION) {
             throw new IllegalArgumentException("Unsupported anchor datum version");
         }
-        AnchorDatumV1 publicDatum = new AnchorDatumV1(datum.chainId(), datum.height(),
-                datum.blockHash(), datum.stateRoot(), datum.memberKeys(),
-                Math.toIntExact(datum.threshold()));
+        AnchorDatumV1 publicDatum = new AnchorDatumV1(datum.chainId(),
+                datum.chainGenesisId(), datum.applicationId(), datum.commitmentProfileId(),
+                datum.formatFingerprint(), datum.height(), datum.blockHash(), datum.stateRoot(),
+                datum.memberKeys(), Math.toIntExact(datum.threshold()));
         try {
             return (ConstrPlutusData) PlutusData.deserialize(publicDatum.encode());
         } catch (Exception malformed) {
@@ -63,7 +69,9 @@ final class AnchorDatumCodec {
     /** Decode untrusted L1 inline-datum bytes through the bounded public codec. */
     static AnchorDatum decode(byte[] cbor) {
         AnchorDatumV1 decoded = AnchorDatumV1.decode(cbor);
-        return new AnchorDatum(ABI_VERSION, decoded.chainId(), decoded.height(),
+        return new AnchorDatum(ABI_VERSION, decoded.chainId(), decoded.chainGenesisId(),
+                decoded.applicationId(), decoded.commitmentProfileId(),
+                decoded.formatFingerprint(), decoded.height(),
                 decoded.blockHash(), decoded.stateRoot(), decoded.memberKeys(),
                 decoded.threshold());
     }

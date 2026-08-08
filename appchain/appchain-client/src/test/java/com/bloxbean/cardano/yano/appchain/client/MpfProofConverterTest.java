@@ -1,9 +1,11 @@
-package com.bloxbean.cardano.yano.appchain.eutxo.client;
+package com.bloxbean.cardano.yano.appchain.client;
+
+import com.bloxbean.cardano.yano.appchain.client.MpfProofConverter;
 
 import com.bloxbean.cardano.vds.core.api.NodeStore;
 import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
-import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoMpfProof;
+import com.bloxbean.cardano.yano.appchain.proofs.MpfNormalizedProof;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -14,7 +16,7 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-class EutxoMpfProofConverterTest {
+class MpfProofConverterTest {
     @Test
     void everyRealInclusionProofNormalizesAndReconstructsTheSameRoot() {
         MpfTrie trie = new MpfTrie(new MapNodeStore());
@@ -30,7 +32,7 @@ class EutxoMpfProofConverterTest {
         for (Map.Entry<byte[], byte[]> entry : entries.entrySet()) {
             AppChainClient.Proof wire = proof(
                     trie, root, entry.getKey(), entry.getValue());
-            EutxoMpfProof converted = EutxoMpfProofConverter.convert(wire);
+            MpfNormalizedProof converted = MpfProofConverter.convert(wire);
 
             assertThat(converted.verify()).isTrue();
             assertThat(converted.stateRoot()).isEqualTo(root);
@@ -64,10 +66,10 @@ class EutxoMpfProofConverterTest {
                 valid.valueHex(),
                 valid.finalizedAtHeight());
 
-        assertThatThrownBy(() -> EutxoMpfProofConverter.convert(tampered))
+        assertThatThrownBy(() -> MpfProofConverter.convert(tampered))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("invalid MPF");
-        assertThatThrownBy(() -> EutxoMpfProofConverter.convert(legacy))
+        assertThatThrownBy(() -> MpfProofConverter.convert(legacy))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("root-fixed");
     }

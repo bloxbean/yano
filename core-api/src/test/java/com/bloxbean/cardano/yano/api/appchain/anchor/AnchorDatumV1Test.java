@@ -25,7 +25,10 @@ class AnchorDatumV1Test {
                 filled(0x22), List.of(filled(3), filled(1), filled(2)), 2);
         String encoded = HexFormat.of().formatHex(datum.encode());
 
-        assertThat(encoded).isEqualTo("d8799f014e65766964656e63652d636861696e0c5820"
+        assertThat(encoded).isEqualTo("d8799f014e65766964656e63652d636861696e5820"
+                + "31".repeat(32)
+                + "4b6f7264657265642d6c6f67516d70662d626c616b6532623235362d76315820"
+                + "32".repeat(32) + "0c5820"
                 + "1111111111111111111111111111111111111111111111111111111111111111"
                 + "58202222222222222222222222222222222222222222222222222222222222222222"
                 + "9f58200101010101010101010101010101010101010101010101010101010101010101"
@@ -48,26 +51,26 @@ class AnchorDatumV1Test {
 
     @Test
     void rejectsUnsupportedMalformedAndNonCanonicalDatums() {
-        assertThatThrownBy(() -> new AnchorDatumV1("bad\ud800", 1,
+        assertThatThrownBy(() -> datum("bad\ud800", 1,
                 filled(1), filled(2), List.of(filled(3)), 1))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> new AnchorDatumV1("chain", -1,
+        assertThatThrownBy(() -> datum("chain", -1,
                 filled(1), filled(2), List.of(filled(3)), 1))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> new AnchorDatumV1("chain", 1,
+        assertThatThrownBy(() -> datum("chain", 1,
                 new byte[31], filled(2), List.of(filled(3)), 1))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> new AnchorDatumV1("chain", 1,
+        assertThatThrownBy(() -> datum("chain", 1,
                 filled(1), filled(2), List.of(filled(3), filled(3)), 1))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> new AnchorDatumV1("chain", 1,
+        assertThatThrownBy(() -> datum("chain", 1,
                 filled(1), filled(2), List.of(filled(3)), 2))
                 .isInstanceOf(IllegalArgumentException.class);
         List<byte[]> oversizedMembers = new ArrayList<>();
         for (int index = 0; index <= AppChainConfig.MAX_MEMBERS; index++) {
             oversizedMembers.add(filled(index));
         }
-        assertThatThrownBy(() -> new AnchorDatumV1("chain", 1,
+        assertThatThrownBy(() -> datum("chain", 1,
                 filled(1), filled(2), oversizedMembers, 1))
                 .isInstanceOf(IllegalArgumentException.class);
 
@@ -120,7 +123,9 @@ class AnchorDatumV1Test {
     private static AnchorDatumV1 datum(String chainId, long height,
                                        byte[] blockHash, byte[] stateRoot,
                                        List<byte[]> members, int threshold) {
-        return new AnchorDatumV1(chainId, height, blockHash, stateRoot, members, threshold);
+        return new AnchorDatumV1(chainId, filled(0x31), "ordered-log",
+                "mpf-blake2b256-v1", filled(0x32), height,
+                blockHash, stateRoot, members, threshold);
     }
 
     private static byte[] rawDatum(long version, List<byte[]> memberKeys) {
@@ -129,8 +134,12 @@ class AnchorDatumV1Test {
         return ConstrPlutusData.builder().alternative(0).data(ListPlutusData.of(
                 BigIntPlutusData.of(version),
                 BytesPlutusData.of("evidence-chain".getBytes(StandardCharsets.UTF_8)),
-                BigIntPlutusData.of(12), BytesPlutusData.of(filled(0x11)),
-                BytesPlutusData.of(filled(0x22)), members, BigIntPlutusData.of(2)))
+                BytesPlutusData.of(filled(0x31)),
+                BytesPlutusData.of("ordered-log".getBytes(StandardCharsets.US_ASCII)),
+                BytesPlutusData.of("mpf-blake2b256-v1".getBytes(StandardCharsets.US_ASCII)),
+                BytesPlutusData.of(filled(0x32)), BigIntPlutusData.of(12),
+                BytesPlutusData.of(filled(0x11)), BytesPlutusData.of(filled(0x22)),
+                members, BigIntPlutusData.of(2)))
                 .build().serializeToBytes();
     }
 

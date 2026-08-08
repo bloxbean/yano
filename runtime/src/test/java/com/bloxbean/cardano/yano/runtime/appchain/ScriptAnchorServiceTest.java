@@ -93,8 +93,10 @@ class ScriptAnchorServiceTest {
 
     @BeforeEach
     void setUp() {
-        leaderLedger = new AppLedgerStore(tempDir.resolve("leader-ledger").toString(), log);
-        followerLedger = new AppLedgerStore(tempDir.resolve("follower-ledger").toString(), log);
+        leaderLedger = new AppLedgerStore(tempDir.resolve("leader-ledger").toString(), log,
+                stateIdentity());
+        followerLedger = new AppLedgerStore(tempDir.resolve("follower-ledger").toString(), log,
+                stateIdentity());
         leaderSigner = new AppMessageSigner("11".repeat(32));
         followerSigner = new AppMessageSigner("22".repeat(32));
         members = Set.of(leaderSigner.publicKeyHex().toLowerCase(),
@@ -110,7 +112,8 @@ class ScriptAnchorServiceTest {
 
         // Diffusers cross-deliver through the fields, so tests can swap the
         // counterpart; the sender identity is the diffusing node's member key
-        leader = new ScriptAnchorService(CHAIN_ID, leaderConfig, leaderLedger,
+        leader = new ScriptAnchorService(
+                    CHAIN_ID, "ordered-log", leaderConfig, leaderLedger,
                 cbor -> {
                     submitted.add(cbor);
                     return txHash(cbor);
@@ -124,7 +127,8 @@ class ScriptAnchorServiceTest {
                 () -> new AppChainEngine.L1Ref(500L, L1_TIP_HASH));
         wallet = leader.anchorAddress(); // pre-bootstrap: the wallet address
 
-        follower = new ScriptAnchorService(CHAIN_ID, followerConfig, followerLedger,
+        follower = new ScriptAnchorService(
+                    CHAIN_ID, "ordered-log", followerConfig, followerLedger,
                 cbor -> {
                     throw new IllegalStateException("Follower must never submit");
                 },
@@ -358,7 +362,9 @@ class ScriptAnchorServiceTest {
         // durable frontier, even when its policy/address/outpoint look valid.
         AnchorDatumCodec.AnchorDatum valid = AnchorDatumCodec.decode(advanceOut.getInlineDatum());
         AnchorDatumCodec.AnchorDatum forged = new AnchorDatumCodec.AnchorDatum(
-                valid.version(), valid.chainId(), valid.height(), valid.blockHash(),
+                valid.version(), valid.chainId(), valid.chainGenesisId(),
+                valid.applicationId(), valid.commitmentProfileId(), valid.formatFingerprint(),
+                valid.height(), valid.blockHash(),
                 fill(32, 0x7f), valid.memberKeys(), valid.threshold());
         Utxo forgedUtxo = new Utxo(new Outpoint(advanceHash, advanceIndex), scriptAddress,
                 advanceOut.getValue().getCoin(),
@@ -388,7 +394,8 @@ class ScriptAnchorServiceTest {
         AppChainEngine.L1Ref[] visibleL1Point = {
                 new AppChainEngine.L1Ref(500L, L1_TIP_HASH)};
         AtomicInteger followerSubmissions = new AtomicInteger();
-        ScriptAnchorService restarted = new ScriptAnchorService(CHAIN_ID,
+        ScriptAnchorService restarted = new ScriptAnchorService(
+                    CHAIN_ID, "ordered-log",
                 new AppChainConfig.AnchorConfig(false, "", 0, 0, 0), followerLedger,
                 cbor -> {
                     followerSubmissions.incrementAndGet();
@@ -520,7 +527,8 @@ class ScriptAnchorServiceTest {
                 changeOut.getValue().getCoin().longValue())));
 
         // Follower's ledger DISAGREES about block 9 (different state root)
-        ScriptAnchorService divergentFollower = new ScriptAnchorService(CHAIN_ID,
+        ScriptAnchorService divergentFollower = new ScriptAnchorService(
+                    CHAIN_ID, "ordered-log",
                 new AppChainConfig.AnchorConfig(false, "", 0, 0, 0), followerLedger,
                 cbor -> {
                     throw new IllegalStateException("never");
@@ -572,7 +580,7 @@ class ScriptAnchorServiceTest {
         AtomicInteger tipCalls = new AtomicInteger();
         Logger safeLog = mock(Logger.class);
         AppLedgerStore ledger = new AppLedgerStore(
-                tempDir.resolve("tick-error-ledger").toString(), log);
+                tempDir.resolve("tick-error-ledger").toString(), log, stateIdentity());
         try {
             ledger.metaPutBytes("anchor_script_policy_id", new byte[28]);
             ledger.metaPutBytes("anchor_script_hash", new byte[28]);
@@ -582,7 +590,7 @@ class ScriptAnchorServiceTest {
                     AppChainConfig.AnchorConfig.DEFAULT_FALLBACK_FEE_LOVELACE,
                     AppChainConfig.AnchorConfig.MODE_SCRIPT, null);
             ScriptAnchorService service = new ScriptAnchorService(
-                    CHAIN_ID, config, ledger, ignored -> "unused", () -> utxoState,
+                    CHAIN_ID, "ordered-log", config, ledger, ignored -> "unused", () -> utxoState,
                     this::blockAt, () -> {
                         tipCalls.incrementAndGet();
                         throw callbackFailure;
@@ -629,7 +637,7 @@ class ScriptAnchorServiceTest {
         Logger safeLog = mock(Logger.class);
         List<byte[]> localSubmissions = new ArrayList<>();
         AppLedgerStore ledger = new AppLedgerStore(
-                tempDir.resolve("signer-error-ledger").toString(), log);
+                tempDir.resolve("signer-error-ledger").toString(), log, stateIdentity());
         try {
             AppChainConfig.AnchorConfig config = new AppChainConfig.AnchorConfig(
                     true, "aa".repeat(32), 1, 1, 7014,
@@ -639,7 +647,7 @@ class ScriptAnchorServiceTest {
             String signerHex = failingSigner.publicKeyHex()
                     .toLowerCase(java.util.Locale.ROOT);
             ScriptAnchorService service = new ScriptAnchorService(
-                    CHAIN_ID, config, ledger,
+                    CHAIN_ID, "ordered-log", config, ledger,
                     cbor -> {
                         localSubmissions.add(cbor);
                         return txHash(cbor);
@@ -716,6 +724,13 @@ class ScriptAnchorServiceTest {
                 List.of(new AssetAmount(policyIdHex, "", BigInteger.ONE)),
                 null, anchorOut.getInlineDatum().serializeToBytes(),
                 null, null, false, slot, 0, null);
+    }
+
+    private static com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity
+    stateIdentity() {
+        return com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity.explicit(
+                com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles.MPF,
+                fill(32, 0x31));
     }
 
     /** Address-keyed UTxO view (the shared fake "L1"). */

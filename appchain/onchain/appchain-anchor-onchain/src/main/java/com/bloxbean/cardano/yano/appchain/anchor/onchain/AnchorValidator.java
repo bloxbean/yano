@@ -53,6 +53,10 @@ public class AnchorValidator {
 
     record AnchorDatum(BigInteger version,
                        byte[] chainId,
+                       byte[] chainGenesisId,
+                       byte[] applicationId,
+                       byte[] commitmentProfileId,
+                       byte[] formatFingerprint,
                        BigInteger height,
                        byte[] blockHash,
                        byte[] stateRoot,
@@ -71,7 +75,8 @@ public class AnchorValidator {
         // traversal to keep 32-of-32 comfortably inside mainnet limits.
         boolean currentShapeValid = datumShapeValid(datum);
         boolean currentBaseProfileValid = baseProfileValid(
-                datum.version(), datum.chainId(), datum.height(),
+                datum.version(), datum.chainId(), datum.chainGenesisId(), datum.applicationId(),
+                datum.commitmentProfileId(), datum.formatFingerprint(), datum.height(),
                 datum.blockHash(), datum.stateRoot());
         boolean currentValidAndSigned = currentValidAndSigned(
                 txInfo, datum.memberKeys(), datum.threshold());
@@ -144,17 +149,25 @@ public class AnchorValidator {
      * codec; this script enforces the consensus-visible byte bound.
      */
     static boolean baseProfileValid(BigInteger version, byte[] chainId,
+                                    byte[] chainGenesisId, byte[] applicationId,
+                                    byte[] commitmentProfileId, byte[] formatFingerprint,
                                     BigInteger height, byte[] blockHash,
                                     byte[] stateRoot) {
         long chainIdLength = Builtins.lengthOfByteString(chainId);
         return version.equals(BigInteger.ONE)
                 && chainIdLength >= 1 && chainIdLength <= 128
+                && Builtins.lengthOfByteString(chainGenesisId) == 32
+                && Builtins.lengthOfByteString(applicationId) >= 1
+                && Builtins.lengthOfByteString(applicationId) <= 128
+                && Builtins.lengthOfByteString(commitmentProfileId) >= 1
+                && Builtins.lengthOfByteString(commitmentProfileId) <= 128
+                && Builtins.lengthOfByteString(formatFingerprint) == 32
                 && height.compareTo(BigInteger.ZERO) >= 0
                 && Builtins.lengthOfByteString(blockHash) == 32
                 && Builtins.lengthOfByteString(stateRoot) == 32;
     }
 
-    /** Require the v1 datum's exact Constr(0, seven fields) wire shape. */
+    /** Require the v1 datum's exact Constr(0, eleven fields) wire shape. */
     static boolean datumShapeValid(AnchorDatum datum) {
         long alternative = Builtins.constrTag(datum);
         PlutusData pair = Builtins.unConstrData(datum);
@@ -165,7 +178,11 @@ public class AnchorValidator {
         PlutusData f4 = Builtins.tailList(f3);
         PlutusData f5 = Builtins.tailList(f4);
         PlutusData f6 = Builtins.tailList(f5);
-        PlutusData trailingFields = Builtins.tailList(f6);
+        PlutusData f7 = Builtins.tailList(f6);
+        PlutusData f8 = Builtins.tailList(f7);
+        PlutusData f9 = Builtins.tailList(f8);
+        PlutusData f10 = Builtins.tailList(f9);
+        PlutusData trailingFields = Builtins.tailList(f10);
         return alternative == 0
                 && Builtins.nullList(trailingFields);
     }
@@ -178,7 +195,8 @@ public class AnchorValidator {
 
     /**
      * Decode the continuing output's inline datum (Constr(0, [version,
-     * chain-id, height, block-hash, state-root, member-keys, threshold]))
+     * chain-id, chain-genesis-id, application-id, commitment-profile-id,
+     * format-fingerprint, height, block-hash, state-root, member-keys, threshold]))
      * and enforce rules 2 (monotonic, stable identity) and 4 (sane successor
      * membership shape) against the current datum.
      */
@@ -190,27 +208,41 @@ public class AnchorValidator {
         PlutusData f1 = Builtins.tailList(fields);
         byte[] nextChainId = Builtins.unBData(Builtins.headList(f1));
         PlutusData f2 = Builtins.tailList(f1);
-        BigInteger nextHeight = Builtins.unIData(Builtins.headList(f2));
+        byte[] nextChainGenesisId = Builtins.unBData(Builtins.headList(f2));
         PlutusData f3 = Builtins.tailList(f2);
-        byte[] nextBlockHash = Builtins.unBData(Builtins.headList(f3));
+        byte[] nextApplicationId = Builtins.unBData(Builtins.headList(f3));
         PlutusData f4 = Builtins.tailList(f3);
-        byte[] nextStateRoot = Builtins.unBData(Builtins.headList(f4));
+        byte[] nextCommitmentProfileId = Builtins.unBData(Builtins.headList(f4));
         PlutusData f5 = Builtins.tailList(f4);
-        PlutusData nextMemberList = Builtins.unListData(Builtins.headList(f5));
+        byte[] nextFormatFingerprint = Builtins.unBData(Builtins.headList(f5));
         PlutusData f6 = Builtins.tailList(f5);
-        BigInteger nextThreshold = Builtins.unIData(Builtins.headList(f6));
-        PlutusData trailingFields = Builtins.tailList(f6);
+        BigInteger nextHeight = Builtins.unIData(Builtins.headList(f6));
+        PlutusData f7 = Builtins.tailList(f6);
+        byte[] nextBlockHash = Builtins.unBData(Builtins.headList(f7));
+        PlutusData f8 = Builtins.tailList(f7);
+        byte[] nextStateRoot = Builtins.unBData(Builtins.headList(f8));
+        PlutusData f9 = Builtins.tailList(f8);
+        PlutusData nextMemberList = Builtins.unListData(Builtins.headList(f9));
+        PlutusData f10 = Builtins.tailList(f9);
+        BigInteger nextThreshold = Builtins.unIData(Builtins.headList(f10));
+        PlutusData trailingFields = Builtins.tailList(f10);
 
         boolean exactShape = alternative == 0
                 && Builtins.nullList(trailingFields);
         boolean baseProfileValid = baseProfileValid(nextVersion, nextChainId,
-                nextHeight, nextBlockHash, nextStateRoot);
+                nextChainGenesisId, nextApplicationId, nextCommitmentProfileId,
+                nextFormatFingerprint, nextHeight, nextBlockHash, nextStateRoot);
         boolean monotonic = nextHeight.compareTo(current.height()) > 0;
         boolean sameChain = nextChainId.equals(current.chainId());
+        boolean sameGenesis = nextChainGenesisId.equals(current.chainGenesisId());
+        boolean sameApplication = nextApplicationId.equals(current.applicationId());
+        boolean sameCommitment = nextCommitmentProfileId.equals(current.commitmentProfileId())
+                && nextFormatFingerprint.equals(current.formatFingerprint());
         boolean sameVersion = nextVersion.equals(current.version());
         boolean memberProfileValid = memberProfileValid(nextMemberList, nextThreshold);
 
-        return exactShape && baseProfileValid && monotonic && sameChain && sameVersion
+        return exactShape && baseProfileValid && monotonic && sameChain && sameGenesis
+                && sameApplication && sameCommitment && sameVersion
                 && memberProfileValid;
     }
 

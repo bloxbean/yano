@@ -11,7 +11,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Off-chain anchor-datum codec vs the on-chain ABI (anchor-v1.cddl): wire
- * format is Constr(0, [7 fields]) — the same shape the julc conformance
+ * format is Constr(0, [11 fields]) — the same shape the on-chain conformance
  * vectors pin down on-chain.
  */
 class AnchorDatumCodecTest {
@@ -23,7 +23,8 @@ class AnchorDatumCodecTest {
     }
 
     private AnchorDatumCodec.AnchorDatum datum() {
-        return new AnchorDatumCodec.AnchorDatum(1, "orders-chain", 42,
+        return new AnchorDatumCodec.AnchorDatum(1, "orders-chain", fill(32, 7),
+                "ordered-log", "mpf-blake2b256-v1", fill(32, 8), 42,
                 fill(32, 0xB0), fill(32, 0x50),
                 List.of(fill(32, 3), fill(32, 1), fill(32, 2)), 2);
     }
@@ -44,10 +45,10 @@ class AnchorDatumCodecTest {
     }
 
     @Test
-    void wireFormat_isConstrZeroWithSevenFields() throws Exception {
+    void wireFormat_isConstrZeroWithCompleteIdentityFields() throws Exception {
         ConstrPlutusData encoded = AnchorDatumCodec.encode(datum());
         assertThat(encoded.getAlternative()).isEqualTo(0);
-        assertThat(encoded.getData().getPlutusDataList()).hasSize(7);
+        assertThat(encoded.getData().getPlutusDataList()).hasSize(11);
 
         // Survives CBOR serialization (inline-datum wire bytes)
         byte[] cbor = encoded.serializeToBytes();

@@ -1,4 +1,4 @@
-package com.bloxbean.cardano.yano.appchain.eutxo.contracts;
+package com.bloxbean.cardano.yano.appchain.proofs;
 
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 
@@ -14,7 +14,7 @@ import java.util.Objects;
  * fields are retained and verified against {@code blake2b_256(key)} so proof
  * conversion cannot substitute a different trie path.</p>
  */
-public record EutxoMpfProof(
+public record MpfNormalizedProof(
         byte[] stateRoot,
         byte[] key,
         byte[] value,
@@ -24,11 +24,11 @@ public record EutxoMpfProof(
 ) {
     public static final int HASH_BYTES = 32;
     public static final int PATH_NIBBLES = HASH_BYTES * 2;
-    public static final int MAX_FOLDS = PATH_NIBBLES;
+    public static final int MAX_FOLDS = 32;
     public static final int MAX_KEY_BYTES = 256;
-    public static final int MAX_VALUE_BYTES = 16 * 1024;
+    public static final int MAX_VALUE_BYTES = 8 * 1024;
 
-    public EutxoMpfProof {
+    public MpfNormalizedProof {
         stateRoot = exact(stateRoot, HASH_BYTES, "state root");
         key = bounded(key, 1, MAX_KEY_BYTES, "key");
         value = bounded(value, 1, MAX_VALUE_BYTES, "value");
@@ -226,7 +226,7 @@ public record EutxoMpfProof(
         }
     }
 
-    static byte[] commitLeaf(byte[] encodedSuffix, byte[] valueHash) {
+    public static byte[] commitLeaf(byte[] encodedSuffix, byte[] valueHash) {
         return hash(encodedSuffix, valueHash);
     }
 
@@ -367,7 +367,7 @@ public record EutxoMpfProof(
 
     @Override
     public boolean equals(Object other) {
-        return other instanceof EutxoMpfProof proof
+        return other instanceof MpfNormalizedProof proof
                 && Arrays.equals(stateRoot, proof.stateRoot)
                 && Arrays.equals(key, proof.key)
                 && Arrays.equals(value, proof.value)

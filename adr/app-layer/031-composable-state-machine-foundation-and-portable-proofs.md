@@ -1,6 +1,6 @@
 # ADR app-layer/031: Composable state-machine foundations and portable proofs
 
-**Status:** Accepted and in implementation — Phases 0 through 5 complete
+**Status:** Accepted and in implementation — Phases 0 through 6 complete
 **Date:** 2026-08-08
 **Scope:** App-chain state machines, composition, authorization and approvals, authenticated state,
 proofs, and L1 consumption
@@ -1120,6 +1120,33 @@ and can be included by standalone or composed applications without runtime speci
 
 **Gate:** The reference validator accepts valid proofs derived from live server output, rejects all
 mutated proof/root/profile/anchor/claim vectors, and remains within published L1 budgets.
+
+#### Phase 6 implementation result
+
+The former `EutxoMpfProof` product contract is removed. `appchain-proof-contracts` now owns the
+bounded `MpfNormalizedProof`, and `appchain-client` owns the strict `MpfProofConverter` from
+`mpf-proof-wire-v1`. eUTxO withdrawal authoring consumes those shared types. Converter and contract
+tests cross-check real MPF proofs, exact root reconstruction, malformed CBOR, and root/key/value and
+bound substitutions. The supported on-chain envelope caps keys at 256 bytes, values at 8 KiB and
+folds at 32 so a maximally configured proof cannot silently inherit the off-chain one-megabyte value
+budget.
+
+`appchain-proof-onchain` publishes `MpfOnChainVerifier`. Its reference validator locates exactly one
+configured state-thread asset at the anchor script among Cardano reference inputs, validates chain
+genesis, application, commitment profile and fingerprint, requires an exact typed physical key, and
+folds the normalized inclusion proof against the referenced root. Application validators retain
+semantic value decoding. The release-pinned Julc compiler accepts this validator as an actual Plutus
+target. The existing eUTxO execution corpus exercises the same MPF algorithm end to end; its current
+two-fold live vector uses a 504-byte redeemer and measures 445,952,815 CPU / 1,462,219 memory units,
+below the configured transaction limits.
+
+The seven-field preview anchor ABI and artifacts are replaced without migration. The supported
+eleven-field `AnchorDatumV1` binds chain ID, chain genesis ID, application ID, commitment profile ID,
+format fingerprint, height, block hash, state root, members and threshold. Both the off-chain codec
+and on-chain validator reject identity substitution; the runtime also verifies every observed or
+proposed datum against its locally selected identity. New Aiken artifacts were generated and their
+positive/adversarial corpus executes on `julc-vm-java`. Configuration now rejects JMT when
+`state.l1-proof-consumption-required=true`; JMT remains off-chain-only.
 
 ### Phase 7 — packaging and dead-code removal
 

@@ -21,12 +21,17 @@ import java.util.Objects;
 /**
  * Strict public codec for the ADR-008.4 script-anchor datum ABI v1.
  *
- * <p>The wire form is {@code Constr(0, [1, chain-id, height, block-hash,
+ * <p>The wire form is {@code Constr(0, [1, chain-id, chain-genesis-id,
+ * application-id, commitment-profile-id, format-fingerprint, height, block-hash,
  * state-root, member-keys, threshold])}. Decoding rejects non-canonical CBOR,
  * unsupported versions, malformed UTF-8, unsorted/duplicate members, and all
  * field profiles that cannot be a valid v1 anchor.</p>
  */
 public record AnchorDatumV1(String chainId,
+                            byte[] chainGenesisId,
+                            String applicationId,
+                            String commitmentProfileId,
+                            byte[] formatFingerprint,
                             long height,
                             byte[] blockHash,
                             byte[] stateRoot,
@@ -42,7 +47,12 @@ public record AnchorDatumV1(String chainId,
 
     public AnchorDatumV1 {
         byte[] chainBytes = validatedChainBytes(chainId);
-        if (chainBytes.length == 0 || height < 0
+        byte[] applicationBytes = validatedIdentifier(applicationId);
+        byte[] profileBytes = validatedIdentifier(commitmentProfileId);
+        if (chainBytes.length == 0 || applicationBytes.length == 0 || profileBytes.length == 0
+                || chainGenesisId == null || chainGenesisId.length != HASH_BYTES
+                || formatFingerprint == null || formatFingerprint.length != HASH_BYTES
+                || height < 0
                 || blockHash == null || blockHash.length != HASH_BYTES
                 || stateRoot == null || stateRoot.length != HASH_BYTES
                 || memberKeys == null || memberKeys.isEmpty()
@@ -50,9 +60,21 @@ public record AnchorDatumV1(String chainId,
                 || threshold < 1 || threshold > memberKeys.size()) {
             throw invalid();
         }
+        chainGenesisId = chainGenesisId.clone();
+        formatFingerprint = formatFingerprint.clone();
         blockHash = blockHash.clone();
         stateRoot = stateRoot.clone();
         memberKeys = canonicalMembers(memberKeys, false);
+    }
+
+    @Override
+    public byte[] chainGenesisId() {
+        return chainGenesisId.clone();
+    }
+
+    @Override
+    public byte[] formatFingerprint() {
+        return formatFingerprint.clone();
     }
 
     @Override
@@ -78,6 +100,10 @@ public record AnchorDatumV1(String chainId,
         if (!(other instanceof AnchorDatumV1 that)
                 || height != that.height || threshold != that.threshold
                 || !chainId.equals(that.chainId)
+                || !applicationId.equals(that.applicationId)
+                || !commitmentProfileId.equals(that.commitmentProfileId)
+                || !Arrays.equals(chainGenesisId, that.chainGenesisId)
+                || !Arrays.equals(formatFingerprint, that.formatFingerprint)
                 || !Arrays.equals(blockHash, that.blockHash)
                 || !Arrays.equals(stateRoot, that.stateRoot)
                 || memberKeys.size() != that.memberKeys.size()) {
@@ -93,7 +119,9 @@ public record AnchorDatumV1(String chainId,
 
     @Override
     public int hashCode() {
-        int result = Objects.hash(chainId, height, threshold);
+        int result = Objects.hash(chainId, applicationId, commitmentProfileId, height, threshold);
+        result = 31 * result + Arrays.hashCode(chainGenesisId);
+        result = 31 * result + Arrays.hashCode(formatFingerprint);
         result = 31 * result + Arrays.hashCode(blockHash);
         result = 31 * result + Arrays.hashCode(stateRoot);
         for (byte[] member : memberKeys) {
@@ -105,6 +133,10 @@ public record AnchorDatumV1(String chainId,
     @Override
     public String toString() {
         return "AnchorDatumV1[chainId=" + chainId + ", height=" + height
+                + ", chainGenesisId=" + HexFormat.of().formatHex(chainGenesisId)
+                + ", applicationId=" + applicationId
+                + ", commitmentProfileId=" + commitmentProfileId
+                + ", formatFingerprint=" + HexFormat.of().formatHex(formatFingerprint)
                 + ", blockHash=" + HexFormat.of().formatHex(blockHash)
                 + ", stateRoot=" + HexFormat.of().formatHex(stateRoot)
                 + ", memberKeys=" + memberKeysHex()
@@ -122,6 +154,10 @@ public record AnchorDatumV1(String chainId,
                 .data(ListPlutusData.of(
                         BigIntPlutusData.of(ABI_VERSION),
                         BytesPlutusData.of(validatedChainBytes(chainId)),
+                        BytesPlutusData.of(chainGenesisId),
+                        BytesPlutusData.of(validatedIdentifier(applicationId)),
+                        BytesPlutusData.of(validatedIdentifier(commitmentProfileId)),
+                        BytesPlutusData.of(formatFingerprint),
                         BigIntPlutusData.of(height),
                         BytesPlutusData.of(blockHash),
                         BytesPlutusData.of(stateRoot),
@@ -146,14 +182,18 @@ public record AnchorDatumV1(String chainId,
                 throw invalid();
             }
             List<PlutusData> fields = constr.getData().getPlutusDataList();
-            if (fields.size() != 7 || asLong(fields.get(0)) != ABI_VERSION) {
+            if (fields.size() != 11 || asLong(fields.get(0)) != ABI_VERSION) {
                 throw invalid();
             }
             String chainId = decodeChainId(asBytes(fields.get(1)));
-            long height = asLong(fields.get(2));
-            byte[] blockHash = asBytes(fields.get(3));
-            byte[] stateRoot = asBytes(fields.get(4));
-            List<PlutusData> encodedMembers = asList(fields.get(5)).getPlutusDataList();
+            byte[] chainGenesisId = asBytes(fields.get(2));
+            String applicationId = decodeIdentifier(asBytes(fields.get(3)));
+            String commitmentProfileId = decodeIdentifier(asBytes(fields.get(4)));
+            byte[] formatFingerprint = asBytes(fields.get(5));
+            long height = asLong(fields.get(6));
+            byte[] blockHash = asBytes(fields.get(7));
+            byte[] stateRoot = asBytes(fields.get(8));
+            List<PlutusData> encodedMembers = asList(fields.get(9)).getPlutusDataList();
             if (encodedMembers.isEmpty()
                     || encodedMembers.size() > AppChainConfig.MAX_MEMBERS) {
                 throw invalid();
@@ -163,12 +203,13 @@ public record AnchorDatumV1(String chainId,
                 members.add(asBytes(encodedMember));
             }
             canonicalMembers(members, true);
-            long threshold = asLong(fields.get(6));
+            long threshold = asLong(fields.get(10));
             if (threshold > Integer.MAX_VALUE) {
                 throw invalid();
             }
-            AnchorDatumV1 datum = new AnchorDatumV1(chainId, height, blockHash,
-                    stateRoot, members, (int) threshold);
+            AnchorDatumV1 datum = new AnchorDatumV1(chainId, chainGenesisId,
+                    applicationId, commitmentProfileId, formatFingerprint, height,
+                    blockHash, stateRoot, members, (int) threshold);
             if (!Arrays.equals(cbor, datum.encode())) {
                 throw invalid();
             }
@@ -282,6 +323,21 @@ public record AnchorDatumV1(String chainId,
         } catch (CharacterCodingException malformed) {
             throw invalid();
         }
+    }
+
+    private static byte[] validatedIdentifier(String value) {
+        if (value == null || !value.matches("[a-z0-9][a-z0-9._-]{0,127}")) {
+            throw invalid();
+        }
+        return value.getBytes(StandardCharsets.US_ASCII);
+    }
+
+    private static String decodeIdentifier(byte[] value) {
+        String decoded = new String(value, StandardCharsets.US_ASCII);
+        if (!Arrays.equals(value, validatedIdentifier(decoded))) {
+            throw invalid();
+        }
+        return decoded;
     }
 
     private static IllegalArgumentException invalid() {
