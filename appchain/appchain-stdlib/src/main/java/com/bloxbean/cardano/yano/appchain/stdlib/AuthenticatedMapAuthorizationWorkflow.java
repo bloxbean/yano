@@ -90,7 +90,7 @@ public final class AuthenticatedMapAuthorizationWorkflow implements CompositeWor
                                     context.state(approvalsGeneration), mapState);
                     return new AuthenticatedMapStateMachine.FinalAuthorization(
                             result.errorCode(), result.governedMutationIndexes(),
-                            result.consumptions(), result.approvalConsumptions());
+                            result.consumptions());
                 });
     }
 

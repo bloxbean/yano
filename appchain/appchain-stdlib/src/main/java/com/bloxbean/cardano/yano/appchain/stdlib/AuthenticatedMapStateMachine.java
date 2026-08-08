@@ -16,6 +16,7 @@ import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValidatorR
 import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValueValidator;
 import com.bloxbean.cardano.yano.api.appchain.authmap.ValidatorInitContext;
 import com.bloxbean.cardano.yano.api.appchain.authmap.ValidatorVerdict;
+import com.bloxbean.cardano.yano.appchain.roles.RoleAuthorizationCapability;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract.CollectionDescriptor;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract.Command;
@@ -324,8 +325,7 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
             }
             applyCommand(block.height(), message, mutations, receiptKey, writer,
                     actionCommitment, authorization.governedMutationIndexes(),
-                    authorization.directConsumptions(),
-                    authorization.approvalConsumptions());
+                    authorization.consumptions());
         }
     }
 
@@ -486,7 +486,7 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
                               byte[] receiptKey, AppStateWriter writer,
                               byte[] batchCommitment) {
         applyCommand(height, message, command, receiptKey, writer, batchCommitment,
-                Set.of(), List.of(), List.of());
+                Set.of(), List.of());
     }
 
     private void applyCommand(
@@ -497,29 +497,18 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
             AppStateWriter writer,
             byte[] batchCommitment,
             Set<Integer> governedMutationIndexes,
-            List<DirectConsumptionV1> directConsumptions,
-            List<ApprovalConsumptionV1> approvalConsumptions
+            List<RoleAuthorizationCapability.ConsumptionPlan> consumptions
     ) {
         Set<ByteKey> consumptionKeys = new HashSet<>();
-        for (DirectConsumptionV1 consumption : directConsumptions) {
-            byte[] key = AuthenticatedMapContract.directConsumptionKey(
-                    consumption.actorId(), consumption.authorizationId());
+        for (RoleAuthorizationCapability.ConsumptionPlan consumption : consumptions) {
+            byte[] key = consumption.replayKey();
             if (!consumptionKeys.add(new ByteKey(key)) || writer.get(key).isPresent()) {
+                int errorCode = consumption.replayFailure()
+                        == RoleAuthorizationCapability.Failure.DIRECT_REPLAY
+                        ? AuthenticatedMapContract.ERROR_DIRECT_AUTHORIZATION_REPLAY
+                        : AuthenticatedMapContract.ERROR_APPROVAL_REPLAY;
                 Receipt receipt = Receipt.rejected(message.getMessageId(), height,
-                        batchCommitment,
-                        AuthenticatedMapContract.ERROR_DIRECT_AUTHORIZATION_REPLAY);
-                writer.put(receiptKey, AuthenticatedMapContract.encodeReceipt(receipt));
-                return;
-            }
-        }
-        Set<ByteKey> approvalConsumptionKeys = new HashSet<>();
-        for (ApprovalConsumptionV1 consumption : approvalConsumptions) {
-            byte[] key = AuthenticatedMapContract.approvalConsumptionKey(
-                    consumption.proposalId());
-            if (!approvalConsumptionKeys.add(new ByteKey(key))
-                    || writer.get(key).isPresent()) {
-                Receipt receipt = Receipt.rejected(message.getMessageId(), height,
-                        batchCommitment, AuthenticatedMapContract.ERROR_APPROVAL_REPLAY);
+                        batchCommitment, errorCode);
                 writer.put(receiptKey, AuthenticatedMapContract.encodeReceipt(receipt));
                 return;
             }
@@ -545,14 +534,8 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
             return;
         }
 
-        for (DirectConsumptionV1 consumption : directConsumptions) {
-            writer.put(AuthenticatedMapContract.directConsumptionKey(
-                            consumption.actorId(), consumption.authorizationId()),
-                    consumption.encode());
-        }
-        for (ApprovalConsumptionV1 consumption : approvalConsumptions) {
-            writer.put(AuthenticatedMapContract.approvalConsumptionKey(
-                    consumption.proposalId()), consumption.encode());
+        for (RoleAuthorizationCapability.ConsumptionPlan consumption : consumptions) {
+            writer.put(consumption.replayKey(), consumption.applicationReceipt());
         }
         List<MutationResult> results = new ArrayList<>(pending.size());
         for (PendingMutation mutation : pending) {
@@ -754,22 +737,20 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
     record FinalAuthorization(
             int errorCode,
             Set<Integer> governedMutationIndexes,
-            List<DirectConsumptionV1> directConsumptions,
-            List<ApprovalConsumptionV1> approvalConsumptions
+            List<RoleAuthorizationCapability.ConsumptionPlan> consumptions
     ) {
         FinalAuthorization {
             governedMutationIndexes = Set.copyOf(governedMutationIndexes);
-            directConsumptions = List.copyOf(directConsumptions);
-            approvalConsumptions = List.copyOf(approvalConsumptions);
+            consumptions = List.copyOf(consumptions);
         }
 
         static FinalAuthorization basic() {
             return new FinalAuthorization(AuthenticatedMapContract.ERROR_NONE,
-                    Set.of(), List.of(), List.of());
+                    Set.of(), List.of());
         }
 
         static FinalAuthorization rejected(int errorCode) {
-            return new FinalAuthorization(errorCode, Set.of(), List.of(), List.of());
+            return new FinalAuthorization(errorCode, Set.of(), List.of());
         }
 
         boolean accepted() {

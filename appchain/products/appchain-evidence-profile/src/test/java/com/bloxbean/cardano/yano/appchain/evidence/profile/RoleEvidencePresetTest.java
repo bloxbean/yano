@@ -15,13 +15,16 @@ import com.bloxbean.cardano.yano.appchain.composite.CompositeStateKeys;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeStateMachine;
 import com.bloxbean.cardano.yano.appchain.evidence.profile.contracts.RoleEvidenceKeys;
 import com.bloxbean.cardano.yano.appchain.evidence.profile.contracts.EvidenceReleaseCommandV1;
+import com.bloxbean.cardano.yano.appchain.evidence.profile.contracts.EvidenceApprovalConsumptionV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.command.SubmitEvidenceCommandV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.state.EvidenceKeys;
 import com.bloxbean.cardano.yano.appchain.integration.ipfs.CanonicalCid;
 import com.bloxbean.cardano.yano.appchain.integration.ipfs.IpfsPinCommandV1;
 import com.bloxbean.cardano.yano.appchain.integration.objectstore.DigestAlgorithm;
 import com.bloxbean.cardano.yano.appchain.integration.objectstore.ObjectPutCommandV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.ApprovalPolicyV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ApprovalProposalV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.RecordStatus;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowKeys;
 import com.bloxbean.cardano.yano.appchain.testkit.AppChainTestProfiles;
 import org.junit.jupiter.api.Test;
@@ -94,10 +97,14 @@ class RoleEvidencePresetTest {
                 "release-evidence-a-v1", registryKey, "approval-evidence-a-v1",
                 "document-evidence-a", filled(0x66), "object:evidence-a/v1",
                 evidence.encode());
+        ApprovalPolicyV1 policy = approvalPolicy();
         state.put(CompositeStateKeys.componentKey("registry", registryKey), filled(0x66));
         state.put(CompositeStateKeys.componentKey("role-approvals",
+                        RoleWorkflowKeys.policyRevision(policy.policyId(), policy.revision())),
+                policy.encode());
+        state.put(CompositeStateKeys.componentKey("role-approvals",
                         RoleWorkflowKeys.proposal(release.approvalItemId())),
-                approvedProposal(release, filled(0x31)).encode());
+                approvedProposal(release, policy, filled(0x31)).encode());
 
         CapturingEmitter mismatched = new CapturingEmitter(2);
         execute(machine, block(2, message(2, release.encode())), state, mismatched);
@@ -107,7 +114,7 @@ class RoleEvidencePresetTest {
 
         state.put(CompositeStateKeys.componentKey("role-approvals",
                         RoleWorkflowKeys.proposal(release.approvalItemId())),
-                approvedProposal(release, release.commandHash()).encode());
+                approvedProposal(release, policy, release.commandHash()).encode());
         EvidenceReleaseCommandV1 tamperedWrapper = new EvidenceReleaseCommandV1(
                 release.releaseId(), release.registryKey(), release.approvalItemId(),
                 release.documentEntityId(), release.documentHash(),
@@ -128,6 +135,17 @@ class RoleEvidencePresetTest {
         assertThat(state.get(CompositeStateKeys.componentKey("role-approvals",
                 RoleEvidenceKeys.evidenceApproval("evidence-a", 1))))
                 .contains(release.approvalItemId().getBytes(StandardCharsets.US_ASCII));
+        assertThat(state.get(CompositeStateKeys.componentKey("role-approvals",
+                RoleEvidenceKeys.approvalConsumption(release.approvalItemId()))))
+                .hasValueSatisfying(encoded -> assertThat(
+                        EvidenceApprovalConsumptionV1.decode(encoded)).satisfies(receipt -> {
+                    assertThat(receipt.proposalId()).isEqualTo(release.approvalItemId());
+                    assertThat(receipt.releaseId()).isEqualTo(release.releaseId());
+                    assertThat(receipt.actionCommitment())
+                            .containsExactly(release.commandHash());
+                    assertThat(receipt.policyRevision()).isEqualTo(1);
+                    assertThat(receipt.appliedHeight()).isEqualTo(4);
+                }));
 
         CapturingEmitter replay = new CapturingEmitter(4);
         execute(machine, block(5, message(5, release.encode())), state, replay);
@@ -157,12 +175,20 @@ class RoleEvidencePresetTest {
     }
 
     private static ApprovalProposalV1 approvedProposal(EvidenceReleaseCommandV1 release,
+                                                       ApprovalPolicyV1 policy,
                                                        byte[] payloadHash) {
-        return new ApprovalProposalV1(release.approvalItemId(), "evidence-release", 1,
-                filled(0x12), "evidence.release.v1", payloadHash, 100,
+        return new ApprovalProposalV1(release.approvalItemId(), policy.policyId(),
+                policy.revision(), policy.digest(), "evidence.release.v1", payloadHash, 100,
                 ApprovalProposalV1.ProposalStatus.APPROVED,
                 "manufacturer-a", "manufacturer-org", 1, "manufacturer", 1,
                 "manufacturer-key", 1, List.of());
+    }
+
+    private static ApprovalPolicyV1 approvalPolicy() {
+        return new ApprovalPolicyV1("evidence-release", 1, RecordStatus.ACTIVE,
+                List.of("manufacturer"), List.of(new ApprovalPolicyV1.RequiredClause(
+                "auditors", "auditor", 1, ApprovalPolicyV1.DistinctBy.ACTOR)),
+                ApprovalPolicyV1.RejectionMode.ANY_ELIGIBLE, 100);
     }
 
     private static SubmitEvidenceCommandV1 evidence(String id) {

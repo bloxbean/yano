@@ -7,6 +7,8 @@ import co.nstant.in.cbor.model.UnsignedInteger;
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowIdentifiers;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowLimits;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.ApprovalReferenceV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.DirectAuthorizationEvidenceV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.internal.RoleWorkflowEd25519;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.internal.StdlibContractCbor;
 
@@ -259,7 +261,7 @@ public final class AuthenticatedMapAuthorizationContract {
             long deadlineHeight,
             int signatureAlgorithm,
             byte[] signature
-    ) implements AuthorizationEvidenceV1 {
+    ) implements AuthorizationEvidenceV1, DirectAuthorizationEvidenceV1 {
         public MapActorAuthorizationV1 {
             authorizationId = exact(authorizationId, 32, "authorizationId");
             chainId = RoleWorkflowIdentifiers.chainId(chainId);
@@ -281,6 +283,7 @@ public final class AuthenticatedMapAuthorizationContract {
         @Override public int kind() { return EVIDENCE_ACTOR; }
         @Override public byte[] authorizationId() { return authorizationId.clone(); }
         @Override public byte[] genesisId() { return genesisId.clone(); }
+        @Override public byte[] applicationId() { return genesisId(); }
         @Override public byte[] actionCommitment() { return actionCommitment.clone(); }
         @Override public List<Integer> coveredMutationIndexes() {
             return List.copyOf(coveredMutationIndexes);
@@ -397,7 +400,7 @@ public final class AuthenticatedMapAuthorizationContract {
             List<Integer> coveredMutationIndexes,
             String policyId,
             long policyRevision
-    ) implements AuthorizationEvidenceV1 {
+    ) implements AuthorizationEvidenceV1, ApprovalReferenceV1 {
         public MapApprovalReferenceV1 {
             proposalId = RoleWorkflowIdentifiers.id(proposalId, "proposalId");
             actionCommitment = exact(actionCommitment, 32, "actionCommitment");
