@@ -116,8 +116,8 @@ export interface StateCommitmentStatus {
   schemaVersion: number;
   profile: string;
   backend: string;
-  dependencyDescriptor: string;
-  nativeProofEncoding: string;
+  commitmentFormatId: string;
+  proofEncodingId: string;
   nativeVersioning: boolean;
   physicalDelete: boolean;
   formatFingerprint: string;
@@ -245,11 +245,11 @@ export interface StateProofEnvelope {
   proofSchemaVersion?: number;
   profile?: string;
   backend?: string;
-  dependencyDescriptor?: string;
+  commitmentFormatId?: string;
   formatFingerprint?: string;
   genesisId?: string;
   legacy?: boolean;
-  nativeProofEncoding?: string;
+  proofEncodingId?: string;
   presence?: 'PRESENT' | 'ABSENT' | 'TOMBSTONED';
   version?: number;
   blockHash?: string;

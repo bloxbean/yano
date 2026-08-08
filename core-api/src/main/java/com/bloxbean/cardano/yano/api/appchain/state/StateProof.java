@@ -8,7 +8,7 @@ public record StateProof(
         byte[] canonicalKey,
         byte[] value,
         Presence presence,
-        String nativeProofEncoding,
+        String proofEncodingId,
         byte[] nativeProof
 ) {
     public StateProof {
@@ -22,9 +22,9 @@ public record StateProof(
         if (presence == Presence.ABSENT ? value != null : value == null) {
             throw new IllegalArgumentException("state proof presence/value differ");
         }
-        nativeProofEncoding = Objects.requireNonNull(
-                nativeProofEncoding, "nativeProofEncoding");
-        if (!snapshot.identity().profile().nativeProofEncoding().equals(nativeProofEncoding)) {
+        proofEncodingId = Objects.requireNonNull(
+                proofEncodingId, "proofEncodingId");
+        if (!snapshot.identity().profile().proofEncodingId().equals(proofEncodingId)) {
             throw new IllegalArgumentException("native proof encoding differs from profile");
         }
         nativeProof = Objects.requireNonNull(nativeProof, "nativeProof").clone();

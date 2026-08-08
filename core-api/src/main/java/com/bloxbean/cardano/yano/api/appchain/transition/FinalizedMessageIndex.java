@@ -9,7 +9,10 @@ import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
+import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -29,21 +32,57 @@ public final class FinalizedMessageIndex {
         }
     }
 
+    /** Consensus configuration that applications commit in their machine/composite profile. */
+    public record Config(InclusionPolicy policy, int maxMessagesPerBlock) {
+        public static final int SCHEMA_VERSION = 1;
+
+        public Config {
+            policy = Objects.requireNonNull(policy, "policy");
+            if (maxMessagesPerBlock < 1
+                    || maxMessagesPerBlock > AppChainConfig.MAX_BLOCK_MESSAGES) {
+                throw new IllegalArgumentException("invalid finalized-message index block limit");
+            }
+        }
+
+        public static Config allMessages() {
+            return new Config(InclusionPolicy.ALL, AppChainConfig.MAX_BLOCK_MESSAGES);
+        }
+
+        /** Stable bytes suitable for a component or application genesis profile. */
+        public byte[] canonicalBytes() {
+            return ByteBuffer.allocate(12).putInt(SCHEMA_VERSION)
+                    .putInt(policy.ordinal()).putInt(maxMessagesPerBlock).array();
+        }
+
+        public byte[] digest() {
+            return Blake2bUtil.blake2bHash256(canonicalBytes());
+        }
+
+        /** Conservative number of authenticated writes (records plus the tip marker). */
+        public int maximumWritesPerBlock() {
+            return maxMessagesPerBlock + 1;
+        }
+    }
+
     private FinalizedMessageIndex() {
     }
 
     public static TransitionPlan plan(
             AppBlockExecutionContext context,
-            InclusionPolicy policy
+            Config config
     ) {
         Objects.requireNonNull(context, "context");
-        Objects.requireNonNull(policy, "policy");
+        Objects.requireNonNull(config, "config");
         AppBlock block = context.block();
         List<StateMutation> writes = new ArrayList<>();
         List<AppMessage> messages = context.messages();
+        if (messages.size() > config.maxMessagesPerBlock()) {
+            throw new IllegalArgumentException(
+                    "finalized-message index block exceeds committed cost limit");
+        }
         for (int visibleIndex = 0; visibleIndex < messages.size(); visibleIndex++) {
             AppMessage message = messages.get(visibleIndex);
-            if (!policy.includes(message)) continue;
+            if (!config.policy().includes(message)) continue;
             writes.add(messageMutation(TransitionContext.of(
                     block, context.originalMessageIndex(visibleIndex), message)));
         }

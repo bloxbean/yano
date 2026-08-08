@@ -26,10 +26,10 @@ export function parseProofEnvelope(text: string): StateProofEnvelope {
   const finalizedAtHeight = optionalNumberField(parsed, 'finalizedAtHeight');
   const profile = optionalStringField(parsed, 'profile');
   const backend = optionalStringField(parsed, 'backend');
-  const dependencyDescriptor = optionalStringField(parsed, 'dependencyDescriptor');
+  const commitmentFormatId = optionalStringField(parsed, 'commitmentFormatId');
   const formatFingerprint = optionalStringField(parsed, 'formatFingerprint');
   const genesisId = optionalStringField(parsed, 'genesisId');
-  const nativeProofEncoding = optionalStringField(parsed, 'nativeProofEncoding');
+  const proofEncodingId = optionalStringField(parsed, 'proofEncodingId');
   const presence = optionalStringField(parsed, 'presence');
 
   if (!STATE_KEY.test(key)) throw new Error('Proof key must be 1–256 bytes of canonical lowercase hex.');
@@ -67,9 +67,9 @@ export function parseProofEnvelope(text: string): StateProofEnvelope {
   return {
     key, chainId, committedHeight, stateRoot, proofWireHex, valueHex, finalizedAtHeight,
     proofSchemaVersion: optionalNumberField(parsed, 'proofSchemaVersion'),
-    profile, backend, dependencyDescriptor, formatFingerprint, genesisId,
+    profile, backend, commitmentFormatId, formatFingerprint, genesisId,
     legacy: typeof parsed.legacy === 'boolean' ? parsed.legacy : undefined,
-    nativeProofEncoding,
+    proofEncodingId,
     presence: presence as StateProofEnvelope['presence'],
     version: optionalNumberField(parsed, 'version'),
     blockHash: optionalStringField(parsed, 'blockHash'),

@@ -12,7 +12,7 @@ import java.util.regex.Pattern;
  * Canonical, backend-neutral identity of one app-chain authenticated-state
  * commitment contract (ADR-025).
  *
- * <p>The Yano profile id is consensus identity. {@code dependencyDescriptor}
+ * <p>The Yano profile id is consensus identity. {@code commitmentFormatId}
  * names the exact persistence/proof contract supplied by the implementation;
  * it is deliberately not accepted as a genesis alias.</p>
  */
@@ -20,8 +20,8 @@ public record StateCommitmentProfile(
         int schemaVersion,
         String id,
         BackendFamily backendFamily,
-        String dependencyDescriptor,
-        String nativeProofEncoding,
+        String commitmentFormatId,
+        String proofEncodingId,
         int rootLength,
         boolean nativeVersioning,
         boolean physicalDelete
@@ -37,8 +37,8 @@ public record StateCommitmentProfile(
         }
         id = requireIdentifier(id, "id");
         backendFamily = Objects.requireNonNull(backendFamily, "backendFamily");
-        dependencyDescriptor = requireIdentifier(dependencyDescriptor, "dependencyDescriptor");
-        nativeProofEncoding = requireIdentifier(nativeProofEncoding, "nativeProofEncoding");
+        commitmentFormatId = requireIdentifier(commitmentFormatId, "commitmentFormatId");
+        proofEncodingId = requireIdentifier(proofEncodingId, "proofEncodingId");
         if (rootLength <= 0 || rootLength > 1024) {
             throw new IllegalArgumentException("rootLength must be between 1 and 1024");
         }
@@ -50,15 +50,15 @@ public record StateCommitmentProfile(
         out.writeBytes(ByteBuffer.allocate(Integer.BYTES).putInt(schemaVersion).array());
         putText(out, id);
         out.write(backendFamily.code());
-        putText(out, dependencyDescriptor);
-        putText(out, nativeProofEncoding);
+        putText(out, commitmentFormatId);
+        putText(out, proofEncodingId);
         out.writeBytes(ByteBuffer.allocate(Integer.BYTES).putInt(rootLength).array());
         int flags = (nativeVersioning ? 1 : 0) | (physicalDelete ? 2 : 0);
         out.write(flags);
         return out.toByteArray();
     }
 
-    /** Blake2b-256 fingerprint of the normalized dependency/persistence contract. */
+    /** Blake2b-256 fingerprint of the normalized commitment/persistence contract. */
     public byte[] formatFingerprint() {
         byte[] descriptor = canonicalDescriptor();
         byte[] input = new byte[FINGERPRINT_DOMAIN.length + descriptor.length];

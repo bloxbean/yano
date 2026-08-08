@@ -431,7 +431,7 @@
     <MetricRow label="Backend" value={stringValue(commitment.backend, 'unavailable')} />
     <MetricRow label="Version" value={fmt(commitment.version)} />
     <MetricRow label="Oldest Proof" value={fmt(commitment.oldestProvableHeight)} />
-    <MetricRow label="Proof Encoding" value={stringValue(commitment.nativeProofEncoding, 'unavailable')} />
+    <MetricRow label="Proof Encoding" value={stringValue(commitment.proofEncodingId, 'unavailable')} />
     <MetricRow label="Format" value={shortHash(commitment.formatFingerprint, 24)}
                copyValue={commitment.formatFingerprint} copyLabel="state format fingerprint" />
     <MetricRow label="Genesis" value={commitment.legacy ? 'legacy generation' : shortHash(commitment.genesisId, 24)}

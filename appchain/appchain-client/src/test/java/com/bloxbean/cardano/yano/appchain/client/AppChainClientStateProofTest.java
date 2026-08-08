@@ -92,14 +92,14 @@ class AppChainClientStateProofTest {
         start(exchange -> respond(exchange, 200, """
                 {"key":"01","chainId":"c1","stateRoot":"%s","valueHex":"ff",
                  "committedHeight":42,"proofSchemaVersion":1,"schemaVersion":1,
-                 "profile":"%s","backend":"%s","dependencyDescriptor":"%s",
+                 "profile":"%s","backend":"%s","commitmentFormatId":"%s",
                  "formatFingerprint":"%s","genesisId":"%s","legacy":false,
-                 "nativeProofEncoding":"%s","nativeVersioning":true,
+                 "proofEncodingId":"%s","nativeVersioning":true,
                  "physicalDelete":false,"version":42,"oldestProvableHeight":2,
                  "presence":"PRESENT","blockHash":"%s"}
                 """.formatted(ROOT, profile.id(), profile.backend(),
-                profile.dependencyDescriptor(), profile.formatFingerprintHex(),
-                "11".repeat(32), profile.nativeProofEncoding(), "22".repeat(32))));
+                profile.commitmentFormatId(), profile.formatFingerprintHex(),
+                "11".repeat(32), profile.proofEncodingId(), "22".repeat(32))));
 
         JsonNode entry = client().stateEntry(new byte[]{1}).orElseThrow();
 
@@ -118,8 +118,8 @@ class AppChainClientStateProofTest {
                 {"key":"01","chainId":"c1","stateRoot":"%s","proofWireHex":"80",
                  "valueHex":"ff","committedHeight":42,"proofSchemaVersion":1,
                  "schemaVersion":1,"profile":"%s","backend":"%s",
-                 "dependencyDescriptor":"%s","formatFingerprint":"%s",
-                 "genesisId":"%s","legacy":false,"nativeProofEncoding":"%s",
+                 "commitmentFormatId":"%s","formatFingerprint":"%s",
+                 "genesisId":"%s","legacy":false,"proofEncodingId":"%s",
                  "nativeVersioning":true,"physicalDelete":false,"version":42,
                  "oldestProvableHeight":2,"presence":"PRESENT","blockHash":"%s",
                  "block":{"version":1,"height":42,"prevHash":"%s","l1Slot":0,
@@ -128,8 +128,8 @@ class AppChainClientStateProofTest {
                  "finalityCertificate":{"scheme":0,"signatures":[
                    {"signer":"%s","signature":"%s"}]}}
                 """.formatted(ROOT, profile.id(), profile.backend(),
-                profile.dependencyDescriptor(), profile.formatFingerprintHex(),
-                "11".repeat(32), profile.nativeProofEncoding(), blockHash,
+                profile.commitmentFormatId(), profile.formatFingerprintHex(),
+                "11".repeat(32), profile.proofEncodingId(), blockHash,
                 "00".repeat(32), "33".repeat(32), ROOT, blockHash,
                 "44".repeat(32), "55".repeat(64));
         AtomicReference<String> response = new AtomicReference<>(tagged);

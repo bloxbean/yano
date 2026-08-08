@@ -149,8 +149,8 @@ public final class ClassicJmtRuntimeBenchmark {
             Map<String, Object> report = new LinkedHashMap<>();
             report.put("schemaVersion", 1);
             report.put("profile", StateCommitmentProfiles.CLASSIC_JMT.id());
-            report.put("dependencyDescriptor",
-                    StateCommitmentProfiles.CLASSIC_JMT.dependencyDescriptor());
+            report.put("commitmentFormatId",
+                    StateCommitmentProfiles.CLASSIC_JMT.commitmentFormatId());
             report.put("cclVersion", "0.8.0-pre5-dev1");
             report.put("durability", "RocksDB WAL + WriteOptions.sync(true), one shared batch");
             report.put("javaVersion", System.getProperty("java.version"));

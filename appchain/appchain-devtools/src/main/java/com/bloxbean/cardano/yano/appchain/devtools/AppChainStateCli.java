@@ -357,11 +357,11 @@ final class AppChainStateCli {
             node.put("schemaVersion", 1);
             node.put("profile", proof.profile());
             node.put("backend", proof.backend());
-            node.put("dependencyDescriptor", proof.dependencyDescriptor());
+            node.put("commitmentFormatId", proof.commitmentFormatId());
             node.put("formatFingerprint", proof.formatFingerprintHex());
             node.put("genesisId", proof.genesisIdHex());
             node.put("legacy", Boolean.TRUE.equals(proof.legacy()));
-            node.put("nativeProofEncoding", proof.nativeProofEncoding());
+            node.put("proofEncodingId", proof.proofEncodingId());
             node.put("nativeVersioning", Boolean.TRUE.equals(proof.nativeVersioning()));
             node.put("physicalDelete", Boolean.TRUE.equals(proof.physicalDelete()));
             node.put("version", proof.committedHeight());

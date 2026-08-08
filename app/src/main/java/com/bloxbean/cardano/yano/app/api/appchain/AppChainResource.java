@@ -8,6 +8,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateProofSnapshot;
 import com.bloxbean.cardano.yano.api.appchain.ReceivedAppMessage;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentImplementations;
 import com.bloxbean.cardano.yano.api.appchain.state.StateIntegrityReport;
 import com.bloxbean.cardano.yano.api.appchain.state.StateProof;
 import com.bloxbean.cardano.yano.api.appchain.state.StateProofEnvelope;
@@ -180,6 +181,13 @@ public class AppChainResource {
     public Response messages(@QueryParam("limit") @DefaultValue("100") int limit,
                              @QueryParam("topic") String topic) {
         return singleChain().messages(limit, topic);
+    }
+
+    @GET
+    @Operation(hidden = true)
+    @Path("messages/{messageIdHex}/proof")
+    public Response messageProof(@PathParam("messageIdHex") String messageIdHex) {
+        return singleChain().messageProof(messageIdHex);
     }
 
     @GET
@@ -1371,6 +1379,34 @@ public class AppChainResource {
                             .entity(Map.of("error", "No finalized message with id " + messageIdHex)).build());
         }
 
+        /** Compact proof from one finalized message id to the signed block messages root. */
+        @GET
+        @Path("messages/{messageIdHex}/proof")
+        public Response messageProof(@PathParam("messageIdHex") String messageIdHex) {
+            if (messageIdHex == null || messageIdHex.length() != 64
+                    || !messageIdHex.matches("[0-9a-f]{64}")) {
+                return badRequest("Message id must be 32 bytes of canonical lowercase hex");
+            }
+            byte[] messageId = HexUtil.decodeHexString(messageIdHex);
+            return gateway.messageInclusionProof(messageId).map(proof -> {
+                Map<String, Object> result = new LinkedHashMap<>();
+                result.put("schemaVersion", proof.schemaVersion());
+                result.put("treeId", proof.treeId());
+                result.put("chainId", proof.chainId());
+                result.put("blockHeight", proof.blockHeight());
+                result.put("blockHash", HexUtil.encodeHexString(proof.blockHash()));
+                result.put("messagesRoot", HexUtil.encodeHexString(proof.messagesRoot()));
+                result.put("messageId", HexUtil.encodeHexString(proof.messageId()));
+                result.put("messageIndex", proof.messageIndex());
+                result.put("leafCount", proof.leafCount());
+                result.put("siblings", proof.siblings().stream()
+                        .map(HexUtil::encodeHexString).toList());
+                return Response.ok(result).build();
+            }).orElse(Response.status(Response.Status.NOT_FOUND)
+                    .entity(Map.of("error", "No finalized message with id "
+                            + messageIdHex)).build());
+        }
+
         /** Profile-tagged native proof for a canonical state key. */
         @GET
         @Path("proof/{keyHex}")
@@ -1671,12 +1707,21 @@ public class AppChainResource {
             result.put("profile", identity.profile().id());
             result.put("backend", identity.profile().backendFamily().name()
                     .toLowerCase(Locale.ROOT));
-            result.put("dependencyDescriptor", identity.profile().dependencyDescriptor());
-            result.put("nativeProofEncoding", identity.profile().nativeProofEncoding());
+            result.put("commitmentFormatId", identity.profile().commitmentFormatId());
+            result.put("proofEncodingId", identity.profile().proofEncodingId());
             result.put("nativeVersioning", identity.profile().nativeVersioning());
             result.put("physicalDelete", identity.profile().physicalDelete());
             result.put("formatFingerprint", HexUtil.encodeHexString(
                     identity.profile().formatFingerprint()));
+            StateCommitmentImplementations.find(identity.profile().id()).ifPresent(metadata -> {
+                Map<String, Object> implementation = new LinkedHashMap<>();
+                implementation.put("compatibility", metadata.compatibility());
+                implementation.put("testedImplementations", metadata.testedImplementations());
+                implementation.put("verifierAvailable", metadata.verifierAvailable());
+                implementation.put("verificationTarget", metadata.verificationTarget().name()
+                        .toLowerCase(Locale.ROOT).replace('_', '-'));
+                result.put("implementation", implementation);
+            });
             result.put("genesisId", HexUtil.encodeHexString(identity.genesisId()));
             result.put("legacy", identity.legacy());
             result.put("version", version);
