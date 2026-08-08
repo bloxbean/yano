@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.examples.evidence;
 
+import com.bloxbean.cardano.yano.appchain.evidence.profile.contracts.EvidenceApprovalConsumptionV1;
+import com.bloxbean.cardano.yano.appchain.evidence.profile.contracts.RoleEvidenceKeys;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.command.NotifyEvidenceCommandV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.event.EvidenceAvailableEventV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.query.EvidenceGetRequestV1;
@@ -11,6 +13,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.Properties;
 
@@ -60,6 +63,23 @@ class EvidenceGoldenVectorTest {
         assertThat(EvidenceKeys.effectScope(
                 EvidenceFixtures.ID, 1, EvidenceEffectOperation.OBJECT))
                 .isEqualTo(vectors.getProperty("scope.object"));
+    }
+
+    @Test
+    void roleApprovalConsumptionMatchesPublishedGoldenVectors() {
+        byte[] action = new byte[32];
+        byte[] messageId = new byte[32];
+        Arrays.fill(action, (byte) 0x31);
+        Arrays.fill(messageId, (byte) 0x41);
+        EvidenceApprovalConsumptionV1 receipt = new EvidenceApprovalConsumptionV1(
+                "approval-42", "release-42", action,
+                "evidence-release", 3, 99, messageId);
+
+        assertVector("role-approval.consumption", receipt.encode());
+        assertVector("role-approval.consumption-key",
+                RoleEvidenceKeys.approvalConsumption("approval-42"));
+        assertThat(vectors.getProperty("role-approval.consumption.cddl-root"))
+                .isEqualTo("evidence-approval-consumption-v1");
     }
 
     private static void assertVector(String name, byte[] value) {

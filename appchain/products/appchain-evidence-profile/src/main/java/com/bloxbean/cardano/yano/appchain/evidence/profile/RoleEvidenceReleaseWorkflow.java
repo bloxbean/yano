@@ -12,16 +12,18 @@ import com.bloxbean.cardano.yano.appchain.composite.ComponentGeneration;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeWorkflow;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeWorkflowContext;
 import com.bloxbean.cardano.yano.appchain.composite.WorkflowDescriptor;
+import com.bloxbean.cardano.yano.appchain.evidence.profile.contracts.EvidenceApprovalConsumptionV1;
 import com.bloxbean.cardano.yano.appchain.evidence.profile.contracts.EvidenceReleaseCommandV1;
 import com.bloxbean.cardano.yano.appchain.evidence.profile.contracts.RoleEvidenceKeys;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.EvidenceContract;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.EvidenceRegistryStateMachine;
+import com.bloxbean.cardano.yano.appchain.roles.RoleAuthorizationCapability;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ApprovalProposalV1;
+import com.bloxbean.cardano.yano.appchain.roles.contracts.ApprovalReferenceV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowKeys;
 import com.bloxbean.cardano.yano.appchain.stdlib.DocTrailStateMachine;
 import com.bloxbean.cardano.yano.appchain.stdlib.DocTrailTransitions;
 
-import java.security.MessageDigest;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
@@ -41,6 +43,7 @@ final class RoleEvidenceReleaseWorkflow implements CompositeWorkflow {
     private final DocTrailStateMachine documentMachine;
     private final DocTrailTransitions documentTransitions = new DocTrailTransitions();
     private final EvidenceRegistryStateMachine evidenceMachine;
+    private final RoleAuthorizationCapability authorization;
 
     RoleEvidenceReleaseWorkflow(WorkflowDescriptor descriptor,
                                 ComponentGeneration registry,
@@ -48,7 +51,8 @@ final class RoleEvidenceReleaseWorkflow implements CompositeWorkflow {
                                 ComponentGeneration documents,
                                 ComponentGeneration evidence,
                                 DocTrailStateMachine documentMachine,
-                                EvidenceRegistryStateMachine evidenceMachine) {
+                                EvidenceRegistryStateMachine evidenceMachine,
+                                String chainId) {
         this.descriptor = descriptor;
         this.registry = registry;
         this.approvals = approvals;
@@ -56,6 +60,7 @@ final class RoleEvidenceReleaseWorkflow implements CompositeWorkflow {
         this.evidence = evidence;
         this.documentMachine = documentMachine;
         this.evidenceMachine = evidenceMachine;
+        this.authorization = new RoleAuthorizationCapability(chainId);
     }
 
     @Override public WorkflowDescriptor descriptor() { return descriptor; }
@@ -96,11 +101,16 @@ final class RoleEvidenceReleaseWorkflow implements CompositeWorkflow {
             } catch (RuntimeException corrupt) {
                 throw new IllegalStateException("corrupt role approval proposal", corrupt);
             }
-            if (proposal.status() != ApprovalProposalV1.ProposalStatus.APPROVED
-                    || !proposal.policyId().equals(POLICY_ID)
-                    || !proposal.payloadDomain().equals(PAYLOAD_DOMAIN)
-                    || !MessageDigest.isEqual(
-                    proposal.payloadHash(), command.commandHash())) continue;
+            byte[] actionCommitment = command.commandHash();
+            byte[] consumptionKey = RoleEvidenceKeys.approvalConsumption(
+                    command.approvalItemId());
+            var verified = authorization.verifyApproval(
+                    new EvidenceApprovalReference(command.approvalItemId(),
+                            actionCommitment, POLICY_ID, proposal.policyRevision()),
+                    PAYLOAD_DOMAIN, actionCommitment, actionCommitment,
+                    block.height(), approvalState.get(consumptionKey).isPresent(),
+                    approvalState);
+            if (!verified.accepted()) continue;
 
             AppMessage documentMessage = routed(source, "doc-trail.command.v1",
                     DocTrailStateMachine.append(command.documentEntityId(),
@@ -122,6 +132,16 @@ final class RoleEvidenceReleaseWorkflow implements CompositeWorkflow {
                     AppEffectEmitter.rejecting("document trail does not emit effects"));
             evidenceMachine.applyCommand(block, evidenceMessage,
                     evidenceState, context.effects(evidence));
+            EvidenceApprovalConsumptionV1 consumption = new EvidenceApprovalConsumptionV1(
+                    command.approvalItemId(), command.releaseId(), actionCommitment,
+                    verified.value().policy().policyId(),
+                    verified.value().policy().revision(), block.height(),
+                    source.getMessageId());
+            RoleAuthorizationCapability.ConsumptionPlan consumptionPlan =
+                    authorization.planApprovalConsumption(
+                            verified, consumptionKey, consumption.encode());
+            approvalState.put(consumptionPlan.replayKey(),
+                    consumptionPlan.applicationReceipt());
             approvalState.put(RoleEvidenceKeys.evidenceApproval(
                             command.evidenceStorageCommand().evidenceId(),
                             command.evidenceStorageCommand().businessVersion()),
@@ -134,6 +154,19 @@ final class RoleEvidenceReleaseWorkflow implements CompositeWorkflow {
                 .chainId(source.getChainId()).topic(topic).sender(source.getSender())
                 .senderSeq(source.getSenderSeq()).expiresAt(source.getExpiresAt()).body(body)
                 .authScheme(source.getAuthScheme()).authProof(source.getAuthProof()).build();
+    }
+
+    private record EvidenceApprovalReference(
+            String proposalId,
+            byte[] actionCommitment,
+            String policyId,
+            long policyRevision
+    ) implements ApprovalReferenceV1 {
+        private EvidenceApprovalReference {
+            actionCommitment = actionCommitment.clone();
+        }
+
+        @Override public byte[] actionCommitment() { return actionCommitment.clone(); }
     }
 
 }

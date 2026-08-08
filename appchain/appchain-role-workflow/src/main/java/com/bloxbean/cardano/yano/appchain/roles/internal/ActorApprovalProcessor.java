@@ -32,6 +32,16 @@ public final class ActorApprovalProcessor {
     private final String payloadDomain;
     private final GovernedAuthorizationLimitsV1 limits;
 
+    /** Product-neutral lifecycle; application bindings verify the exact payload domain on use. */
+    public ActorApprovalProcessor(
+            String chainId,
+            GovernedAuthorizationLimitsV1 limits
+    ) {
+        this.chainId = RoleWorkflowIdentifiers.chainId(chainId);
+        this.payloadDomain = null;
+        this.limits = java.util.Objects.requireNonNull(limits, "limits");
+    }
+
     public ActorApprovalProcessor(
             String chainId,
             String payloadDomain,
@@ -70,7 +80,7 @@ public final class ActorApprovalProcessor {
     ) {
         ActorStatementV1 statement = command.statement();
         if (!statement.chainId().equals(chainId)
-                || !statement.payloadDomain().equals(payloadDomain)) {
+                || payloadDomain != null && !statement.payloadDomain().equals(payloadDomain)) {
             return RoleWorkflowResultCode.WRONG_GENESIS;
         }
         if (statement.deadlineHeight() < height) {
@@ -230,6 +240,14 @@ public final class ActorApprovalProcessor {
         if (proposerRole == null) return RoleWorkflowResultCode.ROLE_MISMATCH;
 
         ApprovalPendingIndexV1 index = pendingIndex(state);
+        RoleApprovalStatsV1 currentStats = stats(state);
+        if (currentStats.pending() >= limits.maximumPendingApprovals()) {
+            return RoleWorkflowResultCode.CAPACITY_EXCEEDED;
+        }
+        if (currentStats.pending() != index.entries().size()) {
+            throw new IllegalStateException(
+                    "approval pending index disagrees with aggregate statistics");
+        }
         if (!hasCapacity(index, statement.actorId(), statement.policyId(),
                 statement.deadlineHeight())) {
             return RoleWorkflowResultCode.CAPACITY_EXCEEDED;
@@ -243,7 +261,7 @@ public final class ActorApprovalProcessor {
                 proposerRole, statement.actorRevision(), statement.keyId(), height,
                 List.of());
         state.put(RoleWorkflowKeys.proposal(statement.proposalId()), created.encode());
-        writeStats(state, stats(state).proposalCreated());
+        writeStats(state, currentStats.proposalCreated());
         putMarkers(state, created);
         writeIndex(state, index.add(new ApprovalPendingIndexV1.Entry(
                 created.proposalId(), created.deadlineHeight(), created.policyId(),

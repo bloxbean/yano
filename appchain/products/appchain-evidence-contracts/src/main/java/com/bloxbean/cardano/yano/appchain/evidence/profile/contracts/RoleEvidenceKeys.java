@@ -17,4 +17,10 @@ public final class RoleEvidenceKeys {
                 + "/v/" + businessVersion + "/approval")
                 .getBytes(StandardCharsets.US_ASCII);
     }
+
+    public static byte[] approvalConsumption(String proposalId) {
+        return ("approval-consumption/"
+                + RoleWorkflowIdentifiers.id(proposalId, "proposalId"))
+                .getBytes(StandardCharsets.US_ASCII);
+    }
 }

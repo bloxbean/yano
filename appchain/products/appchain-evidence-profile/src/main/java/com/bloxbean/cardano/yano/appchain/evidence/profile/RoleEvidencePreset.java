@@ -103,7 +103,7 @@ public final class RoleEvidencePreset {
                         context.chainId(), governance),
                 new RoleEvidenceReleaseWorkflow(releaseDescriptor, generations.get(0),
                         generations.get(2), generations.get(3), generations.get(4),
-                        docTrailMachine, evidenceMachine));
+                        docTrailMachine, evidenceMachine, context.chainId()));
         var builder = ComposableAppStateMachine.builder(RoleEvidenceStateMachineProvider.ID,
                         context, PROFILE_ID, "1.0.0")
                 .machine(registryDescriptor, registryMachine)

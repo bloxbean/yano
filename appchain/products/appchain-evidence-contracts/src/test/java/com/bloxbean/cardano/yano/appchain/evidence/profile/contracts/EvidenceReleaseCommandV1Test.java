@@ -19,6 +19,19 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class EvidenceReleaseCommandV1Test {
     @Test
+    void approvalConsumptionHasFrozenCanonicalWireAndKey() {
+        EvidenceApprovalConsumptionV1 receipt = new EvidenceApprovalConsumptionV1(
+                "approval-42", "release-42", filled(0x31),
+                "evidence-release", 3, 99, filled(0x41));
+
+        assertThat(EvidenceApprovalConsumptionV1.decode(receipt.encode())).isEqualTo(receipt);
+        assertThat(HexFormat.of().formatHex(receipt.encode())).isEqualTo(
+                "88016b617070726f76616c2d34326a72656c656173652d3432582031313131313131313131313131313131313131313131313131313131313131317065766964656e63652d72656c6561736503186358204141414141414141414141414141414141414141414141414141414141414141");
+        assertThat(new String(RoleEvidenceKeys.approvalConsumption("approval-42"),
+                StandardCharsets.US_ASCII)).isEqualTo("approval-consumption/approval-42");
+    }
+
+    @Test
     void canonicalWireHasFrozenDigestAndRejectsTrailingBytes() throws Exception {
         SubmitEvidenceCommandV1 evidence = evidence();
         EvidenceReleaseCommandV1 command = new EvidenceReleaseCommandV1(

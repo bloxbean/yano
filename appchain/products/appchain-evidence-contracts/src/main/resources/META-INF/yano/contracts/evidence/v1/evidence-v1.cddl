@@ -64,3 +64,10 @@ evidence-get-request-v1 = [schema: 1, id: evidence-id,
 evidence-get-response-v1 = [schema: 1, found: bool,
                             head-key: bytes, head-value: bytes,
                             record-key: bytes, record-value: bytes]
+
+; Application-owned one-use role-approval receipt for the evidence-release workflow.
+evidence-approval-consumption-v1 = [schema: 1, proposal-id: tstr,
+                                    release-id: tstr, action-commitment: fingerprint32,
+                                    policy-id: tstr, policy-revision: business-version,
+                                    applied-height: business-version,
+                                    message-id: message-id32]

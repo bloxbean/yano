@@ -1,6 +1,6 @@
 # ADR app-layer/031: Composable state-machine foundations and portable proofs
 
-**Status:** Accepted and in implementation — Phases 0 through 3 complete
+**Status:** Accepted and in implementation — Phases 0 through 4 complete
 **Date:** 2026-08-08
 **Scope:** App-chain state machines, composition, authorization and approvals, authenticated state,
 proofs, and L1 consumption
@@ -1029,6 +1029,35 @@ and observer subscriptions; old profile markers are rejected.
 **Gate:** Authenticated-map and a second application use the same verifier without copied logic. New
 golden vectors pin the approved action, actor/key revision, approval, consumption, and receipt
 formats; preview identifiers are not migrated.
+
+#### Phase 4 implementation result
+
+The implementation inventory found three similarly named but semantically different mechanisms:
+
+| Mechanism | Retained responsibility | Consolidation result |
+|---|---|---|
+| Basic `ApprovalsStateMachine` | Sender-key quorum over its own small command model | Retained as a distinct non-role capability; it is not an ADR-019 actor approval |
+| ADR-019 actor approval lifecycle | Actor/key/organization resolution, frozen policy revision, proposal decisions, expiry and terminal state | `ActorApprovalProcessor` is the single implementation; the older `RoleApprovalWorkflow` now delegates to it instead of copying the lifecycle |
+| Actor-governed policy mutation | Business-actor administration and bounded mutation activation | Remains distinct from application approval and app-chain membership governance |
+
+`RoleAuthorizationCapability` is now the product-neutral read/decision boundary. Direct evidence
+implements `DirectAuthorizationEvidenceV1`; approval bindings implement `ApprovalReferenceV1`.
+The capability verifies chain/application/action binding, deadlines, current and claimed revisions,
+policy status, actor role, organization status, key epoch, signature, approved proposal payload and
+frozen policy digest. It then creates a pure one-use `ConsumptionPlan` containing an
+application-owned replay key and canonical receipt. Rejected decisions cannot produce a plan.
+
+Authenticated-map uses this capability while retaining its exact covered-mutation-index rules and
+its existing direct/approval receipt schemas. The role-evidence document release workflow is the
+second independent consumer. It binds the approval to the complete release-command hash, validates
+the frozen `evidence-release` policy, and atomically writes an
+`EvidenceApprovalConsumptionV1` receipt only after document-trail and evidence-registry acceptance.
+The evidence receipt and key are published as golden vectors. Existing authenticated-map and
+ADR-019 vectors continue to pin signed action, actor/key revision, approval reference, policy,
+consumption and map receipt bytes.
+
+No runtime authorization hook, generic object policy SPI, or second actor/approval data model was
+introduced. Application bindings still own coverage and receipt meaning, as required by §6.4.
 
 ### Phase 5 — typed proof subjects and finalized-message proofs
 
