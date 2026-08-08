@@ -68,6 +68,7 @@ class ZkMembershipStateMachineTest {
         String pubA = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_A));
         AppChainConfig config = AppChainConfig.builder("anon-chain")
                 .signingKeyHex(HexUtil.encodeHexString(KEY_A))
+                .stateCommitmentIdentity(ZkTestStateCommitments.mpf("anon-chain"))
                 .memberKeysHex(Set.of(pubA))
                 .proposerKeyHex(pubA)
                 .threshold(1)

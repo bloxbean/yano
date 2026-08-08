@@ -44,8 +44,7 @@ final class ClassicJmtAuthenticatedStateBackend implements AuthenticatedStateBac
         this.store = Objects.requireNonNull(store, "store");
         this.identity = Objects.requireNonNull(identity, "identity");
         this.faults = Objects.requireNonNull(faults, "faults");
-        if (identity.legacy()
-                || !StateCommitmentProfiles.CLASSIC_JMT.equals(identity.profile())) {
+        if (!StateCommitmentProfiles.CLASSIC_JMT.equals(identity.profile())) {
             throw new IllegalArgumentException(
                     "classic JMT backend requires an explicit jmt-blake2b256-v1 identity");
         }

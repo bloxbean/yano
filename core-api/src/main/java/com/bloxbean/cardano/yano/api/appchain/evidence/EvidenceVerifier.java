@@ -409,14 +409,8 @@ public final class EvidenceVerifier {
             }
             if (stateCommitmentProfile != null
                     && (StateCommitmentProfiles.find(stateCommitmentProfile).isEmpty()
-                    || !(stateGenesisIdHex.isEmpty()
-                    || stateGenesisIdHex.matches("[0-9a-f]{64}")))) {
+                    || !stateGenesisIdHex.matches("[0-9a-f]{64}"))) {
                 throw new IllegalArgumentException("invalid trusted state commitment identity");
-            }
-            if (stateGenesisIdHex != null && stateGenesisIdHex.isEmpty()
-                    && !StateCommitmentProfiles.MPF_BLAKE2B256_V1.equals(
-                    stateCommitmentProfile)) {
-                throw new IllegalArgumentException("only legacy MPF may use an empty genesis id");
             }
         }
 

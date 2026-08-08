@@ -2,7 +2,6 @@ package com.bloxbean.cardano.yano.runtime.appchain;
 
 import com.bloxbean.cardano.vds.mpf.rocksdb.RocksDbNodeStore;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
-import com.bloxbean.cardano.yano.api.appchain.AppStateProofSnapshot;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectProof;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectProofLookup;
@@ -74,7 +73,8 @@ final class AppLedgerStore implements AutoCloseable {
     private final Logger log;
 
     AppLedgerStore(String path, Logger log) {
-        this(path, log, StateCommitmentIdentity.legacyMpf());
+        this(path, log, StateCommitmentIdentity.explicit(
+                StateCommitmentProfiles.MPF, new byte[32]));
     }
 
     AppLedgerStore(String path, Logger log, StateCommitmentIdentity identity) {
@@ -188,16 +188,9 @@ final class AppLedgerStore implements AutoCloseable {
             }
             return;
         }
-        if (stateCommitmentIdentity.legacy()) {
-            if (anyRetained) {
-                throw new IllegalStateException(
-                        "Legacy MPF configuration cannot open an explicit ADR-025 ledger");
-            }
-            return;
-        }
         if (retainedProfile == null || retainedFingerprint == null || retainedGenesis == null) {
             throw new IllegalStateException(
-                    "Explicit ADR-025 configuration cannot open a legacy or partial ledger");
+                    "ADR-025 configuration cannot open an unmarked or partial ledger");
         }
         String profile = new String(retainedProfile, StandardCharsets.US_ASCII);
         if (!stateCommitmentIdentity.profile().id().equals(profile)
@@ -460,17 +453,6 @@ final class AppLedgerStore implements AutoCloseable {
         return stateBackend.prove(height, key).map(proof -> proof.nativeProof());
     }
 
-    /** Read a key against a retained historical root (legacy compatibility helper). */
-    Optional<byte[]> stateGetAtRoot(byte[] root, byte[] key) {
-        return heightForStateRoot(root).flatMap(height -> stateGetAtHeight(height, root, key));
-    }
-
-    /** Build a proof against a retained historical root (legacy compatibility helper). */
-    Optional<byte[]> stateProofWireAtRoot(byte[] root, byte[] key) {
-        return heightForStateRoot(root)
-                .flatMap(height -> stateProofWireAtHeight(height, root, key));
-    }
-
     Optional<byte[]> stateGetAtHeight(long height, byte[] root, byte[] key) {
         if (!rootMatchesHeight(height, root)) {
             return Optional.empty();
@@ -483,64 +465,6 @@ final class AppLedgerStore implements AutoCloseable {
             return Optional.empty();
         }
         return stateBackend.prove(height, key).map(proof -> proof.nativeProof());
-    }
-
-    /**
-     * Build one inclusion or exclusion proof from a single committed root.
-     * Historical MPF nodes are immutable, so value and proof remain fixed to
-     * the captured root while a later block commits concurrently.
-     */
-    Optional<AppStateProofSnapshot> stateProofSnapshot(byte[] key) {
-        byte[] keySnapshot = Objects.requireNonNull(key, "key").clone();
-        CommittedStateSnapshot committed = captureCommittedState();
-        if (committed.height() == 0) {
-            return Optional.empty();
-        }
-        byte[] root = committed.stateRoot();
-        Optional<com.bloxbean.cardano.yano.api.appchain.state.StateProof> proof =
-                stateBackend.prove(committed.height(), keySnapshot);
-        if (proof.isEmpty()) {
-            return Optional.empty();
-        }
-        var retainedProof = proof.orElseThrow();
-        return Optional.of(new AppStateProofSnapshot(
-                keySnapshot, retainedProof.value(), retainedProof.nativeProof(), root,
-                committed.height()));
-    }
-
-    /** Build a proof against the exact post-state root of a retained block. */
-    Optional<AppStateProofSnapshot> stateProofSnapshotAtHeight(long height, byte[] key) {
-        if (height <= 0) {
-            return Optional.empty();
-        }
-        byte[] keySnapshot = Objects.requireNonNull(key, "key").clone();
-        Optional<AppBlock> block = block(height);
-        if (block.isEmpty()) {
-            return Optional.empty();
-        }
-        byte[] root = block.orElseThrow().stateRoot();
-        Optional<com.bloxbean.cardano.yano.api.appchain.state.StateProof> proof =
-                stateBackend.prove(height, keySnapshot);
-        if (proof.isEmpty()) {
-            return Optional.empty();
-        }
-        var retainedProof = proof.orElseThrow();
-        return Optional.of(new AppStateProofSnapshot(
-                keySnapshot, retainedProof.value(), retainedProof.nativeProof(), root, height));
-    }
-
-    private Optional<Long> heightForStateRoot(byte[] root) {
-        if (root == null || root.length != stateCommitmentIdentity.profile().rootLength()) {
-            return Optional.empty();
-        }
-        for (long height = tipHeight(); height > 0; height--) {
-            Optional<AppBlock> candidate = block(height);
-            if (candidate.isPresent()
-                    && Arrays.equals(candidate.orElseThrow().stateRoot(), root)) {
-                return Optional.of(height);
-            }
-        }
-        return Optional.empty();
     }
 
     private boolean rootMatchesHeight(long height, byte[] root) {
@@ -722,7 +646,6 @@ final class AppLedgerStore implements AutoCloseable {
         byte[] normalizedRoot = committedRoot != null ? committedRoot : new byte[32];
         StateCommitmentIdentity preparedIdentity = stateCommit.identity();
         if (preparedIdentity.schemaVersion() != stateCommitmentIdentity.schemaVersion()
-                || preparedIdentity.legacy() != stateCommitmentIdentity.legacy()
                 || !preparedIdentity.profile().equals(stateCommitmentIdentity.profile())
                 || !Arrays.equals(preparedIdentity.genesisId(), stateCommitmentIdentity.genesisId())) {
             throw new IllegalArgumentException("prepared state commit belongs to another profile or genesis");
@@ -744,13 +667,11 @@ final class AppLedgerStore implements AutoCloseable {
                                    WriteBatch batch,
                                    List<GovernedMembership.MetaWrite> metaWrites) {
         try {
-            if (!stateCommitmentIdentity.legacy()) {
-                batch.put(metaCf, KEY_STATE_PROFILE,
-                        stateCommitmentIdentity.profile().id().getBytes(StandardCharsets.US_ASCII));
-                batch.put(metaCf, KEY_STATE_FINGERPRINT,
-                        stateCommitmentIdentity.profile().formatFingerprint());
-                batch.put(metaCf, KEY_STATE_GENESIS_ID, stateCommitmentIdentity.genesisId());
-            }
+            batch.put(metaCf, KEY_STATE_PROFILE,
+                    stateCommitmentIdentity.profile().id().getBytes(StandardCharsets.US_ASCII));
+            batch.put(metaCf, KEY_STATE_FINGERPRINT,
+                    stateCommitmentIdentity.profile().formatFingerprint());
+            batch.put(metaCf, KEY_STATE_GENESIS_ID, stateCommitmentIdentity.genesisId());
             for (GovernedMembership.MetaWrite write : metaWrites) {
                 batch.put(metaCf, write.key().getBytes(StandardCharsets.UTF_8), write.value());
             }

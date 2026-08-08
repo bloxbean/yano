@@ -265,6 +265,7 @@ class AppChainL1CallbackIsolationTest {
                 .pluginSettings(Map.of(
                         "sequencer.mode", MODE_ID,
                         "observers." + OBSERVER_ID + ".type", OBSERVER_TYPE))
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         AppChainSubsystem subsystem = new AppChainSubsystem(
                 config, 42, eventBus, null, tempDir.resolve(testId).toString(),

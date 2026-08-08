@@ -145,6 +145,7 @@ class StdlibConfigWiringTest {
         String pubA = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_A));
         AppChainConfig config = AppChainConfig.builder("cfg-" + name)
                 .signingKeyHex(HexUtil.encodeHexString(KEY_A))
+                .stateCommitmentIdentity(StdlibTestStateCommitments.mpf("cfg-" + name))
                 .memberKeysHex(Set.of(pubA))
                 .proposerKeyHex(pubA)
                 .threshold(1)

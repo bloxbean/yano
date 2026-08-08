@@ -217,8 +217,7 @@ for governed genesis, offline CLI authoring, domain routes, and proof assembly.
 - REST base URL must include the Yano API prefix, for example
   `http://localhost:7070/api/v1`.
 - Use `chainId(...)` when a node hosts multiple app chains.
-- `ProofVerifier.verifyInternalConsistency(proof)` (and the deprecated
-  one-argument `verify`) checks only the proof against the root carried by that
+- `ProofVerifier.verifyInternalConsistency(proof)` checks only the proof against the root carried by that
   same envelope. It makes no chain-authenticity claim.
 - The release-matched verifier accepts the exact `mpf-blake2b256-v1` and
   `jmt-blake2b256-v1` metadata/codec contracts. The declared Poseidon profile

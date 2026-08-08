@@ -73,8 +73,7 @@ public final class StdlibStateMachineProviders {
             }
             StateCommitmentIdentity stateIdentity = context.stateCommitmentIdentity()
                     .orElseGet(() -> StateCommitmentIdentity.fromSettings(context.settings()));
-            if (stateIdentity.legacy()
-                    || !stateIdentity.profile().equals(profile)
+            if (!stateIdentity.profile().equals(profile)
                     || !Arrays.equals(stateIdentity.genesisId(),
                     AuthenticatedMapContract.genesisId(genesis))) {
                 throw new IllegalArgumentException(

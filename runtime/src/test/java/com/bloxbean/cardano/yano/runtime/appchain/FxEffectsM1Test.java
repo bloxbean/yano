@@ -129,7 +129,8 @@ class FxEffectsM1Test {
             assertThat(proof.stateRoot()).isNotEqualTo(pipeline.store.stateRoot());
             assertThat(FxKeys.verifyEffectsProof(proof.record().effectHash(), 4,
                     proof.effectCount(), proof.merklePath(), proof.effectsRoot())).isTrue();
-            assertThat(pipeline.store.stateGetAtRoot(proof.stateRoot(), FxKeys.effectsRootKey(1)))
+            assertThat(pipeline.store.stateGetAtHeight(
+                    proof.record().height(), proof.stateRoot(), FxKeys.effectsRootKey(1)))
                     .contains(proof.effectsRoot());
             assertThat(new MpfTrie(pipeline.store.mpfNodeStore()).verifyProofWire(
                     proof.stateRoot(), FxKeys.effectsRootKey(1), proof.effectsRoot(), true,

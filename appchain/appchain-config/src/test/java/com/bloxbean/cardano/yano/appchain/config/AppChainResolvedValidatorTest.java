@@ -1,7 +1,9 @@
 package com.bloxbean.cardano.yano.appchain.config;
 
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import org.junit.jupiter.api.Test;
 
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -131,9 +133,35 @@ class AppChainResolvedValidatorTest {
                 .containsExactly("DX_CONFIG_PARTIAL_NAMESPACE");
     }
 
+    @Test
+    void l1ProofConsumptionRequirementIsARecognizedConsensusProperty() {
+        Map<String, EffectiveConfigValue> values = values(Map.of(
+                "yano.app-chain.enabled", "true",
+                "yano.app-chain.chain-id", "orders",
+                "yano.app-chain.signing-key", SIGNING_KEY,
+                "yano.app-chain.members", MEMBER,
+                "yano.app-chain.state.l1-proof-consumption-required", "true"));
+
+        ResolvedValidationResult result = new AppChainResolvedValidator().validate(values);
+
+        assertThat(result.valid()).isTrue();
+        assertThat(result.diagnostics())
+                .noneMatch(diagnostic -> diagnostic.key() != null
+                        && diagnostic.key().endsWith("l1-proof-consumption-required"));
+    }
+
     private static Map<String, EffectiveConfigValue> values(Map<String, String> input) {
+        Map<String, String> complete = new LinkedHashMap<>(input);
+        String chainPrefix = input.keySet().stream()
+                .anyMatch(key -> key.startsWith("yano.app-chain.chains[0]."))
+                ? "yano.app-chain.chains[0]." : "yano.app-chain.";
+        complete.putIfAbsent(chainPrefix + "state.commitment-profile",
+                StateCommitmentProfiles.MPF.id());
+        complete.putIfAbsent(chainPrefix + "state.format-fingerprint",
+                HexFormat.of().formatHex(StateCommitmentProfiles.MPF.formatFingerprint()));
+        complete.putIfAbsent(chainPrefix + "state.genesis-id", "01".repeat(32));
         Map<String, EffectiveConfigValue> result = new LinkedHashMap<>();
-        input.forEach((key, value) -> result.put(key, new EffectiveConfigValue(
+        complete.forEach((key, value) -> result.put(key, new EffectiveConfigValue(
                 key, value, "test", ConfigSourceKind.DECLARED_FILE, 250, true, "")));
         return result;
     }

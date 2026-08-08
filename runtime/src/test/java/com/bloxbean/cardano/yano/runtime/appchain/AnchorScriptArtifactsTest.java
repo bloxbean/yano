@@ -11,27 +11,27 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Artifact resolution + identity derivation (ADR 008.4 §2.4): the bundled
- * julc artifacts resolve from the classpath and script hash/address derive
+ * release Aiken artifacts resolve from the classpath and script hash/address derive
  * from the parameterized UPLC — never from source.
  */
 class AnchorScriptArtifactsTest {
 
-    // Golden on-chain identity of the CHECKED-IN julc artifacts, for the fixed
+    // Golden on-chain identity of the CHECKED-IN Aiken artifacts, for the fixed
     // fixture seed = 0x5E×32 / index 1. The value is derived through the FULL
     // production path (classpath cborHex → applyParams → re-encode → hash), so
-    // this pin fails on BOTH an accidental edit to the artifact JSON AND a julc
+    // this pin fails on BOTH an accidental edit to the artifact JSON AND a toolchain
     // upgrade that changes the decode/apply/encode bytes — either of which would
     // silently change a chain's on-chain identity. If a change here is
     // DELIBERATE (new validator logic or an intentional julc bump), regenerate
-    // the artifacts (see the module's JulcSourceCompile* drift tests) and update
+    // the release artifacts and update
     // these constants — a new hash means a NEW anchor identity for newly
     // bootstrapped chains.
     private static final byte[] GOLDEN_SEED = fill(32, 0x5E);
     private static final int GOLDEN_INDEX = 1;
     private static final String GOLDEN_POLICY_ID =
-            "20c67c50d7be2e039dfaae02ab300b736ab5a990100063a780764251";
+            "290f50fd7fc306fcdd1190b2497b946e61bfc1ca7335a01ee0677fe7";
     private static final String GOLDEN_VALIDATOR_HASH =
-            "a311db9923c2a0b9571e1e6f123589e2ea0dea083d9cd7f829e7d6d8";
+            "fcd027c1ab476b80a2a387ac7bffe84ba4179326f320300b16477bb9";
 
     private static byte[] fill(int len, int b) {
         byte[] bytes = new byte[len];
@@ -85,14 +85,14 @@ class AnchorScriptArtifactsTest {
     @Test
     void unknownRef_isRejected() {
         assertThatThrownBy(() -> new AnchorScriptArtifacts(
-                new AnchorScriptConfig("aiken:something", "builtin:julc")))
+                new AnchorScriptConfig("aiken:something", "builtin:aiken")))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Unsupported anchor script ref");
     }
 
     @Test
-    void fileRef_loadsAikenArtifacts() {
-        // The opt-in Aiken artifacts checked in beside their source must load
+    void fileRef_loadsTheBundledReleaseArtifacts() {
+        // The Aiken artifacts checked in beside their source must load
         // through the SAME production path (ADR 008.4 §2.4)
         String base = "../appchain/onchain/aiken/appchain-anchor/artifacts/";
         AnchorScriptArtifacts aiken = new AnchorScriptArtifacts(new AnchorScriptConfig(
@@ -104,19 +104,18 @@ class AnchorScriptArtifactsTest {
         byte[] scriptHash = AnchorScriptArtifacts.scriptHash(aiken.validator(policyId));
         assertThat(scriptHash).hasSize(28);
 
-        // Different implementation → different hashes than the julc builtin
-        AnchorScriptArtifacts julc = new AnchorScriptArtifacts(AnchorScriptConfig.defaults());
-        assertThat(policyId).isNotEqualTo(
-                AnchorScriptArtifacts.scriptHash(julc.threadPolicy(fill(32, 0x5E), 1)));
+        AnchorScriptArtifacts bundled = new AnchorScriptArtifacts(AnchorScriptConfig.defaults());
+        assertThat(policyId).isEqualTo(
+                AnchorScriptArtifacts.scriptHash(bundled.threadPolicy(fill(32, 0x5E), 1)));
     }
 
     @Test
     void hexRef_roundTripsAgainstBuiltin() {
         // Feeding the builtin's own cborHex via hex: must produce identical scripts
         String builtinHex = AnchorScriptArtifacts.resolve(
-                AnchorScriptConfig.BUILTIN_JULC, AnchorScriptArtifacts.BUILTIN_VALIDATOR_RESOURCE);
+                AnchorScriptConfig.BUILTIN_AIKEN, AnchorScriptArtifacts.BUILTIN_VALIDATOR_RESOURCE);
         AnchorScriptArtifacts viaHex = new AnchorScriptArtifacts(
-                new AnchorScriptConfig("hex:" + builtinHex, "builtin:julc"));
+                new AnchorScriptConfig("hex:" + builtinHex, "builtin:aiken"));
         AnchorScriptArtifacts viaBuiltin = new AnchorScriptArtifacts(AnchorScriptConfig.defaults());
 
         byte[] policyId = fill(28, 0x0F);

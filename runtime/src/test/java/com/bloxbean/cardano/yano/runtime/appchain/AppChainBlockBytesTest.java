@@ -62,6 +62,7 @@ class AppChainBlockBytesTest {
                 .blockMaxBytes(blockMaxBytes)  // ~a handful of messages per block
                 .maxBlockMessages(10_000)      // count is NOT the binding limit here
                 .poolMaxMessages(10_000)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         node = new AppChainSubsystem(config, 42, null, null,
                 tempDir.resolve("ledger").toString(), null, log);

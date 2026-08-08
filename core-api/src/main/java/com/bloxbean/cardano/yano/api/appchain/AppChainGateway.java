@@ -73,36 +73,6 @@ public interface AppChainGateway {
     /** Native profile-specific inclusion or exclusion proof against the committed root. */
     java.util.Optional<byte[]> stateProof(byte[] key);
 
-    /**
-     * Atomic inclusion or exclusion proof for one key, bound to the exact
-     * committed height and state root used to read its value. Implementations
-     * predating this capability must override this method before exposing the
-     * proof endpoint. The default fails explicitly: composing {@link #stateRoot()},
-     * {@link #stateValue(byte[])}, and {@link #stateProof(byte[])} can race a
-     * concurrently finalized block and must never be presented as one proof
-     * snapshot.
-     *
-     * @throws UnsupportedOperationException when the gateway has not implemented
-     *                                       atomic proof snapshots
-     */
-    default java.util.Optional<AppStateProofSnapshot> stateProofSnapshot(byte[] key) {
-        throw new UnsupportedOperationException(
-                "Atomic app-chain state proof snapshots are unavailable");
-    }
-
-    /**
-     * Build an inclusion or exclusion proof against the exact post-state root
-     * of a retained finalized height.
-     *
-     * @throws UnsupportedOperationException when historical proof snapshots
-     *                                       are unavailable
-     */
-    default java.util.Optional<AppStateProofSnapshot> stateProofSnapshotAtHeight(
-            long height, byte[] key) {
-        throw new UnsupportedOperationException(
-                "Historical app-chain state proof snapshots are unavailable");
-    }
-
     /** Genesis-selected authenticated-state identity used by this chain generation. */
     default java.util.Optional<StateCommitmentIdentity> stateCommitmentIdentity() {
         return java.util.Optional.empty();

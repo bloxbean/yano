@@ -33,7 +33,7 @@ final class AppChainStateCli {
             Usage: ./yano.sh appchain state entry|proof --url <api-base> --chain <id>
                      --key <hex> [--height <n>] [--api-key <key>]
                or: ./yano.sh appchain state verify --proof-file <json>
-                     --trusted-root <hex> --profile <id> --genesis-id <hex|legacy>
+                     --trusted-root <hex> --profile <id> --genesis-id <64-hex>
                      --chain <id> --height <n> [--root-source <source>]
                or: ./yano.sh appchain state identity|integrity|oldest --url <api-base> --chain <id> [--api-key <key>]
                or: ./yano.sh appchain state snapshot --url <api-base> --chain <id>
@@ -134,7 +134,6 @@ final class AppChainStateCli {
         String proofJson = Files.readString(proofFile, StandardCharsets.UTF_8);
         AppChainClient.Proof proof = AppChainClient.decodeProofEnvelope(proofJson);
         String genesis = required(options, "genesis-id");
-        if ("legacy".equals(genesis)) genesis = "";
         ProofVerifier.TrustedRootSource source = parseRootSource(
                 options.getOrDefault("root-source", "caller-pinned"));
         ProofVerifier.TrustedStateRoot trusted = new ProofVerifier.TrustedStateRoot(
@@ -360,7 +359,6 @@ final class AppChainStateCli {
             node.put("commitmentFormatId", proof.commitmentFormatId());
             node.put("formatFingerprint", proof.formatFingerprintHex());
             node.put("genesisId", proof.genesisIdHex());
-            node.put("legacy", Boolean.TRUE.equals(proof.legacy()));
             node.put("proofEncodingId", proof.proofEncodingId());
             node.put("nativeVersioning", Boolean.TRUE.equals(proof.nativeVersioning()));
             node.put("physicalDelete", Boolean.TRUE.equals(proof.physicalDelete()));

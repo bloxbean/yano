@@ -81,11 +81,11 @@ class AuthenticatedMapRuntimeTest {
 
         long finalizedHeight = first.tipHeight();
         byte[] rootBeforeRestart = first.stateRoot();
-        assertThat(first.stateProofSnapshot(canonicalKey)).isPresent();
-        assertThat(first.stateProofSnapshotAtHeight(finalizedHeight, canonicalKey))
+        assertThat(first.stateProofEnvelope(canonicalKey)).isPresent();
+        assertThat(first.stateProofEnvelopeAtHeight(finalizedHeight, canonicalKey))
                 .isPresent();
-        assertThat(first.stateProofSnapshotAtHeight(finalizedHeight, canonicalKey)
-                .orElseThrow().stateRoot()).isEqualTo(rootBeforeRestart);
+        assertThat(first.stateProofEnvelopeAtHeight(finalizedHeight, canonicalKey)
+                .orElseThrow().proof().snapshot().stateRoot()).isEqualTo(rootBeforeRestart);
 
         AppQueryResult pointQuery = first.query(
                 AuthenticatedMapContract.POINT_QUERY_PATH,
@@ -116,7 +116,7 @@ class AuthenticatedMapRuntimeTest {
         assertThat(restarted.tipHeight()).isEqualTo(finalizedHeight);
         assertThat(restarted.stateRoot()).isEqualTo(rootBeforeRestart);
         assertThat(restarted.stateValue(canonicalKey)).isPresent();
-        assertThat(restarted.stateProofSnapshotAtHeight(finalizedHeight, canonicalKey))
+        assertThat(restarted.stateProofEnvelopeAtHeight(finalizedHeight, canonicalKey))
                 .isPresent();
         assertThat(snapshot.resolve("snapshot-manifest.json")).exists();
     }

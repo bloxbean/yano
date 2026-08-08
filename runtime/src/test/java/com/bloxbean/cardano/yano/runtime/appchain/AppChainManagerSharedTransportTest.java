@@ -43,6 +43,7 @@ class AppChainManagerSharedTransportTest {
                 .proposerKeyHex(pub)
                 .threshold(1)
                 .peers(peers)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         AppChainSubsystem subsystem = new AppChainSubsystem(config, 42, null, null,
                 tempDir.resolve("ledger").toString(), null, log);

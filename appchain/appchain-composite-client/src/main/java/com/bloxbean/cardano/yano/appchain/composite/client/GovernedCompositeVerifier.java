@@ -176,7 +176,7 @@ public final class GovernedCompositeVerifier {
         byte[] value = decodeHex(proof.valueHex(), maximumValueBytes, "profile proof value");
         if (!MessageDigest.isEqual(key, expectedKey)
                 || !expectedRootHex.equals(proof.stateRootHex())
-                || !ProofVerifier.verify(proof, expectedRootHex)) {
+                || !ProofVerifier.verifyAgainstRoot(proof, expectedRootHex)) {
             throw invalid("profile MPF inclusion proof did not verify");
         }
         return value;

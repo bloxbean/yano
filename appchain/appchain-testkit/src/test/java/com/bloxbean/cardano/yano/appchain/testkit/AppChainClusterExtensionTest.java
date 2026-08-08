@@ -13,7 +13,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * application developer gets — annotate, inject the handle, assert on the
  * replicated chain.
  */
-@AppChainCluster(nodes = 3)
+@AppChainCluster(nodes = 3, threshold = 2)
 @Timeout(90)
 class AppChainClusterExtensionTest {
 
@@ -31,9 +31,11 @@ class AppChainClusterExtensionTest {
             assertThat(cluster.node(i).stateRoot()).isEqualTo(root);
         }
 
-        // 3-of-3 finality cert on the block
+        // The configured 2-of-3 quorum is sufficient. A concurrently arriving
+        // third vote may also be retained before the finalized block diffuses.
         long height = cluster.proposer().messageHeight(HexUtil.decodeHexString(id)).orElseThrow();
-        assertThat(cluster.node(2).block(height).orElseThrow().cert().signatures()).hasSize(3);
+        assertThat(cluster.node(2).block(height).orElseThrow().cert().signatures())
+                .hasSizeBetween(2, 3);
 
         // Proof available from any node
         assertThat(cluster.node(2).stateProof(HexUtil.decodeHexString(id))).isPresent();

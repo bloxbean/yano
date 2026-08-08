@@ -158,6 +158,11 @@ yano:
     #   interval-ms: 2000
     #   max-messages: 500
     # state-machine: ordered-log                          # built-in default app
+    # state:
+    #   commitment-profile: mpf-blake2b256-v1            # authenticated-state algorithm/profile
+    #   format-fingerprint: <64 lowercase hex chars>      # canonical encoding fingerprint
+    #   genesis-id: <64 lowercase hex chars>              # new-chain authenticated-map identity
+    #   l1-proof-consumption-required: true               # reject profiles not verifiable on L1
     # L1 anchoring (anchor wallet must be funded):
     # anchor:
     #   enabled: true
@@ -167,8 +172,8 @@ yano:
     #   metadata-label: 7014                              # metadata mode (A1) only
     #   mode: metadata                                    # metadata (default) | script (ADR 008.4)
     #   script:                                           # script mode (A2): threshold-signed anchor UTxO
-    #     validator: builtin:julc                         # builtin:julc | file:/path | hex:...
-    #     thread-policy: builtin:julc
+    #     validator: builtin:aiken                        # builtin:aiken | file:/path | hex:...
+    #     thread-policy: builtin:aiken
     #   # Script mode: bootstrap once via POST /app-chain/admin/anchor/bootstrap;
     #   # followers need NO anchor config — they verify + co-sign automatically.
     # l1:

@@ -273,6 +273,10 @@ public final class AppChainPropertyRegistry {
                 null, 64, 64, PropertyScope.CONSENSUS_SHARED,
                 ChangePolicy.NEW_CHAIN_REQUIRED, true,
                 "Canonical authenticated-map chain-generation identity"));
+        definitions.add(plain(YanoPropertyKeys.AppChain.STATE_L1_PROOF_CONSUMPTION_REQUIRED,
+                PropertyType.BOOLEAN, "false", PropertyScope.CONSENSUS_SHARED,
+                ChangePolicy.NEW_CHAIN_REQUIRED, true,
+                "Require an MPF commitment profile consumable by L1 validators"));
         definitions.add(plain(YanoPropertyKeys.AppChain.ANCHOR_ENABLED, PropertyType.BOOLEAN,
                 "false", PropertyScope.CONSENSUS_SHARED, ChangePolicy.GOVERNED_ACTIVATION, true,
                 "Enable Cardano L1 anchoring"));

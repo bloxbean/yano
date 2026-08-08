@@ -5,6 +5,7 @@ import com.bloxbean.cardano.vds.core.api.NodeStore;
 import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
 import com.bloxbean.cardano.yano.appchain.client.MpfProofConverter;
+import com.bloxbean.cardano.yano.appchain.client.ProofVerifier;
 import com.bloxbean.cardano.yano.appchain.proofs.MpfNormalizedProof;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoOutpoint;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoStateKeys;
@@ -307,7 +308,7 @@ class ProofVaultValidatorConformanceTest extends ContractTest {
                     ("value-" + i).getBytes(StandardCharsets.US_ASCII));
         }
         byte[] root = trie.getRootHash();
-        AppChainClient.Proof wire = new AppChainClient.Proof(
+        AppChainClient.Proof wire = clientProof(
                 HexFormat.of().formatHex(key),
                 "payments",
                 HexFormat.of().formatHex(root),
@@ -317,7 +318,7 @@ class ProofVaultValidatorConformanceTest extends ContractTest {
                 42L,
                 42L);
         MpfNormalizedProof proof = MpfProofConverter.convert(wire);
-        AppChainClient.Proof unrelatedWire = new AppChainClient.Proof(
+        AppChainClient.Proof unrelatedWire = clientProof(
                 HexFormat.of().formatHex(unrelatedKey),
                 "payments",
                 HexFormat.of().formatHex(root),
@@ -442,6 +443,27 @@ class ProofVaultValidatorConformanceTest extends ContractTest {
         byte[] result = new byte[length];
         Arrays.fill(result, (byte) value);
         return result;
+    }
+
+    private static AppChainClient.Proof clientProof(
+            String keyHex,
+            String chainId,
+            String stateRootHex,
+            String proofWireHex,
+            String valueHex,
+            Long finalizedAtHeight,
+            Long committedHeight
+    ) {
+        ProofVerifier.ProfileMetadata metadata = ProofVerifier.profileMetadata(
+                ProofVerifier.MPF_BLAKE2B256_V1).orElseThrow();
+        return new AppChainClient.Proof(
+                keyHex, chainId, stateRootHex, proofWireHex, valueHex,
+                finalizedAtHeight, committedHeight, 1,
+                ProofVerifier.MPF_BLAKE2B256_V1, metadata.backend(),
+                metadata.commitmentFormatId(), metadata.formatFingerprintHex(),
+                "11".repeat(32), metadata.proofEncodingId(),
+                metadata.nativeVersioning(), metadata.physicalDelete(), committedHeight,
+                AppChainClient.ProofPresence.PRESENT, null, null);
     }
 
     private record Fixture(

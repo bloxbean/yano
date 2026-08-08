@@ -54,6 +54,7 @@ class AppChainRetentionTest {
                 .proposerKeyHex(pubA)
                 .threshold(1)
                 .blockIntervalMs(300)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         node = new AppChainSubsystem(config, 42, null, null,
                 tempDir.resolve("ledger").toString(), null, log);

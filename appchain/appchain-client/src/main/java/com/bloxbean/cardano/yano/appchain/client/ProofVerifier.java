@@ -66,30 +66,9 @@ public final class ProofVerifier {
         @Override public void delete(byte[] hash) { }
     }
 
-    /**
-     * Checks mathematical consistency against the root carried by the same
-     * envelope. This does not authenticate the chain or root.
-     *
-     * @deprecated use {@link #verify(AppChainClient.Proof, TrustedStateRoot)}
-     * or {@link #verifyCertified(AppChainClient.Proof, FinalityTrustContext)}.
-     */
-    @Deprecated(forRemoval = false)
-    public static boolean verify(AppChainClient.Proof proof) {
-        return verifyInternalConsistency(proof);
-    }
-
     /** Checks proof/root internal consistency without making an authenticity claim. */
     public static boolean verifyInternalConsistency(AppChainClient.Proof proof) {
         return proof != null && verifyAgainstRoot(proof, proof.stateRootHex());
-    }
-
-    /**
-     * Checks mathematical consistency against an explicit root string. This
-     * legacy overload does not bind chain, genesis, profile, or height; prefer
-     * the {@link TrustedStateRoot} overload at trust boundaries.
-     */
-    public static boolean verify(AppChainClient.Proof proof, String expectedStateRootHex) {
-        return verifyAgainstRoot(proof, expectedStateRootHex);
     }
 
     /** Exact profile metadata compiled into this release's client verifier. */
@@ -110,23 +89,9 @@ public final class ProofVerifier {
     public static boolean hasCanonicalProfileMetadata(AppChainClient.Proof proof) {
         if (proof == null) return false;
         Integer schema = proof.proofSchemaVersion();
-        if (schema == null || schema == 0) {
-            return MPF_BLAKE2B256_V1.equals(proof.profile())
-                    && "mpf".equals(proof.backend())
-                    && "mpf-blake2b256-format-v1".equals(
-                    proof.commitmentFormatId())
-                    && "mpf-proof-wire-v1".equals(proof.proofEncodingId())
-                    && proof.formatFingerprintHex() == null
-                    && Boolean.TRUE.equals(proof.legacy())
-                    && Boolean.FALSE.equals(proof.nativeVersioning())
-                    && Boolean.TRUE.equals(proof.physicalDelete())
-                    && nullToEmpty(proof.genesisIdHex()).isEmpty()
-                    && proof.presence() != AppChainClient.ProofPresence.TOMBSTONED;
-        }
         Optional<ProfileMetadata> selected = profileMetadata(proof.profile());
-        if (schema != 1 || selected.isEmpty() || proof.legacy() == null) return false;
+        if (schema == null || schema != 1 || selected.isEmpty()) return false;
         ProfileMetadata metadata = selected.orElseThrow();
-        boolean legacy = proof.legacy();
         String genesis = nullToEmpty(proof.genesisIdHex());
         return metadata.backend().equals(proof.backend())
                 && metadata.commitmentFormatId().equals(proof.commitmentFormatId())
@@ -134,8 +99,7 @@ public final class ProofVerifier {
                 && metadata.formatFingerprintHex().equals(proof.formatFingerprintHex())
                 && metadata.nativeVersioning() == Boolean.TRUE.equals(proof.nativeVersioning())
                 && metadata.physicalDelete() == Boolean.TRUE.equals(proof.physicalDelete())
-                && (!legacy || MPF_BLAKE2B256_V1.equals(proof.profile()))
-                && (legacy ? genesis.isEmpty() : canonicalHex(genesis, HASH_BYTES))
+                && canonicalHex(genesis, HASH_BYTES)
                 && !(metadata.physicalDelete()
                 && proof.presence() == AppChainClient.ProofPresence.TOMBSTONED);
     }
@@ -213,7 +177,11 @@ public final class ProofVerifier {
         }
     }
 
-    private static boolean verifyAgainstRoot(
+    /**
+     * Checks proof mathematics against an explicit root without authenticating that root.
+     * Use {@link #verify(AppChainClient.Proof, TrustedStateRoot)} at trust boundaries.
+     */
+    public static boolean verifyAgainstRoot(
             AppChainClient.Proof proof,
             String expectedStateRootHex
     ) {
@@ -439,12 +407,9 @@ public final class ProofVerifier {
                 throw new IllegalArgumentException("unsupported state commitment profile");
             }
             genesisIdHex = Objects.requireNonNull(genesisIdHex, "genesisIdHex");
-            if (!(genesisIdHex.isEmpty() || canonicalHex(genesisIdHex, HASH_BYTES))) {
+            if (!canonicalHex(genesisIdHex, HASH_BYTES)) {
                 throw new IllegalArgumentException(
-                        "genesisIdHex must be empty for legacy state or 32-byte canonical hex");
-            }
-            if (genesisIdHex.isEmpty() && !MPF_BLAKE2B256_V1.equals(profile)) {
-                throw new IllegalArgumentException("only legacy MPF may use an empty genesis id");
+                        "genesisIdHex must be 32-byte canonical hex");
             }
             if (height <= 0) {
                 throw new IllegalArgumentException("trusted state height must be positive");
@@ -471,11 +436,8 @@ public final class ProofVerifier {
                 throw new IllegalArgumentException("unsupported state commitment profile");
             }
             genesisIdHex = Objects.requireNonNull(genesisIdHex, "genesisIdHex");
-            if (!(genesisIdHex.isEmpty() || canonicalHex(genesisIdHex, HASH_BYTES))) {
+            if (!canonicalHex(genesisIdHex, HASH_BYTES)) {
                 throw new IllegalArgumentException("invalid genesis identity");
-            }
-            if (genesisIdHex.isEmpty() && !MPF_BLAKE2B256_V1.equals(profile)) {
-                throw new IllegalArgumentException("only legacy MPF may use an empty genesis id");
             }
             if (memberKeysHex == null || memberKeysHex.isEmpty()
                     || memberKeysHex.size() > MAX_MEMBERS) {

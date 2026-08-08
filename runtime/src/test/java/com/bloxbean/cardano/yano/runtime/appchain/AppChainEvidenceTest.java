@@ -78,6 +78,7 @@ class AppChainEvidenceTest {
                 .proposerKeyHex(pubA)
                 .threshold(1)
                 .blockIntervalMs(300)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         node = new AppChainSubsystem(config, 42, null, null,
                 tempDir.resolve("ledger").toString(), null, log);
@@ -109,7 +110,9 @@ class AppChainEvidenceTest {
         assertThat(result.anchoredToL1()).isFalse();
         assertThat(EvidenceVerifier.verify(bundle, new EvidenceVerifier.TrustContext(
                 "evidence-chain", Set.of(pubA, pubB), 1,
-                StateCommitmentProfiles.MPF_BLAKE2B256_V1, "")).valid()).isTrue();
+                StateCommitmentProfiles.MPF_BLAKE2B256_V1,
+                HexUtil.encodeHexString(
+                        bundle.stateCommitment().identity().genesisId()))).valid()).isTrue();
 
         // JSON round-trips and re-verifies signed header/message commitments.
         String json = EvidenceBundleCodec.toJson(bundle);
@@ -142,6 +145,7 @@ class AppChainEvidenceTest {
                 .proposerKeyHex(pubA)
                 .threshold(1)
                 .blockIntervalMs(300)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         node = new AppChainSubsystem(config, 42, null, null,
                 tempDir.resolve("ledger2").toString(), null, log);
@@ -194,6 +198,7 @@ class AppChainEvidenceTest {
                 .maxMessageBytes(3_000)
                 .blockMaxBytes(8_192)
                 .blockIntervalMs(100)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         node = new AppChainSubsystem(config, 42, null, null,
                 tempDir.resolve("ledger-bounded").toString(), null, log);

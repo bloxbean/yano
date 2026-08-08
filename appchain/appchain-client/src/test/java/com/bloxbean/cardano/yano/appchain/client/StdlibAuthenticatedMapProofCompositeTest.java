@@ -65,7 +65,7 @@ class StdlibAuthenticatedMapProofCompositeTest {
                      "valueHex":"%s","committedHeight":1,"proofSchemaVersion":1,
                      "schemaVersion":1,"profile":"%s","backend":"%s",
                      "commitmentFormatId":"%s","formatFingerprint":"%s",
-                     "genesisId":"%s","legacy":false,"proofEncodingId":"%s",
+                     "genesisId":"%s","proofEncodingId":"%s",
                      "nativeVersioning":true,"physicalDelete":false,"version":1,
                      "oldestProvableHeight":1,"presence":"PRESENT","blockHash":"%s",
                      "block":{"version":1,"height":1,"prevHash":"%s","l1Slot":0,

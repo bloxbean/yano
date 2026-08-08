@@ -34,7 +34,7 @@ class PreparedStateCommitRuntimeTest {
     private static final byte[] VALUE = "legacy-value".getBytes(StandardCharsets.UTF_8);
 
     @Test
-    void legacyMpfRootAndProofBytesRemainIdenticalAndCandidateIsSideEffectFree(
+    void mpfRootAndProofBytesRemainStableAndCandidateIsSideEffectFree(
             @TempDir Path directory
     ) {
         MapNodeStore baselineNodes = new MapNodeStore();
@@ -75,7 +75,8 @@ class PreparedStateCommitRuntimeTest {
                     StateProofEnvelope.PROOF_SCHEMA_VERSION);
             assertThat(envelope.proof().presence()).isEqualTo(StateProof.Presence.PRESENT);
             assertThat(envelope.proof().nativeProof()).isEqualTo(expectedProof);
-            assertThat(envelope.proof().snapshot().identity().legacy()).isTrue();
+            assertThat(envelope.proof().snapshot().identity().profile())
+                    .isEqualTo(StateCommitmentProfiles.MPF);
             assertThat(envelope.blockHash()).isEqualTo(AppBlockCodec.blockHash(block));
         }
 
@@ -137,7 +138,8 @@ class PreparedStateCommitRuntimeTest {
             OneShotFault fault = new OneShotFault(point);
             try (AppLedgerStore ledger = new AppLedgerStore(
                     ledgerPath.toString(), LoggerFactory.getLogger("prepared-state-fault"),
-                    StateCommitmentIdentity.legacyMpf(), fault)) {
+                    StateCommitmentIdentity.explicit(
+                            StateCommitmentProfiles.MPF, new byte[32]), fault)) {
                 assertThatThrownBy(() -> attemptCommit(ledger))
                         .isInstanceOf(InjectedFault.class)
                         .hasMessageContaining(point.name());
@@ -175,7 +177,8 @@ class PreparedStateCommitRuntimeTest {
                 StateCommitFaultInjector.FaultPoint.AFTER_RESTART_VERIFICATION)) {
             assertThatThrownBy(() -> new AppLedgerStore(
                     ledgerPath.toString(), LoggerFactory.getLogger("prepared-state-restart"),
-                    StateCommitmentIdentity.legacyMpf(), new OneShotFault(point)))
+                    StateCommitmentIdentity.explicit(
+                            StateCommitmentProfiles.MPF, new byte[32]), new OneShotFault(point)))
                     .isInstanceOf(InjectedFault.class)
                     .hasMessageContaining(point.name());
             try (AppLedgerStore reopened = new AppLedgerStore(
@@ -221,7 +224,7 @@ class PreparedStateCommitRuntimeTest {
         assertThatThrownBy(() -> new AppLedgerStore(
                 ledgerPath.toString(), LoggerFactory.getLogger("prepared-state-identity")))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Legacy MPF configuration");
+                .hasMessageContaining("state-commitment profile, fingerprint, or genesis id");
         StateCommitmentIdentity differentGenesis = StateCommitmentIdentity.explicit(
                 StateCommitmentProfiles.MPF, repeated(4, 32));
         try (AppLedgerStore incompatiblePeer = new AppLedgerStore(

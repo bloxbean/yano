@@ -28,8 +28,7 @@ import java.util.stream.IntStream;
 /**
  * Conformance vectors for the anchor spending validator (ADR app-layer/008.4
  * §4, ABI: core-api/src/main/cddl/appchain/anchor-v1.cddl). These vectors are
- * implementation-independent: the Aiken opt-in implementation must pass the
- * same set against the same context/datum encodings.
+ * implementation-independent and exercise the exact checked-in release artifact.
  */
 class AnchorValidatorConformanceTest extends ContractTest {
 
@@ -51,7 +50,7 @@ class AnchorValidatorConformanceTest extends ContractTest {
     static final List<byte[]> MEMBERS_33 = members(33);
     static final long THRESHOLD = 2;
 
-    static Program julcProgram;
+    static Program releaseProgram;
 
     @BeforeAll
     static void setUp() {
@@ -59,17 +58,16 @@ class AnchorValidatorConformanceTest extends ContractTest {
     }
 
     /**
-     * The implementation under test — the CHECKED-IN julc artifact (the exact
-     * bytes the runtime ships; environment-independent). The Aiken twin and
-     * the local-only source-compile drift test override this.
+     * The implementation under test: the exact Aiken artifact shipped by the runtime.
+     * The local-only Java source-compile drift test overrides this method.
      */
     Program program() {
-        if (julcProgram == null) {
-            julcProgram = BundledJulcArtifacts.load(
+        if (releaseProgram == null) {
+            releaseProgram = BundledAnchorArtifacts.load(
                     "META-INF/plutus/AnchorValidator.plutus.json",
                     PlutusData.bytes(THREAD_POLICY));
         }
-        return julcProgram;
+        return releaseProgram;
     }
 
     // -----------------------------------------------------------------

@@ -46,20 +46,16 @@ class AppChainPluginStateMachineTest {
     @Test
     void customStateMachine_loadedViaServiceLoader_andApplied() throws Exception {
         String pubA = pubHex(KEY_A);
-        AppChainConfig config = new AppChainConfig(
-                "plugin-chain",
-                HexUtil.encodeHexString(KEY_A),
-                Set.of(pubA),
-                List.of(),
-                65536, 3600, 600,
-                pubA,           // single-member chain: self-proposing
-                1,              // threshold 1 (self-vote)
-                300,
-                100,
-                TestKvStateMachineProvider.ID,   // NOT a built-in — resolved via ServiceLoader
-                null,
-                null, 0, java.util.List.of(),
-                false, 0, java.util.Map.of());
+        AppChainConfig config = AppChainConfig.builder("plugin-chain")
+                .signingKeyHex(HexUtil.encodeHexString(KEY_A))
+                .memberKeysHex(Set.of(pubA))
+                .proposerKeyHex(pubA)
+                .threshold(1)
+                .blockIntervalMs(300)
+                .maxBlockMessages(100)
+                .stateMachineId(TestKvStateMachineProvider.ID)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .build();
 
         node = new AppChainSubsystem(config, 42, null, null,
                 tempDir.resolve("ledger").toString(), null, log);
@@ -79,10 +75,16 @@ class AppChainPluginStateMachineTest {
         assertThat(node.stateProof("color".getBytes(StandardCharsets.UTF_8))).isPresent();
 
         // Unknown ids fail fast with the available list
-        AppChainConfig badConfig = new AppChainConfig(
-                "bad-chain", HexUtil.encodeHexString(KEY_A), Set.of(pubA), List.of(),
-                65536, 3600, 600, pubA, 1, 300, 100, "no-such-machine", null, null, 0, java.util.List.of(),
-                false, 0, java.util.Map.of());
+        AppChainConfig badConfig = AppChainConfig.builder("bad-chain")
+                .signingKeyHex(HexUtil.encodeHexString(KEY_A))
+                .memberKeysHex(Set.of(pubA))
+                .proposerKeyHex(pubA)
+                .threshold(1)
+                .blockIntervalMs(300)
+                .maxBlockMessages(100)
+                .stateMachineId("no-such-machine")
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .build();
         org.assertj.core.api.Assertions.assertThatThrownBy(() ->
                         new AppChainSubsystem(badConfig, 42, null, null,
                                 tempDir.resolve("ledger2").toString(), null, log))

@@ -49,7 +49,7 @@ class MpfProofConverterTest {
         AppChainClient.Proof valid = proof(
                 trie, trie.getRootHash(), key, value);
 
-        AppChainClient.Proof tampered = new AppChainClient.Proof(
+        AppChainClient.Proof tampered = TestProofs.mpf(
                 valid.keyHex(),
                 valid.chainId(),
                 valid.stateRootHex(),
@@ -58,18 +58,18 @@ class MpfProofConverterTest {
                         "other".getBytes(StandardCharsets.US_ASCII)),
                 valid.finalizedAtHeight(),
                 valid.committedHeight());
-        AppChainClient.Proof legacy = new AppChainClient.Proof(
+        AppChainClient.Proof nonAtomic = TestProofs.mpf(
                 valid.keyHex(),
                 valid.chainId(),
                 valid.stateRootHex(),
                 valid.proofWireHex(),
                 valid.valueHex(),
-                valid.finalizedAtHeight());
+                valid.finalizedAtHeight(), null);
 
         assertThatThrownBy(() -> MpfProofConverter.convert(tampered))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("invalid MPF");
-        assertThatThrownBy(() -> MpfProofConverter.convert(legacy))
+        assertThatThrownBy(() -> MpfProofConverter.convert(nonAtomic))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("root-fixed");
     }
@@ -80,7 +80,7 @@ class MpfProofConverterTest {
             byte[] key,
             byte[] value
     ) {
-        return new AppChainClient.Proof(
+        return TestProofs.mpf(
                 HexFormat.of().formatHex(key),
                 "eutxo",
                 HexFormat.of().formatHex(root),

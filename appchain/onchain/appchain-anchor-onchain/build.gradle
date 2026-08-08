@@ -1,20 +1,13 @@
-// App-chain script anchor — on-chain validators written in Java (julc,
-// ADR app-layer/008.4 §2.4). The compiled UPLC artifacts under
+// App-chain script anchor. The release UPLC artifacts under
 // src/main/resources/META-INF/plutus/ are CHECKED IN (not regenerated at
 // build time): the script hash derived from them is the chain's on-chain
-// IDENTITY, so it must be byte-stable across machines and julc versions.
-// The released julc 0.1.0-pre14 miscompiles the validator's loop-carried
-// state. The checked validator was generated with post-release julc commit
-// 94eaecee3220. To regenerate after a deliberate source/compiler change,
-// first run JulcSourceCompile* with -Djulc.source-check=true and
-// --include-build pointing at that julc checkout, then rebuild julc-cli's
-// shadowJar and refresh the JSON from a clean CLI compile. Finally run this
-// module's complete checked-artifact suite and the runtime identity golden.
+// IDENTITY, so it must be byte-stable. Aiken is the release implementation;
+// Java/julc sources remain an opt-in cross-implementation drift check.
 plugins {
     id 'java-library'
 }
 
-description = 'Yano app-chain anchor validators (julc/Java default implementation, ADR 008.4)'
+description = 'Yano app-chain anchor validators (Aiken release implementation, ADR 031)'
 
 dependencies {
     // compileOnly: julc's authoring stack COMPILES the validator sources (never
@@ -49,7 +42,7 @@ publishing {
         mavenJava(MavenPublication) {
             pom {
                 name = 'Yano App-Chain Anchor Validators (on-chain)'
-                description = 'Plutus V3 anchor validator + one-shot thread policy, authored in Java (julc)'
+                description = 'Aiken Plutus V3 anchor validator and one-shot thread policy'
             }
         }
     }

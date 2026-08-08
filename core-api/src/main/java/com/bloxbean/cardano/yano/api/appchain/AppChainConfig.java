@@ -1,10 +1,13 @@
 package com.bloxbean.cardano.yano.api.appchain;
 
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 
 /**
  * Configuration of one app chain this node participates in.
@@ -114,21 +117,6 @@ public record AppChainConfig(String chainId,
     /** Exact Ed25519 signature/proof size in the v1 message and finality profile. */
     public static final int ED25519_SIGNATURE_BYTES = 64;
 
-    /** Pre-008.1 signature (no pool capacity / seq enforcement) — kept for source compatibility. */
-    public AppChainConfig(String chainId, String signingKeyHex, Set<String> memberKeysHex,
-                          List<AppPeer> peers, int maxMessageBytes, long maxTtlSeconds,
-                          long defaultTtlSeconds, String proposerKeyHex, int threshold,
-                          long blockIntervalMs, int maxBlockMessages, String stateMachineId,
-                          String ledgerPath, AnchorConfig anchor, int l1StabilityDepth,
-                          List<String> webhookUrls, boolean retentionEnabled,
-                          int retentionKeepBlocks, Map<String, String> pluginSettings) {
-        this(chainId, signingKeyHex, memberKeysHex, peers, maxMessageBytes, maxTtlSeconds,
-                defaultTtlSeconds, proposerKeyHex, threshold, blockIntervalMs, maxBlockMessages,
-                DEFAULT_BLOCK_MAX_BYTES, stateMachineId, ledgerPath, anchor, l1StabilityDepth,
-                webhookUrls, retentionEnabled, retentionKeepBlocks, DEFAULT_POOL_MAX_MESSAGES,
-                false, pluginSettings);
-    }
-
     public AppChainConfig {
         Objects.requireNonNull(chainId, "chainId");
         if (chainId.isBlank() || chainId.indexOf('\0') >= 0
@@ -216,6 +204,7 @@ public record AppChainConfig(String chainId,
         private int poolMaxMessages = DEFAULT_POOL_MAX_MESSAGES;
         private boolean enforceSenderSeq;
         private Map<String, String> pluginSettings = Map.of();
+        private StateCommitmentIdentity stateCommitmentIdentity;
 
         private Builder(String chainId) {
             this.chainId = chainId;
@@ -243,13 +232,41 @@ public record AppChainConfig(String chainId,
         public Builder enforceSenderSeq(boolean value) { this.enforceSenderSeq = value; return this; }
         public Builder pluginSettings(Map<String, String> value) { this.pluginSettings = value; return this; }
 
+        /**
+         * Adds the complete authenticated-state identity without making callers
+         * manually copy its three consensus-critical settings.
+         */
+        public Builder stateCommitmentIdentity(StateCommitmentIdentity identity) {
+            Objects.requireNonNull(identity, "identity");
+            if (stateCommitmentIdentity != null && !stateCommitmentIdentity.equals(identity)) {
+                throw new IllegalArgumentException("conflicting state commitment identity");
+            }
+            this.stateCommitmentIdentity = identity;
+            return this;
+        }
+
         public AppChainConfig build() {
             return new AppChainConfig(chainId, signingKeyHex, memberKeysHex, peers,
                     maxMessageBytes, maxTtlSeconds, defaultTtlSeconds, proposerKeyHex,
                     threshold, blockIntervalMs, maxBlockMessages, blockMaxBytes, stateMachineId,
                     ledgerPath, anchor, l1StabilityDepth, webhookUrls,
                     retentionEnabled, retentionKeepBlocks, poolMaxMessages, enforceSenderSeq,
-                    pluginSettings);
+                    effectivePluginSettings());
+        }
+
+        private Map<String, String> effectivePluginSettings() {
+            Map<String, String> merged = new LinkedHashMap<>(
+                    pluginSettings != null ? pluginSettings : Map.of());
+            if (stateCommitmentIdentity != null) {
+                stateCommitmentIdentity.settings().forEach((key, value) -> {
+                    String existing = merged.putIfAbsent(key, value);
+                    if (existing != null && !existing.equals(value)) {
+                        throw new IllegalArgumentException(
+                                "conflicting state commitment setting: " + key);
+                    }
+                });
+            }
+            return Map.copyOf(merged);
         }
     }
 
@@ -353,7 +370,7 @@ public record AppChainConfig(String chainId,
      * ref selects a compiled Plutus V3 UPLC artifact; script hash and address
      * are ALWAYS derived from the resolved artifact, never from source:
      * <ul>
-     *   <li>{@code builtin:julc} — the bundled julc-compiled artifact</li>
+     *   <li>{@code builtin:aiken} — the bundled release Aiken artifact</li>
      *   <li>{@code file:/path} — a .plutus.json blueprint or raw double-CBOR hex file</li>
      *   <li>{@code hex:...} — inline double-CBOR UPLC hex</li>
      * </ul>
@@ -363,17 +380,17 @@ public record AppChainConfig(String chainId,
      */
     public record AnchorScriptConfig(String validatorRef, String threadPolicyRef) {
 
-        public static final String BUILTIN_JULC = "builtin:julc";
+        public static final String BUILTIN_AIKEN = "builtin:aiken";
 
         public static AnchorScriptConfig defaults() {
-            return new AnchorScriptConfig(BUILTIN_JULC, BUILTIN_JULC);
+            return new AnchorScriptConfig(BUILTIN_AIKEN, BUILTIN_AIKEN);
         }
 
         public AnchorScriptConfig {
             if (validatorRef == null || validatorRef.isBlank())
-                validatorRef = BUILTIN_JULC;
+                validatorRef = BUILTIN_AIKEN;
             if (threadPolicyRef == null || threadPolicyRef.isBlank())
-                threadPolicyRef = BUILTIN_JULC;
+                threadPolicyRef = BUILTIN_AIKEN;
         }
     }
 

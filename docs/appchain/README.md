@@ -30,6 +30,7 @@ credentials unless a guide explicitly says otherwise.
 | Call an ERP/API after a finalized decision | [Webhook effects](tutorials/06-webhook-effects.md) | Configuration; emission is stock or plugin logic |
 | Understand and verify Cardano settlement | [Anchors and independent verification](tutorials/07-anchors-and-verification.md) | No |
 | Implement new business rules without forking Yano | [Plugins and composites](tutorials/08-plugins-and-composites.md) | Small Java plugin |
+| Reuse stock transitions and verify portable proofs | [Composable state and proofs](COMPOSABLE_STATE_AND_PROOFS.md) | Java/configuration |
 | Prepare a pilot deployment | [From demo to pilot](tutorials/09-from-demo-to-pilot.md) | Operations work |
 | Trace an experimental EUTxO ZK round trip on devnet | [EUTxO ZK devnet walkthrough](../../appchain/extensions/eutxo-zk/DEVNET_WALKTHROUGH.md) | Cardano builder integration |
 

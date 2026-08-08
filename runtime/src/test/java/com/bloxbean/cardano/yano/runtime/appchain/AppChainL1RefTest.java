@@ -172,7 +172,8 @@ class AppChainL1RefTest {
                 .proposerKeyHex(proposerHex)
                 .threshold(2)
                 .blockIntervalMs(500)
-                .l1StabilityDepth(DEPTH);
+                .l1StabilityDepth(DEPTH)
+                .stateCommitmentIdentity(TestStateCommitments.MPF);
     }
 
     private AppChainSubsystem startNode(String name, byte[] signingKey, EventBus eventBus,

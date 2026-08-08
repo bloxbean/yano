@@ -10,7 +10,7 @@ import java.util.function.Function;
 
 /**
  * Spring-friendly facade over {@link AppChainClient} (ADR app-layer/006 E1.4):
- * submit, read, and <em>verify</em> app-chain records with one injected bean.
+ * submit and read app-chain records with one injected bean.
  * For anything not covered here, {@link #client()} exposes the full SDK.
  */
 public class AppChainTemplate {
@@ -47,8 +47,10 @@ public class AppChainTemplate {
     }
 
     /**
-     * Fetch the inclusion proof for a state key and verify it locally
-     * ("don't trust, verify"). Empty when the key has no committed entry.
+     * Fetch the inclusion proof for a state key and check its internal proof/root
+     * consistency. Empty when the key has no committed entry. Callers requiring
+     * authenticity must verify against an independently trusted root or finality
+     * context through {@link ProofVerifier}.
      *
      * @return the verified proof, or empty when the key is absent
      * @throws IllegalStateException when the node returned a proof that FAILS
@@ -57,7 +59,7 @@ public class AppChainTemplate {
      */
     public Optional<AppChainClient.Proof> verifiedProof(byte[] stateKey) {
         Optional<AppChainClient.Proof> proof = client.proof(stateKey);
-        if (proof.isPresent() && !ProofVerifier.verify(proof.get())) {
+        if (proof.isPresent() && !ProofVerifier.verifyInternalConsistency(proof.get())) {
             throw new IllegalStateException("MPF proof verification FAILED for key "
                     + Hex.encode(stateKey) + " — the node returned a tampered/invalid proof");
         }

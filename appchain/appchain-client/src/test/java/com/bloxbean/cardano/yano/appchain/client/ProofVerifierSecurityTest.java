@@ -47,10 +47,10 @@ class ProofVerifierSecurityTest {
 
     @Test
     void malformedPublicProofAndOversizedInputsFailClosed() {
-        AppChainClient.Proof malformed = new AppChainClient.Proof(
-                "not-hex", "chain", "also-not-hex", "zz", "01", null);
-        assertThat(ProofVerifier.verify(malformed)).isFalse();
-        assertThat(ProofVerifier.verify(null)).isFalse();
+        AppChainClient.Proof malformed = TestProofs.mpf(
+                "not-hex", "chain", "also-not-hex", "zz", "01", null, 1L);
+        assertThat(ProofVerifier.verifyInternalConsistency(malformed)).isFalse();
+        assertThat(ProofVerifier.verifyInternalConsistency(null)).isFalse();
         assertThat(ProofVerifier.verifyInclusion(
                 new byte[31], new byte[]{1}, new byte[]{2}, new byte[]{(byte) 0x80}))
                 .isFalse();

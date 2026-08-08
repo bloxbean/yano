@@ -62,6 +62,7 @@ class AppChainSystemTopicAdmissionTest {
                 .blockIntervalMs(200)
                 .maxMessageBytes(1_024)
                 .blockMaxBytes(8_192)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         subsystem = new AppChainSubsystem(config, 42, null, null,
                 directory.resolve("ledger").toString(), null,
@@ -140,6 +141,7 @@ class AppChainSystemTopicAdmissionTest {
                 .memberKeysHex(Set.of(signer.publicKeyHex()))
                 .proposerKeyHex(signer.publicKeyHex())
                 .threshold(1)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         subsystem = new AppChainSubsystem(config, 42, null, null,
                 directory.resolve("early-ledger").toString(), null,

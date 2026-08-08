@@ -71,6 +71,7 @@ class EncryptedBodyTest {
         String pubA = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_A));
         AppChainConfig config = AppChainConfig.builder("enc-chain")
                 .signingKeyHex(HexUtil.encodeHexString(KEY_A))
+                .stateCommitmentIdentity(StdlibTestStateCommitments.mpf("enc-chain"))
                 .memberKeysHex(Set.of(pubA))
                 .proposerKeyHex(pubA)
                 .threshold(1)

@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.appchain.examples.evidence.client;
 import com.bloxbean.cardano.vds.core.api.NodeStore;
 import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
+import com.bloxbean.cardano.yano.appchain.client.ProofVerifier;
 import com.bloxbean.cardano.yano.appchain.composite.contracts.CompositeCommitmentV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.EvidenceContract;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.query.EvidenceGetResponseV1;
@@ -288,10 +289,10 @@ class EvidenceClientTest {
         assertFailure(() -> client(height, 1).queryVerified(ID, 1),
                 EvidenceClientError.SNAPSHOT_RACE_EXHAUSTED);
 
-        FakeNode legacyWithoutHeight = node(new Plan(snapshot, snapshot,
+        FakeNode proofWithoutHeight = node(new Plan(snapshot, snapshot,
                 Mutation.OMIT_HEIGHT, null, null, null, false, false));
-        assertFailure(() -> client(legacyWithoutHeight, 1).queryVerified(ID, 1),
-                EvidenceClientError.PROOF_INVALID);
+        assertFailure(() -> client(proofWithoutHeight, 1).queryVerified(ID, 1),
+                EvidenceClientError.TRANSPORT_FAILURE);
     }
 
     @Test
@@ -398,7 +399,7 @@ class EvidenceClientTest {
 
         for (int i = 0; i < 2_000; i++) {
             String attackerText = randomAscii(random, 32 + random.nextInt(65));
-            AppChainClient.Proof malformed = new AppChainClient.Proof(
+            AppChainClient.Proof malformed = profiledProof(
                     attackerText, CHAIN, attackerText, attackerText,
                     attackerText, null, 110L);
             EvidenceClientException failure = capture(() -> EvidenceProofVerifier.verify(
@@ -409,7 +410,7 @@ class EvidenceClientTest {
         }
 
         String oversized = "a".repeat(2 * 1024 * 1024 + 2);
-        AppChainClient.Proof malformed = new AppChainClient.Proof(
+        AppChainClient.Proof malformed = profiledProof(
                 oversized, CHAIN, "00".repeat(32), "00", "00", null, 110L);
         assertFailure(() -> EvidenceProofVerifier.verify(
                         query, snapshot.response, malformed, malformed, CHAIN, ID, 1),
@@ -572,6 +573,37 @@ class EvidenceClientTest {
             if (committedHeight != null) {
                 json.append(",\"committedHeight\":").append(committedHeight);
             }
+            long envelopeHeight = committedHeight != null ? committedHeight : snapshot.height;
+            ProofVerifier.ProfileMetadata metadata = ProofVerifier.profileMetadata(
+                    ProofVerifier.MPF_BLAKE2B256_V1).orElseThrow();
+            String blockHash = "22".repeat(32);
+            json.append(",\"proofSchemaVersion\":1,\"schemaVersion\":1")
+                    .append(",\"profile\":\"").append(metadata.id()).append('"')
+                    .append(",\"backend\":\"").append(metadata.backend()).append('"')
+                    .append(",\"commitmentFormatId\":\"")
+                    .append(metadata.commitmentFormatId()).append('"')
+                    .append(",\"formatFingerprint\":\"")
+                    .append(metadata.formatFingerprintHex()).append('"')
+                    .append(",\"genesisId\":\"").append("11".repeat(32)).append('"')
+                    .append(",\"proofEncodingId\":\"")
+                    .append(metadata.proofEncodingId()).append('"')
+                    .append(",\"nativeVersioning\":").append(metadata.nativeVersioning())
+                    .append(",\"physicalDelete\":").append(metadata.physicalDelete())
+                    .append(",\"version\":").append(envelopeHeight)
+                    .append(",\"oldestProvableHeight\":1")
+                    .append(",\"presence\":\"")
+                    .append(value == null ? "ABSENT" : "PRESENT").append('"')
+                    .append(",\"blockHash\":\"").append(blockHash).append('"')
+                    .append(",\"block\":{\"version\":1,\"height\":")
+                    .append(envelopeHeight)
+                    .append(",\"prevHash\":\"").append("00".repeat(32))
+                    .append("\",\"l1Slot\":0,\"l1BlockHash\":\"\",\"timestamp\":1")
+                    .append(",\"messagesRoot\":\"").append("33".repeat(32)).append('"')
+                    .append(",\"stateRoot\":\"").append(hex(root)).append('"')
+                    .append(",\"blockHash\":\"").append(blockHash).append("\"}")
+                    .append(",\"finalityCertificate\":{\"scheme\":0,\"signatures\":[{")
+                    .append("\"signer\":\"").append("44".repeat(32)).append('"')
+                    .append(",\"signature\":\"").append("55".repeat(64)).append("\"}]}");
             json.append('}');
             respond(exchange, 200, json.toString());
         }
@@ -683,9 +715,33 @@ class EvidenceClientTest {
 
         private AppChainClient.Proof appProof(byte[] key, String chainId) {
             byte[] value = value(key);
-            return new AppChainClient.Proof(hex(key), chainId, hex(root),
+            return profiledProof(hex(key), chainId, hex(root),
                     hex(proof(key)), value == null ? null : hex(value), null, height);
         }
+    }
+
+    private static AppChainClient.Proof profiledProof(
+            String keyHex,
+            String chainId,
+            String stateRootHex,
+            String proofWireHex,
+            String valueHex,
+            Long finalizedAtHeight,
+            Long committedHeight
+    ) {
+        ProofVerifier.ProfileMetadata metadata = ProofVerifier.profileMetadata(
+                ProofVerifier.MPF_BLAKE2B256_V1).orElseThrow();
+        return new AppChainClient.Proof(
+                keyHex, chainId, stateRootHex, proofWireHex, valueHex,
+                finalizedAtHeight, committedHeight, 1,
+                ProofVerifier.MPF_BLAKE2B256_V1, metadata.backend(),
+                metadata.commitmentFormatId(), metadata.formatFingerprintHex(),
+                "11".repeat(32), metadata.proofEncodingId(),
+                metadata.nativeVersioning(), metadata.physicalDelete(), committedHeight,
+                valueHex == null
+                        ? AppChainClient.ProofPresence.ABSENT
+                        : AppChainClient.ProofPresence.PRESENT,
+                null, null);
     }
 
     private static EvidenceRecordV1 record(String id, long version) {

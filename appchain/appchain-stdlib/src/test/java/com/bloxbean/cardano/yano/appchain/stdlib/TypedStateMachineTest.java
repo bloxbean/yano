@@ -78,6 +78,7 @@ class TypedStateMachineTest {
         String pubA = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_A));
         AppChainConfig config = AppChainConfig.builder("typed-chain")
                 .signingKeyHex(HexUtil.encodeHexString(KEY_A))
+                .stateCommitmentIdentity(StdlibTestStateCommitments.mpf("typed-chain"))
                 .memberKeysHex(Set.of(pubA))
                 .proposerKeyHex(pubA)
                 .threshold(1)

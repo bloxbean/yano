@@ -18,12 +18,6 @@ final class StateCommitmentGuard {
 
     void verifyRetained(AppLedgerStore ledger, String chainId) {
         Optional<byte[]> observed = ledger.stateGet(StateCommitmentIdentity.markerKey());
-        if (identity.legacy()) {
-            if (observed.isPresent()) {
-                throw incompatible(chainId, ledger.tipHeight(), "explicit marker found for a legacy chain");
-            }
-            return;
-        }
         if (ledger.tipHeight() == 0) {
             if (observed.isPresent()) {
                 throw incompatible(chainId, 0, "marker exists before height 1");
@@ -36,9 +30,6 @@ final class StateCommitmentGuard {
     }
 
     void apply(long height, AppStateWriter writer) {
-        if (identity.legacy()) {
-            return;
-        }
         byte[] key = StateCommitmentIdentity.markerKey();
         byte[] observed = writer.get(key).orElse(null);
         if (height == 1) {

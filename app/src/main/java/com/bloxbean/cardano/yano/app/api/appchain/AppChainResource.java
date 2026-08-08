@@ -4,7 +4,6 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppChainGateway;
 import com.bloxbean.cardano.yano.api.appchain.AppChainGateways;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryPath;
-import com.bloxbean.cardano.yano.api.appchain.AppStateProofSnapshot;
 import com.bloxbean.cardano.yano.api.appchain.ReceivedAppMessage;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
@@ -519,16 +518,6 @@ public class AppChainResource {
                         "Unknown app-chain proof verification field: " + name);
             }
 
-            /** Source-compatible request constructor for the legacy MPF API. */
-            public ProofVerificationRequest(
-                    String mode,
-                    String expectedRootHex,
-                    String keyHex,
-                    String valueHex,
-                    String proofWireHex
-            ) {
-                this(mode, null, null, expectedRootHex, keyHex, valueHex, proofWireHex);
-            }
         }
 
         /** ADR-011.3 query parameters; omitted or empty hex means empty bytes. */
@@ -1453,12 +1442,12 @@ public class AppChainResource {
                     return profileTaggedStateResult(
                             key, height, envelope.orElseThrow(), includeProof);
                 }
-
-                Optional<AppStateProofSnapshot> snapshot = height == null
-                        ? gateway.stateProofSnapshot(key)
-                        : gateway.stateProofSnapshotAtHeight(height, key);
-                return legacyStateResult(key, height,
-                        snapshot != null ? snapshot : Optional.empty(), includeProof);
+                return Response.status(Response.Status.NOT_FOUND)
+                        .entity(Map.of("code", "STATE_PROOF_UNAVAILABLE",
+                                "error", height == null
+                                        ? "No committed state proof available for key"
+                                        : "No retained state proof available for key at height " + height))
+                        .build();
             } catch (UnsupportedOperationException unavailable) {
                 return Response.status(Response.Status.SERVICE_UNAVAILABLE)
                         .entity(Map.of(
@@ -1528,54 +1517,6 @@ public class AppChainResource {
             return Response.ok(result).build();
         }
 
-        private Response legacyStateResult(
-                byte[] key,
-                Long height,
-                Optional<AppStateProofSnapshot> snapshot,
-                boolean includeProof
-        ) {
-            if (snapshot.isEmpty()) {
-                return Response.status(Response.Status.NOT_FOUND)
-                        .entity(Map.of("code", "STATE_PROOF_UNAVAILABLE",
-                                "error", height == null
-                                        ? "No committed state proof available for key"
-                                        : "No retained state proof available for key at height " + height))
-                        .build();
-            }
-            var proof = snapshot.orElseThrow();
-            byte[] proofKey = proof.key();
-            if (!java.util.Arrays.equals(key, proofKey)) {
-                return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
-                        .entity(Map.of("error", "State proof snapshot identity mismatch"))
-                        .build();
-            }
-            byte[] proofWire = proof.proofWire();
-            byte[] proofValue = proof.value();
-            if (proofWire.length > MAX_PROOF_WIRE_BYTES
-                    || (proofValue != null && proofValue.length > MAX_PROOF_VALUE_BYTES)) {
-                return Response.status(413)
-                        .entity(Map.of("error", "State proof response exceeds the size limit"))
-                        .build();
-            }
-            Map<String, Object> result = new LinkedHashMap<>();
-            result.put("key", HexUtil.encodeHexString(proofKey));
-            result.put("chainId", gateway.chainId());
-            result.put("committedHeight", proof.committedHeight());
-            result.put("version", proof.committedHeight());
-            result.put("stateRoot", HexUtil.encodeHexString(proof.stateRoot()));
-            result.put("presence", proofValue != null ? "PRESENT" : "ABSENT");
-            if (includeProof) {
-                result.put("proofWireHex", HexUtil.encodeHexString(proofWire));
-            }
-            if (proofValue != null) {
-                result.put("valueHex", HexUtil.encodeHexString(proofValue));
-            }
-            gateway.messageHeight(proofKey)
-                    .filter(finalizedHeight -> finalizedHeight <= proof.committedHeight())
-                    .ifPresent(h -> result.put("finalizedAtHeight", h));
-            return Response.ok(result).build();
-        }
-
         Response proof(String keyHex) {
             return proof(keyHex, null);
         }
@@ -1630,19 +1571,21 @@ public class AppChainResource {
                 return badRequest("'valueHex' must be omitted for an exclusion proof");
             }
 
-            String profile = request.profile() != null
-                    ? request.profile() : ProofVerifier.MPF_BLAKE2B256_V1;
+            if (request.profile() == null) {
+                return badRequest("'profile' is required");
+            }
+            String profile = request.profile();
             if (!profile.equals(ProofVerifier.MPF_BLAKE2B256_V1)
                     && !profile.equals(ProofVerifier.JMT_BLAKE2B256_V1)
                     && !profile.equals(ProofVerifier.JMT_POSEIDON_BLS12381_V1)) {
                 return badRequest("Unsupported state commitment profile");
             }
+            if (request.presence() == null) {
+                return badRequest("'presence' is required");
+            }
             AppChainClient.ProofPresence presence;
             try {
-                presence = request.presence() != null
-                        ? AppChainClient.ProofPresence.valueOf(request.presence())
-                        : inclusion ? AppChainClient.ProofPresence.PRESENT
-                        : AppChainClient.ProofPresence.ABSENT;
+                presence = AppChainClient.ProofPresence.valueOf(request.presence());
             } catch (IllegalArgumentException invalidPresence) {
                 return badRequest("'presence' must be PRESENT, ABSENT, or TOMBSTONED");
             }
@@ -1723,7 +1666,6 @@ public class AppChainResource {
                 result.put("implementation", implementation);
             });
             result.put("genesisId", HexUtil.encodeHexString(identity.genesisId()));
-            result.put("legacy", identity.legacy());
             result.put("version", version);
             result.put("stateRoot", HexUtil.encodeHexString(stateRoot));
             result.put("oldestProvableHeight", oldestProvableHeight);

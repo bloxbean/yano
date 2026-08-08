@@ -76,8 +76,8 @@ ADR-025 adds profile-aware current/historical reads and offline verification:
 `state verify` never defaults to the root in the proof file. A node-reported
 anchor view is useful discovery data, but it becomes a trust source only after
 the referenced Cardano transaction and anchor payload/datum are independently
-verified. Use `--genesis-id legacy` only for a retained pre-ADR legacy-MPF
-generation.
+verified. Every app-chain generation must use its explicit 32-byte genesis id;
+preview legacy generations are not accepted or migrated.
 
 Offline value-validation commands use the exact generated genesis:
 

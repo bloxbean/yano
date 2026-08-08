@@ -63,6 +63,7 @@ class FxResultSignerAdmissionTest {
                 .pluginSettings(Map.of(
                         "effects.enabled", "true",
                         "effects.result.signers", executor))
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         node = new AppChainSubsystem(config, 42, null, emitter(), dir.toString(), null,
                 LoggerFactory.getLogger(FxResultSignerAdmissionTest.class));

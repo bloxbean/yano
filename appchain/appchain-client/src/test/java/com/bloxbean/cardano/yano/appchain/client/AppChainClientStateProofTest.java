@@ -19,10 +19,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @Timeout(30)
 class AppChainClientStateProofTest {
     private static final String ROOT = "ab".repeat(32);
-    private static final String INCLUSION = """
-            {"key":"01","chainId":"c1","stateRoot":"%s","proofWireHex":"80",
-             "valueHex":"ff","finalizedAtHeight":3,"committedHeight":42}
-            """.formatted(ROOT);
+    private static final String BLOCK_HASH = "22".repeat(32);
+    private static final String INCLUSION = proofEnvelope("\"valueHex\":\"ff\","
+            + "\"finalizedAtHeight\":3,", "PRESENT");
+    private static final String EXCLUSION = proofEnvelope("", "ABSENT");
 
     private HttpServer server;
 
@@ -34,7 +34,7 @@ class AppChainClientStateProofTest {
     }
 
     @Test
-    void proofParsesAtomicSnapshotAndPreservesLegacyMessageHeight() throws Exception {
+    void proofParsesCertifiedAtomicSnapshotAndMessageHeight() throws Exception {
         AtomicReference<String> path = new AtomicReference<>();
         start(exchange -> {
             path.set(exchange.getRequestURI().getRawPath());
@@ -54,10 +54,7 @@ class AppChainClientStateProofTest {
 
     @Test
     void proofPreservesAtomicExclusionEnvelope() throws Exception {
-        start(exchange -> respond(exchange, 200, """
-                {"key":"01","chainId":"c1","stateRoot":"%s",
-                 "proofWireHex":"80","committedHeight":42}
-                """.formatted(ROOT)));
+        start(exchange -> respond(exchange, 200, EXCLUSION));
 
         AppChainClient.Proof proof = client().proof(new byte[]{1}).orElseThrow();
 
@@ -68,13 +65,23 @@ class AppChainClientStateProofTest {
 
     @Test
     void stateEntryUsesDedicatedCurrentOrHistoricalEndpointWithoutProofBytes() throws Exception {
+        ProofVerifier.ProfileMetadata profile = ProofVerifier.profileMetadata(
+                ProofVerifier.MPF_BLAKE2B256_V1).orElseThrow();
         AtomicReference<String> request = new AtomicReference<>();
         start(exchange -> {
             request.set(exchange.getRequestURI().toString());
             respond(exchange, 200, """
                     {"key":"01","chainId":"c1","stateRoot":"%s","valueHex":"ff",
-                     "committedHeight":42,"version":42,"presence":"PRESENT"}
-                    """.formatted(ROOT));
+                     "committedHeight":42,"proofSchemaVersion":1,"schemaVersion":1,
+                     "profile":"%s","backend":"%s","commitmentFormatId":"%s",
+                     "formatFingerprint":"%s","genesisId":"%s",
+                     "proofEncodingId":"%s","nativeVersioning":%s,
+                     "physicalDelete":%s,"version":42,"oldestProvableHeight":2,
+                     "presence":"PRESENT","blockHash":"%s"}
+                    """.formatted(ROOT, profile.id(), profile.backend(),
+                    profile.commitmentFormatId(), profile.formatFingerprintHex(),
+                    "11".repeat(32), profile.proofEncodingId(), profile.nativeVersioning(),
+                    profile.physicalDelete(), BLOCK_HASH));
         });
 
         JsonNode entry = client().stateEntry(new byte[]{1}, 42).orElseThrow();
@@ -93,7 +100,7 @@ class AppChainClientStateProofTest {
                 {"key":"01","chainId":"c1","stateRoot":"%s","valueHex":"ff",
                  "committedHeight":42,"proofSchemaVersion":1,"schemaVersion":1,
                  "profile":"%s","backend":"%s","commitmentFormatId":"%s",
-                 "formatFingerprint":"%s","genesisId":"%s","legacy":false,
+                 "formatFingerprint":"%s","genesisId":"%s",
                  "proofEncodingId":"%s","nativeVersioning":true,
                  "physicalDelete":false,"version":42,"oldestProvableHeight":2,
                  "presence":"PRESENT","blockHash":"%s"}
@@ -119,7 +126,7 @@ class AppChainClientStateProofTest {
                  "valueHex":"ff","committedHeight":42,"proofSchemaVersion":1,
                  "schemaVersion":1,"profile":"%s","backend":"%s",
                  "commitmentFormatId":"%s","formatFingerprint":"%s",
-                 "genesisId":"%s","legacy":false,"proofEncodingId":"%s",
+                 "genesisId":"%s","proofEncodingId":"%s",
                  "nativeVersioning":true,"physicalDelete":false,"version":42,
                  "oldestProvableHeight":2,"presence":"PRESENT","blockHash":"%s",
                  "block":{"version":1,"height":42,"prevHash":"%s","l1Slot":0,
@@ -158,16 +165,13 @@ class AppChainClientStateProofTest {
     }
 
     @Test
-    void proofKeepsLegacyEnvelopeSourceCompatible() throws Exception {
+    void proofRejectsEnvelopeWithoutCommittedSnapshotIdentity() throws Exception {
         start(exchange -> respond(exchange, 200,
                 INCLUSION.replace(",\"committedHeight\":42", "")));
 
-        AppChainClient.Proof proof = client().proof(new byte[]{1}).orElseThrow();
-
-        assertThat(proof.committedHeight()).isNull();
-        AppChainClient.Proof constructed = new AppChainClient.Proof(
-                "01", "c1", ROOT, "80", "ff", 3L);
-        assertThat(constructed.committedHeight()).isNull();
+        assertThatThrownBy(() -> client().proof(new byte[]{1}))
+                .isInstanceOf(AppChainClient.AppChainClientException.class)
+                .hasMessage("Invalid app-chain state proof identity");
     }
 
     @Test
@@ -260,6 +264,28 @@ class AppChainClientStateProofTest {
 
     private AppChainClient client() {
         return AppChainClient.builder(baseUrl()).chainId("c1").build();
+    }
+
+    private static String proofEnvelope(String valueAndFinalityFields, String presence) {
+        ProofVerifier.ProfileMetadata profile = ProofVerifier.profileMetadata(
+                ProofVerifier.MPF_BLAKE2B256_V1).orElseThrow();
+        return """
+                {"key":"01","chainId":"c1","stateRoot":"%s","proofWireHex":"80",
+                 %s"committedHeight":42,"proofSchemaVersion":1,"schemaVersion":1,
+                 "profile":"%s","backend":"%s","commitmentFormatId":"%s",
+                 "formatFingerprint":"%s","genesisId":"%s",
+                 "proofEncodingId":"%s","nativeVersioning":%s,"physicalDelete":%s,
+                 "version":42,"oldestProvableHeight":2,"presence":"%s","blockHash":"%s",
+                 "block":{"version":1,"height":42,"prevHash":"%s","l1Slot":0,
+                   "l1BlockHash":"","timestamp":1,"messagesRoot":"%s",
+                   "stateRoot":"%s","blockHash":"%s"},
+                 "finalityCertificate":{"scheme":0,"signatures":[
+                   {"signer":"%s","signature":"%s"}]}}
+                """.formatted(ROOT, valueAndFinalityFields, profile.id(), profile.backend(),
+                profile.commitmentFormatId(), profile.formatFingerprintHex(), "11".repeat(32),
+                profile.proofEncodingId(), profile.nativeVersioning(), profile.physicalDelete(),
+                presence, BLOCK_HASH, "00".repeat(32), "33".repeat(32), ROOT, BLOCK_HASH,
+                "44".repeat(32), "55".repeat(64));
     }
 
     private String baseUrl() {

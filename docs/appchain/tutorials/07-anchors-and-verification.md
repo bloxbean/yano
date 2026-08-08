@@ -137,5 +137,5 @@ history even after local files are deleted.
 - Use `EvidenceVerifier` and `EffectProofVerifier` rather than trusting server
   booleans.
 - Test L1 rollback and anchor resubmission before a pilot.
-- Review the bundled Java/julc and Aiken validator twins and their pinned
-  hashes before depending on a released script identity.
+- Review the pinned Aiken release artifacts and the Java/julc cross-implementation
+  drift checks before depending on a released script identity.

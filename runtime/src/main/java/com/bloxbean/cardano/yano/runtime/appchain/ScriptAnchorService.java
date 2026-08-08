@@ -1668,9 +1668,6 @@ final class ScriptAnchorService {
 
     private byte[] chainGenesisId() {
         var identity = ledger.stateCommitmentIdentity();
-        if (identity.legacy()) {
-            throw new IllegalStateException("script anchors require explicit chain genesis identity");
-        }
         return identity.genesisId();
     }
 

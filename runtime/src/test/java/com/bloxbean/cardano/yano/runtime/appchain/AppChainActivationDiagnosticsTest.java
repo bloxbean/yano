@@ -80,6 +80,7 @@ class AppChainActivationDiagnosticsTest {
                 .signingKeyHex(HexUtil.encodeHexString(key))
                 .memberKeysHex(Set.of(publicKey))
                 .pluginSettings(settings)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         return new AppChainSubsystem(config, 42, null, null, null, null, logger);
     }

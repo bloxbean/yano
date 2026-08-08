@@ -363,6 +363,7 @@ class AppChainSubsystemGenerationLifecycleTest {
                 .threshold(1)
                 .blockIntervalMs(60_000)
                 .pluginSettings(Map.of("sequencer.mode", BlockingSequencerMode.ID))
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         return new AppChainSubsystem(config, 42, null, null,
                 ledgerBase.toString(), null, registry,
@@ -383,6 +384,7 @@ class AppChainSubsystemGenerationLifecycleTest {
                 .threshold(1)
                 .blockIntervalMs(60_000)
                 .pluginSettings(pluginSettings)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         return new AppChainSubsystem(config, 42, eventBus, stateMachine,
                 ledgerBase.toString(), null, registry,

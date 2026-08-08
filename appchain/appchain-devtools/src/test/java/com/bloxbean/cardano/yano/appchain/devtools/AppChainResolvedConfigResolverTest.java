@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.appchain.devtools;
 
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import com.bloxbean.cardano.yano.appchain.config.AppChainPropertyRegistry;
 import com.bloxbean.cardano.yano.appchain.config.AppChainResolvedValidator;
 import com.bloxbean.cardano.yano.appchain.config.ConfigSourceKind;
@@ -10,6 +11,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.HexFormat;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -123,12 +125,18 @@ class AppChainResolvedConfigResolverTest {
                       - chain-id: orders
                         signing-key: %s
                         members: %s
+                        state:
+                          commitment-profile: %s
+                          format-fingerprint: %s
+                          genesis-id: %s
                     validation:
                       strict: true
                     dx:
                       resolved-config-digest: %s
                       release-catalog-digest: %s
-                """.formatted(SIGNING_KEY, MEMBER, "c".repeat(64), "d".repeat(64)));
+                """.formatted(SIGNING_KEY, MEMBER, StateCommitmentProfiles.MPF.id(),
+                HexFormat.of().formatHex(StateCommitmentProfiles.MPF.formatFingerprint()),
+                "01".repeat(32), "c".repeat(64), "d".repeat(64)));
         AppChainPropertyRegistry registry = AppChainPropertyRegistry.framework();
 
         ResolvedAppChainConfiguration resolved = resolver.resolve(
@@ -136,7 +144,9 @@ class AppChainResolvedConfigResolverTest {
         var validation = new AppChainResolvedValidator(registry, List.of())
                 .validate(resolved.values());
 
-        assertThat(validation.valid()).isTrue();
+        assertThat(validation.valid())
+                .as(validation.diagnostics().toString())
+                .isTrue();
         assertThat(validation.diagnostics())
                 .noneMatch(diagnostic -> diagnostic.code().equals("DX_CONFIG_MIXED_CHAIN_FORMS"));
     }

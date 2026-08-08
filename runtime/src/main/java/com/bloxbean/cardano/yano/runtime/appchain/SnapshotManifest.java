@@ -65,7 +65,6 @@ final class SnapshotManifest {
                     HexUtil.encodeHexString(stateIdentity.profile().formatFingerprint()));
             manifest.put("stateCommitmentGenesisId",
                     HexUtil.encodeHexString(stateIdentity.genesisId()));
-            manifest.put("legacyStateCommitment", stateIdentity.legacy());
             manifest.put("memberEpochsHash", HexUtil.encodeHexString(
                     Blake2bUtil.blake2bHash256(memberEpochsBytes != null ? memberEpochsBytes : new byte[0])));
             if (lastAnchorTx != null && !lastAnchorTx.isBlank()) {
@@ -176,14 +175,6 @@ final class SnapshotManifest {
             JsonNode manifest,
             StateCommitmentIdentity stateIdentity
     ) {
-        int version = manifest.path("version").asInt(1);
-        if (version < 2) {
-            if (!stateIdentity.legacy()) {
-                throw new IllegalStateException(
-                        "Legacy snapshot manifest does not bind an explicit state commitment identity");
-            }
-            return;
-        }
         if (manifest.path("stateCommitmentIdentitySchema").asInt(-1)
                 != stateIdentity.schemaVersion()
                 || !manifest.path("stateCommitmentProfile").asText("")
@@ -191,9 +182,7 @@ final class SnapshotManifest {
                 || !manifest.path("stateCommitmentFormatFingerprint").asText("")
                 .equals(HexUtil.encodeHexString(stateIdentity.profile().formatFingerprint()))
                 || !manifest.path("stateCommitmentGenesisId").asText("")
-                .equals(HexUtil.encodeHexString(stateIdentity.genesisId()))
-                || manifest.path("legacyStateCommitment").asBoolean(!stateIdentity.legacy())
-                != stateIdentity.legacy()) {
+                .equals(HexUtil.encodeHexString(stateIdentity.genesisId()))) {
             throw new IllegalStateException(
                     "Restored snapshot state commitment identity does not match local genesis");
         }

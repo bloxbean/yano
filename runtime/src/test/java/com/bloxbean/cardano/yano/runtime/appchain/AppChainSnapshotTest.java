@@ -76,6 +76,7 @@ class AppChainSnapshotTest {
                 .proposerKeyHex(pubA)
                 .threshold(1)
                 .blockIntervalMs(300)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         source = new AppChainSubsystem(config, 42, null, null,
                 tempDir.resolve("source").toString(), null, log);
@@ -100,7 +101,7 @@ class AppChainSnapshotTest {
         assertThat(manifest.path("version").asInt()).isEqualTo(2);
         assertThat(manifest.path("stateCommitmentProfile").asText())
                 .isEqualTo(StateCommitmentProfiles.MPF_BLAKE2B256_V1);
-        assertThat(manifest.path("legacyStateCommitment").asBoolean()).isTrue();
+        assertThat(manifest.has("legacyStateCommitment")).isFalse();
         StateCommitmentIdentity wrongIdentity = StateCommitmentIdentity.explicit(
                 StateCommitmentProfiles.MPF, seed(99));
         assertThatThrownBy(() -> SnapshotManifest.verifyPostOpen(
@@ -162,6 +163,7 @@ class AppChainSnapshotTest {
                 .threshold(1)
                 .blockIntervalMs(200)
                 .pluginSettings(effectSettings)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         source = new AppChainSubsystem(sourceConfig, 42, null, snapshotEffectEmitter(),
                 tempDir.resolve("source-fx").toString(), null, log);
@@ -192,6 +194,7 @@ class AppChainSnapshotTest {
                 .threshold(1)
                 .blockIntervalMs(200)
                 .pluginSettings(effectSettings)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         AppChainSubsystem restored = new AppChainSubsystem(targetConfig, 42, null,
                 snapshotEffectEmitter(), restoreBase.toString(), null, log);
@@ -229,6 +232,7 @@ class AppChainSnapshotTest {
                 .threshold(1)
                 .blockIntervalMs(200)
                 .pluginSettings(effectSettings)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         source = new AppChainSubsystem(beforeRotation, 42, null,
                 snapshotEffectEmitter(ResultPolicy.CHAIN), ledgerBase.toString(), null, log);
@@ -255,6 +259,7 @@ class AppChainSnapshotTest {
                 .threshold(1)
                 .blockIntervalMs(200)
                 .pluginSettings(effectSettings)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         AppChainSubsystem rotated = new AppChainSubsystem(afterRotation, 42, null,
                 snapshotEffectEmitter(ResultPolicy.CHAIN), ledgerBase.toString(), null, log);
@@ -337,6 +342,7 @@ class AppChainSnapshotTest {
                 .proposerKeyHex(pubA)
                 .threshold(1)
                 .blockIntervalMs(300)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         source = new AppChainSubsystem(config, 42, null, null,
                 tempDir.resolve("source").toString(), null, log);

@@ -167,8 +167,8 @@ yano:
               fallback-delay-slots: "60"
               soft-batch-cap: "1"
             observer-id: "bridge-deposits"
-            vault-address: "addr_test1wp5kwkyukh0h6vyj6g2vc250gnjy4hhswhwfauv0m349mugukf2cf"
-            vault-script-hash: "6967589cb5df7d3092d214cc2a8f44e44adef075dc9ef18fdc6a5df1"
+            vault-address: "addr_test1wpwhmf5cd5pm9gsg5y8xnkyk3xue2u35ral098gd8u49g3gjpdqgr"
+            vault-script-hash: "5d7da6986d03b2a208a10e69d89689b99572341f7ef29d0d3f2a5445"
             confirmation-observer-id: "bridge-withdrawals"
             withdrawal-address: "addr_test1vrf4896s3htkc8pzytgvvm07c2e489rtcg42f23zk5r2mjs8ge5ef"
             epoch: "0"
@@ -179,14 +179,14 @@ yano:
         bridge-deposits:
           type: "eutxo-vault-deposit-v1"
           chain-id: "payment-chain-settlement"
-          vault-address: "addr_test1wp5kwkyukh0h6vyj6g2vc250gnjy4hhswhwfauv0m349mugukf2cf"
-          vault-script-hash: "6967589cb5df7d3092d214cc2a8f44e44adef075dc9ef18fdc6a5df1"
+          vault-address: "addr_test1wpwhmf5cd5pm9gsg5y8xnkyk3xue2u35ral098gd8u49g3gjpdqgr"
+          vault-script-hash: "5d7da6986d03b2a208a10e69d89689b99572341f7ef29d0d3f2a5445"
           max-lovelace: "100000000"
         bridge-withdrawals:
           type: "eutxo-batch-withdrawal-confirmation-v1"
           chain-id: "payment-chain-settlement"
           bridge-epoch: "0"
-          vault-address: "addr_test1wp5kwkyukh0h6vyj6g2vc250gnjy4hhswhwfauv0m349mugukf2cf"
+          vault-address: "addr_test1wpwhmf5cd5pm9gsg5y8xnkyk3xue2u35ral098gd8u49g3gjpdqgr"
       effects:
         enabled: "true"
         executor:
@@ -194,10 +194,10 @@ yano:
         executors:
           eutxo-settlement:
             owner: "false"
-            vault-address: "addr_test1wp5kwkyukh0h6vyj6g2vc250gnjy4hhswhwfauv0m349mugukf2cf"
-            shard-address: "addr_test1wzf40zzylfag4jxuqky9r4m65eslvjh2mw8q8gwawk5w77qzyg439"
-            root-address: "addr_test1wqr20zh95ngrteg2n5kcafcrc6ykz5c97wvtjkrnvj7mp7cwnfhhg"
-            root-unit: "e3fd503a4bc35777425ffdf8a804ed2c74cf8a6c5574f710328a565959616e6f536574746c65526f6f74"
+            vault-address: "addr_test1wpwhmf5cd5pm9gsg5y8xnkyk3xue2u35ral098gd8u49g3gjpdqgr"
+            shard-address: "addr_test1wqkrdxsvwfrzwm60qf6fk06w6f3me8ssfwururl4mt3j94sjytqyh"
+            root-address: "addr_test1wqrd9g5sauf0qr32qh4xptfs5sjnuq89skca6tn3kgf6pkcyfxw0z"
+            root-unit: "57f1b65a38d0bfc2ce88071973137972eaa365e89bb43ef857982c0659616e6f536574746c65526f6f74"
             shard-thread-policy-id: "f31a3e218309d7a8b055150d55ef930a96c096072ad8ce31e758edec"
             operator-address: "addr_test1vq2p8rmdp8p70auqjg0vzu59793575jqegfuwejrk5mu42czwm8wp"
             operator-seed: "9166d2a27e522e201ff90f5f24d9d18f5f0a7999886c006e0d2653946c40af79"

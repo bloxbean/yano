@@ -537,6 +537,9 @@ public final class YanoPropertyKeys {
         public static final String BLOCK_MAX_BYTES = "yano.app-chain.block.max-bytes";
         /** Built-in state machine id; default "ordered-log". */
         public static final String STATE_MACHINE = "yano.app-chain.state-machine";
+        /** Require an MPF profile whose state proofs can be consumed by L1 validators. */
+        public static final String STATE_L1_PROOF_CONSUMPTION_REQUIRED =
+                "yano.app-chain.state.l1-proof-consumption-required";
         public static final String ANCHOR_ENABLED = "yano.app-chain.anchor.enabled";
         /** Anchor wallet Ed25519 payment key (hex, 32-byte seed). */
         public static final String ANCHOR_SIGNING_KEY = "yano.app-chain.anchor.signing-key";
@@ -549,7 +552,7 @@ public final class YanoPropertyKeys {
         public static final String ANCHOR_FALLBACK_FEE_LOVELACE = "yano.app-chain.anchor.fallback-fee-lovelace";
         /** Anchor mode: metadata (default, A1) or script (A2, ADR 008.4). */
         public static final String ANCHOR_MODE = "yano.app-chain.anchor.mode";
-        /** Script-anchor validator artifact ref: builtin:julc | file:/path | hex:... */
+        /** Script-anchor validator artifact ref: builtin:aiken | file:/path | hex:... */
         public static final String ANCHOR_SCRIPT_VALIDATOR = "yano.app-chain.anchor.script.validator";
         /** Script-anchor thread-policy artifact ref (same forms as the validator). */
         public static final String ANCHOR_SCRIPT_THREAD_POLICY = "yano.app-chain.anchor.script.thread-policy";
