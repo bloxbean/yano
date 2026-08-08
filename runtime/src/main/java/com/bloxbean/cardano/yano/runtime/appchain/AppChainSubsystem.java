@@ -1660,26 +1660,6 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     @Override
-    public Optional<AppStateProofSnapshot> stateProofSnapshot(byte[] key) {
-        byte[] keySnapshot = Objects.requireNonNull(key, "key").clone();
-        return generationUseOr(Optional.empty(), () -> {
-            AppLedgerStore currentLedger = ledger;
-            return currentLedger != null
-                    ? currentLedger.stateProofSnapshot(keySnapshot) : Optional.empty();
-        });
-    }
-
-    @Override
-    public Optional<AppStateProofSnapshot> stateProofSnapshotAtHeight(long height, byte[] key) {
-        byte[] keySnapshot = Objects.requireNonNull(key, "key").clone();
-        return generationUseOr(Optional.empty(), () -> {
-            AppLedgerStore currentLedger = ledger;
-            return currentLedger != null
-                    ? currentLedger.stateProofSnapshotAtHeight(height, keySnapshot) : Optional.empty();
-        });
-    }
-
-    @Override
     public Optional<StateCommitmentIdentity> stateCommitmentIdentity() {
         return Optional.of(stateCommitmentIdentity);
     }
@@ -3058,7 +3038,6 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         status.put("formatFingerprint", HexUtil.encodeHexString(
                 stateCommitmentIdentity.profile().formatFingerprint()));
         status.put("genesisId", HexUtil.encodeHexString(stateCommitmentIdentity.genesisId()));
-        status.put("legacy", stateCommitmentIdentity.legacy());
         AppLedgerStore currentLedger = ledger;
         if (currentLedger != null) {
             status.put("latestVersion", currentLedger.tipHeight());

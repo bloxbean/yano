@@ -2,6 +2,8 @@ package com.bloxbean.cardano.yano.appchain.devtools;
 
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfile;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import com.bloxbean.cardano.yano.appchain.config.AppChainConfigParser;
 import com.bloxbean.cardano.yano.appchain.config.AppChainConfigSemantics;
 import com.bloxbean.cardano.yano.appchain.config.AppChainApprovalsConfig;
@@ -199,6 +201,8 @@ final class AppChainProjectResolver {
             materializeAuthenticatedMap(
                     chain, consensus, nodeTemplate, prefix);
         }
+        materializeStateCommitmentIdentity(
+                blueprint.metadata().name(), chain, sortedCapabilities, consensus, prefix);
 
         validateWithRuntimeParser(consensus, nodeTemplate, chain.topology().members());
 
@@ -536,6 +540,35 @@ final class AppChainProjectResolver {
             if (prior != null && !prior.equals(setting.getValue())) {
                 throw new IllegalArgumentException(
                         "authenticated-map genesis conflicts with " + setting.getKey());
+            }
+        }
+    }
+
+    private static void materializeStateCommitmentIdentity(
+            String projectName,
+            AppChainProjectModel.ChainIntent chain,
+            Set<String> capabilities,
+            Map<String, String> consensus,
+            String prefix
+    ) {
+        String profileKey = prefix + StateCommitmentIdentity.PROFILE_SETTING;
+        String genesisKey = prefix + StateCommitmentIdentity.GENESIS_ID_SETTING;
+        StateCommitmentProfile profile = StateCommitmentProfiles.require(
+                consensus.getOrDefault(profileKey, StateCommitmentProfiles.MPF.id()));
+        String genesisHex = consensus.get(genesisKey);
+        byte[] genesisId = genesisHex == null
+                ? HexFormat.of().parseHex(AppChainProjectCatalog.sha256(
+                "yano-appchain-project-genesis-v1\0"
+                        + projectName + "\0" + chain.chainId() + "\0"
+                        + String.join(",", capabilities)))
+                : canonicalHex32(genesisHex, StateCommitmentIdentity.GENESIS_ID_SETTING);
+        StateCommitmentIdentity identity = StateCommitmentIdentity.explicit(profile, genesisId);
+        for (Map.Entry<String, String> setting : identity.settings().entrySet()) {
+            String key = prefix + setting.getKey();
+            String prior = consensus.putIfAbsent(key, setting.getValue());
+            if (prior != null && !prior.equals(setting.getValue())) {
+                throw new IllegalArgumentException(
+                        "state commitment identity conflicts with " + setting.getKey());
             }
         }
     }

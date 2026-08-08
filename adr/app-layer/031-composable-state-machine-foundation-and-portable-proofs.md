@@ -1,6 +1,6 @@
 # ADR app-layer/031: Composable state-machine foundations and portable proofs
 
-**Status:** Accepted and in implementation — Phases 0 through 6 complete
+**Status:** Accepted and implemented — Phases 0 through 7 complete
 **Date:** 2026-08-08
 **Scope:** App-chain state machines, composition, authorization and approvals, authenticated state,
 proofs, and L1 consumption
@@ -102,9 +102,9 @@ The root alone is therefore not enough to interpret a proof; a verifier must als
 | `jmt-blake2b256-v1` | Implemented and released | Reserved logical tombstone | Versioned roots/nodes with pruning watermark | Off-chain only in this ADR |
 | Poseidon JMT profile | Declared, deliberately unreleased | Profile-defined | Not a supported runtime proof contract | None |
 
-MPF native proofs use `ccl-mpf-proof-wire-v1`. Classic JMT native proofs use
-`ccl-classic-jmt-proof-cbor-v1`. These are backend-specific proof formats even though they are
-returned through the common `StateProof` contract.
+At the review baseline, MPF native proofs used `ccl-mpf-proof-wire-v1` and classic JMT native proofs
+used `ccl-classic-jmt-proof-cbor-v1`. These were backend-specific proof formats even though they
+were returned through the common `StateProof` contract.
 
 ### 2.3 Composite storage format
 
@@ -255,7 +255,8 @@ The eUTxO extension already contains:
 
 This demonstrates that CCL MPF roots can be consumed by Cardano validators. It is not yet a generic
 app-chain facility because the normalized proof ABI, converter, claim semantics, validators, and
-cost limits live under the eUTxO product. A raw REST `ccl-mpf-proof-wire-v1` response cannot simply be
+cost limits live under the eUTxO product. At the review baseline, a raw REST
+`ccl-mpf-proof-wire-v1` response could not simply be
 passed to the stock anchor validator.
 
 A reusable on-chain path still needs:
@@ -1156,6 +1157,43 @@ positive/adversarial corpus executes on `julc-vm-java`. Configuration now reject
 * Delete redundant component/workflow helpers, old proof/observation codecs, old anchor artifacts,
   compatibility façades, and preview storage readers.
 * Keep classic JMT explicitly off-chain and test pruning/watermark client behavior.
+
+---
+
+#### Phase 7 implementation result
+
+The supported developer path is documented in
+`docs/appchain/COMPOSABLE_STATE_AND_PROOFS.md`: standalone stock machines, ordinary
+`AppStateMachine` composition, direct transition-capability reuse, typed off-chain proofs, and the
+bounded MPF/Cardano validator path are one layered model. The guide also makes the ADR-028 boundary
+explicit: ADR-031 supplies replay-safe sequenced observations and proof subjects, while the proposed
+epoch observer/state producer remains separate work.
+
+The preview `AppStateProofSnapshot` model, gateway methods, runtime builders, REST fallback, client
+decoder, source-compatible proof constructors, and unsafe one-argument `ProofVerifier.verify`
+convenience are deleted. State REST reads now serve only certified, profile-tagged
+`StateProofEnvelope` data and historical requests fail at the retained proof boundary. Tests use
+explicit profile identities rather than synthesizing legacy proof envelopes. The old eUTxO-local
+converter names and documentation now point to the shared `MpfProofConverter` and proof contracts.
+
+The anchor module now has one canonical loader and conformance suite for the exact pinned Aiken
+release artifact. Duplicate tests that loaded the same bytes from a second path were removed;
+Java/julc source compilation remains an opt-in cross-implementation drift check. Classic JMT stays
+an off-chain profile with explicit historical/tombstone/pruning tests, and configuration continues
+to reject it when L1 proof consumption is required.
+
+The repository-wide test-class build, focused state/proof/composition/anchor suites, a three-member
+2-of-3 replication/quorum gate (including two-survivor progress), and the live L1
+cluster/script-anchor smoke gates form the final release check for this preview reset.
+
+The live gates completed on a fresh devnet. The metadata-anchor cluster reached a 2-of-2 finalized
+root, served the certified `mpf-proof-wire-v1` proof from the follower, verified it natively, and
+confirmed its L1 anchor. The script-anchor cluster bootstrapped a new thread, confirmed two
+monotonic advances with two member witnesses, promoted the follower's identity only after observing
+the verified candidate in its own committed L1 view, and produced identical roots plus stability-
+gated L1 observations on both nodes. The gate also found and closed a strict-configuration coverage
+gap: `state.l1-proof-consumption-required` is now a registered, forwarded, consensus-scoped property
+with parser and resolved-configuration regression tests.
 
 ---
 

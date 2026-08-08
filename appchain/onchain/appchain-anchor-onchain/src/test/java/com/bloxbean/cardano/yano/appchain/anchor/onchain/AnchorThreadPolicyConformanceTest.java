@@ -44,7 +44,7 @@ class AnchorThreadPolicyConformanceTest extends ContractTest {
      */
     Program program() {
         if (julcProgram == null) {
-            julcProgram = BundledJulcArtifacts.load(
+            julcProgram = BundledAnchorArtifacts.load(
                     "META-INF/plutus/AnchorThreadPolicy.plutus.json",
                     PlutusData.bytes(SEED_TX_ID), PlutusData.integer(SEED_INDEX));
         }

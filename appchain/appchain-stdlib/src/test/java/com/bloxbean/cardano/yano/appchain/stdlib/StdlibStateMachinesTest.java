@@ -134,6 +134,7 @@ class StdlibStateMachinesTest {
         String pubA = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_A));
         AppChainConfig config = AppChainConfig.builder("stdlib-" + name)
                 .signingKeyHex(HexUtil.encodeHexString(KEY_A))
+                .stateCommitmentIdentity(StdlibTestStateCommitments.mpf("stdlib-" + name))
                 .memberKeysHex(Set.of(pubA))
                 .proposerKeyHex(pubA)   // self-proposing single member
                 .threshold(1)

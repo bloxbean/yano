@@ -153,20 +153,16 @@ class AppChainSequencingIntegrationTest {
     private AppChainSubsystem startNode(String name, byte[] signingKey, Set<String> members,
                                         String proposerHex, int serverPort,
                                         List<AppChainConfig.AppPeer> peers) throws Exception {
-        AppChainConfig config = new AppChainConfig(
-                CHAIN_ID,
-                HexUtil.encodeHexString(signingKey),
-                members,
-                peers,
-                65536, 3600, 600,
-                proposerHex,
-                2,      // threshold: both members must co-sign
-                500,    // fast proposer tick for tests
-                100,
-                AppChainConfig.DEFAULT_STATE_MACHINE,
-                null,
-                null, 0, java.util.List.of(),
-                false, 0, java.util.Map.of());
+        AppChainConfig config = AppChainConfig.builder(CHAIN_ID)
+                .signingKeyHex(HexUtil.encodeHexString(signingKey))
+                .memberKeysHex(members)
+                .peers(peers)
+                .proposerKeyHex(proposerHex)
+                .threshold(2)
+                .blockIntervalMs(500)
+                .maxBlockMessages(100)
+                .stateCommitmentIdentity(AppChainIntegrationFixtures.MPF)
+                .build();
         AppChainSubsystem subsystem = new AppChainSubsystem(config, MAGIC, null, null,
                 tempDir.resolve("ledger-" + name).toString(), log);
         subsystems.add(subsystem);

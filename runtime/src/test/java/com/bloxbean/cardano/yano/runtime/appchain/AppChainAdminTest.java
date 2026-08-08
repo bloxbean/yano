@@ -58,6 +58,7 @@ class AppChainAdminTest {
                 .proposerKeyHex(pubB)
                 .threshold(2)
                 .blockIntervalMs(300)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         node = new AppChainSubsystem(config, 42, null, null,
                 tempDir.resolve("ledger").toString(), null, log);
@@ -116,7 +117,9 @@ class AppChainAdminTest {
         AppChainConfig config = AppChainConfig.builder("privileged-chain")
                 .signingKeyHex(HexUtil.encodeHexString(KEY_A))
                 .memberKeysHex(Set.of(pubA, pubB)).proposerKeyHex(pubB).threshold(2)
-                .blockIntervalMs(300).build();
+                .blockIntervalMs(300)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .build();
         AppStateMachine machine = new AppStateMachine() {
             @Override public String id() { return "privileged-test"; }
             @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) { }
@@ -153,7 +156,9 @@ class AppChainAdminTest {
                 .pluginSettings(Map.of(
                         "membership.mode", "governed",
                         "machines.composite.profile-mode", "governed"))
-                .blockIntervalMs(300).build();
+                .blockIntervalMs(300)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .build();
         node = new AppChainSubsystem(config, 42, null, new AppStateMachine() {
             @Override public String id() { return "composite-test"; }
             @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) { }

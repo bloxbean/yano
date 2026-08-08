@@ -1469,18 +1469,6 @@ public class YanoProducer {
         }
 
         @Override
-        public java.util.Optional<com.bloxbean.cardano.yano.api.appchain.AppStateProofSnapshot>
-                stateProofSnapshot(byte[] key) {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
-        public java.util.Optional<com.bloxbean.cardano.yano.api.appchain.AppStateProofSnapshot>
-                stateProofSnapshotAtHeight(long height, byte[] key) {
-            throw unavailableRole("AppChainGateway");
-        }
-
-        @Override
         public java.util.Optional<com.bloxbean.cardano.yano.api.appchain.AppAnchorCommitment>
                 latestAnchorCommitment() {
             throw unavailableRole("AppChainGateway");

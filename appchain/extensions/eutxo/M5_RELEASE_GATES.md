@@ -13,7 +13,7 @@ product.
 |---|---|---|
 | Accepted-root threshold and profile preservation | `RootAndNullifierValidatorConformanceTest` | PASS |
 | Exact monotonic nullifier and explicit migration | `RootAndNullifierValidatorConformanceTest` | PASS |
-| Real Yano MPF proof conversion and root reconstruction | `EutxoMpfProofConverterTest` | PASS |
+| Real Yano MPF proof conversion and root reconstruction | `MpfProofConverterTest` | PASS |
 | On-chain claim inclusion, destination, payout, vault continuation, and replay rejection | `ProofVaultValidatorConformanceTest` | PASS |
 | Current-root selection and old/ambiguous-root rejection | `ProofWithdrawalTransactionBuilderTest` | PASS |
 | Permissionless relayer body integrity and exact-byte retry | `ProofWithdrawalTransactionBuilderTest` | PASS |

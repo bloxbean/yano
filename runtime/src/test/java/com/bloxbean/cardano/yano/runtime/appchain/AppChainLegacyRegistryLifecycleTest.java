@@ -75,6 +75,7 @@ class AppChainLegacyRegistryLifecycleTest {
                 .memberKeysHex(Set.of("00".repeat(32)))
                 .proposerKeyHex("00".repeat(32))
                 .threshold(1)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         try (URLClassLoader loader = serviceLoader()) {
             assertThatThrownBy(() -> new AppChainSubsystem(
@@ -133,6 +134,7 @@ class AppChainLegacyRegistryLifecycleTest {
                 .memberKeysHex(Set.of(PUBLIC_KEY))
                 .proposerKeyHex(PUBLIC_KEY)
                 .threshold(1)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
     }
 

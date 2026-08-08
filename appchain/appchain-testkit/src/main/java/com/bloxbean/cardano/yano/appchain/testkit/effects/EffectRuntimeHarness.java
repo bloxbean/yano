@@ -13,6 +13,7 @@ import com.bloxbean.cardano.yano.api.appchain.effects.EffectIntent;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectView;
 import com.bloxbean.cardano.yano.api.appchain.effects.FinalityGate;
 import com.bloxbean.cardano.yano.api.appchain.effects.ResultPolicy;
+import com.bloxbean.cardano.yano.appchain.testkit.AppChainTestStateCommitments;
 import com.bloxbean.cardano.yano.runtime.appchain.AppChainSubsystem;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginProviderRegistry;
 import org.slf4j.LoggerFactory;
@@ -97,6 +98,7 @@ public final class EffectRuntimeHarness implements AutoCloseable {
         Map<String, String> settings = runtimeSettings(actionType, scheme, connectorSettings);
         AppChainConfig config = AppChainConfig.builder(CHAIN_ID)
                 .signingKeyHex(signingKey)
+                .stateCommitmentIdentity(AppChainTestStateCommitments.mpf(CHAIN_ID))
                 .memberKeysHex(Set.of(memberKey))
                 .proposerKeyHex(memberKey)
                 .threshold(1)

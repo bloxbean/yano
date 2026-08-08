@@ -188,6 +188,7 @@ class AppChainMultiChainIntegrationTest {
                 .maxBlockMessages(500)
                 .poolMaxMessages(1000)
                 .ledgerPath(tempDir.resolve("ledger-bytes-" + name).toString())
+                .stateCommitmentIdentity(AppChainIntegrationFixtures.MPF)
                 .build();
         AppChainSubsystem chain = new AppChainSubsystem(config, MAGIC, null, null,
                 tempDir.resolve("ledger-bytes-" + name).toString(), null, log);
@@ -234,20 +235,16 @@ class AppChainMultiChainIntegrationTest {
 
     private AppChainSubsystem subsystem(String name, String chainId, byte[] signingKey,
                                         Set<String> members, String proposerHex, int peerPort) {
-        AppChainConfig config = new AppChainConfig(
-                chainId,
-                HexUtil.encodeHexString(signingKey),
-                members,
-                List.of(new AppChainConfig.AppPeer("localhost", peerPort)),
-                65536, 3600, 600,
-                proposerHex,
-                2,
-                500,
-                100,
-                AppChainConfig.DEFAULT_STATE_MACHINE,
-                null,
-                null, 0, java.util.List.of(),
-                false, 0, java.util.Map.of());
+        AppChainConfig config = AppChainConfig.builder(chainId)
+                .signingKeyHex(HexUtil.encodeHexString(signingKey))
+                .memberKeysHex(members)
+                .peers(List.of(new AppChainConfig.AppPeer("localhost", peerPort)))
+                .proposerKeyHex(proposerHex)
+                .threshold(2)
+                .blockIntervalMs(500)
+                .maxBlockMessages(100)
+                .stateCommitmentIdentity(AppChainIntegrationFixtures.MPF)
+                .build();
         return new AppChainSubsystem(config, MAGIC, null, null,
                 tempDir.resolve("ledger-" + name).toString(), null, log);
     }

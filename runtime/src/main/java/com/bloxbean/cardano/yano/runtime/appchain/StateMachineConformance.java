@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
+import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AuthScheme;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
@@ -15,6 +16,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -130,8 +132,8 @@ public final class StateMachineConformance {
 
     private StateMachineConformance(Builder builder) {
         this.provider = builder.provider;
-        this.settings = builder.settings;
         this.chainId = builder.chainId;
+        this.settings = conformanceSettings(builder.settings, chainId);
         this.blocks = builder.blocks;
         this.messagesPerBlock = builder.messagesPerBlock;
         this.seed = builder.seed;
@@ -150,6 +152,28 @@ public final class StateMachineConformance {
     public static UpgradeBuilder upgrade(AppStateMachineProvider oldProvider,
                                          AppStateMachineProvider newProvider) {
         return new UpgradeBuilder(oldProvider, newProvider);
+    }
+
+    /**
+     * Conformance ledgers are fresh, generated chain instances. Give them an
+     * explicit deterministic MPF identity unless the fixture selected one.
+     */
+    private static Map<String, String> conformanceSettings(
+            Map<String, String> settings,
+            String chainId
+    ) {
+        Map<String, String> effective = new LinkedHashMap<>(settings);
+        boolean identityAbsent = !effective.containsKey(StateCommitmentIdentity.PROFILE_SETTING)
+                && !effective.containsKey(StateCommitmentIdentity.FINGERPRINT_SETTING)
+                && !effective.containsKey(StateCommitmentIdentity.GENESIS_ID_SETTING);
+        if (identityAbsent) {
+            byte[] genesisId = Blake2bUtil.blake2bHash256(
+                    ("yano-conformance-genesis-v1\0" + chainId)
+                            .getBytes(StandardCharsets.UTF_8));
+            effective.putAll(StateCommitmentIdentity.explicit(
+                    StateCommitmentProfiles.MPF, genesisId).settings());
+        }
+        return Map.copyOf(effective);
     }
 
     public static final class Builder {
@@ -558,21 +582,22 @@ public final class StateMachineConformance {
                 throw new IllegalStateException("activation height " + activationHeight
                         + " is beyond the corpus (" + blocks + " blocks) — nothing would be tested");
             }
+            Map<String, String> baseSettings = conformanceSettings(settings, chainId);
             Set<String> activationKeys = new LinkedHashSet<>();
             activationKeys.add(activationKey(oldProvider.id()));
             activationKeys.add(activationKey(newProvider.id()));
             for (String key : activationKeys) {
-                if (settings.containsKey(key)) {
+                if (baseSettings.containsKey(key)) {
                     throw new IllegalStateException("settings already contain activation key '" + key
                             + "'; remove it and let activationAt() define the upgrade boundary");
                 }
             }
             List<AppBlock> corpus = buildCorpus(chainId, blocks, messagesPerBlock, seed, messageGenerator);
-            Map<String, String> upgraded = new LinkedHashMap<>(settings);
+            Map<String, String> upgraded = new LinkedHashMap<>(baseSettings);
             upgraded.put(activationKey(newProvider.id()), String.valueOf(activationHeight));
             try {
                 Path workDir = Files.createTempDirectory("appchain-upgrade-conformance");
-                Map<Long, HeightOutcome> baseline = applyCorpus(oldProvider, settings, chainId,
+                Map<Long, HeightOutcome> baseline = applyCorpus(oldProvider, baseSettings, chainId,
                         corpus, workDir.resolve("baseline"), -1, -1, List.of(),
                         messagesPerBlock);
                 List<Map<Long, HeightOutcome>> newRuns = new ArrayList<>();

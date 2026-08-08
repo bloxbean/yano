@@ -41,7 +41,9 @@ class StateCommitmentProfilesTest {
 
         assertThat(identity.genesisId()[0]).isEqualTo((byte) 7);
         assertThat(StateCommitmentIdentity.fromSettings(identity.settings())).isEqualTo(identity);
-        assertThat(StateCommitmentIdentity.fromSettings(Map.of()).legacy()).isTrue();
+        assertThatThrownBy(() -> StateCommitmentIdentity.fromSettings(Map.of()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("configured together");
         assertThat(identity.digest()).hasSize(32);
         assertThat(identity.canonicalBytes()).isNotEmpty();
 
@@ -85,7 +87,7 @@ class StateCommitmentProfilesTest {
                 .hasMessageContaining("only by MPF");
         assertThatThrownBy(() -> StateCommitmentIdentity.fromSettings(Map.of(
                 StateCommitmentIdentity.L1_PROOF_REQUIRED_SETTING, "true")))
-                .hasMessageContaining("explicit MPF");
+                .hasMessageContaining("configured together");
     }
 
     @Test

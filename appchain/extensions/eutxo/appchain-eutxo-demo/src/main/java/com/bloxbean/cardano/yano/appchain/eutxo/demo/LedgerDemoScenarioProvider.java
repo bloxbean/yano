@@ -172,7 +172,7 @@ public final class LedgerDemoScenarioProvider implements EutxoDemoScenarioProvid
         AppChainClient.Proof proof = client.proof(recipient)
                 .orElseThrow(() -> new IllegalStateException(
                         "recipient MPF proof is unavailable"));
-        if (!ProofVerifier.verify(proof, snapshot.stateRootHex())) {
+        if (!ProofVerifier.verifyAgainstRoot(proof, snapshot.stateRootHex())) {
             throw new IllegalStateException("recipient MPF proof is invalid");
         }
         current = journal.advance(operationId, "round-trip", requestDigest,
@@ -196,7 +196,7 @@ public final class LedgerDemoScenarioProvider implements EutxoDemoScenarioProvid
         EutxoClient client = client(workspace, cluster);
         AppChainClient.Proof proof = client.proof(outpoint)
                 .orElseThrow(() -> new IllegalStateException("MPF proof is unavailable"));
-        if (!ProofVerifier.verify(proof, entry.publicArtifacts().get("stateRoot"))) {
+        if (!ProofVerifier.verifyAgainstRoot(proof, entry.publicArtifacts().get("stateRoot"))) {
             throw new IllegalStateException("stored ledger result no longer verifies");
         }
         return pass(workspace, entry.publicArtifacts());

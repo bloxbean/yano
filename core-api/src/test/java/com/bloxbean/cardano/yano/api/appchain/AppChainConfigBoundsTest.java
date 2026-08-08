@@ -2,11 +2,14 @@ package com.bloxbean.cardano.yano.api.appchain;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -120,6 +123,34 @@ class AppChainConfigBoundsTest {
                 .isLessThanOrEqualTo(config.proposalMaxBytes());
         assertThat((long) AppBlockCodec.serialize(finalized).length)
                 .isLessThanOrEqualTo(config.blockMaxBytes());
+    }
+
+    @Test
+    void builderMaterializesOneCompleteStateIdentityIndependentOfCallOrder() {
+        StateCommitmentIdentity identity = StateCommitmentIdentity.explicit(
+                StateCommitmentProfiles.MPF, new byte[32]);
+
+        AppChainConfig identityFirst = AppChainConfig.builder("identity-first")
+                .signingKeyHex("00".repeat(32))
+                .stateCommitmentIdentity(identity)
+                .pluginSettings(Map.of("custom.setting", "value"))
+                .build();
+        AppChainConfig settingsFirst = AppChainConfig.builder("settings-first")
+                .signingKeyHex("00".repeat(32))
+                .pluginSettings(Map.of("custom.setting", "value"))
+                .stateCommitmentIdentity(identity)
+                .build();
+
+        assertThat(identityFirst.pluginSettings()).containsAllEntriesOf(identity.settings());
+        assertThat(settingsFirst.pluginSettings()).isEqualTo(identityFirst.pluginSettings());
+        assertThatThrownBy(() -> AppChainConfig.builder("conflict")
+                .signingKeyHex("00".repeat(32))
+                .pluginSettings(Map.of(StateCommitmentIdentity.PROFILE_SETTING,
+                        StateCommitmentProfiles.CLASSIC_JMT.id()))
+                .stateCommitmentIdentity(identity)
+                .build())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("conflicting state commitment setting");
     }
 
     private static AppChainConfig config(String chainId, Set<String> members) {

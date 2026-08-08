@@ -107,18 +107,18 @@ public final class AppChainClient {
             "key", "chainId", "stateRoot", "proofWireHex", "valueHex",
             "finalizedAtHeight", "committedHeight", "proofSchemaVersion",
             "profile", "backend", "commitmentFormatId", "formatFingerprint",
-            "genesisId", "legacy", "proofEncodingId", "presence",
+            "genesisId", "proofEncodingId", "presence",
             "nativeVersioning", "physicalDelete", "schemaVersion", "version",
             "oldestProvableHeight", "blockHash", "block", "finalityCertificate");
     private static final Set<String> STATE_ENTRY_RESPONSE_FIELDS = Set.of(
             "key", "chainId", "stateRoot", "valueHex", "finalizedAtHeight",
             "committedHeight", "proofSchemaVersion", "profile", "backend",
-            "commitmentFormatId", "formatFingerprint", "genesisId", "legacy",
+            "commitmentFormatId", "formatFingerprint", "genesisId",
             "proofEncodingId", "presence", "nativeVersioning", "physicalDelete",
             "schemaVersion", "version", "oldestProvableHeight", "blockHash");
     private static final Set<String> PROFILE_ENTRY_FIELDS = Set.of(
             "proofSchemaVersion", "profile", "backend", "commitmentFormatId",
-            "formatFingerprint", "genesisId", "legacy", "proofEncodingId",
+            "formatFingerprint", "genesisId", "proofEncodingId",
             "nativeVersioning", "physicalDelete", "schemaVersion",
             "oldestProvableHeight", "blockHash");
     private static final Set<String> CERTIFIED_BLOCK_FIELDS = Set.of(
@@ -529,12 +529,9 @@ public final class AppChainClient {
         if ((presence == ProofPresence.ABSENT) != (valueHex == null)) {
             throw new AppChainClientException("App-chain state entry presence/value mismatch");
         }
-        boolean profileTagged = response.has("proofSchemaVersion");
-        if (!profileTagged) {
-            if (PROFILE_ENTRY_FIELDS.stream().anyMatch(response::has)) {
-                throw new AppChainClientException("Partial app-chain state entry identity");
-            }
-            return response.deepCopy();
+        if (!response.has("proofSchemaVersion")) {
+            throw new AppChainClientException(
+                    "App-chain state entry is missing commitment identity");
         }
         Long version = optionalNonNegativeLong(response, "version");
         Long oldestProvableHeight = optionalNonNegativeLong(response, "oldestProvableHeight");
@@ -546,13 +543,8 @@ public final class AppChainClient {
                 || !response.path("physicalDelete").isBoolean()) {
             throw new AppChainClientException("Invalid app-chain state entry identity");
         }
-        JsonNode legacyNode = response.get("legacy");
-        if (legacyNode == null || !legacyNode.isBoolean()) {
-            throw new AppChainClientException("Invalid app-chain state entry identity");
-        }
-        boolean legacy = legacyNode.booleanValue();
         String genesisId = requiredCanonicalBoundedHex(
-                response, "genesisId", legacy ? 0 : 32, 32);
+                response, "genesisId", 32, 32);
         Proof metadataProbe = new Proof(
                 keyHex, resultChainId, rootHex, "00", valueHex,
                 finalizedAtHeight, committedHeight, 1,
@@ -560,7 +552,7 @@ public final class AppChainClient {
                 requiredProofIdentifier(response, "backend"),
                 requiredProofIdentifier(response, "commitmentFormatId"),
                 requiredCanonicalBoundedHex(response, "formatFingerprint", 32, 32),
-                genesisId, legacy,
+                genesisId,
                 requiredProofIdentifier(response, "proofEncodingId"),
                 response.get("nativeVersioning").booleanValue(),
                 response.get("physicalDelete").booleanValue(),
@@ -635,27 +627,9 @@ public final class AppChainClient {
         if (expectedChainId != null && !expectedChainId.equals(resultChainId)) {
             throw new AppChainClientException("App-chain state proof chain mismatch");
         }
-        boolean profileTagged = response.has("proofSchemaVersion");
-        if (!profileTagged) {
-            if (PROFILE_ENTRY_FIELDS.stream().anyMatch(response::has)) {
-                throw new AppChainClientException("Partial app-chain state proof identity");
-            }
-            Long legacyVersion = optionalNonNegativeLong(response, "version");
-            if (legacyVersion != null && !legacyVersion.equals(committedHeight)) {
-                throw new AppChainClientException(
-                        "App-chain state proof contains contradictory versions");
-            }
-            if (response.has("presence")) {
-                String expectedPresence = valueHex == null ? "ABSENT" : "PRESENT";
-                JsonNode legacyPresence = response.get("presence");
-                if (!legacyPresence.isTextual()
-                        || !expectedPresence.equals(legacyPresence.textValue())) {
-                    throw new AppChainClientException(
-                            "App-chain state proof presence/value mismatch");
-                }
-            }
-            return new Proof(keyHex, resultChainId, rootHex, proofWireHex,
-                    valueHex, finalizedAtHeight, committedHeight);
+        if (!response.has("proofSchemaVersion")) {
+            throw new AppChainClientException(
+                    "App-chain state proof is missing commitment identity");
         }
 
         Integer proofSchemaVersion = requiredPositiveInt(response, "proofSchemaVersion");
@@ -676,16 +650,8 @@ public final class AppChainClient {
         String commitmentFormatId = requiredProofIdentifier(response, "commitmentFormatId");
         String formatFingerprint = requiredCanonicalBoundedHex(
                 response, "formatFingerprint", 32, 32);
-        JsonNode legacyNode = response.get("legacy");
-        if (legacyNode == null || !legacyNode.isBoolean()) {
-            throw new AppChainClientException("Invalid app-chain state proof identity");
-        }
-        boolean legacy = legacyNode.booleanValue();
         String genesisId = requiredCanonicalBoundedHex(
-                response, "genesisId", legacy ? 0 : 32, 32);
-        if (legacy && !genesisId.isEmpty()) {
-            throw new AppChainClientException("Invalid legacy state proof genesis identity");
-        }
+                response, "genesisId", 32, 32);
         String proofEncodingId = requiredProofIdentifier(response, "proofEncodingId");
         boolean nativeVersioning = response.get("nativeVersioning").booleanValue();
         boolean physicalDelete = response.get("physicalDelete").booleanValue();
@@ -716,7 +682,7 @@ public final class AppChainClient {
         Proof proof = new Proof(keyHex, resultChainId, rootHex, proofWireHex,
                 valueHex, finalizedAtHeight, committedHeight, proofSchemaVersion,
                 profile, backend, commitmentFormatId, formatFingerprint,
-                genesisId, legacy, proofEncodingId, nativeVersioning,
+                genesisId, proofEncodingId, nativeVersioning,
                 physicalDelete, oldestProvableHeight, presence, block, finality);
         if (!ProofVerifier.hasCanonicalProfileMetadata(proof)) {
             throw new AppChainClientException(
@@ -1742,34 +1708,12 @@ public final class AppChainClient {
                         String proofWireHex, String valueHex, Long finalizedAtHeight,
                         Long committedHeight, Integer proofSchemaVersion,
                         String profile, String backend, String commitmentFormatId,
-                        String formatFingerprintHex, String genesisIdHex, Boolean legacy,
+                        String formatFingerprintHex, String genesisIdHex,
                         String proofEncodingId, Boolean nativeVersioning,
                         Boolean physicalDelete, Long oldestProvableHeight,
                         ProofPresence presence,
                         CertifiedBlockHeader block,
                         FinalityCertificate finalityCertificate) {
-        /** Source-compatible legacy MPF constructor. */
-        public Proof(String keyHex, String chainId, String stateRootHex,
-                     String proofWireHex, String valueHex, Long finalizedAtHeight,
-                     Long committedHeight) {
-            this(keyHex, chainId, stateRootHex, proofWireHex, valueHex,
-                    finalizedAtHeight, committedHeight, 0,
-                    "mpf-blake2b256-v1", "mpf",
-                    "mpf-blake2b256-format-v1", null, "", true,
-                    "mpf-proof-wire-v1", false, true, null,
-                    valueHex == null ? ProofPresence.ABSENT : ProofPresence.PRESENT,
-                    null, null);
-        }
-
-        /**
-         * Source-compatible constructor for proof envelopes produced before
-         * the atomic committed-snapshot height was exposed.
-         */
-        public Proof(String keyHex, String chainId, String stateRootHex,
-                     String proofWireHex, String valueHex, Long finalizedAtHeight) {
-            this(keyHex, chainId, stateRootHex, proofWireHex, valueHex,
-                    finalizedAtHeight, null);
-        }
     }
 
     public enum ProofPresence {

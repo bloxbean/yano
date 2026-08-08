@@ -518,7 +518,7 @@ final class RoleDemoWorkflow {
                     && proof.committedHeight() == query.committedHeight()
                     && HexFormat.of().formatHex(physicalKey).equals(proof.keyHex())
                     && HexFormat.of().formatHex(query.payload()).equals(proof.valueHex())
-                    && ProofVerifier.verify(proof, root)) {
+                    && ProofVerifier.verifyAgainstRoot(proof, root)) {
                 return query.payload();
             }
         }

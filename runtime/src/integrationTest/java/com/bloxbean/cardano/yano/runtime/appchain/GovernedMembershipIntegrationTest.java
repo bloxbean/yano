@@ -176,6 +176,7 @@ class GovernedMembershipIntegrationTest {
             throws Exception {
         AppChainConfig config = AppChainConfig.builder(CHAIN_ID)
                 .signingKeyHex(HexUtil.encodeHexString(key))
+                .stateCommitmentIdentity(AppChainIntegrationFixtures.MPF)
                 .memberKeysHex(members)
                 .peers(peers)
                 .proposerKeyHex(pubHex(KEY_A))

@@ -396,6 +396,7 @@ class SinkRunnerLifecycleTest {
                 .threshold(1)
                 .blockIntervalMs(100)
                 .pluginSettings(Map.of("sinks.blocking.enabled", "true"))
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         AppChainSubsystem subsystem = new AppChainSubsystem(
                 config, 42, null, null, ledgerPath.toString(), null, registry, LOG);

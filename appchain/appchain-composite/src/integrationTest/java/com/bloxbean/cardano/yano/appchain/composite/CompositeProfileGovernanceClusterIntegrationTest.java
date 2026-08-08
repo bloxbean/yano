@@ -17,6 +17,8 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import com.bloxbean.cardano.yano.appchain.composite.contracts.AggregateQueryLimitsV1;
 import com.bloxbean.cardano.yano.appchain.composite.contracts.CompositeProfileGovernanceV1;
 import com.bloxbean.cardano.yano.appchain.testkit.AppChainTestProfiles;
@@ -235,6 +237,8 @@ class CompositeProfileGovernanceClusterIntegrationTest {
         }
         AppChainConfig config = AppChainConfig.builder(CHAIN)
                 .signingKeyHex(HexUtil.encodeHexString(key))
+                .stateCommitmentIdentity(StateCommitmentIdentity.explicit(
+                        StateCommitmentProfiles.MPF, new byte[32]))
                 .memberKeysHex(members)
                 .peers(peers)
                 .proposerKeyHex(proposer)

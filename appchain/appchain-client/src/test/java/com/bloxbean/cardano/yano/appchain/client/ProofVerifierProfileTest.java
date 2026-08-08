@@ -92,7 +92,7 @@ class ProofVerifierProfileTest {
         AppChainClient.Proof proof = new AppChainClient.Proof(
                 Hex.encode(key), CHAIN, Hex.encode(root), Hex.encode(wire), Hex.encode(value),
                 null, 1L, 1, ProofVerifier.MPF_BLAKE2B256_V1, "mpf",
-                "mpf-blake2b256-format-v1", mpf.formatFingerprintHex(), GENESIS, false,
+                "mpf-blake2b256-format-v1", mpf.formatFingerprintHex(), GENESIS,
                 "mpf-proof-wire-v1", false, true, 1L,
                 AppChainClient.ProofPresence.PRESENT, header, certificate);
         ProofVerifier.FinalityTrustContext trust = new ProofVerifier.FinalityTrustContext(
@@ -111,7 +111,7 @@ class ProofVerifierProfileTest {
                 proof.keyHex(), proof.chainId(), proof.stateRootHex(), proof.proofWireHex(),
                 proof.valueHex(), null, 1L, 1, proof.profile(), proof.backend(),
                 proof.commitmentFormatId(), proof.formatFingerprintHex(), proof.genesisIdHex(),
-                false, proof.proofEncodingId(), false, true, 1L,
+                proof.proofEncodingId(), false, true, 1L,
                 proof.presence(), wrongRoot, certificate);
         assertThat(ProofVerifier.verifyCertified(substituted, trust)).isFalse();
     }
@@ -130,7 +130,7 @@ class ProofVerifierProfileTest {
                 Hex.encode(key), CHAIN, Hex.encode(root), Hex.encode(wire),
                 value != null ? Hex.encode(value) : null, null, 1L, 1,
                 profile, metadata.backend(), metadata.commitmentFormatId(),
-                metadata.formatFingerprintHex(), GENESIS, false,
+                metadata.formatFingerprintHex(), GENESIS,
                 metadata.proofEncodingId(), metadata.nativeVersioning(),
                 metadata.physicalDelete(), 1L,
                 presence, null, null);

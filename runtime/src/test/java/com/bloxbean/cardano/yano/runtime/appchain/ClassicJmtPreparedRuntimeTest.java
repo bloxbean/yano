@@ -124,8 +124,7 @@ class ClassicJmtPreparedRuntimeTest {
             assertThat(tombstone.presence()).isEqualTo(StateProof.Presence.TOMBSTONED);
             assertThat(tombstone.value())
                     .isEqualTo(StateCommitmentValues.classicJmtTombstone());
-            assertThat(ledger.stateProofSnapshotAtHeight(2, KEY_B))
-                    .get().extracting(snapshot -> snapshot.value())
+            assertThat(tombstone.value())
                     .isEqualTo(StateCommitmentValues.classicJmtTombstone());
             assertThat(absent.presence()).isEqualTo(StateProof.Presence.ABSENT);
             assertThat(absent.value()).isNull();

@@ -82,6 +82,7 @@ class CustomSignerProviderTest {
                 .proposerKeyHex(pub)
                 .threshold(1)
                 .blockIntervalMs(300)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         node = new AppChainSubsystem(config, 42, null, null,
                 tempDir.resolve("ledger").toString(), null, log);
@@ -103,6 +104,7 @@ class CustomSignerProviderTest {
                 .memberKeysHex(Set.of(pub))
                 .proposerKeyHex(pub)
                 .threshold(1)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         assertThatThrownBy(() -> new AppChainSubsystem(config, 42, null, null,
                 tempDir.resolve("ledger2").toString(), null, log))

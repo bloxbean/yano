@@ -60,6 +60,7 @@ class EffectsSettingsConsensusProfileTest {
                 .proposerKeyHex(MEMBER)
                 .maxBlockMessages(100)
                 .pluginSettings(settings)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
     }
 }

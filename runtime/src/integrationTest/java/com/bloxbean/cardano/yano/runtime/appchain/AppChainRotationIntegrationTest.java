@@ -185,6 +185,7 @@ class AppChainRotationIntegrationTest {
                                             EventBus bus, Path ledgerDir) throws Exception {
         AppChainConfig config = AppChainConfig.builder("rot-chain")
                 .signingKeyHex(HexUtil.encodeHexString(key))
+                .stateCommitmentIdentity(AppChainIntegrationFixtures.MPF)
                 .memberKeysHex(members)
                 .peers(peers)
                 .threshold(2)
@@ -202,6 +203,7 @@ class AppChainRotationIntegrationTest {
             throws Exception {
         AppChainConfig config = AppChainConfig.builder("pr-chain")
                 .signingKeyHex(HexUtil.encodeHexString(key))
+                .stateCommitmentIdentity(AppChainIntegrationFixtures.MPF)
                 .memberKeysHex(members)
                 .peers(peers)
                 .proposerKeyHex(proposerHex)

@@ -103,6 +103,7 @@ class AppChainConfigParserTest {
                 java.util.HexFormat.of().formatHex(
                         StateCommitmentProfiles.MPF.formatFingerprint()));
         values.put(StateCommitmentIdentity.GENESIS_ID_SETTING, "ab".repeat(32));
+        values.put(StateCommitmentIdentity.L1_PROOF_REQUIRED_SETTING, "true");
 
         AppChainConfig config = AppChainConfigParser.parse(values);
         StateCommitmentIdentity identity = StateCommitmentIdentity.fromSettings(
@@ -111,6 +112,8 @@ class AppChainConfigParserTest {
         assertThat(identity.profile().id()).isEqualTo("mpf-blake2b256-v1");
         assertThat(identity.genesisId()).isEqualTo(java.util.HexFormat.of()
                 .parseHex("ab".repeat(32)));
+        assertThat(config.pluginSettings())
+                .containsEntry(StateCommitmentIdentity.L1_PROOF_REQUIRED_SETTING, "true");
     }
 
     private static Map<String, Object> base() {

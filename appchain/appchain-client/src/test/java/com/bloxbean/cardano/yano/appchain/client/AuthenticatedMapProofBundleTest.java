@@ -101,7 +101,7 @@ class AuthenticatedMapProofBundleTest {
 
     @Test
     void directAndApprovalBundlesRequireCurrentPointerFacts() {
-        AppChainClient.Proof placeholder = new AppChainClient.Proof(
+        AppChainClient.Proof placeholder = TestProofs.mpf(
                 "01", CHAIN, "11".repeat(32), "80", "01", null, 1L);
         assertThatThrownBy(() -> new AuthenticatedMapProofBundle(
                 AuthenticatedMapProofBundle.Kind.DIRECT_ROLE, CHAIN,
@@ -618,7 +618,7 @@ class AuthenticatedMapProofBundleTest {
                 Hex.encode(tree.getProofWire(key, 1).orElseThrow()), Hex.encode(value),
                 null, 1L, 1, metadata.id(), metadata.backend(),
                 metadata.commitmentFormatId(), metadata.formatFingerprintHex(),
-                GENESIS, false, metadata.proofEncodingId(),
+                GENESIS, metadata.proofEncodingId(),
                 metadata.nativeVersioning(), metadata.physicalDelete(), 1L,
                 AppChainClient.ProofPresence.PRESENT, null, null);
     }

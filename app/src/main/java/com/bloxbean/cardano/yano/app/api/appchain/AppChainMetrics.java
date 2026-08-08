@@ -301,8 +301,7 @@ public class AppChainMetrics {
         Gauge.builder("yano.appchain.state.commitment.info", state, ignored -> 1d)
                 .tags("chain", chain, "profile", profile, "backend", backend,
                         "format_fingerprint", formatFingerprint,
-                        "genesis_id", genesisId.isEmpty() ? "legacy" : genesisId,
-                        "legacy", Boolean.toString(identity.legacy()))
+                        "genesis_id", genesisId)
                 .description("Static authenticated-state commitment identity")
                 .register(registry);
         Gauge.builder("yano.appchain.state.version", state, StateMetricSnapshot::version)

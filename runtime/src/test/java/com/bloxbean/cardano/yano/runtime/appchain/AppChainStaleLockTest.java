@@ -209,6 +209,7 @@ class AppChainStaleLockTest {
                 .proposerKeyHex(proposerHex)
                 .threshold(2)
                 .blockIntervalMs(500)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         AppChainSubsystem subsystem = new AppChainSubsystem(config, MAGIC, null, null,
                 ledgerDir.toString(), null, log);

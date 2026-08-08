@@ -11,6 +11,7 @@ import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundle;
 import com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceVerifier;
 import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
+import com.bloxbean.cardano.yano.appchain.client.ProofVerifier;
 import com.bloxbean.cardano.yano.appchain.composite.contracts.CompositeCommitmentV1;
 import com.bloxbean.cardano.yano.appchain.composite.contracts.CompositeProfileEpochV1;
 import org.junit.jupiter.api.Test;
@@ -86,7 +87,15 @@ class GovernedCompositeVerifierTest {
         AppChainClient.Proof wrongRoot = new AppChainClient.Proof(
                 fixture.markerProof().keyHex(), CHAIN, "00".repeat(32),
                 fixture.markerProof().proofWireHex(), fixture.markerProof().valueHex(),
-                HEIGHT, HEIGHT);
+                HEIGHT, HEIGHT, fixture.markerProof().proofSchemaVersion(),
+                fixture.markerProof().profile(), fixture.markerProof().backend(),
+                fixture.markerProof().commitmentFormatId(),
+                fixture.markerProof().formatFingerprintHex(),
+                fixture.markerProof().genesisIdHex(),
+                fixture.markerProof().proofEncodingId(),
+                fixture.markerProof().nativeVersioning(), fixture.markerProof().physicalDelete(),
+                fixture.markerProof().oldestProvableHeight(), fixture.markerProof().presence(),
+                fixture.markerProof().block(), fixture.markerProof().finalityCertificate());
         assertThatThrownBy(() -> GovernedCompositeVerifier.verify(
                 fixture.evidence(), fixture.trust(), fixture.pointerProof(),
                 List.of(fixture.epochProof()), wrongRoot,
@@ -161,10 +170,17 @@ class GovernedCompositeVerifierTest {
     private static AppChainClient.Proof proof(
             MpfTrie trie, byte[] key, byte[] value, byte[] root
     ) {
+        ProofVerifier.ProfileMetadata metadata = ProofVerifier.profileMetadata(
+                ProofVerifier.MPF_BLAKE2B256_V1).orElseThrow();
         return new AppChainClient.Proof(
                 HexFormat.of().formatHex(key), CHAIN, HexFormat.of().formatHex(root),
                 HexFormat.of().formatHex(trie.getProofWire(key).orElseThrow()),
-                HexFormat.of().formatHex(value), HEIGHT, HEIGHT);
+                HexFormat.of().formatHex(value), HEIGHT, HEIGHT, 1,
+                ProofVerifier.MPF_BLAKE2B256_V1, metadata.backend(),
+                metadata.commitmentFormatId(), metadata.formatFingerprintHex(),
+                "11".repeat(32), metadata.proofEncodingId(),
+                metadata.nativeVersioning(), metadata.physicalDelete(), HEIGHT,
+                AppChainClient.ProofPresence.PRESENT, null, null);
     }
 
     private static AppMessage message() {

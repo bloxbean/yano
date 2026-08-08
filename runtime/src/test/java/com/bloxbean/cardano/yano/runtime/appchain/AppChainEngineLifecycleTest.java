@@ -96,6 +96,7 @@ class AppChainEngineLifecycleTest {
                 .threshold(2)
                 .maxBlockMessages(1)
                 .poolMaxMessages(1)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         AssertionError primary = new AssertionError("sensitive apply assertion");
         TestVirtualMachineError fatalCleanup = new TestVirtualMachineError();
@@ -169,6 +170,7 @@ class AppChainEngineLifecycleTest {
                 .threshold(2)
                 .maxBlockMessages(1)
                 .poolMaxMessages(1)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
 
         ThrowFirstApplyMachine machine = new ThrowFirstApplyMachine();
@@ -258,6 +260,7 @@ class AppChainEngineLifecycleTest {
                 .threshold(2)
                 .maxBlockMessages(1)
                 .poolMaxMessages(1)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
 
         InterruptResistantMachine machine = new InterruptResistantMachine();

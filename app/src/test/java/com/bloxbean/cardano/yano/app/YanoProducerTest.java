@@ -253,6 +253,7 @@ class YanoProducerTest {
                 "yano.app-chain.effects.enabled", "true",
                 "yano.app-chain.effects.metrics.types", "cardano.payment,webhook",
                 "yano.app-chain.state.commitment-profile", "mpf-blake2b256-v1",
+                "yano.app-chain.state.l1-proof-consumption-required", "true",
                 "yano.app-chain.chains[0].chain-id", "payments",
                 "yano.app-chain.chains[0].effects.enabled", "true",
                 "yano.app-chain.chains[0].effects.executor.enabled", "true",
@@ -266,6 +267,8 @@ class YanoProducerTest {
                 globals.get("yano.app-chain.effects.metrics.types"));
         assertEquals("mpf-blake2b256-v1",
                 globals.get("yano.app-chain.state.commitment-profile"));
+        assertEquals("true",
+                globals.get("yano.app-chain.state.l1-proof-consumption-required"));
 
         var chain = producer.parseAppChainChains().getFirst();
         assertEquals("payments", chain.get("chain-id"));

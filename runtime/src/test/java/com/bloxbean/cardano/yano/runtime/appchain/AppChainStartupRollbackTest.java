@@ -149,6 +149,7 @@ class AppChainStartupRollbackTest {
                 .proposerKeyHex(PUBLIC_KEY)
                 .threshold(1)
                 .pluginSettings(settings)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
     }
 

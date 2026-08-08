@@ -1,6 +1,5 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
-import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfile;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfileCommitment;
@@ -72,21 +71,6 @@ final class ConsensusProfileGuard {
         }
     }
 
-    /** Compatibility adapter for focused legacy MPF tests. */
-    void apply(long height, MpfTrie trie) {
-        apply(height, new AppStateWriter() {
-            @Override public void put(byte[] key, byte[] value) { trie.put(key, value); }
-            @Override public void delete(byte[] key) { trie.delete(key); }
-            @Override public Optional<byte[]> get(byte[] key) {
-                return Optional.ofNullable(trie.get(key));
-            }
-            @Override public byte[] stateRoot() {
-                byte[] root = trie.getRootHash();
-                return root != null ? root : new byte[32];
-            }
-        });
-    }
-
     private IllegalStateException incompatible(
             String chainId,
             long tip,
@@ -105,6 +89,6 @@ final class ConsensusProfileGuard {
         return new IllegalStateException("App-chain '" + chainId
                 + "' retained consensus profile is incompatible at tip " + tip
                 + ": " + reason + " (expected=" + digestHex
-                + ", observed=" + observedIdentity + "). Start with a fresh preview ledger.");
+                + ", observed=" + observedIdentity + "). Start with a fresh app-chain ledger.");
     }
 }

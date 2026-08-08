@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.appchain.devtools;
 import com.bloxbean.cardano.vds.core.api.NodeStore;
 import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.yano.appchain.client.Hex;
+import com.bloxbean.cardano.yano.appchain.client.ProofVerifier;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -35,18 +36,38 @@ class AppChainStateCliTest {
         byte[] value = "value".getBytes(StandardCharsets.US_ASCII);
         trie.put(key, value);
         String root = Hex.encode(trie.getRootHash());
+        ProofVerifier.ProfileMetadata profile = ProofVerifier.profileMetadata(
+                ProofVerifier.MPF_BLAKE2B256_V1).orElseThrow();
+        String genesis = "11".repeat(32);
+        String blockHash = "22".repeat(32);
         Path proof = temporary.resolve("proof.json");
         Files.writeString(proof, """
                 {"key":"%s","chainId":"cli-chain","stateRoot":"%s",
-                 "proofWireHex":"%s","valueHex":"%s","committedHeight":1}
+                 "proofWireHex":"%s","valueHex":"%s","committedHeight":1,
+                 "proofSchemaVersion":1,"schemaVersion":1,"profile":"%s",
+                 "backend":"%s","commitmentFormatId":"%s",
+                 "formatFingerprint":"%s","genesisId":"%s",
+                 "proofEncodingId":"%s","nativeVersioning":%s,
+                 "physicalDelete":%s,"version":1,"oldestProvableHeight":1,
+                 "presence":"PRESENT","blockHash":"%s",
+                 "block":{"version":1,"height":1,"prevHash":"%s","l1Slot":0,
+                   "l1BlockHash":"","timestamp":1,"messagesRoot":"%s",
+                   "stateRoot":"%s","blockHash":"%s"},
+                 "finalityCertificate":{"scheme":0,"signatures":[
+                   {"signer":"%s","signature":"%s"}]}}
                 """.formatted(Hex.encode(key), root,
-                Hex.encode(trie.getProofWire(key).orElseThrow()), Hex.encode(value)));
+                Hex.encode(trie.getProofWire(key).orElseThrow()), Hex.encode(value),
+                profile.id(), profile.backend(), profile.commitmentFormatId(),
+                profile.formatFingerprintHex(), genesis, profile.proofEncodingId(),
+                profile.nativeVersioning(), profile.physicalDelete(), blockHash,
+                "00".repeat(32), "33".repeat(32), root, blockHash,
+                "44".repeat(32), "55".repeat(64)));
 
         Result valid = run("state", "verify",
                 "--proof-file", proof.toString(),
                 "--trusted-root", root,
                 "--profile", "mpf-blake2b256-v1",
-                "--genesis-id", "legacy",
+                "--genesis-id", genesis,
                 "--chain", "cli-chain",
                 "--height", "1",
                 "--root-source", "cardano-anchor");
@@ -54,17 +75,17 @@ class AppChainStateCliTest {
                 "--proof-file", proof.toString(),
                 "--trusted-root", "00".repeat(32),
                 "--profile", "mpf-blake2b256-v1",
-                "--genesis-id", "legacy",
+                "--genesis-id", genesis,
                 "--chain", "cli-chain",
                 "--height", "1");
         Result missingTrust = run("state", "verify",
                 "--proof-file", proof.toString(),
                 "--profile", "mpf-blake2b256-v1",
-                "--genesis-id", "legacy",
+                "--genesis-id", genesis,
                 "--chain", "cli-chain",
                 "--height", "1");
 
-        assertThat(valid.exit()).isZero();
+        assertThat(valid.exit()).as(valid.err()).isZero();
         assertThat(valid.err()).isEmpty();
         JsonNode result = json.readTree(valid.out());
         assertThat(result.path("valid").asBoolean()).isTrue();

@@ -224,8 +224,8 @@ The flow is:
    bridge epoch, finalized height, MPF root, member profile, threshold, and
    generation. An advance requires the current threshold; an epoch migration
    is a distinct action.
-3. `EutxoClient.withdrawalProof` fetches the root-fixed MPF proof and
-   `EutxoMpfProofConverter` converts Yano's proof to the bounded on-chain
+3. `EutxoClient.withdrawalProof` fetches the root-fixed MPF proof and the shared
+   `MpfProofConverter` converts Yano's proof to the bounded on-chain
    representation while independently reconstructing the root.
 4. Any relayer uses `ProofWithdrawalTransactionBuilder` and
    `ProofWithdrawalRelayClient` to prepare, sign, persist, and submit the exact

@@ -34,7 +34,7 @@ class ConsensusProfileGuardTest {
 
         try (AppLedgerStore ledger = ledger(directory)) {
             MpfTrie trie = new MpfTrie(ledger.mpfNodeStore());
-            guard.apply(1, trie);
+            guard.apply(1, TestStateCommitments.writer(trie));
             byte[] root = trie.getRootHash();
             AppBlock block = block(root);
             try (WriteBatch batch = new WriteBatch()) {
@@ -127,6 +127,7 @@ class ConsensusProfileGuardTest {
                 .memberKeysHex(Set.of(member))
                 .proposerKeyHex(member)
                 .maxBlockMessages(100)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
     }
 

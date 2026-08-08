@@ -806,8 +806,8 @@ Flat (single-chain) keys. The same suffixes apply per chain under
 | `anchor.every-blocks` | `10` | Anchor after this many new app blocks |
 | `anchor.max-interval-minutes` | `60` | Anchor at least this often while blocks pend |
 | `anchor.metadata-label` | `7014` | Metadata label of anchor txs (metadata mode) |
-| `anchor.script.validator` | `builtin:julc` | Script mode: anchor validator artifact — `builtin:julc`, `file:/path` (blueprint or raw hex) or `hex:...` |
-| `anchor.script.thread-policy` | `builtin:julc` | Script mode: thread-policy artifact (same forms) |
+| `anchor.script.validator` | `builtin:aiken` | Script mode: anchor validator artifact — `builtin:aiken`, `file:/path` (blueprint or raw hex) or `hex:...` |
+| `anchor.script.thread-policy` | `builtin:aiken` | Script mode: thread-policy artifact (same forms) |
 | `observers.<id>.type` | — | L1 observer instance (§5.5): `address-deposit`, `metadata-label`, or a plugin provider id. Further `observers.<id>.*` keys are provider settings (e.g. `address`, `label`). Must be identical on all members; requires `l1.stability-depth > 0` |
 | `anchor.validity-slots` | `7200` | Anchor tx TTL = current L1 slot + this; a resubmitted anchor can never race a late-landing original |
 | `anchor.fallback-fee-lovelace` | `300000` | Anchor tx fee when protocol parameters are unavailable; normally the fee is computed from the node's current params by tx size |

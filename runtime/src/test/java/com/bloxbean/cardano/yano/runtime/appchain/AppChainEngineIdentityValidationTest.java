@@ -54,6 +54,7 @@ class AppChainEngineIdentityValidationTest {
                 .proposerKeyHex(signer.publicKeyHex())
                 .threshold(1)
                 .maxBlockMessages(2)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         Logger logger = mock(Logger.class);
         AppLedgerStore ledger = new AppLedgerStore(
@@ -281,6 +282,7 @@ class AppChainEngineIdentityValidationTest {
                 .memberKeysHex(members)
                 .proposerKeyHex(proposer.publicKeyHex())
                 .threshold(2)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         Logger logger = mock(Logger.class);
         AppLedgerStore ledger = new AppLedgerStore(
@@ -339,8 +341,10 @@ class AppChainEngineIdentityValidationTest {
             AppLedgerStore ledger
     ) {
         var trie = new com.bloxbean.cardano.vds.mpf.MpfTrie(ledger.mpfNodeStore());
+        AppStateWriter writer = TestStateCommitments.writer(trie);
+        new StateCommitmentGuard(TestStateCommitments.MPF).apply(1, writer);
         new ConsensusProfileGuard(EffectsSettings.from(config).consensusProfile(config))
-                .apply(1, trie);
+                .apply(1, writer);
         return new AppBlock(block.version(), block.chainId(), block.height(), block.prevHash(),
                 block.l1Slot(), block.l1BlockHash(), block.timestamp(), block.messagesRoot(),
                 trie.getRootHash(), block.messages(), block.proposer(), block.cert());

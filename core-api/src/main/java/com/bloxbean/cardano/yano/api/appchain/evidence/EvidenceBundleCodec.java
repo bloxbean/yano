@@ -72,7 +72,7 @@ public final class EvidenceBundleCodec {
     private static final Set<String> STATE_COMMITMENT_FIELDS = Set.of(
             "schemaVersion", "profile", "backend", "commitmentFormatId",
             "proofEncodingId", "nativeVersioning", "physicalDelete",
-            "formatFingerprint", "genesisId", "legacy", "version", "stateRoot");
+            "formatFingerprint", "genesisId", "version", "stateRoot");
     private EvidenceBundleCodec() {
     }
 
@@ -136,7 +136,6 @@ public final class EvidenceBundleCodec {
             state.put("formatFingerprint", HexUtil.encodeHexString(
                     identity.profile().formatFingerprint()));
             state.put("genesisId", HexUtil.encodeHexString(identity.genesisId()));
-            state.put("legacy", identity.legacy());
             state.put("version", snapshot.height());
             state.put("stateRoot", HexUtil.encodeHexString(snapshot.stateRoot()));
         }
@@ -262,15 +261,13 @@ public final class EvidenceBundleCodec {
                 || !node.get("nativeVersioning").isBoolean()
                 || !node.get("physicalDelete").isBoolean()
                 || !hex32(node.get("formatFingerprint"))
-                || !node.get("genesisId").isTextual()
-                || !node.get("legacy").isBoolean()
+                || !hex32(node.get("genesisId"))
                 || !nonNegativeLong(node.get("version"))
                 || !hex32(node.get("stateRoot"))) {
             throw invalid();
         }
         StateCommitmentProfile profile = StateCommitmentProfiles.find(
                 node.get("profile").textValue()).orElseThrow(EvidenceBundleCodec::invalid);
-        boolean legacy = node.get("legacy").booleanValue();
         String genesisHex = node.get("genesisId").textValue();
         if (!node.get("backend").textValue().equals(
                 profile.backendFamily().name().toLowerCase(Locale.ROOT))
@@ -281,15 +278,10 @@ public final class EvidenceBundleCodec {
                 || node.get("nativeVersioning").booleanValue() != profile.nativeVersioning()
                 || node.get("physicalDelete").booleanValue() != profile.physicalDelete()
                 || !node.get("formatFingerprint").textValue().equals(
-                HexUtil.encodeHexString(profile.formatFingerprint()))
-                || legacy && (!profile.equals(StateCommitmentProfiles.MPF)
-                || !genesisHex.isEmpty())
-                || !legacy && !genesisHex.matches("[0-9a-f]{64}")) {
+                HexUtil.encodeHexString(profile.formatFingerprint()))) {
             throw invalid();
         }
-        StateCommitmentIdentity identity = legacy
-                ? StateCommitmentIdentity.legacyMpf()
-                : StateCommitmentIdentity.explicit(
+        StateCommitmentIdentity identity = StateCommitmentIdentity.explicit(
                 profile, HexUtil.decodeHexString(genesisHex));
         long version = node.get("version").longValue();
         byte[] root = HexUtil.decodeHexString(node.get("stateRoot").textValue());

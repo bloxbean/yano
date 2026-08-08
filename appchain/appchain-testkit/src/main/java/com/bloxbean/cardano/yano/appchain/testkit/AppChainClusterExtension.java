@@ -104,6 +104,8 @@ public class AppChainClusterExtension implements BeforeAllCallback, AfterAllCall
                 }
                 AppChainConfig config = AppChainConfig.builder(annotation.chainId())
                         .signingKeyHex(HexUtil.encodeHexString(seeds.get(i)))
+                        .stateCommitmentIdentity(
+                                AppChainTestStateCommitments.mpf(annotation.chainId()))
                         .memberKeysHex(members)
                         .peers(peers)
                         .proposerKeyHex(proposer)

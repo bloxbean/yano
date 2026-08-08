@@ -42,7 +42,8 @@ public final class AppChainConfigParser {
             "state.", Set.of(
                     StateCommitmentIdentity.PROFILE_SETTING,
                     StateCommitmentIdentity.FINGERPRINT_SETTING,
-                    StateCommitmentIdentity.GENESIS_ID_SETTING));
+                    StateCommitmentIdentity.GENESIS_ID_SETTING,
+                    StateCommitmentIdentity.L1_PROOF_REQUIRED_SETTING));
 
     private AppChainConfigParser() {
     }

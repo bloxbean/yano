@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.appchain.devtools;
 
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import com.bloxbean.cardano.yano.appchain.config.AppChainMetadataDescriptor;
 import com.bloxbean.cardano.yano.appchain.config.AppChainPropertyDefinition;
 import com.bloxbean.cardano.yano.appchain.config.ChangePolicy;
@@ -20,6 +21,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.HexFormat;
 import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -278,7 +280,13 @@ class AppChainDevtoolsCliTest {
                     effects:
                       enabled: true
                       max-per-block: 4
-                """.formatted(secret, member));
+                    state:
+                      commitment-profile: %s
+                      format-fingerprint: %s
+                      genesis-id: %s
+                """.formatted(secret, member, StateCommitmentProfiles.MPF.id(),
+                HexFormat.of().formatHex(StateCommitmentProfiles.MPF.formatFingerprint()),
+                "01".repeat(32)));
 
         Result result = run("config", "validate", "--mode", "resolved",
                 "--format", "json", "--config", config.toString());

@@ -13,8 +13,8 @@ import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryResult;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
-import com.bloxbean.cardano.yano.api.appchain.AppStateProofSnapshot;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
+import com.bloxbean.cardano.yano.api.appchain.state.StateProofEnvelope;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginProviderRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -187,7 +187,7 @@ class AppChainCommittedQueryTest {
     }
 
     @Test
-    void proofSnapshotsBindValueProofRootAndHeightAcrossLaterCommits()
+    void proofEnvelopesBindValueProofRootHeightBlockAndCertificateAcrossLaterCommits()
             throws Exception {
         SnapshotQueryMachine machine = new SnapshotQueryMachine();
         AppChainSubsystem node = create(
@@ -195,58 +195,63 @@ class AppChainCommittedQueryTest {
         byte[] key = "color".getBytes(StandardCharsets.UTF_8);
         byte[] missingKey = "missing".getBytes(StandardCharsets.UTF_8);
 
-        assertThat(node.stateProofSnapshot(key)).isEmpty();
+        assertThat(node.stateProofEnvelope(key)).isEmpty();
         node.start();
-        assertThat(node.stateProofSnapshot(key)).isEmpty();
+        assertThat(node.stateProofEnvelope(key)).isEmpty();
 
         node.submit("kv", "color=blue".getBytes(StandardCharsets.UTF_8));
         awaitTrue("first proof state block", () -> node.tipHeight() >= 1);
 
-        AppStateProofSnapshot first = node.stateProofSnapshot(key).orElseThrow();
-        assertThat(first.key()).containsExactly(key);
-        assertThat(new String(first.value(), StandardCharsets.UTF_8)).isEqualTo("blue");
-        assertThat(first.stateRoot()).containsExactly(
-                node.block(first.committedHeight()).orElseThrow().stateRoot());
+        StateProofEnvelope first = node.stateProofEnvelope(key).orElseThrow();
+        assertThat(first.proof().canonicalKey()).containsExactly(key);
+        assertThat(new String(first.proof().value(), StandardCharsets.UTF_8)).isEqualTo("blue");
+        assertThat(first.proof().snapshot().stateRoot()).containsExactly(
+                node.block(first.proof().snapshot().height()).orElseThrow().stateRoot());
         assertThat(verifies(first, true)).isTrue();
 
-        AppStateProofSnapshot exclusion = node.stateProofSnapshot(missingKey).orElseThrow();
-        assertThat(exclusion.key()).containsExactly(missingKey);
-        assertThat(exclusion.value()).isNull();
-        assertThat(exclusion.committedHeight()).isEqualTo(first.committedHeight());
-        assertThat(exclusion.stateRoot()).containsExactly(first.stateRoot());
+        StateProofEnvelope exclusion = node.stateProofEnvelope(missingKey).orElseThrow();
+        assertThat(exclusion.proof().canonicalKey()).containsExactly(missingKey);
+        assertThat(exclusion.proof().value()).isNull();
+        assertThat(exclusion.proof().snapshot().height())
+                .isEqualTo(first.proof().snapshot().height());
+        assertThat(exclusion.proof().snapshot().stateRoot())
+                .containsExactly(first.proof().snapshot().stateRoot());
         assertThat(verifies(exclusion, false)).isTrue();
 
         node.submit("kv", "color=green".getBytes(StandardCharsets.UTF_8));
         awaitTrue("second proof state block", () -> node.tipHeight() >= 2);
-        AppStateProofSnapshot second = node.stateProofSnapshot(key).orElseThrow();
+        StateProofEnvelope second = node.stateProofEnvelope(key).orElseThrow();
 
-        assertThat(second.committedHeight()).isGreaterThan(first.committedHeight());
-        assertThat(new String(second.value(), StandardCharsets.UTF_8)).isEqualTo("green");
-        assertThat(second.stateRoot()).containsExactly(
-                node.block(second.committedHeight()).orElseThrow().stateRoot());
+        assertThat(second.proof().snapshot().height())
+                .isGreaterThan(first.proof().snapshot().height());
+        assertThat(new String(second.proof().value(), StandardCharsets.UTF_8)).isEqualTo("green");
+        assertThat(second.proof().snapshot().stateRoot()).containsExactly(
+                node.block(second.proof().snapshot().height()).orElseThrow().stateRoot());
         assertThat(verifies(second, true)).isTrue();
         assertThat(verifies(first, true)).isTrue();
 
-        AppStateProofSnapshot historical =
-                node.stateProofSnapshotAtHeight(first.committedHeight(), key).orElseThrow();
-        assertThat(historical.committedHeight()).isEqualTo(first.committedHeight());
-        assertThat(historical.stateRoot()).containsExactly(first.stateRoot());
-        assertThat(historical.value()).containsExactly(first.value());
+        StateProofEnvelope historical = node.stateProofEnvelopeAtHeight(
+                first.proof().snapshot().height(), key).orElseThrow();
+        assertThat(historical.proof().snapshot().height())
+                .isEqualTo(first.proof().snapshot().height());
+        assertThat(historical.proof().snapshot().stateRoot())
+                .containsExactly(first.proof().snapshot().stateRoot());
+        assertThat(historical.proof().value()).containsExactly(first.proof().value());
         assertThat(verifies(historical, true)).isTrue();
-        assertThat(node.stateProofSnapshotAtHeight(0, key)).isEmpty();
-        assertThat(node.stateProofSnapshotAtHeight(10_000, key)).isEmpty();
+        assertThat(node.stateProofEnvelopeAtHeight(0, key)).isEmpty();
+        assertThat(node.stateProofEnvelopeAtHeight(10_000, key)).isEmpty();
 
-        byte[] exposedValue = first.value();
-        byte[] exposedWire = first.proofWire();
-        byte[] exposedRoot = first.stateRoot();
+        byte[] exposedValue = first.proof().value();
+        byte[] exposedWire = first.proof().nativeProof();
+        byte[] exposedRoot = first.proof().snapshot().stateRoot();
         exposedValue[0] ^= 1;
         exposedWire[0] ^= 1;
         exposedRoot[0] ^= 1;
-        assertThat(new String(first.value(), StandardCharsets.UTF_8)).isEqualTo("blue");
+        assertThat(new String(first.proof().value(), StandardCharsets.UTF_8)).isEqualTo("blue");
         assertThat(verifies(first, true)).isTrue();
 
         node.stop();
-        assertThat(node.stateProofSnapshot(key)).isEmpty();
+        assertThat(node.stateProofEnvelope(key)).isEmpty();
     }
 
     @Test
@@ -377,6 +382,7 @@ class AppChainCommittedQueryTest {
                 .proposerKeyHex(PUBLIC_KEY)
                 .threshold(1)
                 .blockIntervalMs(blockIntervalMs)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         AppChainSubsystem node = new AppChainSubsystem(
                 config, 42, null, machine, tempDir.resolve(chainId).toString(),
@@ -442,7 +448,8 @@ class AppChainCommittedQueryTest {
         return bytes;
     }
 
-    private static boolean verifies(AppStateProofSnapshot snapshot, boolean inclusion) {
+    private static boolean verifies(StateProofEnvelope envelope, boolean inclusion) {
+        var proof = envelope.proof();
         MpfTrie verifier = new MpfTrie(new NodeStore() {
             @Override
             public byte[] get(byte[] hash) {
@@ -458,8 +465,8 @@ class AppChainCommittedQueryTest {
             }
         });
         return verifier.verifyProofWire(
-                snapshot.stateRoot(), snapshot.key(), snapshot.value(), inclusion,
-                snapshot.proofWire());
+                proof.snapshot().stateRoot(), proof.canonicalKey(), proof.value(), inclusion,
+                proof.nativeProof());
     }
 
     @FunctionalInterface

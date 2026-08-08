@@ -69,17 +69,16 @@ class AppChainWebhookTest {
         String hookUrl = "http://localhost:" + webhookServer.getAddress().getPort() + "/hook";
 
         String pubA = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_A));
-        AppChainConfig config = new AppChainConfig(
-                "webhook-chain",
-                HexUtil.encodeHexString(KEY_A),
-                Set.of(pubA),
-                List.of(),
-                65536, 3600, 600,
-                pubA, 1, 300, 100,
-                AppChainConfig.DEFAULT_STATE_MACHINE,
-                null, null, 0,
-                List.of(hookUrl),
-                false, 0, java.util.Map.of());
+        AppChainConfig config = AppChainConfig.builder("webhook-chain")
+                .signingKeyHex(HexUtil.encodeHexString(KEY_A))
+                .memberKeysHex(Set.of(pubA))
+                .proposerKeyHex(pubA)
+                .threshold(1)
+                .blockIntervalMs(300)
+                .maxBlockMessages(100)
+                .webhookUrls(List.of(hookUrl))
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .build();
         node = new AppChainSubsystem(config, 42, null, null,
                 tempDir.resolve("ledger").toString(), null, log);
 

@@ -157,22 +157,12 @@ class AppChainTwoNodeSmokeTest {
      */
     private AppChainSubsystem startNode(byte[] signingKey, Set<String> members,
                                         int serverPort, List<AppChainConfig.AppPeer> peers) throws Exception {
-        AppChainConfig config = new AppChainConfig(
-                CHAIN_ID,
-                HexUtil.encodeHexString(signingKey),
-                members,
-                peers,
-                65536,
-                3600,
-                600,
-                "",   // no sequencer — M1 diffusion-only mode
-                1,
-                AppChainConfig.DEFAULT_BLOCK_INTERVAL_MS,
-                AppChainConfig.DEFAULT_MAX_BLOCK_MESSAGES,
-                AppChainConfig.DEFAULT_STATE_MACHINE,
-                null,
-                null, 0, java.util.List.of(),
-                false, 0, java.util.Map.of());
+        AppChainConfig config = AppChainConfig.builder(CHAIN_ID)
+                .signingKeyHex(HexUtil.encodeHexString(signingKey))
+                .memberKeysHex(members)
+                .peers(peers)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .build();
         AppChainSubsystem subsystem = new AppChainSubsystem(config, MAGIC, null, log);
         subsystems.add(subsystem);
 

@@ -1108,6 +1108,7 @@ class AppChainProviderRegistryTest {
                 .stateMachineId("Registry.Machine:V1")
                 .l1StabilityDepth(1)
                 .pluginSettings(settings)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         return new AppChainSubsystem(config, 42, new SimpleEventBus(), null,
                 base.toString(), null, registry, LOG);
@@ -1127,7 +1128,8 @@ class AppChainProviderRegistryTest {
                 .signingKeyHex(KEY_HEX)
                 .memberKeysHex(Set.of(PUBLIC_KEY))
                 .proposerKeyHex(PUBLIC_KEY)
-                .threshold(1);
+                .threshold(1)
+                .stateCommitmentIdentity(TestStateCommitments.MPF);
     }
 
     private AppChainSubsystem builtInSubsystem(String chainId, Path base,
@@ -1139,6 +1141,7 @@ class AppChainProviderRegistryTest {
                 .proposerKeyHex(PUBLIC_KEY)
                 .threshold(1)
                 .pluginSettings(settings)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         return new AppChainSubsystem(config, 42, null, null,
                 base.toString(), null, registry, LOG);

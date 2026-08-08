@@ -61,6 +61,7 @@ class AppChainBackpressureTest {
                 .blockIntervalMs(60_000)
                 .maxBlockMessages(1)
                 .poolMaxMessages(1)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         node = new AppChainSubsystem(config, 42, null, null,
                 tempDir.resolve("ledger").toString(), null, log);

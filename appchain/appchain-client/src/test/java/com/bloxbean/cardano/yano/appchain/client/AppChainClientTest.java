@@ -235,22 +235,23 @@ class AppChainClientTest {
         byte[] root = trie.getRootHash();
         byte[] proofWire = trie.getProofWire(key).orElseThrow();
 
-        AppChainClient.Proof proof = new AppChainClient.Proof(
+        AppChainClient.Proof proof = TestProofs.mpf(
                 Hex.encode(key), "c1", Hex.encode(root),
-                Hex.encode(proofWire), Hex.encode(value), 3L);
+                Hex.encode(proofWire), Hex.encode(value), 3L, 3L);
 
         // The SDK verifies with zero node access
-        assertThat(ProofVerifier.verify(proof)).isTrue();
+        assertThat(ProofVerifier.verifyInternalConsistency(proof)).isTrue();
 
         // Against an independently obtained (anchored) root
-        assertThat(ProofVerifier.verify(proof, Hex.encode(root))).isTrue();
+        assertThat(ProofVerifier.verifyAgainstRoot(proof, Hex.encode(root))).isTrue();
 
         // Tampered value or wrong root fails closed
-        AppChainClient.Proof tampered = new AppChainClient.Proof(
+        AppChainClient.Proof tampered = TestProofs.mpf(
                 Hex.encode(key), "c1", Hex.encode(root),
-                Hex.encode(proofWire), Hex.encode("REJECTED".getBytes(StandardCharsets.UTF_8)), 3L);
-        assertThat(ProofVerifier.verify(tampered)).isFalse();
-        assertThat(ProofVerifier.verify(proof, Hex.encode(new byte[32]))).isFalse();
+                Hex.encode(proofWire), Hex.encode("REJECTED".getBytes(StandardCharsets.UTF_8)),
+                3L, 3L);
+        assertThat(ProofVerifier.verifyInternalConsistency(tampered)).isFalse();
+        assertThat(ProofVerifier.verifyAgainstRoot(proof, Hex.encode(new byte[32]))).isFalse();
     }
 
     @Test
