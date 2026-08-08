@@ -117,11 +117,16 @@ public final class ShowcaseSettlementPlan {
      * {@code owner} stays false here: the cluster launcher grants
      * {@code effects.executors.eutxo-settlement.owner=true} to exactly ONE
      * node (single-owner pinning).
+     *
+     * <p>Supply EITHER {@code operatorSeed} (inline hex — only ever for the
+     * public devnet demo actor) or {@code operatorSeedFile} (the path to an
+     * owner-only key file, for every public network).
      */
     public static Map<String, String> configProperties(
             SettlementBootstrapPlan plan, String chainId,
             String withdrawalL2Address, String operatorAddress,
-            byte[] operatorSeed, String networkName, String scriptDir) {
+            byte[] operatorSeed, String operatorSeedFile,
+            String networkName, String scriptDir) {
         Map<String, String> config = new LinkedHashMap<>();
         config.put("machines.eutxo.profile", plan.profile().id());
         config.put("machines.eutxo.expected-profile-digest",
@@ -169,8 +174,15 @@ public final class ShowcaseSettlementPlan {
         config.put(executor + "shard-thread-policy-id",
                 plan.shardThreadPolicyIdHex());
         config.put(executor + "operator-address", operatorAddress);
-        config.put(executor + "operator-seed",
-                HexFormat.of().formatHex(operatorSeed));
+        if (operatorSeedFile != null && !operatorSeedFile.isBlank()) {
+            // A public-network operator's key NEVER enters the chain YAML:
+            // the config names the owner-only file, and the wiring reads it.
+            config.put(executor + "operator-seed-file", operatorSeedFile.trim());
+        } else {
+            config.put(executor + "operator-seed",
+                    HexFormat.of().formatHex(java.util.Objects.requireNonNull(
+                            operatorSeed, "operatorSeed (or operatorSeedFile)")));
+        }
         if (scriptDir == null || scriptDir.isBlank()) {
             config.put(executor + "vault-script",
                     plan.vaultScript().getCborHex());
@@ -189,13 +201,31 @@ public final class ShowcaseSettlementPlan {
         return config;
     }
 
+    /** Inline-seed, file-script variant — the packaged devnet demo chain. */
+    public static Map<String, String> configProperties(
+            SettlementBootstrapPlan plan, String chainId,
+            String withdrawalL2Address, String operatorAddress,
+            byte[] operatorSeed, String networkName, String scriptDir) {
+        return configProperties(plan, chainId, withdrawalL2Address,
+                operatorAddress, operatorSeed, null, networkName, scriptDir);
+    }
+
     /** Inline-script variant (tests, small configs). */
     public static Map<String, String> configProperties(
             SettlementBootstrapPlan plan, String chainId,
             String withdrawalL2Address, String operatorAddress,
             byte[] operatorSeed, String networkName) {
         return configProperties(plan, chainId, withdrawalL2Address,
-                operatorAddress, operatorSeed, networkName, null);
+                operatorAddress, operatorSeed, null, networkName, null);
+    }
+
+    /**
+     * The chains[] index a generated block is rendered with before it is
+     * spliced into a real config — {@code chain add} renumbers it to the
+     * instance's next free slot.
+     */
+    public static int chainIndexPlaceholder() {
+        return 0;
     }
 
     /**

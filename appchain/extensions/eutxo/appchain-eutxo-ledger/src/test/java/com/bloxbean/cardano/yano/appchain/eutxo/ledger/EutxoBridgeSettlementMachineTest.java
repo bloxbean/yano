@@ -60,6 +60,120 @@ class EutxoBridgeSettlementMachineTest {
     private static final String VAULT = "addr_test1_bridge_vault";
     private static final String VAULT_HASH = "11".repeat(28);
 
+    /**
+     * Wallets hand out BASE addresses, and the vault validator fingerprints
+     * either form ({@code Nothing} vs {@code Just (StakingHash …)}), so a base
+     * destination must form a claim normally.
+     */
+    @Test
+    void v3WithdrawalToABaseAddressIsAccepted() throws Exception {
+        EutxoStateMachine machine = v3Machine(2);
+        MemoryAppState state = new MemoryAppState();
+        long total = 10_000_000L;
+        applyDeposit(machine, state, total);
+
+        AppMessage withdrawalMessage = withdrawTo(
+                machine, state, baseAddressOf(ALICE.address()), total);
+        assertThat(receiptStatus(machine, state, withdrawalMessage))
+                .isEqualTo(EutxoReceipt.Status.ACCEPTED);
+        assertThat(state.get(EutxoStateKeys.totalWithdrawalCount(7))).isPresent();
+    }
+
+    /**
+     * A destination the vault could never pay must not form a claim at all:
+     * batches form oldest-first, so one unsettleable claim would re-batch and
+     * fail forever, blocking every later claim on the chain.
+     */
+    @Test
+    void v3WithdrawalToANonPayableDestinationIsRejected() throws Exception {
+        EutxoStateMachine machine = v3Machine(2);
+        MemoryAppState state = new MemoryAppState();
+        long total = 10_000_000L;
+        applyDeposit(machine, state, total);
+
+        String rewardAddress = com.bloxbean.cardano.client.address.AddressProvider
+                .getRewardAddress(
+                        com.bloxbean.cardano.client.address.Credential.fromKey(
+                                fill(28, 9)),
+                        com.bloxbean.cardano.client.common.model.Networks.testnet())
+                .getAddress();
+        AppMessage withdrawalMessage = withdrawTo(
+                machine, state, rewardAddress, total);
+
+        assertThat(receiptStatus(machine, state, withdrawalMessage))
+                .isEqualTo(EutxoReceipt.Status.REJECTED);
+        assertThat(state.get(EutxoStateKeys.totalWithdrawalCount(7))).isEmpty();
+    }
+
+    /**
+     * The effect runtime injects a reserved '~fx/result' message after every
+     * settlement. It is not a transaction: decoding it produced INVALID_CBOR
+     * and a receipt with an EMPTY transaction id, which polluted the explorer
+     * and — because a blank id repeats — broke the lifecycle index's unique
+     * constraint on the second settlement.
+     */
+    @Test
+    void reservedTopicMessagesAreNotIndexedAsTransactions() throws Exception {
+        EutxoStateMachine machine = v3Machine(2);
+        MemoryAppState state = new MemoryAppState();
+        applyDeposit(machine, state, 10_000_000L);
+
+        AppMessage reserved = AppMessage.builder()
+                .version(1)
+                .messageId(fill(32, 99))
+                .chainId("eutxo-test")
+                .topic(com.bloxbean.cardano.yano.api.appchain.effects
+                        .FxResultBody.TOPIC)
+                .sender(new byte[32])
+                .senderSeq(99)
+                .expiresAt(Long.MAX_VALUE)
+                .body(new byte[] {0x00})
+                .authScheme(0)
+                .authProof(new byte[64])
+                .build();
+        machine.apply(block(2, reserved), state);
+
+        assertThat(EutxoQueryCodec.decodeOptionalReceipt(machine.query(
+                EutxoQueryCodec.ATTEMPT_PATH,
+                EutxoQueryCodec.attemptRequest(reserved.getMessageId()),
+                state)))
+                .as("a reserved system message must produce no transaction receipt")
+                .isNull();
+    }
+
+    /** Same payment credential, with a staking part attached. */
+
+    private static String baseAddressOf(String enterpriseAddress) {
+        com.bloxbean.cardano.client.address.Address enterprise =
+                new com.bloxbean.cardano.client.address.Address(enterpriseAddress);
+        return com.bloxbean.cardano.client.address.AddressProvider.getBaseAddress(
+                        enterprise.getPaymentCredential().orElseThrow(),
+                        com.bloxbean.cardano.client.address.Credential.fromKey(
+                                fill(28, 9)),
+                        com.bloxbean.cardano.client.common.model.Networks.testnet())
+                .getAddress();
+    }
+
+    private static AppMessage withdrawTo(
+            EutxoStateMachine machine, MemoryAppState state,
+            String destination, long total) throws Exception {
+        EutxoWithdrawalDatum datum = new EutxoWithdrawalDatum(
+                1, "eutxo-test", 7, destination, fill(32, 6));
+        Transaction withdrawal = EutxoTransactionFixtures.signedOutputs(
+                mirroredOutpoint(machine, state),
+                ALICE,
+                List.of(TransactionOutput.builder()
+                        .address(withdrawalAddress())
+                        .value(Value.fromCoin(BigInteger.valueOf(total)))
+                        .inlineDatum(PlutusData.deserialize(datum.encode()))
+                        .build()),
+                0,
+                0);
+        AppMessage message = message(62, withdrawal);
+        machine.apply(block(2, message), state);
+        return message;
+    }
+
     @Test
     void v3WithdrawalSplitsPayoutAndBountyAndReconcilesTotalReserve()
             throws Exception {

@@ -57,7 +57,6 @@ import java.util.Objects;
  */
 final class QuickTxSettlePipeline {
     private static final long CONFIRM_POLL_MILLIS = 1_000;
-    private static final long CONFIRM_TIMEOUT_MILLIS = 90_000;
 
     private final SettlementWiring wiring;
     private final SettlementClaimsView claimsView;
@@ -239,7 +238,8 @@ final class QuickTxSettlePipeline {
     }
 
     private void awaitConfirmation(String transactionId) throws Exception {
-        long deadline = System.currentTimeMillis() + CONFIRM_TIMEOUT_MILLIS;
+        long deadline = System.currentTimeMillis()
+                + wiring.confirmTimeout().toMillis();
         while (System.currentTimeMillis() < deadline) {
             if (backend.status(transactionId)
                     == CardanoSettlementBackend.Status.CONFIRMED) {
@@ -251,22 +251,48 @@ final class QuickTxSettlePipeline {
                 + " did not confirm within the group window");
     }
 
-    /** Claim redeemer field: enterprise pubkey destinations (demo custody). */
+    /**
+     * Claim redeemer field: the destination as a Plutus {@code Address}.
+     *
+     * <p>Both enterprise and base destinations are supported — wallets hand
+     * out base addresses, and the vault validator already fingerprints either
+     * form ({@code Nothing} vs {@code Just (StakingHash …)}). The staking part
+     * must be encoded FAITHFULLY: the validator compares the paying output's
+     * address to this value with {@code equalsData}, so an enterprise
+     * encoding for a base destination would simply never match.
+     */
+    /**
+     * {@code Maybe StakingCredential}: {@code Nothing} for an enterprise
+     * address, {@code Just (StakingHash cred)} for a base one. Pointer
+     * addresses are refused — the validator only fingerprints StakingHash, so
+     * a pointer destination could never be paid.
+     */
+    private static PlutusData stakingPart(Address destination) {
+        var delegation = destination.getDelegationCredential();
+        if (delegation.isEmpty()) {
+            return ConstrPlutusData.of(1);
+        }
+        var credential = delegation.get();
+        int tag = credential.getType()
+                == com.bloxbean.cardano.client.address.CredentialType.Key ? 0 : 1;
+        // Just ( StakingHash ( Credential ) )
+        return ConstrPlutusData.of(0,
+                ConstrPlutusData.of(0,
+                        ConstrPlutusData.of(tag,
+                                BytesPlutusData.of(credential.getBytes()))));
+    }
+
     static PlutusData claimData(EutxoWithdrawalClaim claim) {
         Address destination = new Address(claim.destinationAddress());
         var credential = destination.getPaymentCredential().orElseThrow(
                 () -> new IllegalStateException(
                         "destination has no payment credential"));
-        if (destination.getDelegationCredential().isPresent()) {
-            throw new IllegalStateException(
-                    "settlement destinations must be enterprise addresses");
-        }
         int credentialTag = credential.getType()
                 == com.bloxbean.cardano.client.address.CredentialType.Key ? 0 : 1;
         PlutusData destinationData = ConstrPlutusData.of(0,
                 ConstrPlutusData.of(credentialTag,
                         BytesPlutusData.of(credential.getBytes())),
-                ConstrPlutusData.of(1));
+                stakingPart(destination));
         return ConstrPlutusData.of(0,
                 BigIntPlutusData.of(claim.bridgeEpoch()),
                 BigIntPlutusData.of(claim.settlementSequence()),

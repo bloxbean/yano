@@ -33,6 +33,8 @@ SERVER_BASE=13337
 ANCHOR=false
 ANCHOR_MODE="script"
 ANCHOR_KEY_FILE=""
+SETTLEMENT_KEY_FILE=""
+SETTLEMENT_CONFIRM=""
 # All chains are anchor-ENABLED by default (config-only, no L1 spend);
 # bootstrap stays selective and per-chain — that is where spending starts.
 ANCHOR_CHAINS="$(IFS=,; printf '%s' "${LIGHT_CHAINS[*]}")"
@@ -74,6 +76,8 @@ parse() {
       --anchor-key-file) ANCHOR=true; ANCHOR_KEY_FILE="${2:-}"; ANCHOR_KEY_EXPLICIT=true; shift 2;;
       --anchor-chain|--anchor-chains) ANCHOR=true; ANCHOR_CHAINS="${2:-}"; shift 2;;
       --confirm-public-anchor) PUBLIC_CONFIRM="${2:-}"; shift 2;;
+      --settlement-key-file) SETTLEMENT_KEY_FILE="${2:-}"; shift 2;;
+      --confirm-public-settlement) SETTLEMENT_CONFIRM="${2:-}"; shift 2;;
       --data-dir) DATA_ROOT="${2:-}"; shift 2;;
       --node) NODE="${2:-}"; shift 2;;
       --count) COUNT="${2:-}"; shift 2;;
@@ -383,6 +387,7 @@ prepare_light() {
   fi
   install_authenticated_map_candidate "$candidate"
   install_authenticated_map_jmt_candidate "$jmt_candidate"
+  [ "$NETWORK" = devnet ] || strip_devnet_settlement_chain
   write_node_configs "$NODES"
   note "Prepared light instance '$INSTANCE'"
   note "  data:    $root"
@@ -1339,6 +1344,52 @@ settlement_yml_value() {
 
 settlement_script_dir() { printf '%s/config/settlement' "$YANO_HOME"; }
 
+# The packaged settlement chain carries the DEVNET-only profile and demo
+# identity. If it ever activates on a public network the chain-id retains that
+# profile digest, and the real identity can never be adopted under the same id.
+# Strip it before any node starts; it is the last chain, so indices stay
+# contiguous. The bootstrapped block is adopted afterwards.
+strip_devnet_settlement_chain() {
+  local config="$YANO_HOME/config/application-appchain.yml" tmp
+  grep -q "chain-id: \"$SETTLEMENT_CHAIN_ID\"" "$config" 2>/dev/null || return 0
+  # ONLY the packaged devnet block is removed. Once the operator has adopted
+  # their own production settlement chain, this runs on every start (up_light
+  # -> prepare_light) and must leave it completely alone.
+  grep -q 'profile: "yano-eutxo-v3-bridge-settlement-devnet"' "$config" \
+    2>/dev/null || return 0
+  tmp="$config.public.$$"
+  awk -v cid="$SETTLEMENT_CHAIN_ID" '
+    function flush(   i) {
+      if (nbuf > 0) {
+        if (keep) { printf "%s", pending; for (i = 1; i <= nbuf; i++) print buf[i] }
+        nbuf = 0
+      }
+      pending = ""
+    }
+    /^    # DEVNET-ONLY profile/ { flush(); pending = $0 "\n"; next }
+    /^    chains\[/ { flush(); inblock = 1; keep = 1; nbuf = 1; buf[1] = $0; next }
+    {
+      if (inblock) {
+        if ($0 ~ /^[[:space:]]*$/) { buf[++nbuf] = $0; next }
+        match($0, /[^ ]/); ind = RSTART - 1
+        if (ind >= 6) {
+          buf[++nbuf] = $0
+          if (index($0, "chain-id: \"" cid "\"") > 0) { keep = 0 }
+          next
+        }
+        flush(); inblock = 0
+      }
+      print
+    }
+    END { flush() }
+  ' "$config" > "$tmp" || { rm -f -- "$tmp"; die "cannot rewrite $config"; }
+  grep -q "chain-id: \"$SETTLEMENT_CHAIN_ID\"" "$tmp" \
+    && { rm -f -- "$tmp"; die "failed to remove the devnet settlement chain from $config"; }
+  mv -- "$tmp" "$config" || die "cannot replace $config"
+  note "removed the packaged DEVNET settlement chain for this $NETWORK instance;"
+  note "deploy your own with: ./showcase.sh settlement prepare --instance $INSTANCE --settlement-key-file <file>"
+}
+
 # True when the one-shot root thread token is present at the root address —
 # the single authoritative signal that the L1 identity is deployed.
 settlement_root_thread_live() {
@@ -1397,12 +1448,106 @@ run_settlement_info() {
   note "DEVNET-ONLY demo profile (relaxed fallback floor); PUBLIC demo keys."
 }
 
+# The packaged settlement actors are derived from a PUBLISHED formula, so on
+# any public network the operator must bring their own key — exactly like the
+# preprod anchor seed.
+require_settlement_actors() {
+  local action="$1"
+  [ "$NETWORK" != devnet ] || return 0
+  [ -n "$SETTLEMENT_KEY_FILE" ] || die \
+    "settlement $action on $NETWORK needs --settlement-key-file: the packaged demo actors' seeds are public. Generate one:" \
+    "  mkdir -m 700 ./private-settlement && (umask 077; openssl rand -hex 32 > ./private-settlement/operator.seed)" \
+    "Then: ./showcase.sh settlement prepare --instance $INSTANCE --settlement-key-file \$(pwd)/private-settlement/operator.seed"
+  [ "$SETTLEMENT_CONFIRM" = "$NETWORK" ] || die \
+    "settlement $action on $NETWORK spends real funds; add --confirm-public-settlement $NETWORK"
+}
+
+# Key-file arguments for the demo CLI, empty on the packaged devnet demo.
+settlement_key_args() {
+  [ -n "$SETTLEMENT_KEY_FILE" ] || return 0
+  printf -- '--operator-seed-file %s' "$SETTLEMENT_KEY_FILE"
+}
+
+# The cluster's LIVE federation keys — the settlement root datum commits to
+# them, so they must come from the running cluster, not a constant. Read them
+# from a chain that already EXISTS: the settlement chain is adopted only after
+# this identity is deployed, so querying it would always fall back and could
+# silently commit to the wrong federation.
+settlement_member_args() {
+  local members threshold json
+  json="$(curl -fsS -H "X-API-Key: $API_KEY" \
+    "http://127.0.0.1:$HTTP_BASE/api/v1/app-chain/chains/${LIGHT_CHAINS[0]}/admin/members" \
+    2>/dev/null || true)"
+  [ -n "$json" ] || return 0
+  members="$(printf '%s' "$json" | jq -r '.members | join(",")' 2>/dev/null || true)"
+  threshold="$(printf '%s' "$json" | jq -r '.threshold' 2>/dev/null || true)"
+  [ -n "$members" ] && [ "$members" != null ] || return 0
+  printf -- '--member-keys %s' "$members"
+  [ -n "$threshold" ] && [ "$threshold" != null ] \
+    && printf -- ' --threshold %s' "$threshold"
+}
+
+# A claim sits at PENDING whether its settlement effect is waiting, retrying,
+# or DEAD in the poison lane. Parked effects are NEVER retried, so surface them
+# explicitly — otherwise a stuck chain is indistinguishable from a slow one.
+settlement_effect_health() {
+  local base status effects parked retry failure
+  base="http://127.0.0.1:$HTTP_BASE/api/v1/app-chain/chains/$SETTLEMENT_CHAIN_ID"
+  status="$(curl -fsS -H "X-API-Key: $API_KEY" "$base/status" 2>/dev/null || true)"
+  [ -n "$status" ] || return 0
+  parked="$(printf '%s' "$status" | jq -r '.effects.executor.statusCounts.PARKED // 0' 2>/dev/null || echo 0)"
+  retry="$(printf '%s' "$status" | jq -r '.effects.executor.statusCounts.RETRY // 0' 2>/dev/null || echo 0)"
+  failure="$(printf '%s' "$status" | jq -r '[.effects.executor.executorOperations[]?.failureCode | select(. != null and . != "NONE")] | first // empty' 2>/dev/null || true)"
+  [ "$parked" != 0 ] || [ "$retry" != 0 ] || [ -n "$failure" ] || return 0
+
+  note ""
+  note "Settlement queue health:"
+  [ "$retry" = 0 ] \
+    || note "  $retry effect(s) RETRYING — the node is still trying; no action needed."
+  [ -z "$failure" ] || note "  last executor failure code: $failure"
+  if [ "$parked" != 0 ]; then
+    note "  $parked effect(s) PARKED — DEAD, and they will never retry on their own."
+    note "  A claim stays PENDING while its batch is parked, and batches form"
+    note "  oldest-first, so every later claim is blocked behind it."
+    effects="$(curl -fsS -H "X-API-Key: $API_KEY" "$base/effects" 2>/dev/null || true)"
+    if [ -n "$effects" ]; then
+      printf '%s' "$effects" | jq -r '.effects[]? | "    stuck: \(.type) height=\(.height) ordinal=\(.ordinal) scope=\(.scope)"' 2>/dev/null || true
+      printf '%s' "$effects" | jq -r --arg b "$base" '.effects[]? | "    requeue: curl -X POST -H \"X-API-Key: <key>\" \($b)/effects/\(.height)/\(.ordinal)/requeue"' 2>/dev/null || true
+    fi
+    note "  Diagnose the cause BEFORE requeuing — a requeue repeats the same failure."
+    note "  The effect runtime logs the cause at DEBUG."
+  fi
+}
+
+run_settlement_prepare() {
+  [ -n "$SETTLEMENT_KEY_FILE" ] || die \
+    "settlement prepare needs --settlement-key-file. Generate one:" \
+    "  mkdir -m 700 ./private-settlement && (umask 077; openssl rand -hex 32 > ./private-settlement/operator.seed)"
+  "$YANO_HOME/yano.sh" appchain eutxo demo settlement-prepare \
+    --network "$NETWORK" --operator-seed-file "$SETTLEMENT_KEY_FILE"
+  note "fund the address above, wait for the node to see it, then:"
+  note "  ./showcase.sh settlement bootstrap --instance $INSTANCE \\"
+  note "    --settlement-key-file $SETTLEMENT_KEY_FILE \\"
+  note "    --confirm-public-settlement $NETWORK"
+}
+
 run_settlement_bootstrap() {
-  [ "$NETWORK" = devnet ] \
-    || die "the packaged settlement identity is devnet-deterministic; on $NETWORK bootstrap with your own funded seeds (see docs/SETTLEMENT_CHAIN.md)"
+  require_settlement_actors bootstrap
+  if [ -n "$SETTLEMENT_KEY_FILE" ]; then
+    note "deploying the settlement identity on the $NETWORK L1 with your own operator key (idempotent)..."
+    "$YANO_HOME/yano.sh" appchain eutxo demo settlement-bootstrap \
+      --target-base "http://127.0.0.1:$HTTP_BASE" \
+      --network "$NETWORK" --operator-seed-file "$SETTLEMENT_KEY_FILE" \
+      $(settlement_member_args) \
+      --output "$(settlement_script_dir)"
+    note "bootstrap complete. Adopt the generated chain block, then restart:"
+    note "  ./showcase.sh chain add $SETTLEMENT_CHAIN_ID --instance $INSTANCE"
+    return 0
+  fi
   note "deploying the settlement identity on the devnet L1 (idempotent)..."
   "$YANO_HOME/yano.sh" appchain eutxo demo settlement-bootstrap \
     --target-base "http://127.0.0.1:$HTTP_BASE" \
+    --network devnet \
     --output "$(settlement_script_dir)"
   # No restart: the devnet plan is deterministic and its validators ship with
   # the distribution, so the executor was already wired at startup.
@@ -1790,6 +1935,20 @@ PY
       resume_joined_nodes
       note "authenticated-map-jmt-chain added; verify with: ./showcase.sh status --instance $INSTANCE";;
     "$SETTLEMENT_CHAIN_ID")
+      # On a public network the chain block is generated by `settlement
+      # bootstrap` from the operator's OWN identity and adopted by hand. This
+      # command then migrates the instance marker to match it — it never
+      # splices the packaged devnet block.
+      if [ "$NETWORK" != devnet ]; then
+        grep -q "chain-id: \"$SETTLEMENT_CHAIN_ID\"" \
+          "$YANO_HOME/config/application-appchain.yml" || die \
+          "on $NETWORK you must adopt your own settlement block first:" \
+          "  ./showcase.sh settlement bootstrap --instance $INSTANCE --settlement-key-file <file> --confirm-public-settlement $NETWORK" \
+          "then append the printed configBlock to $YANO_HOME/config/application-appchain.yml (docs/PREPROD_SETTLEMENT.md)"
+        grep -q 'profile: "yano-eutxo-v3-bridge-settlement-devnet"' \
+          "$YANO_HOME/config/application-appchain.yml" && die \
+          "the adopted settlement block carries the DEVNET-only profile; on $NETWORK it must be yano-eutxo-v3-bridge-settlement"
+      fi
       grep -q 'chain-id: "payment-chain-settlement"' \
         "$YANO_HOME/config/application-appchain.yml" \
         || die "packaged application-appchain.yml lacks the settlement chain; replace showcase.sh, tools/, yano/config/application-appchain.yml, and the plugin bundle from a newly built showcase ZIP first"
@@ -1830,21 +1989,25 @@ PY
     [ "$PROFILE" = light ] || die "settlement applies to the light profile (the eutxo profile has its own scenarios)"
     case "${POSITIONAL[0]:-}" in
       info) run_settlement_info;;
+      prepare) run_settlement_prepare;;
       bootstrap) run_settlement_bootstrap;;
       deposit)
-        [ "$NETWORK" = devnet ] \
-          || die "the packaged deposit uses the devnet demo operator; on $NETWORK deposit your own funds (docs/SETTLEMENT_CHAIN.md)"
+        require_settlement_actors deposit
         "$YANO_HOME/yano.sh" appchain eutxo demo settlement-deposit \
-          --target-base "http://127.0.0.1:$HTTP_BASE";;
+          --target-base "http://127.0.0.1:$HTTP_BASE" \
+          --network "$NETWORK" $(settlement_key_args);;
       withdraw)
+        require_settlement_actors withdraw
         "$YANO_HOME/yano.sh" appchain eutxo demo settlement-withdraw \
-          --target-base "http://127.0.0.1:$HTTP_BASE"
+          --target-base "http://127.0.0.1:$HTTP_BASE" \
+          --network "$NETWORK" $(settlement_key_args)
         note "claim created — the federation settles it on its own; watch with:"
         note "  ./showcase.sh settlement status --instance $INSTANCE";;
       status)
         "$YANO_HOME/yano.sh" appchain eutxo demo settlement-status \
-          --target-base "http://127.0.0.1:$HTTP_BASE";;
-      *) die "usage: settlement info|bootstrap|deposit|withdraw|status";;
+          --target-base "http://127.0.0.1:$HTTP_BASE"
+        settlement_effect_health;;
+      *) die "usage: settlement info|prepare|bootstrap|deposit|withdraw|status";;
     esac;;
   ceremony)
     adopt_marker

@@ -41,9 +41,16 @@ public final class EutxoDemoCli {
                                            (bridge scenario only; the workspace
                                            keeps wallets/journal/artifacts and
                                            never starts or stops the target)
-              --operator-seed-file <file>  64-hex vault operator seed; required
-                                           with --target-base so settlement can
-                                           sign for the target chain's vault
+              --operator-seed-file <file>  64-hex raw Ed25519 operator seed in an
+                                           owner-only file (openssl rand -hex 32).
+                                           Required for settlement on any public
+                                           network; settlement-prepare needs only
+                                           this, no running node
+              --network <name>             devnet (default) | preprod | preview |
+                                           sanchonet | mainnet
+              --member-keys <hex,hex,...>  the chain's live federation keys, which
+                                           the settlement root datum commits to
+              --threshold <n>              federation threshold; default majority
               --payout-address <address>   the target chain's configured
                                            withdrawal address (attach setup)
               --address <Cardano address>  external L1 depositor
@@ -139,6 +146,22 @@ public final class EutxoDemoCli {
                 throw new IllegalArgumentException(
                         "settlement-bootstrap needs --output <config/settlement dir>");
             }
+            // Public networks: the operator supplies their OWN key, and the
+            // identity is built on the production profile.
+            if (options.operatorSeedFile() != null) {
+                return EutxoDemoResult.of("EUTXO_SETTLEMENT_BOOTSTRAP",
+                        SettlementDeployment.bootstrap(
+                                base,
+                                SettlementOperatorIdentity.fromKeyFile(
+                                        options.operatorSeedFile()),
+                                options.network(),
+                                memberKeys(options),
+                                effectiveThreshold(options),
+                                options.operatorSeedFile().toAbsolutePath()
+                                        .getParent(),
+                                options.operatorSeedFile(), scriptDir));
+            }
+            requireDevnetDemoActors(options, "settlement-bootstrap");
             String transaction = SettlementBootstrapWorkflow
                     .bootstrapShowcaseDevnet(base + "/api/v1/");
             ShowcaseSettlementPlan.writeScripts(
@@ -157,14 +180,31 @@ public final class EutxoDemoCli {
             payload.put("scriptDirectory", scriptDir.toString());
             return EutxoDemoResult.of("EUTXO_SETTLEMENT_BOOTSTRAP", payload);
         }
+        // Public-network step 1: where to send the funds, and how much.
+        if ("settlement-prepare".equals(options.command())) {
+            if (options.operatorSeedFile() == null) {
+                throw new IllegalArgumentException("settlement-prepare needs"
+                        + " --operator-seed-file (generate one:"
+                        + " openssl rand -hex 32 > operator.seed)");
+            }
+            // No --target-base: preparing needs no node.
+            return EutxoDemoResult.of("EUTXO_SETTLEMENT_PREPARE",
+                    SettlementDeployment.prepare(
+                            SettlementOperatorIdentity.fromKeyFile(
+                                    options.operatorSeedFile()),
+                            options.network()));
+        }
         if ("settlement-deposit".equals(options.command())) {
+            SettlementOperatorIdentity identity = settlementIdentity(
+                    options, "settlement-deposit");
             return EutxoDemoResult.of("EUTXO_SETTLEMENT_DEPOSIT",
                     ShowcaseSettlementDemo.deposit(
-                            requireTarget(options), options.amount()));
+                            requireTarget(options), options.amount(), identity));
         }
         if ("settlement-withdraw".equals(options.command())) {
             return EutxoDemoResult.of("EUTXO_SETTLEMENT_WITHDRAW",
-                    ShowcaseSettlementDemo.withdraw(requireTarget(options)));
+                    ShowcaseSettlementDemo.withdraw(requireTarget(options),
+                            settlementIdentity(options, "settlement-withdraw")));
         }
         if ("settlement-status".equals(options.command())) {
             return EutxoDemoResult.of("EUTXO_SETTLEMENT_STATUS",
@@ -348,6 +388,9 @@ public final class EutxoDemoCli {
         long amount = 20_000_000L;
         Path output = null;
         Path signedTransaction = null;
+        String network = "devnet";
+        String memberKeys = null;
+        int threshold = 0;
         EutxoDemoOptions.Format format = EutxoDemoOptions.Format.TEXT;
         boolean confirmed = false;
         boolean help = arguments.length == 0;
@@ -394,6 +437,12 @@ public final class EutxoDemoCli {
                     case "json" -> EutxoDemoOptions.Format.JSON;
                     default -> throw new Usage("--format must be text or json");
                 };
+                case "--network" -> network = network(
+                        required(arguments, ++index, value), value);
+                case "--member-keys" -> memberKeys =
+                        required(arguments, ++index, value);
+                case "--threshold" -> threshold = integer(
+                        required(arguments, ++index, value), value, 1, 32);
                 case "--yes" -> confirmed = true;
                 default -> {
                     if (value.startsWith("--")) {
@@ -414,8 +463,8 @@ public final class EutxoDemoCli {
                     "ceremony", "round-trip", "deposit-build",
                     "deposit-submit",
                     "settlement-bootstrap", "settlement-info",
-                    "settlement-deposit", "settlement-withdraw",
-                    "settlement-status").contains(command)) {
+                    "settlement-prepare", "settlement-deposit",
+                    "settlement-withdraw", "settlement-status").contains(command)) {
                 throw new Usage("unknown EUTxO demo command: " + command);
             }
         }
@@ -440,9 +489,13 @@ public final class EutxoDemoCli {
                         + " run setup once, then operations directly");
             }
         }
-        if (!help && operatorSeedFile != null && targetBase == null) {
-            throw new Usage(
-                    "--operator-seed-file is valid only with --target-base");
+        // settlement-prepare is pure derivation: it needs the key and
+        // nothing else, so it must not require a running node.
+        if (!help && operatorSeedFile != null && targetBase == null
+                && !"settlement-prepare".equals(command)) {
+            throw new Usage("--operator-seed-file is valid only with"
+                    + " --target-base (except settlement-prepare, which"
+                    + " contacts no node)");
         }
         if (!help && payoutAddress != null
                 && !("setup".equals(command) && targetBase != null)) {
@@ -456,8 +509,62 @@ public final class EutxoDemoCli {
                 members, count, httpPortBase, serverPortBase,
                 targetBase, operatorSeedFile, payoutAddress,
                 address, l2Address, l2PublicKey, amount, output,
-                signedTransaction,
+                signedTransaction, network, memberKeys, threshold,
                 format, confirmed, help);
+    }
+
+    /**
+     * The settlement actors for this invocation: the operator's own key when
+     * one is supplied, otherwise the packaged devnet demo actors — which are
+     * refused anywhere but devnet, because their seeds are public.
+     */
+    private static SettlementOperatorIdentity settlementIdentity(
+            EutxoDemoOptions options, String command) {
+        if (options.operatorSeedFile() != null) {
+            return SettlementOperatorIdentity.fromKeyFile(
+                    options.operatorSeedFile());
+        }
+        requireDevnetDemoActors(options, command);
+        return SettlementOperatorIdentity.demo();
+    }
+
+    private static void requireDevnetDemoActors(
+            EutxoDemoOptions options, String command) {
+        if (!"devnet".equals(options.network())) {
+            throw new IllegalArgumentException(command + " on "
+                    + options.network() + " needs --operator-seed-file: the"
+                    + " packaged demo actors' seeds come from a published"
+                    + " formula and anyone could spend their funds"
+                    + " (generate one: openssl rand -hex 32 > operator.seed)");
+        }
+    }
+
+    /** Supplied threshold, else a majority of the member set. */
+    private static int effectiveThreshold(EutxoDemoOptions options) {
+        int supplied = options.threshold();
+        return supplied > 0 ? supplied : memberKeys(options).size() / 2 + 1;
+    }
+
+    /** The chain's live federation keys, for the root datum. */
+    private static java.util.List<String> memberKeys(EutxoDemoOptions options) {
+        if (options.memberKeys() == null || options.memberKeys().isBlank()) {
+            return ShowcaseSettlementPlan.CLUSTER_MEMBERS;
+        }
+        return java.util.Arrays.stream(options.memberKeys().split(","))
+                .map(String::trim)
+                .filter(key -> !key.isEmpty())
+                .map(key -> key.toLowerCase(java.util.Locale.ROOT))
+                .toList();
+    }
+
+    /** The demo actors are devnet-only; every other network needs a key file. */
+    private static String network(String value, String flag) {
+        String normalized = value.trim().toLowerCase(java.util.Locale.ROOT);
+        return switch (normalized) {
+            case "devnet", "preprod", "preview", "sanchonet", "mainnet" -> normalized;
+            default -> throw new Usage(flag + " must be devnet, preprod,"
+                    + " preview, sanchonet, or mainnet");
+        };
     }
 
     private static String bech32Address(String value) {

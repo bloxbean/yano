@@ -38,9 +38,26 @@ import java.util.Objects;
  * {@link ShowcaseSettlementPlan#configProperties}.
  */
 public final class SettlementBootstrapWorkflow {
-    private static final long ROOT_LOVELACE = 5_000_000L;
-    private static final long THREAD_LOVELACE = 2_000_000L;
-    private static final long VAULT_GENESIS_LOVELACE = 20_000_000L;
+    public static final long ROOT_LOVELACE = 5_000_000L;
+    public static final long THREAD_LOVELACE = 2_000_000L;
+    public static final long VAULT_GENESIS_LOVELACE = 20_000_000L;
+    /** Nullifier shards (one thread token each). */
+    public static final int SHARD_COUNT = 16;
+    /** Headroom for the three bootstrap transactions' fees and collateral. */
+    public static final long FEE_HEADROOM_LOVELACE = 5_000_000L;
+
+    /**
+     * Lovelace the operator address must hold before {@code bootstrap} can
+     * run: every genesis output plus fee headroom. The two one-shot seed
+     * UTxOs are spent by the mints but their value returns as change, so they
+     * are not counted twice.
+     */
+    public static long requiredFundingLovelace() {
+        return ROOT_LOVELACE
+                + (long) SHARD_COUNT * THREAD_LOVELACE
+                + VAULT_GENESIS_LOVELACE
+                + FEE_HEADROOM_LOVELACE;
+    }
 
     private SettlementBootstrapWorkflow() {
     }

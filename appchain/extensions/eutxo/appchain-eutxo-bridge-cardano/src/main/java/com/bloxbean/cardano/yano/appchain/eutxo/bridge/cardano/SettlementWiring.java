@@ -24,7 +24,8 @@ record SettlementWiring(
         String vaultScriptHex,
         String shardScriptHex,
         long ttlSlots,
-        Duration roundTimeout
+        Duration roundTimeout,
+        Duration confirmTimeout
 ) {
     SettlementWiring {
         vaultAddress = required(vaultAddress, "vault-address");
@@ -46,6 +47,7 @@ record SettlementWiring(
             throw new IllegalArgumentException("ttl-slots must be positive");
         }
         Objects.requireNonNull(roundTimeout, "roundTimeout");
+        Objects.requireNonNull(confirmTimeout, "confirmTimeout");
     }
 
     /**
@@ -68,12 +70,29 @@ record SettlementWiring(
                 config.get("root-unit"),
                 config.get("shard-thread-policy-id"),
                 config.get("operator-address"),
-                parseHex(config.get("operator-seed"), "operator-seed"),
+                parseHex(fileBacked(config, "operator-seed"), "operator-seed"),
                 scriptHex(config, "vault-script"),
                 scriptHex(config, "shard-script"),
                 Long.parseLong(config.getOrDefault("ttl-slots", "7200")),
                 Duration.ofMillis(Long.parseLong(
-                        config.getOrDefault("round-timeout-ms", "30000"))));
+                        config.getOrDefault("round-timeout-ms", "30000"))),
+                // How long to wait for the settle transaction to CONFIRM on
+                // the L1. This is a public-network wait — preprod/mainnet
+                // blocks plus the stability depth routinely exceed a minute,
+                // and timing out here parks an effect whose transaction
+                // actually succeeded, so the default is generous.
+                Duration.ofMillis(Long.parseLong(
+                        config.getOrDefault("confirm-timeout-ms", "600000"))));
+    }
+
+    /**
+     * A secret read from {@code <key>} inline or, preferred, from the
+     * owner-only file named by {@code <key>-file}. Public-network operators
+     * supply their OWN operator key; it must never be rendered into the
+     * instance's chain YAML, which is world-readable in most deployments.
+     */
+    private static String fileBacked(Map<String, String> config, String key) {
+        return scriptHex(config, key);
     }
 
     /**

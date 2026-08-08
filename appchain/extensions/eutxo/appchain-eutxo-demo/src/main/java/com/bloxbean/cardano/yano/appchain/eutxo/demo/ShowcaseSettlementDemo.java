@@ -53,13 +53,14 @@ public final class ShowcaseSettlementDemo {
     }
 
     /** L1 deposit into the settlement vault; mirrors to the depositor's L2 address. */
-    static Map<String, Object> deposit(String targetBase, long amountLovelace)
+    static Map<String, Object> deposit(String targetBase, long amountLovelace,
+                                       SettlementOperatorIdentity identity)
             throws Exception {
         long lovelace = amountLovelace > 0 ? amountLovelace : DEPOSIT_LOVELACE;
         BackendService backend = new BFBackendService(
                 targetBase + "/api/v1/", "demo");
         EutxoKeyWallet depositor = EutxoKeyWallet.fromSeed(
-                ShowcaseSettlementPlan.DEPOSITOR_L2_SEED);
+                identity.depositorL2Seed());
         EutxoVaultDatum datum = new EutxoVaultDatum(
                 EutxoVaultDatum.ABI_VERSION,
                 ShowcaseSettlementPlan.CHAIN_ID,
@@ -74,9 +75,9 @@ public final class ShowcaseSettlementDemo {
                                 List.of(Amount.lovelace(
                                         BigInteger.valueOf(lovelace))),
                                 PlutusData.deserialize(datum.encode()))
-                        .from(ShowcaseSettlementPlan.OPERATOR_ADDRESS))
+                        .from(identity.operatorAddress()))
                 .withSigner(SignerProviders.signerFrom(
-                        SecretKey.create(ShowcaseSettlementPlan.OPERATOR_SEED)))
+                        SecretKey.create(identity.operatorSeed())))
                 .completeAndWait();
         if (!result.isSuccessful()) {
             throw new IllegalStateException(
@@ -97,10 +98,12 @@ public final class ShowcaseSettlementDemo {
      * L2 withdrawal: pay the withdrawal address, forming a claim. The node
      * settles it on its own — poll {@code status} to watch it confirm.
      */
-    static Map<String, Object> withdraw(String targetBase) throws Exception {
+    static Map<String, Object> withdraw(String targetBase,
+                                        SettlementOperatorIdentity identity)
+            throws Exception {
         EutxoClient eutxo = eutxoClient(targetBase);
         EutxoKeyWallet depositor = EutxoKeyWallet.fromSeed(
-                ShowcaseSettlementPlan.DEPOSITOR_L2_SEED);
+                identity.depositorL2Seed());
         List<EutxoRecord> funds = eutxo.utxos(depositor.address());
         if (funds.isEmpty()) {
             throw new IllegalStateException(
@@ -112,12 +115,12 @@ public final class ShowcaseSettlementDemo {
         // has to be kept in step with the deposit's.
         BigInteger claimLovelace = lovelaceOf(source);
         String withdrawalAddress = EutxoKeyWallet.fromSeed(
-                ShowcaseSettlementPlan.WITHDRAWAL_L2_SEED).address();
+                identity.withdrawalL2Seed()).address();
         EutxoWithdrawalDatum datum = new EutxoWithdrawalDatum(
                 EutxoWithdrawalDatum.ABI_VERSION,
                 ShowcaseSettlementPlan.CHAIN_ID,
                 0,
-                ShowcaseSettlementPlan.PAYOUT_ADDRESS,
+                identity.payoutAddress(),
                 // A source UTxO is spendable once, so its outpoint is a
                 // unique — and, unlike an identity hash, reproducible — nonce.
                 nonce("withdrawal", source.outpoint().toString()));
@@ -149,7 +152,7 @@ public final class ShowcaseSettlementDemo {
         payload.put("chainId", ShowcaseSettlementPlan.CHAIN_ID);
         payload.put("l2Transaction", TransactionUtil.getTxHash(cbor));
         payload.put("lovelace", claimLovelace);
-        payload.put("payoutAddress", ShowcaseSettlementPlan.PAYOUT_ADDRESS);
+        payload.put("payoutAddress", identity.payoutAddress());
         payload.put("note", "the claim is now pending; the federation settles"
                 + " it autonomously — poll: settlement status");
         return payload;

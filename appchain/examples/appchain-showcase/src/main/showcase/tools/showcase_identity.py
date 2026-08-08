@@ -477,6 +477,24 @@ def migrate_chain_add_settlement(args: argparse.Namespace) -> None:
         raise ValueError("retained authenticated-map genesis does not match the marker; "
                          "refusing to migrate a tampered instance")
     if deployment.get("chainIds") == LIGHT_CHAINS:
+        # Already listed. Re-record the packaged digests so an operator who
+        # legitimately edited the config — on a public network the settlement
+        # block is generated from THEIR identity and adopted by hand — is not
+        # locked out by the retained-config check.
+        deployment["configSha256"] = sha256(pathlib.Path(args.config).resolve())
+        deployment["pluginSha256"] = sha256(pathlib.Path(args.plugin).resolve())
+        validate_deployment_identity(deployment)
+        # The cluster marker is bound to the chain set too. An instance whose
+        # settlement chain was adopted after creation (public networks) still
+        # carries the pre-adoption list, so bring it forward as well.
+        if args.cluster_marker and pathlib.Path(args.cluster_marker).exists():
+            cluster_path = pathlib.Path(args.cluster_marker)
+            cluster = parsed_identity(cluster_path, "yano.cluster.appchain-identity")
+            if cluster.get("chainIds") != list(LIGHT_CHAINS):
+                cluster["chainIds"] = list(LIGHT_CHAINS)
+                validate_cluster_identity(cluster, list(LIGHT_CHAINS))
+                write_atomic(cluster_path, canonical(cluster))
+        write_atomic(marker, canonical(deployment))
         print("already-migrated")
         return
     if deployment.get("chainIds") != LIGHT_CHAINS_V10:

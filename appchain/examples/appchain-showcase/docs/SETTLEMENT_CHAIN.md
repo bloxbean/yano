@@ -32,11 +32,14 @@ operator manually spending it. This chain replaces both halves:
 ```bash
 ./showcase.sh quickstart --profile light --nodes 3
 ./showcase.sh settlement bootstrap     # deploy the L1 identity (once)
-./showcase.sh restart                  # executor picks up the validators
 ./showcase.sh settlement deposit       # L1 deposit -> mirrored L2 funds
 ./showcase.sh settlement withdraw      # L2 claim -> then just watch
 ./showcase.sh settlement status        # PENDING ... CONFIRMED
 ```
+
+No restart after `bootstrap`: the devnet plan is deterministic and its
+validators ship with the distribution, so the executor is already wired at
+startup.
 
 Between `withdraw` and `status` **nobody runs a settle command**. The chain:
 
@@ -71,22 +74,24 @@ genesis UTxO), so the packaged chain config is static and golden-tested.
 
 ## 4. Deploying on preprod
 
-The same machinery, with runtime seeds instead of the deterministic ones:
+Supported, with your own operator key — see
+[PREPROD_SETTLEMENT.md](PREPROD_SETTLEMENT.md). In short:
 
-1. fund two UTxOs from your own wallet (they become the one-shot seeds);
-2. compute a `SettlementBootstrapPlan` from them, using the PRODUCTION
-   profile `yano-eutxo-v3-bridge-settlement` — its fallback floor is 21,600
-   slots (~6 h), the real safety window;
-3. run the bootstrap against your node's API;
-4. emit the chain block with
-   `ShowcaseSettlementPlan.configProperties(plan, …)` and adopt it with
-   `chain add`.
+```bash
+mkdir -m 700 ./private-settlement
+(umask 077; openssl rand -hex 32 > ./private-settlement/operator.seed)
 
-Budget ~50 ADA (seeds, thread min-ADA, fees), most of it recoverable. Note
-that a *live* A3 exit demo needs the root thread to go stale past the
-production floor — hours, not seconds. Read §9 of the ADR before putting any
-non-demo funds behind this, and note the open follow-up in §13.1: the
-fallback floor is currently enforced off-chain only.
+./showcase.sh settlement prepare   --instance pp --settlement-key-file <file>
+#   -> prints the address to fund and the exact amount
+./showcase.sh settlement bootstrap --instance pp --settlement-key-file <file> \
+    --confirm-public-settlement preprod
+#   -> deploys on the PRODUCTION profile and prints the chain block to adopt
+```
+
+The production profile's fallback floor is 21,600 slots (~6 h), the real
+safety window, so a *live* A3 exit demo takes hours rather than seconds. The
+packaged demo actors are refused on every public network: their seeds come
+from a published formula.
 
 ## 5. The nullifier mirror
 

@@ -169,6 +169,7 @@ class EutxoDemoWorkspaceTest {
                 "payments-eutxo", "payments-eutxo", 3, 1, 7070, 13337,
                 null, null, null,
                 null, null, null, 20_000_000L, null, null,
+                "devnet", null, 0,
                 EutxoDemoOptions.Format.TEXT, false, false);
     }
 
@@ -179,6 +180,7 @@ class EutxoDemoWorkspaceTest {
                 targetBase, operatorSeedFile,
                 "addr_test1vrpz48l78va55y3ewuv7p6narrtgsw2ajq3ns9xx945e0vsmpxjls",
                 null, null, null, 20_000_000L, null, null,
+                "devnet", null, 0,
                 EutxoDemoOptions.Format.TEXT, false, false);
     }
 }

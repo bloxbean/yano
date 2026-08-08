@@ -22,6 +22,9 @@ public record EutxoDemoOptions(
         long amount,
         Path output,
         Path signedTransaction,
+        String network,
+        String memberKeys,
+        int threshold,
         Format format,
         boolean confirmed,
         boolean help

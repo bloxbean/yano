@@ -65,9 +65,18 @@ final class SqliteEutxoIndexReader implements EutxoIndexReader {
     public Optional<EutxoTransactionSummary> transaction(
             String transactionId
     ) {
+        // transaction_id is NOT unique: an undecodable transaction indexes
+        // with an empty id, and a replayed one is committed again as
+        // DUPLICATE_TRANSACTION. Blank matches nothing, and among real
+        // duplicates the ACCEPTED row is the meaningful answer.
+        if (transactionId == null || transactionId.isBlank()) {
+            return Optional.empty();
+        }
         return one(
                 "SELECT canonical_payload FROM indexed_transaction"
-                        + " WHERE transaction_id = ?",
+                        + " WHERE transaction_id = ?"
+                        + " ORDER BY (status = 'ACCEPTED') DESC,"
+                        + " event_sequence ASC LIMIT 1",
                 transactionId,
                 EutxoTransactionSummary::decode);
     }

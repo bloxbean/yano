@@ -9,6 +9,9 @@ import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoQueryCodec;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoTransactionSummary;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoWithdrawalRecord;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HexFormat;
@@ -25,6 +28,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * Notifications are hints; retained blocks and committed records are truth.
  */
 public final class EutxoIndexCoordinator implements AutoCloseable {
+    private static final Logger log =
+            LoggerFactory.getLogger(EutxoIndexCoordinator.class);
+
     private final AppChainGateway gateway;
     private final EutxoIndexStore store;
     private final EutxoProjector projector;
@@ -169,6 +175,15 @@ public final class EutxoIndexCoordinator implements AutoCloseable {
             failure = null;
         } catch (Throwable caught) {
             metrics.recordFailure();
+            // The index is optional, so a projection failure must not stop the
+            // node — but swallowing it silently leaves the console reporting
+            // "unavailable" with nothing anywhere to explain why.
+            if (failure == null
+                    || !caught.getClass().equals(failure.getClass())) {
+                log.warn("EUTxO lifecycle index projection failed for chain "
+                        + "'{}' — the index is now serving INDEX_FAILED",
+                        gateway.chainId(), caught);
+            }
             failure = caught;
         }
     }

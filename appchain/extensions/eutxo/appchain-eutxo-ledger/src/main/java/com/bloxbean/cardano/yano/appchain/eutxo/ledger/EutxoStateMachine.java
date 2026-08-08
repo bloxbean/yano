@@ -232,6 +232,17 @@ public final class EutxoStateMachine implements AppStateMachine {
                 ordinal++;
                 continue;
             }
+            // Reserved topics ('~…') are runtime-internal — the effect
+            // runtime injects '~fx/result' after every settlement. They are
+            // NOT EUTxO transactions: decoding one yields INVALID_CBOR and a
+            // receipt with an empty transaction id, which shows up as a bogus
+            // rejected transaction in the explorer and (because a blank id
+            // repeats) used to break the lifecycle index outright.
+            String topic = message.getTopic();
+            if (topic != null && topic.startsWith("~")) {
+                ordinal++;
+                continue;
+            }
             UtxoTransitionEngine.TransitionResult result =
                     transitionEngine.transition(message.getBody(), block.l1Slot(), writer);
             WithdrawalPlan withdrawalPlan = WithdrawalPlan.empty();
@@ -833,6 +844,13 @@ public final class EutxoStateMachine implements AppStateMachine {
             }
             EutxoWithdrawalClaim claim;
             if (settlementProfile()) {
+                // Keep a claim the vault could never pay out of the queue:
+                // batches form oldest-first, so one unsettleable claim would
+                // re-batch and fail forever, blocking every later claim on
+                // the chain. Enterprise AND base destinations are payable —
+                // the validator fingerprints both — so only pointer or
+                // malformed addresses are refused here.
+                requireSettleableDestination(datum.destinationAddress());
                 // ADR-UTXO-009: the withdrawer's output funds BOTH the payout
                 // and the committed executor bounty; the fee resolves from
                 // the governed schedule at creation and is frozen in the
@@ -1543,6 +1561,36 @@ public final class EutxoStateMachine implements AppStateMachine {
             return claims.stream()
                     .map(EutxoWithdrawalClaim::withdrawalOutpoint)
                     .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        }
+    }
+
+    /**
+     * ADR-UTXO-009: the settle redeemer commits the destination as a Plutus
+     * {@code Address}. The vault validator fingerprints an enterprise
+     * ({@code Nothing}) or a base ({@code Just (StakingHash …)}) destination,
+     * so both are payable; a pointer address is not, and a claim carrying one
+     * could never settle.
+     */
+    private static void requireSettleableDestination(String destinationAddress) {
+        try {
+            Address destination = new Address(destinationAddress);
+            if (destination.getPaymentCredential().isEmpty()) {
+                throw new WithdrawalFailure("BRIDGE_WITHDRAWAL_DESTINATION",
+                        "withdrawal destination has no payment credential");
+            }
+            switch (destination.getAddressType()) {
+                case Base, Enterprise -> { }
+                default -> throw new WithdrawalFailure(
+                        "BRIDGE_WITHDRAWAL_DESTINATION",
+                        "withdrawal destination must be a base or enterprise "
+                                + "address; the settlement vault cannot pay a "
+                                + destination.getAddressType() + " address");
+            }
+        } catch (WithdrawalFailure failure) {
+            throw failure;
+        } catch (RuntimeException malformed) {
+            throw new WithdrawalFailure("BRIDGE_WITHDRAWAL_DESTINATION",
+                    "withdrawal destination is not a valid Cardano address");
         }
     }
 

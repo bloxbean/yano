@@ -1181,6 +1181,12 @@ final class EffectRuntime implements AutoCloseable {
             log.warn("App-chain '{}' effect {} failed (errorType={})",
                     chainId, operation, errorType);
         }
+        // The type alone is not actionable: an executor that fails every retry
+        // on a public network leaves the operator with nothing to diagnose.
+        // The cause stays at DEBUG because a third-party executor's message
+        // may carry payload detail the WARN line deliberately withholds.
+        log.debug("App-chain '{}' effect {} failure detail", chainId, operation,
+                failure);
     }
 
     private static String failureType(Throwable failure) {
