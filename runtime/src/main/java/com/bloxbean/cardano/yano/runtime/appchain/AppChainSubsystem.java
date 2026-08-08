@@ -3428,6 +3428,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                                     false, "", 0, 0, 0);
                     ScriptAnchorService scriptService = new ScriptAnchorService(
                             config.chainId(),
+                            config.stateMachineId(),
                             anchorCfg,
                             ledgerStore,
                             txSubmitter,

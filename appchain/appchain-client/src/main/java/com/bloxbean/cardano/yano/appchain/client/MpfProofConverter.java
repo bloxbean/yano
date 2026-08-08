@@ -1,4 +1,4 @@
-package com.bloxbean.cardano.yano.appchain.eutxo.client;
+package com.bloxbean.cardano.yano.appchain.client;
 
 import co.nstant.in.cbor.CborDecoder;
 import co.nstant.in.cbor.model.Array;
@@ -9,7 +9,7 @@ import co.nstant.in.cbor.model.UnsignedInteger;
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
 import com.bloxbean.cardano.yano.appchain.client.ProofVerifier;
-import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoMpfProof;
+import com.bloxbean.cardano.yano.appchain.proofs.MpfNormalizedProof;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -20,15 +20,15 @@ import java.util.List;
 import java.util.Objects;
 
 /** Converts a verified MPF wire proof to the bounded L1 fold representation. */
-public final class EutxoMpfProofConverter {
+public final class MpfProofConverter {
     private static final long TAG_BRANCH = 121;
     private static final long TAG_FORK = 122;
     private static final long TAG_LEAF = 123;
 
-    private EutxoMpfProofConverter() {
+    private MpfProofConverter() {
     }
 
-    public static EutxoMpfProof convert(AppChainClient.Proof proof) {
+    public static MpfNormalizedProof convert(AppChainClient.Proof proof) {
         Objects.requireNonNull(proof, "proof");
         if (proof.valueHex() == null) {
             throw new IllegalArgumentException(
@@ -38,7 +38,7 @@ public final class EutxoMpfProofConverter {
             throw new IllegalArgumentException(
                     "proof-gated withdrawal requires a root-fixed committed height");
         }
-        if (!ProofVerifier.verify(proof)) {
+        if (!ProofVerifier.verifyInternalConsistency(proof)) {
             throw new IllegalArgumentException(
                     "node supplied an invalid MPF inclusion proof");
         }
@@ -46,7 +46,7 @@ public final class EutxoMpfProofConverter {
         byte[] key = hex(proof.keyHex(), "key");
         byte[] value = hex(proof.valueHex(), "value");
         byte[] wire = hex(proof.proofWireHex(), "proof wire");
-        byte[] path = EutxoMpfProof.nibbles(
+        byte[] path = MpfNormalizedProof.nibbles(
                 Blake2bUtil.blake2bHash256(key));
 
         List<DataItem> decoded;
@@ -61,11 +61,11 @@ public final class EutxoMpfProofConverter {
             throw new IllegalArgumentException(
                     "MPF proof must contain one step array");
         }
-        if (steps.getDataItems().size() > EutxoMpfProof.MAX_FOLDS) {
+        if (steps.getDataItems().size() > MpfNormalizedProof.MAX_FOLDS) {
             throw new IllegalArgumentException("MPF proof contains too many steps");
         }
         int cursor = 0;
-        List<EutxoMpfProof.FoldStep> forward = new ArrayList<>();
+        List<MpfNormalizedProof.FoldStep> forward = new ArrayList<>();
         for (DataItem item : steps.getDataItems()) {
             if (!(item instanceof Array step)) {
                 throw new IllegalArgumentException(
@@ -78,7 +78,7 @@ public final class EutxoMpfProofConverter {
             }
             int skip = uint(step, 0, "skip");
             int nextCursor = Math.addExact(cursor, Math.addExact(skip, 1));
-            if (nextCursor > EutxoMpfProof.PATH_NIBBLES) {
+            if (nextCursor > MpfNormalizedProof.PATH_NIBBLES) {
                 throw new IllegalArgumentException(
                         "MPF proof consumes beyond the hashed key path");
             }
@@ -94,7 +94,7 @@ public final class EutxoMpfProofConverter {
                             "MPF branch step has the wrong shape");
                 }
                 byte[] joined = bytes(step.getDataItems().get(1), "neighbors");
-                if (joined.length != EutxoMpfProof.HASH_BYTES * 4) {
+                if (joined.length != MpfNormalizedProof.HASH_BYTES * 4) {
                     throw new IllegalArgumentException(
                             "MPF branch step requires four 32-byte neighbors");
                 }
@@ -102,13 +102,13 @@ public final class EutxoMpfProofConverter {
                 for (int i = 0; i < 4; i++) {
                     neighbors.add(java.util.Arrays.copyOfRange(
                             joined,
-                            i * EutxoMpfProof.HASH_BYTES,
-                            (i + 1) * EutxoMpfProof.HASH_BYTES));
+                            i * MpfNormalizedProof.HASH_BYTES,
+                            (i + 1) * MpfNormalizedProof.HASH_BYTES));
                 }
                 if (step.getDataItems().size() == 3) {
                     branchValueHash = exact(
                             bytes(step.getDataItems().get(2), "branch value hash"),
-                            EutxoMpfProof.HASH_BYTES,
+                            MpfNormalizedProof.HASH_BYTES,
                             "branch value hash");
                 }
             } else if (tag == TAG_FORK) {
@@ -129,9 +129,9 @@ public final class EutxoMpfProofConverter {
                 requireNibbles(neighborPrefix, "fork prefix");
                 byte[] neighborRoot = exact(
                         bytes(neighbor.getDataItems().get(2), "fork root"),
-                        EutxoMpfProof.HASH_BYTES,
+                        MpfNormalizedProof.HASH_BYTES,
                         "fork root");
-                neighbors = EutxoMpfProof.sparseNeighbors(
+                neighbors = MpfNormalizedProof.sparseNeighbors(
                         nibble,
                         neighborNibble,
                         Blake2bUtil.blake2bHash256(
@@ -140,19 +140,19 @@ public final class EutxoMpfProofConverter {
                 throw new IllegalArgumentException(
                         "unsupported MPF proof step tag " + tag);
             }
-            forward.add(new EutxoMpfProof.FoldStep(
+            forward.add(new MpfNormalizedProof.FoldStep(
                     cursor, prefix, nibble, neighbors, branchValueHash));
             cursor = nextCursor;
         }
-        List<EutxoMpfProof.FoldStep> folds = new ArrayList<>(forward);
+        List<MpfNormalizedProof.FoldStep> folds = new ArrayList<>(forward);
         Collections.reverse(folds);
-        EutxoMpfProof converted = new EutxoMpfProof(
+        MpfNormalizedProof converted = new MpfNormalizedProof(
                 root,
                 key,
                 value,
-                EutxoMpfProof.encodeLeafSuffix(
+                MpfNormalizedProof.encodeLeafSuffix(
                         java.util.Arrays.copyOfRange(
-                                path, cursor, EutxoMpfProof.PATH_NIBBLES)),
+                                path, cursor, MpfNormalizedProof.PATH_NIBBLES)),
                 folds,
                 proof.committedHeight());
         if (!converted.verify()) {

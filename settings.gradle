@@ -38,6 +38,8 @@ include 'appchain-role-workflow-contracts'
 include 'appchain-role-workflow'
 include 'appchain-testkit'
 include 'appchain-client'
+include 'appchain-proof-contracts'
+include 'appchain-proof-onchain'
 include 'appchain-integration-contracts'
 include 'appchain-evidence-contracts'
 include 'appchain-evidence-registry'
@@ -74,6 +76,8 @@ include 'appchain-spring-boot-starter'
 include 'appchain-anchor-onchain'
 include 'appchain-plugin-conformance'
 project(':appchain-anchor-onchain').projectDir = file('appchain/onchain/appchain-anchor-onchain')
+project(':appchain-proof-contracts').projectDir = file('appchain/appchain-proof-contracts')
+project(':appchain-proof-onchain').projectDir = file('appchain/onchain/appchain-proof-onchain')
 project(':appchain-config').projectDir = file('appchain/appchain-config')
 project(':appchain-devtools').projectDir = file('appchain/appchain-devtools')
 project(':appchain-studio').projectDir = file('appchain/appchain-studio')

@@ -130,6 +130,20 @@ class AnchorValidatorConformanceTest extends ContractTest {
     }
 
     @Test
+    void genesisApplicationAndCommitmentSubstitutionFail() {
+        assertFailure(evaluate(program(), advanceCtx(baseline()
+                .nextChainGenesisId(fill(32, 0x41))).buildPlutusData()));
+        assertFailure(evaluate(program(), advanceCtx(baseline()
+                .nextApplicationId("other-app".getBytes(
+                        java.nio.charset.StandardCharsets.US_ASCII))).buildPlutusData()));
+        assertFailure(evaluate(program(), advanceCtx(baseline()
+                .nextCommitmentProfileId("jmt-blake2b256-v1".getBytes(
+                        java.nio.charset.StandardCharsets.US_ASCII))).buildPlutusData()));
+        assertFailure(evaluate(program(), advanceCtx(baseline()
+                .nextFormatFingerprint(fill(32, 0x42))).buildPlutusData()));
+    }
+
+    @Test
     void versionChange_fails() {
         assertFailure(evaluate(program(),
                 advanceCtx(baseline().nextVersion(2)).buildPlutusData()));
@@ -442,6 +456,15 @@ class AnchorValidatorConformanceTest extends ContractTest {
         long version = 1;
         byte[] chainId = CHAIN_ID;
         byte[] nextChainId = CHAIN_ID;
+        byte[] chainGenesisId = fill(32, 0x31);
+        byte[] nextChainGenesisId = fill(32, 0x31);
+        byte[] applicationId = "ordered-log".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        byte[] nextApplicationId = applicationId;
+        byte[] commitmentProfileId = "mpf-blake2b256-v1".getBytes(
+                java.nio.charset.StandardCharsets.US_ASCII);
+        byte[] nextCommitmentProfileId = commitmentProfileId;
+        byte[] formatFingerprint = fill(32, 0x32);
+        byte[] nextFormatFingerprint = fill(32, 0x32);
         long nextVersion = 1;
         long height = 10;
         long nextHeight = 11;
@@ -468,6 +491,10 @@ class AnchorValidatorConformanceTest extends ContractTest {
         Vector version(long v) { this.version = v; return this; }
         Vector chainId(byte[] v) { this.chainId = v; return this; }
         Vector nextChainId(byte[] v) { this.nextChainId = v; return this; }
+        Vector nextChainGenesisId(byte[] v) { this.nextChainGenesisId = v; return this; }
+        Vector nextApplicationId(byte[] v) { this.nextApplicationId = v; return this; }
+        Vector nextCommitmentProfileId(byte[] v) { this.nextCommitmentProfileId = v; return this; }
+        Vector nextFormatFingerprint(byte[] v) { this.nextFormatFingerprint = v; return this; }
         Vector nextVersion(long v) { this.nextVersion = v; return this; }
         Vector height(long v) { this.height = v; return this; }
         Vector nextHeight(long v) { this.nextHeight = v; return this; }
@@ -502,10 +529,13 @@ class AnchorValidatorConformanceTest extends ContractTest {
                 Optional.empty());
         var currentDatum = anchorDatum(v.currentDatumAlternative,
                 v.extraCurrentDatumField, v.version, v.chainId, v.height,
-                v.blockHash, v.stateRoot, v.members, v.threshold);
+                v.chainGenesisId, v.applicationId, v.commitmentProfileId,
+                v.formatFingerprint, v.blockHash, v.stateRoot, v.members, v.threshold);
         var nextDatum = anchorDatum(v.nextDatumAlternative,
                 v.extraNextDatumField, v.nextVersion, v.nextChainId, v.nextHeight,
-                v.nextBlockHash, v.nextStateRoot, v.nextMembers, v.nextThreshold);
+                v.nextChainGenesisId, v.nextApplicationId, v.nextCommitmentProfileId,
+                v.nextFormatFingerprint, v.nextBlockHash, v.nextStateRoot,
+                v.nextMembers, v.nextThreshold);
 
         var ownRef = new TxOutRef(
                 new com.bloxbean.cardano.julc.ledger.TxId(fill(32, 0x11)), BigInteger.ZERO);
@@ -549,16 +579,22 @@ class AnchorValidatorConformanceTest extends ContractTest {
     static PlutusData anchorDatum(long version, byte[] chainId, long height,
                                   byte[] blockHash, byte[] stateRoot,
                                   List<byte[]> memberKeys, long threshold) {
-        return anchorDatum(0, false, version, chainId, height, blockHash,
-                stateRoot, memberKeys, threshold);
+        return anchorDatum(0, false, version, chainId, height,
+                fill(32, 0x31), "ordered-log".getBytes(java.nio.charset.StandardCharsets.US_ASCII),
+                "mpf-blake2b256-v1".getBytes(java.nio.charset.StandardCharsets.US_ASCII),
+                fill(32, 0x32), blockHash, stateRoot, memberKeys, threshold);
     }
 
     static PlutusData anchorDatum(int alternative, boolean extraField,
                                   long version, byte[] chainId, long height,
+                                  byte[] chainGenesisId, byte[] applicationId,
+                                  byte[] commitmentProfileId, byte[] formatFingerprint,
                                   byte[] blockHash, byte[] stateRoot,
                                   List<byte[]> memberKeys, long threshold) {
         List<PlutusData> fields = new ArrayList<>(List.of(
                 PlutusData.integer(version), PlutusData.bytes(chainId),
+                PlutusData.bytes(chainGenesisId), PlutusData.bytes(applicationId),
+                PlutusData.bytes(commitmentProfileId), PlutusData.bytes(formatFingerprint),
                 PlutusData.integer(height), PlutusData.bytes(blockHash),
                 PlutusData.bytes(stateRoot),
                 PlutusData.list(memberKeys.stream()

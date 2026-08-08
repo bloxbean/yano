@@ -145,6 +145,7 @@ final class ScriptAnchorService {
     private static final int MAX_ADOPTION_TXS = 8;
 
     private final String chainId;
+    private final String applicationId;
     private final AppChainConfig.AnchorConfig anchorConfig;
     private final AppLedgerStore ledger;
     private final Function<byte[], String> txSubmitter;
@@ -187,6 +188,7 @@ final class ScriptAnchorService {
     private volatile String lastAnchorTxHash;
 
     ScriptAnchorService(String chainId,
+                        String applicationId,
                         AppChainConfig.AnchorConfig anchorConfig,
                         AppLedgerStore ledger,
                         Function<byte[], String> txSubmitter,
@@ -202,6 +204,7 @@ final class ScriptAnchorService {
                         long protocolMagic,
                         Logger log) {
         this.chainId = chainId;
+        this.applicationId = applicationId;
         this.anchorConfig = Objects.requireNonNull(anchorConfig, "anchorConfig");
         this.ledger = ledger;
         this.txSubmitter = txSubmitter;
@@ -811,8 +814,8 @@ final class ScriptAnchorService {
             logFailure("continuing datum decode", failure);
             return false;
         }
-        if (datum.version() != AnchorDatumCodec.ABI_VERSION || !chainId.equals(datum.chainId())) {
-            log.warn("Script-anchor: datum version/chain-id mismatch — refused");
+        if (!hasExpectedIdentity(datum)) {
+            log.warn("Script-anchor: datum identity mismatch — refused");
             return false;
         }
         long myTip = tipHeightSupplier.get();
@@ -860,8 +863,7 @@ final class ScriptAnchorService {
     private boolean validAdoptionBaseline(Utxo anchorUtxo) {
         try {
             AnchorDatumCodec.AnchorDatum datum = AnchorDatumCodec.decode(anchorUtxo.inlineDatum());
-            if (datum.version() != AnchorDatumCodec.ABI_VERSION
-                    || !chainId.equals(datum.chainId())
+            if (!hasExpectedIdentity(datum)
                     || datum.height() < 0L || datum.height() > tipHeightSupplier.get()) {
                 return false;
             }
@@ -1243,9 +1245,8 @@ final class ScriptAnchorService {
 
                 AnchorDatumCodec.AnchorDatum datum = AnchorDatumCodec.decode(
                         anchorUtxo.inlineDatum());
-                if (datum.version() != AnchorDatumCodec.ABI_VERSION
-                        || !chainId.equals(datum.chainId())) {
-                    log.warn("Script-anchor: observed thread datum version/chain-id mismatch — ignored");
+                if (!hasExpectedIdentity(datum)) {
+                    log.warn("Script-anchor: observed thread datum identity mismatch — ignored");
                     return null;
                 }
                 long observedHeight = datum.height();
@@ -1639,7 +1640,8 @@ final class ScriptAnchorService {
                 .map(HexUtil::decodeHexString)
                 .toList();
         return new AnchorDatumCodec.AnchorDatum(
-                AnchorDatumCodec.ABI_VERSION, chainId, 0L,
+                AnchorDatumCodec.ABI_VERSION, chainId, chainGenesisId(), applicationId,
+                commitmentProfileId(), formatFingerprint(), 0L,
                 new byte[32], new byte[32],
                 AnchorDatumCodec.sortedKeys(memberKeys), thresholdSupplier.getAsInt());
     }
@@ -1658,9 +1660,35 @@ final class ScriptAnchorService {
         List<byte[]> memberKeys = membersSupplier.get().stream()
                 .map(HexUtil::decodeHexString)
                 .toList();
-        return new AnchorDatumCodec.AnchorDatum(AnchorDatumCodec.ABI_VERSION, chainId, tip,
+        return new AnchorDatumCodec.AnchorDatum(AnchorDatumCodec.ABI_VERSION, chainId,
+                chainGenesisId(), applicationId, commitmentProfileId(), formatFingerprint(), tip,
                 blockHash, stateRoot, AnchorDatumCodec.sortedKeys(memberKeys),
                 thresholdSupplier.getAsInt());
+    }
+
+    private byte[] chainGenesisId() {
+        var identity = ledger.stateCommitmentIdentity();
+        if (identity.legacy()) {
+            throw new IllegalStateException("script anchors require explicit chain genesis identity");
+        }
+        return identity.genesisId();
+    }
+
+    private String commitmentProfileId() {
+        return ledger.stateCommitmentIdentity().profile().id();
+    }
+
+    private byte[] formatFingerprint() {
+        return ledger.stateCommitmentIdentity().profile().formatFingerprint();
+    }
+
+    private boolean hasExpectedIdentity(AnchorDatumCodec.AnchorDatum datum) {
+        return datum.version() == AnchorDatumCodec.ABI_VERSION
+                && chainId.equals(datum.chainId())
+                && applicationId.equals(datum.applicationId())
+                && commitmentProfileId().equals(datum.commitmentProfileId())
+                && java.util.Arrays.equals(chainGenesisId(), datum.chainGenesisId())
+                && java.util.Arrays.equals(formatFingerprint(), datum.formatFingerprint());
     }
 
     private Utxo findAnchorUtxo(byte[] policyId, byte[] scriptHash) {

@@ -75,6 +75,20 @@ class StateCommitmentProfilesTest {
     }
 
     @Test
+    void jmtCannotDeclareL1ProofConsumption() {
+        Map<String, String> settings = new LinkedHashMap<>(
+                StateCommitmentIdentity.explicit(StateCommitmentProfiles.CLASSIC_JMT,
+                        new byte[32]).settings());
+        settings.put(StateCommitmentIdentity.L1_PROOF_REQUIRED_SETTING, "true");
+
+        assertThatThrownBy(() -> StateCommitmentIdentity.fromSettings(settings))
+                .hasMessageContaining("only by MPF");
+        assertThatThrownBy(() -> StateCommitmentIdentity.fromSettings(Map.of(
+                StateCommitmentIdentity.L1_PROOF_REQUIRED_SETTING, "true")))
+                .hasMessageContaining("explicit MPF");
+    }
+
+    @Test
     void classicJmtLogicalTombstoneAndProofPresenceAreCanonical() {
         byte[] tombstone = StateCommitmentValues.classicJmtTombstone();
         assertThat(StateCommitmentValues.isClassicJmtTombstone(tombstone)).isTrue();

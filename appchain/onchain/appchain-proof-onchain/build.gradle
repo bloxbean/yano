@@ -1,0 +1,25 @@
+plugins {
+    id 'java-library'
+}
+
+description = 'Reusable Julc/Cardano on-chain verification for Yano proof contracts'
+
+dependencies {
+    compileOnly "com.bloxbean.cardano:julc-stdlib:${libs.versions.julc.get()}"
+    compileOnly "com.bloxbean.cardano:julc-ledger-api:${libs.versions.julc.get()}"
+
+    testImplementation "com.bloxbean.cardano:julc-stdlib:${libs.versions.julc.get()}"
+    testImplementation "com.bloxbean.cardano:julc-testkit:${libs.versions.julc.get()}"
+    testImplementation "com.bloxbean.cardano:julc-ledger-api:${libs.versions.julc.get()}"
+    testImplementation "com.bloxbean.cardano:julc-compiler:${libs.versions.julc.get()}"
+    testRuntimeOnly "com.bloxbean.cardano:julc-vm-java:${libs.versions.julc.get()}"
+    testImplementation libs.cardano.client.crypto
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testImplementation libs.assertj.core
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}

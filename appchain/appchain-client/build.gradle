@@ -6,6 +6,7 @@ dependencies {
     api project(':appchain-stdlib-contracts')
     api project(':appchain-composite-contracts')
     api project(':appchain-role-workflow-contracts')
+    api project(':appchain-proof-contracts')
     implementation libs.jackson.databind
     implementation libs.jackson.dataformat.cbor
     implementation libs.cardano.client.crypto

@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.eutxo.contracts;
 
+import com.bloxbean.cardano.yano.appchain.proofs.MpfNormalizedProof;
+
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 import com.bloxbean.cardano.client.transaction.spec.TransactionBody;
 import org.junit.jupiter.api.Test;
@@ -537,15 +539,15 @@ class EutxoContractCodecTest {
                 EutxoWithdrawalCommitment.fromClaim(claim);
         byte[] key = EutxoStateKeys.withdrawalCommitment(claim.claimId());
         byte[] value = commitment.encode();
-        byte[] path = EutxoMpfProof.nibbles(
+        byte[] path = MpfNormalizedProof.nibbles(
                 com.bloxbean.cardano.client.crypto.Blake2bUtil
                         .blake2bHash256(key));
-        byte[] encodedSuffix = EutxoMpfProof.encodeLeafSuffix(path);
-        byte[] root = EutxoMpfProof.commitLeaf(
+        byte[] encodedSuffix = MpfNormalizedProof.encodeLeafSuffix(path);
+        byte[] root = MpfNormalizedProof.commitLeaf(
                 encodedSuffix,
                 com.bloxbean.cardano.client.crypto.Blake2bUtil
                         .blake2bHash256(value));
-        EutxoMpfProof proof = new EutxoMpfProof(
+        MpfNormalizedProof proof = new MpfNormalizedProof(
                 root, key, value, encodedSuffix, List.of(), 9);
         EutxoProofWithdrawal withdrawal = new EutxoProofWithdrawal(
                 1, commitment, proof);

@@ -32,7 +32,8 @@
 ; across implementations.
 ;
 ; WIRE FORMAT: the datum is Plutus Data, wrapped in constructor 0 —
-; Constr(0, [version, chain-id, height, block-hash, state-root,
+; Constr(0, [version, chain-id, chain-genesis-id, application-id,
+; commitment-profile-id, format-fingerprint, height, block-hash, state-root,
 ; member-keys, threshold]). Both the julc record codec and Aiken types
 ; produce this Constr(0, fields) encoding; the field list below describes
 ; the payload inside the wrapper.
@@ -40,6 +41,10 @@
 anchor-datum = [
     version      : uint,             ; ABI version = 1
     chain-id     : bstr .size (1..128), ; app-chain identity (UTF-8 bytes)
+    chain-genesis-id : bstr .size 32, ; exact clean-baseline chain generation
+    application-id : bstr .size (1..128), ; state-machine/application profile id
+    commitment-profile-id : bstr .size (1..128), ; e.g. mpf-blake2b256-v1
+    format-fingerprint : bstr .size 32, ; exact commitment/proof format contract
     height       : uint,             ; app-block height this anchor attests
     block-hash   : bstr .size 32,    ; blake2b-256 app-block hash at height
     state-root   : bstr .size 32,    ; MPF root bound by that block

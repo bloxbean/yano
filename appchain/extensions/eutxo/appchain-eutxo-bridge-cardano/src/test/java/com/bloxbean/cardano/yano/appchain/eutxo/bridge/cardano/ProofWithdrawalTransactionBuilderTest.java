@@ -11,7 +11,7 @@ import com.bloxbean.cardano.client.transaction.spec.TransactionWitnessSet;
 import com.bloxbean.cardano.client.transaction.spec.Value;
 import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoFederatedRoot;
-import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoMpfProof;
+import com.bloxbean.cardano.yano.appchain.proofs.MpfNormalizedProof;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoNullifierState;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoOutpoint;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoProofWithdrawal;
@@ -225,13 +225,13 @@ class ProofWithdrawalTransactionBuilderTest {
                 EutxoWithdrawalCommitment.fromClaim(claim);
         byte[] key = EutxoStateKeys.withdrawalCommitment(claim.claimId());
         byte[] value = commitment.encode();
-        byte[] path = EutxoMpfProof.nibbles(
+        byte[] path = MpfNormalizedProof.nibbles(
                 Blake2bUtil.blake2bHash256(key));
-        byte[] suffix = EutxoMpfProof.encodeLeafSuffix(path);
+        byte[] suffix = MpfNormalizedProof.encodeLeafSuffix(path);
         byte[] leaf = concatenate(
                 suffix, Blake2bUtil.blake2bHash256(value));
         byte[] rootHash = Blake2bUtil.blake2bHash256(leaf);
-        EutxoMpfProof proof = new EutxoMpfProof(
+        MpfNormalizedProof proof = new MpfNormalizedProof(
                 rootHash, key, value, suffix, List.of(), 42);
         EutxoProofWithdrawal withdrawal =
                 new EutxoProofWithdrawal(1, commitment, proof);

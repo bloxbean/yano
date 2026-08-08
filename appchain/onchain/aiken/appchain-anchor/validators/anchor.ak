@@ -36,6 +36,10 @@ use cardano/transaction.{InlineDatum, Output, OutputReference, Transaction}
 pub type AnchorDatum {
   version: Int,
   chain_id: ByteArray,
+  chain_genesis_id: ByteArray,
+  application_id: ByteArray,
+  commitment_profile_id: ByteArray,
+  format_fingerprint: ByteArray,
   height: Int,
   block_hash: ByteArray,
   state_root: ByteArray,
@@ -74,6 +78,10 @@ validator anchor(thread_policy_id: ByteArray) {
     let next_base_profile_valid = base_profile_valid(next_datum)
     let monotonic = next_datum.height > current.height
     let same_chain = next_datum.chain_id == current.chain_id
+    let same_genesis = next_datum.chain_genesis_id == current.chain_genesis_id
+    let same_application = next_datum.application_id == current.application_id
+    let same_commitment =
+      next_datum.commitment_profile_id == current.commitment_profile_id && next_datum.format_fingerprint == current.format_fingerprint
     let same_version = next_datum.version == current.version
     let current_profile_valid =
       member_profile_valid(current.member_keys, current.threshold)
@@ -94,7 +102,7 @@ validator anchor(thread_policy_id: ByteArray) {
     let value_preserved =
       lovelace_of(next.value) >= lovelace_of(own_input.output.value)
 
-    thread_continues && current_base_profile_valid && next_base_profile_valid && monotonic && same_chain && same_version && current_profile_valid && next_profile_valid && threshold_signed && value_preserved
+    thread_continues && current_base_profile_valid && next_base_profile_valid && monotonic && same_chain && same_genesis && same_application && same_commitment && same_version && current_profile_valid && next_profile_valid && threshold_signed && value_preserved
   }
 
   else(_) {
@@ -109,7 +117,13 @@ fn base_profile_valid(datum: AnchorDatum) -> Bool {
   let chain_id_length = builtin.length_of_bytearray(datum.chain_id)
   datum.version == 1 && chain_id_length >= 1 && chain_id_length <= 128 && datum.height >= 0 && builtin.length_of_bytearray(
     datum.block_hash,
-  ) == 32 && builtin.length_of_bytearray(datum.state_root) == 32
+  ) == 32 && builtin.length_of_bytearray(datum.state_root) == 32 && builtin.length_of_bytearray(
+    datum.chain_genesis_id,
+  ) == 32 && builtin.length_of_bytearray(datum.application_id) >= 1 && builtin.length_of_bytearray(
+    datum.application_id,
+  ) <= 128 && builtin.length_of_bytearray(datum.commitment_profile_id) >= 1 && builtin.length_of_bytearray(
+    datum.commitment_profile_id,
+  ) <= 128 && builtin.length_of_bytearray(datum.format_fingerprint) == 32
 }
 
 /// The v1 member profile is non-empty, bounded to 32, contains exactly

@@ -1,5 +1,6 @@
 dependencies {
     api libs.cardano.client.core
+    api project(':appchain-proof-contracts')
     implementation libs.cbor
     implementation libs.cardano.client.crypto
 

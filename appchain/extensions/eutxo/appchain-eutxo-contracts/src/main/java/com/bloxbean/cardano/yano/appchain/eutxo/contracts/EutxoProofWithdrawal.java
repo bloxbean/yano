@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.eutxo.contracts;
 
+import com.bloxbean.cardano.yano.appchain.proofs.MpfNormalizedProof;
+
 import com.bloxbean.cardano.client.plutus.spec.BigIntPlutusData;
 import com.bloxbean.cardano.client.plutus.spec.BytesPlutusData;
 import com.bloxbean.cardano.client.plutus.spec.ConstrPlutusData;
@@ -15,7 +17,7 @@ import java.util.Objects;
 public record EutxoProofWithdrawal(
         int abiVersion,
         EutxoWithdrawalCommitment commitment,
-        EutxoMpfProof proof
+        MpfNormalizedProof proof
 ) {
     public static final int ABI_VERSION = 1;
 
@@ -58,7 +60,7 @@ public record EutxoProofWithdrawal(
         return toPlutusData().serializeToBytes();
     }
 
-    private static PlutusData foldData(EutxoMpfProof.FoldStep fold) {
+    private static PlutusData foldData(MpfNormalizedProof.FoldStep fold) {
         List<byte[]> neighbors = fold.neighbors();
         return ConstrPlutusData.of(
                 0,
