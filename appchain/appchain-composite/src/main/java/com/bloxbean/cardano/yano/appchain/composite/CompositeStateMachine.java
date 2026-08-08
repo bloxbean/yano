@@ -51,10 +51,10 @@ public final class CompositeStateMachine implements AppStateMachine {
     public static CompositeStateMachine create(
             AppStateMachineContext context,
             CompositeProfile profile,
-            List<CompositeComponent> components,
+            List<AppStateMachine> machines,
             List<CompositeWorkflow> workflows
     ) {
-        return create(ID, context, profile, components, workflows);
+        return create(ID, context, profile, machines, workflows);
     }
 
     /**
@@ -65,7 +65,7 @@ public final class CompositeStateMachine implements AppStateMachine {
             String machineId,
             AppStateMachineContext context,
             CompositeProfile profile,
-            List<CompositeComponent> components,
+            List<AppStateMachine> machines,
             List<CompositeWorkflow> workflows
     ) {
         Objects.requireNonNull(context, "context");
@@ -76,7 +76,7 @@ public final class CompositeStateMachine implements AppStateMachine {
         CompositeGovernanceConfig config = governanceConfig(context);
         verifyGovernedMembershipMode(context, config);
         CompositeProfileCatalog catalog = new CompositeProfileCatalog(
-                List.of(new CompositeProfileCatalog.Entry(profile, components, workflows)),
+                List.of(new CompositeProfileCatalog.Entry(profile, machines, workflows)),
                 frameworkMaxEffects,
                 config.mode() == CompositeGovernanceConfig.ProfileMode.GOVERNED
                         ? config.resultDrainBlocks() : null);
@@ -118,12 +118,12 @@ public final class CompositeStateMachine implements AppStateMachine {
 
     static CompositeStateMachine forTest(
             CompositeProfile profile,
-            List<CompositeComponent> components,
+            List<AppStateMachine> machines,
             List<CompositeWorkflow> workflows,
             int frameworkMaxEffects
     ) {
         CompositeProfileCatalog catalog = new CompositeProfileCatalog(
-                List.of(new CompositeProfileCatalog.Entry(profile, components, workflows)),
+                List.of(new CompositeProfileCatalog.Entry(profile, machines, workflows)),
                 frameworkMaxEffects);
         return new CompositeStateMachine(ID, "test-chain", catalog, profile.digest(),
                 frameworkMaxEffects, new CompositeGovernanceConfig(
@@ -148,10 +148,10 @@ public final class CompositeStateMachine implements AppStateMachine {
         Map<ComponentGeneration, ComponentBinding> byGeneration = new LinkedHashMap<>();
         Map<WorkflowDescriptor, WorkflowBinding> uniqueWorkflows = new LinkedHashMap<>();
         for (CompositeProfileCatalog.Entry entry : catalog.entries()) {
-            List<ComponentBinding> bindings = new ArrayList<>(entry.components().size());
-            for (int index = 0; index < entry.components().size(); index++) {
+            List<ComponentBinding> bindings = new ArrayList<>(entry.machines().size());
+            for (int index = 0; index < entry.machines().size(); index++) {
                 ComponentBinding binding = new ComponentBinding(
-                        entry.profile().components().get(index), entry.components().get(index));
+                        entry.profile().components().get(index), entry.machines().get(index));
                 bindings.add(binding);
                 byGeneration.putIfAbsent(binding.descriptor().generation(), binding);
             }
@@ -271,11 +271,6 @@ public final class CompositeStateMachine implements AppStateMachine {
                     ? AdmissionResult.accept()
                     : AdmissionResult.reject("Composite profile governance is disabled");
         }
-        if (topic != null && topic.startsWith("~")
-                && !topic.startsWith(com.bloxbean.cardano.yano.api.appchain.l1view
-                .L1Observation.TOPIC_PREFIX)) {
-            return AdmissionResult.reject("Unsupported composite framework topic");
-        }
         List<ComponentBinding> candidates = runtime.components().stream()
                 .filter(component -> component.descriptor().activeAt(candidateHeight))
                 .filter(component -> component.descriptor().topics().contains(topic))
@@ -284,6 +279,12 @@ public final class CompositeStateMachine implements AppStateMachine {
                 .filter(workflow -> workflow.descriptor().activeAt(candidateHeight))
                 .filter(workflow -> workflow.descriptor().topic().equals(topic))
                 .toList();
+        if (topic != null && topic.startsWith("~")
+                && !topic.startsWith(com.bloxbean.cardano.yano.api.appchain.l1view
+                .L1Observation.TOPIC_PREFIX)
+                && candidates.isEmpty()) {
+            return AdmissionResult.reject("Unsupported composite framework topic");
+        }
         if (candidates.isEmpty() && workflowCandidates.isEmpty()) {
             return AdmissionResult.reject("Unknown composite message topic");
         }
@@ -348,22 +349,60 @@ public final class CompositeStateMachine implements AppStateMachine {
 
     @Override
     public AdmissionResult validatePrivilegedSystemSubmission(String topic, byte[] body) {
-        if (governance == null
-                || !com.bloxbean.cardano.yano.appchain.composite.contracts
+        if (com.bloxbean.cardano.yano.appchain.composite.contracts
                 .CompositeProfileGovernanceV1.TOPIC.equals(topic)) {
-            return AdmissionResult.reject("Composite profile governance is disabled");
+            if (governance == null) {
+                return AdmissionResult.reject("Composite profile governance is disabled");
+            }
+            return governance.permitsLocalSubmission(body)
+                    ? AdmissionResult.accept()
+                    : AdmissionResult.reject(
+                    "Invalid command or target profile is absent from the local executable catalog");
         }
-        return governance.permitsLocalSubmission(body)
-                ? AdmissionResult.accept()
-                : AdmissionResult.reject(
-                "Invalid command or target profile is absent from the local executable catalog");
+        List<AppStateMachine> owners = allComponents.stream()
+                .filter(component -> component.descriptor().topics().contains(topic))
+                .map(ComponentBinding::product)
+                .distinct()
+                .toList();
+        if (owners.isEmpty()) {
+            return AdmissionResult.reject("No composite machine owns this privileged topic");
+        }
+        for (AppStateMachine owner : owners) {
+            AdmissionResult result = owner.validatePrivilegedSystemSubmission(
+                    topic, body != null ? body.clone() : null);
+            if (result == null || !result.isAccepted()) {
+                return result != null ? result
+                        : AdmissionResult.reject("Composite machine returned no admission result");
+            }
+        }
+        return AdmissionResult.accept();
     }
 
     @Override
     public Map<String, Object> operationalStatus() {
-        if (governance != null) return governance.operationalStatus();
-        return Map.of("mode", "fixed", "activeProfileDigest",
-                HexFormat.of().formatHex(profile.digest()));
+        Map<String, Object> status = new LinkedHashMap<>();
+        if (governance != null) {
+            status.putAll(governance.operationalStatus());
+        } else {
+            status.put("mode", "fixed");
+            status.put("activeProfileDigest", HexFormat.of().formatHex(profile.digest()));
+        }
+        Map<String, Object> componentStatuses = new LinkedHashMap<>();
+        for (ComponentBinding component : allComponents) {
+            Map<String, Object> child = Objects.requireNonNull(
+                    component.product().operationalStatus(),
+                    "component operationalStatus");
+            if (!child.isEmpty()) {
+                ComponentGeneration generation = component.descriptor().generation();
+                String key = generation.componentId() + "/" + generation.semanticVersion()
+                        + "@" + generation.fromHeight();
+                componentStatuses.put(key, Map.copyOf(child));
+            }
+        }
+        if (!componentStatuses.isEmpty()) {
+            status.put("components", Map.copyOf(componentStatuses));
+        }
+        return Map.copyOf(status);
     }
 
     @Override
@@ -610,7 +649,7 @@ public final class CompositeStateMachine implements AppStateMachine {
                 .build();
     }
 
-    private record ComponentBinding(ComponentDescriptor descriptor, CompositeComponent product) {
+    private record ComponentBinding(ComponentDescriptor descriptor, AppStateMachine product) {
     }
 
     private record WorkflowBinding(WorkflowDescriptor descriptor, CompositeWorkflow product) {

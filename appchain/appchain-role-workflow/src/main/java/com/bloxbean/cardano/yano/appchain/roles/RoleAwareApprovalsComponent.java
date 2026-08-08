@@ -5,11 +5,11 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
+import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.appchain.composite.ComponentDescriptor;
-import com.bloxbean.cardano.yano.appchain.composite.CompositeComponent;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ApprovalPolicyV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.DirectRolePolicyV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.GovernedGenesisV1;
@@ -25,7 +25,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 
 /** State owner and exact-query surface for policy revisions and role decisions. */
-public final class RoleAwareApprovalsComponent implements CompositeComponent {
+public final class RoleAwareApprovalsComponent implements AppStateMachine {
     public static final String COMPONENT_ID = RoleWorkflowIdentifiers.ROLE_APPROVALS_COMPONENT_ID;
     public static final String QUERY_POLICY = "policy";
     public static final String QUERY_POLICY_CURRENT = "policy-current";
@@ -56,7 +56,9 @@ public final class RoleAwareApprovalsComponent implements CompositeComponent {
         }
     }
 
-    @Override public ComponentDescriptor descriptor() { return descriptor; }
+    public ComponentDescriptor descriptor() { return descriptor; }
+
+    @Override public String id() { return descriptor.componentId(); }
 
     @Override
     public void init(AppStateReader ownState, AppChainInfo chain) {

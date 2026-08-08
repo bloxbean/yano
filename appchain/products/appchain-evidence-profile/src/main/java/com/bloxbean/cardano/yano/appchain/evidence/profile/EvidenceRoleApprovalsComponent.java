@@ -12,7 +12,6 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
 import com.bloxbean.cardano.yano.appchain.composite.ComponentDescriptor;
-import com.bloxbean.cardano.yano.appchain.composite.CompositeComponent;
 import com.bloxbean.cardano.yano.appchain.evidence.profile.contracts.RoleEvidenceKeys;
 import com.bloxbean.cardano.yano.appchain.roles.RoleAwareApprovalsComponent;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowIdentifiers;
@@ -20,7 +19,7 @@ import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowIdentifier
 import java.nio.charset.StandardCharsets;
 
 /** Evidence-specific query adapter over the reusable role-approvals component. */
-final class EvidenceRoleApprovalsComponent implements CompositeComponent {
+final class EvidenceRoleApprovalsComponent implements AppStateMachine {
     static final String QUERY_EVIDENCE_APPROVAL = "evidence-approval";
 
     private final RoleAwareApprovalsComponent delegate;
@@ -29,9 +28,13 @@ final class EvidenceRoleApprovalsComponent implements CompositeComponent {
         delegate = new RoleAwareApprovalsComponent(descriptor);
     }
 
-    @Override
     public ComponentDescriptor descriptor() {
         return delegate.descriptor();
+    }
+
+    @Override
+    public String id() {
+        return descriptor().componentId();
     }
 
     @Override

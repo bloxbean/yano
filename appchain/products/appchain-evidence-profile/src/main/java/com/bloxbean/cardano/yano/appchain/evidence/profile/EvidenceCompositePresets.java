@@ -2,16 +2,13 @@ package com.bloxbean.cardano.yano.appchain.evidence.profile;
 
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.effects.ActivationSchedule;
-import com.bloxbean.cardano.yano.appchain.composite.contracts.AggregateQueryLimitsV1;
 import com.bloxbean.cardano.yano.appchain.evidence.profile.contracts.EvidenceWorkflowCapacityV1;
 import com.bloxbean.cardano.yano.appchain.composite.ComponentDescriptor;
 import com.bloxbean.cardano.yano.appchain.composite.ComponentGeneration;
-import com.bloxbean.cardano.yano.appchain.composite.CompositeComponent;
-import com.bloxbean.cardano.yano.appchain.composite.CompositeProfile;
+import com.bloxbean.cardano.yano.appchain.composite.ComposableAppStateMachine;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeStateMachine;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeWorkflow;
 import com.bloxbean.cardano.yano.appchain.composite.LegacyQueryAlias;
-import com.bloxbean.cardano.yano.appchain.composite.StateMachineComponentAdapter;
 import com.bloxbean.cardano.yano.appchain.composite.WorkflowDescriptor;
 import com.bloxbean.cardano.yano.appchain.config.AppChainApprovalsConfig;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.EvidenceContract;
@@ -84,7 +81,7 @@ public final class EvidenceCompositePresets {
         ComponentDescriptor evidenceDescriptor = descriptor(EVIDENCE_ID,
                 evidenceConfig.configurationId(),
                 gated ? List.of() : List.of(EvidenceContract.COMMAND_TOPIC),
-                List.of("get"), evidenceQuota);
+                List.of(EvidenceContract.GET_QUERY_PATH), evidenceQuota);
 
         KvRegistryStateMachine registryMachine = new KvRegistryStateMachine(registryFormat);
         ApprovalsStateMachine approvalsMachine = new ApprovalsStateMachine(
@@ -92,15 +89,9 @@ public final class EvidenceCompositePresets {
         DocTrailStateMachine docTrailMachine = new DocTrailStateMachine();
         EvidenceRegistryStateMachine evidenceMachine =
                 new EvidenceRegistryStateMachine(evidenceConfig);
-        List<CompositeComponent> components = List.of(
-                new StateMachineComponentAdapter(registryDescriptor, registryMachine),
-                new StateMachineComponentAdapter(approvalsDescriptor, approvalsMachine),
-                new StateMachineComponentAdapter(docTrailDescriptor, docTrailMachine),
-                new StateMachineComponentAdapter(evidenceDescriptor, evidenceMachine,
-                        Map.of("get", EvidenceContract.GET_QUERY_PATH)));
-
-        List<ComponentGeneration> participants = components.stream()
-                .map(component -> component.descriptor().generation()).toList();
+        List<ComponentGeneration> participants = List.of(
+                registryDescriptor.generation(), approvalsDescriptor.generation(),
+                docTrailDescriptor.generation(), evidenceDescriptor.generation());
         WorkflowDescriptor releaseDescriptor = new WorkflowDescriptor(
                 EvidenceReleaseWorkflow.ID, EvidenceReleaseWorkflow.PRODUCT_VERSION,
                 EvidenceReleaseWorkflow.TOPIC,
@@ -108,7 +99,6 @@ public final class EvidenceCompositePresets {
         CompositeWorkflow release = new EvidenceReleaseWorkflow(releaseDescriptor,
                 participants.get(0), participants.get(1), participants.get(2), participants.get(3),
                 docTrailMachine, evidenceMachine, evidenceConfig);
-        List<WorkflowDescriptor> workflowDescriptors;
         List<CompositeWorkflow> workflows;
         if (gated) {
             WorkflowDescriptor notifyDescriptor = new WorkflowDescriptor(
@@ -118,19 +108,20 @@ public final class EvidenceCompositePresets {
             CompositeWorkflow notify = new EvidenceNotifyWorkflow(
                     notifyDescriptor, participants.get(3), evidenceMachine);
             // Workflow order is committed and products use that same order.
-            workflowDescriptors = List.of(notifyDescriptor, releaseDescriptor);
             workflows = List.of(notify, release);
         } else {
-            workflowDescriptors = List.of(releaseDescriptor);
             workflows = List.of(release);
         }
-        CompositeProfile profile = new CompositeProfile(1, preset, "1.0.0",
-                components.stream().map(CompositeComponent::descriptor).toList(),
-                workflowDescriptors,
-                List.of(new LegacyQueryAlias(
-                        EvidenceContract.GET_QUERY_PATH, EVIDENCE_ID, "get")),
-                AggregateQueryLimitsV1.DEFAULT);
-        return CompositeStateMachine.create(context, profile, components, workflows);
+        var builder = ComposableAppStateMachine.builder(
+                        CompositeStateMachine.ID, context, preset, "1.0.0")
+                .machine(registryDescriptor, registryMachine)
+                .machine(approvalsDescriptor, approvalsMachine)
+                .machine(docTrailDescriptor, docTrailMachine)
+                .machine(evidenceDescriptor, evidenceMachine)
+                .queryAlias(new LegacyQueryAlias(EvidenceContract.GET_QUERY_PATH,
+                        EVIDENCE_ID, EvidenceContract.GET_QUERY_PATH));
+        workflows.forEach(builder::workflow);
+        return builder.build();
     }
 
     private static EvidenceWorkflowCapacityV1 evidenceCapacity(Map<String, String> settings) {

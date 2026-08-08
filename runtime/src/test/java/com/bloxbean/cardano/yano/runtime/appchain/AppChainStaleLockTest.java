@@ -85,7 +85,7 @@ class AppChainStaleLockTest {
 
         // Crash A and make its persisted locked proposal EXPIRED (the gate's
         // crash-restart-past-TTL scenario, compressed in time)
-        nodes.remove("a").stop();
+        nodes.remove("a").close();
         expireStoredLock(dirA, 1);
 
         // Restart A; bring B and C up. A must propose a FRESH block at height
@@ -137,7 +137,7 @@ class AppChainStaleLockTest {
         // Unlock is REFUSED while the locked round is still recoverable
         assertThat(nodeA.unlockStaleRound()).isFalse();
 
-        nodes.remove("a").stop();
+        nodes.remove("a").close();
         expireStoredLock(dirA, 1);
         AppChainSubsystem restartedA = start("a", KEY_A, members, pubA, portA,
                 List.of(peer(portB)), dirA);

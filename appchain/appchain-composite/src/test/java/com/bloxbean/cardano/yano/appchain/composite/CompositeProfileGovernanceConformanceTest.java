@@ -160,7 +160,7 @@ class CompositeProfileGovernanceConformanceTest {
         }
     }
 
-    private static class RecordingComponent implements CompositeComponent {
+    private static class RecordingComponent implements TestCompositeMachine {
         private final ComponentDescriptor descriptor;
 
         private RecordingComponent(ComponentDescriptor descriptor) {

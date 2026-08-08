@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.composite;
 
+import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -58,9 +60,9 @@ public final class CompositeProfileCatalog {
             if (byDigest.putIfAbsent(digest, entry) != null) {
                 throw new IllegalArgumentException("duplicate composite catalog profile digest");
             }
-            for (int index = 0; index < entry.components().size(); index++) {
+            for (int index = 0; index < entry.machines().size(); index++) {
                 ComponentDescriptor descriptor = entry.profile().components().get(index);
-                CompositeComponent product = entry.components().get(index);
+                AppStateMachine product = entry.machines().get(index);
                 String previousCompatibility = namespaceCompatibility.putIfAbsent(
                         descriptor.componentId(), descriptor.stateAndResultCompatibilityId());
                 if (previousCompatibility != null && !previousCompatibility.equals(
@@ -117,9 +119,9 @@ public final class CompositeProfileCatalog {
         return componentProducts;
     }
 
-    List<CompositeComponent> uniqueComponents() {
-        Set<CompositeComponent> seen = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
-        List<CompositeComponent> result = new ArrayList<>();
+    List<AppStateMachine> uniqueComponents() {
+        Set<AppStateMachine> seen = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+        List<AppStateMachine> result = new ArrayList<>();
         for (ComponentProduct product : componentProducts.values()) {
             if (seen.add(product.product())) {
                 result.add(product.product());
@@ -129,17 +131,16 @@ public final class CompositeProfileCatalog {
     }
 
     public record Entry(CompositeProfile profile,
-                        List<CompositeComponent> components,
+                        List<AppStateMachine> machines,
                         List<CompositeWorkflow> workflows) {
         public Entry {
             profile = Objects.requireNonNull(profile, "profile");
-            components = List.copyOf(Objects.requireNonNull(components, "components"));
+            machines = List.copyOf(Objects.requireNonNull(machines, "machines"));
             workflows = List.copyOf(Objects.requireNonNull(workflows, "workflows"));
-            List<ComponentDescriptor> componentDescriptors = components.stream()
-                    .map(CompositeComponent::descriptor).map(Objects::requireNonNull).toList();
-            if (!profile.components().equals(componentDescriptors)) {
+            if (profile.components().size() != machines.size()
+                    || machines.stream().anyMatch(Objects::isNull)) {
                 throw new IllegalArgumentException(
-                        "catalog component products must exactly match profile order");
+                        "catalog machine products must exactly match profile component order");
             }
             List<WorkflowDescriptor> workflowDescriptors = workflows.stream()
                     .map(CompositeWorkflow::descriptor).map(Objects::requireNonNull).toList();
@@ -154,7 +155,7 @@ public final class CompositeProfileCatalog {
         }
     }
 
-    record ComponentProduct(ComponentDescriptor descriptor, CompositeComponent product) {
+    record ComponentProduct(ComponentDescriptor descriptor, AppStateMachine product) {
     }
 
     record WorkflowProduct(WorkflowDescriptor descriptor, CompositeWorkflow product) {

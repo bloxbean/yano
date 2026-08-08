@@ -1,17 +1,13 @@
 package com.bloxbean.cardano.yano.appchain.evidence.profile;
 
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
-import com.bloxbean.cardano.yano.api.appchain.effects.ActivationSchedule;
 import com.bloxbean.cardano.yano.appchain.composite.ComponentDescriptor;
 import com.bloxbean.cardano.yano.appchain.composite.ComponentGeneration;
-import com.bloxbean.cardano.yano.appchain.composite.CompositeComponent;
-import com.bloxbean.cardano.yano.appchain.composite.CompositeProfile;
+import com.bloxbean.cardano.yano.appchain.composite.ComposableAppStateMachine;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeStateMachine;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeWorkflow;
 import com.bloxbean.cardano.yano.appchain.composite.LegacyQueryAlias;
-import com.bloxbean.cardano.yano.appchain.composite.StateMachineComponentAdapter;
 import com.bloxbean.cardano.yano.appchain.composite.WorkflowDescriptor;
-import com.bloxbean.cardano.yano.appchain.composite.contracts.AggregateQueryLimitsV1;
 import com.bloxbean.cardano.yano.appchain.evidence.profile.contracts.EvidenceWorkflowCapacityV1;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.EvidenceContract;
 import com.bloxbean.cardano.yano.appchain.examples.evidence.EvidenceRegistryConfig;
@@ -73,7 +69,7 @@ public final class RoleEvidencePreset {
         ComponentDescriptor docTrailDescriptor = descriptor(DOC_TRAIL_ID, "workflow-only-v1",
                 List.of(), List.of(), 0);
         ComponentDescriptor evidenceDescriptor = descriptor(EVIDENCE_ID,
-                evidenceConfig.configurationId(), List.of(), List.of("get"),
+                evidenceConfig.configurationId(), List.of(), List.of(EvidenceContract.GET_QUERY_PATH),
                 capacity.gatedEvidenceComponentEffects());
 
         KvRegistryStateMachine registryMachine = new KvRegistryStateMachine(registryFormat);
@@ -83,15 +79,10 @@ public final class RoleEvidencePreset {
                 actorDescriptor, context.chainId(), governance);
         EvidenceRoleApprovalsComponent approvalComponent =
                 new EvidenceRoleApprovalsComponent(approvalDescriptor);
-        List<CompositeComponent> components = List.of(
-                new StateMachineComponentAdapter(registryDescriptor, registryMachine),
-                actorComponent,
-                approvalComponent,
-                new StateMachineComponentAdapter(docTrailDescriptor, docTrailMachine),
-                new StateMachineComponentAdapter(evidenceDescriptor, evidenceMachine,
-                        Map.of("get", EvidenceContract.GET_QUERY_PATH)));
-        List<ComponentGeneration> generations = components.stream()
-                .map(component -> component.descriptor().generation()).toList();
+        List<ComponentGeneration> generations = List.of(
+                registryDescriptor.generation(), actorDescriptor.generation(),
+                approvalDescriptor.generation(), docTrailDescriptor.generation(),
+                evidenceDescriptor.generation());
 
         WorkflowDescriptor notifyDescriptor = new WorkflowDescriptor(
                 RoleEvidenceNotifyWorkflow.ID, "1.0.0", RoleEvidenceNotifyWorkflow.TOPIC,
@@ -113,14 +104,17 @@ public final class RoleEvidencePreset {
                 new RoleEvidenceReleaseWorkflow(releaseDescriptor, generations.get(0),
                         generations.get(2), generations.get(3), generations.get(4),
                         docTrailMachine, evidenceMachine));
-        CompositeProfile profile = new CompositeProfile(1, PROFILE_ID, "1.0.0",
-                components.stream().map(CompositeComponent::descriptor).toList(),
-                List.of(notifyDescriptor, roleDescriptor, releaseDescriptor),
-                List.of(new LegacyQueryAlias(
-                        EvidenceContract.GET_QUERY_PATH, EVIDENCE_ID, "get")),
-                AggregateQueryLimitsV1.DEFAULT);
-        return CompositeStateMachine.create(RoleEvidenceStateMachineProvider.ID,
-                context, profile, components, workflows);
+        var builder = ComposableAppStateMachine.builder(RoleEvidenceStateMachineProvider.ID,
+                        context, PROFILE_ID, "1.0.0")
+                .machine(registryDescriptor, registryMachine)
+                .machine(actorDescriptor, actorComponent)
+                .machine(approvalDescriptor, approvalComponent)
+                .machine(docTrailDescriptor, docTrailMachine)
+                .machine(evidenceDescriptor, evidenceMachine)
+                .queryAlias(new LegacyQueryAlias(EvidenceContract.GET_QUERY_PATH,
+                        EVIDENCE_ID, EvidenceContract.GET_QUERY_PATH));
+        workflows.forEach(builder::workflow);
+        return builder.build();
     }
 
     private static ComponentDescriptor descriptor(String id, String configurationId,

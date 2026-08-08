@@ -11,7 +11,6 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.appchain.composite.ComponentDescriptor;
-import com.bloxbean.cardano.yano.appchain.composite.CompositeComponent;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorKeyEpochV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorKeyProofV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorRecordV1;
@@ -39,7 +38,7 @@ import java.util.Arrays;
 import java.util.List;
 
 /** Threshold-governed, append-revision domain organization/actor/key registry. */
-public final class DomainActorRegistryComponent implements CompositeComponent {
+public final class DomainActorRegistryComponent implements AppStateMachine {
     public static final String COMPONENT_ID = RoleWorkflowIdentifiers.DOMAIN_ACTORS_COMPONENT_ID;
     public static final String TOPIC = ActorGovernanceCommandV1.ACTOR_REGISTRY_TOPIC;
     public static final String QUERY_ORGANIZATION = "organization";
@@ -99,7 +98,9 @@ public final class DomainActorRegistryComponent implements CompositeComponent {
         }
     }
 
-    @Override public ComponentDescriptor descriptor() { return descriptor; }
+    public ComponentDescriptor descriptor() { return descriptor; }
+
+    @Override public String id() { return descriptor.componentId(); }
 
     @Override
     public void init(AppStateReader ownState, AppChainInfo chain) {

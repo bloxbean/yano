@@ -203,7 +203,7 @@ class CompositeProfileGovernanceTest {
         return HexFormat.of().formatHex(filled(value));
     }
 
-    private static final class RecordingComponent implements CompositeComponent {
+    private static final class RecordingComponent implements TestCompositeMachine {
         private final ComponentDescriptor descriptor;
 
         private RecordingComponent(ComponentDescriptor descriptor) {

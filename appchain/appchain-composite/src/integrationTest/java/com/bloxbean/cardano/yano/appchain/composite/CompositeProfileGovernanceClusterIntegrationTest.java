@@ -13,6 +13,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfile;
 import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipEpoch;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
+import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
@@ -374,14 +375,16 @@ class CompositeProfileGovernanceClusterIntegrationTest {
                 1, 0, List.of(topic), List.of("get"), quota);
     }
 
-    private static final class RecordingComponent implements CompositeComponent {
+    private static final class RecordingComponent implements AppStateMachine {
         private final ComponentDescriptor descriptor;
 
         private RecordingComponent(ComponentDescriptor descriptor) {
             this.descriptor = descriptor;
         }
 
-        @Override public ComponentDescriptor descriptor() { return descriptor; }
+        public ComponentDescriptor descriptor() { return descriptor; }
+
+        @Override public String id() { return descriptor.componentId(); }
 
         @Override
         public void apply(AppBlockExecutionContext execution, AppStateWriter state, AppEffectEmitter effects) {

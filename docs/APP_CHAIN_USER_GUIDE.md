@@ -1706,12 +1706,13 @@ evidence client performs this sequence and exposes both logical and physical
 proof keys.
 
 Custom compositions are ordinary ADR-011 manifested state-machine bundles.
-Assemble `CompositeComponent` products and optional declared workflows, call
-`CompositeStateMachine.create("my-distinct-machine-id", context, ...)`, and
-export the same distinct id from the provider and manifest. Construction
-always checks component/workflow reservations against the real
-`effects.max-per-block`. Do not publish arbitrary profiles under the stock
-`composite` identity.
+Use `ComposableAppStateMachine.builder(...)` to register ordinary
+`AppStateMachine` instances with explicit component descriptors and optional
+declared workflows, then export the resulting machine's distinct id from the
+provider and manifest. The builder generates the canonical profile and checks
+component/workflow reservations against the real `effects.max-per-block`.
+There is no second component lifecycle SPI or state-machine adapter. Do not
+publish arbitrary profiles under the stock `composite` identity.
 
 Replacement generations may change a committed `configurationId` only while
 retaining the same `stateAndResultCompatibilityId`. Generations with one

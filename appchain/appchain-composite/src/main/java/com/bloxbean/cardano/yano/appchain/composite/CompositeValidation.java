@@ -43,9 +43,14 @@ final class CompositeValidation {
             boolean declaredL1Observer = topicField
                     && value.startsWith(l1Prefix)
                     && ID.matcher(value.substring(l1Prefix.length())).matches();
-            if (!declaredL1Observer) {
+            String governancePrefix = "~governance/";
+            boolean declaredGovernanceRoute = topicField
+                    && value.startsWith(governancePrefix)
+                    && ID.matcher(value.substring(governancePrefix.length())).matches();
+            if (!declaredL1Observer && !declaredGovernanceRoute) {
                 throw new IllegalArgumentException(
-                        field + " may reserve only an explicit ~l1/<observer-id> route");
+                        field + " may reserve only an explicit ~l1/<observer-id> or "
+                                + "~governance/<command-id> route");
             }
         }
         return value;
