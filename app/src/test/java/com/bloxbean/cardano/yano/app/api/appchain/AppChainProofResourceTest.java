@@ -41,10 +41,10 @@ class AppChainProofResourceTest {
             assertEquals(runtimeProfile.backendFamily().name()
                             .toLowerCase(java.util.Locale.ROOT),
                     clientProfile.backend());
-            assertEquals(runtimeProfile.dependencyDescriptor(),
-                    clientProfile.dependencyDescriptor());
-            assertEquals(runtimeProfile.nativeProofEncoding(),
-                    clientProfile.nativeProofEncoding());
+            assertEquals(runtimeProfile.commitmentFormatId(),
+                    clientProfile.commitmentFormatId());
+            assertEquals(runtimeProfile.proofEncodingId(),
+                    clientProfile.proofEncodingId());
             assertEquals(runtimeProfile.nativeVersioning(),
                     clientProfile.nativeVersioning());
             assertEquals(runtimeProfile.physicalDelete(),
@@ -64,7 +64,7 @@ class AppChainProofResourceTest {
         StateSnapshot snapshot = new StateSnapshot(identity, 4, root);
         StateProof stateProof = new StateProof(snapshot, key, value,
                 StateProof.Presence.PRESENT,
-                identity.profile().nativeProofEncoding(), new byte[]{(byte) 0x80});
+                identity.profile().proofEncodingId(), new byte[]{(byte) 0x80});
         FinalityCert certificate = new FinalityCert(FinalityCert.SCHEME_ED25519,
                 List.of(new FinalityCert.Signature(new byte[32], new byte[64])));
         AppBlock block = new AppBlock(AppBlock.BLOCK_VERSION, "chain-a", 4,

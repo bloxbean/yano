@@ -42,15 +42,15 @@ public final class ProofVerifier {
             "yano-state-commitment-format-v1\0".getBytes(StandardCharsets.US_ASCII);
     private static final ProfileMetadata MPF_PROFILE = profile(
             MPF_BLAKE2B256_V1, "mpf", 0,
-            "ccl-mpf-legacy-blake2b256-v1", "ccl-mpf-proof-wire-v1",
+            "mpf-blake2b256-format-v1", "mpf-proof-wire-v1",
             false, true, true);
     private static final ProfileMetadata CLASSIC_JMT_PROFILE = profile(
             JMT_BLAKE2B256_V1, "jmt", 1,
-            "classic-radix16-blake2b256-v1", "ccl-classic-jmt-proof-cbor-v1",
+            "classic-radix16-blake2b256-v1", "jmt-proof-cbor-v1",
             true, false, true);
     private static final ProfileMetadata POSEIDON_JMT_PROFILE = profile(
             JMT_POSEIDON_BLS12381_V1, "jmt", 1,
-            "zeroj-poseidon-jmt-v1", "zeroj-poseidon-jmt-proof-v1",
+            "jmt-poseidon-bls12381-format-v1", "jmt-poseidon-bls12381-proof-v1",
             true, false, false);
 
     private ProofVerifier() {
@@ -113,9 +113,9 @@ public final class ProofVerifier {
         if (schema == null || schema == 0) {
             return MPF_BLAKE2B256_V1.equals(proof.profile())
                     && "mpf".equals(proof.backend())
-                    && "ccl-mpf-legacy-blake2b256-v1".equals(
-                    proof.dependencyDescriptor())
-                    && "ccl-mpf-proof-wire-v1".equals(proof.nativeProofEncoding())
+                    && "mpf-blake2b256-format-v1".equals(
+                    proof.commitmentFormatId())
+                    && "mpf-proof-wire-v1".equals(proof.proofEncodingId())
                     && proof.formatFingerprintHex() == null
                     && Boolean.TRUE.equals(proof.legacy())
                     && Boolean.FALSE.equals(proof.nativeVersioning())
@@ -129,8 +129,8 @@ public final class ProofVerifier {
         boolean legacy = proof.legacy();
         String genesis = nullToEmpty(proof.genesisIdHex());
         return metadata.backend().equals(proof.backend())
-                && metadata.dependencyDescriptor().equals(proof.dependencyDescriptor())
-                && metadata.nativeProofEncoding().equals(proof.nativeProofEncoding())
+                && metadata.commitmentFormatId().equals(proof.commitmentFormatId())
+                && metadata.proofEncodingId().equals(proof.proofEncodingId())
                 && metadata.formatFingerprintHex().equals(proof.formatFingerprintHex())
                 && metadata.nativeVersioning() == Boolean.TRUE.equals(proof.nativeVersioning())
                 && metadata.physicalDelete() == Boolean.TRUE.equals(proof.physicalDelete())
@@ -349,8 +349,8 @@ public final class ProofVerifier {
             String id,
             String backend,
             int backendCode,
-            String dependencyDescriptor,
-            String nativeProofEncoding,
+            String commitmentFormatId,
+            String proofEncodingId,
             boolean nativeVersioning,
             boolean physicalDelete,
             boolean verifierAvailable
@@ -359,8 +359,8 @@ public final class ProofVerifier {
         descriptor.writeBytes(ByteBuffer.allocate(Integer.BYTES).putInt(1).array());
         putProfileText(descriptor, id);
         descriptor.write(backendCode);
-        putProfileText(descriptor, dependencyDescriptor);
-        putProfileText(descriptor, nativeProofEncoding);
+        putProfileText(descriptor, commitmentFormatId);
+        putProfileText(descriptor, proofEncodingId);
         descriptor.writeBytes(ByteBuffer.allocate(Integer.BYTES).putInt(HASH_BYTES).array());
         descriptor.write((nativeVersioning ? 1 : 0) | (physicalDelete ? 2 : 0));
         byte[] canonical = descriptor.toByteArray();
@@ -369,7 +369,7 @@ public final class ProofVerifier {
                 PROFILE_FINGERPRINT_DOMAIN.length);
         System.arraycopy(canonical, 0, fingerprintInput, PROFILE_FINGERPRINT_DOMAIN.length,
                 canonical.length);
-        return new ProfileMetadata(id, backend, dependencyDescriptor, nativeProofEncoding,
+        return new ProfileMetadata(id, backend, commitmentFormatId, proofEncodingId,
                 nativeVersioning, physicalDelete,
                 Hex.encode(Blake2bUtil.blake2bHash256(fingerprintInput)), verifierAvailable);
     }
@@ -406,8 +406,8 @@ public final class ProofVerifier {
     public record ProfileMetadata(
             String id,
             String backend,
-            String dependencyDescriptor,
-            String nativeProofEncoding,
+            String commitmentFormatId,
+            String proofEncodingId,
             boolean nativeVersioning,
             boolean physicalDelete,
             String formatFingerprintHex,

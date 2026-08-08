@@ -272,10 +272,10 @@ def verify_vectors(values):
 
     expected_mpf = profile_fingerprint(values["profile.mpf.id"], 0,
                                        values["profile.mpf.descriptor"],
-                                       "ccl-mpf-proof-wire-v1", 2)
+                                       "mpf-proof-wire-v1", 2)
     expected_jmt = profile_fingerprint(values["profile.jmt.id"], 1,
                                        values["profile.jmt.descriptor"],
-                                       "ccl-classic-jmt-proof-cbor-v1", 1)
+                                       "jmt-proof-cbor-v1", 1)
     require(expected_mpf.hex() == values["profile.mpf.fingerprint"],
             "MPF format fingerprint")
     require(expected_jmt.hex() == values["profile.jmt.fingerprint"],

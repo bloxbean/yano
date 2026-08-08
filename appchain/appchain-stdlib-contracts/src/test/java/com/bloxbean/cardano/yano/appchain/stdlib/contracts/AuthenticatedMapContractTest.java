@@ -302,7 +302,7 @@ class AuthenticatedMapContractTest {
                 StateCommitmentProfiles.JMT_BLAKE2B256_V1,
                 StateCommitmentProfiles.JMT_POSEIDON_BLS12381_V1);
         assertThat(JmtProfile.classicBlake2b256V1().format().profileId())
-                .isEqualTo(StateCommitmentProfiles.CLASSIC_JMT.dependencyDescriptor());
+                .isEqualTo(StateCommitmentProfiles.CLASSIC_JMT.commitmentFormatId());
     }
 
     private static AuthenticatedMapContract.Genesis genesis() {

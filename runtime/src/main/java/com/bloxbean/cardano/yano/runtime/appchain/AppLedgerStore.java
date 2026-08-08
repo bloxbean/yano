@@ -12,6 +12,7 @@ import com.bloxbean.cardano.yano.api.appchain.state.AuthenticatedStateBackend;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import com.bloxbean.cardano.yano.api.appchain.state.StateProofEnvelope;
+import com.bloxbean.cardano.yano.api.appchain.evidence.MessageInclusionProof;
 import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 import org.rocksdb.*;
 import org.slf4j.Logger;
@@ -433,6 +434,12 @@ final class AppLedgerStore implements AutoCloseable {
         } catch (RocksDBException e) {
             throw new RuntimeException("Failed to read message index", e);
         }
+    }
+
+    Optional<MessageInclusionProof> messageInclusionProof(byte[] messageId) {
+        return messageHeight(messageId)
+                .flatMap(this::block)
+                .flatMap(block -> MessageInclusionProof.fromBlock(block, messageId));
     }
 
     /** Read a key from the committed authenticated-state backend. */

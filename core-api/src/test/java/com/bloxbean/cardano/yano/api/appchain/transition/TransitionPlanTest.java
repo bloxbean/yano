@@ -62,7 +62,7 @@ class TransitionPlanTest {
 
         MapWriter writer = new MapWriter();
         TransitionPlans.commit(FinalizedMessageIndex.plan(
-                        routed, FinalizedMessageIndex.InclusionPolicy.ALL),
+                        routed, FinalizedMessageIndex.Config.allMessages()),
                 writer, AppEffectEmitter.rejecting("effects forbidden"));
 
         FinalizedMessageIndex.MessageRecord record = FinalizedMessageIndex.decode(

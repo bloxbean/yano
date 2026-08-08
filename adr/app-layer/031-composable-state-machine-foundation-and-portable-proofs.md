@@ -1,6 +1,6 @@
 # ADR app-layer/031: Composable state-machine foundations and portable proofs
 
-**Status:** Accepted and in implementation — Phases 0 through 4 complete
+**Status:** Accepted and in implementation — Phases 0 through 5 complete
 **Date:** 2026-08-08
 **Scope:** App-chain state machines, composition, authorization and approvals, authenticated state,
 proofs, and L1 consumption
@@ -1075,6 +1075,36 @@ introduced. Application bindings still own coverage and receipt meaning, as requ
 state record without knowing raw prefixes. Verification succeeds against an independently supplied
 root and fails under every root/profile/chain/key/value substitution. No supported commitment or
 proof-wire identifier names CCL, ZeroJ, a Java class, or another implementation provider.
+
+#### Phase 5 implementation result
+
+The supported profile records now use `commitmentFormatId` and `proofEncodingId`, and all released
+format/wire identifiers are implementation-neutral. The identifier change intentionally generated
+new format fingerprints, authenticated-map genesis IDs, and authorization vectors. Deterministic
+Java generators and the independent Python verifiers pin the new baseline. Provider compatibility
+is exposed through `StateCommitmentImplementations`; it is descriptive, reports MPF as
+off-chain/on-chain and classic JMT as off-chain-only, and is not part of the profile descriptor or
+fingerprint.
+
+`StateProofSubject` and the client `ProofSubjects` catalog publish canonical subjects for finalized
+messages, document heads, authenticated-map entries, approval outcomes, ADR-028 epoch parameters
+and epoch stake credentials, and composite profile markers. Composite physical-key derivation uses
+the same `CompositeCommitmentV1.componentKey` implementation as the runtime contract. Typed client
+lookups derive that key and decode only authenticated present values.
+
+`MessageInclusionProof` generates and verifies bounded paths against the existing
+`AppBlock.messagesRoot` algorithm, including its odd-leaf duplication rule. The runtime and REST
+surface can produce the proof directly from a finalized message ID; the strict client decoder
+rejects unknown fields, malformed bounds, and substituted chain/message/root/path data.
+`PortableProofBundle` verifies this compact claim against independently supplied block identity,
+optionally binds a supplied signed `AppMessage`, and optionally verifies a typed state proof against
+an independent `TrustedStateRoot`. Its result distinguishes `ID_ONLY`, verified or invalid supplied
+content, state-fact status, and `AvailabilityStatus.NOT_PROVEN`; supplying a body never creates an
+availability claim.
+
+`FinalizedMessageIndex` remains an opt-in transition capability. Its canonical `Config` commits the
+inclusion policy and maximum per-block state cost, publishes the maximum authenticated-write count,
+and can be included by standalone or composed applications without runtime special cases.
 
 ### Phase 6 — reusable on-chain MPF verification
 

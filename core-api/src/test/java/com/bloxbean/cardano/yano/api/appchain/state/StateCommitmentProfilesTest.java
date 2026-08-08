@@ -18,7 +18,7 @@ class StateCommitmentProfilesTest {
         assertThat(new HashSet<>(StateCommitmentProfiles.all().stream()
                 .map(profile -> java.util.HexFormat.of().formatHex(profile.formatFingerprint()))
                 .toList())).hasSize(3);
-        assertThat(StateCommitmentProfiles.CLASSIC_JMT.dependencyDescriptor())
+        assertThat(StateCommitmentProfiles.CLASSIC_JMT.commitmentFormatId())
                 .isEqualTo("classic-radix16-blake2b256-v1");
     }
 
@@ -90,12 +90,12 @@ class StateCommitmentProfilesTest {
         StateProof proof = new StateProof(
                 snapshot, new byte[]{1}, StateCommitmentValues.classicJmtTombstone(),
                 StateProof.Presence.TOMBSTONED,
-                StateCommitmentProfiles.CLASSIC_JMT.nativeProofEncoding(),
+                StateCommitmentProfiles.CLASSIC_JMT.proofEncodingId(),
                 new byte[]{(byte) 0x80});
         assertThat(proof.presence()).isEqualTo(StateProof.Presence.TOMBSTONED);
         assertThatThrownBy(() -> new StateProof(
                 snapshot, new byte[]{1}, null, StateProof.Presence.TOMBSTONED,
-                StateCommitmentProfiles.CLASSIC_JMT.nativeProofEncoding(),
+                StateCommitmentProfiles.CLASSIC_JMT.proofEncodingId(),
                 new byte[]{(byte) 0x80}))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("presence/value");

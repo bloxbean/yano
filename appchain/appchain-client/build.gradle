@@ -2,8 +2,10 @@
 // Deliberately light: no yaci/runtime dependencies — just JSON and the
 // release-matched MPF/JMT verifiers for client-side proof checks.
 dependencies {
+    api project(':core-api')
     api project(':appchain-stdlib-contracts')
-    implementation project(':appchain-composite-contracts')
+    api project(':appchain-composite-contracts')
+    api project(':appchain-role-workflow-contracts')
     implementation libs.jackson.databind
     implementation libs.jackson.dataformat.cbor
     implementation libs.cardano.client.crypto

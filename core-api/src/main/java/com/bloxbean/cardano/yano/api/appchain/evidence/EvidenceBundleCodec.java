@@ -70,8 +70,8 @@ public final class EvidenceBundleCodec {
     private static final Set<String> ANCHOR_FIELDS = Set.of(
             "anchoredHeight", "anchoredBlockHash", "txHash", "l1Slot");
     private static final Set<String> STATE_COMMITMENT_FIELDS = Set.of(
-            "schemaVersion", "profile", "backend", "dependencyDescriptor",
-            "nativeProofEncoding", "nativeVersioning", "physicalDelete",
+            "schemaVersion", "profile", "backend", "commitmentFormatId",
+            "proofEncodingId", "nativeVersioning", "physicalDelete",
             "formatFingerprint", "genesisId", "legacy", "version", "stateRoot");
     private EvidenceBundleCodec() {
     }
@@ -129,8 +129,8 @@ public final class EvidenceBundleCodec {
             state.put("profile", identity.profile().id());
             state.put("backend", identity.profile().backendFamily().name()
                     .toLowerCase(Locale.ROOT));
-            state.put("dependencyDescriptor", identity.profile().dependencyDescriptor());
-            state.put("nativeProofEncoding", identity.profile().nativeProofEncoding());
+            state.put("commitmentFormatId", identity.profile().commitmentFormatId());
+            state.put("proofEncodingId", identity.profile().proofEncodingId());
             state.put("nativeVersioning", identity.profile().nativeVersioning());
             state.put("physicalDelete", identity.profile().physicalDelete());
             state.put("formatFingerprint", HexUtil.encodeHexString(
@@ -257,8 +257,8 @@ public final class EvidenceBundleCodec {
                 || node.get("schemaVersion").intValue() != StateCommitmentIdentity.SCHEMA_VERSION
                 || !node.get("profile").isTextual()
                 || !node.get("backend").isTextual()
-                || !node.get("dependencyDescriptor").isTextual()
-                || !node.get("nativeProofEncoding").isTextual()
+                || !node.get("commitmentFormatId").isTextual()
+                || !node.get("proofEncodingId").isTextual()
                 || !node.get("nativeVersioning").isBoolean()
                 || !node.get("physicalDelete").isBoolean()
                 || !hex32(node.get("formatFingerprint"))
@@ -274,10 +274,10 @@ public final class EvidenceBundleCodec {
         String genesisHex = node.get("genesisId").textValue();
         if (!node.get("backend").textValue().equals(
                 profile.backendFamily().name().toLowerCase(Locale.ROOT))
-                || !node.get("dependencyDescriptor").textValue().equals(
-                profile.dependencyDescriptor())
-                || !node.get("nativeProofEncoding").textValue().equals(
-                profile.nativeProofEncoding())
+                || !node.get("commitmentFormatId").textValue().equals(
+                profile.commitmentFormatId())
+                || !node.get("proofEncodingId").textValue().equals(
+                profile.proofEncodingId())
                 || node.get("nativeVersioning").booleanValue() != profile.nativeVersioning()
                 || node.get("physicalDelete").booleanValue() != profile.physicalDelete()
                 || !node.get("formatFingerprint").textValue().equals(

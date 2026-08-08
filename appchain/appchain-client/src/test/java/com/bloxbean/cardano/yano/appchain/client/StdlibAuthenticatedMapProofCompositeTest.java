@@ -64,8 +64,8 @@ class StdlibAuthenticatedMapProofCompositeTest {
                     {"key":"%s","chainId":"c1","stateRoot":"%s","proofWireHex":"%s",
                      "valueHex":"%s","committedHeight":1,"proofSchemaVersion":1,
                      "schemaVersion":1,"profile":"%s","backend":"%s",
-                     "dependencyDescriptor":"%s","formatFingerprint":"%s",
-                     "genesisId":"%s","legacy":false,"nativeProofEncoding":"%s",
+                     "commitmentFormatId":"%s","formatFingerprint":"%s",
+                     "genesisId":"%s","legacy":false,"proofEncodingId":"%s",
                      "nativeVersioning":true,"physicalDelete":false,"version":1,
                      "oldestProvableHeight":1,"presence":"PRESENT","blockHash":"%s",
                      "block":{"version":1,"height":1,"prevHash":"%s","l1Slot":0,
@@ -75,8 +75,8 @@ class StdlibAuthenticatedMapProofCompositeTest {
                        {"signer":"%s","signature":"%s"}]}}
                     """.formatted(Hex.encode(compositeKey), rootHex, proofWire,
                     Hex.encode(entry), profile.id(), profile.backend(),
-                    profile.dependencyDescriptor(), profile.formatFingerprintHex(),
-                    "11".repeat(32), profile.nativeProofEncoding(), blockHash,
+                    profile.commitmentFormatId(), profile.formatFingerprintHex(),
+                    "11".repeat(32), profile.proofEncodingId(), blockHash,
                     "00".repeat(32), "33".repeat(32), rootHex, blockHash,
                     "44".repeat(32), "55".repeat(64)))
                     .getBytes(StandardCharsets.UTF_8);

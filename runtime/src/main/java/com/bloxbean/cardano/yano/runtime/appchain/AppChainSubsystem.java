@@ -1710,6 +1710,18 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     @Override
+    public Optional<com.bloxbean.cardano.yano.api.appchain.evidence.MessageInclusionProof>
+    messageInclusionProof(byte[] messageId) {
+        byte[] id = Objects.requireNonNull(messageId, "messageId").clone();
+        if (id.length != 32) return Optional.empty();
+        return generationUseOr(Optional.empty(), () -> {
+            AppLedgerStore currentLedger = ledger;
+            return currentLedger != null
+                    ? currentLedger.messageInclusionProof(id) : Optional.empty();
+        });
+    }
+
+    @Override
     public Optional<com.bloxbean.cardano.yano.api.appchain.state.StateIntegrityReport>
     stateIntegrity() {
         return generationUseOr(Optional.empty(), () -> {
@@ -3037,10 +3049,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         status.put("profile", stateCommitmentIdentity.profile().id());
         status.put("backend", stateCommitmentIdentity.profile().backendFamily().name().toLowerCase(
                 Locale.ROOT));
-        status.put("dependencyDescriptor",
-                stateCommitmentIdentity.profile().dependencyDescriptor());
-        status.put("nativeProofEncoding",
-                stateCommitmentIdentity.profile().nativeProofEncoding());
+        status.put("commitmentFormatId",
+                stateCommitmentIdentity.profile().commitmentFormatId());
+        status.put("proofEncodingId",
+                stateCommitmentIdentity.profile().proofEncodingId());
         status.put("nativeVersioning", stateCommitmentIdentity.profile().nativeVersioning());
         status.put("physicalDelete", stateCommitmentIdentity.profile().physicalDelete());
         status.put("formatFingerprint", HexUtil.encodeHexString(

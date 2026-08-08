@@ -10,13 +10,13 @@ public final class StateCommitmentProfiles {
     public static final String JMT_BLAKE2B256_V1 = "jmt-blake2b256-v1";
     public static final String JMT_POSEIDON_BLS12381_V1 = "jmt-poseidon-bls12381-v1";
 
-    /** CCL has no named MPF descriptor yet; this is Yano's frozen normalization of the legacy format. */
+    /** Frozen, implementation-neutral description of the released MPF format. */
     public static final StateCommitmentProfile MPF = new StateCommitmentProfile(
             StateCommitmentProfile.SCHEMA_VERSION,
             MPF_BLAKE2B256_V1,
             StateCommitmentProfile.BackendFamily.MPF,
-            "ccl-mpf-legacy-blake2b256-v1",
-            "ccl-mpf-proof-wire-v1",
+            "mpf-blake2b256-format-v1",
+            "mpf-proof-wire-v1",
             32,
             false,
             true);
@@ -26,7 +26,7 @@ public final class StateCommitmentProfiles {
             JMT_BLAKE2B256_V1,
             StateCommitmentProfile.BackendFamily.JMT,
             "classic-radix16-blake2b256-v1",
-            "ccl-classic-jmt-proof-cbor-v1",
+            "jmt-proof-cbor-v1",
             32,
             true,
             false);
@@ -36,8 +36,8 @@ public final class StateCommitmentProfiles {
             StateCommitmentProfile.SCHEMA_VERSION,
             JMT_POSEIDON_BLS12381_V1,
             StateCommitmentProfile.BackendFamily.JMT,
-            "zeroj-poseidon-jmt-v1",
-            "zeroj-poseidon-jmt-proof-v1",
+            "jmt-poseidon-bls12381-format-v1",
+            "jmt-poseidon-bls12381-proof-v1",
             32,
             true,
             false);

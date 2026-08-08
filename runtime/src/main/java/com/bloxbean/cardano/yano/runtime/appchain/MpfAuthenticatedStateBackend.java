@@ -106,7 +106,7 @@ final class MpfAuthenticatedStateBackend implements AuthenticatedStateBackend {
                     canonicalKey,
                     value,
                     value != null ? StateProof.Presence.PRESENT : StateProof.Presence.ABSENT,
-                    identity.profile().nativeProofEncoding(),
+                    identity.profile().proofEncodingId(),
                     proof.orElseThrow()));
         });
     }

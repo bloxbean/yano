@@ -134,7 +134,7 @@ final class ClassicJmtAuthenticatedStateBackend implements AuthenticatedStateBac
                         }
                         return new StateProof(
                                 snapshot.orElseThrow(), key, committedValue, presence,
-                                identity.profile().nativeProofEncoding(), wire);
+                                identity.profile().proofEncodingId(), wire);
                     }));
         }
     }

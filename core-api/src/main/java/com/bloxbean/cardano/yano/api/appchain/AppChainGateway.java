@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.api.appchain;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 import com.bloxbean.cardano.yano.api.appchain.state.StateIntegrityReport;
 import com.bloxbean.cardano.yano.api.appchain.state.StateProofEnvelope;
+import com.bloxbean.cardano.yano.api.appchain.evidence.MessageInclusionProof;
 
 import java.util.List;
 import java.util.Map;
@@ -115,6 +116,11 @@ public interface AppChainGateway {
     /** Historical profile-tagged proof while the backend retains the required state. */
     default java.util.Optional<StateProofEnvelope> stateProofEnvelopeAtHeight(
             long height, byte[] key) {
+        return java.util.Optional.empty();
+    }
+
+    /** Compact inclusion path from a finalized message id to its block's messages root. */
+    default java.util.Optional<MessageInclusionProof> messageInclusionProof(byte[] messageId) {
         return java.util.Optional.empty();
     }
 

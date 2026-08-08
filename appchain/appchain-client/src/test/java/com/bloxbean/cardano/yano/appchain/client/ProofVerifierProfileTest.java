@@ -92,8 +92,8 @@ class ProofVerifierProfileTest {
         AppChainClient.Proof proof = new AppChainClient.Proof(
                 Hex.encode(key), CHAIN, Hex.encode(root), Hex.encode(wire), Hex.encode(value),
                 null, 1L, 1, ProofVerifier.MPF_BLAKE2B256_V1, "mpf",
-                "ccl-mpf-legacy-blake2b256-v1", mpf.formatFingerprintHex(), GENESIS, false,
-                "ccl-mpf-proof-wire-v1", false, true, 1L,
+                "mpf-blake2b256-format-v1", mpf.formatFingerprintHex(), GENESIS, false,
+                "mpf-proof-wire-v1", false, true, 1L,
                 AppChainClient.ProofPresence.PRESENT, header, certificate);
         ProofVerifier.FinalityTrustContext trust = new ProofVerifier.FinalityTrustContext(
                 CHAIN, ProofVerifier.MPF_BLAKE2B256_V1, GENESIS,
@@ -110,8 +110,8 @@ class ProofVerifierProfileTest {
         AppChainClient.Proof substituted = new AppChainClient.Proof(
                 proof.keyHex(), proof.chainId(), proof.stateRootHex(), proof.proofWireHex(),
                 proof.valueHex(), null, 1L, 1, proof.profile(), proof.backend(),
-                proof.dependencyDescriptor(), proof.formatFingerprintHex(), proof.genesisIdHex(),
-                false, proof.nativeProofEncoding(), false, true, 1L,
+                proof.commitmentFormatId(), proof.formatFingerprintHex(), proof.genesisIdHex(),
+                false, proof.proofEncodingId(), false, true, 1L,
                 proof.presence(), wrongRoot, certificate);
         assertThat(ProofVerifier.verifyCertified(substituted, trust)).isFalse();
     }
@@ -129,9 +129,9 @@ class ProofVerifierProfileTest {
         return new AppChainClient.Proof(
                 Hex.encode(key), CHAIN, Hex.encode(root), Hex.encode(wire),
                 value != null ? Hex.encode(value) : null, null, 1L, 1,
-                profile, metadata.backend(), metadata.dependencyDescriptor(),
+                profile, metadata.backend(), metadata.commitmentFormatId(),
                 metadata.formatFingerprintHex(), GENESIS, false,
-                metadata.nativeProofEncoding(), metadata.nativeVersioning(),
+                metadata.proofEncodingId(), metadata.nativeVersioning(),
                 metadata.physicalDelete(), 1L,
                 presence, null, null);
     }

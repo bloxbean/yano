@@ -31,7 +31,7 @@ public final class OrderedLogStateMachine implements AppStateMachine {
             AppEffectEmitter effects
     ) {
         TransitionPlans.commit(
-                FinalizedMessageIndex.plan(context, FinalizedMessageIndex.InclusionPolicy.ALL),
+                FinalizedMessageIndex.plan(context, FinalizedMessageIndex.Config.allMessages()),
                 writer, effects);
     }
 }

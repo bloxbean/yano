@@ -36,15 +36,15 @@ public final class AuthenticatedMapGoldenVectorGenerator {
                 Integer.toString(AuthenticatedMapContract.VALUE_ENCODING_CANONICAL_CBOR));
         vectors.put("dependency.ccl.version", "0.8.0-pre5-dev1");
         vectors.put("profile.mpf.id", StateCommitmentProfiles.MPF.id());
-        vectors.put("profile.mpf.descriptor", StateCommitmentProfiles.MPF.dependencyDescriptor());
+        vectors.put("profile.mpf.descriptor", StateCommitmentProfiles.MPF.commitmentFormatId());
         vectors.put("profile.mpf.fingerprint",
                 hex(StateCommitmentProfiles.MPF.formatFingerprint()));
         vectors.put("profile.jmt.id", StateCommitmentProfiles.CLASSIC_JMT.id());
         vectors.put("profile.jmt.descriptor",
-                StateCommitmentProfiles.CLASSIC_JMT.dependencyDescriptor());
+                StateCommitmentProfiles.CLASSIC_JMT.commitmentFormatId());
         vectors.put("profile.jmt.fingerprint",
                 hex(StateCommitmentProfiles.CLASSIC_JMT.formatFingerprint()));
-        vectors.put("profile.jmt.dependencyDescriptorBytes",
+        vectors.put("profile.jmt.commitmentFormatIdBytes",
                 hex(JmtProfile.classicBlake2b256V1().format().encode()));
 
         byte[] key = AuthenticatedMapContract.canonicalKey("products", ascii("sku-1"));

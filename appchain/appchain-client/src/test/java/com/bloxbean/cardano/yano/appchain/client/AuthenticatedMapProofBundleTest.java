@@ -617,8 +617,8 @@ class AuthenticatedMapProofBundleTest {
                 Hex.encode(key), CHAIN, Hex.encode(root),
                 Hex.encode(tree.getProofWire(key, 1).orElseThrow()), Hex.encode(value),
                 null, 1L, 1, metadata.id(), metadata.backend(),
-                metadata.dependencyDescriptor(), metadata.formatFingerprintHex(),
-                GENESIS, false, metadata.nativeProofEncoding(),
+                metadata.commitmentFormatId(), metadata.formatFingerprintHex(),
+                GENESIS, false, metadata.proofEncodingId(),
                 metadata.nativeVersioning(), metadata.physicalDelete(), 1L,
                 AppChainClient.ProofPresence.PRESENT, null, null);
     }
