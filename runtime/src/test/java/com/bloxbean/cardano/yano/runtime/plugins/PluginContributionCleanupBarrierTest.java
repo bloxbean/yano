@@ -1,6 +1,8 @@
 package com.bloxbean.cardano.yano.runtime.plugins;
 
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
@@ -162,7 +164,8 @@ class PluginContributionCleanupBarrierTest {
             }
 
             @Override
-            public void apply(AppBlock block, AppStateWriter writer) {
+            public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
             }
         };
         CloseableStateMachineProvider provider =
@@ -200,7 +203,7 @@ class PluginContributionCleanupBarrierTest {
         AtomicInteger providerCloses = new AtomicInteger();
         AppStateMachine machine = new AppStateMachine() {
             @Override public String id() { return "blocked-query"; }
-            @Override public void apply(AppBlock block, AppStateWriter writer) { }
+            @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) { }
             @Override public byte[] query(
                     String path, byte[] params, AppQueryContext context
             ) {
@@ -251,7 +254,7 @@ class PluginContributionCleanupBarrierTest {
                                 "stop the runtime")));
                 return AdmissionResult.accept();
             }
-            @Override public void apply(AppBlock block, AppStateWriter writer) { }
+            @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) { }
         };
         CatalogPluginProviderRegistry registry = registry(
                 ContributionKind.APP_STATE_MACHINE, "teardown-preflight",
@@ -273,7 +276,7 @@ class PluginContributionCleanupBarrierTest {
         AtomicInteger providerCloses = new AtomicInteger();
         AppStateMachine machine = new AppStateMachine() {
             @Override public String id() { return "retained"; }
-            @Override public void apply(AppBlock block, AppStateWriter writer) { }
+            @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) { }
         };
         CloseableStateMachineProvider provider =
                 new CloseableStateMachineProvider(machine, providerCloses);

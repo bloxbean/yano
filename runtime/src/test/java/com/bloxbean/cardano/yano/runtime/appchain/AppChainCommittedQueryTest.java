@@ -6,6 +6,8 @@ import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
@@ -63,7 +65,7 @@ class AppChainCommittedQueryTest {
     @Test
     void contextualHookResultIdentityBoundsAndCopiesAreEnforced() {
         LegacyQueryMachine legacy = new LegacyQueryMachine();
-        assertThat(legacy.query("echo", new byte[0])).containsExactly(4, 5, 6);
+        assertThat(legacy.query("echo", new byte[0], null)).containsExactly(4, 5, 6);
         AppChainSubsystem legacyNode = create("legacy-query", legacy,
                 PluginProviderRegistry.empty(), 60_000);
         legacyNode.start();
@@ -483,11 +485,12 @@ class AppChainCommittedQueryTest {
         }
 
         @Override
-        public void apply(AppBlock block, AppStateWriter writer) {
+        public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
         }
 
         @Override
-        public byte[] query(String path, byte[] params) {
+        public byte[] query(String path, byte[] params, AppQueryContext context) {
             received.set(params);
             return switch (path) {
                 case "echo" -> {
@@ -531,7 +534,7 @@ class AppChainCommittedQueryTest {
                 throw new AppQueryException(AppQueryException.Code.UNAVAILABLE,
                         "plugin secret unavailable detail");
             }
-            return super.query(path, params);
+            return super.query(path, params, context);
         }
     }
 
@@ -554,7 +557,8 @@ class AppChainCommittedQueryTest {
         }
 
         @Override
-        public void apply(AppBlock block, AppStateWriter writer) {
+        public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
             applyThreads.add(Thread.currentThread().getName());
             for (AppMessage message : block.messages()) {
                 String body = new String(message.getBody(), StandardCharsets.UTF_8);
@@ -600,7 +604,8 @@ class AppChainCommittedQueryTest {
         }
 
         @Override
-        public void apply(AppBlock block, AppStateWriter writer) {
+        public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
         }
 
         @Override
@@ -623,7 +628,8 @@ class AppChainCommittedQueryTest {
         }
 
         @Override
-        public void apply(AppBlock block, AppStateWriter writer) {
+        public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
         }
 
         @Override
@@ -642,7 +648,7 @@ class AppChainCommittedQueryTest {
         private final AtomicInteger queuedCalls = new AtomicInteger();
 
         @Override public String id() { return "cancel-queued-machine"; }
-        @Override public void apply(AppBlock block, AppStateWriter writer) { }
+        @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) { }
 
         @Override
         public byte[] query(String path, byte[] params, AppQueryContext context) {

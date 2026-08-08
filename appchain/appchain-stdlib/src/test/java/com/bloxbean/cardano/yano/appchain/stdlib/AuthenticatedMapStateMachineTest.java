@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.appchain.stdlib;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AuthScheme;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipEpoch;
@@ -10,6 +11,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValidatorResolver;
 import com.bloxbean.cardano.yano.api.appchain.authmap.ValidatorVerdict;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
@@ -841,7 +843,10 @@ class AuthenticatedMapStateMachineTest {
                 new byte[0], 1_700_000_000_000L + height,
                 new byte[32], new byte[32], List.of(messages), OWNER,
                 FinalityCert.empty());
-        machine.apply(block, state);
+        machine.apply(
+                AppBlockExecutionContext.fromValidatedBlock(block),
+                state,
+                AppEffectEmitter.rejecting("effects are not expected"));
         state.committedHeight = height;
     }
 

@@ -1,11 +1,12 @@
 package com.example.appchain;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
-import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 
 import java.nio.charset.StandardCharsets;
 
@@ -41,8 +42,9 @@ public class CounterStateMachine implements AppStateMachine {
     }
 
     @Override
-    public void apply(AppBlock block, AppStateWriter writer) {
-        for (AppMessage message : block.messages()) {
+    public void apply(AppBlockExecutionContext context, AppStateWriter writer,
+                      AppEffectEmitter effects) {
+        for (AppMessage message : context.messages()) {
             byte[] key = ("c/" + new String(message.getBody(), StandardCharsets.UTF_8))
                     .getBytes(StandardCharsets.UTF_8);
             long current = writer.get(key)

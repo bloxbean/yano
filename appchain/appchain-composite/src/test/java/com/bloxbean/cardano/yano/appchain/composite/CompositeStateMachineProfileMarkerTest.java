@@ -1,10 +1,12 @@
 package com.bloxbean.cardano.yano.appchain.composite;
 
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
 import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.appchain.composite.contracts.CompositeCommitmentV1;
 import org.junit.jupiter.api.Test;
 
@@ -26,12 +28,12 @@ class CompositeStateMachineProfileMarkerTest {
                 profile, List.of(), List.of(), 1);
         MemoryState state = new MemoryState();
 
-        machine.apply(block(1), state);
+        machine.apply(block(1), state, AppEffectEmitter.rejecting("unused"));
         assertThat(state.get(CompositeStateKeys.profileMarkerKey())).isPresent();
         assertThat(state.get(CompositeStateKeys.profileMarkerKey()).orElseThrow())
                 .containsExactly(profile.canonicalBytes());
 
-        machine.apply(block(2), state);
+        machine.apply(block(2), state, AppEffectEmitter.rejecting("unused"));
         machine.init(state, new AppChainInfo("chain", "00", 1));
     }
 
@@ -40,14 +42,15 @@ class CompositeStateMachineProfileMarkerTest {
         MemoryState state = new MemoryState();
         CompositeStateMachine original = CompositeStateMachine.forTest(
                 CompositeProfile.of("empty", "1", List.of()), List.of(), List.of(), 1);
-        original.apply(block(1), state);
+        original.apply(block(1), state, AppEffectEmitter.rejecting("unused"));
 
         CompositeStateMachine changed = CompositeStateMachine.forTest(
                 CompositeProfile.of("empty", "2", List.of()), List.of(), List.of(), 1);
         assertThatThrownBy(() -> changed.init(state, new AppChainInfo("chain", "00", 1)))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("retained composite profile marker");
-        assertThatThrownBy(() -> changed.apply(block(2), state))
+        assertThatThrownBy(() -> changed.apply(
+                block(2), state, AppEffectEmitter.rejecting("unused")))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("profile marker does not match");
     }
@@ -57,7 +60,8 @@ class CompositeStateMachineProfileMarkerTest {
         CompositeStateMachine machine = CompositeStateMachine.forTest(
                 CompositeProfile.of("empty", "1", List.of()), List.of(), List.of(), 1);
 
-        assertThatThrownBy(() -> machine.apply(block(2), new MemoryState()))
+        assertThatThrownBy(() -> machine.apply(
+                block(2), new MemoryState(), AppEffectEmitter.rejecting("unused")))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("absent after genesis");
     }
@@ -107,9 +111,10 @@ class CompositeStateMachineProfileMarkerTest {
                 .containsExactly("~composite/profile/v1".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
     }
 
-    private static AppBlock block(long height) {
-        return new AppBlock(1, "chain", height, new byte[32], 0, new byte[0],
-                height, new byte[32], new byte[32], List.of(), new byte[32], FinalityCert.empty());
+    private static AppBlockExecutionContext block(long height) {
+        return AppBlockExecutionContext.fromValidatedBlock(new AppBlock(
+                1, "chain", height, new byte[32], 0, new byte[0], height,
+                new byte[32], new byte[32], List.of(), new byte[32], FinalityCert.empty()));
     }
 
     private static final class MemoryState implements AppStateWriter {

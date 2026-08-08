@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.api.appchain.state.CandidateState;
@@ -39,7 +40,8 @@ final class FxBlockApplier {
             StateCommitmentGuard stateGuard = new StateCommitmentGuard(
                     store.stateCommitmentIdentity());
             stateGuard.apply(block.height(), candidate);
-            FxKernel.Result fx = kernel.apply(machine, block, candidate, reader);
+            AppBlockExecutionContext context = AppBlockExecutionContext.fromValidatedBlock(block);
+            FxKernel.Result fx = kernel.apply(machine, context, candidate, reader);
             var prepared = candidate.prepare();
             if (!(prepared instanceof StagedStateCommit staged)) {
                 prepared.close();

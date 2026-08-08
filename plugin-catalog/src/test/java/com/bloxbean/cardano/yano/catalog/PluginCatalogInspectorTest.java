@@ -23,12 +23,12 @@ class PluginCatalogInspectorTest {
     @Test
     void validatesAndPublishesDeterministicDependencyFirstInventory() {
         IndexedBundle base = indexed(
-                BASE, "1.2.0", new YanoApiRange(1, 2, 1), List.of(),
+                BASE, "1.2.0", new YanoApiRange(2, 2, 3), List.of(),
                 List.of(new BundleContribution(
                         ContributionKind.HEALTH, BASE, "com.example.BaseHealth")),
                 DIGEST_A);
         IndexedBundle feature = indexed(
-                FEATURE, "2.0.0", new YanoApiRange(1, 1, 1),
+                FEATURE, "2.0.0", new YanoApiRange(2, 2, 3),
                 List.of(new BundleDependency(
                         BASE, SemVersion.parse("1.0.0"), SemVersion.parse("2.0.0"))),
                 List.of(new BundleContribution(
@@ -137,7 +137,7 @@ class PluginCatalogInspectorTest {
     @Test
     void rejectsMissingOrIncompatibleSelectedDependencies() {
         IndexedBundle missingDependency = indexed(
-                FEATURE, "1.0.0", new YanoApiRange(1, 1, 1),
+                FEATURE, "1.0.0", new YanoApiRange(2, 2, 3),
                 List.of(new BundleDependency(BASE, null, null)), List.of(), DIGEST_B);
         assertThatThrownBy(() -> inspector.inspect(
                 new PluginIndex(1, List.of(missingDependency), List.of()),
@@ -147,9 +147,9 @@ class PluginCatalogInspectorTest {
                 .hasMessageContaining(BASE);
 
         IndexedBundle base = indexed(
-                BASE, "1.0.0", new YanoApiRange(1, 1, 1), List.of(), List.of(), DIGEST_A);
+                BASE, "1.0.0", new YanoApiRange(2, 2, 3), List.of(), List.of(), DIGEST_A);
         IndexedBundle incompatible = indexed(
-                FEATURE, "1.0.0", new YanoApiRange(1, 1, 1),
+                FEATURE, "1.0.0", new YanoApiRange(2, 2, 3),
                 List.of(new BundleDependency(BASE, SemVersion.parse("2.0.0"), null)),
                 List.of(), DIGEST_B);
         assertThatThrownBy(() -> inspector.inspect(
@@ -162,10 +162,10 @@ class PluginCatalogInspectorTest {
     @Test
     void rejectsCyclesAndSelectedContributionCollisions() {
         IndexedBundle baseCycle = indexed(
-                BASE, "1.0.0", new YanoApiRange(1, 1, 1),
+                BASE, "1.0.0", new YanoApiRange(2, 2, 3),
                 List.of(new BundleDependency(FEATURE, null, null)), List.of(), DIGEST_A);
         IndexedBundle featureCycle = indexed(
-                FEATURE, "1.0.0", new YanoApiRange(1, 1, 1),
+                FEATURE, "1.0.0", new YanoApiRange(2, 2, 3),
                 List.of(new BundleDependency(BASE, null, null)), List.of(), DIGEST_B);
         assertThatThrownBy(() -> inspector.inspect(
                 new PluginIndex(1, List.of(baseCycle, featureCycle), List.of()),
@@ -176,11 +176,11 @@ class PluginCatalogInspectorTest {
                 .hasMessageContaining(FEATURE);
 
         IndexedBundle first = indexed(
-                BASE, "1.0.0", new YanoApiRange(1, 1, 1), List.of(),
+                BASE, "1.0.0", new YanoApiRange(2, 2, 3), List.of(),
                 List.of(new BundleContribution(ContributionKind.FINALIZED_SINK,
                         "shared", "com.example.FirstSink")), DIGEST_A);
         IndexedBundle second = indexed(
-                FEATURE, "1.0.0", new YanoApiRange(1, 1, 1), List.of(),
+                FEATURE, "1.0.0", new YanoApiRange(2, 2, 3), List.of(),
                 List.of(new BundleContribution(ContributionKind.FINALIZED_SINK,
                         "shared", "com.example.SecondSink")), DIGEST_B);
         assertThatThrownBy(() -> inspector.inspect(

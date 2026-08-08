@@ -8,6 +8,7 @@ import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfile;
 import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipEpoch;
@@ -383,8 +384,9 @@ class CompositeProfileGovernanceClusterIntegrationTest {
         @Override public ComponentDescriptor descriptor() { return descriptor; }
 
         @Override
-        public void apply(AppBlock block, AppStateWriter state, AppEffectEmitter effects) {
-            block.messages().forEach(message -> state.put(new byte[]{1}, message.getBody()));
+        public void apply(AppBlockExecutionContext execution, AppStateWriter state, AppEffectEmitter effects) {
+            AppBlock block = execution.block();
+            execution.messages().forEach(message -> state.put(new byte[]{1}, message.getBody()));
         }
 
         @Override
@@ -403,8 +405,9 @@ class CompositeProfileGovernanceClusterIntegrationTest {
         @Override public WorkflowDescriptor descriptor() { return descriptor; }
 
         @Override
-        public void apply(AppBlock block, CompositeWorkflowContext context) {
-            block.messages().forEach(message -> descriptor.participants().forEach(
+        public void apply(AppBlockExecutionContext execution, CompositeWorkflowContext context) {
+            AppBlock block = execution.block();
+            execution.messages().forEach(message -> descriptor.participants().forEach(
                     participant -> context.state(participant)
                             .put(new byte[]{2}, message.getBody())));
         }

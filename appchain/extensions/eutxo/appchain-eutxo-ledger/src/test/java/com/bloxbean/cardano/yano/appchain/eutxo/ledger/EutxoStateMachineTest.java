@@ -20,6 +20,7 @@ import com.bloxbean.cardano.client.plutus.util.ScriptDataHashGenerator;
 import com.bloxbean.cardano.client.spec.NetworkId;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
@@ -62,7 +63,7 @@ class EutxoStateMachineTest {
         MemoryAppState state = new MemoryAppState();
 
         // Materialize genesis with an empty first block.
-        machine.apply(block(1), state);
+        apply(machine, block(1), state);
         EutxoRecord genesis = records(machine, state, ALICE.address()).getFirst();
 
         Transaction first = EutxoTransactionFixtures.signedPayment(
@@ -91,7 +92,7 @@ class EutxoStateMachineTest {
         AppMessage firstMessage = message(11, first);
         AppMessage chainedMessage = message(12, chained);
         AppMessage conflictMessage = message(13, conflict);
-        machine.apply(block(2, firstMessage, chainedMessage, conflictMessage), state);
+        apply(machine, block(2, firstMessage, chainedMessage, conflictMessage), state);
         state.committedHeight(2);
 
         assertThat(records(machine, state, BOB.address())).isEmpty();
@@ -132,7 +133,7 @@ class EutxoStateMachineTest {
     void invalidWitnessDoesNotMutateUtxosAndCanBeRetriedAsANewAttempt() {
         EutxoStateMachine machine = machine(ALICE.address(), 50);
         MemoryAppState state = new MemoryAppState();
-        machine.apply(block(1), state);
+        apply(machine, block(1), state);
         EutxoRecord genesis = records(machine, state, ALICE.address()).getFirst();
 
         Transaction wrongSigner = EutxoTransactionFixtures.signedPayment(
@@ -143,7 +144,7 @@ class EutxoStateMachineTest {
                 0);
         AppMessage attempt = message(21, wrongSigner);
         byte[] rootBefore = state.stateRoot();
-        machine.apply(block(2, attempt), state);
+        apply(machine, block(2, attempt), state);
 
         assertThat(records(machine, state, ALICE.address())).containsExactly(genesis);
         assertThat(receipt(machine, state, attempt).code()).isEqualTo("MISSING_INPUT_WITNESS");
@@ -163,15 +164,15 @@ class EutxoStateMachineTest {
         MemoryAppState firstState = new MemoryAppState();
         MemoryAppState secondState = new MemoryAppState();
         AppBlock genesisBlock = block(1);
-        firstMachine.apply(genesisBlock, firstState);
-        secondMachine.apply(genesisBlock, secondState);
+        apply(firstMachine, genesisBlock, firstState);
+        apply(secondMachine, genesisBlock, secondState);
         EutxoRecord genesis = records(firstMachine, firstState, ALICE.address()).getFirst();
         Transaction payment = EutxoTransactionFixtures.signedPayment(
                 genesis.outpoint(), ALICE, List.of(payment(BOB.address(), 100)), 0, 0);
         AppBlock paymentBlock = block(2, message(31, payment));
 
-        firstMachine.apply(paymentBlock, firstState);
-        secondMachine.apply(paymentBlock, secondState);
+        apply(firstMachine, paymentBlock, firstState);
+        apply(secondMachine, paymentBlock, secondState);
 
         assertThat(firstState.sameState(secondState)).isTrue();
         assertThat(firstState.stateRoot()).isEqualTo(secondState.stateRoot());
@@ -231,12 +232,12 @@ class EutxoStateMachineTest {
                 genesis,
                 new KeyPaymentTransitionEngine(EutxoProfile.V2));
         MemoryAppState state = new MemoryAppState();
-        machine.apply(block(1), state);
+        apply(machine, block(1), state);
 
         Transaction spend = plutusSpend(
                 genesis.records().getFirst().outpoint(), script, ALICE.address(), 100);
         AppMessage submitted = message(41, spend);
-        machine.apply(block(2, submitted), state);
+        apply(machine, block(2, submitted), state);
 
         EutxoReceipt receipt = receipt(machine, state, submitted);
         assertThat(receipt.status()).isEqualTo(EutxoReceipt.Status.ACCEPTED);
@@ -269,11 +270,11 @@ class EutxoStateMachineTest {
                         (transaction, inputs) -> PlutusV3Evaluator.Evaluation.reject(
                                 "PLUTUS_VALIDATION_FAILED", "bounded rejection")));
         MemoryAppState state = new MemoryAppState();
-        machine.apply(block(1), state);
+        apply(machine, block(1), state);
         AppMessage submitted = message(42, plutusSpend(
                 genesis.records().getFirst().outpoint(), script, ALICE.address(), 100));
 
-        machine.apply(block(2, submitted), state);
+        apply(machine, block(2, submitted), state);
 
         assertThat(receipt(machine, state, submitted).code())
                 .isEqualTo("PLUTUS_VALIDATION_FAILED");
@@ -299,7 +300,7 @@ class EutxoStateMachineTest {
         EutxoStateMachine machine = (EutxoStateMachine)
                 new EutxoStateMachineProvider().create(context(settings));
         MemoryAppState state = new MemoryAppState();
-        machine.apply(block(1), state);
+        apply(machine, block(1), state);
         Transaction unsigned = Transaction.builder()
                 .body(TransactionBody.builder()
                         .inputs(List.of(TransactionInput.builder()
@@ -317,7 +318,7 @@ class EutxoStateMachineTest {
                 .build();
         AppMessage submitted = message(43, unsigned);
 
-        machine.apply(block(2, submitted), state);
+        apply(machine, block(2, submitted), state);
 
         assertThat(receipt(machine, state, submitted).code())
                 .isEqualTo("SCRIPT_WITNESS_MISSING");
@@ -367,7 +368,7 @@ class EutxoStateMachineTest {
         AppMessage deposit = observationMessage(51, observation);
 
         assertThat(machine.validate(deposit).isAccepted()).isTrue();
-        machine.apply(block(1, deposit, deposit), state);
+        apply(machine, block(1, deposit, deposit), state);
 
         assertThat(records(machine, state, ALICE.address()))
                 .singleElement()
@@ -417,7 +418,7 @@ class EutxoStateMachineTest {
                 depositClaim.l1Slot(),
                 depositClaim.l1BlockHash(),
                 depositClaim.encode());
-        machine.apply(block(1, observationMessage(61, depositObservation)), state);
+        apply(machine, block(1, observationMessage(61, depositObservation)), state);
 
         EutxoWithdrawalDatum datum = new EutxoWithdrawalDatum(
                 1, "eutxo-test", 7, ALICE.address(), fill(32, 6));
@@ -444,7 +445,7 @@ class EutxoStateMachineTest {
                 0,
                 2);
         AppMessage withdrawalMessage = message(62, withdrawal);
-        machine.apply(block(2, withdrawalMessage), state);
+        apply(machine, block(2, withdrawalMessage), state);
 
         assertThat(receipt(machine, state, withdrawalMessage).status())
                 .isEqualTo(EutxoReceipt.Status.ACCEPTED);
@@ -499,7 +500,7 @@ class EutxoStateMachineTest {
                 confirmation.encode());
         AppMessage confirmationMessage =
                 observationMessage(63, confirmationObservation);
-        machine.apply(block(3, confirmationMessage, confirmationMessage), state);
+        apply(machine, block(3, confirmationMessage, confirmationMessage), state);
 
         EutxoWithdrawalRecord confirmed = EutxoQueryCodec.decodeOptionalWithdrawalRecord(
                 machine.query(
@@ -566,7 +567,7 @@ class EutxoStateMachineTest {
                 fill(32, 9),
                 unknown.encode());
 
-        machine.apply(block(1, observationMessage(64, observation)), state);
+        apply(machine, block(1, observationMessage(64, observation)), state);
 
         assertThat(new String(
                 state.get(EutxoStateKeys.bridgeHalt()).orElseThrow(),
@@ -768,6 +769,16 @@ class EutxoStateMachineTest {
                 .authScheme(0)
                 .authProof(new byte[64])
                 .build();
+    }
+
+    private static void apply(
+            EutxoStateMachine machine,
+            AppBlock block,
+            MemoryAppState state
+    ) {
+        machine.apply(AppBlockExecutionContext.fromValidatedBlock(block), state,
+                com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter
+                        .rejecting("unused"));
     }
 
     private static AppBlock block(long height, AppMessage... messages) {

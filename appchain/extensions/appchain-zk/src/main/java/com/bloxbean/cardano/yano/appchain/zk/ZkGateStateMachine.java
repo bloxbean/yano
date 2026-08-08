@@ -2,8 +2,10 @@ package com.bloxbean.cardano.yano.appchain.zk;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.OrderedLog;
 
 /**
@@ -54,9 +56,11 @@ public final class ZkGateStateMachine implements AppStateMachine {
     }
 
     @Override
-    public void apply(AppBlock block, AppStateWriter writer) {
+    public void apply(AppBlockExecutionContext context, AppStateWriter writer,
+                      AppEffectEmitter effects) {
+        AppBlock block = context.block();
         int index = 0;
-        for (AppMessage message : block.messages()) {
+        for (AppMessage message : context.messages()) {
             int position = index++;
             // MANDATORY consensus verification — every member re-verifies the
             // proof; a message whose proof does not verify is recorded by no one.

@@ -13,6 +13,7 @@ import com.bloxbean.cardano.yaci.events.api.SubscriptionHandle;
 import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
 import com.bloxbean.cardano.yaci.events.impl.NoopEventBus;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
@@ -173,13 +174,8 @@ class PluginTcclBoundaryTest {
             assertThat(machineStatus).containsEntry("profile", "ready");
             assertThatThrownBy(() -> machineStatus.put("mutate", true))
                     .isInstanceOf(UnsupportedOperationException.class);
-            firstMachine.apply(null, null);
             firstMachine.apply(null, null, null);
-            firstMachine.onEffectResult(null, null, null);
             firstMachine.onEffectResult(null, null, null, null);
-            assertThatThrownBy(() -> firstMachine.query("failure", new byte[0]))
-                    .isInstanceOf(IllegalStateException.class)
-                    .hasMessage("expected query failure");
             assertThatThrownBy(() -> firstMachine.query(
                     "failure", new byte[0], (AppQueryContext) null))
                     .isInstanceOf(IllegalStateException.class)
@@ -723,7 +719,7 @@ class PluginTcclBoundaryTest {
         String secret = "state-machine-identity-secret";
         AppStateMachine rawMachine = new AppStateMachine() {
             @Override public String id() { throw new AssertionError(secret); }
-            @Override public void apply(AppBlock block, AppStateWriter writer) { }
+            @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) { }
         };
         AppStateMachineProvider rawProvider = new AppStateMachineProvider() {
             @Override public String id() { return "secret-safe-machine"; }
@@ -2692,33 +2688,25 @@ class PluginTcclBoundaryTest {
             probe.check();
             return new ProbeMap<>(probe, Map.of("profile", "ready"));
         }
-        @Override public void apply(AppBlock block, AppStateWriter writer) { probe.check(); }
         @Override
-        public void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
-            probe.check();
-        }
-        @Override
-        public void onEffectResult(AppBlock block, EffectResult result, AppStateWriter writer) {
+        public void apply(AppBlockExecutionContext context, AppStateWriter writer,
+                          AppEffectEmitter effects) {
             probe.check();
         }
         @Override
         public void onEffectResult(
-                AppBlock block,
+                AppBlockExecutionContext context,
                 EffectResult result,
                 AppStateWriter writer,
                 AppEffectEmitter effects
         ) {
             probe.check();
         }
-        @Override public byte[] query(String path, byte[] params) {
-            probe.check();
-            throw new IllegalStateException("expected query failure");
-        }
         @Override public byte[] query(
                 String path, byte[] params, AppQueryContext context
         ) {
             probe.check();
-            return query(path, params);
+            throw new IllegalStateException("expected query failure");
         }
     }
 

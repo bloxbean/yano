@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.runtime.plugins;
 import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
@@ -1277,40 +1278,24 @@ final class PluginSpiFacades {
         }
 
         @Override
-        public void apply(AppBlock block, AppStateWriter writer) {
+        public void apply(
+                AppBlockExecutionContext context,
+                AppStateWriter writer,
+                AppEffectEmitter effects
+        ) {
             pluginRun(callbacks, loader,
-                    () -> delegate.apply(block, writer));
-        }
-
-        @Override
-        public void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
-            pluginRun(callbacks, loader,
-                    () -> delegate.apply(block, writer, effects));
-        }
-
-        @Override
-        public void onEffectResult(AppBlock block, EffectResult result, AppStateWriter writer) {
-            pluginRun(callbacks, loader,
-                    () -> delegate.onEffectResult(block, result, writer));
+                    () -> delegate.apply(context, writer, effects));
         }
 
         @Override
         public void onEffectResult(
-                AppBlock block,
+                AppBlockExecutionContext context,
                 EffectResult result,
                 AppStateWriter writer,
                 AppEffectEmitter effects
         ) {
             pluginRun(callbacks, loader,
-                    () -> delegate.onEffectResult(block, result, writer, effects));
-        }
-
-        @Override
-        public byte[] query(String path, byte[] params) {
-            byte[] input = params != null ? params.clone() : null;
-            byte[] response = pluginCall(callbacks, loader,
-                    () -> delegate.query(path, input));
-            return response != null ? response.clone() : null;
+                    () -> delegate.onEffectResult(context, result, writer, effects));
         }
 
         @Override

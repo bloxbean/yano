@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.appchain.composite;
 import com.bloxbean.cardano.yano.appchain.composite.contracts.AggregateQueryLimitsV1;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
@@ -172,15 +173,16 @@ class CompositeWorkflowTest {
         }
 
         @Override
-        public void apply(AppBlock block, AppStateWriter state, AppEffectEmitter effects) {
-            for (AppMessage message : block.messages()) {
+        public void apply(AppBlockExecutionContext execution, AppStateWriter state, AppEffectEmitter effects) {
+            AppBlock block = execution.block();
+            for (AppMessage message : execution.messages()) {
                 state.put(KEY, message.getBody());
             }
         }
 
         @Override
         public void onEffectResult(
-                AppBlock block,
+                AppBlockExecutionContext execution,
                 EffectResult result,
                 AppStateWriter ownState,
                 AppEffectEmitter ownedEffects
@@ -211,8 +213,9 @@ class CompositeWorkflowTest {
         }
 
         @Override
-        public void apply(AppBlock block, CompositeWorkflowContext context) {
-            for (AppMessage ignored : block.messages()) {
+        public void apply(AppBlockExecutionContext execution, CompositeWorkflowContext context) {
+            AppBlock block = execution.block();
+            for (AppMessage ignored : execution.messages()) {
                 calls++;
                 ComponentGeneration registry = descriptor.participants().get(0);
                 ComponentGeneration approvals = descriptor.participants().get(1);
@@ -256,7 +259,8 @@ class CompositeWorkflowTest {
         }
 
         @Override
-        public void apply(AppBlock routedBlock, CompositeWorkflowContext context) {
+        public void apply(AppBlockExecutionContext execution, CompositeWorkflowContext context) {
+            AppBlock block = execution.block();
         }
     }
 
@@ -266,9 +270,11 @@ class CompositeWorkflowTest {
                 .authScheme(0).authProof(new byte[]{1}).build();
     }
 
-    private static AppBlock block(long height, AppMessage... messages) {
-        return new AppBlock(1, "chain", height, new byte[32], 0, new byte[0], height,
-                new byte[32], new byte[32], List.of(messages), new byte[32], FinalityCert.empty());
+    private static AppBlockExecutionContext block(long height, AppMessage... messages) {
+        return AppBlockExecutionContext.fromValidatedBlock(new AppBlock(
+                1, "chain", height, new byte[32], 0, new byte[0], height,
+                new byte[32], new byte[32], List.of(messages), new byte[32],
+                FinalityCert.empty()));
     }
 
     private static byte[] bytes(String value) {

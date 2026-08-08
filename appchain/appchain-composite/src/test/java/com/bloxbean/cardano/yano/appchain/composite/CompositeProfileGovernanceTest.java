@@ -2,12 +2,14 @@ package com.bloxbean.cardano.yano.appchain.composite;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfile;
 import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipEpoch;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.appchain.composite.contracts.CompositeCommitmentV1;
 import com.bloxbean.cardano.yano.appchain.composite.contracts.CompositeGovernanceStatusV1;
 import com.bloxbean.cardano.yano.appchain.composite.contracts.CompositeProfileEpochV1;
@@ -167,12 +169,14 @@ class CompositeProfileGovernanceTest {
                               long height,
                               AppMessage... messages) {
         state.height = height;
-        machine.apply(block(height, List.of(messages)), state);
+        machine.apply(block(height, List.of(messages)), state,
+                AppEffectEmitter.rejecting("unused"));
     }
 
-    private static AppBlock block(long height, List<AppMessage> messages) {
-        return new AppBlock(1, "chain", height, new byte[32], 0, new byte[0], height,
-                new byte[32], new byte[32], messages, new byte[32], FinalityCert.empty());
+    private static AppBlockExecutionContext block(long height, List<AppMessage> messages) {
+        return AppBlockExecutionContext.fromValidatedBlock(new AppBlock(
+                1, "chain", height, new byte[32], 0, new byte[0], height,
+                new byte[32], new byte[32], messages, new byte[32], FinalityCert.empty()));
     }
 
     private static AppMessage command(String sender, CompositeProfileGovernanceV1.Command command) {
@@ -209,9 +213,10 @@ class CompositeProfileGovernanceTest {
         @Override public ComponentDescriptor descriptor() { return descriptor; }
 
         @Override
-        public void apply(AppBlock block, AppStateWriter state,
+        public void apply(AppBlockExecutionContext execution, AppStateWriter state,
                           com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter effects) {
-            for (AppMessage message : block.messages()) state.put(VALUE_KEY, message.getBody());
+            AppBlock block = execution.block();
+            for (AppMessage message : execution.messages()) state.put(VALUE_KEY, message.getBody());
         }
 
         @Override

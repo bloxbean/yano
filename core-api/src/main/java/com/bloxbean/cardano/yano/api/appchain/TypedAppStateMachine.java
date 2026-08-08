@@ -43,15 +43,13 @@ public abstract class TypedAppStateMachine<T> implements AppStateMachine {
     }
 
     @Override
-    public final void apply(AppBlock block, AppStateWriter writer) {
-        apply(block, writer, AppEffectEmitter.rejecting(
-                "Effects unavailable on the legacy 2-arg apply path — invoke "
-                        + "apply(block, writer, effects) instead"));
-    }
-
-    @Override
-    public final void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
-        for (AppMessage message : block.messages()) {
+    public final void apply(
+            AppBlockExecutionContext context,
+            AppStateWriter writer,
+            AppEffectEmitter effects
+    ) {
+        AppBlock block = context.block();
+        for (AppMessage message : context.messages()) {
             T payload;
             try {
                 payload = codec.decode(message.getBody());

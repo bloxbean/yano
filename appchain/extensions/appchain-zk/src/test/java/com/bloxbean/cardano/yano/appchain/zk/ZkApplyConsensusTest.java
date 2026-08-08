@@ -3,9 +3,12 @@ package com.bloxbean.cardano.yano.appchain.zk;
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
+import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.zeroj.bbs.BbsKeyPair;
 import com.bloxbean.cardano.zeroj.verifier.core.VerifierRegistry;
 import org.junit.jupiter.api.Test;
@@ -41,14 +44,14 @@ class ZkApplyConsensusTest {
         // A forged proof ("FORGED" != "VALID") must NOT be recorded by a follower
         byte[] forged = new ZkProofBody("demo", "groth16", "bls12381",
                 "FORGED".getBytes(StandardCharsets.UTF_8), List.of()).encode();
-        machine.apply(block(forged), writer);
+        apply(machine, block(forged), writer);
         assertThat(writer.map.keySet()).containsOnly("~tip"); // only the tip marker, no message record
 
         // A valid proof IS recorded
         MapWriter writer2 = new MapWriter();
         byte[] valid = new ZkProofBody("demo", "groth16", "bls12381",
                 "VALID".getBytes(StandardCharsets.UTF_8), List.of()).encode();
-        machine.apply(block(valid), writer2);
+        apply(machine, block(valid), writer2);
         assertThat(writer2.map).hasSizeGreaterThan(1);
     }
 
@@ -62,14 +65,14 @@ class ZkApplyConsensusTest {
         byte[] unbound = new MembershipProofBody("membership", "groth16", "bls12381",
                 "VALID".getBytes(StandardCharsets.UTF_8), List.of(BigInteger.ONE),
                 nullifier, "ctx".getBytes(), "vote".getBytes()).encode();
-        machine.apply(block(unbound), writer);
+        apply(machine, block(unbound), writer);
         assertThat(writer.map).isEmpty();
 
         // Bound (nullifier IS a public input) → recorded
         byte[] bound = new MembershipProofBody("membership", "groth16", "bls12381",
                 "VALID".getBytes(StandardCharsets.UTF_8), List.of(new BigInteger(1, nullifier)),
                 nullifier, "ctx".getBytes(), "vote".getBytes()).encode();
-        machine.apply(block(bound), writer);
+        apply(machine, block(bound), writer);
         assertThat(writer.map.keySet().stream().anyMatch(k -> k.startsWith("~anon/"))).isTrue();
     }
 
@@ -86,17 +89,17 @@ class ZkApplyConsensusTest {
         // Forged: valid signature but tampered attributes → apply records nothing
         CredentialBody forged = new CredentialBody("hr", "c2", valid.signature(),
                 valid.header(), List.of("Mallory".getBytes(), "Eng".getBytes()));
-        machine.apply(block(forged.encode()), writer);
+        apply(machine, block(forged.encode()), writer);
         assertThat(writer.map).isEmpty();
 
         // Unknown issuer → nothing
         CredentialBody unknown = new CredentialBody("finance", "c3", valid.signature(),
                 valid.header(), attrs);
-        machine.apply(block(unknown.encode()), writer);
+        apply(machine, block(unknown.encode()), writer);
         assertThat(writer.map).isEmpty();
 
         // Valid → recorded
-        machine.apply(block(valid.encode()), writer);
+        apply(machine, block(valid.encode()), writer);
         assertThat(writer.map.keySet()).contains("cred/c1");
     }
 
@@ -137,6 +140,17 @@ class ZkApplyConsensusTest {
         return new AppBlock(2, "t", 1, new byte[32], 0, new byte[0], 0L,
                 new byte[32], new byte[32], List.of(message), new byte[32],
                 new FinalityCert(0, List.of()));
+    }
+
+    private static void apply(
+            AppStateMachine machine,
+            AppBlock block,
+            AppStateWriter writer
+    ) {
+        machine.apply(
+                AppBlockExecutionContext.fromValidatedBlock(block),
+                writer,
+                AppEffectEmitter.rejecting("effects are not expected"));
     }
 
     private static byte[] seed(int fill) {

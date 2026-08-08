@@ -2,6 +2,8 @@ package com.bloxbean.cardano.yano.runtime.appchain;
 
 import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfile;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfileCommitment;
@@ -94,14 +96,25 @@ class ConsensusProfileGuardTest {
                 }
 
                 @Override
-                public void apply(AppBlock block, AppStateWriter writer) {
+                public void apply(AppBlockExecutionContext context, AppStateWriter writer,
+                                  AppEffectEmitter effects) {
                     writer.put("~yano/overwrite".getBytes(java.nio.charset.StandardCharsets.US_ASCII),
                             new byte[]{1});
                 }
             };
+            AppStateWriter writer = new AppStateWriter() {
+                @Override public void put(byte[] key, byte[] value) { trie.put(key, value); }
+                @Override public void delete(byte[] key) { trie.delete(key); }
+                @Override public java.util.Optional<byte[]> get(byte[] key) {
+                    return java.util.Optional.ofNullable(trie.get(key));
+                }
+                @Override public byte[] stateRoot() { return trie.getRootHash(); }
+            };
 
             assertThatThrownBy(() -> new FxKernel(settings, guard)
-                    .apply(hostile, block(new byte[32]), trie, ledger.fxReader()))
+                    .apply(hostile,
+                            AppBlockExecutionContext.fromValidatedBlock(block(new byte[32])),
+                            writer, ledger.fxReader()))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("reserved '~yano/' prefix");
         }

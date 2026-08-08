@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.appchain.stdlib;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.appchain.composite.ComponentGeneration;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeWorkflow;
@@ -75,15 +76,16 @@ public final class AuthenticatedMapAuthorizationWorkflow implements CompositeWor
     }
 
     @Override
-    public void apply(AppBlock routedBlock, CompositeWorkflowContext context) {
+    public void apply(AppBlockExecutionContext execution, CompositeWorkflowContext context) {
+        AppBlock block = execution.block();
         if (directAuthorizer == null) {
-            map.applyCommands(routedBlock, context.state(mapGeneration));
+            map.applyCommands(execution, context.state(mapGeneration));
             return;
         }
-        map.applyCommands(routedBlock, context.state(mapGeneration),
+        map.applyCommands(execution, context.state(mapGeneration),
                 (message, command, mapState) -> {
                     AuthenticatedMapDirectAuthorizer.AuthorizationResult result =
-                            directAuthorizer.authorize(command, routedBlock.height(),
+                            directAuthorizer.authorize(command, block.height(),
                                     message.getMessageId(), context.state(actorsGeneration),
                                     context.state(approvalsGeneration), mapState);
                     return new AuthenticatedMapStateMachine.FinalAuthorization(

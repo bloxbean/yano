@@ -4,6 +4,8 @@ import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yaci.events.impl.SimpleEventBus;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
@@ -417,7 +419,7 @@ class AppChainProviderRegistryTest {
                     @Override public AppStateMachine create() {
                         return new AppStateMachine() {
                             @Override public String id() { return "different-machine"; }
-                            @Override public void apply(AppBlock block, AppStateWriter writer) { }
+                            @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) { }
                         };
                     }
                 });
@@ -522,7 +524,7 @@ class AppChainProviderRegistryTest {
                                     com.bloxbean.cardano.yano.api.appchain.AppChainInfo info) {
                                 throw new IllegalStateException("state init boom");
                             }
-                            @Override public void apply(AppBlock block, AppStateWriter writer) { }
+                            @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) { }
                         };
                     }
                 });
@@ -1311,7 +1313,7 @@ class AppChainProviderRegistryTest {
                     stateMachines.incrementAndGet();
                     return new AppStateMachine() {
                         @Override public String id() { return "Registry.Machine:V1"; }
-                        @Override public void apply(AppBlock block, AppStateWriter writer) { }
+                        @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) { }
                     };
                 }
             };

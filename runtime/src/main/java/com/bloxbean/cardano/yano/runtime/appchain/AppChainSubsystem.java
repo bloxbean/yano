@@ -781,41 +781,22 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             }
 
             @Override
-            public void apply(AppBlock block, AppStateWriter writer) {
-                delegate.apply(block, writer);
-            }
-
-            @Override
             public void apply(
-                    AppBlock block,
+                    AppBlockExecutionContext context,
                     AppStateWriter writer,
                     com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter effects
             ) {
-                delegate.apply(block, writer, effects);
+                delegate.apply(context, writer, effects);
             }
 
             @Override
             public void onEffectResult(
-                    AppBlock block,
-                    com.bloxbean.cardano.yano.api.appchain.effects.EffectResult result,
-                    AppStateWriter writer
-            ) {
-                delegate.onEffectResult(block, result, writer);
-            }
-
-            @Override
-            public void onEffectResult(
-                    AppBlock block,
+                    AppBlockExecutionContext context,
                     com.bloxbean.cardano.yano.api.appchain.effects.EffectResult result,
                     AppStateWriter writer,
                     com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter effects
             ) {
-                delegate.onEffectResult(block, result, writer, effects);
-            }
-
-            @Override
-            public byte[] query(String path, byte[] params) {
-                return delegate.query(path, params);
+                delegate.onEffectResult(context, result, writer, effects);
             }
 
             @Override

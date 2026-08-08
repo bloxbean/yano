@@ -1,6 +1,8 @@
 package com.bloxbean.cardano.yano.runtime.plugins;
 
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
@@ -288,7 +290,7 @@ class LegacyServiceLoaderProviderRegistryTest {
         public AppStateMachine create() {
             return new AppStateMachine() {
                 @Override public String id() { return "test-state"; }
-                @Override public void apply(AppBlock block, AppStateWriter writer) { }
+                @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) { }
             };
         }
     }

@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.appchain.roles;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
@@ -144,14 +145,15 @@ public final class DomainActorRegistryComponent implements CompositeComponent {
     }
 
     @Override
-    public void apply(AppBlock block, AppStateWriter ownState, AppEffectEmitter effects) {
+    public void apply(AppBlockExecutionContext execution, AppStateWriter ownState, AppEffectEmitter effects) {
+        AppBlock block = execution.block();
         if (genesis != null) {
             initializeOrVerify(block.height(), ownState);
         }
         if (actorGovernance != null) {
             actorGovernance.prepareHeight(block.height(), ownState, ownState);
             ActorGovernanceProcessor.MutationHandler handler = actorGovernanceHandler();
-            for (AppMessage message : block.messages()) {
+            for (AppMessage message : execution.messages()) {
                 byte[] resultKey = RoleWorkflowKeys.commandResult(message.getMessageId());
                 if (ownState.get(resultKey).isPresent()) continue;
                 try {
@@ -185,7 +187,7 @@ public final class DomainActorRegistryComponent implements CompositeComponent {
                         return activateMutation(RegistryMutationV1.decode(mutation), writer);
                     }
                 };
-        for (AppMessage message : block.messages()) {
+        for (AppMessage message : execution.messages()) {
             try {
                 governance.apply(GovernedMutationCommandV1.decode(message.getBody()),
                         message.getSender(), block.height(), state, handler);

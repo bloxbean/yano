@@ -11,6 +11,7 @@ import com.bloxbean.cardano.yaci.core.model.TransactionOutput;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
+import com.bloxbean.cardano.yano.api.appchain.SequencedL1Observation;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observer;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
@@ -89,6 +90,11 @@ class L1ObservationServiceTest {
                 .sender(new byte[32])
                 .body(observation.encode())
                 .build();
+    }
+
+    private SequencedL1Observation sequenced(L1Observation observation) {
+        AppMessage message = message(observation);
+        return new SequencedL1Observation(0, message.getMessageId(), observation);
     }
 
     @Test
@@ -331,46 +337,32 @@ class L1ObservationServiceTest {
                 .filter(o -> o.observerId().equals("deposits")).findFirst().orElseThrow();
 
         // OK: matches own recomputation
-        assertThat(follower.verify(message(deposit)))
+        assertThat(follower.verify(sequenced(deposit)))
                 .isEqualTo(AppChainEngine.L1RefVerdict.OK);
 
         // MISMATCH: tampered claim (fail-closed)
         L1Observation tampered = new L1Observation(deposit.observerId(), deposit.txHash(),
                 deposit.slot(), deposit.blockHash(), new byte[]{0x00});
-        assertThat(follower.verify(message(tampered)))
+        assertThat(follower.verify(sequenced(tampered)))
                 .isEqualTo(AppChainEngine.L1RefVerdict.MISMATCH);
 
         // MISMATCH: wrong L1 block hash at that slot
         L1Observation wrongBlock = new L1Observation(deposit.observerId(), deposit.txHash(),
                 deposit.slot(), fill(32, 9), deposit.claim());
-        assertThat(follower.verify(message(wrongBlock)))
+        assertThat(follower.verify(sequenced(wrongBlock)))
                 .isEqualTo(AppChainEngine.L1RefVerdict.MISMATCH);
 
         // MISMATCH: fabricated observation at an in-window slot we saw
         L1Observation fabricated = new L1Observation("deposits", fill(32, 7), 110,
                 fill(32, 2), deposit.claim());
-        assertThat(follower.verify(message(fabricated)))
+        assertThat(follower.verify(sequenced(fabricated)))
                 .isEqualTo(AppChainEngine.L1RefVerdict.MISMATCH);
 
         // AHEAD: newer than our L1 view
         L1Observation ahead = new L1Observation(deposit.observerId(), deposit.txHash(),
                 999, deposit.blockHash(), deposit.claim());
-        assertThat(follower.verify(message(ahead)))
+        assertThat(follower.verify(sequenced(ahead)))
                 .isEqualTo(AppChainEngine.L1RefVerdict.AHEAD);
-
-        // MISMATCH: topic/body disagreement (fail-closed)
-        AppMessage wrongTopic = AppMessage.builder()
-                .messageId(new byte[32]).chainId("test-chain")
-                .topic("~l1/other").sender(new byte[32]).body(deposit.encode()).build();
-        assertThat(follower.verify(wrongTopic))
-                .isEqualTo(AppChainEngine.L1RefVerdict.MISMATCH);
-
-        // MISMATCH: undecodable body
-        AppMessage garbage = AppMessage.builder()
-                .messageId(new byte[32]).chainId("test-chain")
-                .topic("~l1/deposits").sender(new byte[32]).body(new byte[]{0x01}).build();
-        assertThat(follower.verify(garbage))
-                .isEqualTo(AppChainEngine.L1RefVerdict.MISMATCH);
     }
 
     @Test
@@ -384,7 +376,7 @@ class L1ObservationServiceTest {
         for (int i = 0; i < 200; i++) {
             follower.onL1Block(200 + i, fill(32, 3), block("dd".repeat(32), "addr_x", 1, null));
         }
-        assertThat(follower.verify(message(deposit)))
+        assertThat(follower.verify(sequenced(deposit)))
                 .isEqualTo(AppChainEngine.L1RefVerdict.UNKNOWN);
 
         // Rollback below an observed slot: the observation is forgotten and
@@ -392,7 +384,7 @@ class L1ObservationServiceTest {
         follower.onL1Rollback(150);
         L1Observation later = new L1Observation("deposits", fill(32, 5), 300,
                 fill(32, 3), deposit.claim());
-        assertThat(follower.verify(message(later)))
+        assertThat(follower.verify(sequenced(later)))
                 .isEqualTo(AppChainEngine.L1RefVerdict.AHEAD);
     }
 

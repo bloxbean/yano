@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.appchain.stdlib;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
@@ -63,7 +64,7 @@ public final class AuthenticatedMapComponent implements CompositeComponent {
 
     @Override
     public void apply(
-            AppBlock routedBlock,
+            AppBlockExecutionContext execution,
             AppStateWriter ownState,
             AppEffectEmitter ownedEffects
     ) {
@@ -112,16 +113,16 @@ public final class AuthenticatedMapComponent implements CompositeComponent {
         return transitions.validateFinalForBlock(message, candidateHeight);
     }
 
-    void applyCommands(AppBlock block, AppStateWriter ownState) {
-        transitions.applyFinal(block, ownState);
+    void applyCommands(AppBlockExecutionContext execution, AppStateWriter ownState) {
+        transitions.applyFinal(execution, ownState);
     }
 
     void applyCommands(
-            AppBlock block,
+            AppBlockExecutionContext execution,
             AppStateWriter ownState,
             AuthenticatedMapStateMachine.FinalAuthorizationEvaluator authorizer
     ) {
-        transitions.applyFinal(block, ownState, authorizer);
+        transitions.applyFinal(execution, ownState, authorizer);
     }
 
     AuthenticatedMapContract.Genesis genesis() {

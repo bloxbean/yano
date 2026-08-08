@@ -1,7 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.composite;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
-import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
@@ -14,13 +14,8 @@ import java.util.Objects;
 import java.util.Map;
 
 /**
- * Adapter for an {@link AppStateMachine} that can operate on a component-local
- * state view and a routed block. The composite supplies only the component's
- * messages and recomputes the routed block's {@code messagesRoot}; delegates
- * must not assume that the block represents the complete chain message batch
- * or that its {@code stateRoot} is a component-local post-state commitment.
- * Its finality certificate is empty because the full-block certificate cannot
- * authenticate this synthetic projection.
+ * Adapter for an {@link AppStateMachine} operating on a component-local state
+ * view and a restricted view of the original block execution context.
  */
 public final class StateMachineComponentAdapter implements CompositeComponent {
     private final ComponentDescriptor descriptor;
@@ -60,18 +55,31 @@ public final class StateMachineComponentAdapter implements CompositeComponent {
     }
 
     @Override
-    public void apply(AppBlock routedBlock, AppStateWriter ownState, AppEffectEmitter ownedEffects) {
-        delegate.apply(routedBlock, ownState, ownedEffects);
+    public AppStateMachine.AdmissionResult validateForBlock(
+            AppMessage routedMessage,
+            long candidateHeight,
+            AppStateReader ownState
+    ) {
+        return delegate.validateForBlock(routedMessage, candidateHeight, ownState);
+    }
+
+    @Override
+    public void apply(
+            AppBlockExecutionContext context,
+            AppStateWriter ownState,
+            AppEffectEmitter ownedEffects
+    ) {
+        delegate.apply(context, ownState, ownedEffects);
     }
 
     @Override
     public void onEffectResult(
-            AppBlock block,
+            AppBlockExecutionContext context,
             EffectResult result,
             AppStateWriter ownState,
             AppEffectEmitter ownedEffects
     ) {
-        delegate.onEffectResult(block, result, ownState, ownedEffects);
+        delegate.onEffectResult(context, result, ownState, ownedEffects);
     }
 
     @Override

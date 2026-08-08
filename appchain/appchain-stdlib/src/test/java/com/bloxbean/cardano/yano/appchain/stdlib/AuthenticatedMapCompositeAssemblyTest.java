@@ -4,6 +4,7 @@ import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AuthScheme;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
 import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipEpoch;
@@ -12,6 +13,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValidatorResolver;
 import com.bloxbean.cardano.yano.api.appchain.authmap.ValidatorVerdict;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeStateKeys;
@@ -107,7 +109,7 @@ class AuthenticatedMapCompositeAssemblyTest {
                 AuthenticatedMapContract.encodeCommand(mutation));
         assertThat(machine.validate(legacyCommand).isAccepted()).isFalse();
 
-        machine.apply(block(1, finalCommand), state);
+        execute(machine, block(1, finalCommand), state);
         state.committedHeight = 1;
         byte[] physicalEntry = physical(AuthenticatedMapComponent.COMPONENT_ID,
                 AuthenticatedMapContract.canonicalKey("products", applicationKey));
@@ -159,7 +161,7 @@ class AuthenticatedMapCompositeAssemblyTest {
 
         MemoryState state = new MemoryState();
         machine.init(state, new AppChainInfo(CHAIN_ID, hex(MEMBER), 1));
-        machine.apply(block(1), state);
+        execute(machine, block(1), state);
         state.committedHeight = 1;
 
         assertThat(state.get(physical(DomainActorRegistryComponent.COMPONENT_ID,
@@ -203,7 +205,7 @@ class AuthenticatedMapCompositeAssemblyTest {
                 AuthenticatedMapAuthorizationContract.encodeCommand(
                         new AuthenticatedMapCommandV1(action, List.of(authorization))));
         assertThat(machine.validateForBlock(mapCommand, 2, state).isAccepted()).isTrue();
-        machine.apply(block(2, mapCommand), state);
+        execute(machine, block(2, mapCommand), state);
         state.committedHeight = 2;
 
         byte[] receipt = state.get(physical(AuthenticatedMapComponent.COMPONENT_ID,
@@ -224,7 +226,7 @@ class AuthenticatedMapCompositeAssemblyTest {
 
         AppMessage replay = message(AuthenticatedMapContract.DEFAULT_TOPIC, 4,
                 mapCommand.getBody());
-        machine.apply(block(3, replay), state);
+        execute(machine, block(3, replay), state);
         state.committedHeight = 3;
         assertReceiptError(state, replay,
                 AuthenticatedMapContract.ERROR_DIRECT_AUTHORIZATION_REPLAY);
@@ -253,7 +255,7 @@ class AuthenticatedMapCompositeAssemblyTest {
         assertThat(machine.validate(invalidSignatureCommand).isAccepted()).isFalse();
         assertThat(machine.validate(invalidSignatureCommand).reason())
                 .isEqualTo("INVALID_SIGNATURE");
-        machine.apply(block(4, invalidSignatureCommand), state);
+        execute(machine, block(4, invalidSignatureCommand), state);
         state.committedHeight = 4;
         assertReceiptError(state, invalidSignatureCommand,
                 AuthenticatedMapContract.ERROR_ACTOR_SIGNATURE);
@@ -312,7 +314,7 @@ class AuthenticatedMapCompositeAssemblyTest {
                                         "canonical", bytes("bad"), hexBytes("1817"))),
                         AuthenticatedMapContract.AUTH_OPEN));
         assertThat(machine.validate(nonCanonical).isAccepted()).isFalse();
-        machine.apply(block(1, nonCanonical), state);
+        execute(machine, block(1, nonCanonical), state);
         state.committedHeight = 1;
         assertReceiptError(state, nonCanonical,
                 AuthenticatedMapContract.ERROR_VALUE_ENCODING);
@@ -324,7 +326,7 @@ class AuthenticatedMapCompositeAssemblyTest {
                                         hexBytes("a1637174790b"))),
                         AuthenticatedMapContract.AUTH_OPEN));
         assertThat(machine.validate(schemaRejected).isAccepted()).isFalse();
-        machine.apply(block(2, schemaRejected), state);
+        execute(machine, block(2, schemaRejected), state);
         state.committedHeight = 2;
         assertReceiptError(state, schemaRejected,
                 AuthenticatedMapContract.ERROR_VALUE_SCHEMA);
@@ -338,7 +340,7 @@ class AuthenticatedMapCompositeAssemblyTest {
         AppMessage accepted = message(AuthenticatedMapContract.DEFAULT_TOPIC, 9,
                 finalCommand(valid, AuthenticatedMapContract.AUTH_OPEN));
         assertThat(machine.validate(accepted).isAccepted()).isTrue();
-        machine.apply(block(3, accepted), state);
+        execute(machine, block(3, accepted), state);
         state.committedHeight = 3;
         assertThat(state.get(physical(AuthenticatedMapComponent.COMPONENT_ID,
                 AuthenticatedMapContract.canonicalKey(
@@ -386,7 +388,7 @@ class AuthenticatedMapCompositeAssemblyTest {
                         "records", bytes("bad"), bytes("invalid"))));
         AppMessage finalizedBatch = message(AuthenticatedMapContract.DEFAULT_TOPIC, 6,
                 finalCommand(batch, AuthenticatedMapContract.AUTH_OPEN));
-        machine.apply(block(1, finalizedBatch), state);
+        execute(machine, block(1, finalizedBatch), state);
         state.committedHeight = 1;
 
         assertThat(state.get(physical(AuthenticatedMapComponent.COMPONENT_ID,
@@ -418,7 +420,7 @@ class AuthenticatedMapCompositeAssemblyTest {
                 context(config), genesis);
         MemoryState state = new MemoryState();
         machine.init(state, new AppChainInfo(CHAIN_ID, hex(MEMBER), 1));
-        machine.apply(block(1), state);
+        execute(machine, block(1), state);
         state.committedHeight = 1;
 
         DirectRolePolicyV1 revisionTwo = new DirectRolePolicyV1(
@@ -433,7 +435,7 @@ class AuthenticatedMapCompositeAssemblyTest {
                 List.of(signedAdministrator(fixture, genesis, policySubject,
                         AdministratorStatementV1.Decision.PROPOSE,
                         fixture.actorA(), ACTOR_SEED, 2)));
-        machine.apply(block(2, proposePolicy), state);
+        execute(machine, block(2, proposePolicy), state);
         state.committedHeight = 2;
         assertThat(RoleCommandResultV1.decode(machine.query(
                 "components/role-approvals/command-result",
@@ -453,7 +455,7 @@ class AuthenticatedMapCompositeAssemblyTest {
                 List.of(signedAdministrator(fixture, genesis, policySubject,
                         AdministratorStatementV1.Decision.APPROVE,
                         fixture.actorC(), ACTOR_SEED_C, 3)));
-        machine.apply(block(3, approvePolicy), state);
+        execute(machine, block(3, approvePolicy), state);
         state.committedHeight = 3;
         assertThat(RoleCommandResultV1.decode(machine.query(
                 "components/role-approvals/command-result",
@@ -470,7 +472,7 @@ class AuthenticatedMapCompositeAssemblyTest {
                 GovernedRoleApprovalWorkflow.TOPIC, 23,
                 ActorGovernanceCommandV1.Operation.ACTIVATE,
                 policySubject, List.of());
-        machine.apply(block(4, policyTwoAction, activatePolicy), state);
+        execute(machine, block(4, policyTwoAction, activatePolicy), state);
         state.committedHeight = 4;
         assertThat(state.get(physical(RoleAwareApprovalsComponent.COMPONENT_ID,
                 RoleWorkflowKeys.directPolicyCurrent("issuer-write"))))
@@ -498,7 +500,7 @@ class AuthenticatedMapCompositeAssemblyTest {
                         AuthenticatedMapContract.Mutation.put(
                                 "governed-products", bytes("actor-a"), bytes("a"))),
                 4, 15);
-        machine.apply(block(5, actorAAction), state);
+        execute(machine, block(5, actorAAction), state);
         state.committedHeight = 5;
         AppMessage actorBAction = directMapMessage(genesis, fixture.actorB(),
                 ACTOR_SEED_B, revisionTwo, sharedAuthorizationId, 25,
@@ -506,7 +508,7 @@ class AuthenticatedMapCompositeAssemblyTest {
                         AuthenticatedMapContract.Mutation.put(
                                 "governed-products", bytes("actor-b"), bytes("b"))),
                 5, 15);
-        machine.apply(block(6, actorBAction), state);
+        execute(machine, block(6, actorBAction), state);
         state.committedHeight = 6;
         assertThat(machine.query(AuthenticatedMapContract.DIRECT_CONSUMPTION_QUERY_PATH,
                 new DirectConsumptionQueryV1(
@@ -528,7 +530,7 @@ class AuthenticatedMapCompositeAssemblyTest {
         AppMessage atomicFailure = directMapMessage(genesis, fixture.actorB(),
                 ACTOR_SEED_B, revisionTwo, unusedAuthorizationId, 26,
                 failingBatch, 6, 15);
-        machine.apply(block(7, atomicFailure), state);
+        execute(machine, block(7, atomicFailure), state);
         state.committedHeight = 7;
         assertReceiptError(state, atomicFailure, AuthenticatedMapContract.ERROR_ABSENT);
         assertThat(state.get(physical(AuthenticatedMapComponent.COMPONENT_ID,
@@ -553,7 +555,7 @@ class AuthenticatedMapCompositeAssemblyTest {
                 List.of(signedAdministrator(fixture, genesis, actorSubject,
                         AdministratorStatementV1.Decision.PROPOSE,
                         fixture.actorA(), ACTOR_SEED, 8)));
-        machine.apply(block(8, proposeActor), state);
+        execute(machine, block(8, proposeActor), state);
         state.committedHeight = 8;
         assertThat(RoleCommandResultV1.decode(machine.query(
                 "components/domain-actors/command-result",
@@ -573,7 +575,7 @@ class AuthenticatedMapCompositeAssemblyTest {
                 List.of(signedAdministrator(fixture, genesis, actorSubject,
                         AdministratorStatementV1.Decision.APPROVE,
                         fixture.actorC(), ACTOR_SEED_C, 9)));
-        machine.apply(block(9, approveActor), state);
+        execute(machine, block(9, approveActor), state);
         state.committedHeight = 9;
         assertThat(RoleCommandResultV1.decode(machine.query(
                 "components/domain-actors/command-result",
@@ -588,7 +590,7 @@ class AuthenticatedMapCompositeAssemblyTest {
         AppMessage activateActor = governanceMessage(
                 DomainActorRegistryComponent.TOPIC, 30,
                 ActorGovernanceCommandV1.Operation.ACTIVATE, actorSubject, List.of());
-        machine.apply(block(10, staleActorAction, activateActor), state);
+        execute(machine, block(10, staleActorAction, activateActor), state);
         state.committedHeight = 10;
         assertReceiptError(state, staleActorAction,
                 AuthenticatedMapContract.ERROR_ACTOR_INELIGIBLE);
@@ -619,7 +621,7 @@ class AuthenticatedMapCompositeAssemblyTest {
                 new com.bloxbean.cardano.yano.appchain.roles.contracts
                         .RegistryMutationV1.PutActor(
                         suspendedAdministrator, List.of()).encode(), 12, 20);
-        machine.apply(block(11, governanceMessage(
+        execute(machine, block(11, governanceMessage(
                 DomainActorRegistryComponent.TOPIC, 31,
                 ActorGovernanceCommandV1.Operation.PROPOSE, unsafeSubject,
                 List.of(signedAdministrator(fixture, genesis, unsafeSubject,
@@ -652,7 +654,7 @@ class AuthenticatedMapCompositeAssemblyTest {
                 context(config), genesis);
         MemoryState state = new MemoryState();
         machine.init(state, new AppChainInfo(CHAIN_ID, hex(MEMBER), 1));
-        machine.apply(block(1), state);
+        execute(machine, block(1), state);
         state.committedHeight = 1;
 
         AuthenticatedMapContract.Command mutation = AuthenticatedMapContract.Command.single(
@@ -688,7 +690,7 @@ class AuthenticatedMapCompositeAssemblyTest {
                         otherGenesisPayload, deadline, fixture.actorA().actorId(),
                         fixture.actorA().revision(),
                         fixture.actorA().keys().getFirst().keyId(), ""), ACTOR_SEED);
-        machine.apply(block(2, propose, proposeForOtherGenesis), state);
+        execute(machine, block(2, propose, proposeForOtherGenesis), state);
         state.committedHeight = 2;
         assertThat(RoleCommandResultV1.decode(machine.query(
                 "components/role-approvals/command-result",
@@ -734,7 +736,7 @@ class AuthenticatedMapCompositeAssemblyTest {
                         fixture.actorA().revision(),
                         fixture.actorA().keys().getFirst().keyId(), "issuer"),
                 ACTOR_SEED);
-        machine.apply(block(3, mapCommand, approval, approvalForOtherGenesis), state);
+        execute(machine, block(3, mapCommand, approval, approvalForOtherGenesis), state);
         state.committedHeight = 3;
 
         assertThat(state.get(physical(AuthenticatedMapComponent.COMPONENT_ID,
@@ -767,7 +769,7 @@ class AuthenticatedMapCompositeAssemblyTest {
                 AuthenticatedMapAuthorizationContract.encodeCommand(
                         new AuthenticatedMapCommandV1(
                                 action, List.of(otherGenesisReference))));
-        machine.apply(block(4, otherGenesisExecution, replay), state);
+        execute(machine, block(4, otherGenesisExecution, replay), state);
         state.committedHeight = 4;
         assertReceiptError(state, otherGenesisExecution,
                 AuthenticatedMapContract.ERROR_APPROVAL_MISMATCH);
@@ -802,14 +804,14 @@ class AuthenticatedMapCompositeAssemblyTest {
                 context(config), genesis);
         MemoryState state = new MemoryState();
         machine.init(state, new AppChainInfo(CHAIN_ID, hex(MEMBER), 1));
-        machine.apply(block(1), state);
+        execute(machine, block(1), state);
         state.committedHeight = 1;
 
         AppMessage first = directCryptoMessage(70, fixture, genesis,
                 repeated(0x61), "crypto-1");
         AppMessage second = directCryptoMessage(71, fixture, genesis,
                 repeated(0x62), "crypto-2");
-        machine.apply(block(2, first, second), state);
+        execute(machine, block(2, first, second), state);
         state.committedHeight = 2;
 
         byte[] applied = state.get(physical(AuthenticatedMapComponent.COMPONENT_ID,
@@ -827,7 +829,7 @@ class AuthenticatedMapCompositeAssemblyTest {
         // the same evidence budget reopens at the next height.
         AppMessage reopened = directCryptoMessage(72, fixture, genesis,
                 repeated(0x63), "crypto-3");
-        machine.apply(block(3, reopened), state);
+        execute(machine, block(3, reopened), state);
         state.committedHeight = 3;
         byte[] recovered = state.get(physical(AuthenticatedMapComponent.COMPONENT_ID,
                         AuthenticatedMapContract.receiptKey(reopened.getMessageId())))
@@ -913,7 +915,7 @@ class AuthenticatedMapCompositeAssemblyTest {
                 context(config), genesis);
         MemoryState state = new MemoryState();
         machine.init(state, new AppChainInfo(CHAIN_ID, hex(MEMBER), 1));
-        machine.apply(block(1), state);
+        execute(machine, block(1), state);
         state.committedHeight = 1;
 
         AppMessage first = approvalMessage(80, fixture, genesis, "bucket-a",
@@ -925,7 +927,7 @@ class AuthenticatedMapCompositeAssemblyTest {
         AppMessage otherBucket = approvalMessage(82, fixture, genesis, "bucket-c",
                 repeated(0x56), 11, ActorStatementV1.Action.PROPOSE,
                 fixture.actorA(), ACTOR_SEED, "");
-        machine.apply(block(2, first, sameBucket, otherBucket), state);
+        execute(machine, block(2, first, sameBucket, otherBucket), state);
         state.committedHeight = 2;
 
         assertThat(RoleCommandResultV1.decode(machine.query(
@@ -963,19 +965,19 @@ class AuthenticatedMapCompositeAssemblyTest {
                 context(config), genesis);
         MemoryState state = new MemoryState();
         machine.init(state, new AppChainInfo(CHAIN_ID, hex(MEMBER), 1));
-        machine.apply(block(1), state);
+        execute(machine, block(1), state);
         state.committedHeight = 1;
 
         AppMessage expiring = approvalMessage(50, fixture, genesis, "expiring",
                 repeated(0x51), 3, ActorStatementV1.Action.PROPOSE,
                 fixture.actorA(), ACTOR_SEED, "");
-        machine.apply(block(2, expiring), state);
+        execute(machine, block(2, expiring), state);
         state.committedHeight = 2;
 
         AppMessage saturated = approvalMessage(51, fixture, genesis, "saturated",
                 repeated(0x52), 10, ActorStatementV1.Action.PROPOSE,
                 fixture.actorA(), ACTOR_SEED, "");
-        machine.apply(block(3, saturated), state);
+        execute(machine, block(3, saturated), state);
         state.committedHeight = 3;
         assertThat(RoleCommandResultV1.decode(machine.query(
                 "components/role-approvals/command-result",
@@ -997,7 +999,7 @@ class AuthenticatedMapCompositeAssemblyTest {
         AppMessage reopened = approvalMessage(52, fixture, genesis, "reopened",
                 repeated(0x53), 10, ActorStatementV1.Action.PROPOSE,
                 fixture.actorA(), ACTOR_SEED, "");
-        machine.apply(block(4), state);
+        execute(machine, block(4), state);
         state.committedHeight = 4;
         assertThat(ApprovalProposalV1.decode(machine.query(
                 "components/role-approvals/proposal", bytes("expiring"), state)).status())
@@ -1008,7 +1010,7 @@ class AuthenticatedMapCompositeAssemblyTest {
                         new RolePendingQueriesV1.PageQuery("", 10).encode(), state));
         assertThat(emptyAfterExpiry.entries()).isEmpty();
 
-        machine.apply(block(5, reopened), state);
+        execute(machine, block(5, reopened), state);
         state.committedHeight = 5;
         assertThat(RoleCommandResultV1.decode(machine.query(
                 "components/role-approvals/command-result",
@@ -1038,7 +1040,7 @@ class AuthenticatedMapCompositeAssemblyTest {
                 context(config), genesis);
         MemoryState state = new MemoryState();
         machine.init(state, new AppChainInfo(CHAIN_ID, hex(MEMBER), 1));
-        machine.apply(block(1), state);
+        execute(machine, block(1), state);
         state.committedHeight = 1;
 
         AuthenticatedMapContract.Command mutations = AuthenticatedMapContract.Command.batch(
@@ -1060,7 +1062,7 @@ class AuthenticatedMapCompositeAssemblyTest {
         AppMessage proposeB = approvalMessage(61, fixture, genesis,
                 "approval-b", commitment, deadline, ActorStatementV1.Action.PROPOSE,
                 fixture.actorA(), ACTOR_SEED, "");
-        machine.apply(block(2, proposeA, proposeB), state);
+        execute(machine, block(2, proposeA, proposeB), state);
         state.committedHeight = 2;
 
         AppMessage approveA = approvalMessage(62, fixture, genesis,
@@ -1069,7 +1071,7 @@ class AuthenticatedMapCompositeAssemblyTest {
         AppMessage approveB = approvalMessage(63, fixture, genesis,
                 "approval-b", commitment, deadline, ActorStatementV1.Action.APPROVE,
                 fixture.actorA(), ACTOR_SEED, "issuer");
-        machine.apply(block(3, approveA, approveB), state);
+        execute(machine, block(3, approveA, approveB), state);
         state.committedHeight = 3;
 
         MapApprovalReferenceV1 referenceA = new MapApprovalReferenceV1(
@@ -1082,7 +1084,7 @@ class AuthenticatedMapCompositeAssemblyTest {
                 AuthenticatedMapAuthorizationContract.encodeCommand(
                         new AuthenticatedMapCommandV1(
                                 action, List.of(referenceA, referenceB))));
-        machine.apply(block(4, map), state);
+        execute(machine, block(4, map), state);
         state.committedHeight = 4;
 
         assertReceiptError(state, map, AuthenticatedMapContract.ERROR_ABSENT);
@@ -1414,6 +1416,17 @@ class AuthenticatedMapCompositeAssemblyTest {
                 new byte[32], 0, new byte[0], 1_700_000_000_000L + height,
                 new byte[32], new byte[32], List.of(messages), MEMBER,
                 FinalityCert.empty());
+    }
+
+    private static void execute(
+            CompositeStateMachine machine,
+            AppBlock block,
+            MemoryState state
+    ) {
+        machine.apply(
+                AppBlockExecutionContext.fromValidatedBlock(block),
+                state,
+                AppEffectEmitter.rejecting("effects are not expected"));
     }
 
     private static byte[] physical(String componentId, byte[] localKey) {

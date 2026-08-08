@@ -3,6 +3,8 @@ package com.bloxbean.cardano.yano.runtime.appchain;
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
@@ -159,7 +161,7 @@ class AppChainLegacyRegistryLifecycleTest {
 
     private static final class NoopStateMachine implements AppStateMachine {
         @Override public String id() { return "noop"; }
-        @Override public void apply(AppBlock block, AppStateWriter writer) { }
+        @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) { }
     }
 
     private static final class CountingRegistry

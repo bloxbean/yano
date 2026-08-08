@@ -2,8 +2,11 @@ package com.bloxbean.cardano.yano.appchain.stdlib;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
+import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigInteger;
@@ -48,13 +51,13 @@ class StdlibCborSafetyTest {
                 .isFalse();
 
         MapWriter writer = new MapWriter();
-        assertThatCode(() -> new KvRegistryStateMachine().apply(block, writer))
+        assertThatCode(() -> apply(new KvRegistryStateMachine(), block, writer))
                 .doesNotThrowAnyException();
-        assertThatCode(() -> new ApprovalsStateMachine().apply(block, writer))
+        assertThatCode(() -> apply(new ApprovalsStateMachine(), block, writer))
                 .doesNotThrowAnyException();
-        assertThatCode(() -> new BalancesStateMachine().apply(block, writer))
+        assertThatCode(() -> apply(new BalancesStateMachine(), block, writer))
                 .doesNotThrowAnyException();
-        assertThatCode(() -> new DocTrailStateMachine().apply(block, writer))
+        assertThatCode(() -> apply(new DocTrailStateMachine(), block, writer))
                 .doesNotThrowAnyException();
         assertThat(writer.values).isEmpty();
     }
@@ -88,6 +91,17 @@ class StdlibCborSafetyTest {
         return new AppBlock(1, "chain", 1, new byte[32], 0, new byte[0], 1,
                 new byte[32], new byte[32], List.of(message), new byte[32],
                 FinalityCert.empty());
+    }
+
+    private static void apply(
+            AppStateMachine machine,
+            AppBlock block,
+            AppStateWriter writer
+    ) {
+        machine.apply(
+                AppBlockExecutionContext.fromValidatedBlock(block),
+                writer,
+                AppEffectEmitter.rejecting("effects are not expected"));
     }
 
     private static final class MapWriter implements AppStateWriter {

@@ -1,7 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.composite;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
-import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 
 /**
@@ -10,9 +10,8 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
  * must be handled as deterministic per-message no-ops. Throwing for such an
  * admitted message can poison the proposer pool and repeatedly abort block
  * construction. Exceptions are reserved for state corruption, impossible
- * invariants, or framework contract violations. The supplied block is a
- * routed projection whose finality certificate is deliberately empty; the
- * original full-block certificate cannot authenticate that synthetic block.
+ * invariants, or framework contract violations. The routed execution context
+ * retains the original globally authenticated block identity and indexes.
  */
 public interface CompositeWorkflow {
     WorkflowDescriptor descriptor();
@@ -29,5 +28,5 @@ public interface CompositeWorkflow {
         return validate(routedMessage);
     }
 
-    void apply(AppBlock routedBlock, CompositeWorkflowContext context);
+    void apply(AppBlockExecutionContext execution, CompositeWorkflowContext context);
 }

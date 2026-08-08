@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yano.appchain.evidence.profile.contracts.EvidenceRel
 import com.bloxbean.cardano.yano.appchain.evidence.profile.contracts.EvidenceReleasePrerequisiteCommandsV1;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
@@ -139,7 +140,7 @@ class EvidenceCompositePresetTest {
         List<AppMessage> approvals = new ArrayList<>();
         List<AppMessage> releases = new ArrayList<>();
 
-        machine.apply(block(1, message(1, EvidenceCompositePresets.REGISTRY_TOPIC,
+        execute(machine, block(1, message(1, EvidenceCompositePresets.REGISTRY_TOPIC,
                 KvRegistryStateMachine.put(REGISTRY_KEY, bytes("passport")))),
                 state, new CapturingEmitter(1));
         for (int index = 0; index < 8; index++) {
@@ -155,13 +156,13 @@ class EvidenceCompositePresetTest {
                     filled(0x61 + index), "object:" + index, command.encode());
             releases.add(message(18 + index, EvidenceReleaseWorkflow.TOPIC, release.encode()));
         }
-        machine.apply(block(2, proposals.toArray(AppMessage[]::new)),
+        execute(machine, block(2, proposals.toArray(AppMessage[]::new)),
                 state, new CapturingEmitter(2));
-        machine.apply(block(3, approvals.toArray(AppMessage[]::new)),
+        execute(machine, block(3, approvals.toArray(AppMessage[]::new)),
                 state, new CapturingEmitter(3));
         CapturingEmitter emitted = new CapturingEmitter(4);
 
-        machine.apply(block(4, releases.toArray(AppMessage[]::new)), state, emitted);
+        execute(machine, block(4, releases.toArray(AppMessage[]::new)), state, emitted);
 
         assertThat(emitted.intents).hasSize(16);
         assertThat(emitted.intents).extracting(EffectIntent::type)
@@ -179,7 +180,7 @@ class EvidenceCompositePresetTest {
                 "machines.composite.profile-mode", "governed")));
         MemoryState state = new MemoryState();
 
-        governed.apply(block(1), state, new CapturingEmitter(1));
+        execute(governed, block(1), state, new CapturingEmitter(1));
 
         assertThat(governed.profile().digest()).containsExactly(fixed.profile().digest());
         assertThat(governed.operationalStatus()).containsEntry("mode", "governed")
@@ -214,7 +215,7 @@ class EvidenceCompositePresetTest {
 
         MemoryState state = new MemoryState();
         CapturingEmitter emitter = new CapturingEmitter(1);
-        gated.apply(block(1, direct), state, emitter);
+        execute(gated, block(1, direct), state, emitter);
         assertThat(emitter.intents).isEmpty();
         assertThat(state.get(CompositeStateKeys.componentKey("evidence",
                 EvidenceKeys.recordKey("direct-bypass", 1)))).isEmpty();
@@ -246,18 +247,18 @@ class EvidenceCompositePresetTest {
         SubmitEvidenceCommandV1 evidence = evidence("sample-42");
         EvidenceReleaseCommandV1 release = release("release-42", evidence, "doc://certificate");
 
-        machine.apply(block(1,
+        execute(machine, block(1,
                 message(1, EvidenceCompositePresets.REGISTRY_TOPIC,
                         KvRegistryStateMachine.put(REGISTRY_KEY, bytes("passport"))),
                 message(2, EvidenceCompositePresets.APPROVALS_TOPIC,
                         ApprovalsStateMachine.propose(
                                 "approval-42", evidence.encode(), 1, 0))),
                 state, new CapturingEmitter(1));
-        machine.apply(block(2, message(3, EvidenceCompositePresets.APPROVALS_TOPIC,
+        execute(machine, block(2, message(3, EvidenceCompositePresets.APPROVALS_TOPIC,
                 ApprovalsStateMachine.approve("approval-42"))), state, new CapturingEmitter(2));
 
         CapturingEmitter emitted = new CapturingEmitter(3);
-        machine.apply(block(3, message(4, EvidenceReleaseWorkflow.TOPIC, release.encode())),
+        execute(machine, block(3, message(4, EvidenceReleaseWorkflow.TOPIC, release.encode())),
                 state, emitted);
 
         assertThat(emitted.intents).extracting(EffectIntent::type)
@@ -271,7 +272,7 @@ class EvidenceCompositePresetTest {
                 .isEqualTo(1);
 
         CapturingEmitter replay = new CapturingEmitter(4);
-        machine.apply(block(4, message(5, EvidenceReleaseWorkflow.TOPIC, release.encode())),
+        execute(machine, block(4, message(5, EvidenceReleaseWorkflow.TOPIC, release.encode())),
                 state, replay);
         assertThat(replay.intents).isEmpty();
         assertThat(DocTrailStateMachine.decodeEntry(state.get(trailKey).orElseThrow()).count())
@@ -290,32 +291,32 @@ class EvidenceCompositePresetTest {
         EvidenceReleaseCommandV1 initial = release(
                 "release-42", submit, "doc://certificate/v1");
 
-        machine.apply(block(1,
+        execute(machine, block(1,
                 message(1, EvidenceCompositePresets.REGISTRY_TOPIC,
                         KvRegistryStateMachine.put(REGISTRY_KEY, bytes("passport"))),
                 message(2, EvidenceCompositePresets.APPROVALS_TOPIC,
                         ApprovalsStateMachine.propose(
                                 "approval-42", submit.encode(), 1, 0))),
                 state, new CapturingEmitter(1));
-        machine.apply(block(2, message(3, EvidenceCompositePresets.APPROVALS_TOPIC,
+        execute(machine, block(2, message(3, EvidenceCompositePresets.APPROVALS_TOPIC,
                 ApprovalsStateMachine.approve("approval-42"))), state, new CapturingEmitter(2));
-        machine.apply(block(3, message(4, EvidenceReleaseWorkflow.TOPIC, initial.encode())),
+        execute(machine, block(3, message(4, EvidenceReleaseWorkflow.TOPIC, initial.encode())),
                 state, new CapturingEmitter(3));
 
         RepublishEvidenceCommandV1 republish = republish(submit, 2);
         EvidenceReleaseCommandV1 next = new EvidenceReleaseCommandV1(
                 "release-43", REGISTRY_KEY, "approval-43", "product-42",
                 filled(0x67), "doc://certificate/v2", republish.encode());
-        machine.apply(block(4, message(5, EvidenceCompositePresets.APPROVALS_TOPIC,
+        execute(machine, block(4, message(5, EvidenceCompositePresets.APPROVALS_TOPIC,
                 ApprovalsStateMachine.propose("approval-43", republish.encode(), 1, 0))),
                 state, new CapturingEmitter(4));
-        machine.apply(block(5, message(6, EvidenceCompositePresets.APPROVALS_TOPIC,
+        execute(machine, block(5, message(6, EvidenceCompositePresets.APPROVALS_TOPIC,
                 ApprovalsStateMachine.approve("approval-43"))), state, new CapturingEmitter(5));
 
         byte[] trailKey = CompositeStateKeys.componentKey("doc-trail",
                 DocTrailStateMachine.entityKey("product-42"));
         CapturingEmitter premature = new CapturingEmitter(6);
-        machine.apply(block(6, message(7, EvidenceReleaseWorkflow.TOPIC, next.encode())),
+        execute(machine, block(6, message(7, EvidenceReleaseWorkflow.TOPIC, next.encode())),
                 state, premature);
         assertThat(premature.intents).isEmpty();
         assertThat(state.get(CompositeStateKeys.componentKey("evidence",
@@ -323,17 +324,17 @@ class EvidenceCompositePresetTest {
         assertThat(DocTrailStateMachine.decodeEntry(state.get(trailKey).orElseThrow()).count())
                 .isEqualTo(1);
 
-        machine.onEffectResult(block(7), failedResult(3, 0,
+        deliver(machine, block(7), failedResult(3, 0,
                 ConnectorTypes.OBJECT_PUT, EvidenceEffectOperation.OBJECT, 7),
                 state, new CapturingEmitter(7));
-        machine.onEffectResult(block(8), failedResult(3, 1,
+        deliver(machine, block(8), failedResult(3, 1,
                 ConnectorTypes.IPFS_PIN, EvidenceEffectOperation.IPFS, 8),
                 state, new CapturingEmitter(8));
         assertThat(EvidenceStatus.derive(record(state, "sample-42", 1)))
                 .isEqualTo(EvidenceStatus.STORAGE_FAILED);
 
         CapturingEmitter foreignOwner = new CapturingEmitter(9);
-        machine.apply(block(9, message(8, EvidenceReleaseWorkflow.TOPIC, next.encode(),
+        execute(machine, block(9, message(8, EvidenceReleaseWorkflow.TOPIC, next.encode(),
                 filled(0x45))), state, foreignOwner);
         assertThat(foreignOwner.intents).isEmpty();
         assertThat(state.get(CompositeStateKeys.componentKey("evidence",
@@ -345,13 +346,13 @@ class EvidenceCompositePresetTest {
         EvidenceReleaseCommandV1 skippedRelease = new EvidenceReleaseCommandV1(
                 "release-44", REGISTRY_KEY, "approval-44", "product-42",
                 filled(0x68), "doc://certificate/v3", skipped.encode());
-        machine.apply(block(10, message(9, EvidenceCompositePresets.APPROVALS_TOPIC,
+        execute(machine, block(10, message(9, EvidenceCompositePresets.APPROVALS_TOPIC,
                 ApprovalsStateMachine.propose("approval-44", skipped.encode(), 1, 0))),
                 state, new CapturingEmitter(10));
-        machine.apply(block(11, message(10, EvidenceCompositePresets.APPROVALS_TOPIC,
+        execute(machine, block(11, message(10, EvidenceCompositePresets.APPROVALS_TOPIC,
                 ApprovalsStateMachine.approve("approval-44"))), state, new CapturingEmitter(11));
         CapturingEmitter versionSkip = new CapturingEmitter(12);
-        machine.apply(block(12, message(11, EvidenceReleaseWorkflow.TOPIC,
+        execute(machine, block(12, message(11, EvidenceReleaseWorkflow.TOPIC,
                 skippedRelease.encode())), state, versionSkip);
         assertThat(versionSkip.intents).isEmpty();
         assertThat(state.get(CompositeStateKeys.componentKey("evidence",
@@ -360,7 +361,7 @@ class EvidenceCompositePresetTest {
                 .isEqualTo(1);
 
         CapturingEmitter emitted = new CapturingEmitter(13);
-        machine.apply(block(13, message(12, EvidenceReleaseWorkflow.TOPIC, next.encode())),
+        execute(machine, block(13, message(12, EvidenceReleaseWorkflow.TOPIC, next.encode())),
                 state, emitted);
 
         assertThat(emitted.intents).extracting(EffectIntent::type)
@@ -385,23 +386,23 @@ class EvidenceCompositePresetTest {
         MemoryState state = new MemoryState();
         SubmitEvidenceCommandV1 evidence = evidence("sample-42");
         EvidenceReleaseCommandV1 release = release("release-42", evidence, "doc://certificate");
-        machine.apply(block(1, message(1, EvidenceCompositePresets.REGISTRY_TOPIC,
+        execute(machine, block(1, message(1, EvidenceCompositePresets.REGISTRY_TOPIC,
                 KvRegistryStateMachine.put(REGISTRY_KEY, bytes("passport")))),
                 state, new CapturingEmitter(1));
 
         CapturingEmitter missingApproval = new CapturingEmitter(2);
-        machine.apply(block(2, message(2, EvidenceReleaseWorkflow.TOPIC, release.encode())),
+        execute(machine, block(2, message(2, EvidenceReleaseWorkflow.TOPIC, release.encode())),
                 state, missingApproval);
         assertThat(missingApproval.intents).isEmpty();
         assertThat(state.get(CompositeStateKeys.componentKey("evidence",
                 EvidenceKeys.recordKey("sample-42", 1)))).isEmpty();
 
-        machine.apply(block(2, message(3, EvidenceCompositePresets.APPROVALS_TOPIC,
+        execute(machine, block(2, message(3, EvidenceCompositePresets.APPROVALS_TOPIC,
                 ApprovalsStateMachine.propose("approval-42", evidence.encode(), 1, 0))),
                 state, new CapturingEmitter(2));
-        machine.apply(block(3, message(4, EvidenceCompositePresets.APPROVALS_TOPIC,
+        execute(machine, block(3, message(4, EvidenceCompositePresets.APPROVALS_TOPIC,
                 ApprovalsStateMachine.approve("approval-42"))), state, new CapturingEmitter(3));
-        machine.apply(block(4, message(5, EvidenceReleaseWorkflow.TOPIC, release.encode())),
+        execute(machine, block(4, message(5, EvidenceReleaseWorkflow.TOPIC, release.encode())),
                 state, new CapturingEmitter(4));
 
         EvidenceReleaseCommandV1 conflict = release(
@@ -409,7 +410,7 @@ class EvidenceCompositePresetTest {
         byte[] trailKey = CompositeStateKeys.componentKey("doc-trail",
                 DocTrailStateMachine.entityKey("product-42"));
         CapturingEmitter conflictingReplay = new CapturingEmitter(5);
-        machine.apply(block(5, message(6, EvidenceReleaseWorkflow.TOPIC, conflict.encode())),
+        execute(machine, block(5, message(6, EvidenceReleaseWorkflow.TOPIC, conflict.encode())),
                 state, conflictingReplay);
         assertThat(conflictingReplay.intents).isEmpty();
         assertThat(DocTrailStateMachine.decodeEntry(state.get(trailKey).orElseThrow()).count())
@@ -561,6 +562,32 @@ class EvidenceCompositePresetTest {
         return new AppBlock(1, CHAIN, height, new byte[32], 0, new byte[0],
                 1_700_000_000_000L + height, new byte[32], new byte[32],
                 List.of(messages), new byte[32], FinalityCert.empty());
+    }
+
+    private static void execute(
+            CompositeStateMachine machine,
+            AppBlock block,
+            MemoryState state,
+            AppEffectEmitter emitter
+    ) {
+        machine.apply(
+                AppBlockExecutionContext.fromValidatedBlock(block),
+                state,
+                emitter);
+    }
+
+    private static void deliver(
+            CompositeStateMachine machine,
+            AppBlock block,
+            EffectResult result,
+            MemoryState state,
+            AppEffectEmitter emitter
+    ) {
+        machine.onEffectResult(
+                AppBlockExecutionContext.fromValidatedBlock(block),
+                result,
+                state,
+                emitter);
     }
 
     private static byte[] bytes(String value) {

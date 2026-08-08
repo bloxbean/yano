@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.appchain.showcase;
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
@@ -70,8 +71,9 @@ final class ShowcaseReleaseWorkflow implements CompositeWorkflow {
     }
 
     @Override
-    public void apply(AppBlock block, CompositeWorkflowContext context) {
-        for (AppMessage source : block.messages()) {
+    public void apply(AppBlockExecutionContext execution, CompositeWorkflowContext context) {
+        AppBlock block = execution.block();
+        for (AppMessage source : execution.messages()) {
             ShowcaseReleaseCommand command;
             try {
                 command = ShowcaseReleaseCommand.decode(source.getBody());
@@ -105,7 +107,12 @@ final class ShowcaseReleaseWorkflow implements CompositeWorkflow {
                     != CompositeWorkflowContext.ClaimResult.CLAIMED) {
                 continue;
             }
-            auditMachine.apply(withMessages(block, List.of(auditMessage)), auditState);
+            auditMachine.apply(
+                    com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext
+                            .fromValidatedBlock(withMessages(block, List.of(auditMessage))),
+                    auditState,
+                    com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter
+                            .rejecting("document trail does not emit effects"));
             EffectId effectId = context.effects(release).emit(
                     EffectIntent.of(ShowcaseOutboxExecutor.TYPE, order)
                             .scope(ShowcaseReleaseStateMachine.SCOPE_PREFIX + command.releaseId())

@@ -9,6 +9,7 @@ import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
@@ -120,16 +121,11 @@ public final class ApprovalsStateMachine implements AppStateMachine {
     }
 
     @Override
-    public void apply(AppBlock block, AppStateWriter writer) {
-        apply(block, writer, AppEffectEmitter
-                .rejecting("Effects unavailable on the legacy 2-arg apply path"));
-    }
-
-    @Override
-    public void apply(AppBlock block, AppStateWriter writer,
+    public void apply(AppBlockExecutionContext context, AppStateWriter writer,
                       AppEffectEmitter effects) {
+        AppBlock block = context.block();
         boolean effectActive = onApprovedEffectActiveAt(block.height());
-        for (AppMessage message : block.messages()) {
+        for (AppMessage message : context.messages()) {
             Command command;
             try {
                 command = decodeCommandForHeight(message.getBody(), block.height());
@@ -221,8 +217,12 @@ public final class ApprovalsStateMachine implements AppStateMachine {
     }
 
     @Override
-    public void onEffectResult(AppBlock block, EffectResult result,
-                               AppStateWriter writer) {
+    public void onEffectResult(
+            AppBlockExecutionContext context,
+            EffectResult result,
+            AppStateWriter writer,
+            AppEffectEmitter effects
+    ) {
         if (!onApprovedEffect.enabled()
                 || !result.scope().startsWith(ON_APPROVED_SCOPE_PREFIX)
                 || !onApprovedEffect.type().equals(result.type())) {

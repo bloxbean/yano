@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.api.appchain;
 
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
@@ -17,7 +18,11 @@ class AppStateMachineQueryContractTest {
             }
 
             @Override
-            public void apply(AppBlock block, AppStateWriter writer) {
+            public void apply(
+                    AppBlockExecutionContext execution,
+                    AppStateWriter writer,
+                    AppEffectEmitter emitter
+            ) {
             }
         };
 

@@ -4,6 +4,8 @@ import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import org.junit.jupiter.api.AfterEach;
@@ -117,7 +119,7 @@ class AppChainAdminTest {
                 .blockIntervalMs(300).build();
         AppStateMachine machine = new AppStateMachine() {
             @Override public String id() { return "privileged-test"; }
-            @Override public void apply(AppBlock block, AppStateWriter writer) { }
+            @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) { }
             @Override
             public AdmissionResult validatePrivilegedSystemSubmission(String topic, byte[] body) {
                 return "~governance/test".equals(topic) && Arrays.equals(body, new byte[]{1})
@@ -154,7 +156,7 @@ class AppChainAdminTest {
                 .blockIntervalMs(300).build();
         node = new AppChainSubsystem(config, 42, null, new AppStateMachine() {
             @Override public String id() { return "composite-test"; }
-            @Override public void apply(AppBlock block, AppStateWriter writer) { }
+            @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) { }
         }, tempDir.resolve("governed-profile-ledger").toString(), null, log);
         node.start();
 

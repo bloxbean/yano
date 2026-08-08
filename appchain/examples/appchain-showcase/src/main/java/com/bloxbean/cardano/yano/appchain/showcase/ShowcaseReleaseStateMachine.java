@@ -7,10 +7,12 @@ import co.nstant.in.cbor.model.UnicodeString;
 import co.nstant.in.cbor.model.UnsignedInteger;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectId;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectOutcome;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
@@ -34,12 +36,16 @@ public final class ShowcaseReleaseStateMachine implements AppStateMachine {
     }
 
     @Override
-    public void apply(AppBlock block, AppStateWriter writer) {
+    public void apply(AppBlockExecutionContext context, AppStateWriter writer,
+                      AppEffectEmitter effects) {
+        AppBlock block = context.block();
         // The workflow is the only command writer for this private component.
     }
 
     @Override
-    public void onEffectResult(AppBlock block, EffectResult result, AppStateWriter writer) {
+    public void onEffectResult(AppBlockExecutionContext context, EffectResult result,
+                               AppStateWriter writer, AppEffectEmitter effects) {
+        AppBlock block = context.block();
         if (!ShowcaseOutboxExecutor.TYPE.equals(result.type())
                 || !result.scope().startsWith(SCOPE_PREFIX)) {
             return;

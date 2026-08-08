@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.appchain.stdlib;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
 import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipEpoch;
 import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipView;
@@ -10,6 +11,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValidatorResolver;
 import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValueValidator;
 import com.bloxbean.cardano.yano.api.appchain.authmap.ValidatorInitContext;
@@ -229,9 +231,11 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
     }
 
     @Override
-    public void apply(AppBlock block, AppStateWriter writer) {
+    public void apply(AppBlockExecutionContext context, AppStateWriter writer,
+                      AppEffectEmitter effects) {
+        AppBlock block = context.block();
         initializeOrVerify(block.height(), writer);
-        for (AppMessage message : block.messages()) {
+        for (AppMessage message : context.messages()) {
             if (!AuthenticatedMapContract.DEFAULT_TOPIC.equals(message.getTopic())) {
                 continue;
             }
@@ -258,18 +262,19 @@ public final class AuthenticatedMapStateMachine implements AppStateMachine {
     }
 
     /** Applies the final v1 envelope inside the authenticated-map composite workflow. */
-    void applyFinal(AppBlock block, AppStateWriter writer) {
-        applyFinal(block, writer, null);
+    void applyFinal(AppBlockExecutionContext context, AppStateWriter writer) {
+        applyFinal(context, writer, null);
     }
 
     /** Applies final-v1 commands with an optional governed authorization evaluator. */
     void applyFinal(
-            AppBlock block,
+            AppBlockExecutionContext context,
             AppStateWriter writer,
             FinalAuthorizationEvaluator authorizer
     ) {
+        AppBlock block = context.block();
         initializeOrVerify(block.height(), writer);
-        for (AppMessage message : block.messages()) {
+        for (AppMessage message : context.messages()) {
             if (!AuthenticatedMapContract.DEFAULT_TOPIC.equals(message.getTopic())) {
                 continue;
             }

@@ -127,7 +127,7 @@ final class AppChainEngine implements AutoCloseable {
      * verdict semantics as {@link L1RefValidator}.
      */
     interface ObservationValidator {
-        L1RefVerdict check(AppMessage message);
+        L1RefVerdict check(SequencedL1Observation observation);
     }
 
     void setL1RefSupplier(java.util.function.Supplier<L1Ref> supplier) {
@@ -414,7 +414,8 @@ final class AppChainEngine implements AutoCloseable {
         if (!verifyCatchUpL1Ref(block)) {
             return false;
         }
-        if (!verifyCatchUpObservations(block)) {
+        AppBlockExecutionContext executionContext = executionContext(block, "Catch-up block");
+        if (executionContext == null || !verifyCatchUpObservations(executionContext)) {
             return false;
         }
         for (AppMessage message : block.messages()) {
@@ -442,7 +443,7 @@ final class AppChainEngine implements AutoCloseable {
             discardRound();
         }
 
-        try (AppliedBlock applied = applyBlock(block)) {
+        try (AppliedBlock applied = applyBlock(block, executionContext)) {
             if (!Arrays.equals(applied.block.stateRoot(), block.stateRoot())) {
                 log.warn("Catch-up block state-root mismatch at height {} — rejecting", block.height());
                 return false;
@@ -782,7 +783,9 @@ final class AppChainEngine implements AutoCloseable {
         if (!verifyProposalL1Ref(envelope, block)) {
             return;
         }
-        if (!verifyProposalObservations(envelope, block)) {
+        AppBlock executionBlock = block.withCert(FinalityCert.empty());
+        AppBlockExecutionContext executionContext = executionContext(executionBlock, "Proposal");
+        if (executionContext == null || !verifyProposalObservations(envelope, executionContext)) {
             return;
         }
         // Every message inside the block must be a valid, member-signed envelope
@@ -824,7 +827,7 @@ final class AppChainEngine implements AutoCloseable {
         if (pendingRound != null) {
             discardRound();
         }
-        AppliedBlock applied = applyBlock(block.withCert(FinalityCert.empty()));
+        AppliedBlock applied = applyBlock(executionBlock, executionContext);
         if (!Arrays.equals(applied.block.stateRoot(), block.stateRoot())) {
             try (applied) {
                 log.warn("Proposal state-root mismatch at height {} (local {} vs proposed {}) — rejecting",
@@ -1180,6 +1183,10 @@ final class AppChainEngine implements AutoCloseable {
      * prepared commit leaves the database unchanged.
      */
     private AppliedBlock applyBlock(AppBlock block) {
+        return applyBlock(block, AppBlockExecutionContext.fromValidatedBlock(block));
+    }
+
+    private AppliedBlock applyBlock(AppBlock block, AppBlockExecutionContext executionContext) {
         WriteBatch batch = Objects.requireNonNull(
                 writeBatchFactory.get(), "writeBatchFactory returned null");
         CandidateState candidate = null;
@@ -1192,7 +1199,7 @@ final class AppChainEngine implements AutoCloseable {
                     committedHeight, baseRoot, block.height());
             stateCommitmentGuard.apply(block.height(), candidate);
             FxKernel.Result[] fxResult = new FxKernel.Result[1];
-            fxResult[0] = fxKernel.apply(stateMachine, block, candidate, fxReader);
+            fxResult[0] = fxKernel.apply(stateMachine, executionContext, candidate, fxReader);
             var prepared = candidate.prepare();
             if (!(prepared instanceof StagedStateCommit staged)) {
                 prepared.close();
@@ -1364,13 +1371,14 @@ final class AppChainEngine implements AutoCloseable {
      *
      * @return true to continue proposal processing; false = rejected or deferred
      */
-    private boolean verifyProposalObservations(AppMessage envelope, AppBlock block) {
+    private boolean verifyProposalObservations(
+            AppMessage envelope,
+            AppBlockExecutionContext executionContext
+    ) {
+        AppBlock block = executionContext.block();
         ObservationValidator validator = observationValidator;
-        for (AppMessage message : block.messages()) {
-            String topic = message.getTopic() != null ? message.getTopic() : "";
-            if (!topic.startsWith(com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation.TOPIC_PREFIX)) {
-                continue;
-            }
+        for (SequencedL1Observation sequenced : executionContext.l1Observations()) {
+            AppMessage message = block.messages().get(sequenced.originalMessageIndex());
             if (validator == null) {
                 log.warn("Proposal at height {} contains observation {} but this node has no "
                         + "observers configured — rejecting (configure the same observers on "
@@ -1380,9 +1388,8 @@ final class AppChainEngine implements AutoCloseable {
             // ADR 008.4 §3.1 REQUIRED: observation slot <= the block's stable
             // l1-ref slot — a fact may only finalize once it is stability-deep
             // (the app chain never rolls back). Fail-closed on undecodable.
-            var observation = com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation
-                    .decode(message.getBody());
-            if (observation == null || observation.slot() > block.l1Slot()) {
+            var observation = sequenced.observation();
+            if (observation.slot() > block.l1Slot()) {
                 log.warn("Proposal observation {} at height {} is undecodable or not yet "
                         + "stability-deep (obs slot {} > block l1-ref {}) — rejecting",
                         message.getMessageIdHex(), block.height(),
@@ -1390,7 +1397,7 @@ final class AppChainEngine implements AutoCloseable {
                 deferredProposals.remove(envelope.getMessageIdHex());
                 return false;
             }
-            L1RefVerdict verdict = validator.check(message);
+            L1RefVerdict verdict = validator.check(sequenced);
             switch (verdict) {
                 case OK, UNKNOWN -> { /* verified, or below window: chain vouches */ }
                 case MISMATCH -> {
@@ -1428,26 +1435,23 @@ final class AppChainEngine implements AutoCloseable {
      * UNKNOWN (older than the window — the common case during catch-up)
      * accepts on the certificate.
      */
-    private boolean verifyCatchUpObservations(AppBlock block) {
+    private boolean verifyCatchUpObservations(AppBlockExecutionContext executionContext) {
+        AppBlock block = executionContext.block();
         ObservationValidator validator = observationValidator;
-        for (AppMessage message : block.messages()) {
-            String topic = message.getTopic() != null ? message.getTopic() : "";
-            if (!topic.startsWith(com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation.TOPIC_PREFIX)) {
-                continue;
-            }
+        for (SequencedL1Observation sequenced : executionContext.l1Observations()) {
+            AppMessage message = block.messages().get(sequenced.originalMessageIndex());
             if (validator == null) {
                 log.warn("Catch-up block at height {} contains observation {} but this node has no "
                         + "observers configured — rejecting", block.height(), message.getMessageIdHex());
                 return false;
             }
-            var observation = com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation
-                    .decode(message.getBody());
-            if (observation == null || observation.slot() > block.l1Slot()) {
+            var observation = sequenced.observation();
+            if (observation.slot() > block.l1Slot()) {
                 log.warn("Catch-up observation {} at height {} is undecodable or exceeds the block "
                         + "l1-ref — rejecting", message.getMessageIdHex(), block.height());
                 return false;
             }
-            L1RefVerdict verdict = validator.check(message);
+            L1RefVerdict verdict = validator.check(sequenced);
             if (verdict == L1RefVerdict.MISMATCH) {
                 log.warn("Catch-up observation {} does not match our own L1 recomputation at height {} "
                         + "— rejecting", message.getMessageIdHex(), block.height());
@@ -1460,6 +1464,16 @@ final class AppChainEngine implements AutoCloseable {
             }
         }
         return true;
+    }
+
+    private AppBlockExecutionContext executionContext(AppBlock block, String source) {
+        try {
+            return AppBlockExecutionContext.fromValidatedBlock(block);
+        } catch (IllegalArgumentException failure) {
+            log.warn("{} at height {} contains an invalid L1 observation — rejecting: {}",
+                    source, block.height(), failure.getMessage());
+            return null;
+        }
     }
 
     /**

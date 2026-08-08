@@ -5,6 +5,8 @@ import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AuthScheme;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
@@ -101,7 +103,8 @@ class AppChainEngineLifecycleTest {
             @Override public String id() { return "fatal-close-machine"; }
 
             @Override
-            public void apply(AppBlock block, AppStateWriter writer) {
+            public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
                 throw primary;
             }
         };
@@ -407,7 +410,8 @@ class AppChainEngineLifecycleTest {
         }
 
         @Override
-        public void apply(AppBlock block, AppStateWriter writer) {
+        public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
             applyActive.set(true);
             entered.countDown();
             try {
@@ -436,7 +440,8 @@ class AppChainEngineLifecycleTest {
         }
 
         @Override
-        public void apply(AppBlock block, AppStateWriter writer) {
+        public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
             if (applies.incrementAndGet() == 1) {
                 firstFailure.countDown();
                 throw new AssertionError("sensitive apply failure");

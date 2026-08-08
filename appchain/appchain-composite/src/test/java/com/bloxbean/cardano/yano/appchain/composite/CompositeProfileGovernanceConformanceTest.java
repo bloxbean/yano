@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.composite;
 
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfile;
 import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipEpoch;
 import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipView;
@@ -169,8 +170,9 @@ class CompositeProfileGovernanceConformanceTest {
         @Override public ComponentDescriptor descriptor() { return descriptor; }
 
         @Override
-        public void apply(AppBlock block, AppStateWriter state, AppEffectEmitter effects) {
-            block.messages().forEach(message -> state.put(new byte[]{1}, message.getBody()));
+        public void apply(AppBlockExecutionContext execution, AppStateWriter state, AppEffectEmitter effects) {
+            AppBlock block = execution.block();
+            execution.messages().forEach(message -> state.put(new byte[]{1}, message.getBody()));
         }
 
         @Override
@@ -185,16 +187,17 @@ class CompositeProfileGovernanceConformanceTest {
         }
 
         @Override
-        public void apply(AppBlock block, AppStateWriter state, AppEffectEmitter effects) {
-            super.apply(block, state, effects);
-            block.messages().forEach(message -> effects.emit(new EffectIntent(
+        public void apply(AppBlockExecutionContext execution, AppStateWriter state, AppEffectEmitter effects) {
+            super.apply(execution, state, effects);
+            execution.messages().forEach(message -> effects.emit(new EffectIntent(
                     "test.effect", new byte[]{1}, "records", FinalityGate.APP_FINAL,
                     ResultPolicy.CHAIN, 3, null)));
         }
 
         @Override
-        public void onEffectResult(AppBlock block, EffectResult result,
+        public void onEffectResult(AppBlockExecutionContext execution, EffectResult result,
                                    AppStateWriter state, AppEffectEmitter effects) {
+            AppBlock block = execution.block();
             state.put(new byte[]{2}, result.externalRef());
         }
     }

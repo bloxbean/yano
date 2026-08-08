@@ -1,7 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
-import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfileCommitment;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
@@ -111,14 +111,16 @@ final class FxKernel {
      * (ADR-010 F4), so enabling effects later can never collide with
      * historical application leaves.
      */
-    Result apply(AppStateMachine machine, AppBlock block, AppStateWriter state, FxReader reader) {
+    Result apply(AppStateMachine machine, AppBlockExecutionContext context,
+                 AppStateWriter state, FxReader reader) {
+        AppBlock block = context.block();
         if (consensusProfileGuard != null) {
             consensusProfileGuard.apply(block.height(), state);
         }
         AppStateWriter machineWriter = guardedWriter(state, settings.strictReservedPrefix());
 
         if (!settings.enabled()) {
-            machine.apply(block, machineWriter, AppEffectEmitter.rejecting(
+            machine.apply(context, machineWriter, AppEffectEmitter.rejecting(
                     "Effects are disabled for this chain (effects.enabled=false)"));
             return Result.NONE;
         }
@@ -148,7 +150,7 @@ final class FxKernel {
             closedInBlock.add(positionKey(result.effectId().height(), result.effectId().ordinal()));
             incorporated.add(result);
             emitter.closedOne();
-            machine.onEffectResult(block, result, machineWriter, emitter);
+            machine.onEffectResult(context, result, machineWriter, emitter);
         }
 
         // 2. Deterministic expiry sweep at this height. Every swept effect is
@@ -180,10 +182,10 @@ final class FxKernel {
             incorporated.add(expired);
             expiredThisBlock++;
             emitter.closedOne();
-            machine.onEffectResult(block, expired, machineWriter, emitter);
+            machine.onEffectResult(context, expired, machineWriter, emitter);
         }
 
-        machine.apply(block, machineWriter, emitter);
+        machine.apply(context, machineWriter, emitter);
 
         // 4. Commitment leaves.
         byte[] effectsRoot = null;
@@ -226,11 +228,6 @@ final class FxKernel {
                 Map.copyOf(bucketPuts), bucket.isEmpty() ? -1 : block.height(),
                 Math.max(0, newOpen),
                 Math.addExact(reader.expiredCount(), expiredThisBlock));
-    }
-
-    /** Compatibility adapter for focused legacy MPF tests. Production uses {@link AppStateWriter}. */
-    Result apply(AppStateMachine machine, AppBlock block, MpfTrie trie, FxReader reader) {
-        return apply(machine, block, writerFor(trie), reader);
     }
 
     // ------------------------------------------------------------------
@@ -328,20 +325,6 @@ final class FxKernel {
                     throw new IllegalArgumentException(
                             "Application state keys must not use the reserved '~fx/' prefix (ADR-010 F4)");
                 }
-            }
-        };
-    }
-
-    private static AppStateWriter writerFor(MpfTrie trie) {
-        return new AppStateWriter() {
-            @Override public void put(byte[] key, byte[] value) { trie.put(key, value); }
-            @Override public void delete(byte[] key) { trie.delete(key); }
-            @Override public Optional<byte[]> get(byte[] key) {
-                return Optional.ofNullable(trie.get(key));
-            }
-            @Override public byte[] stateRoot() {
-                byte[] root = trie.getRootHash();
-                return root != null ? root : new byte[32];
             }
         };
     }
