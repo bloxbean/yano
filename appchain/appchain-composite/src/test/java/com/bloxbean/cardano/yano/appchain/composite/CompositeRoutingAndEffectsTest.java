@@ -276,9 +276,7 @@ class CompositeRoutingAndEffectsTest {
     @Test
     void routedBlocksExposeAMessagesRootConsistentWithTheirRoutedMessages() {
         RootCheckingStateMachine delegate = new RootCheckingStateMachine();
-        StateMachineComponentAdapter adapter = new StateMachineComponentAdapter(
-                descriptor("first", "first.v1", 1, 0, List.of(), 0), delegate);
-        CompositeStateMachine machine = machine(adapter);
+        CompositeStateMachine machine = machine(delegate);
 
         AppBlock source = rawBlock(1, message("other.v1", "ignored"),
                 message("first.v1", "accepted")).withCert(new FinalityCert(
@@ -290,13 +288,15 @@ class CompositeRoutingAndEffectsTest {
         assertThat(delegate.applied).isTrue();
     }
 
-    private static CompositeStateMachine machine(CompositeComponent... components) {
-        List<CompositeComponent> list = List.of(components);
+    private static CompositeStateMachine machine(TestCompositeMachine... components) {
+        List<TestCompositeMachine> list = List.of(components);
         CompositeProfile profile = CompositeProfile.of("test", "1",
-                list.stream().map(CompositeComponent::descriptor).toList());
+                list.stream().map(TestCompositeMachine::descriptor).toList());
         int cap = Math.max(1, list.stream()
                 .mapToInt(component -> component.descriptor().maxEffectsPerBlock()).sum());
-        return CompositeStateMachine.forTest(profile, list, List.of(), cap);
+        return CompositeStateMachine.forTest(profile,
+                list.stream().map(component -> (AppStateMachine) component).toList(),
+                List.of(), cap);
     }
 
     private static RecordingComponent component(
@@ -342,7 +342,7 @@ class CompositeRoutingAndEffectsTest {
         return value.getBytes(StandardCharsets.UTF_8);
     }
 
-    private static class RecordingComponent implements CompositeComponent {
+    private static class RecordingComponent implements TestCompositeMachine {
         final ComponentDescriptor descriptor;
         final List<String> appliedBodies = new ArrayList<>();
         int applyCalls;
@@ -406,12 +406,13 @@ class CompositeRoutingAndEffectsTest {
         }
     }
 
-    private static final class RootCheckingStateMachine implements AppStateMachine {
+    private static final class RootCheckingStateMachine implements TestCompositeMachine {
         private boolean applied;
 
         @Override
-        public String id() {
-            return "root-checking";
+        public ComponentDescriptor descriptor() {
+            return CompositeRoutingAndEffectsTest.descriptor(
+                    "first", "first.v1", 1, 0, List.of(), 0);
         }
 
         @Override

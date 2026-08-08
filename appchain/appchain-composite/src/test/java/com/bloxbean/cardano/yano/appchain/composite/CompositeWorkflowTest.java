@@ -137,15 +137,17 @@ class CompositeWorkflowTest {
     }
 
     private static CompositeStateMachine machine(
-            List<CompositeComponent> components,
+            List<TestCompositeMachine> components,
             List<CompositeWorkflow> workflows
     ) {
         CompositeProfile profile = new CompositeProfile(1, "workflow-test", "1",
-                components.stream().map(CompositeComponent::descriptor).toList(),
+                components.stream().map(TestCompositeMachine::descriptor).toList(),
                 workflows.stream().map(CompositeWorkflow::descriptor).toList(),
                 List.of(), AggregateQueryLimitsV1.DEFAULT);
         profile.validateEffectBudget(1);
-        return CompositeStateMachine.forTest(profile, components, workflows, 1);
+        return CompositeStateMachine.forTest(profile,
+                components.stream().map(component -> (AppStateMachine) component).toList(),
+                workflows, 1);
     }
 
     private static WorkflowDescriptor workflow(PutComponent... participants) {
@@ -159,7 +161,7 @@ class CompositeWorkflowTest {
                 List.of(topic), List.of(), 0));
     }
 
-    private static final class PutComponent implements CompositeComponent {
+    private static final class PutComponent implements TestCompositeMachine {
         private final ComponentDescriptor descriptor;
         private int resultCalls;
 

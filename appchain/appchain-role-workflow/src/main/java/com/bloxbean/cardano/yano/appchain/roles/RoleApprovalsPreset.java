@@ -3,12 +3,9 @@ package com.bloxbean.cardano.yano.appchain.roles;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.appchain.composite.ComponentDescriptor;
 import com.bloxbean.cardano.yano.appchain.composite.ComponentGeneration;
-import com.bloxbean.cardano.yano.appchain.composite.CompositeComponent;
-import com.bloxbean.cardano.yano.appchain.composite.CompositeProfile;
+import com.bloxbean.cardano.yano.appchain.composite.ComposableAppStateMachine;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeStateMachine;
-import com.bloxbean.cardano.yano.appchain.composite.CompositeWorkflow;
 import com.bloxbean.cardano.yano.appchain.composite.WorkflowDescriptor;
-import com.bloxbean.cardano.yano.appchain.composite.contracts.AggregateQueryLimitsV1;
 
 import java.util.List;
 import java.util.Objects;
@@ -45,7 +42,6 @@ public final class RoleApprovalsPreset {
                 actorsDescriptor, context.chainId(), governance);
         RoleAwareApprovalsComponent approvals = new RoleAwareApprovalsComponent(
                 approvalsDescriptor);
-        List<CompositeComponent> components = List.of(actors, approvals);
         ComponentGeneration actorsGeneration = actorsDescriptor.generation();
         ComponentGeneration approvalsGeneration = approvalsDescriptor.generation();
         WorkflowDescriptor workflowDescriptor = new WorkflowDescriptor(
@@ -54,12 +50,11 @@ public final class RoleApprovalsPreset {
                 List.of(actorsGeneration, approvalsGeneration), 0);
         RoleApprovalWorkflow workflow = new RoleApprovalWorkflow(workflowDescriptor,
                 actorsGeneration, approvalsGeneration, context.chainId(), governance);
-        List<CompositeWorkflow> workflows = List.of(workflow);
-        CompositeProfile profile = new CompositeProfile(CompositeProfile.SCHEMA_VERSION,
-                PROFILE_ID, PROFILE_VERSION,
-                components.stream().map(CompositeComponent::descriptor).toList(),
-                List.of(workflowDescriptor), List.of(), AggregateQueryLimitsV1.DEFAULT);
-        return CompositeStateMachine.create(RoleApprovalsStateMachineProvider.ID,
-                context, profile, components, workflows);
+        return ComposableAppStateMachine.builder(RoleApprovalsStateMachineProvider.ID,
+                        context, PROFILE_ID, PROFILE_VERSION)
+                .machine(actorsDescriptor, actors)
+                .machine(approvalsDescriptor, approvals)
+                .workflow(workflow)
+                .build();
     }
 }

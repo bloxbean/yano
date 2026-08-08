@@ -1,6 +1,6 @@
 # ADR app-layer/031: Composable state-machine foundations and portable proofs
 
-**Status:** Accepted and in implementation — Phases 0 through 2 complete
+**Status:** Accepted and in implementation — Phases 0 through 3 complete
 **Date:** 2026-08-08
 **Scope:** App-chain state machines, composition, authorization and approvals, authenticated state,
 proofs, and L1 consumption

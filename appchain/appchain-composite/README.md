@@ -15,9 +15,10 @@ Custom products may use this framework without inheriting evidence behavior.
 Each `ComponentDescriptor` declares exact versioned topics and local query
 paths. The composite maps local keys through
 `CompositeCommitmentV1.componentKey(componentId, localKey)` and never exposes
-the root writer. Routed blocks contain only the component's messages, have a
-recomputed `messagesRoot`, and deliberately carry no finality certificate;
-result callbacks receive a zero-message projection.
+the root writer. Routed execution preserves the finalized block identity and
+finality certificate while exposing only the component's messages and their
+original global indexes. Result callbacks receive the same block-bound context
+with an empty routed message view.
 
 Direct queries use:
 
@@ -31,14 +32,23 @@ bounded wire implementation and one committed root-fixed context.
 
 ## Building a product composition
 
-Create `ComponentDescriptor` values, matching `CompositeComponent` products,
-and optional `WorkflowDescriptor`/`CompositeWorkflow` products. For a fixed
-one-profile chain, construct the machine through the mandatory factory:
+Register ordinary `AppStateMachine` instances with explicit
+`ComponentDescriptor` values and optional declared workflows. The builder
+generates the single canonical profile committed by the resulting application:
 
 ```java
-CompositeStateMachine machine = CompositeStateMachine.create(
-        "my-domain-composite", context, profile, components, workflows);
+AppStateMachine machine = ComposableAppStateMachine.builder(
+                "my-domain-composite", context, "my-profile", "1.0.0")
+        .machine(documentDescriptor, new DocTrailStateMachine())
+        .machine(logDescriptor, new OrderedLogStateMachine())
+        .workflow(releaseWorkflow)
+        .build();
 ```
+
+There is no separate component lifecycle API or whole-machine adapter. Stock
+machines use the same `AppStateMachine` contract standalone and when composed;
+the explicit descriptor commits their namespace, routes, activation, queries,
+configuration identity, compatibility identity, and effect quota.
 
 For a long-lived governed chain, package an immutable digest-keyed catalog and
 select its genesis entry explicitly:

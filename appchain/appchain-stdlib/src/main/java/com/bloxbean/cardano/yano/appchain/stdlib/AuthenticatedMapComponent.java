@@ -11,7 +11,6 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.appchain.composite.ComponentDescriptor;
-import com.bloxbean.cardano.yano.appchain.composite.CompositeComponent;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowIdentifiers;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapAuthorizationContract;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
@@ -20,7 +19,7 @@ import java.util.List;
 import java.util.Objects;
 
 /** Isolated state/query owner for the authenticated-map composite assembly. */
-public final class AuthenticatedMapComponent implements CompositeComponent {
+public final class AuthenticatedMapComponent implements AppStateMachine {
     public static final String COMPONENT_ID = AuthenticatedMapContract.STATE_MACHINE_ID;
 
     private static final List<String> BASIC_QUERY_PATHS = List.of(
@@ -52,9 +51,13 @@ public final class AuthenticatedMapComponent implements CompositeComponent {
         }
     }
 
-    @Override
     public ComponentDescriptor descriptor() {
         return descriptor;
+    }
+
+    @Override
+    public String id() {
+        return descriptor.componentId();
     }
 
     @Override

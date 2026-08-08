@@ -423,7 +423,7 @@ class CompositeProfileGovernanceAdversarialTest {
     }
 
     private static CompositeProfileCatalog.Entry entry(CompositeProfile profile,
-                                                       CompositeComponent component) {
+                                                       TestCompositeMachine component) {
         return new CompositeProfileCatalog.Entry(profile, List.of(component), List.of());
     }
 
@@ -547,7 +547,7 @@ class CompositeProfileGovernanceAdversarialTest {
                            RecordingComponent nextComponent) {
     }
 
-    private static class RecordingComponent implements CompositeComponent {
+    private static class RecordingComponent implements TestCompositeMachine {
         private final ComponentDescriptor descriptor;
         private int applied;
 

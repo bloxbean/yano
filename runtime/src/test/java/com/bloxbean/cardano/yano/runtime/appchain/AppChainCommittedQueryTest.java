@@ -64,14 +64,6 @@ class AppChainCommittedQueryTest {
 
     @Test
     void contextualHookResultIdentityBoundsAndCopiesAreEnforced() {
-        LegacyQueryMachine legacy = new LegacyQueryMachine();
-        assertThat(legacy.query("echo", new byte[0], null)).containsExactly(4, 5, 6);
-        AppChainSubsystem legacyNode = create("legacy-query", legacy,
-                PluginProviderRegistry.empty(), 60_000);
-        legacyNode.start();
-        assertCode(AppQueryException.Code.UNSUPPORTED,
-                () -> legacyNode.query("echo", new byte[0]));
-
         ContextualQueryMachine machine = new ContextualQueryMachine();
         AppChainSubsystem node = create("contextual-query", machine,
                 PluginProviderRegistry.empty(), 60_000);
@@ -475,13 +467,13 @@ class AppChainCommittedQueryTest {
         void run() throws Exception;
     }
 
-    private static class LegacyQueryMachine implements AppStateMachine {
+    private static class QueryMachine implements AppStateMachine {
         protected final byte[] response = new byte[]{4, 5, 6};
         protected final AtomicReference<byte[]> received = new AtomicReference<>();
 
         @Override
         public String id() {
-            return "legacy-machine";
+            return "query-machine";
         }
 
         @Override
@@ -508,7 +500,7 @@ class AppChainCommittedQueryTest {
         }
     }
 
-    private static final class ContextualQueryMachine extends LegacyQueryMachine {
+    private static final class ContextualQueryMachine extends QueryMachine {
         private final TestVirtualMachineError fatal = new TestVirtualMachineError();
 
         @Override

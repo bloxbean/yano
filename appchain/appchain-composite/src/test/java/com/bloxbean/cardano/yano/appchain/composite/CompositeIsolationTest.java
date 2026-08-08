@@ -26,10 +26,10 @@ class CompositeIsolationTest {
     private static final byte[] LOCAL_KEY = "item".getBytes(StandardCharsets.US_ASCII);
 
     @Test
-    void productDescriptorsAreBoundOnceAndCannotChangeCommittedCapabilities() {
+    void explicitDescriptorsDefineCommittedCapabilitiesIndependentlyOfMachineIdentity() {
         ComponentDescriptor committed = descriptor("first", "first.v1", 1, 0, 0);
         ComponentDescriptor rogue = descriptor("other", "first.v1", 1, 0, 0);
-        SwitchingComponent product = new SwitchingComponent(committed, rogue);
+        PutComponent product = new PutComponent(rogue);
         CompositeStateMachine machine = CompositeStateMachine.forTest(
                 CompositeProfile.of("bound", "1", List.of(committed)),
                 List.of(product), List.of(), 1);
@@ -39,7 +39,6 @@ class CompositeIsolationTest {
                         block(message("first.v1", "safe"))), state,
                 AppEffectEmitter.rejecting("unused"));
 
-        assertThat(product.descriptorCalls).isEqualTo(1);
         assertThat(state.get(CompositeStateKeys.componentKey("first", LOCAL_KEY)))
                 .hasValue(bytes("safe"));
         assertThat(state.get(CompositeStateKeys.componentKey("other", LOCAL_KEY))).isEmpty();
@@ -115,6 +114,78 @@ class CompositeIsolationTest {
         assertThat(machine.id()).isEqualTo("custom-machine");
     }
 
+    @Test
+    void builderRegistersOrdinaryMachinesAndGeneratesTheCommittedProfile() {
+        ComponentDescriptor descriptor = descriptor("documents", "documents.v1", 1, 0, 0);
+        AppStateMachine stockMachine = new AppStateMachine() {
+            @Override public String id() { return "stock-documents"; }
+
+            @Override
+            public void apply(AppBlockExecutionContext execution, AppStateWriter state,
+                              AppEffectEmitter effects) {
+                execution.messages().forEach(message -> state.put(LOCAL_KEY, message.getBody()));
+            }
+        };
+
+        CompositeStateMachine machine = ComposableAppStateMachine.builder(
+                        "document-service", context(1), "document-profile", "1")
+                .machine(descriptor, stockMachine)
+                .build();
+        MemoryState state = new MemoryState();
+
+        machine.apply(AppBlockExecutionContext.fromValidatedBlock(
+                        block(message("documents.v1", "version-1"))),
+                state, AppEffectEmitter.rejecting("unused"));
+
+        assertThat(machine.id()).isEqualTo("document-service");
+        assertThat(machine.profile()).isEqualTo(new CompositeProfile(
+                CompositeProfile.SCHEMA_VERSION, "document-profile", "1",
+                List.of(descriptor), List.of(), List.of(), AggregateQueryLimitsV1.DEFAULT));
+        assertThat(state.get(CompositeStateKeys.componentKey("documents", LOCAL_KEY)))
+                .hasValue(bytes("version-1"));
+        assertThat(state.get(LOCAL_KEY)).isEmpty();
+    }
+
+    @Test
+    void composedMachineRetainsPrivilegedAdmissionAndOperationalDiagnostics() {
+        String topic = "~governance/stock-documents";
+        ComponentDescriptor descriptor = descriptor("documents", topic, 1, 0, 0);
+        AppStateMachine stockMachine = new AppStateMachine() {
+            @Override public String id() { return "stock-documents"; }
+
+            @Override
+            public AdmissionResult validatePrivilegedSystemSubmission(String candidateTopic,
+                                                                       byte[] body) {
+                return topic.equals(candidateTopic) && Arrays.equals(body, bytes("allow"))
+                        ? AdmissionResult.accept()
+                        : AdmissionResult.reject("denied");
+            }
+
+            @Override
+            public Map<String, Object> operationalStatus() {
+                return Map.of("ready", true);
+            }
+
+            @Override
+            public void apply(AppBlockExecutionContext execution, AppStateWriter state,
+                              AppEffectEmitter effects) {
+            }
+        };
+        CompositeStateMachine machine = ComposableAppStateMachine.builder(
+                        "document-service", context(1), "document-profile", "1")
+                .machine(descriptor, stockMachine)
+                .build();
+
+        assertThat(machine.validate(message(topic, "allow")).isAccepted()).isTrue();
+        assertThat(machine.validatePrivilegedSystemSubmission(topic, bytes("allow")).isAccepted())
+                .isTrue();
+        assertThat(machine.validatePrivilegedSystemSubmission(topic, bytes("deny")).isAccepted())
+                .isFalse();
+        assertThat(machine.operationalStatus()).containsEntry("mode", "fixed");
+        assertThat(machine.operationalStatus().get("components"))
+                .isEqualTo(Map.of("documents/1@1", Map.of("ready", true)));
+    }
+
     private static ComponentDescriptor descriptor(
             String id, String topic, long from, long until, int quota
     ) {
@@ -156,7 +227,7 @@ class CompositeIsolationTest {
         return value.getBytes(StandardCharsets.UTF_8);
     }
 
-    private static class PutComponent implements CompositeComponent {
+    private static class PutComponent implements TestCompositeMachine {
         private final ComponentDescriptor descriptor;
 
         private PutComponent(ComponentDescriptor descriptor) {
@@ -171,23 +242,6 @@ class CompositeIsolationTest {
             for (AppMessage message : execution.messages()) {
                 state.put(LOCAL_KEY, message.getBody());
             }
-        }
-    }
-
-    private static final class SwitchingComponent extends PutComponent {
-        private final ComponentDescriptor first;
-        private final ComponentDescriptor later;
-        private int descriptorCalls;
-
-        private SwitchingComponent(ComponentDescriptor first, ComponentDescriptor later) {
-            super(first);
-            this.first = first;
-            this.later = later;
-        }
-
-        @Override
-        public ComponentDescriptor descriptor() {
-            return descriptorCalls++ == 0 ? first : later;
         }
     }
 

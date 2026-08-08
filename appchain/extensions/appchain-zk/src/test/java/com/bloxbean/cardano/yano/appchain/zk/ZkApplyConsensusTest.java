@@ -136,7 +136,8 @@ class ZkApplyConsensusTest {
         AppMessage message = AppMessage.builder()
                 .version(2).chainId("t").topic("t").sender(new byte[32])
                 .senderSeq(0).expiresAt(0).body(body)
-                .messageId(Blake2bUtil.blake2bHash256(body)).build();
+                .messageId(Blake2bUtil.blake2bHash256(body))
+                .authScheme(0).authProof(new byte[64]).build();
         return new AppBlock(2, "t", 1, new byte[32], 0, new byte[0], 0L,
                 new byte[32], new byte[32], List.of(message), new byte[32],
                 new FinalityCert(0, List.of()));

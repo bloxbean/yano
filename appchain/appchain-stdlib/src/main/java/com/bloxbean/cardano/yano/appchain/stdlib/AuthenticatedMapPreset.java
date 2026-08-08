@@ -3,13 +3,11 @@ package com.bloxbean.cardano.yano.appchain.stdlib;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.appchain.composite.ComponentDescriptor;
 import com.bloxbean.cardano.yano.appchain.composite.ComponentGeneration;
-import com.bloxbean.cardano.yano.appchain.composite.CompositeComponent;
-import com.bloxbean.cardano.yano.appchain.composite.CompositeProfile;
+import com.bloxbean.cardano.yano.appchain.composite.ComposableAppStateMachine;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeStateMachine;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeWorkflow;
 import com.bloxbean.cardano.yano.appchain.composite.LegacyQueryAlias;
 import com.bloxbean.cardano.yano.appchain.composite.WorkflowDescriptor;
-import com.bloxbean.cardano.yano.appchain.composite.contracts.AggregateQueryLimitsV1;
 import com.bloxbean.cardano.yano.appchain.roles.DomainActorRegistryComponent;
 import com.bloxbean.cardano.yano.appchain.roles.GovernedRoleApprovalWorkflow;
 import com.bloxbean.cardano.yano.appchain.roles.RoleAwareApprovalsComponent;
@@ -64,11 +62,10 @@ public final class AuthenticatedMapPreset {
                 new AuthenticatedMapStateMachine(genesis,
                         context.membershipView().orElse(null),
                         context.authenticatedMapValidatorResolver().orElse(null)));
-        List<CompositeComponent> components = List.of(actors, approvals, map);
-        List<ComponentGeneration> generations = components.stream()
-                .map(component -> component.descriptor().generation()).toList();
+        List<ComponentGeneration> generations = List.of(
+                actorsDescriptor.generation(), approvalsDescriptor.generation(),
+                mapDescriptor.generation());
 
-        List<WorkflowDescriptor> workflowDescriptors = new ArrayList<>();
         List<CompositeWorkflow> workflows = new ArrayList<>();
         if (governed) {
             WorkflowDescriptor roleDescriptor = new WorkflowDescriptor(
@@ -76,7 +73,6 @@ public final class AuthenticatedMapPreset {
                     GovernedRoleApprovalWorkflow.PRODUCT_VERSION,
                     GovernedRoleApprovalWorkflow.TOPIC, 1, 0,
                     List.of(generations.get(0), generations.get(1)), 0);
-            workflowDescriptors.add(roleDescriptor);
             workflows.add(new GovernedRoleApprovalWorkflow(roleDescriptor,
                     generations.get(0), generations.get(1), context.chainId(),
                     AuthenticatedMapContract.genesisId(genesis), governedGenesis,
@@ -86,7 +82,6 @@ public final class AuthenticatedMapPreset {
                 AuthenticatedMapAuthorizationWorkflow.WORKFLOW_ID,
                 AuthenticatedMapAuthorizationWorkflow.PRODUCT_VERSION,
                 AuthenticatedMapContract.DEFAULT_TOPIC, 1, 0, generations, 0);
-        workflowDescriptors.add(mapWorkflowDescriptor);
         workflows.add(new AuthenticatedMapAuthorizationWorkflow(
                 mapWorkflowDescriptor, generations.get(0), generations.get(1),
                 generations.get(2), map));
@@ -111,14 +106,15 @@ public final class AuthenticatedMapPreset {
                     AuthenticatedMapComponent.COMPONENT_ID,
                     AuthenticatedMapContract.APPROVAL_CONSUMPTION_QUERY_PATH));
         }
-        CompositeProfile profile = new CompositeProfile(
-                CompositeProfile.SCHEMA_VERSION, PROFILE_ID, PROFILE_VERSION,
-                components.stream().map(CompositeComponent::descriptor).toList(),
-                workflowDescriptors,
-                queryAliases,
-                AggregateQueryLimitsV1.DEFAULT);
-        return CompositeStateMachine.create(AuthenticatedMapContract.STATE_MACHINE_ID,
-                context, profile, components, workflows);
+        var builder = ComposableAppStateMachine.builder(
+                        AuthenticatedMapContract.STATE_MACHINE_ID,
+                        context, PROFILE_ID, PROFILE_VERSION)
+                .machine(actorsDescriptor, actors)
+                .machine(approvalsDescriptor, approvals)
+                .machine(mapDescriptor, map);
+        workflows.forEach(builder::workflow);
+        queryAliases.forEach(builder::queryAlias);
+        return builder.build();
     }
 
     private static List<String> actorQueries() {
