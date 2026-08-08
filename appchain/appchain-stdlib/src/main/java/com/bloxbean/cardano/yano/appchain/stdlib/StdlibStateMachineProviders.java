@@ -129,7 +129,7 @@ public final class StdlibStateMachineProviders {
         @Override
         public AppStateMachine create(AppStateMachineContext context) {
             String format = context.settings().getOrDefault("machines.kv-registry.value-format", "raw");
-            return new KvRegistryStateMachine(KvRegistryStateMachine.ValueFormat.parse(format));
+            return new KvRegistryStateMachine(KvRegistryTransitions.ValueFormat.parse(format));
         }
     }
 

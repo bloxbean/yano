@@ -22,6 +22,7 @@ import com.bloxbean.cardano.yano.appchain.roles.RoleAwareApprovalsComponent;
 import com.bloxbean.cardano.yano.appchain.roles.RoleWorkflowGovernanceConfig;
 import com.bloxbean.cardano.yano.appchain.stdlib.DocTrailStateMachine;
 import com.bloxbean.cardano.yano.appchain.stdlib.KvRegistryStateMachine;
+import com.bloxbean.cardano.yano.appchain.stdlib.KvRegistryTransitions;
 
 import java.util.List;
 import java.util.Locale;
@@ -47,8 +48,8 @@ public final class RoleEvidencePreset {
         RoleWorkflowGovernanceConfig governance = RoleWorkflowGovernanceConfig.from(context);
         EvidenceWorkflowCapacityV1 capacity = capacity(settings);
         capacity.validateAgainst(consensus.maxBlockMessages(), consensus.effectsMaxPerBlock());
-        KvRegistryStateMachine.ValueFormat registryFormat =
-                KvRegistryStateMachine.ValueFormat.parse(settings.getOrDefault(
+        KvRegistryTransitions.ValueFormat registryFormat =
+                KvRegistryTransitions.ValueFormat.parse(settings.getOrDefault(
                         "machines.kv-registry.value-format", "raw").trim());
         EvidenceRegistryConfig evidenceConfig = EvidenceRegistryConfig.from(context);
 

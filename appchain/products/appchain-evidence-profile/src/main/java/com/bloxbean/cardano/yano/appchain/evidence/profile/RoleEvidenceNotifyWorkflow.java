@@ -4,8 +4,6 @@ import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
-import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
-import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.appchain.composite.ComponentGeneration;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeWorkflow;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeWorkflowContext;
@@ -59,17 +57,8 @@ final class RoleEvidenceNotifyWorkflow implements CompositeWorkflow {
             } catch (RuntimeException malformed) {
                 continue;
             }
-            machine.apply(
-                    com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext
-                            .fromValidatedBlock(withMessages(block, List.of(message))),
+            machine.applyCommand(block, message,
                     context.state(evidence), context.effects(evidence));
         }
-    }
-
-    private static AppBlock withMessages(AppBlock block, List<AppMessage> messages) {
-        return new AppBlock(block.version(), block.chainId(), block.height(), block.prevHash(),
-                block.l1Slot(), block.l1BlockHash(), block.timestamp(),
-                AppBlockCodec.messagesRoot(messages), block.stateRoot(), messages,
-                block.proposer(), FinalityCert.empty());
     }
 }

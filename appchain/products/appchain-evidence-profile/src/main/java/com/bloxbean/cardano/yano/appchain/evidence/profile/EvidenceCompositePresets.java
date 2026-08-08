@@ -20,6 +20,7 @@ import com.bloxbean.cardano.yano.appchain.examples.evidence.EvidenceRegistryStat
 import com.bloxbean.cardano.yano.appchain.stdlib.ApprovalsStateMachine;
 import com.bloxbean.cardano.yano.appchain.stdlib.DocTrailStateMachine;
 import com.bloxbean.cardano.yano.appchain.stdlib.KvRegistryStateMachine;
+import com.bloxbean.cardano.yano.appchain.stdlib.KvRegistryTransitions;
 
 import java.util.List;
 import java.util.Locale;
@@ -66,8 +67,8 @@ public final class EvidenceCompositePresets {
                 consensusProfile.effectsMaxPerBlock());
         String formatSetting = settings.getOrDefault(
                 "machines.kv-registry.value-format", "raw").trim();
-        KvRegistryStateMachine.ValueFormat registryFormat =
-                KvRegistryStateMachine.ValueFormat.parse(formatSetting);
+        KvRegistryTransitions.ValueFormat registryFormat =
+                KvRegistryTransitions.ValueFormat.parse(formatSetting);
         EvidenceRegistryConfig evidenceConfig = EvidenceRegistryConfig.from(context);
 
         ComponentDescriptor registryDescriptor = descriptor(REGISTRY_ID,
