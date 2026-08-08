@@ -16,9 +16,17 @@ Phase 4 is deferred until the required ZeroJ library is released, and optional
 Phase 6 is deferred. CCL `0.8.0-pre5-dev1` remains a development baseline, so
 this status is not production qualification.
 
+**Preview-baseline amendment:** ADR-031 supersedes this ADR's vendor-prefixed
+commitment-format and proof-encoding identifiers for the first supported
+app-chain baseline. References below to `ccl-*` and `zeroj-*` descriptors record
+the implemented preview state; supported consensus/wire identifiers describe
+the algorithm and format, while CCL/ZeroJ compatibility is conformance metadata.
+No preview identifier migration or alias is required.
+
 If accepted and implemented, this ADR supersedes the state-commitment choice in
-[ADR-005 §D3](005-yano-app-chain-framework.md) for new app chains. Existing
-chains remain bound to their original MPF state history.
+[ADR-005 §D3](005-yano-app-chain-framework.md) for the supported app-chain
+baseline. Its earlier assumption that preview chains might retain their MPF
+history is replaced by ADR-031's fresh-start rule.
 
 ## Date
 
