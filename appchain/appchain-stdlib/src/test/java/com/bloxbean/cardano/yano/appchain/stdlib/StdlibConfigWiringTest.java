@@ -123,15 +123,15 @@ class StdlibConfigWiringTest {
 
     @Test
     void kvRegistry_valueFormatParse() {
-        assertThat(KvRegistryStateMachine.ValueFormat.parse(null))
-                .isEqualTo(KvRegistryStateMachine.ValueFormat.RAW);
-        assertThat(KvRegistryStateMachine.ValueFormat.parse(""))
-                .isEqualTo(KvRegistryStateMachine.ValueFormat.RAW);
-        assertThat(KvRegistryStateMachine.ValueFormat.parse("CBOR"))
-                .isEqualTo(KvRegistryStateMachine.ValueFormat.CBOR);
-        assertThat(KvRegistryStateMachine.ValueFormat.parse(" utf8 "))
-                .isEqualTo(KvRegistryStateMachine.ValueFormat.UTF8);
-        assertThatThrownBy(() -> KvRegistryStateMachine.ValueFormat.parse("json"))
+        assertThat(KvRegistryTransitions.ValueFormat.parse(null))
+                .isEqualTo(KvRegistryTransitions.ValueFormat.RAW);
+        assertThat(KvRegistryTransitions.ValueFormat.parse(""))
+                .isEqualTo(KvRegistryTransitions.ValueFormat.RAW);
+        assertThat(KvRegistryTransitions.ValueFormat.parse("CBOR"))
+                .isEqualTo(KvRegistryTransitions.ValueFormat.CBOR);
+        assertThat(KvRegistryTransitions.ValueFormat.parse(" utf8 "))
+                .isEqualTo(KvRegistryTransitions.ValueFormat.UTF8);
+        assertThatThrownBy(() -> KvRegistryTransitions.ValueFormat.parse("json"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("value-format");
     }

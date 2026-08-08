@@ -75,7 +75,8 @@ class StdlibContractParityTest {
 
     @Test
     void runtimeAdmissionParsersSharePortableProofKeyBounds() {
-        assertThatThrownBy(() -> KvRegistryStateMachine.Command.decode(
+        assertThatThrownBy(() -> new KvRegistryTransitions(
+                KvRegistryTransitions.ValueFormat.RAW).decodeCommand(
                 rawKvCommand(new byte[257], new byte[]{1})))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> ApprovalsStateMachine.Command.decode(
@@ -84,7 +85,7 @@ class StdlibContractParityTest {
         assertThatThrownBy(() -> BalancesStateMachine.Command.decode(
                 rawBalanceCommand("a".repeat(255))))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> DocTrailStateMachine.Command.decode(
+        assertThatThrownBy(() -> DocTrailTransitions.decodeCommand(
                 rawDocTrailCommand("a".repeat(255))))
                 .isInstanceOf(IllegalArgumentException.class);
     }

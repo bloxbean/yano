@@ -5,8 +5,9 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
-import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
-import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
+import com.bloxbean.cardano.yano.api.appchain.transition.TransitionContext;
+import com.bloxbean.cardano.yano.api.appchain.transition.TransitionPlans;
 import com.bloxbean.cardano.yano.appchain.composite.ComponentGeneration;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeWorkflow;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeWorkflowContext;
@@ -18,6 +19,7 @@ import com.bloxbean.cardano.yano.appchain.examples.evidence.EvidenceRegistryStat
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ApprovalProposalV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowKeys;
 import com.bloxbean.cardano.yano.appchain.stdlib.DocTrailStateMachine;
+import com.bloxbean.cardano.yano.appchain.stdlib.DocTrailTransitions;
 
 import java.security.MessageDigest;
 import java.nio.charset.StandardCharsets;
@@ -37,6 +39,7 @@ final class RoleEvidenceReleaseWorkflow implements CompositeWorkflow {
     private final ComponentGeneration documents;
     private final ComponentGeneration evidence;
     private final DocTrailStateMachine documentMachine;
+    private final DocTrailTransitions documentTransitions = new DocTrailTransitions();
     private final EvidenceRegistryStateMachine evidenceMachine;
 
     RoleEvidenceReleaseWorkflow(WorkflowDescriptor descriptor,
@@ -70,7 +73,9 @@ final class RoleEvidenceReleaseWorkflow implements CompositeWorkflow {
     @Override
     public void apply(AppBlockExecutionContext execution, CompositeWorkflowContext context) {
         AppBlock block = execution.block();
+        int visibleIndex = 0;
         for (AppMessage source : execution.messages()) {
+            int originalIndex = execution.originalMessageIndex(visibleIndex++);
             final EvidenceReleaseCommandV1 command;
             try {
                 command = EvidenceReleaseCommandV1.decode(source.getBody());
@@ -108,15 +113,14 @@ final class RoleEvidenceReleaseWorkflow implements CompositeWorkflow {
                     command.evidenceStorageCommand(), evidenceState)) continue;
             if (context.claim(command.releaseId(), command.commandHash())
                     != CompositeWorkflowContext.ClaimResult.CLAIMED) continue;
-            documentMachine.apply(
-                    com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext
-                            .fromValidatedBlock(withMessages(block, List.of(documentMessage))),
+            TransitionPlans.commitIfApproved(documentTransitions.decide(
+                            documentMessage.getBody(),
+                            new TransitionContext(block.height(), block.timestamp(), originalIndex,
+                                    source.getMessageId(), documentMessage.getTopic(), source.getSender()),
+                            documentState),
                     documentState,
-                    com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter
-                            .rejecting("document trail does not emit effects"));
-            evidenceMachine.apply(
-                    com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext
-                            .fromValidatedBlock(withMessages(block, List.of(evidenceMessage))),
+                    AppEffectEmitter.rejecting("document trail does not emit effects"));
+            evidenceMachine.applyCommand(block, evidenceMessage,
                     evidenceState, context.effects(evidence));
             approvalState.put(RoleEvidenceKeys.evidenceApproval(
                             command.evidenceStorageCommand().evidenceId(),
@@ -132,10 +136,4 @@ final class RoleEvidenceReleaseWorkflow implements CompositeWorkflow {
                 .authScheme(source.getAuthScheme()).authProof(source.getAuthProof()).build();
     }
 
-    private static AppBlock withMessages(AppBlock block, List<AppMessage> messages) {
-        return new AppBlock(block.version(), block.chainId(), block.height(), block.prevHash(),
-                block.l1Slot(), block.l1BlockHash(), block.timestamp(),
-                AppBlockCodec.messagesRoot(messages), block.stateRoot(), messages,
-                block.proposer(), FinalityCert.empty());
-    }
 }

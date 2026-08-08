@@ -1,17 +1,14 @@
 package com.bloxbean.cardano.yano.appchain.stdlib;
 
-import co.nstant.in.cbor.model.Array;
-import co.nstant.in.cbor.model.ByteString;
-import co.nstant.in.cbor.model.DataItem;
-import co.nstant.in.cbor.model.UnsignedInteger;
-import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
-import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
+import com.bloxbean.cardano.yano.api.appchain.transition.TransitionContext;
+import com.bloxbean.cardano.yano.api.appchain.transition.TransitionDecision;
+import com.bloxbean.cardano.yano.api.appchain.transition.TransitionPlans;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.DocTrailContract;
 
 import java.util.List;
@@ -39,7 +36,7 @@ import java.util.List;
 public final class DocTrailStateMachine implements AppStateMachine {
 
     public static final String ID = "doc-trail";
-    private static final byte[] GENESIS_HEAD = new byte[32];
+    private final DocTrailTransitions transitions = new DocTrailTransitions();
 
     @Override
     public String id() {
@@ -49,7 +46,7 @@ public final class DocTrailStateMachine implements AppStateMachine {
     @Override
     public AdmissionResult validate(AppMessage message) {
         try {
-            Command.decode(message.getBody());
+            DocTrailTransitions.decodeCommand(message.getBody());
             return AdmissionResult.accept();
         } catch (Exception e) {
             return AdmissionResult.reject("Malformed doc-trail command: " + e.getMessage());
@@ -60,20 +57,19 @@ public final class DocTrailStateMachine implements AppStateMachine {
     public void apply(AppBlockExecutionContext context, AppStateWriter writer,
                       AppEffectEmitter effects) {
         AppBlock block = context.block();
+        int visibleIndex = 0;
         for (AppMessage message : context.messages()) {
-            Command command;
+            int originalIndex = context.originalMessageIndex(visibleIndex++);
+            DocTrailTransitions.Append command;
             try {
-                command = Command.decode(message.getBody());
+                command = DocTrailTransitions.decodeCommand(message.getBody());
             } catch (Exception e) {
                 continue;
             }
-            byte[] key = entityKey(command.entityId());
-            Entry current = writer.get(key).map(Entry::decode)
-                    .orElse(new Entry(0, GENESIS_HEAD));
-
-            byte[] combined = concat(current.headHash(), command.entryHash(), message.getSender());
-            byte[] newHead = Blake2bUtil.blake2bHash256(combined);
-            writer.put(key, new Entry(current.count() + 1, newHead).encode());
+            TransitionDecision decision = transitions.decide(command,
+                    TransitionContext.of(block, originalIndex, message),
+                    DocTrailTransitions.facts(writer, command));
+            TransitionPlans.commitIfApproved(decision, writer, effects);
         }
     }
 
@@ -90,7 +86,8 @@ public final class DocTrailStateMachine implements AppStateMachine {
     }
 
     public static Entry decodeEntry(byte[] stateValue) {
-        return Entry.decode(stateValue);
+        DocTrailTransitions.TrailHead head = DocTrailTransitions.decodeHead(stateValue);
+        return new Entry(head.count(), head.headHash());
     }
 
     /**
@@ -101,42 +98,15 @@ public final class DocTrailStateMachine implements AppStateMachine {
         return DocTrailContract.computeHead(entryHashes, authors);
     }
 
-    private static byte[] concat(byte[]... parts) {
-        int len = 0;
-        for (byte[] part : parts) {
-            len += part.length;
-        }
-        byte[] out = new byte[len];
-        int offset = 0;
-        for (byte[] part : parts) {
-            System.arraycopy(part, 0, out, offset, part.length);
-            offset += part.length;
-        }
-        return out;
-    }
-
-    record Command(String entityId, byte[] entryHash, String ref) {
-        static Command decode(byte[] body) {
-            DocTrailContract.Append decoded = DocTrailContract.decodeCommand(body);
-            return new Command(decoded.entityId(), decoded.entryHash(), decoded.reference());
-        }
-    }
-
     /** Per-entity trail head: number of entries and the running chained hash. */
     public record Entry(long count, byte[] headHash) {
-        byte[] encode() {
-            Array arr = new Array();
-            arr.add(new UnsignedInteger(count));
-            arr.add(new ByteString(headHash));
-            return CborSerializationUtil.serialize(arr);
+        public Entry {
+            headHash = headHash.clone();
         }
-
-        static Entry decode(byte[] bytes) {
-            StdlibCbor.requirePersistedEntry(bytes);
-            List<DataItem> items = ((Array) CborSerializationUtil.deserializeOne(bytes)).getDataItems();
-            return new Entry(
-                    ((UnsignedInteger) items.get(0)).getValue().longValue(),
-                    ((ByteString) items.get(1)).getBytes());
+        @Override public byte[] headHash() { return headHash.clone(); }
+        byte[] encode() {
+            return DocTrailTransitions.encodeHead(
+                    new DocTrailTransitions.TrailHead(count, headHash));
         }
     }
 }

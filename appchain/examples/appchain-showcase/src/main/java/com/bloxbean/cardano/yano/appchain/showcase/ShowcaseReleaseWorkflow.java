@@ -6,18 +6,20 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
-import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
-import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectId;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectIntent;
 import com.bloxbean.cardano.yano.api.appchain.effects.FinalityGate;
 import com.bloxbean.cardano.yano.api.appchain.effects.ResultPolicy;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
+import com.bloxbean.cardano.yano.api.appchain.transition.TransitionContext;
+import com.bloxbean.cardano.yano.api.appchain.transition.TransitionPlans;
 import com.bloxbean.cardano.yano.appchain.composite.ComponentGeneration;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeWorkflow;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeWorkflowContext;
 import com.bloxbean.cardano.yano.appchain.composite.WorkflowDescriptor;
 import com.bloxbean.cardano.yano.appchain.stdlib.ApprovalsStateMachine;
 import com.bloxbean.cardano.yano.appchain.stdlib.DocTrailStateMachine;
+import com.bloxbean.cardano.yano.appchain.stdlib.DocTrailTransitions;
 import com.bloxbean.cardano.yano.appchain.stdlib.KvRegistryStateMachine;
 
 import java.nio.charset.StandardCharsets;
@@ -36,6 +38,7 @@ final class ShowcaseReleaseWorkflow implements CompositeWorkflow {
     private final ComponentGeneration audit;
     private final ComponentGeneration release;
     private final DocTrailStateMachine auditMachine;
+    private final DocTrailTransitions auditTransitions = new DocTrailTransitions();
     private final ShowcaseReleaseStateMachine releaseMachine;
 
     ShowcaseReleaseWorkflow(WorkflowDescriptor descriptor, ComponentGeneration orders,
@@ -73,7 +76,9 @@ final class ShowcaseReleaseWorkflow implements CompositeWorkflow {
     @Override
     public void apply(AppBlockExecutionContext execution, CompositeWorkflowContext context) {
         AppBlock block = execution.block();
+        int visibleIndex = 0;
         for (AppMessage source : execution.messages()) {
+            int originalIndex = execution.originalMessageIndex(visibleIndex++);
             ShowcaseReleaseCommand command;
             try {
                 command = ShowcaseReleaseCommand.decode(source.getBody());
@@ -107,12 +112,13 @@ final class ShowcaseReleaseWorkflow implements CompositeWorkflow {
                     != CompositeWorkflowContext.ClaimResult.CLAIMED) {
                 continue;
             }
-            auditMachine.apply(
-                    com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext
-                            .fromValidatedBlock(withMessages(block, List.of(auditMessage))),
+            TransitionPlans.commitIfApproved(auditTransitions.decide(
+                            auditMessage.getBody(),
+                            new TransitionContext(block.height(), block.timestamp(), originalIndex,
+                                    source.getMessageId(), auditMessage.getTopic(), source.getSender()),
+                            auditState),
                     auditState,
-                    com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter
-                            .rejecting("document trail does not emit effects"));
+                    AppEffectEmitter.rejecting("document trail does not emit effects"));
             EffectId effectId = context.effects(release).emit(
                     EffectIntent.of(ShowcaseOutboxExecutor.TYPE, order)
                             .scope(ShowcaseReleaseStateMachine.SCOPE_PREFIX + command.releaseId())
@@ -136,10 +142,4 @@ final class ShowcaseReleaseWorkflow implements CompositeWorkflow {
                 .build();
     }
 
-    private static AppBlock withMessages(AppBlock block, List<AppMessage> messages) {
-        return new AppBlock(block.version(), block.chainId(), block.height(), block.prevHash(),
-                block.l1Slot(), block.l1BlockHash(), block.timestamp(),
-                AppBlockCodec.messagesRoot(messages), block.stateRoot(), messages,
-                block.proposer(), FinalityCert.empty());
-    }
 }

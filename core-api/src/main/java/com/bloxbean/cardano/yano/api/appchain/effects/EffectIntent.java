@@ -44,7 +44,7 @@ public record EffectIntent(String type,
         if (type.startsWith("~")) {
             throw new IllegalArgumentException("effect type must not start with '~' (reserved)");
         }
-        payload = payload != null ? payload : new byte[0];
+        payload = payload != null ? payload.clone() : new byte[0];
         scope = scope != null ? scope : "";
         gate = gate != null ? gate : FinalityGate.CHAIN_DEFAULT;
         result = result != null ? result : ResultPolicy.NONE;
@@ -55,7 +55,13 @@ public record EffectIntent(String type,
             throw new IllegalArgumentException(
                     "expiryBlocks applies only to ResultPolicy.CHAIN effects (ADR-010 F9)");
         }
-        sourceMessageId = sourceMessageId != null && sourceMessageId.length > 0 ? sourceMessageId : null;
+        sourceMessageId = sourceMessageId != null && sourceMessageId.length > 0
+                ? sourceMessageId.clone() : null;
+    }
+
+    @Override public byte[] payload() { return payload.clone(); }
+    @Override public byte[] sourceMessageId() {
+        return sourceMessageId != null ? sourceMessageId.clone() : null;
     }
 
     public static Builder of(String type, byte[] payload) {

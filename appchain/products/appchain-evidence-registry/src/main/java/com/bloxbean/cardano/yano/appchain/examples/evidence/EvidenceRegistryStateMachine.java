@@ -95,26 +95,40 @@ public final class EvidenceRegistryStateMachine implements AppStateMachine {
             throw new IllegalArgumentException("Evidence registry received a block for another chain");
         }
         for (AppMessage message : context.messages()) {
-            if (!EvidenceContract.COMMAND_TOPIC.equals(message.getTopic())) {
-                continue;
-            }
-            final EvidenceCommandV1 command;
-            try {
-                command = EvidenceCommandCodec.decode(message.getBody());
-            } catch (RuntimeException malformed) {
-                continue;
-            }
-            if (!validSender(message.getSender())) {
-                continue;
-            }
-            if (command instanceof SubmitEvidenceCommandV1 submit) {
-                applySubmit(block, writer, effects, message, submit);
-            } else if (command instanceof RepublishEvidenceCommandV1 republish) {
-                applyRepublish(block, writer, effects, message, republish);
-            } else if (command instanceof NotifyEvidenceCommandV1 notify) {
-                applyNotify(block, writer, effects, message, notify);
-            }
+            applyCommand(block, message, writer, effects);
         }
+    }
+
+    /** Apply one routed command against the original globally authenticated block. */
+    public boolean applyCommand(
+            AppBlock block,
+            AppMessage message,
+            AppStateWriter writer,
+            AppEffectEmitter effects
+    ) {
+        Objects.requireNonNull(block, "block");
+        Objects.requireNonNull(message, "message");
+        Objects.requireNonNull(writer, "writer");
+        Objects.requireNonNull(effects, "effects");
+        if (!config.chainId().equals(block.chainId())
+                || !EvidenceContract.COMMAND_TOPIC.equals(message.getTopic())
+                || !validSender(message.getSender())) {
+            return false;
+        }
+        final EvidenceCommandV1 command;
+        try {
+            command = EvidenceCommandCodec.decode(message.getBody());
+        } catch (RuntimeException malformed) {
+            return false;
+        }
+        if (command instanceof SubmitEvidenceCommandV1 submit) {
+            applySubmit(block, writer, effects, message, submit);
+        } else if (command instanceof RepublishEvidenceCommandV1 republish) {
+            applyRepublish(block, writer, effects, message, republish);
+        } else if (command instanceof NotifyEvidenceCommandV1 notify) {
+            applyNotify(block, writer, effects, message, notify);
+        }
+        return true;
     }
 
     @Override

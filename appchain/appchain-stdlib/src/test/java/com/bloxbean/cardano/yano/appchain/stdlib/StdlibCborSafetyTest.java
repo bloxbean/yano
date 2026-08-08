@@ -25,13 +25,14 @@ class StdlibCborSafetyTest {
     void deeplyNestedCommandsAreOrdinaryDeterministicRejections() {
         byte[] hostile = nestedArrays(10_000);
 
-        assertThatThrownBy(() -> KvRegistryStateMachine.Command.decode(hostile))
+        assertThatThrownBy(() -> new KvRegistryTransitions(
+                KvRegistryTransitions.ValueFormat.RAW).decodeCommand(hostile))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> ApprovalsStateMachine.Command.decode(hostile))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> BalancesStateMachine.Command.decode(hostile))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> DocTrailStateMachine.Command.decode(hostile))
+        assertThatThrownBy(() -> DocTrailTransitions.decodeCommand(hostile))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -65,7 +66,7 @@ class StdlibCborSafetyTest {
     @Test
     void nestedKvCborValueIsBoundedBeforeRecursiveDecode() {
         KvRegistryStateMachine machine = new KvRegistryStateMachine(
-                KvRegistryStateMachine.ValueFormat.CBOR);
+                KvRegistryTransitions.ValueFormat.CBOR);
         byte[] command = KvRegistryStateMachine.put(new byte[]{1}, nestedArrays(10_000));
 
         assertThat(machine.validate(message(command)).isAccepted()).isFalse();

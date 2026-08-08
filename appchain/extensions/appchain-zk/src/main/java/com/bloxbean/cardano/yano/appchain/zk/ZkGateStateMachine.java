@@ -6,7 +6,9 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
-import com.bloxbean.cardano.yano.api.appchain.OrderedLog;
+import com.bloxbean.cardano.yano.api.appchain.transition.FinalizedMessageIndex;
+import com.bloxbean.cardano.yano.api.appchain.transition.TransitionContext;
+import com.bloxbean.cardano.yano.api.appchain.transition.TransitionPlans;
 
 /**
  * E7.1 ZK admission/consensus gate (ADR app-layer/006). Each message body is an
@@ -59,9 +61,9 @@ public final class ZkGateStateMachine implements AppStateMachine {
     public void apply(AppBlockExecutionContext context, AppStateWriter writer,
                       AppEffectEmitter effects) {
         AppBlock block = context.block();
-        int index = 0;
+        int visibleIndex = 0;
         for (AppMessage message : context.messages()) {
-            int position = index++;
+            int originalIndex = context.originalMessageIndex(visibleIndex++);
             // MANDATORY consensus verification — every member re-verifies the
             // proof; a message whose proof does not verify is recorded by no one.
             ZkProofBody body;
@@ -73,8 +75,9 @@ public final class ZkGateStateMachine implements AppStateMachine {
             if (verifier.verify(body) != null) {
                 continue; // failed verification — not recorded, by all members
             }
-            OrderedLog.recordMessage(writer, block.height(), position, message);
+            TransitionPlans.commit(FinalizedMessageIndex.planMessage(
+                    TransitionContext.of(block, originalIndex, message)), writer, effects);
         }
-        OrderedLog.recordTip(writer, block.height());
+        TransitionPlans.commit(FinalizedMessageIndex.planTip(block.height()), writer, effects);
     }
 }
