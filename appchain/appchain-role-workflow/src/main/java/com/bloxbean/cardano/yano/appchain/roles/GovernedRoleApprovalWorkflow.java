@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.appchain.roles;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.appchain.composite.ComponentGeneration;
@@ -88,13 +89,14 @@ public final class GovernedRoleApprovalWorkflow implements CompositeWorkflow {
     }
 
     @Override
-    public void apply(AppBlock routedBlock, CompositeWorkflowContext context) {
+    public void apply(AppBlockExecutionContext execution, CompositeWorkflowContext context) {
+        AppBlock block = execution.block();
         var actorState = context.state(actors);
         var approvalState = context.state(approvals);
-        governance.prepareHeight(routedBlock.height(), actorState, approvalState);
-        actorApprovals.prepareHeight(routedBlock.height(), approvalState);
+        governance.prepareHeight(block.height(), actorState, approvalState);
+        actorApprovals.prepareHeight(block.height(), approvalState);
         ActorGovernanceProcessor.MutationHandler handler = policyGovernanceHandler();
-        for (AppMessage message : routedBlock.messages()) {
+        for (AppMessage message : execution.messages()) {
             byte[] resultKey = RoleWorkflowKeys.commandResult(message.getMessageId());
             if (approvalState.get(resultKey).isPresent()) continue;
             try {
@@ -103,19 +105,19 @@ public final class GovernedRoleApprovalWorkflow implements CompositeWorkflow {
                 String subjectId;
                 int commandKind;
                 if (command instanceof ActorGovernanceCommandV1 governed) {
-                    result = governance.apply(governed, routedBlock.height(),
+                    result = governance.apply(governed, block.height(),
                             actorState, approvalState, handler);
                     subjectId = governed.mutationId();
                     commandKind = RoleCommandResultV1.KIND_POLICY_GOVERNANCE;
                 } else {
                     SignedActorCommandV1 actor = (SignedActorCommandV1) command;
                     result = actorApprovals.apply(actor,
-                            routedBlock.height(), actorState, approvalState);
+                            block.height(), actorState, approvalState);
                     subjectId = actor.statement().proposalId();
                     commandKind = RoleCommandResultV1.KIND_APPROVAL;
                 }
                 approvalState.put(resultKey, new RoleCommandResultV1(
-                        commandKind, subjectId, result, routedBlock.height(),
+                        commandKind, subjectId, result, block.height(),
                         message.getMessageId(), RoleCommandResultV1.commandDigest(
                         message.getBody())).encode());
             } catch (IllegalArgumentException malformed) {

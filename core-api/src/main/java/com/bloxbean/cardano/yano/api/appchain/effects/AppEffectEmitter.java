@@ -2,7 +2,7 @@ package com.bloxbean.cardano.yano.api.appchain.effects;
 
 /**
  * Deterministic effect emission, handed to
- * {@code AppStateMachine.apply(block, writer, effects)} (ADR app-layer/010
+ * {@code AppStateMachine.apply(context, writer, effects)} (ADR app-layer/010
  * F1). {@code emit()} records intent as consensus data — it never performs
  * I/O. Everything forbidden inside {@code apply()} stays forbidden here.
  * <p>

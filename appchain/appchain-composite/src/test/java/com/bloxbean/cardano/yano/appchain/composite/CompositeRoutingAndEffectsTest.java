@@ -4,8 +4,10 @@ import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.appchain.composite.contracts.AggregateQueryCodecV1;
 import com.bloxbean.cardano.yano.appchain.composite.contracts.AggregateQueryLimitsV1;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
+import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
@@ -91,6 +93,28 @@ class CompositeRoutingAndEffectsTest {
         assertThat(newGeneration.validateCalls).isEqualTo(1);
         assertThat(machine.validateForBlock(message("unknown.v1", "x"), 10,
                 new MemoryState(9)).isAccepted()).isFalse();
+    }
+
+    @Test
+    void l1AdmissionIsExplicitStateAwareAndNamespaceRestricted() {
+        StateAwareComponent component = new StateAwareComponent(new ComponentDescriptor(
+                "epoch", "1", "cfg", "state-v1", 1, 0,
+                List.of("~l1/epoch"), List.of(), 0));
+        CompositeStateMachine machine = machine(component);
+        MemoryState committed = new MemoryState(4);
+        committed.put(CompositeStateKeys.componentKey("epoch", LOCAL_KEY), bytes("own"));
+        committed.put(CompositeStateKeys.componentKey("sibling", LOCAL_KEY), bytes("sibling"));
+
+        assertThat(machine.validateForBlock(
+                message("~l1/epoch", "valid"), 5, committed).isAccepted()).isTrue();
+        assertThat(component.stateAwareCalls).isEqualTo(1);
+        assertThat(component.candidateHeight).isEqualTo(5);
+        assertThat(component.sawOwnState).isTrue();
+        assertThat(component.sawSiblingState).isFalse();
+        assertThat(machine.validateForBlock(
+                message("~l1/other", "valid"), 5, committed).isAccepted()).isFalse();
+        assertThat(machine.validateForBlock(
+                message("~unknown", "valid"), 5, committed).isAccepted()).isFalse();
     }
 
     @Test
@@ -256,11 +280,11 @@ class CompositeRoutingAndEffectsTest {
                 descriptor("first", "first.v1", 1, 0, List.of(), 0), delegate);
         CompositeStateMachine machine = machine(adapter);
 
-        AppBlock source = block(1, message("other.v1", "ignored"),
+        AppBlock source = rawBlock(1, message("other.v1", "ignored"),
                 message("first.v1", "accepted")).withCert(new FinalityCert(
                 FinalityCert.SCHEME_ED25519,
                 List.of(new FinalityCert.Signature(new byte[32], new byte[64]))));
-        machine.apply(source,
+        machine.apply(AppBlockExecutionContext.fromValidatedBlock(source),
                 new MemoryState(1), new CapturingEmitter(1));
 
         assertThat(delegate.applied).isTrue();
@@ -304,9 +328,14 @@ class CompositeRoutingAndEffectsTest {
                 .authScheme(0).authProof(new byte[]{1}).build();
     }
 
-    private static AppBlock block(long height, AppMessage... messages) {
+    private static AppBlockExecutionContext block(long height, AppMessage... messages) {
+        return AppBlockExecutionContext.fromValidatedBlock(rawBlock(height, messages));
+    }
+
+    private static AppBlock rawBlock(long height, AppMessage... messages) {
         return new AppBlock(1, "chain", height, new byte[32], 0, new byte[0], height,
-                new byte[32], new byte[32], List.of(messages), new byte[32], FinalityCert.empty());
+                AppBlockCodec.messagesRoot(List.of(messages)), new byte[32],
+                List.of(messages), new byte[32], FinalityCert.empty());
     }
 
     private static byte[] bytes(String value) {
@@ -335,9 +364,10 @@ class CompositeRoutingAndEffectsTest {
         }
 
         @Override
-        public void apply(AppBlock routedBlock, AppStateWriter ownState, AppEffectEmitter effects) {
+        public void apply(AppBlockExecutionContext execution, AppStateWriter ownState, AppEffectEmitter effects) {
+            AppBlock block = execution.block();
             applyCalls++;
-            for (AppMessage message : routedBlock.messages()) {
+            for (AppMessage message : execution.messages()) {
                 String body = new String(message.getBody(), StandardCharsets.UTF_8);
                 appliedBodies.add(body);
                 ownState.put(LOCAL_KEY, message.getBody());
@@ -345,6 +375,34 @@ class CompositeRoutingAndEffectsTest {
                     effects.emit(intent());
                 }
             }
+        }
+    }
+
+    private static final class StateAwareComponent extends RecordingComponent {
+        int stateAwareCalls;
+        long candidateHeight;
+        boolean sawOwnState;
+        boolean sawSiblingState;
+
+        private StateAwareComponent(ComponentDescriptor descriptor) {
+            super(descriptor);
+        }
+
+        @Override
+        public AppStateMachine.AdmissionResult validateForBlock(
+                AppMessage routedMessage,
+                long candidateHeight,
+                AppStateReader ownState
+        ) {
+            stateAwareCalls++;
+            this.candidateHeight = candidateHeight;
+            sawOwnState = ownState.get(LOCAL_KEY).isPresent();
+            sawSiblingState = ownState.get(
+                    CompositeStateKeys.componentKey("sibling", LOCAL_KEY)).isPresent();
+            return "valid".equals(new String(
+                    routedMessage.getBody(), StandardCharsets.UTF_8))
+                    ? AppStateMachine.AdmissionResult.accept()
+                    : AppStateMachine.AdmissionResult.reject("invalid epoch claim");
         }
     }
 
@@ -362,9 +420,13 @@ class CompositeRoutingAndEffectsTest {
         }
 
         @Override
-        public void apply(AppBlock block, AppStateWriter state) {
-            assertThat(block.messagesRoot()).isEqualTo(AppBlockCodec.messagesRoot(block.messages()));
-            assertThat(block.cert().signatures()).isEmpty();
+        public void apply(AppBlockExecutionContext context, AppStateWriter state,
+                          AppEffectEmitter effects) {
+            AppBlock block = context.block();
+            assertThat(block.messagesRoot()).isEqualTo(
+                    AppBlockCodec.messagesRoot(block.messages()));
+            assertThat(context.messages()).hasSize(1);
+            assertThat(block.cert().signatures()).hasSize(1);
             applied = true;
         }
     }
@@ -384,21 +446,22 @@ class CompositeRoutingAndEffectsTest {
         }
 
         @Override
-        public void apply(AppBlock block, AppStateWriter state, AppEffectEmitter effects) {
-            for (AppMessage ignored : block.messages()) {
+        public void apply(AppBlockExecutionContext execution, AppStateWriter state, AppEffectEmitter effects) {
+            AppBlock block = execution.block();
+            for (AppMessage ignored : execution.messages()) {
                 effects.emit(intent());
             }
         }
 
         @Override
         public void onEffectResult(
-                AppBlock block,
+                AppBlockExecutionContext execution,
                 EffectResult result,
                 AppStateWriter state,
                 AppEffectEmitter effects
         ) {
             resultCalls++;
-            resultBlockMessages = block.messages().size();
+            resultBlockMessages = execution.messages().size();
             state.put("result".getBytes(StandardCharsets.US_ASCII), result.externalRef());
             if (emitContinuation) {
                 effects.emit(intent());
@@ -412,8 +475,9 @@ class CompositeRoutingAndEffectsTest {
         }
 
         @Override
-        public void apply(AppBlock block, AppStateWriter state, AppEffectEmitter effects) {
-            if (!block.messages().isEmpty()) {
+        public void apply(AppBlockExecutionContext execution, AppStateWriter state, AppEffectEmitter effects) {
+            AppBlock block = execution.block();
+            if (!execution.messages().isEmpty()) {
                 effects.emit(intent());
                 effects.emit(intent());
             }

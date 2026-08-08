@@ -249,7 +249,7 @@ class PluginCatalogPackagingTest {
                 AppStateMachineProvider.class, "conformance-machine").create();
         assertEquals("conformance-machine", machine.id());
         machine.init(null, null);
-        machine.apply(null, null);
+        machine.apply(null, null, null);
 
         SequencerContext sequencerContext = new SequencerContext() {
             @Override public String chainId() { return "conformance-chain"; }

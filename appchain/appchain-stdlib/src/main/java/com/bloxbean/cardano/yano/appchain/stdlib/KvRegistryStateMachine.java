@@ -5,8 +5,10 @@ import co.nstant.in.cbor.model.ByteString;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.KvRegistryContract;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -121,8 +123,10 @@ public final class KvRegistryStateMachine implements AppStateMachine {
     }
 
     @Override
-    public void apply(AppBlock block, AppStateWriter writer) {
-        for (AppMessage message : block.messages()) {
+    public void apply(AppBlockExecutionContext context, AppStateWriter writer,
+                      AppEffectEmitter effects) {
+        AppBlock block = context.block();
+        for (AppMessage message : context.messages()) {
             Command command;
             try {
                 command = Command.decode(message.getBody());

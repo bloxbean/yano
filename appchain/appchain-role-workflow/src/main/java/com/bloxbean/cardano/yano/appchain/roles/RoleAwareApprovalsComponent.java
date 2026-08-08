@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.roles;
 
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
@@ -65,9 +66,10 @@ public final class RoleAwareApprovalsComponent implements CompositeComponent {
     }
 
     @Override
-    public void apply(AppBlock routedBlock, AppStateWriter ownState, AppEffectEmitter ownedEffects) {
+    public void apply(AppBlockExecutionContext execution, AppStateWriter ownState, AppEffectEmitter ownedEffects) {
+        AppBlock block = execution.block();
         if (genesis != null) {
-            initializeOrVerify(routedBlock.height(), ownState);
+            initializeOrVerify(block.height(), ownState);
         }
         // Commands are owned by the declared cross-component workflow.
     }

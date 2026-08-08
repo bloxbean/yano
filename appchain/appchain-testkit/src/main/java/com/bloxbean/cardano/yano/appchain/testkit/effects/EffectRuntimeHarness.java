@@ -3,7 +3,7 @@ package com.bloxbean.cardano.yano.appchain.testkit.effects;
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
@@ -256,11 +256,10 @@ public final class EffectRuntimeHarness implements AutoCloseable {
     private static AppStateMachine emitting(String actionType) {
         return new AppStateMachine() {
             @Override public String id() { return "effect-runtime-test-emitter"; }
-            @Override public void apply(AppBlock block, AppStateWriter writer) { }
-
             @Override
-            public void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
-                for (AppMessage message : block.messages()) {
+            public void apply(AppBlockExecutionContext context, AppStateWriter writer,
+                              AppEffectEmitter effects) {
+                for (AppMessage message : context.messages()) {
                     effects.emit(EffectIntent.of(actionType, message.getBody())
                             .scope(scope(message.getMessageIdHex()))
                             .gate(FinalityGate.APP_FINAL)

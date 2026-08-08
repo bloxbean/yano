@@ -7,6 +7,7 @@ import com.bloxbean.cardano.client.transaction.spec.Value;
 import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipEpoch;
 import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipView;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
@@ -131,7 +132,7 @@ class EutxoBridgeSettlementMachineTest {
                 .authScheme(0)
                 .authProof(new byte[64])
                 .build();
-        machine.apply(block(2, reserved), state);
+        apply(machine, block(2, reserved), state);
 
         assertThat(EutxoQueryCodec.decodeOptionalReceipt(machine.query(
                 EutxoQueryCodec.ATTEMPT_PATH,
@@ -170,7 +171,7 @@ class EutxoBridgeSettlementMachineTest {
                 0,
                 0);
         AppMessage message = message(62, withdrawal);
-        machine.apply(block(2, message), state);
+        apply(machine, block(2, message), state);
         return message;
     }
 
@@ -208,7 +209,7 @@ class EutxoBridgeSettlementMachineTest {
         String withdrawalTxId = TransactionUtil.getTxHash(
                 EutxoTransactionFixtures.serialize(withdrawal));
         AppMessage withdrawalMessage = message(62, withdrawal);
-        machine.apply(block(2, withdrawalMessage), state);
+        apply(machine, block(2, withdrawalMessage), state);
         assertThat(receiptStatus(machine, state, withdrawalMessage))
                 .isEqualTo(EutxoReceipt.Status.ACCEPTED);
 
@@ -265,7 +266,7 @@ class EutxoBridgeSettlementMachineTest {
                 200,
                 fill(32, 7),
                 confirmation.encode());
-        machine.apply(block(3, observationMessage(63, observation)), state);
+        apply(machine, block(3, observationMessage(63, observation)), state);
 
         EutxoReserve reconciled = EutxoReserve.decode(
                 state.get(EutxoStateKeys.reserve(EutxoReserve.LOVELACE)).orElseThrow());
@@ -295,7 +296,7 @@ class EutxoBridgeSettlementMachineTest {
                 0,
                 0);
         AppMessage withdrawalMessage = message(65, withdrawal);
-        machine.apply(block(2, withdrawalMessage), state);
+        apply(machine, block(2, withdrawalMessage), state);
         assertThat(receiptStatus(machine, state, withdrawalMessage))
                 .isEqualTo(EutxoReceipt.Status.REJECTED);
         EutxoReserve reserve = EutxoReserve.decode(
@@ -308,7 +309,7 @@ class EutxoBridgeSettlementMachineTest {
             throws Exception {
         EutxoStateMachine machine = v3Machine(2);
         MemoryAppState state = new MemoryAppState();
-        machine.apply(block(1), state);
+        apply(machine, block(1), state);
         EutxoBridgeParams initial = EutxoBridgeParams.decode(
                 state.get(EutxoStateKeys.bridgeParamsCurrent()).orElseThrow());
         assertThat(initial.feeFlatLovelace()).isEqualTo(2_000_000L);
@@ -322,19 +323,19 @@ class EutxoBridgeSettlementMachineTest {
                                 100L, 3_600L, 86_400L, 0L),
                         2);
         // Outsider approval is skipped deterministically.
-        machine.apply(block(2, paramsMessage(70, OUTSIDER, command)), state);
+        apply(machine, block(2, paramsMessage(70, OUTSIDER, command)), state);
         assertThat(state.get(EutxoStateKeys.bridgeParamsProposals())).isEmpty();
         assertThat(state.get(EutxoStateKeys.bridgeParamsPending())).isEmpty();
 
-        machine.apply(block(3, paramsMessage(71, MEMBER_ONE, command)), state);
+        apply(machine, block(3, paramsMessage(71, MEMBER_ONE, command)), state);
         assertThat(state.get(EutxoStateKeys.bridgeParamsProposals())).isPresent();
         assertThat(state.get(EutxoStateKeys.bridgeParamsPending())).isEmpty();
 
         // Duplicate approval by the same member does not schedule.
-        machine.apply(block(4, paramsMessage(72, MEMBER_ONE, command)), state);
+        apply(machine, block(4, paramsMessage(72, MEMBER_ONE, command)), state);
         assertThat(state.get(EutxoStateKeys.bridgeParamsPending())).isEmpty();
 
-        machine.apply(block(5, paramsMessage(73, MEMBER_TWO, command)), state);
+        apply(machine, block(5, paramsMessage(73, MEMBER_TWO, command)), state);
         assertThat(state.get(EutxoStateKeys.bridgeParamsPending())).isPresent();
         assertThat(state.get(EutxoStateKeys.bridgeParamsProposals())).isEmpty();
         // Not yet active.
@@ -342,8 +343,8 @@ class EutxoBridgeSettlementMachineTest {
                 state.get(EutxoStateKeys.bridgeParamsCurrent()).orElseThrow())
                 .feeFlatLovelace()).isEqualTo(2_000_000L);
 
-        machine.apply(block(6), state);
-        machine.apply(block(7), state);
+        apply(machine, block(6), state);
+        apply(machine, block(7), state);
         EutxoBridgeParams active = EutxoBridgeParams.decode(
                 state.get(EutxoStateKeys.bridgeParamsCurrent()).orElseThrow());
         assertThat(active.feeFlatLovelace()).isEqualTo(3_000_000L);
@@ -366,7 +367,7 @@ class EutxoBridgeSettlementMachineTest {
                 0,
                 0);
         AppMessage withdrawalMessage = message(74, withdrawal);
-        machine.apply(block(9, withdrawalMessage), state);
+        apply(machine, block(9, withdrawalMessage), state);
         assertThat(receiptStatus(machine, state, withdrawalMessage))
                 .isEqualTo(EutxoReceipt.Status.ACCEPTED);
         EutxoWithdrawalRecord record = EutxoQueryCodec.decodeWithdrawalRecords(
@@ -417,10 +418,10 @@ class EutxoBridgeSettlementMachineTest {
         EutxoStateMachine one = v3Machine(2);
         EutxoStateMachine two = v3Machine(2);
         for (AppBlock block : blocks) {
-            one.apply(block, first);
+            apply(one, block, first);
         }
         for (AppBlock block : blocks) {
-            two.apply(block, second);
+            apply(two, block, second);
         }
         assertThat(first.sameState(second)).isTrue();
         assertThat(EutxoBridgeParams.decode(
@@ -508,7 +509,7 @@ class EutxoBridgeSettlementMachineTest {
         assertThat(batch.batchSeq()).isZero();
         // Cursor advanced; a follow-up block does NOT re-emit the same range.
         CapturingEmitter again = new CapturingEmitter(height + 1);
-        machine.apply(block(height + 1), state, again);
+        apply(machine, block(height + 1), state, again);
         assertThat(again.batches()).isEmpty();
     }
 
@@ -521,10 +522,10 @@ class EutxoBridgeSettlementMachineTest {
         long height = createWithdrawal(machine, state, 1, 5_000_000L, 0x60);
         height = createWithdrawal(machine, state, height, 5_000_000L, 0x61);
         CapturingEmitter early = new CapturingEmitter(height + 1);
-        machine.apply(block(height + 1), state, early);
+        apply(machine, block(height + 1), state, early);
         assertThat(early.batches()).isEmpty();
         CapturingEmitter fired = new CapturingEmitter(height + 200);
-        machine.apply(block(height + 200), state, fired);
+        apply(machine, block(height + 200), state, fired);
         assertThat(fired.batches()).hasSize(1);
         assertThat(fired.batches().getFirst().toSequence()).isEqualTo(2);
     }
@@ -546,9 +547,9 @@ class EutxoBridgeSettlementMachineTest {
                 EutxoStateMachine.SETTLEMENT_EFFECT_TYPE,
                 "bridge/settlement/7/0",
                 EffectOutcome.FAILED, new byte[0], null, height + 2);
-        machine.onEffectResult(block(height + 2), failed, state);
+        onEffectResult(machine, block(height + 2), failed, state);
         CapturingEmitter refired = new CapturingEmitter(height + 3);
-        machine.apply(block(height + 3), state, refired);
+        apply(machine, block(height + 3), state, refired);
         assertThat(refired.batches()).hasSize(1);
         assertThat(refired.batches().getFirst().fromSequence()).isZero();
     }
@@ -591,7 +592,7 @@ class EutxoBridgeSettlementMachineTest {
         L1Observation observation = new L1Observation(
                 "bridge-withdrawals", HexFormat.of().parseHex("88".repeat(32)),
                 250, fill(32, 8), confirmation.encode());
-        machine.apply(block(height, observationMessage(0xB1, observation)),
+        apply(machine, block(height, observationMessage(0xB1, observation)),
                 state, new CapturingEmitter(height));
 
         List<EutxoWithdrawalRecord> after = EutxoQueryCodec.decodeWithdrawalRecords(
@@ -635,7 +636,7 @@ class EutxoBridgeSettlementMachineTest {
         L1Observation observation = new L1Observation(
                 "bridge-withdrawals", HexFormat.of().parseHex("99".repeat(32)),
                 260, fill(32, 9), forged.encode());
-        machine.apply(block(height, observationMessage(0xB7, observation)),
+        apply(machine, block(height, observationMessage(0xB7, observation)),
                 state, new CapturingEmitter(height));
 
         // Bridge halts; the claim stays PENDING; the reserve is untouched.
@@ -657,7 +658,7 @@ class EutxoBridgeSettlementMachineTest {
         // sub-floor proposal must never accumulate approvals on any member.
         EutxoStateMachine machine = v3Machine(2);
         MemoryAppState state = new MemoryAppState();
-        machine.apply(block(1), state);
+        apply(machine, block(1), state);
 
         EutxoBridgeParamsGovernanceV1.Command subFloor =
                 new EutxoBridgeParamsGovernanceV1.Command(
@@ -666,8 +667,8 @@ class EutxoBridgeSettlementMachineTest {
                                 100L, 3_600L,
                                 EutxoProfile.V3.fallbackDelayMinSlots() - 1, 0L),
                         2);
-        machine.apply(block(2, paramsMessage(90, MEMBER_ONE, subFloor)), state);
-        machine.apply(block(3, paramsMessage(91, MEMBER_TWO, subFloor)), state);
+        apply(machine, block(2, paramsMessage(90, MEMBER_ONE, subFloor)), state);
+        apply(machine, block(3, paramsMessage(91, MEMBER_TWO, subFloor)), state);
         // Dropped before it becomes a proposal — nothing scheduled, nothing
         // recorded, current params untouched.
         assertThat(state.get(EutxoStateKeys.bridgeParamsProposals())).isEmpty();
@@ -685,8 +686,8 @@ class EutxoBridgeSettlementMachineTest {
                                 100L, 3_600L,
                                 EutxoProfile.V3.fallbackDelayMinSlots(), 0L),
                         4);
-        machine.apply(block(4, paramsMessage(92, MEMBER_ONE, atFloor)), state);
-        machine.apply(block(5, paramsMessage(93, MEMBER_TWO, atFloor)), state);
+        apply(machine, block(4, paramsMessage(92, MEMBER_ONE, atFloor)), state);
+        apply(machine, block(5, paramsMessage(93, MEMBER_TWO, atFloor)), state);
         assertThat(state.get(EutxoStateKeys.bridgeParamsPending())).isPresent();
     }
 
@@ -713,7 +714,7 @@ class EutxoBridgeSettlementMachineTest {
                         .inlineDatum(PlutusData.deserialize(datum.encode()))
                         .build()),
                 0, 0);
-        machine.apply(block(height + 1, message(0x90 + nonceByte, withdrawal)),
+        apply(machine, block(height + 1, message(0x90 + nonceByte, withdrawal)),
                 state, withdrawalEmitter);
         return height + 2;
     }
@@ -726,7 +727,7 @@ class EutxoBridgeSettlementMachineTest {
                 "bridge-deposits",
                 HexFormat.of().parseHex(claim.acceptedOutpoint().transactionId()),
                 claim.l1Slot(), claim.l1BlockHash(), claim.encode());
-        machine.apply(block(height, observationMessage(0xA0 + nonceByte, observation)),
+        apply(machine, block(height, observationMessage(0xA0 + nonceByte, observation)),
                 state, new CapturingEmitter(height));
     }
 
@@ -868,7 +869,7 @@ class EutxoBridgeSettlementMachineTest {
                 claim.l1Slot(),
                 claim.l1BlockHash(),
                 claim.encode());
-        machine.apply(block(1, observationMessage(61, observation)), state);
+        apply(machine, block(1, observationMessage(61, observation)), state);
     }
 
     private static EutxoOutpoint mirroredOutpoint(
@@ -959,6 +960,33 @@ class EutxoBridgeSettlementMachineTest {
                 .authScheme(0)
                 .authProof(new byte[64])
                 .build();
+    }
+
+    private static void apply(
+            EutxoStateMachine machine,
+            AppBlock block,
+            MemoryAppState state
+    ) {
+        apply(machine, block, state, AppEffectEmitter.rejecting("unused"));
+    }
+
+    private static void apply(
+            EutxoStateMachine machine,
+            AppBlock block,
+            MemoryAppState state,
+            AppEffectEmitter effects
+    ) {
+        machine.apply(AppBlockExecutionContext.fromValidatedBlock(block), state, effects);
+    }
+
+    private static void onEffectResult(
+            EutxoStateMachine machine,
+            AppBlock block,
+            EffectResult result,
+            MemoryAppState state
+    ) {
+        machine.onEffectResult(AppBlockExecutionContext.fromValidatedBlock(block), result, state,
+                AppEffectEmitter.rejecting("unused"));
     }
 
     private static AppBlock block(long height, AppMessage... messages) {

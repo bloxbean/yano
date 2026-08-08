@@ -1,20 +1,20 @@
 package com.bloxbean.cardano.yano.appchain.composite;
 
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
-import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.appchain.composite.contracts.AggregateQueryCodecV1;
-import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectId;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectIntent;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
+import com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody;
 import com.bloxbean.cardano.yano.api.appchain.effects.ResultPolicy;
 
 import java.nio.ByteBuffer;
@@ -235,7 +235,7 @@ public final class CompositeStateMachine implements AppStateMachine {
     public AdmissionResult validate(
             com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage message
     ) {
-        return validateAgainstRuntime(message, runtimeFor(profileBytes), 1, false);
+        return validateAgainstRuntime(message, runtimeFor(profileBytes), 1, false, null);
     }
 
     @Override
@@ -250,18 +250,31 @@ public final class CompositeStateMachine implements AppStateMachine {
         RuntimeEntry runtime = governance != null
                 ? runtimeFor(governance.profileForCandidateHeight(candidateHeight, committedState))
                 : runtimeFor(profileBytes);
-        return validateAgainstRuntime(message, runtime, candidateHeight, true);
+        return validateAgainstRuntime(
+                message, runtime, candidateHeight, true, committedState);
     }
 
     private AdmissionResult validateAgainstRuntime(
             com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage message,
             RuntimeEntry runtime,
             long candidateHeight,
-            boolean candidateAware
+            boolean candidateAware,
+            AppStateReader committedState
     ) {
         String topic = message.getTopic();
-        if (topic != null && topic.startsWith("~")) {
+        if (FxResultBody.TOPIC.equals(topic)) {
             return AdmissionResult.accept();
+        }
+        if (com.bloxbean.cardano.yano.appchain.composite.contracts
+                .CompositeProfileGovernanceV1.TOPIC.equals(topic)) {
+            return governance != null
+                    ? AdmissionResult.accept()
+                    : AdmissionResult.reject("Composite profile governance is disabled");
+        }
+        if (topic != null && topic.startsWith("~")
+                && !topic.startsWith(com.bloxbean.cardano.yano.api.appchain.l1view
+                .L1Observation.TOPIC_PREFIX)) {
+            return AdmissionResult.reject("Unsupported composite framework topic");
         }
         List<ComponentBinding> candidates = runtime.components().stream()
                 .filter(component -> component.descriptor().activeAt(candidateHeight))
@@ -275,7 +288,12 @@ public final class CompositeStateMachine implements AppStateMachine {
             return AdmissionResult.reject("Unknown composite message topic");
         }
         for (ComponentBinding candidate : candidates) {
-            AdmissionResult result = candidate.product().validate(snapshot(message));
+            AdmissionResult result = candidateAware
+                    ? candidate.product().validateForBlock(
+                    snapshot(message), candidateHeight,
+                    NamespacedStateViews.reader(
+                            candidate.descriptor().componentId(), committedState))
+                    : candidate.product().validate(snapshot(message));
             if (!result.isAccepted()) {
                 return result;
             }
@@ -293,12 +311,12 @@ public final class CompositeStateMachine implements AppStateMachine {
     }
 
     @Override
-    public void apply(AppBlock block, AppStateWriter writer) {
-        apply(block, writer, AppEffectEmitter.rejecting("effects unavailable to composite"));
-    }
-
-    @Override
-    public void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
+    public void apply(
+            AppBlockExecutionContext context,
+            AppStateWriter writer,
+            AppEffectEmitter effects
+    ) {
+        AppBlock block = context.block();
         RuntimeEntry runtime = runtimeAtBlockStart(block, writer);
         if (governance != null) {
             governance.processCommands(block, writer);
@@ -309,13 +327,9 @@ public final class CompositeStateMachine implements AppStateMachine {
             if (!descriptor.activeAt(block.height())) {
                 continue;
             }
-            List<com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage> routed =
-                    block.messages().stream()
-                            .filter(message -> message.getTopic() != null
-                                    && !message.getTopic().startsWith("~"))
-                            .filter(message -> descriptor.topics().contains(message.getTopic()))
-                            .toList();
-            component.product().apply(withMessages(block, routed),
+            List<Integer> routed = routeIndexes(
+                    context, descriptor.topics()::contains);
+            component.product().apply(context.routeToMessageIndexes(routed),
                     NamespacedStateViews.writer(descriptor.componentId(), writer),
                     new OwnedEmitter(block.height(), descriptor, writer, effects));
         }
@@ -324,11 +338,9 @@ public final class CompositeStateMachine implements AppStateMachine {
             if (!descriptor.activeAt(block.height())) {
                 continue;
             }
-            List<com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage> routed =
-                    block.messages().stream()
-                            .filter(message -> descriptor.topic().equals(message.getTopic()))
-                            .toList();
-            workflow.product().apply(withMessages(block, routed),
+            List<Integer> routed = routeIndexes(
+                    context, topic -> descriptor.topic().equals(topic));
+            workflow.product().apply(context.routeToMessageIndexes(routed),
                     new WorkflowContext(block.height(), descriptor, writer, effects));
         }
         clearQuotaCounters(block.height(), writer);
@@ -356,11 +368,12 @@ public final class CompositeStateMachine implements AppStateMachine {
 
     @Override
     public void onEffectResult(
-            AppBlock block,
+            AppBlockExecutionContext context,
             EffectResult result,
             AppStateWriter writer,
             AppEffectEmitter effects
     ) {
+        AppBlock block = context.block();
         runtimeAtBlockStart(block, writer);
         byte[] ownerKey = CompositeStateKeys.effectOwnerKey(result.effectId());
         byte[] encodedOwner = writer.get(ownerKey).orElseThrow(() ->
@@ -377,7 +390,7 @@ public final class CompositeStateMachine implements AppStateMachine {
                 .orElseThrow(() -> new IllegalStateException(
                         "composite effect owner references an unavailable generation: " + generation));
         ComponentDescriptor descriptor = component.descriptor();
-        component.product().onEffectResult(withMessages(block, List.of()), result,
+        component.product().onEffectResult(context.routeToMessageIndexes(List.of()), result,
                 NamespacedStateViews.writer(descriptor.componentId(), writer),
                 new OwnedEmitter(block.height(), descriptor, writer, effects));
         writer.delete(ownerKey);
@@ -565,17 +578,19 @@ public final class CompositeStateMachine implements AppStateMachine {
         }
     }
 
-    private static AppBlock withMessages(
-            AppBlock block,
-            List<com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage> messages
+    private static List<Integer> routeIndexes(
+            AppBlockExecutionContext context,
+            java.util.function.Predicate<String> topicFilter
     ) {
-        List<com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage> safeMessages =
-                messages.stream().map(CompositeStateMachine::snapshot).toList();
-        return new AppBlock(block.version(), block.chainId(), block.height(), block.prevHash().clone(),
-                block.l1Slot(), block.l1BlockHash().clone(), block.timestamp(),
-                AppBlockCodec.messagesRoot(safeMessages),
-                block.stateRoot().clone(), safeMessages, block.proposer().clone(),
-                FinalityCert.empty());
+        List<Integer> indexes = new ArrayList<>();
+        List<com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage> messages =
+                context.messages();
+        for (int index = 0; index < messages.size(); index++) {
+            if (topicFilter.test(messages.get(index).getTopic())) {
+                indexes.add(context.originalMessageIndex(index));
+            }
+        }
+        return List.copyOf(indexes);
     }
 
     private static com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage snapshot(

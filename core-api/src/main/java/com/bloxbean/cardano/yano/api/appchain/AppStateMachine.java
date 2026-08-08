@@ -49,10 +49,9 @@ public interface AppStateMachine {
      * Height- and state-aware mempool admission for the next candidate block.
      * <p>
      * The runtime invokes this overload while selecting a proposal, with the
-     * committed state at {@code candidateHeight - 1}. The default preserves
-     * source and binary compatibility for existing machines. Versioned state
-     * machines should override it when the valid topic or payload set changes
-     * at an activation height.
+     * committed state at {@code candidateHeight - 1}. Versioned state machines
+     * should override it when the valid topic or payload set changes at an
+     * activation height.
      */
     default AdmissionResult validateForBlock(
             AppMessage message,
@@ -78,33 +77,16 @@ public interface AppStateMachine {
     }
 
     /**
-     * Deterministic transition: apply every message of the finalized block,
-     * writing state through {@code writer}. Keys/values written here form the
-     * MPF state commitment whose root is bound into the block.
-     */
-    void apply(AppBlock block, AppStateWriter writer);
-
-    /**
-     * Deterministic transition WITH effect emission (ADR app-layer/010 F1).
-     * The engine always invokes this overload; the default delegates to the
-     * 2-arg form, so existing machines are untouched. Effect-emitting
-     * machines override this (and may implement the 2-arg form as a plain
-     * delegate — the engine never calls it directly).
+     * Deterministic transition with block-scoped, replayable inputs and effect
+     * emission (ADR-031). This is the only execution entry point.
      * <p>
      * {@code effects.emit(...)} records intent as consensus data — it never
      * performs I/O. Everything forbidden in {@code apply()} remains forbidden
-     * here; emission must be a pure function of {@code (block, committed
+     * here; emission must be a pure function of {@code (context, committed
      * state)}, and emission-logic changes MUST be height-gated
      * (ADR app-layer/010.1, {@code ActivationSchedule}).
-     * <p>
-     * Callers other than the framework should invoke THIS form. The 2-arg
-     * form is the legacy entry point: on an effect-emitting machine it fails
-     * deterministically at the first {@code emit()} (with earlier writes
-     * already staged) — never catch that and commit.
      */
-    default void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
-        apply(block, writer);
-    }
+    void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects);
 
     /**
      * Deterministic callback when a consensus-incorporated effect outcome
@@ -114,34 +96,12 @@ public interface AppStateMachine {
      * this block's app messages are applied; writes join the same atomic
      * commit. Same determinism contract as {@code apply()}. Default: no-op.
      */
-    default void onEffectResult(AppBlock block, EffectResult result, AppStateWriter writer) {
-    }
-
-    /**
-     * Deterministic effect-result callback with the block-scoped emitter
-     * (ADR-013.1). The engine invokes exactly this overload. Its default
-     * delegates to the legacy callback once, preserving existing source and
-     * binary implementations. Emissions share one global ordinal sequence
-     * with other result callbacks and {@link #apply(AppBlock, AppStateWriter,
-     * AppEffectEmitter)} in this block.
-     */
     default void onEffectResult(
-            AppBlock block,
+            AppBlockExecutionContext context,
             EffectResult result,
             AppStateWriter writer,
             AppEffectEmitter effects
     ) {
-        onEffectResult(block, result, writer);
-    }
-
-    /**
-     * Legacy optional read hook retained for source compatibility and direct
-     * library callers. The bounded ADR-011.3 runtime never invokes this hook:
-     * a payload produced without the committed query context cannot honestly
-     * be bound to the height and state root in {@link AppQueryResult}.
-     */
-    default byte[] query(String path, byte[] params) {
-        throw new UnsupportedOperationException("query not supported by " + id());
     }
 
     /**
@@ -171,9 +131,7 @@ public interface AppStateMachine {
      * Other reason codes are host-owned; unexpected plugin failures are
      * redacted and mapped to {@link AppQueryException.Code#FAILED}.</p>
      *
-     * <p>The default reports {@code UNSUPPORTED}. Existing state machines
-     * remain source compatible, but must implement this overload before the
-     * runtime can expose a root-attested query result.</p>
+     * <p>The default reports {@code UNSUPPORTED}.</p>
      */
     default byte[] query(String path, byte[] params, AppQueryContext state) {
         throw new AppQueryException(AppQueryException.Code.UNSUPPORTED,

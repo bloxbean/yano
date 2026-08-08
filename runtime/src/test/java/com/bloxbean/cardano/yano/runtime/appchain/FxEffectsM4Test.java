@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.runtime.appchain;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
@@ -165,8 +166,8 @@ class FxEffectsM4Test {
     private static AppStateMachine emitting(ResultPolicy policy) {
         return new AppStateMachine() {
             @Override public String id() { return "emitter"; }
-            @Override public void apply(AppBlock block, AppStateWriter writer) { }
-            @Override public void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
+            @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
                 for (AppMessage message : block.messages()) {
                     effects.emit(EffectIntent.of("test.action", message.getBody())
                             .scope("s/" + block.height())

@@ -37,7 +37,16 @@ final class CompositeValidation {
     static String route(String value, String field) {
         printable(value, field);
         if (value.startsWith("~")) {
-            throw new IllegalArgumentException(field + " must not use a reserved system route");
+            String l1Prefix = com.bloxbean.cardano.yano.api.appchain.l1view
+                    .L1Observation.TOPIC_PREFIX;
+            boolean topicField = field.toLowerCase(java.util.Locale.ROOT).contains("topic");
+            boolean declaredL1Observer = topicField
+                    && value.startsWith(l1Prefix)
+                    && ID.matcher(value.substring(l1Prefix.length())).matches();
+            if (!declaredL1Observer) {
+                throw new IllegalArgumentException(
+                        field + " may reserve only an explicit ~l1/<observer-id> route");
+            }
         }
         return value;
     }

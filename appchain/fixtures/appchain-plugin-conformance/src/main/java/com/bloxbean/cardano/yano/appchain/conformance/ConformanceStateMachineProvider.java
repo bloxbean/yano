@@ -1,10 +1,12 @@
 package com.bloxbean.cardano.yano.appchain.conformance;
 
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 
 import java.nio.charset.StandardCharsets;
 import java.util.HexFormat;
@@ -41,7 +43,8 @@ public final class ConformanceStateMachineProvider implements AppStateMachinePro
             }
 
             @Override
-            public void apply(AppBlock block, AppStateWriter writer) {
+            public void apply(AppBlockExecutionContext context, AppStateWriter writer,
+                              AppEffectEmitter effects) {
                 ConformanceTcclProbe.productCallback(firstCallback,
                         "state-machine apply");
                 // The isolated conformance chain never proposes a block.

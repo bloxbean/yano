@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.appchain.roles;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.appchain.composite.ComponentGeneration;
@@ -72,11 +73,12 @@ public final class RoleApprovalWorkflow implements CompositeWorkflow {
     }
 
     @Override
-    public void apply(AppBlock block, CompositeWorkflowContext context) {
+    public void apply(AppBlockExecutionContext execution, CompositeWorkflowContext context) {
+        AppBlock block = execution.block();
         AppStateWriter registryState = context.state(registry);
         OverlayState approvalState = new OverlayState(context.state(approvals));
         GovernedMutationProcessor.MutationHandler handler = policyHandler();
-        for (AppMessage message : block.messages()) {
+        for (AppMessage message : execution.messages()) {
             try {
                 Object command = decode(message.getBody());
                 if (command instanceof GovernedMutationCommandV1 governed) {

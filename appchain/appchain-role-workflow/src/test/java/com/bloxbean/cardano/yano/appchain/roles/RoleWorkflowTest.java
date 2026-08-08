@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.appchain.roles;
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
@@ -689,9 +690,11 @@ class RoleWorkflowTest {
         return new ActorIdentity(actor, organization, role, 1, key, seed, List.of(key));
     }
 
-    private static AppBlock block(long height, AppMessage... messages) {
-        return new AppBlock(1, CHAIN, height, new byte[32], 0, new byte[0], height,
-                new byte[32], new byte[32], List.of(messages), new byte[32], FinalityCert.empty());
+    private static AppBlockExecutionContext block(long height, AppMessage... messages) {
+        return AppBlockExecutionContext.fromValidatedBlock(new AppBlock(
+                1, CHAIN, height, new byte[32], 0, new byte[0], height,
+                new byte[32], new byte[32], List.of(messages), new byte[32],
+                FinalityCert.empty()));
     }
 
     private static byte[] seed(int value) {

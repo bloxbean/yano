@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.appchain.stdlib;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.effects.ActivationSchedule;
@@ -47,15 +48,15 @@ class ApprovalsGenericEffectTest {
     @Test
     void emptyPayloadEmitsOnceWithExactGenericContract() {
         Fixture fixture = fixture(1, 25, FinalityGate.L1_ANCHORED);
-        fixture.machine.apply(block(1, 1,
+        execute(fixture.machine, block(1, 1,
                 message(ApprovalsStateMachine.propose("empty", new byte[0], 1, 0), "alice")),
                 fixture.state, fixture.emitter);
         assertThat(fixture.state.get(
                 ApprovalsStateMachine.stagedEffectPayloadKey("empty"))).isPresent();
 
         AppMessage approval = message(ApprovalsStateMachine.approve("empty"), "bob");
-        fixture.machine.apply(block(2, 2, approval), fixture.state, fixture.emitter);
-        fixture.machine.apply(block(3, 3, approval), fixture.state, fixture.emitter);
+        execute(fixture.machine, block(2, 2, approval), fixture.state, fixture.emitter);
+        execute(fixture.machine, block(3, 3, approval), fixture.state, fixture.emitter);
 
         assertThat(fixture.emitter.intents).singleElement().satisfies(intent -> {
             assertThat(intent.type()).isEqualTo("demo.webhook");
@@ -81,7 +82,7 @@ class ApprovalsGenericEffectTest {
     void allTerminalOutcomesPreserveApprovedDecisionAndExactEvidence() {
         for (EffectOutcome outcome : EffectOutcome.values()) {
             Fixture fixture = fixture(1, 10, FinalityGate.APP_FINAL);
-            fixture.machine.apply(block(1, 1,
+            execute(fixture.machine, block(1, 1,
                     message(ApprovalsStateMachine.propose(
                             "item", "payload".getBytes(StandardCharsets.UTF_8), 1, 0), "alice"),
                     message(ApprovalsStateMachine.approve("item"), "bob")),
@@ -92,7 +93,7 @@ class ApprovalsGenericEffectTest {
                     "demo.webhook", "approvals/on-approved/item", outcome,
                     ("ref-" + outcome).getBytes(StandardCharsets.UTF_8), detailHash, 2);
 
-            fixture.machine.onEffectResult(block(2, 2), result, fixture.state);
+            deliver(fixture.machine, block(2, 2), result, fixture.state);
 
             var item = ApprovalsStateMachine.decodeItem(fixture.state.get(
                     ApprovalsStateMachine.itemKey("item")).orElseThrow());
@@ -111,7 +112,7 @@ class ApprovalsGenericEffectTest {
     @Test
     void wrongCorrelationIsNoOpAndFirstTerminalResultWins() {
         Fixture fixture = fixture(1, 10, FinalityGate.APP_FINAL);
-        fixture.machine.apply(block(1, 1,
+        execute(fixture.machine, block(1, 1,
                 message(ApprovalsStateMachine.propose("item", new byte[]{1}, 1, 0), "alice"),
                 message(ApprovalsStateMachine.approve("item"), "bob")),
                 fixture.state, fixture.emitter);
@@ -125,14 +126,14 @@ class ApprovalsGenericEffectTest {
                         "approvals/on-approved/other", EffectOutcome.CONFIRMED),
                 result(new EffectId("chain", 1, 0), "demo.webhook",
                         "wrong/item", EffectOutcome.CONFIRMED))) {
-            fixture.machine.onEffectResult(block(2, 2), wrong, fixture.state);
+            deliver(fixture.machine, block(2, 2), wrong, fixture.state);
         }
         assertThat(effectState(fixture).status())
                 .isEqualTo(ApprovalsStateMachine.EFFECT_STATUS_PENDING);
 
-        fixture.machine.onEffectResult(block(2, 2), result(new EffectId("chain", 1, 0),
+        deliver(fixture.machine, block(2, 2), result(new EffectId("chain", 1, 0),
                 "demo.webhook", "approvals/on-approved/item", EffectOutcome.FAILED), fixture.state);
-        fixture.machine.onEffectResult(block(3, 3), result(new EffectId("chain", 1, 0),
+        deliver(fixture.machine, block(3, 3), result(new EffectId("chain", 1, 0),
                 "demo.webhook", "approvals/on-approved/item", EffectOutcome.CONFIRMED), fixture.state);
         assertThat(effectState(fixture).outcome()).isEqualTo(EffectOutcome.FAILED);
     }
@@ -140,10 +141,10 @@ class ApprovalsGenericEffectTest {
     @Test
     void rejectionAndDeadlineExpiryDeleteStagedPayloadWithoutEmission() {
         Fixture rejected = fixture(1, 10, FinalityGate.APP_FINAL);
-        rejected.machine.apply(block(1, 1,
+        execute(rejected.machine, block(1, 1,
                 message(ApprovalsStateMachine.propose("reject", new byte[]{1}, 2, 0), "alice")),
                 rejected.state, rejected.emitter);
-        rejected.machine.apply(block(2, 2,
+        execute(rejected.machine, block(2, 2,
                 message(ApprovalsStateMachine.reject("reject"), "bob")),
                 rejected.state, rejected.emitter);
         assertThat(rejected.state.get(
@@ -151,10 +152,10 @@ class ApprovalsGenericEffectTest {
         assertThat(rejected.emitter.intents).isEmpty();
 
         Fixture expired = fixture(1, 10, FinalityGate.APP_FINAL);
-        expired.machine.apply(block(1, 10,
+        execute(expired.machine, block(1, 10,
                 message(ApprovalsStateMachine.propose("expire", new byte[]{1}, 1, 10), "alice")),
                 expired.state, expired.emitter);
-        expired.machine.apply(block(2, 11,
+        execute(expired.machine, block(2, 11,
                 message(ApprovalsStateMachine.approve("expire"), "bob")),
                 expired.state, expired.emitter);
         assertThat(expired.state.get(
@@ -217,6 +218,31 @@ class ApprovalsGenericEffectTest {
         return new AppBlock(1, "chain", height, new byte[32], 0, new byte[0], timestamp,
                 new byte[32], new byte[32], List.of(messages), new byte[32],
                 FinalityCert.empty());
+    }
+
+    private static void execute(
+            ApprovalsStateMachine machine,
+            AppBlock block,
+            MemoryState state,
+            AppEffectEmitter emitter
+    ) {
+        machine.apply(
+                AppBlockExecutionContext.fromValidatedBlock(block),
+                state,
+                emitter);
+    }
+
+    private static void deliver(
+            ApprovalsStateMachine machine,
+            AppBlock block,
+            EffectResult result,
+            MemoryState state
+    ) {
+        machine.onEffectResult(
+                AppBlockExecutionContext.fromValidatedBlock(block),
+                result,
+                state,
+                AppEffectEmitter.rejecting("follow-up effects are not expected"));
     }
 
     private record Fixture(ApprovalsStateMachine machine,

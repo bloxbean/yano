@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.appchain.examples.evidence;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
@@ -84,20 +85,16 @@ public final class EvidenceRegistryStateMachine implements AppStateMachine {
     }
 
     @Override
-    public void apply(AppBlock block, AppStateWriter writer) {
-        apply(block, writer, AppEffectEmitter.rejecting(
-                "Effects unavailable on the legacy evidence-registry apply path"));
-    }
-
-    @Override
-    public void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
+    public void apply(AppBlockExecutionContext context, AppStateWriter writer,
+                      AppEffectEmitter effects) {
+        AppBlock block = context.block();
         Objects.requireNonNull(block, "block");
         Objects.requireNonNull(writer, "writer");
         Objects.requireNonNull(effects, "effects");
         if (!config.chainId().equals(block.chainId())) {
             throw new IllegalArgumentException("Evidence registry received a block for another chain");
         }
-        for (AppMessage message : block.messages()) {
+        for (AppMessage message : context.messages()) {
             if (!EvidenceContract.COMMAND_TOPIC.equals(message.getTopic())) {
                 continue;
             }
@@ -121,18 +118,14 @@ public final class EvidenceRegistryStateMachine implements AppStateMachine {
     }
 
     @Override
-    public void onEffectResult(AppBlock block, EffectResult result, AppStateWriter writer) {
-        applyEffectResult(block, result, writer, null);
-    }
-
-    @Override
     public void onEffectResult(
-            AppBlock block,
+            AppBlockExecutionContext context,
             EffectResult result,
             AppStateWriter writer,
             AppEffectEmitter effects
     ) {
-        applyEffectResult(block, result, writer, Objects.requireNonNull(effects, "effects"));
+        applyEffectResult(context.block(), result, writer,
+                Objects.requireNonNull(effects, "effects"));
     }
 
     private void applyEffectResult(

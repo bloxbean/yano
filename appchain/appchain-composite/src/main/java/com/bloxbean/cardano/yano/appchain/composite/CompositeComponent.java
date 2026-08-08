@@ -1,7 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.composite;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
-import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
@@ -13,15 +13,8 @@ import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
 
 /**
  * Bundle-local deterministic component executed through enforced composite views.
- * The block supplied to {@link #apply} is a routed projection: its messages and
- * {@code messagesRoot} contain only this component's admitted messages, its
- * {@code stateRoot} is inherited metadata rather than a component-local
- * post-state commitment, and its finality certificate is deliberately empty.
- * A certificate over the original full block cannot authenticate the synthetic
- * projection and must never be verified against it. {@link #onEffectResult}
- * receives an even narrower metadata-only projection with zero messages and
- * an empty certificate, so one component cannot inspect sibling traffic while
- * incorporating its owned result.
+ * The execution context retains the original globally authenticated block
+ * identity while exposing only this component's routed messages.
  */
 public interface CompositeComponent {
     ComponentDescriptor descriptor();
@@ -33,10 +26,22 @@ public interface CompositeComponent {
         return AppStateMachine.AdmissionResult.accept();
     }
 
-    void apply(AppBlock routedBlock, AppStateWriter ownState, AppEffectEmitter ownedEffects);
+    default AppStateMachine.AdmissionResult validateForBlock(
+            AppMessage routedMessage,
+            long candidateHeight,
+            AppStateReader ownState
+    ) {
+        return validate(routedMessage);
+    }
+
+    void apply(
+            AppBlockExecutionContext context,
+            AppStateWriter ownState,
+            AppEffectEmitter ownedEffects
+    );
 
     default void onEffectResult(
-            AppBlock block,
+            AppBlockExecutionContext context,
             EffectResult result,
             AppStateWriter ownState,
             AppEffectEmitter ownedEffects

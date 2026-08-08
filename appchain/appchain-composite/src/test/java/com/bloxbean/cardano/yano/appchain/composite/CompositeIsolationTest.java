@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.appchain.composite;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.appchain.composite.contracts.AggregateQueryLimitsV1;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.appchain.testkit.AppChainTestProfiles;
@@ -34,7 +35,8 @@ class CompositeIsolationTest {
                 List.of(product), List.of(), 1);
         MemoryState state = new MemoryState();
 
-        machine.apply(block(message("first.v1", "safe")), state,
+        machine.apply(AppBlockExecutionContext.fromValidatedBlock(
+                        block(message("first.v1", "safe"))), state,
                 AppEffectEmitter.rejecting("unused"));
 
         assertThat(product.descriptorCalls).isEqualTo(1);
@@ -61,7 +63,8 @@ class CompositeIsolationTest {
         CompositeStateMachine machine = CompositeStateMachine.forTest(
                 profile, List.of(first, other), List.of(workflow), 1);
 
-        assertThatThrownBy(() -> machine.apply(block(message("flow.v1", "x")),
+        assertThatThrownBy(() -> machine.apply(AppBlockExecutionContext.fromValidatedBlock(
+                        block(message("flow.v1", "x"))),
                 new MemoryState(), AppEffectEmitter.rejecting("unused")))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("undeclared component access");
@@ -86,7 +89,8 @@ class CompositeIsolationTest {
         byte[] originalPrevHash = block.prevHash().clone();
 
         assertThat(machine.validateForBlock(message, 1, new MemoryState()).isAccepted()).isTrue();
-        machine.apply(block, new MemoryState(), AppEffectEmitter.rejecting("unused"));
+        machine.apply(AppBlockExecutionContext.fromValidatedBlock(block),
+                new MemoryState(), AppEffectEmitter.rejecting("unused"));
 
         assertThat(observer.observedBody).isNull();
         assertThat(message.getMessageId()).isEqualTo(originalMessageId);
@@ -162,8 +166,9 @@ class CompositeIsolationTest {
         @Override public ComponentDescriptor descriptor() { return descriptor; }
 
         @Override
-        public void apply(AppBlock block, AppStateWriter state, AppEffectEmitter effects) {
-            for (AppMessage message : block.messages()) {
+        public void apply(AppBlockExecutionContext execution, AppStateWriter state, AppEffectEmitter effects) {
+            AppBlock block = execution.block();
+            for (AppMessage message : execution.messages()) {
                 state.put(LOCAL_KEY, message.getBody());
             }
         }
@@ -205,7 +210,8 @@ class CompositeIsolationTest {
         }
 
         @Override
-        public void apply(AppBlock block, CompositeWorkflowContext context) {
+        public void apply(AppBlockExecutionContext execution, CompositeWorkflowContext context) {
+            AppBlock block = execution.block();
             context.state(unauthorized).put(LOCAL_KEY, new byte[]{1});
         }
     }
@@ -221,9 +227,10 @@ class CompositeIsolationTest {
         }
 
         @Override
-        public void apply(AppBlock block, AppStateWriter state, AppEffectEmitter effects) {
+        public void apply(AppBlockExecutionContext execution, AppStateWriter state, AppEffectEmitter effects) {
+            AppBlock block = execution.block();
             block.prevHash()[0] ^= 1;
-            block.messages().getFirst().getBody()[0] ^= 1;
+            execution.messages().getFirst().getBody()[0] ^= 1;
         }
     }
 

@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.runtime.appchain;
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
@@ -368,9 +369,9 @@ class AppChainSnapshotTest {
     private static AppStateMachine snapshotEffectEmitter(ResultPolicy resultPolicy) {
         return new AppStateMachine() {
             @Override public String id() { return "snapshot-effect-emitter"; }
-            @Override public void apply(AppBlock block, AppStateWriter writer) { }
             @Override
-            public void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
+            public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
                 block.messages().stream()
                         .filter(message -> !message.getTopic().startsWith("~"))
                         .forEach(message -> effects.emit(EffectIntent

@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.appchain.evidence.profile;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
@@ -44,14 +45,27 @@ final class EvidenceRoleApprovalsComponent implements CompositeComponent {
     }
 
     @Override
-    public void apply(AppBlock routedBlock, AppStateWriter ownState, AppEffectEmitter ownedEffects) {
-        delegate.apply(routedBlock, ownState, ownedEffects);
+    public AppStateMachine.AdmissionResult validateForBlock(
+            AppMessage routedMessage,
+            long candidateHeight,
+            AppStateReader ownState
+    ) {
+        return delegate.validateForBlock(routedMessage, candidateHeight, ownState);
     }
 
     @Override
-    public void onEffectResult(AppBlock block, EffectResult result,
+    public void apply(
+            AppBlockExecutionContext execution,
+            AppStateWriter ownState,
+            AppEffectEmitter ownedEffects
+    ) {
+        delegate.apply(execution, ownState, ownedEffects);
+    }
+
+    @Override
+    public void onEffectResult(AppBlockExecutionContext execution, EffectResult result,
                                AppStateWriter ownState, AppEffectEmitter ownedEffects) {
-        delegate.onEffectResult(block, result, ownState, ownedEffects);
+        delegate.onEffectResult(execution, result, ownState, ownedEffects);
     }
 
     @Override

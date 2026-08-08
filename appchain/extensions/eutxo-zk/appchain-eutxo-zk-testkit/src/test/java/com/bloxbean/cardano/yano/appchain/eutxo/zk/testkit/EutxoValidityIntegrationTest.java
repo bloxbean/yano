@@ -2,9 +2,11 @@ package com.bloxbean.cardano.yano.appchain.eutxo.zk.testkit;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoContract;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoDepositClaim;
@@ -97,8 +99,8 @@ class EutxoValidityIntegrationTest {
         MemoryAppState firstState = new MemoryAppState();
         MemoryAppState replayState = new MemoryAppState();
         AppBlock genesis = block(1);
-        first.apply(genesis, firstState);
-        replay.apply(genesis, replayState);
+        apply(first, genesis, firstState);
+        apply(replay, genesis, replayState);
 
         TransactionOutput mirrored = TransactionOutput.builder()
                 .address(alice.address())
@@ -129,8 +131,8 @@ class EutxoValidityIntegrationTest {
                 claim.encode());
         AppBlock depositBlock = block(
                 2, observationMessage(8, observation));
-        first.apply(depositBlock, firstState);
-        replay.apply(depositBlock, replayState);
+        apply(first, depositBlock, firstState);
+        apply(replay, depositBlock, replayState);
 
         long expiry = 100;
         EutxoWithdrawalDatum withdrawal = new EutxoWithdrawalDatum(
@@ -177,8 +179,8 @@ class EutxoValidityIntegrationTest {
                 body, domain, alice, l2Secret);
         AppBlock withdrawalBlock = block(
                 3, message(transaction.canonicalBytes()));
-        first.apply(withdrawalBlock, firstState);
-        replay.apply(withdrawalBlock, replayState);
+        apply(first, withdrawalBlock, firstState);
+        apply(replay, withdrawalBlock, replayState);
 
         EutxoValidityTransition transition =
                 EutxoValidityTransition.decode(firstState.get(
@@ -254,7 +256,7 @@ class EutxoValidityIntegrationTest {
                 .create(context(settings));
         MemoryAppState state = new MemoryAppState();
 
-        machine.apply(block(1), state);
+        apply(machine, block(1), state);
         byte[] genesisRoot = state.get(EutxoStateKeys.validityRoot())
                 .orElseThrow();
         var genesis = EutxoQueryCodec.decodeRecords(machine.query(
@@ -300,7 +302,7 @@ class EutxoValidityIntegrationTest {
         EutxoL2Transaction payment = l2Transaction(
                 cardanoBody, domain, alice, aliceL2Secret);
         byte[] transactionCbor = payment.canonicalBytes();
-        machine.apply(block(2, message(transactionCbor)), state);
+        apply(machine, block(2, message(transactionCbor)), state);
 
         byte[] nextRoot = state.get(EutxoStateKeys.validityRoot())
                 .orElseThrow();
@@ -524,6 +526,17 @@ class EutxoValidityIntegrationTest {
                 List.of(messages),
                 new byte[32],
                 FinalityCert.empty());
+    }
+
+    private static void apply(
+            AppStateMachine machine,
+            AppBlock block,
+            MemoryAppState state
+    ) {
+        machine.apply(
+                AppBlockExecutionContext.fromValidatedBlock(block),
+                state,
+                AppEffectEmitter.rejecting("effects are not expected"));
     }
 
     private static EutxoTestWallet wallet(int value) {

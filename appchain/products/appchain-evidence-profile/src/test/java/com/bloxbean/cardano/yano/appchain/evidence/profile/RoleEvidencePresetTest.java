@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.appchain.evidence.profile;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipEpoch;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
@@ -85,7 +86,7 @@ class RoleEvidencePresetTest {
     void approvedRoleProposalAtomicallyReleasesEvidenceAndWritesItsAuditLinkOnce() {
         CompositeStateMachine machine = RoleEvidencePreset.create(context());
         MemoryState state = new MemoryState();
-        machine.apply(block(1), state, new CapturingEmitter(1));
+        execute(machine, block(1), state, new CapturingEmitter(1));
 
         SubmitEvidenceCommandV1 evidence = evidence("evidence-a");
         byte[] registryKey = "evidence/evidence-a".getBytes(StandardCharsets.US_ASCII);
@@ -99,7 +100,7 @@ class RoleEvidencePresetTest {
                 approvedProposal(release, filled(0x31)).encode());
 
         CapturingEmitter mismatched = new CapturingEmitter(2);
-        machine.apply(block(2, message(2, release.encode())), state, mismatched);
+        execute(machine, block(2, message(2, release.encode())), state, mismatched);
         assertThat(mismatched.intents).isEmpty();
         assertThat(state.get(CompositeStateKeys.componentKey("evidence",
                 EvidenceKeys.recordKey("evidence-a", 1)))).isEmpty();
@@ -112,13 +113,13 @@ class RoleEvidencePresetTest {
                 release.documentEntityId(), release.documentHash(),
                 "object:attacker-selected-reference", release.evidenceCommand());
         CapturingEmitter tampered = new CapturingEmitter(3);
-        machine.apply(block(3, message(3, tamperedWrapper.encode())), state, tampered);
+        execute(machine, block(3, message(3, tamperedWrapper.encode())), state, tampered);
         assertThat(tampered.intents).isEmpty();
         assertThat(state.get(CompositeStateKeys.componentKey("evidence",
                 EvidenceKeys.recordKey("evidence-a", 1)))).isEmpty();
 
         CapturingEmitter emitted = new CapturingEmitter(3);
-        machine.apply(block(4, message(4, release.encode())), state, emitted);
+        execute(machine, block(4, message(4, release.encode())), state, emitted);
 
         assertThat(emitted.intents).extracting(EffectIntent::type)
                 .containsExactly("object.put", "ipfs.pin");
@@ -129,7 +130,7 @@ class RoleEvidencePresetTest {
                 .contains(release.approvalItemId().getBytes(StandardCharsets.US_ASCII));
 
         CapturingEmitter replay = new CapturingEmitter(4);
-        machine.apply(block(5, message(5, release.encode())), state, replay);
+        execute(machine, block(5, message(5, release.encode())), state, replay);
         assertThat(replay.intents).isEmpty();
     }
 
@@ -189,6 +190,18 @@ class RoleEvidencePresetTest {
         return new AppBlock(1, CHAIN, height, new byte[32], 0, new byte[0],
                 1_700_000_000_000L + height, new byte[32], new byte[32],
                 List.of(messages), MEMBER, FinalityCert.empty());
+    }
+
+    private static void execute(
+            CompositeStateMachine machine,
+            AppBlock block,
+            MemoryState state,
+            AppEffectEmitter emitter
+    ) {
+        machine.apply(
+                AppBlockExecutionContext.fromValidatedBlock(block),
+                state,
+                emitter);
     }
 
     private static byte[] filled(int value) {

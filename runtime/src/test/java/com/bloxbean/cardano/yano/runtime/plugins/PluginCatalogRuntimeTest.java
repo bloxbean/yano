@@ -3433,6 +3433,7 @@ class PluginCatalogRuntimeTest {
         Files.writeString(providerSource, """
                 package %s;
                 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
                 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSink;
                 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory;
                 import java.io.InputStream;

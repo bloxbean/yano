@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.appchain.examples.evidence;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
@@ -56,7 +57,7 @@ class EvidenceRegistryStateMachineTest {
         AppMessage submit = message(EvidenceFixtures.OWNER, 1,
                 EvidenceFixtures.submit().encode(), EvidenceFixtures.SUBMIT_MESSAGE);
         CapturingEmitter submitEffects = new CapturingEmitter(10);
-        machine.apply(block(10, submit), state, submitEffects);
+        execute(machine, block(10, submit), state, submitEffects);
 
         assertThat(submitEffects.intents).hasSize(2);
         assertStorageIntent(submitEffects.intents.get(0), ConnectorTypes.OBJECT_PUT,
@@ -68,7 +69,7 @@ class EvidenceRegistryStateMachineTest {
         assertThat(pending.objectEffect().ordinal()).isZero();
         assertThat(pending.ipfsEffect().ordinal()).isEqualTo(1);
 
-        machine.onEffectResult(block(11), result(pending.objectEffect().height(),
+        deliver(machine, block(11), result(pending.objectEffect().height(),
                 pending.objectEffect().ordinal(), ConnectorTypes.OBJECT_PUT,
                 EvidenceEffectOperation.OBJECT, EvidenceFixtures.objectReceipt(), 11), state);
         assertThat(EvidenceStatus.derive(record(state, 1)))
@@ -80,11 +81,11 @@ class EvidenceRegistryStateMachineTest {
                         EvidenceFixtures.ID, 1).encode(), EvidenceFixtures.NOTIFY_MESSAGE),
                 message(RUNNER, 3, new NotifyEvidenceCommandV1(
                         EvidenceFixtures.ID, 1).encode(), EvidenceFixtures.repeat(0x44)));
-        machine.onEffectResult(readyAndNotify, result(afterObject.ipfsEffect().height(),
+        deliver(machine, readyAndNotify, result(afterObject.ipfsEffect().height(),
                 afterObject.ipfsEffect().ordinal(), ConnectorTypes.IPFS_PIN,
                 EvidenceEffectOperation.IPFS, EvidenceFixtures.ipfsReceipt(), 12), state);
         CapturingEmitter notificationEffects = new CapturingEmitter(12);
-        machine.apply(readyAndNotify, state, notificationEffects);
+        execute(machine, readyAndNotify, state, notificationEffects);
 
         assertThat(notificationEffects.intents).hasSize(1);
         EffectIntent notification = notificationEffects.intents.getFirst();
@@ -102,7 +103,7 @@ class EvidenceRegistryStateMachineTest {
         assertThat(EvidenceStatus.derive(notifying))
                 .isEqualTo(EvidenceStatus.NOTIFICATION_PENDING);
         assertThat(notifying.notifyMessageId()).isEqualTo(EvidenceFixtures.NOTIFY_MESSAGE);
-        machine.onEffectResult(block(13), new EffectResult(
+        deliver(machine, block(13), new EffectResult(
                 new EffectId(CHAIN, notifying.notificationEffect().height(),
                         notifying.notificationEffect().ordinal()),
                 ConnectorTypes.KAFKA_PUBLISH,
@@ -118,7 +119,7 @@ class EvidenceRegistryStateMachineTest {
         assertThat(queried.record().businessVersion()).isEqualTo(1);
 
         CapturingEmitter republishEffects = new CapturingEmitter(14);
-        machine.apply(block(14, message(EvidenceFixtures.OWNER, 4,
+        execute(machine, block(14, message(EvidenceFixtures.OWNER, 4,
                 EvidenceFixtures.republish().encode(), EvidenceFixtures.repeat(0x45))),
                 state, republishEffects);
         assertThat(republishEffects.intents).hasSize(2);
@@ -138,22 +139,22 @@ class EvidenceRegistryStateMachineTest {
                 EvidenceFixtures.submit().encode(), EvidenceFixtures.SUBMIT_MESSAGE);
 
         CapturingEmitter initial = new CapturingEmitter(10);
-        machine.apply(block(10, submit), state, initial);
+        execute(machine, block(10, submit), state, initial);
         EvidenceRecordV1 pending = record(state, 1);
         byte[] beforeReplay = pending.encode();
 
         CapturingEmitter replay = new CapturingEmitter(11);
-        machine.apply(block(11, submit), state, replay);
+        execute(machine, block(11, submit), state, replay);
         assertThat(replay.intents).isEmpty();
         assertThat(record(state, 1).encode()).isEqualTo(beforeReplay);
 
-        machine.onEffectResult(block(12), result(pending.ipfsEffect().height(),
+        deliver(machine, block(12), result(pending.ipfsEffect().height(),
                 pending.ipfsEffect().ordinal(), ConnectorTypes.IPFS_PIN,
                 EvidenceEffectOperation.IPFS, EvidenceFixtures.ipfsReceipt(), 12), state);
         assertThat(EvidenceStatus.derive(record(state, 1)))
                 .isEqualTo(EvidenceStatus.STORAGE_PENDING);
 
-        machine.onEffectResult(block(13), result(pending.objectEffect().height(),
+        deliver(machine, block(13), result(pending.objectEffect().height(),
                 pending.objectEffect().ordinal(), ConnectorTypes.OBJECT_PUT,
                 EvidenceEffectOperation.OBJECT, EvidenceFixtures.objectReceipt(), 13), state);
         assertThat(EvidenceStatus.derive(record(state, 1)))
@@ -167,11 +168,11 @@ class EvidenceRegistryStateMachineTest {
         MemoryState state = new MemoryState();
         AppMessage submit = message(EvidenceFixtures.OWNER, 1,
                 EvidenceFixtures.submit().encode(), EvidenceFixtures.SUBMIT_MESSAGE);
-        machine.apply(block(10, submit), state, new CapturingEmitter(10));
+        execute(machine, block(10, submit), state, new CapturingEmitter(10));
         EvidenceRecordV1 pending = record(state, 1);
 
         CapturingEmitter beforeActivation = new CapturingEmitter(11);
-        machine.onEffectResult(block(11), result(pending.objectEffect().height(),
+        deliver(machine, block(11), result(pending.objectEffect().height(),
                 pending.objectEffect().ordinal(), ConnectorTypes.OBJECT_PUT,
                 EvidenceEffectOperation.OBJECT, EvidenceFixtures.objectReceipt(), 11),
                 state, beforeActivation);
@@ -184,11 +185,11 @@ class EvidenceRegistryStateMachineTest {
                 EvidenceFixtures.NOTIFY_MESSAGE);
         AppBlock activationBlock = block(12, explicitNotify);
         CapturingEmitter sharedBlockEmitter = new CapturingEmitter(12);
-        machine.onEffectResult(activationBlock, result(afterObject.ipfsEffect().height(),
+        deliver(machine, activationBlock, result(afterObject.ipfsEffect().height(),
                 afterObject.ipfsEffect().ordinal(), ConnectorTypes.IPFS_PIN,
                 EvidenceEffectOperation.IPFS, EvidenceFixtures.ipfsReceipt(), 12),
                 state, sharedBlockEmitter);
-        machine.apply(activationBlock, state, sharedBlockEmitter);
+        execute(machine, activationBlock, state, sharedBlockEmitter);
 
         assertThat(sharedBlockEmitter.intents).singleElement().satisfies(intent -> {
             assertThat(intent.type()).isEqualTo(ConnectorTypes.KAFKA_PUBLISH);
@@ -214,22 +215,22 @@ class EvidenceRegistryStateMachineTest {
                 EvidenceFixtures.submit().encode(), EvidenceFixtures.SUBMIT_MESSAGE);
         assertThat(machine.validate(foreignSubmit).isAccepted()).isFalse();
         CapturingEmitter effects = new CapturingEmitter(10);
-        machine.apply(block(10, foreignSubmit), state, effects);
+        execute(machine, block(10, foreignSubmit), state, effects);
         assertThat(effects.intents).isEmpty();
 
         AppMessage malformed = message(EvidenceFixtures.OWNER, 2,
                 new byte[]{1, 2, 3}, EvidenceFixtures.repeat(0x46));
         assertThat(machine.validate(malformed).isAccepted()).isFalse();
-        machine.apply(block(11, malformed), state, new CapturingEmitter(11));
+        execute(machine, block(11, malformed), state, new CapturingEmitter(11));
         assertThat(state.entries).isEmpty();
 
         AppMessage submit = message(EvidenceFixtures.OWNER, 3,
                 EvidenceFixtures.submit().encode(), EvidenceFixtures.SUBMIT_MESSAGE);
         CapturingEmitter valid = new CapturingEmitter(12);
-        machine.apply(block(12, submit), state, valid);
+        execute(machine, block(12, submit), state, valid);
         EvidenceRecordV1 pending = record(state, 1);
 
-        machine.onEffectResult(block(13), new EffectResult(
+        deliver(machine, block(13), new EffectResult(
                 new EffectId(CHAIN, pending.objectEffect().height(),
                         pending.objectEffect().ordinal()),
                 ConnectorTypes.IPFS_PIN,
@@ -238,7 +239,7 @@ class EvidenceRegistryStateMachineTest {
                 EffectOutcome.CONFIRMED, EvidenceFixtures.objectReceipt(), null, 13), state);
         assertThat(record(state, 1).objectTerminal()).isNull();
 
-        machine.onEffectResult(block(13), new EffectResult(
+        deliver(machine, block(13), new EffectResult(
                 new EffectId(CHAIN, pending.objectEffect().height(),
                         pending.objectEffect().ordinal() + 7),
                 ConnectorTypes.OBJECT_PUT,
@@ -247,7 +248,7 @@ class EvidenceRegistryStateMachineTest {
                 EffectOutcome.CONFIRMED, EvidenceFixtures.objectReceipt(), null, 13), state);
         assertThat(record(state, 1).objectTerminal()).isNull();
 
-        machine.onEffectResult(block(13), result(pending.objectEffect().height(),
+        deliver(machine, block(13), result(pending.objectEffect().height(),
                 pending.objectEffect().ordinal(), ConnectorTypes.OBJECT_PUT,
                 EvidenceEffectOperation.OBJECT, new byte[]{1, 2, 3}, 13), state);
         assertThat(EvidenceStatus.derive(record(state, 1)))
@@ -255,7 +256,7 @@ class EvidenceRegistryStateMachineTest {
         assertThat(record(state, 1).objectTerminal()).isNotNull();
 
         // First terminal result is absorbing in the business record too.
-        machine.onEffectResult(block(14), result(pending.objectEffect().height(),
+        deliver(machine, block(14), result(pending.objectEffect().height(),
                 pending.objectEffect().ordinal(), ConnectorTypes.OBJECT_PUT,
                 EvidenceEffectOperation.OBJECT, EvidenceFixtures.objectReceipt(), 14), state);
         assertThat(record(state, 1).objectTerminal().externalRef())
@@ -485,6 +486,46 @@ class EvidenceRegistryStateMachineTest {
                 0, new byte[0], 1_700_000_000_000L + height,
                 EvidenceFixtures.repeat(0x62), new byte[32], List.of(messages),
                 EvidenceFixtures.repeat(0x63), FinalityCert.empty());
+    }
+
+    private static void execute(
+            EvidenceRegistryStateMachine machine,
+            AppBlock block,
+            MemoryState state,
+            AppEffectEmitter emitter
+    ) {
+        machine.apply(
+                AppBlockExecutionContext.fromValidatedBlock(block),
+                state,
+                emitter);
+    }
+
+    private static void deliver(
+            EvidenceRegistryStateMachine machine,
+            AppBlock block,
+            EffectResult result,
+            MemoryState state
+    ) {
+        deliver(
+                machine,
+                block,
+                result,
+                state,
+                AppEffectEmitter.rejecting("follow-up effects are not expected"));
+    }
+
+    private static void deliver(
+            EvidenceRegistryStateMachine machine,
+            AppBlock block,
+            EffectResult result,
+            MemoryState state,
+            AppEffectEmitter emitter
+    ) {
+        machine.onEffectResult(
+                AppBlockExecutionContext.fromValidatedBlock(block),
+                result,
+                state,
+                emitter);
     }
 
     private static String hex(byte[] value) {

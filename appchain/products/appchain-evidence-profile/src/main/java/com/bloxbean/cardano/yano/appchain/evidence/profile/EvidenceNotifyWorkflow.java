@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.appchain.evidence.profile;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
@@ -65,8 +66,9 @@ final class EvidenceNotifyWorkflow implements CompositeWorkflow {
     }
 
     @Override
-    public void apply(AppBlock block, CompositeWorkflowContext context) {
-        for (AppMessage message : block.messages()) {
+    public void apply(AppBlockExecutionContext execution, CompositeWorkflowContext context) {
+        AppBlock block = execution.block();
+        for (AppMessage message : execution.messages()) {
             try {
                 if (!(EvidenceCommandCodec.decode(message.getBody())
                         instanceof NotifyEvidenceCommandV1)
@@ -76,7 +78,9 @@ final class EvidenceNotifyWorkflow implements CompositeWorkflow {
             } catch (RuntimeException malformed) {
                 continue;
             }
-            evidenceMachine.apply(withMessages(block, List.of(message)),
+            evidenceMachine.apply(
+                    com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext
+                            .fromValidatedBlock(withMessages(block, List.of(message))),
                     context.state(evidence), context.effects(evidence));
         }
     }

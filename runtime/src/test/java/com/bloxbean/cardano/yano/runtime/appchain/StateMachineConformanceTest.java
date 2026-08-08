@@ -1,6 +1,8 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
@@ -81,7 +83,8 @@ class StateMachineConformanceTest {
         }
 
         @Override
-        public void apply(AppBlock block, AppStateWriter writer) {
+        public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
             writer.put(("h" + block.height()).getBytes(StandardCharsets.UTF_8),
                     String.valueOf(System.nanoTime()).getBytes(StandardCharsets.UTF_8));
         }

@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.runtime.appchain;
 
 import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
@@ -233,7 +234,8 @@ class FxEffectsM1Test {
     void reservedPrefixGuard_rejectsApplicationWrites(@TempDir Path dir) {
         AppStateMachine trespasser = new AppStateMachine() {
             @Override public String id() { return "trespasser"; }
-            @Override public void apply(AppBlock block, AppStateWriter writer) {
+            @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
                 writer.put("~fx/root/hijack".getBytes(StandardCharsets.UTF_8), new byte[]{1});
             }
         };
@@ -284,7 +286,8 @@ class FxEffectsM1Test {
         // effects feature. A disabled chain must reject trespassing writes too.
         AppStateMachine trespasser = new AppStateMachine() {
             @Override public String id() { return "trespasser"; }
-            @Override public void apply(AppBlock block, AppStateWriter writer) {
+            @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
                 writer.put("~fx/done/junk".getBytes(StandardCharsets.UTF_8), new byte[]{1});
             }
         };
@@ -415,12 +418,8 @@ class FxEffectsM1Test {
         }
 
         @Override
-        public void apply(AppBlock block, AppStateWriter writer) {
-            throw new UnsupportedOperationException("engine always calls the 3-arg apply");
-        }
-
-        @Override
-        public void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
+        public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
             int index = 0;
             for (var message : block.messages()) {
                 writer.put(key("m/" + block.height() + "/" + index), message.getBody());
@@ -435,7 +434,8 @@ class FxEffectsM1Test {
         }
 
         @Override
-        public void onEffectResult(AppBlock block, EffectResult result, AppStateWriter writer) {
+        public void onEffectResult(AppBlockExecutionContext context, EffectResult result, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
             writer.put(key("expired/" + result.effectId().canonical()),
                     String.valueOf(result.outcome().code()).getBytes(StandardCharsets.UTF_8));
         }
@@ -446,7 +446,8 @@ class FxEffectsM1Test {
         private ActivationSchedule activations = ActivationSchedule.empty();
 
         @Override
-        public void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
+        public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
             int index = 0;
             for (var message : block.messages()) {
                 writer.put(key("m/" + block.height() + "/" + index), message.getBody());
@@ -476,12 +477,8 @@ class FxEffectsM1Test {
         }
 
         @Override
-        public void apply(AppBlock block, AppStateWriter writer) {
-            throw new UnsupportedOperationException("engine always calls the 3-arg apply");
-        }
-
-        @Override
-        public void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
+        public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
             int command = 0;
             for (var message : block.messages()) {
                 if (message.getTopic().startsWith("~")) {
@@ -496,7 +493,8 @@ class FxEffectsM1Test {
         }
 
         @Override
-        public void onEffectResult(AppBlock block, EffectResult result, AppStateWriter writer) {
+        public void onEffectResult(AppBlockExecutionContext context, EffectResult result, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
             writer.put(key("result/" + result.effectId().canonical()), resultMarker(block));
         }
 
@@ -576,9 +574,8 @@ class FxEffectsM1Test {
     private static AppStateMachine machineOf(TriApply body) {
         return new AppStateMachine() {
             @Override public String id() { return "inline"; }
-            @Override public void apply(AppBlock block, AppStateWriter writer) { }
-            @Override public void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
-                body.apply(block, writer, effects);
+            @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) {
+                body.apply(context.block(), writer, effects);
             }
         };
     }

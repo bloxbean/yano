@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.runtime.appchain;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
@@ -120,10 +121,9 @@ class FxEffectsM5Test {
         }
 
         @Override public String id() { return "recording"; }
-        @Override public void apply(AppBlock block, AppStateWriter writer) { }
-
         @Override
-        public void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
+        public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
             for (AppMessage message : block.messages()) {
                 String body = new String(message.getBody(), StandardCharsets.UTF_8);
                 if (message.getTopic().startsWith("~") || !body.startsWith("emit-")) {

@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.runtime.appchain;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
@@ -613,10 +614,9 @@ class FxEffectsM3Test {
         }
 
         @Override public String id() { return "recording"; }
-        @Override public void apply(AppBlock block, AppStateWriter writer) { }
-
         @Override
-        public void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
+        public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
             for (AppMessage message : block.messages()) {
                 String body = new String(message.getBody(), StandardCharsets.UTF_8);
                 if (message.getTopic().startsWith("~") || !body.startsWith("emit-")) {
@@ -631,7 +631,8 @@ class FxEffectsM3Test {
         }
 
         @Override
-        public void onEffectResult(AppBlock block, EffectResult result, AppStateWriter writer) {
+        public void onEffectResult(AppBlockExecutionContext context, EffectResult result, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
             results.add(result);
             writer.put(("seen/" + result.effectId().canonical()).getBytes(StandardCharsets.UTF_8),
                     new byte[]{(byte) result.outcome().code()});
@@ -644,10 +645,9 @@ class FxEffectsM3Test {
         final List<Long> pendingCounts = new ArrayList<>();
 
         @Override public String id() { return "result-emitter"; }
-        @Override public void apply(AppBlock block, AppStateWriter writer) { }
-
         @Override
-        public void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
+        public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
             for (AppMessage message : block.messages()) {
                 if (message.getTopic().startsWith("~")) {
                     continue;
@@ -667,17 +667,13 @@ class FxEffectsM3Test {
         }
 
         @Override
-        public void onEffectResult(AppBlock block, EffectResult result, AppStateWriter writer) {
-            legacyCallbacks++;
-        }
-
-        @Override
         public void onEffectResult(
-                AppBlock block,
+                AppBlockExecutionContext context,
                 EffectResult result,
                 AppStateWriter writer,
                 AppEffectEmitter effects
         ) {
+            AppBlock block = context.block();
             emitterCallbacks++;
             pendingCounts.add(effects.pendingCount());
             effects.emit(EffectIntent.of(

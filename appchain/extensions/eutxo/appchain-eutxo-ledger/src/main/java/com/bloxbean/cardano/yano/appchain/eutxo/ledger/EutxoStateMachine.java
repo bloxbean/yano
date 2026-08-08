@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.appchain.eutxo.ledger;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
@@ -184,23 +185,20 @@ public final class EutxoStateMachine implements AppStateMachine {
     }
 
     @Override
-    public void apply(AppBlock block, AppStateWriter writer) {
-        apply(block, writer, AppEffectEmitter.rejecting(
-                "EUTxO settlement effects require the 3-arg apply"));
-    }
-
-    @Override
-    public void apply(AppBlock block, AppStateWriter writer,
+    public void apply(AppBlockExecutionContext context, AppStateWriter writer,
                       AppEffectEmitter effects) {
+        AppBlock block = context.block();
         ensureGenesis(writer);
         if (settlementProfile()) {
             activateScheduledParams(block.height(), writer);
         }
         int ordinal = 0;
+        int visibleMessageIndex = 0;
         long summarySequence = writer.get(EutxoStateKeys.summaryCount())
                 .map(EutxoStateMachine::longValue)
                 .orElse(0L);
-        for (AppMessage message : block.messages()) {
+        for (AppMessage message : context.messages()) {
+            int originalMessageIndex = context.originalMessageIndex(visibleMessageIndex++);
             if (settlementProfile() && EutxoBridgeParamsGovernanceV1.TOPIC
                     .equals(message.getTopic())) {
                 processParamsCommand(message, block.height(), writer);
@@ -208,7 +206,11 @@ public final class EutxoStateMachine implements AppStateMachine {
                 continue;
             }
             if (bridge.enabled() && bridge.topic().equals(message.getTopic())) {
-                importDeposit(acceptedDeposit(message), block.height(), writer);
+                importDeposit(acceptedDeposit(context.l1ObservationAt(originalMessageIndex)
+                                .orElseThrow(() -> new IllegalArgumentException(
+                                        "accepted bridge observation is missing from execution context"))
+                                .observation()),
+                        block.height(), writer);
                 ordinal++;
                 continue;
             }
@@ -218,7 +220,10 @@ public final class EutxoStateMachine implements AppStateMachine {
                     // v3 (A2 batch) settlement: one observation confirms the
                     // whole batch; clear each positional claim in order.
                     EutxoBatchWithdrawalConfirmation batch =
-                            batchWithdrawalConfirmation(message);
+                            batchWithdrawalConfirmation(context.l1ObservationAt(originalMessageIndex)
+                                    .orElseThrow(() -> new IllegalArgumentException(
+                                            "accepted withdrawal observation is missing from execution context"))
+                                    .observation());
                     if (applyVaultCustody(batch, writer)) {
                         for (EutxoWithdrawalConfirmation confirmation :
                                 batch.confirmations()) {
@@ -227,7 +232,11 @@ public final class EutxoStateMachine implements AppStateMachine {
                     }
                 } else {
                     confirmWithdrawal(
-                            withdrawalConfirmation(message), block.height(), writer);
+                            withdrawalConfirmation(context.l1ObservationAt(originalMessageIndex)
+                                    .orElseThrow(() -> new IllegalArgumentException(
+                                            "accepted withdrawal observation is missing from execution context"))
+                                    .observation()),
+                            block.height(), writer);
                 }
                 ordinal++;
                 continue;
@@ -353,8 +362,13 @@ public final class EutxoStateMachine implements AppStateMachine {
     }
 
     @Override
-    public void onEffectResult(AppBlock block, EffectResult result,
-                               AppStateWriter writer) {
+    public void onEffectResult(
+            AppBlockExecutionContext context,
+            EffectResult result,
+            AppStateWriter writer,
+            AppEffectEmitter effects
+    ) {
+        AppBlock block = context.block();
         if (!settlementProfile()
                 || !SETTLEMENT_EFFECT_TYPE.equals(result.type())
                 || !result.scope().startsWith(SETTLEMENT_SCOPE_PREFIX)) {
@@ -952,6 +966,10 @@ public final class EutxoStateMachine implements AppStateMachine {
 
     private EutxoDepositClaim acceptedDeposit(AppMessage message) {
         L1Observation observation = L1Observation.decode(message.getBody());
+        return acceptedDeposit(observation);
+    }
+
+    private EutxoDepositClaim acceptedDeposit(L1Observation observation) {
         if (observation == null
                 || !bridge.topic().equals(observation.topic())
                 || !bridge.observerId().equals(observation.observerId())) {
@@ -1105,6 +1123,10 @@ public final class EutxoStateMachine implements AppStateMachine {
 
     private EutxoWithdrawalConfirmation withdrawalConfirmation(AppMessage message) {
         L1Observation observation = L1Observation.decode(message.getBody());
+        return withdrawalConfirmation(observation);
+    }
+
+    private EutxoWithdrawalConfirmation withdrawalConfirmation(L1Observation observation) {
         if (observation == null
                 || !bridge.confirmationTopic().equals(observation.topic())
                 || !bridge.confirmationObserverId().equals(observation.observerId())) {
@@ -1166,6 +1188,12 @@ public final class EutxoStateMachine implements AppStateMachine {
             AppMessage message
     ) {
         L1Observation observation = L1Observation.decode(message.getBody());
+        return batchWithdrawalConfirmation(observation);
+    }
+
+    private EutxoBatchWithdrawalConfirmation batchWithdrawalConfirmation(
+            L1Observation observation
+    ) {
         if (observation == null
                 || !bridge.confirmationTopic().equals(observation.topic())
                 || !bridge.confirmationObserverId().equals(observation.observerId())) {

@@ -7,8 +7,10 @@ import co.nstant.in.cbor.model.UnsignedInteger;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 
 import java.nio.charset.StandardCharsets;
 
@@ -30,9 +32,14 @@ public final class OrderedLogStateMachine implements AppStateMachine {
     }
 
     @Override
-    public void apply(AppBlock block, AppStateWriter writer) {
+    public void apply(
+            AppBlockExecutionContext context,
+            AppStateWriter writer,
+            AppEffectEmitter effects
+    ) {
+        AppBlock block = context.block();
         int index = 0;
-        for (AppMessage message : block.messages()) {
+        for (AppMessage message : context.messages()) {
             com.bloxbean.cardano.yano.api.appchain.OrderedLog.recordMessage(
                     writer, block.height(), index++, message);
         }

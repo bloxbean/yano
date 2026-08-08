@@ -1,7 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
 import com.bloxbean.cardano.yaci.core.model.Block;
-import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
+import com.bloxbean.cardano.yano.api.appchain.SequencedL1Observation;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observer;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider;
@@ -255,11 +255,8 @@ final class L1ObservationService {
      * node's OWN window (fail-closed: undecodable bodies and topic/body
      * disagreements are MISMATCH).
      */
-    AppChainEngine.L1RefVerdict verify(AppMessage message) {
-        L1Observation observation = L1Observation.decode(message.getBody());
-        if (observation == null || !observation.topic().equals(message.getTopic())) {
-            return AppChainEngine.L1RefVerdict.MISMATCH;
-        }
+    AppChainEngine.L1RefVerdict verify(SequencedL1Observation sequenced) {
+        L1Observation observation = sequenced.observation();
         if (observation.slot() > newestSlot) {
             return AppChainEngine.L1RefVerdict.AHEAD;
         }

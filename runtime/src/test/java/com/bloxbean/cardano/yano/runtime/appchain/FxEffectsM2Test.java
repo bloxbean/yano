@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.runtime.appchain;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
@@ -1858,8 +1859,8 @@ class FxEffectsM2Test {
     private static AppStateMachine emitting(String type, ResultPolicy policy, FinalityGate gate) {
         return new AppStateMachine() {
             @Override public String id() { return "emitter"; }
-            @Override public void apply(AppBlock block, AppStateWriter writer) { }
-            @Override public void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
+            @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
                 for (AppMessage message : block.messages()) {
                     effects.emit(EffectIntent.of(type, message.getBody())
                             .scope("s/" + block.height())
@@ -1874,8 +1875,8 @@ class FxEffectsM2Test {
     private static AppStateMachine emittingWithExpiry(String type, long expiryBlocks) {
         return new AppStateMachine() {
             @Override public String id() { return "emitter"; }
-            @Override public void apply(AppBlock block, AppStateWriter writer) { }
-            @Override public void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
+            @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
                 for (AppMessage message : block.messages()) {
                     effects.emit(EffectIntent.of(type, message.getBody())
                             .result(ResultPolicy.CHAIN)
@@ -1889,7 +1890,7 @@ class FxEffectsM2Test {
     private static AppStateMachine noOpMachine() {
         return new AppStateMachine() {
             @Override public String id() { return "no-op"; }
-            @Override public void apply(AppBlock block, AppStateWriter writer) { }
+            @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) { }
         };
     }
 
@@ -1935,9 +1936,9 @@ class FxEffectsM2Test {
     private static AppStateMachine emittingOnlyTailAsTarget() {
         return new AppStateMachine() {
             @Override public String id() { return "tail-emitter"; }
-            @Override public void apply(AppBlock block, AppStateWriter writer) { }
             @Override
-            public void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
+            public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
                 for (int i = 0; i < block.messages().size(); i++) {
                     AppMessage message = block.messages().get(i);
                     effects.emit(EffectIntent.of(
@@ -1951,9 +1952,9 @@ class FxEffectsM2Test {
     private static AppStateMachine emittingTypes(String... types) {
         return new AppStateMachine() {
             @Override public String id() { return "typed-emitter"; }
-            @Override public void apply(AppBlock block, AppStateWriter writer) { }
             @Override
-            public void apply(AppBlock block, AppStateWriter writer, AppEffectEmitter effects) {
+            public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
                 for (int i = 0; i < block.messages().size(); i++) {
                     effects.emit(EffectIntent.of(types[i % types.length],
                             block.messages().get(i).getBody()).build());

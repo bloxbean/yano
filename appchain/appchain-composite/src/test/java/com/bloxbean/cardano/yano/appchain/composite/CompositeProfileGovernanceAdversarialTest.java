@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.appchain.composite;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfile;
 import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
 import com.bloxbean.cardano.yano.api.appchain.AppChainMembershipEpoch;
@@ -164,8 +165,10 @@ class CompositeProfileGovernanceAdversarialTest {
         CompositeStateMachine governed = CompositeStateMachine.create(
                 context(disabled, ignored -> membership()), catalog, profile.digest());
 
-        fixed.apply(block(1, List.of()), new MemoryState());
-        governed.apply(block(1, List.of()), new MemoryState());
+        fixed.apply(block(1, List.of()), new MemoryState(),
+                AppEffectEmitter.rejecting("unused"));
+        governed.apply(block(1, List.of()), new MemoryState(),
+                AppEffectEmitter.rejecting("unused"));
     }
 
     @Test
@@ -498,9 +501,10 @@ class CompositeProfileGovernanceAdversarialTest {
         machine.apply(block(height, List.of(messages)), state, effects);
     }
 
-    private static AppBlock block(long height, List<AppMessage> messages) {
-        return new AppBlock(1, "chain", height, new byte[32], 0, new byte[0], height,
-                new byte[32], new byte[32], messages, new byte[32], FinalityCert.empty());
+    private static AppBlockExecutionContext block(long height, List<AppMessage> messages) {
+        return AppBlockExecutionContext.fromValidatedBlock(new AppBlock(
+                1, "chain", height, new byte[32], 0, new byte[0], height,
+                new byte[32], new byte[32], messages, new byte[32], FinalityCert.empty()));
     }
 
     private static AppMessage command(String sender, CompositeProfileGovernanceV1.Command command) {
@@ -554,8 +558,9 @@ class CompositeProfileGovernanceAdversarialTest {
         @Override public ComponentDescriptor descriptor() { return descriptor; }
 
         @Override
-        public void apply(AppBlock block, AppStateWriter state, AppEffectEmitter effects) {
-            for (AppMessage message : block.messages()) {
+        public void apply(AppBlockExecutionContext execution, AppStateWriter state, AppEffectEmitter effects) {
+            AppBlock block = execution.block();
+            for (AppMessage message : execution.messages()) {
                 applied++;
                 state.put(VALUE_KEY, message.getBody());
             }
@@ -575,16 +580,18 @@ class CompositeProfileGovernanceAdversarialTest {
         }
 
         @Override
-        public void apply(AppBlock block, AppStateWriter state, AppEffectEmitter effects) {
-            for (AppMessage ignored : block.messages()) {
+        public void apply(AppBlockExecutionContext execution, AppStateWriter state, AppEffectEmitter effects) {
+            AppBlock block = execution.block();
+            for (AppMessage ignored : execution.messages()) {
                 effects.emit(new EffectIntent("test.effect", new byte[]{1}, "records",
                         FinalityGate.APP_FINAL, ResultPolicy.CHAIN, 3, null));
             }
         }
 
         @Override
-        public void onEffectResult(AppBlock block, EffectResult result,
+        public void onEffectResult(AppBlockExecutionContext execution, EffectResult result,
                                    AppStateWriter state, AppEffectEmitter effects) {
+            AppBlock block = execution.block();
             resultCalls++;
             state.put("result".getBytes(StandardCharsets.US_ASCII), result.externalRef());
         }

@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.appchain.evidence.profile;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
@@ -84,8 +85,9 @@ final class EvidenceReleaseWorkflow implements CompositeWorkflow {
     }
 
     @Override
-    public void apply(AppBlock block, CompositeWorkflowContext context) {
-        for (AppMessage source : block.messages()) {
+    public void apply(AppBlockExecutionContext execution, CompositeWorkflowContext context) {
+        AppBlock block = execution.block();
+        for (AppMessage source : execution.messages()) {
             final EvidenceReleaseCommandV1 command;
             try {
                 command = EvidenceReleaseCommandV1.decode(source.getBody());
@@ -128,9 +130,16 @@ final class EvidenceReleaseWorkflow implements CompositeWorkflow {
                 continue;
             }
 
-            docTrailMachine.apply(withMessages(block, List.of(documentMessage)), documentState);
-            evidenceMachine.apply(withMessages(block, List.of(evidenceMessage)), evidenceState,
-                    context.effects(evidence));
+            docTrailMachine.apply(
+                    com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext
+                            .fromValidatedBlock(withMessages(block, List.of(documentMessage))),
+                    documentState,
+                    com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter
+                            .rejecting("document trail does not emit effects"));
+            evidenceMachine.apply(
+                    com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext
+                            .fromValidatedBlock(withMessages(block, List.of(evidenceMessage))),
+                    evidenceState, context.effects(evidence));
         }
     }
 
