@@ -686,7 +686,10 @@ tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
         } as Set
         if (bridgeContributions != Set.of(
                 'l1-observer:eutxo-vault-deposit-v1',
-                'l1-observer:eutxo-withdrawal-confirmation-v1')) {
+                'l1-observer:eutxo-withdrawal-confirmation-v1',
+                // ADR-UTXO-009: the A2 federated batch settlement stack.
+                'l1-observer:eutxo-batch-withdrawal-confirmation-v1',
+                'effect-executor:eutxo-settlement')) {
             throw new GradleException(
                     "EUTxO bridge contribution inventory is incomplete: ${bridgeContributions}")
         }

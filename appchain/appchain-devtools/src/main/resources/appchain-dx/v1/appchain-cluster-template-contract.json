@@ -55,6 +55,12 @@
       "suppliedBy": "appchain-cluster/anchor-option",
       "requiredBeforeStartup": false,
       "description": "Optional anchor cadence override"
+    },
+    {
+      "propertyPattern": "yano.app-chain.chains[*].effects.executors.eutxo-settlement.owner",
+      "suppliedBy": "appchain-cluster/settlement-owner",
+      "requiredBeforeStartup": false,
+      "description": "Single-owner pinning: granted to exactly one node so only it drives l1.settlement effects"
     }
   ]
 }
