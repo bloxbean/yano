@@ -1,8 +1,5 @@
 package com.bloxbean.cardano.yano.api.plugin.ui;
 
-import java.io.IOException;
-import java.io.InputStream;
-
 /** ServiceLoader SPI for one validated, bundle-owned UI extension. */
 public interface UiExtensionProvider {
     String id();
@@ -11,6 +8,6 @@ public interface UiExtensionProvider {
 
     UiExtensionAssetManifest assets();
 
-    /** Opens a declared asset. The caller closes the returned stream. */
-    InputStream openAsset(String normalizedPath) throws IOException;
+    /** Reads one declared asset through the plugin callback lifetime fence. */
+    byte[] assetBytes(String normalizedPath);
 }

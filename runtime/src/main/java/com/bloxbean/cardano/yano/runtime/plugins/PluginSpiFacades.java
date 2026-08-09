@@ -399,6 +399,9 @@ final class PluginSpiFacades {
             case METRICS -> new MetricsProviderFacade(
                     (PluginMetricsProvider) delegate, effectiveLoader, activation,
                     products, callbacks);
+            case UI_EXTENSION -> new UiExtensionProviderFacade(
+                    (com.bloxbean.cardano.yano.api.plugin.ui.UiExtensionProvider) delegate,
+                    effectiveLoader, activation, products, callbacks);
         };
     }
 
@@ -944,6 +947,45 @@ final class PluginSpiFacades {
                         value, api -> new DomainApiFacade(
                                 api, loader, activation, callbacks));
             }));
+        }
+    }
+
+    private record UiExtensionProviderFacade(
+            com.bloxbean.cardano.yano.api.plugin.ui.UiExtensionProvider delegate,
+            ClassLoader loader,
+            ActivationContext activation,
+            ProductReservations products,
+            CallbackTracker callbacks
+    ) implements com.bloxbean.cardano.yano.api.plugin.ui.UiExtensionProvider {
+        private UiExtensionProviderFacade {
+            Objects.requireNonNull(delegate, "delegate");
+        }
+
+        @Override
+        public String id() {
+            return activation.call("read ui-extension provider identity",
+                    () -> pluginCall(callbacks, loader, delegate::id));
+        }
+
+        @Override
+        public com.bloxbean.cardano.yano.api.plugin.ui.UiExtensionDescriptor descriptor() {
+            return Objects.requireNonNull(
+                    pluginCall(callbacks, loader, delegate::descriptor),
+                    "UiExtensionProvider.descriptor() must not return null");
+        }
+
+        @Override
+        public com.bloxbean.cardano.yano.api.plugin.ui.UiExtensionAssetManifest assets() {
+            return Objects.requireNonNull(
+                    pluginCall(callbacks, loader, delegate::assets),
+                    "UiExtensionProvider.assets() must not return null");
+        }
+
+        @Override
+        public byte[] assetBytes(String normalizedPath) {
+            return Objects.requireNonNull(
+                    pluginCall(callbacks, loader, () -> delegate.assetBytes(normalizedPath)),
+                    "UiExtensionProvider.assetBytes() must not return null").clone();
         }
     }
 

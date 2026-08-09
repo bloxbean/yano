@@ -51,6 +51,11 @@ public interface Yano extends AutoCloseable {
         return com.bloxbean.cardano.yano.api.plugin.domain.DomainApiGateway.empty();
     }
 
+    /** Active, validated plugin UI catalog; empty when none are selected. */
+    default com.bloxbean.cardano.yano.api.plugin.ui.UiExtensionGateway uiExtensions() {
+        return com.bloxbean.cardano.yano.api.plugin.ui.UiExtensionGateway.empty();
+    }
+
     /** Host registration seam for bounded node-local derived read models. */
     default Optional<com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelHost>
             localReadModels() {

@@ -25,3 +25,28 @@ The core API now supplies immutable descriptor, permission, asset-manifest, and 
 Contract tests accept the Cardano History descriptor and reject traversal, unknown media, duplicate
 paths, undeclared permissions, non-canonical digests, and budget violations. These are generic
 plugin contracts; no Cardano-specific type was added to `core-api`.
+
+## P1 — plugin UI foundation
+
+Status: complete
+
+Implemented:
+
+- `ui-extension` is a manifest-required, auxiliary-local contribution kind with native-image and
+  offline/runtime catalog parity;
+- the runtime eagerly reads every declared asset through the plugin callback fence, checks its
+  exact size and SHA-256 digest, derives a deterministic content-set digest, and publishes only a
+  host-owned immutable byte snapshot;
+- stop/unload atomically removes the catalog and invalidates the content-addressed namespace;
+- the REST adapter exposes a no-store catalog and immutable assets with `nosniff`, ETag,
+  restrictive CSP, referrer, and same-origin resource headers;
+- the console adds a generic capability-gated extension route and an opaque-origin iframe with
+  only `allow-scripts`;
+- the v1 `postMessage` bridge binds source window, opaque origin, API version, random session
+  nonce, selected chain, request ID, permission, input/response size, concurrency, and timeout;
+  it offers only bounded read operations and never passes the API key or a raw-fetch primitive.
+
+Conformance covers invalid paths/media/digests, duplicate assets, unsupported permissions and API
+versions, wrong-chain capability requirements, forged nonces, undeclared bridge methods,
+cross-namespace asset access, and lifecycle cleanup. The production console contains no
+Cardano-History-specific source or asset.

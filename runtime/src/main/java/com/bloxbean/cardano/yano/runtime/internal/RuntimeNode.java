@@ -82,6 +82,7 @@ import com.bloxbean.cardano.yano.runtime.producer.SlotLeaderSigningComponents;
 import com.bloxbean.cardano.yano.runtime.producer.StakeDataProviderFactory;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginManager;
 import com.bloxbean.cardano.yano.runtime.plugins.DomainApiRegistry;
+import com.bloxbean.cardano.yano.runtime.plugins.UiExtensionRegistry;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginRuntimeEnvironment;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginOperationsRegistry;
 import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
@@ -188,6 +189,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     private final ServeSubsystem serveSubsystem;
     private final com.bloxbean.cardano.yano.runtime.appchain.AppChainManager appChainManager;
     private final DomainApiRegistry domainApiRegistry;
+    private final UiExtensionRegistry uiExtensionRegistry;
     private final com.bloxbean.cardano.yano.runtime.plugins.LocalReadModelRegistry
             localReadModels;
     private final PluginOperationsRegistry pluginOperationsRegistry;
@@ -461,6 +463,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                     localReadModels,
                     pluginOperationsRegistry);
             constructionCleanup.addLast(domainApiRegistry::close);
+            this.uiExtensionRegistry = new UiExtensionRegistry(this.pluginEnvironment);
+            constructionCleanup.addLast(uiExtensionRegistry::close);
 
             // Register default consensus listener (accept-all placeholder).
             var consensusListener = new DefaultConsensusListener();
@@ -837,6 +841,11 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     /** Constrained ADR-011.3 domain API dispatcher. */
     public com.bloxbean.cardano.yano.api.plugin.domain.DomainApiGateway domainApis() {
         return domainApiRegistry;
+    }
+
+    /** Active, content-verified plugin UI catalog and assets. */
+    public com.bloxbean.cardano.yano.api.plugin.ui.UiExtensionGateway uiExtensions() {
+        return uiExtensionRegistry;
     }
 
     public com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelHost
@@ -1371,6 +1380,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 pluginsStarted = true;
             }
             domainApiRegistry.resume();
+            uiExtensionRegistry.resume();
             utxoSubsystem.initializeFilterChain(
                     pluginManager != null ? pluginManager.getStorageFilters() : List.of());
             // Health and metrics may depend on services contributed by the
@@ -1388,6 +1398,11 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
     private void stopDomainAndNodePlugins(boolean stopNodePlugins) {
         Throwable failure = null;
+        try {
+            uiExtensionRegistry.stop();
+        } catch (Throwable uiFailure) {
+            failure = recordPluginCleanupFailure(failure, uiFailure);
+        }
         try {
             pluginOperationsRegistry.sealAndAwait();
         } catch (Throwable operationsFailure) {
@@ -3539,6 +3554,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         Throwable failure = attemptRuntimeCleanup(
                 null, "plugin telemetry products", pluginOperationsRegistry::sealAndAwait);
         failure = attemptRuntimeCleanup(
+                failure, "plugin UI products", uiExtensionRegistry::stop);
+        failure = attemptRuntimeCleanup(
                 failure, "domain API products", domainApiRegistry::sealAndAwait);
         if (unsafeLedgerApplyShutdown) {
             failure = recordPluginCleanupFailure(failure, new IllegalStateException(
@@ -3623,6 +3640,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
             @Override
             public void closeDomainApis() {
+                uiExtensionRegistry.close();
                 domainApiRegistry.close();
             }
 

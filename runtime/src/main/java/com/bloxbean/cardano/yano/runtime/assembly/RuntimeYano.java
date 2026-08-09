@@ -206,6 +206,14 @@ final class RuntimeYano implements Yano, DevnetRuntimeProvider {
     }
 
     @Override
+    public com.bloxbean.cardano.yano.api.plugin.ui.UiExtensionGateway uiExtensions() {
+        if (nodeLifecycle instanceof com.bloxbean.cardano.yano.runtime.internal.RuntimeNode runtimeNode) {
+            return runtimeNode.uiExtensions();
+        }
+        return com.bloxbean.cardano.yano.api.plugin.ui.UiExtensionGateway.empty();
+    }
+
+    @Override
     public Optional<com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelHost>
             localReadModels() {
         return nodeLifecycle instanceof RuntimeNode runtimeNode
