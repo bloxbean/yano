@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.appchain.history;
 
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider;
+import com.bloxbean.cardano.yano.api.plugin.ui.UiExtensionProvider;
 import org.junit.jupiter.api.Test;
 
 import java.io.InputStream;
@@ -22,6 +23,10 @@ class CardanoHistoryPluginMetadataTest {
                 .map(ServiceLoader.Provider::get)
                 .filter(value -> CardanoHistoryProduct.BUNDLE_ID.equals(value.id())))
                 .hasSize(1);
+        assertThat(ServiceLoader.load(UiExtensionProvider.class).stream()
+                .map(ServiceLoader.Provider::get)
+                .filter(value -> CardanoHistoryProduct.BUNDLE_ID.equals(value.id())))
+                .singleElement().isInstanceOf(CardanoHistoryUiExtensionProvider.class);
 
         String path = "META-INF/yano/plugins/" + CardanoHistoryProduct.BUNDLE_ID + ".json";
         try (InputStream input = getClass().getClassLoader().getResourceAsStream(path)) {
@@ -29,6 +34,7 @@ class CardanoHistoryPluginMetadataTest {
             String manifest = new String(input.readAllBytes(), StandardCharsets.UTF_8);
             assertThat(manifest).contains("\"kind\": \"app-state-machine\"")
                     .contains("\"kind\": \"domain-api\"")
+                    .contains("\"kind\": \"ui-extension\"")
                     .contains("\"name\": \"cardano-history\"");
         }
     }
