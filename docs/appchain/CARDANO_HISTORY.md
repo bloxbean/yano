@@ -72,6 +72,18 @@ verified Cardano source.
 See [Authenticated snapshots](AUTHENTICATED_SNAPSHOTS.md) for retention and
 [Plugin UI extensions](PLUGIN_UI_EXTENSIONS.md) for frontend isolation.
 
+## Product console
+
+Installing the Cardano History bundle also installs a capability-gated **Cardano History** app-chain
+tab. It shows the selected chain's enabled history capabilities and anchor, provides bounded
+parameter, stake, DRep, and proposal queries, and exposes proof coordinates in a Proof Lab. The UI
+runs in the standard opaque-origin sandbox and can use only the declared read-only host bridge; it
+does not receive an API key and cannot open its own network connection.
+
+The browser checks proof-envelope chain, key, height, root, and MPF-profile binding. Full MPF wire
+verification and independent Cardano L1 anchor verification remain available through
+`yano-cardano-history verify`, and the UI labels that distinction explicitly.
+
 ## On-chain consumption
 
 `appchain-cardano-history-onchain` fixes the Cardano History application ID, MPF profile, canonical

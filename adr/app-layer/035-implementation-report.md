@@ -91,3 +91,13 @@ redeemer authority. Emulator suites cover inclusion, exclusion, same-root comple
 values, stake amount/pool/combined, proposal, DRep, and wrong-root/profile cases; product tests
 compile both validators and freeze the canonical keys and predicate mapping. JMT is not exposed as
 an on-chain option.
+
+## P5 — Cardano History plugin UI
+
+Status: complete
+
+The product bundle now contributes its own sandboxed Cardano History UI. The capability-aware
+overview, parameter/stake/governance queries, and Proof Lab use only the versioned read-only host
+bridge; the assets contain no direct network primitive or external URL. The Proof Lab independently
+checks proof-envelope chain/key/height/root/profile binding and clearly directs operators to the
+standalone verifier for full MPF-wire and independently sourced Cardano-anchor verification.

@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Cardano History</title>
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+  <header><div><span class="eyebrow">YANO APP-CHAIN PRODUCT</span><h1>Cardano History</h1></div><span id="connection" class="pill warn">connecting</span></header>
+  <nav><button data-tab="overview" class="active">Overview</button><button data-tab="parameters">Parameters</button><button data-tab="stake">Epoch stake</button><button data-tab="governance">Governance</button><button data-tab="proof">Proof lab</button></nav>
+  <main>
+    <section id="overview" class="tab active"><div class="grid"><article><h2>Chain</h2><div id="summary" class="facts"></div></article><article><h2>Enabled capabilities</h2><div id="capabilities" class="chips"></div></article><article><h2>L1 anchor</h2><pre id="anchor">Waiting for host…</pre></article><article><h2>Available epochs</h2><div id="epochs" class="chips"></div></article></div></section>
+    <section id="parameters" class="tab"><article><h2>Protocol parameters</h2><form data-query="parameters"><label>Epoch <input name="epoch" type="number" min="0" required></label><button>Query</button></form><pre class="result">Choose an epoch.</pre></article></section>
+    <section id="stake" class="tab"><article><h2>Stake credential at end of epoch</h2><p class="note">Absence is asserted only when the same-root completeness record is complete.</p><form data-query="stake"><label>Epoch <input name="epoch" type="number" min="0" required></label><label>Credential type <select name="type"><option value="0">Key</option><option value="1">Script</option></select></label><label>Credential hash <input name="hash" pattern="[0-9a-fA-F]{56}" required></label><button>Query</button></form><pre class="result">Enter a credential.</pre></article></section>
+    <section id="governance" class="tab"><div class="grid"><article><h2>DRep distribution</h2><form data-query="drep"><label>Epoch <input name="epoch" type="number" min="0" required></label><label>DRep type <select name="type"><option value="0">Key</option><option value="1">Script</option></select></label><label>DRep hash <input name="hash" pattern="[0-9a-fA-F]{56}" required></label><button>Query</button></form><pre class="result">Enter a DRep.</pre></article><article><h2>Proposal history</h2><form data-query="proposal"><label>Epoch <input name="epoch" type="number" min="0" required></label><label>Transaction ID <input name="tx" pattern="[0-9a-fA-F]{64}" required></label><label>Index <input name="index" type="number" min="0" max="65535" required></label><button>Query</button></form><pre class="result">Enter a proposal ID.</pre></article></div></section>
+    <section id="proof" class="tab"><article><h2>Proof lab</h2><p class="note">Select “Generate proof” after a primary-state query. The browser independently checks response/key/root/height bindings. Use the standalone CLI for full MPF-wire and Cardano L1 cryptographic verification.</p><button id="generate" disabled>Generate proof</button><div id="proof-status" class="verdict">No proof coordinates selected.</div><pre id="proof-result">—</pre></article></section>
+  </main>
+  <div id="error" role="alert"></div>
+  <script src="assets/app.js"></script>
+</body>
+</html>
