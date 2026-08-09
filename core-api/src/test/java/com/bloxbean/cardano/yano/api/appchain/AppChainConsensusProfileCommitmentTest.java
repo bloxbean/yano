@@ -14,11 +14,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class AppChainConsensusProfileCommitmentTest {
     private static final String SIGNER_1 = "11".repeat(32);
     private static final String SIGNER_2 = "22".repeat(32);
-    private static final String GOLDEN_BYTES = "0000000100010000000000400000000000400000"
-            + "0000000507000000800000400000000000000186a000000000000186a001000002"
+    private static final String GOLDEN_BYTES = "0000000200010000000000400000000000400000"
+            + "000000050000000507000000800000400000000000000186a000000000000186a001000002"
             + SIGNER_1 + SIGNER_2;
     private static final String GOLDEN_DIGEST =
-            "fe3f0092d18c6f95e662f558084b56dac8350516c88c9e6ab0fcf51343d00f95";
+            "2307f63829e8b5309a71f921b58c5983a409d5e56bdc354ba011aed8cdca3438";
 
     @Test
     void freezesCanonicalKeyBytesAndDigest() {
@@ -28,7 +28,7 @@ class AppChainConsensusProfileCommitmentTest {
 
         assertThat(new String(AppChainConsensusProfileCommitment.markerKey(),
                 java.nio.charset.StandardCharsets.US_ASCII))
-                .isEqualTo("~yano/consensus-profile/v1");
+                .isEqualTo("~yano/consensus-profile/v2");
         assertThat(HexUtil.encodeHexString(encoded)).isEqualTo(GOLDEN_BYTES);
         assertThat(HexUtil.encodeHexString(
                 AppChainConsensusProfileCommitment.digest(profile))).isEqualTo(GOLDEN_DIGEST);
@@ -42,14 +42,14 @@ class AppChainConsensusProfileCommitmentTest {
                 enabledProfile(List.of(SIGNER_1, SIGNER_2)));
 
         byte[] unknownFlags = encoded.clone();
-        unknownFlags[24] |= (byte) 0x80;
+        unknownFlags[28] |= (byte) 0x80;
         assertThatThrownBy(() -> AppChainConsensusProfileCommitment.decode(unknownFlags))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("unknown flag");
 
         byte[] reversedSigners = encoded.clone();
-        System.arraycopy(encoded, 53 + 32, reversedSigners, 53, 32);
-        System.arraycopy(encoded, 53, reversedSigners, 53 + 32, 32);
+        System.arraycopy(encoded, 57 + 32, reversedSigners, 57, 32);
+        System.arraycopy(encoded, 57, reversedSigners, 57 + 32, 32);
         assertThatThrownBy(() -> AppChainConsensusProfileCommitment.decode(reversedSigners))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("canonically encoded");
@@ -63,7 +63,8 @@ class AppChainConsensusProfileCommitmentTest {
     @Test
     void enforcesCanonicalDisabledEffectProfile() {
         AppChainConsensusProfile disabled = new AppChainConsensusProfile(
-                1, 65_536, 64, 4_194_304, 0, false,
+                AppChainConsensusProfile.SCHEMA_VERSION,
+                65_536, 64, 4_194_304, 0, 0, false,
                 false, 0, 0, 0, 0,
                 FinalityGate.APP_FINAL, EffectOutcomeCommitment.PER_EFFECT,
                 true, List.of());
@@ -71,7 +72,8 @@ class AppChainConsensusProfileCommitmentTest {
         assertThat(AppChainConsensusProfileCommitment.decode(
                 AppChainConsensusProfileCommitment.encode(disabled))).isEqualTo(disabled);
         assertThatThrownBy(() -> new AppChainConsensusProfile(
-                1, 65_536, 64, 4_194_304, 0, false,
+                AppChainConsensusProfile.SCHEMA_VERSION,
+                65_536, 64, 4_194_304, 0, 0, false,
                 false, 1, 0, 0, 0,
                 FinalityGate.APP_FINAL, EffectOutcomeCommitment.PER_EFFECT,
                 true, List.of()))
@@ -102,10 +104,11 @@ class AppChainConsensusProfileCommitmentTest {
 
     private static AppChainConsensusProfile enabledProfile(List<String> signers) {
         return new AppChainConsensusProfile(
-                1,
+                AppChainConsensusProfile.SCHEMA_VERSION,
                 65_536,
                 64,
                 4_194_304,
+                5,
                 5,
                 true,
                 true,

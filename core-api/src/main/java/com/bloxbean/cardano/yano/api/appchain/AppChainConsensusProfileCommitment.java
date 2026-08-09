@@ -16,7 +16,7 @@ import java.util.Objects;
 
 /** Canonical ADR-016 key, binary codec and domain-separated digest. */
 public final class AppChainConsensusProfileCommitment {
-    public static final int FIXED_BYTES = 53;
+    public static final int FIXED_BYTES = 57;
     public static final int MAX_BYTES = FIXED_BYTES + AppChainConfig.MAX_MEMBERS * 32;
 
     private static final byte FLAG_ENFORCE_SENDER_SEQ = 1;
@@ -24,11 +24,11 @@ public final class AppChainConsensusProfileCommitment {
     private static final byte FLAG_EFFECTS_STRICT_PREFIX = 1 << 2;
     private static final int KNOWN_FLAGS = FLAG_ENFORCE_SENDER_SEQ
             | FLAG_EFFECTS_ENABLED | FLAG_EFFECTS_STRICT_PREFIX;
-    private static final byte[] MARKER_KEY = "~yano/consensus-profile/v1"
+    private static final byte[] MARKER_KEY = "~yano/consensus-profile/v2"
             .getBytes(StandardCharsets.US_ASCII);
     private static final byte[] RESERVED_PREFIX = "~yano/"
             .getBytes(StandardCharsets.US_ASCII);
-    private static final byte[] DIGEST_DOMAIN = "yano-app-chain-consensus-profile-v1\0"
+    private static final byte[] DIGEST_DOMAIN = "yano-app-chain-consensus-profile-v2\0"
             .getBytes(StandardCharsets.US_ASCII);
 
     private AppChainConsensusProfileCommitment() {
@@ -60,6 +60,7 @@ public final class AppChainConsensusProfileCommitment {
         out.putInt(profile.maxBlockMessages());
         out.putLong(profile.maxBlockBytes());
         out.putInt(profile.l1StabilityDepth());
+        out.putInt(profile.epochStabilityDepth());
         int flags = 0;
         if (profile.enforceSenderSeq()) {
             flags |= FLAG_ENFORCE_SENDER_SEQ;
@@ -101,6 +102,7 @@ public final class AppChainConsensusProfileCommitment {
             int maxBlockMessages = in.getInt();
             long maxBlockBytes = in.getLong();
             int l1StabilityDepth = in.getInt();
+            int epochStabilityDepth = in.getInt();
             int flags = Byte.toUnsignedInt(in.get());
             if ((flags & ~KNOWN_FLAGS) != 0) {
                 throw new IllegalArgumentException("consensus profile contains unknown flag bits");
@@ -128,6 +130,7 @@ public final class AppChainConsensusProfileCommitment {
                     maxBlockMessages,
                     maxBlockBytes,
                     l1StabilityDepth,
+                    epochStabilityDepth,
                     (flags & FLAG_ENFORCE_SENDER_SEQ) != 0,
                     (flags & FLAG_EFFECTS_ENABLED) != 0,
                     effectsMaxPerBlock,

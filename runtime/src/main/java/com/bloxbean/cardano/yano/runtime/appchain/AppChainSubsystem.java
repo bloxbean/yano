@@ -142,6 +142,9 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     /** L1 observations (008.4 I3.2): all members recompute; the scheduled
      *  proposer injects. Null when no observers are configured. */
     private volatile L1ObservationService observationService;
+    private volatile L1EpochObservationCoordinator epochObservationCoordinator;
+    private volatile com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochStateProvider
+            epochStateProvider;
     private volatile java.util.function.Function<byte[], String> txSubmitter;
     private volatile java.util.function.Supplier<com.bloxbean.cardano.yano.api.utxo.UtxoState> utxoStateSupplier;
     private final java.util.concurrent.ConcurrentLinkedDeque<AppChainEngine.L1Ref> recentL1Points =
@@ -1028,6 +1031,12 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         this.utxoStateSupplier = utxoStateSupplier;
     }
 
+    /** Wire the persistent, epoch-pinned ledger-state source used by ADR-028 observers. */
+    public void wireL1EpochState(
+            com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochStateProvider provider) {
+        this.epochStateProvider = Objects.requireNonNull(provider, "provider");
+    }
+
     private volatile com.bloxbean.cardano.yano.api.TxEvaluationGateway txEvaluation;
 
     /** Wire the node's phase-2 evaluator for script-executor tx assembly. */
@@ -1514,7 +1523,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
      * observation (counted); the proposer re-observes nothing — the fact is
      * simply not sequenced until an operator inspects the drop counters.
      */
-    private void injectObservation(com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation observation) {
+    private boolean injectObservation(
+            com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation observation) {
         try {
             AppMessage message = buildSigned(observation.topic(), observation.encode(),
                     config.defaultTtlSeconds());
@@ -1524,14 +1534,18 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 record(message, ReceivedAppMessage.Source.LOCAL);
                 log.info("L1 observation injected: topic={}, l1Slot={}, id={}",
                         observation.topic(), observation.slot(), message.getMessageIdHex());
+                return true;
             } else if (added == AppMsgPool.AddResult.FULL) {
                 countDrop("pool_full");
                 log.warn("L1 observation dropped — pool full (topic {}, l1Slot {})",
                         observation.topic(), observation.slot());
+                return false;
             }
+            return true;
         } catch (Exception e) {
             log.warn("L1 observation injection failed (errorType={})",
                     e.getClass().getName());
+            return false;
         }
     }
 
@@ -2887,6 +2901,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         if (currentObservations != null) {
             status.put("observers", currentObservations.status());
         }
+        L1EpochObservationCoordinator currentEpochObservations = epochObservationCoordinator;
+        if (currentEpochObservations != null) {
+            status.put("epochObservers", currentEpochObservations.status());
+        }
         Map<String, String> activations = transitionActivationSettings(config.pluginSettings());
         if (!activations.isEmpty()) {
             // Transition activations apply to all state-machine/kernel logic,
@@ -3432,9 +3450,61 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     throw new IllegalArgumentException("L1 observers require l1.stability-depth > 0 "
                             + "(observations are injected only once stability-deep — rollback safety)");
                 }
-                chainEngine.setObservationValidator(observationService::verify);
                 log.info("App-chain '{}' L1 observers configured: {}",
                         config.chainId(), observationService.status().keySet());
+            }
+            List<com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochObserver>
+                    epochObservers = L1EpochObservationCoordinator.observersFromConfig(
+                    config.pluginSettings(), pluginProviders);
+            if (!epochObservers.isEmpty()) {
+                if (eventBus == null) {
+                    throw new IllegalArgumentException(
+                            "L1 epoch observers require an L1 BlockAppliedEvent feed");
+                }
+                if (config.retentionEnabled()) {
+                    throw new IllegalArgumentException(
+                            "L1 epoch observers require retention.enabled=false");
+                }
+                var stateSource = epochStateProvider;
+                if (stateSource == null) {
+                    throw new IllegalArgumentException(
+                            "L1 epoch observers require a persistent epoch-state provider");
+                }
+                this.epochObservationCoordinator = new L1EpochObservationCoordinator(
+                        epochObservers,
+                        stateSource,
+                        new EpochObservationSpool(
+                                ledgerStore, EpochObservationSpool.DEFAULT_MAX_BYTES),
+                        config.epochStabilityDepth(),
+                        1,
+                        config.maxMessageBytes(),
+                        this::isScheduledProposer,
+                        this::injectObservation,
+                        config.chainId(),
+                        log);
+                chainEngine.setVotingHealth(epochObservationCoordinator::healthy);
+                log.info("App-chain '{}' L1 epoch observers configured: {}",
+                        config.chainId(), epochObservers.stream()
+                                .map(com.bloxbean.cardano.yano.api.appchain.l1view
+                                        .L1EpochObserver::observerId)
+                                .toList());
+            }
+            if (observationService != null || epochObservationCoordinator != null) {
+                chainEngine.setObservationValidator((sequenced, historicalCatchUp) -> {
+                    var observation = sequenced.observation();
+                    if (observation.anchor()
+                            instanceof com.bloxbean.cardano.yano.api.appchain.l1view
+                            .L1Observation.EpochAnchor) {
+                        L1EpochObservationCoordinator coordinator =
+                                epochObservationCoordinator;
+                        return coordinator != null
+                                ? coordinator.verify(observation, historicalCatchUp)
+                                : AppChainEngine.L1RefVerdict.MISMATCH;
+                    }
+                    L1ObservationService service = observationService;
+                    return service != null ? service.verify(sequenced)
+                            : AppChainEngine.L1RefVerdict.MISMATCH;
+                });
             }
             chainEngine.setEnvelopeRelay(this::relay);
             if (governedMode()) {
@@ -3527,6 +3597,9 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             buildSinks(ledgerStore);
             buildEffectRuntime(ledgerStore);
             subscribeL1Events(generationToken);
+            if (epochObservationCoordinator != null) {
+                epochObservationCoordinator.start();
+            }
             this.queryLane = new QueryLane(generationToken, ledgerStore);
         }
 
@@ -3852,7 +3925,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         // a late callback from a retired subscription must never observe the
         // next generation's services.
         L1GenerationServices services = new L1GenerationServices(
-                generationToken, anchorService, scriptAnchorService, observationService);
+                generationToken, anchorService, scriptAnchorService, observationService,
+                epochObservationCoordinator);
         eventSubscriptions.addAll(acquireL1Subscriptions(
                 eventBus,
                 event -> onL1BlockApplied(event, services),
@@ -3863,7 +3937,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             long generationToken,
             AnchorService anchor,
             ScriptAnchorService scriptAnchor,
-            L1ObservationService observations
+            L1ObservationService observations,
+            L1EpochObservationCoordinator epochObservations
     ) {
     }
 
@@ -3971,6 +4046,14 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             }
         });
 
+        runL1Phase("epoch observation wake-up", () -> {
+            L1EpochObservationCoordinator coordinator = services.epochObservations();
+            if (coordinator != null) {
+                coordinator.onBlockApplied(event.slot(), event.blockNumber(),
+                        HexUtil.decodeHexString(event.blockHash()));
+            }
+        });
+
         runL1Phase("anchor confirmation", () -> {
             AnchorService currentAnchor = services.anchor();
             ScriptAnchorService currentScriptAnchor = services.scriptAnchor();
@@ -4043,6 +4126,12 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             L1ObservationService currentObservations = services.observations();
             if (currentObservations != null) {
                 currentObservations.onL1Rollback(targetSlot);
+            }
+        });
+        runL1Phase("epoch observation rollback", () -> {
+            L1EpochObservationCoordinator coordinator = services.epochObservations();
+            if (coordinator != null) {
+                coordinator.onRollback(targetSlot);
             }
         });
     }
@@ -4710,6 +4799,19 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             }
             lastBlockAtMillis = now;
         }
+        L1EpochObservationCoordinator epochCoordinator = epochObservationCoordinator;
+        if (epochCoordinator != null) {
+            try {
+                AppBlockExecutionContext execution =
+                        AppBlockExecutionContext.fromValidatedBlock(block);
+                for (SequencedL1Observation observation : execution.l1Observations()) {
+                    epochCoordinator.onFinalized(observation.observation());
+                }
+            } catch (RuntimeException failure) {
+                log.warn("Failed to acknowledge finalized epoch observations (errorType={})",
+                        failure.getClass().getName());
+            }
+        }
         for (FinalizedBlockListener listener : finalizedListeners) {
             try {
                 listener.onFinalized(block, blockHash);
@@ -4915,6 +5017,14 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         }
         eventSubscriptions.clear();
 
+        L1EpochObservationCoordinator retiringEpochCoordinator =
+                epochObservationCoordinator;
+        epochObservationCoordinator = null;
+        if (retiringEpochCoordinator != null) {
+            closeResource("L1 epoch observation coordinator",
+                    retiringEpochCoordinator::close, cleanupFailures);
+        }
+
         // Shutdown ORDER matters (ADR-010 F5 review): stop the tick source and
         // WAIT for it, then close the runtime (waits for workers), and only
         // then may the ledger close — nothing may touch RocksDB afterwards.
@@ -5043,6 +5153,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 || anchorService != null
                 || scriptAnchorService != null
                 || observationService != null
+                || epochObservationCoordinator != null
                 || !eventSubscriptions.isEmpty()
                 || !sinkRunners.isEmpty();
     }

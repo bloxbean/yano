@@ -99,13 +99,17 @@ final class L1ObservationService {
             String observerId = entry.getKey();
             Map<String, String> settings = entry.getValue();
             String type = settings.getOrDefault("type", "");
+            if (L1EpochObservationCoordinator.isEpochObserverType(type, providers)) {
+                continue;
+            }
             observers.add(switch (type) {
                 case MetadataLabelObserver.TYPE -> new MetadataLabelObserver(observerId, settings);
                 case AddressDepositObserver.TYPE -> new AddressDepositObserver(observerId, settings);
                 default -> loadProvided(type, observerId, settings, providers);
             });
         }
-        return new L1ObservationService(observers, windowBlocks, log);
+        return observers.isEmpty() ? null
+                : new L1ObservationService(observers, windowBlocks, log);
     }
 
     private static L1Observer loadProvided(String type, String observerId,

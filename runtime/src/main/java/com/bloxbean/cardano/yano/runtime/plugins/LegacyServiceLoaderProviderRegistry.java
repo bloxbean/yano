@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.runtime.plugins;
 
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochObserverProvider;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerModeProvider;
 import com.bloxbean.cardano.yano.api.appchain.signer.SignerProviderFactory;
@@ -76,6 +77,9 @@ public final class LegacyServiceLoaderProviderRegistry
                     providerSource, discoveryBudget, productReservations);
             scan(discovered, constructed, ContributionKind.L1_OBSERVER,
                     L1ObserverProvider.class, L1ObserverProvider::type,
+                    providerSource, discoveryBudget, productReservations);
+            scan(discovered, constructed, ContributionKind.L1_EPOCH_OBSERVER,
+                    L1EpochObserverProvider.class, L1EpochObserverProvider::type,
                     providerSource, discoveryBudget, productReservations);
             scan(discovered, constructed, ContributionKind.SIGNER_PROVIDER,
                     SignerProviderFactory.class, SignerProviderFactory::scheme,

@@ -44,6 +44,9 @@ final class AppLedgerStore implements AutoCloseable {
     private static final byte[] CF_FX_RECORDS = "app_fx_records".getBytes(StandardCharsets.UTF_8);
     /** Effect runtime tier (ADR-010 F3): node-local execution progress — never replicated, disposable. */
     private static final byte[] CF_FX_RUNTIME = "app_fx_runtime".getBytes(StandardCharsets.UTF_8);
+    /** Durable ADR-028 epoch-observation generation/outbox state (node local). */
+    private static final byte[] CF_EPOCH_OBSERVATIONS =
+            "app_epoch_observations_v1".getBytes(StandardCharsets.UTF_8);
 
     private static final byte[] KEY_TIP_HEIGHT = "tip_height".getBytes(StandardCharsets.UTF_8);
     private static final byte[] KEY_TIP_HASH = "tip_hash".getBytes(StandardCharsets.UTF_8);
@@ -65,6 +68,7 @@ final class AppLedgerStore implements AutoCloseable {
     private final ColumnFamilyHandle queryIndexCf;
     private final ColumnFamilyHandle fxRecordsCf;
     private final ColumnFamilyHandle fxRuntimeCf;
+    private final ColumnFamilyHandle epochObservationsCf;
     private final RocksDbNodeStore mpfNodeStore;
     private final SharedRocksDbJmtStore jmtStore;
     private final StateCommitmentIdentity stateCommitmentIdentity;
@@ -114,7 +118,8 @@ final class AppLedgerStore implements AutoCloseable {
                     new ColumnFamilyDescriptor(SharedRocksDbJmtStore.CF_VALUES, defaultCfOptions),
                     new ColumnFamilyDescriptor(SharedRocksDbJmtStore.CF_ROOTS, defaultCfOptions),
                     new ColumnFamilyDescriptor(SharedRocksDbJmtStore.CF_STALE, defaultCfOptions),
-                    new ColumnFamilyDescriptor(SharedRocksDbJmtStore.CF_METADATA, defaultCfOptions));
+                    new ColumnFamilyDescriptor(SharedRocksDbJmtStore.CF_METADATA, defaultCfOptions),
+                    new ColumnFamilyDescriptor(CF_EPOCH_OBSERVATIONS, defaultCfOptions));
             try {
                 openedDb = RocksDB.open(openedOptions, path, descriptors, cfHandles);
             } catch (RocksDBException failure) {
@@ -135,6 +140,7 @@ final class AppLedgerStore implements AutoCloseable {
             this.jmtStore = new SharedRocksDbJmtStore(db,
                     cfHandles.get(8), cfHandles.get(9), cfHandles.get(10),
                     cfHandles.get(11), cfHandles.get(12));
+            this.epochObservationsCf = cfHandles.get(13);
             this.stateBackend = StateCommitmentProfiles.MPF.id().equals(profileId)
                     ? new MpfAuthenticatedStateBackend(
                     this, mpfNodeStore, stateCommitmentIdentity, stateCommitFaults)
@@ -1680,6 +1686,93 @@ final class AppLedgerStore implements AutoCloseable {
         } catch (RocksDBException e) {
             throw new RuntimeException("Failed to read app ledger meta", e);
         }
+    }
+
+    record EpochSpoolEntry(byte[] key, byte[] value) {
+        EpochSpoolEntry {
+            key = key.clone();
+            value = value.clone();
+        }
+
+        @Override public byte[] key() { return key.clone(); }
+        @Override public byte[] value() { return value.clone(); }
+    }
+
+    record EpochSpoolMutation(byte[] key, byte[] value) {
+        EpochSpoolMutation {
+            key = key.clone();
+            value = value != null ? value.clone() : null;
+        }
+
+        @Override public byte[] key() { return key.clone(); }
+        @Override public byte[] value() { return value != null ? value.clone() : null; }
+
+        static EpochSpoolMutation put(byte[] key, byte[] value) {
+            return new EpochSpoolMutation(key, Objects.requireNonNull(value, "value"));
+        }
+
+        static EpochSpoolMutation delete(byte[] key) {
+            return new EpochSpoolMutation(key, null);
+        }
+    }
+
+    byte[] epochSpoolGet(byte[] key) {
+        try {
+            return db.get(epochObservationsCf, Objects.requireNonNull(key, "key"));
+        } catch (RocksDBException failure) {
+            throw new RuntimeException("Failed to read epoch-observation spool", failure);
+        }
+    }
+
+    void epochSpoolWrite(List<EpochSpoolMutation> mutations) {
+        if (mutations.isEmpty()) {
+            return;
+        }
+        try (WriteBatch batch = new WriteBatch();
+             WriteOptions options = new WriteOptions()) {
+            for (EpochSpoolMutation mutation : mutations) {
+                byte[] value = mutation.value();
+                if (value == null) {
+                    batch.delete(epochObservationsCf, mutation.key());
+                } else {
+                    batch.put(epochObservationsCf, mutation.key(), value);
+                }
+            }
+            db.write(options, batch);
+        } catch (RocksDBException failure) {
+            throw new RuntimeException("Failed to update epoch-observation spool", failure);
+        }
+    }
+
+    List<EpochSpoolEntry> epochSpoolScan(byte[] prefix, int limit) {
+        Objects.requireNonNull(prefix, "prefix");
+        if (limit <= 0) {
+            return List.of();
+        }
+        List<EpochSpoolEntry> result = new ArrayList<>(Math.min(limit, 256));
+        try (RocksIterator iterator = db.newIterator(epochObservationsCf)) {
+            for (iterator.seek(prefix); iterator.isValid() && result.size() < limit;
+                 iterator.next()) {
+                byte[] key = iterator.key();
+                if (!plainPrefix(key, prefix)) {
+                    break;
+                }
+                result.add(new EpochSpoolEntry(key, iterator.value()));
+            }
+        }
+        return List.copyOf(result);
+    }
+
+    private static boolean plainPrefix(byte[] key, byte[] prefix) {
+        if (key.length < prefix.length) {
+            return false;
+        }
+        for (int index = 0; index < prefix.length; index++) {
+            if (key[index] != prefix[index]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static byte[] voteLockKey(long height) {

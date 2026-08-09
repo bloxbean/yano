@@ -33,6 +33,7 @@ import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
  * @param anchor            L1 anchoring policy; null = anchoring disabled
  * @param l1StabilityDepth  minimum depth (blocks) of the L1 reference carried in
  *                          app blocks; 0 = no L1 reference
+ * @param epochStabilityDepth block depth required before epoch observations are offered
  * @param webhookUrls       webhook sinks receiving finalized blocks
  *                          (at-least-once, ordered, per-sink persisted cursor)
  * @param retentionEnabled  prune message bodies below the last L1_FINAL anchor
@@ -65,6 +66,7 @@ public record AppChainConfig(String chainId,
                              String ledgerPath,
                              AnchorConfig anchor,
                              int l1StabilityDepth,
+                             int epochStabilityDepth,
                              List<String> webhookUrls,
                              boolean retentionEnabled,
                              int retentionKeepBlocks,
@@ -165,6 +167,8 @@ public record AppChainConfig(String chainId,
                     + requiredSingleMessageBytes + " for this profile)");
         if (stateMachineId == null || stateMachineId.isBlank())
             stateMachineId = DEFAULT_STATE_MACHINE;
+        if (epochStabilityDepth < 0)
+            throw new IllegalArgumentException("l1.epoch-stability-depth must be nonnegative");
         webhookUrls = webhookUrls != null ? List.copyOf(webhookUrls) : List.of();
         if (retentionKeepBlocks < 0)
             retentionKeepBlocks = 0;
@@ -198,6 +202,7 @@ public record AppChainConfig(String chainId,
         private String ledgerPath;
         private AnchorConfig anchor;
         private int l1StabilityDepth;
+        private int epochStabilityDepth = -1;
         private List<String> webhookUrls = List.of();
         private boolean retentionEnabled;
         private int retentionKeepBlocks;
@@ -225,6 +230,7 @@ public record AppChainConfig(String chainId,
         public Builder ledgerPath(String value) { this.ledgerPath = value; return this; }
         public Builder anchor(AnchorConfig value) { this.anchor = value; return this; }
         public Builder l1StabilityDepth(int value) { this.l1StabilityDepth = value; return this; }
+        public Builder epochStabilityDepth(int value) { this.epochStabilityDepth = value; return this; }
         public Builder webhookUrls(List<String> value) { this.webhookUrls = value; return this; }
         public Builder retentionEnabled(boolean value) { this.retentionEnabled = value; return this; }
         public Builder retentionKeepBlocks(int value) { this.retentionKeepBlocks = value; return this; }
@@ -249,7 +255,8 @@ public record AppChainConfig(String chainId,
             return new AppChainConfig(chainId, signingKeyHex, memberKeysHex, peers,
                     maxMessageBytes, maxTtlSeconds, defaultTtlSeconds, proposerKeyHex,
                     threshold, blockIntervalMs, maxBlockMessages, blockMaxBytes, stateMachineId,
-                    ledgerPath, anchor, l1StabilityDepth, webhookUrls,
+                    ledgerPath, anchor, l1StabilityDepth,
+                    epochStabilityDepth >= 0 ? epochStabilityDepth : l1StabilityDepth, webhookUrls,
                     retentionEnabled, retentionKeepBlocks, poolMaxMessages, enforceSenderSeq,
                     effectivePluginSettings());
         }
