@@ -38,6 +38,9 @@ import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthSource;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsContext;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsProvider;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsSource;
+import com.bloxbean.cardano.yano.api.plugin.ui.UiExtensionAssetManifest;
+import com.bloxbean.cardano.yano.api.plugin.ui.UiExtensionDescriptor;
+import com.bloxbean.cardano.yano.api.plugin.ui.UiExtensionProvider;
 import com.bloxbean.cardano.yano.catalog.BundleContribution;
 import com.bloxbean.cardano.yano.catalog.BundleDependency;
 import com.bloxbean.cardano.yano.catalog.BundleManifest;
@@ -3216,6 +3219,7 @@ class PluginCatalogRuntimeTest {
             case DOMAIN_API -> ParityDomainApiProvider.class;
             case HEALTH -> ParityHealthProvider.class;
             case METRICS -> ParityMetricsProvider.class;
+            case UI_EXTENSION -> ParityUiExtensionProvider.class;
         };
     }
 
@@ -4002,6 +4006,13 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
         public PluginMetricsSource create(PluginMetricsContext context) {
             throw unexpectedParityActivation();
         }
+    }
+
+    public static final class ParityUiExtensionProvider implements UiExtensionProvider {
+        @Override public String id() { throw unexpectedParityActivation(); }
+        @Override public UiExtensionDescriptor descriptor() { throw unexpectedParityActivation(); }
+        @Override public UiExtensionAssetManifest assets() { throw unexpectedParityActivation(); }
+        @Override public byte[] assetBytes(String path) { throw unexpectedParityActivation(); }
     }
 
     public static final class ParentShadowSink implements FinalizedStreamSinkFactory {

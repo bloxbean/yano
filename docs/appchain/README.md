@@ -32,6 +32,7 @@ credentials unless a guide explicitly says otherwise.
 | Implement new business rules without forking Yano | [Plugins and composites](tutorials/08-plugins-and-composites.md) | Small Java plugin |
 | Reuse stock transitions and verify portable proofs | [Composable state and proofs](COMPOSABLE_STATE_AND_PROOFS.md) | Java/configuration |
 | Archive and prove large immutable period datasets | [Authenticated snapshots](AUTHENTICATED_SNAPSHOTS.md) | Configuration/API |
+| Package a sandboxed product UI in a plugin jar | [Plugin UI extensions](PLUGIN_UI_EXTENSIONS.md) | Plugin frontend |
 | Prepare a pilot deployment | [From demo to pilot](tutorials/09-from-demo-to-pilot.md) | Operations work |
 | Trace an experimental EUTxO ZK round trip on devnet | [EUTxO ZK devnet walkthrough](../../appchain/extensions/eutxo-zk/DEVNET_WALKTHROUGH.md) | Cardano builder integration |
 
@@ -153,6 +154,7 @@ need full detail:
 - [Profile governance runbook](../APP_CHAIN_PROFILE_GOVERNANCE.md)
 - [Domain actors and role-aware approvals](../APP_CHAIN_DOMAIN_ROLES.md)
 - [Plugin query and domain API contract](../APP_CHAIN_PLUGIN_QUERY_AND_DOMAIN_API.md)
+- [Sandboxed plugin UI extensions](PLUGIN_UI_EXTENSIONS.md)
 - [Release acceptance and schema status](RELEASE_ACCEPTANCE.md)
 - [Canonical open-work tracker](../../adr/app-layer/open_item.md)
 

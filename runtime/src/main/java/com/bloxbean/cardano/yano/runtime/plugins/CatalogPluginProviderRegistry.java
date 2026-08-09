@@ -859,6 +859,9 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
                 case METRICS -> pluginCallback(
                         callbackTracker, pluginClassLoader,
                         ((PluginMetricsProvider) provider)::id);
+                case UI_EXTENSION -> pluginCallback(
+                        callbackTracker, pluginClassLoader,
+                        ((com.bloxbean.cardano.yano.api.plugin.ui.UiExtensionProvider) provider)::id);
             };
             if (selector == null || selector.isBlank() || !selector.equals(selector.trim())) {
                 throw new IllegalStateException("Provider returned an invalid selector");
