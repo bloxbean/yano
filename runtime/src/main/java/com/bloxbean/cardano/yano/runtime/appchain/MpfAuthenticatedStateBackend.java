@@ -3,6 +3,9 @@ package com.bloxbean.cardano.yano.runtime.appchain;
 import com.bloxbean.cardano.vds.core.api.NodeStore;
 import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.vds.mpf.rocksdb.RocksDbNodeStore;
+import com.bloxbean.cardano.vds.mpf.rocksdb.gc.GcOptions;
+import com.bloxbean.cardano.vds.mpf.rocksdb.gc.GcReport;
+import com.bloxbean.cardano.vds.mpf.rocksdb.gc.strategy.OnDiskMarkSweepStrategy;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.state.AuthenticatedStateBackend;
 import com.bloxbean.cardano.yano.api.appchain.state.CandidateState;
@@ -14,11 +17,14 @@ import com.bloxbean.cardano.yano.api.appchain.state.StateSnapshot;
 import org.rocksdb.RocksDBException;
 import org.rocksdb.WriteBatch;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.locks.StampedLock;
 
 /** CCL MPF adapter with side-effect-free candidates and external-batch preparation. */
 final class MpfAuthenticatedStateBackend implements AuthenticatedStateBackend {
@@ -28,6 +34,8 @@ final class MpfAuthenticatedStateBackend implements AuthenticatedStateBackend {
     private final RocksDbNodeStore durableNodes;
     private final StateCommitmentIdentity identity;
     private final StateCommitFaultInjector faults;
+    /** Candidates/proofs are readers; destructive reachability GC is the sole writer. */
+    private final StampedLock access = new StampedLock();
 
     MpfAuthenticatedStateBackend(
             AppLedgerStore ledger,
@@ -42,6 +50,12 @@ final class MpfAuthenticatedStateBackend implements AuthenticatedStateBackend {
         if (!StateCommitmentProfiles.MPF.equals(identity.profile())) {
             throw new IllegalArgumentException("MPF backend requires mpf-blake2b256-v1");
         }
+        long watermark = ledger.mpfProofPruneWatermark();
+        long completed = ledger.mpfProofGcCompletedWatermark();
+        if (watermark < 1 || completed < 0 || completed > watermark
+                || (ledger.tipHeight() > 0 && watermark > ledger.tipHeight())) {
+            throw new IllegalStateException("Invalid retained MPF proof watermark " + watermark);
+        }
     }
 
     @Override
@@ -51,21 +65,33 @@ final class MpfAuthenticatedStateBackend implements AuthenticatedStateBackend {
 
     @Override
     public CandidateState beginCandidate(long baseHeight, byte[] baseRoot, long targetHeight) {
-        byte[] expectedRoot = committedRoot();
-        if (baseHeight != ledger.tipHeight() || !Arrays.equals(expectedRoot, baseRoot)) {
-            throw new IllegalArgumentException("candidate base differs from the finalized MPF head");
+        long stamp = access.readLock();
+        try {
+            byte[] expectedRoot = committedRoot();
+            if (baseHeight != ledger.tipHeight() || !Arrays.equals(expectedRoot, baseRoot)) {
+                throw new IllegalArgumentException(
+                        "candidate base differs from the finalized MPF head");
+            }
+            if (targetHeight != Math.addExact(baseHeight, 1)) {
+                throw new IllegalArgumentException(
+                        "candidate target height must immediately follow its base");
+            }
+            MpfCandidate candidate = new MpfCandidate(
+                    baseHeight, expectedRoot, targetHeight, stamp);
+            faults.at(StateCommitFaultInjector.FaultPoint.AFTER_CANDIDATE_OPEN);
+            return candidate;
+        } catch (RuntimeException | Error failure) {
+            access.unlockRead(stamp);
+            throw failure;
         }
-        if (targetHeight != Math.addExact(baseHeight, 1)) {
-            throw new IllegalArgumentException("candidate target height must immediately follow its base");
-        }
-        MpfCandidate candidate = new MpfCandidate(baseHeight, expectedRoot, targetHeight);
-        faults.at(StateCommitFaultInjector.FaultPoint.AFTER_CANDIDATE_OPEN);
-        return candidate;
     }
 
     @Override
     public Optional<StateSnapshot> snapshot(long height) {
         if (height < 0) {
+            return Optional.empty();
+        }
+        if (height > 0 && height < oldestProvableHeight()) {
             return Optional.empty();
         }
         if (height == 0) {
@@ -79,53 +105,145 @@ final class MpfAuthenticatedStateBackend implements AuthenticatedStateBackend {
     @Override
     public Optional<byte[]> get(long height, byte[] canonicalKey) {
         Objects.requireNonNull(canonicalKey, "canonicalKey");
-        return snapshot(height).flatMap(snapshot -> {
-            if (height == 0) {
-                return Optional.empty();
-            }
-            return Optional.ofNullable(new MpfTrie(durableNodes, snapshot.stateRoot())
-                    .get(canonicalKey));
-        });
+        long stamp = access.readLock();
+        try {
+            return snapshot(height).flatMap(snapshot -> {
+                if (height == 0) {
+                    return Optional.empty();
+                }
+                return Optional.ofNullable(new MpfTrie(durableNodes, snapshot.stateRoot())
+                        .get(canonicalKey));
+            });
+        } finally {
+            access.unlockRead(stamp);
+        }
     }
 
     @Override
     public Optional<StateProof> prove(long height, byte[] canonicalKey) {
         Objects.requireNonNull(canonicalKey, "canonicalKey");
-        return snapshot(height).flatMap(snapshot -> {
-            if (height == 0) {
-                return Optional.empty();
-            }
-            MpfTrie trie = new MpfTrie(durableNodes, snapshot.stateRoot());
-            Optional<byte[]> proof = trie.getProofWire(canonicalKey);
-            if (proof.isEmpty()) {
-                return Optional.empty();
-            }
-            byte[] value = trie.get(canonicalKey);
-            return Optional.of(new StateProof(
-                    snapshot,
-                    canonicalKey,
-                    value,
-                    value != null ? StateProof.Presence.PRESENT : StateProof.Presence.ABSENT,
-                    identity.profile().proofEncodingId(),
-                    proof.orElseThrow()));
-        });
+        long stamp = access.readLock();
+        try {
+            return snapshot(height).flatMap(snapshot -> {
+                if (height == 0) {
+                    return Optional.empty();
+                }
+                MpfTrie trie = new MpfTrie(durableNodes, snapshot.stateRoot());
+                Optional<byte[]> proof = trie.getProofWire(canonicalKey);
+                if (proof.isEmpty()) {
+                    return Optional.empty();
+                }
+                byte[] value = trie.get(canonicalKey);
+                return Optional.of(new StateProof(
+                        snapshot,
+                        canonicalKey,
+                        value,
+                        value != null ? StateProof.Presence.PRESENT : StateProof.Presence.ABSENT,
+                        identity.profile().proofEncodingId(),
+                        proof.orElseThrow()));
+            });
+        } finally {
+            access.unlockRead(stamp);
+        }
     }
 
     @Override
     public StateIntegrityReport verifyIntegrity() {
-        long height = ledger.tipHeight();
-        byte[] root = committedRoot();
-        boolean rootPresent = Arrays.equals(root, EMPTY_ROOT) || durableNodes.get(root) != null;
-        boolean valid = ledger.verifyIntegrity() && rootPresent;
-        return new StateIntegrityReport(identity, height, root, valid,
-                valid
-                        ? "tip block, committed MPF root, and root node agree"
-                        : "tip block, committed MPF root, or root node differ");
+        long stamp = access.readLock();
+        try {
+            long height = ledger.tipHeight();
+            byte[] root = committedRoot();
+            boolean rootPresent = Arrays.equals(root, EMPTY_ROOT) || durableNodes.get(root) != null;
+            boolean valid = ledger.verifyIntegrity() && rootPresent;
+            return new StateIntegrityReport(identity, height, root, valid,
+                    valid
+                            ? "tip block, committed MPF root, and root node agree"
+                            : "tip block, committed MPF root, or root node differ");
+        } finally {
+            access.unlockRead(stamp);
+        }
     }
 
     @Override
     public long oldestProvableHeight() {
-        return ledger.tipHeight() == 0 ? 0 : 1;
+        return ledger.tipHeight() == 0 ? 0 : ledger.mpfProofPruneWatermark();
+    }
+
+    @Override
+    public int pruneBefore(long retainFromHeight) {
+        long stamp = access.writeLock();
+        int deleted;
+        try {
+            long tip = ledger.tipHeight();
+            long current = oldestProvableHeight();
+            if (retainFromHeight < current) {
+                throw new IllegalArgumentException(
+                        "MPF proof pruning cannot restore an older proof height");
+            }
+            if (retainFromHeight < 1 || retainFromHeight > tip) {
+                throw new IllegalArgumentException(
+                        "MPF proof retain height must be between 1 and the finalized tip");
+            }
+            if (retainFromHeight == current
+                    && ledger.mpfProofGcCompletedWatermark() >= retainFromHeight) {
+                return 0;
+            }
+
+            List<StateSnapshot> retained = new ArrayList<>();
+            for (long height = retainFromHeight; height <= tip; height++) {
+                long retainedHeight = height;
+                retained.add(ledger.block(retainedHeight)
+                        .map(AppBlock::stateRoot)
+                        .map(root -> new StateSnapshot(identity, retainedHeight, root))
+                        .orElseThrow(() -> new IllegalStateException(
+                                "Missing finalized app block while retaining MPF root at height "
+                                        + retainedHeight)));
+            }
+
+            // Advance the visible boundary first. A process death can under-claim retained
+            // roots, but can never advertise a root that a partly completed sweep removed.
+            if (retainFromHeight > current) {
+                ledger.advanceMpfProofPruneWatermark(retainFromHeight);
+            }
+            GcOptions options = new GcOptions();
+            options.useSnapshot = true;
+            options.deleteBatchSize = 10_000;
+            GcReport report;
+            try {
+                report = new OnDiskMarkSweepStrategy().run(
+                        durableNodes, null,
+                        ignored -> retained.stream().map(StateSnapshot::stateRoot).toList(),
+                        options);
+            } catch (Exception failure) {
+                throw new RuntimeException("MPF reachability pruning failed", failure);
+            }
+            verifyRetainedRoots(retained);
+            deleted = report.deleted > Integer.MAX_VALUE
+                    ? Integer.MAX_VALUE : Math.toIntExact(report.deleted);
+        } finally {
+            access.unlockWrite(stamp);
+        }
+        // RocksDB compaction is concurrency-safe and need not extend the exclusive
+        // candidate/proof pause imposed by the reachability mark-and-sweep itself.
+        ledger.compactMpfNodes();
+        ledger.completeMpfProofGc(retainFromHeight);
+        return deleted;
+    }
+
+    private void verifyRetainedRoots(List<StateSnapshot> retained) {
+        byte[] markerKey = StateCommitmentIdentity.markerKey();
+        byte[] markerValue = identity.canonicalBytes();
+        for (StateSnapshot snapshot : retained) {
+            MpfTrie trie = new MpfTrie(durableNodes, snapshot.stateRoot());
+            byte[] value = trie.get(markerKey);
+            Optional<byte[]> proof = trie.getProofWire(markerKey);
+            if (!Arrays.equals(value, markerValue) || proof.isEmpty()
+                    || !trie.verifyProofWire(snapshot.stateRoot(), markerKey, markerValue,
+                    true, proof.orElseThrow())) {
+                throw new IllegalStateException(
+                        "Retained MPF root failed verification at height " + snapshot.height());
+            }
+        }
     }
 
     private byte[] committedRoot() {
@@ -139,12 +257,15 @@ final class MpfAuthenticatedStateBackend implements AuthenticatedStateBackend {
         private final long targetHeight;
         private final OverlayNodeStore overlay;
         private final MpfTrie trie;
+        private long accessStamp;
         private boolean closed;
 
-        private MpfCandidate(long baseHeight, byte[] baseRoot, long targetHeight) {
+        private MpfCandidate(long baseHeight, byte[] baseRoot, long targetHeight,
+                             long accessStamp) {
             this.baseHeight = baseHeight;
             this.baseRoot = baseRoot.clone();
             this.targetHeight = targetHeight;
+            this.accessStamp = accessStamp;
             this.overlay = new OverlayNodeStore(durableNodes);
             this.trie = baseHeight == 0 && Arrays.equals(baseRoot, EMPTY_ROOT)
                     ? new MpfTrie(overlay)
@@ -199,7 +320,7 @@ final class MpfAuthenticatedStateBackend implements AuthenticatedStateBackend {
             Map<ByteKey, Mutation> mutations = overlay.freeze();
             closed = true;
             StagedStateCommit prepared = new MpfPreparedCommit(
-                    baseHeight, baseRoot, targetHeight, root, mutations);
+                    baseHeight, baseRoot, targetHeight, root, mutations, takeAccessStamp());
             try {
                 faults.at(StateCommitFaultInjector.FaultPoint.AFTER_PREPARE);
                 return prepared;
@@ -214,6 +335,7 @@ final class MpfAuthenticatedStateBackend implements AuthenticatedStateBackend {
             if (!closed) {
                 closed = true;
                 overlay.clear();
+                releaseAccess();
             }
         }
 
@@ -227,6 +349,19 @@ final class MpfAuthenticatedStateBackend implements AuthenticatedStateBackend {
                 throw new IllegalStateException("MPF candidate is closed");
             }
         }
+
+        private long takeAccessStamp() {
+            long stamp = accessStamp;
+            accessStamp = 0;
+            return stamp;
+        }
+
+        private void releaseAccess() {
+            long stamp = takeAccessStamp();
+            if (stamp != 0) {
+                access.unlockRead(stamp);
+            }
+        }
     }
 
     private final class MpfPreparedCommit implements StagedStateCommit {
@@ -236,17 +371,20 @@ final class MpfAuthenticatedStateBackend implements AuthenticatedStateBackend {
         private final byte[] stateRoot;
         private Map<ByteKey, Mutation> mutations;
         private final int mutationCount;
+        private long accessStamp;
         private boolean staged;
         private boolean closed;
 
         private MpfPreparedCommit(long baseHeight, byte[] baseRoot, long targetHeight,
-                                  byte[] stateRoot, Map<ByteKey, Mutation> mutations) {
+                                  byte[] stateRoot, Map<ByteKey, Mutation> mutations,
+                                  long accessStamp) {
             this.baseHeight = baseHeight;
             this.baseRoot = baseRoot.clone();
             this.targetHeight = targetHeight;
             this.stateRoot = stateRoot.clone();
             this.mutations = mutations;
             this.mutationCount = mutations.size();
+            this.accessStamp = accessStamp;
         }
 
         @Override public StateCommitmentIdentity identity() { return identity; }
@@ -288,6 +426,10 @@ final class MpfAuthenticatedStateBackend implements AuthenticatedStateBackend {
                 if (mutations != null) {
                     mutations.clear();
                     mutations = null;
+                }
+                if (accessStamp != 0) {
+                    access.unlockRead(accessStamp);
+                    accessStamp = 0;
                 }
             }
         }

@@ -383,3 +383,43 @@ Verification:
   missing or wrong-root anchors;
 - the full 1.3M JMT and pruned-MPF benchmark results above provide persistent proof/restart evidence for both
   selectable profiles.
+
+## M8 — qualification and preprod pilot
+
+Status: implementation and local qualification complete; the refreshed three-member preprod pilot and its
+independent source comparisons are recorded after deployment below. The long-running public-network release
+gate remains fail-closed until its evidence is present.
+
+Implemented for qualification:
+
+- added an explicitly experimental, node-local MPF reachability-pruning policy with
+  `state.proof-pruning.enabled=false` by default, a contiguous retained-height horizon, and a dedicated scheduler
+  so GC never runs on the consensus scheduler;
+- serialized candidates and proof reads against mark/sweep, durably advanced the proof watermark before any
+  deletion, verified the commitment marker through every retained root after GC, and moved RocksDB compaction
+  outside the exclusive candidate pause;
+- made interrupted CCL on-disk mark column families recoverable at ledger startup; a process death can therefore
+  conservatively reduce the advertised proof horizon but cannot make the node advertise a root whose nodes may
+  have been swept;
+- exposed pruning configuration, health, last retained height, deleted-record count, and failure state in the
+  existing state-commitment status surface. A failure disables later passes for that runtime generation without
+  stopping consensus;
+- added a showcase-only `cardano-history-pilot` composition of the independently selectable parameter, stake,
+  and governance machines. It is a qualification fixture, not the ADR-035 product provider or UI;
+- added a 1,000-consecutive-epoch determinism test using independently constructed observers and differently
+  ordered source containers for parameters, stake, proposal lifecycle, and DRep distribution.
+
+Local pruning qualification:
+
+- multiple retained MPF roots survive mark/sweep, compaction, restart, inclusion proof generation, and absence proof
+  generation while roots below the watermark are no longer served;
+- an in-flight prepared state commit holds the backend read stamp until commit/discard, and a concurrent GC waits
+  rather than deleting nodes that the candidate references;
+- a simulated process death leaving `marks_*` behind reopens successfully and removes the stale family;
+- watermark rollback and pruning beyond the finalized tip fail closed;
+- a live one-member app chain produces four blocks while the opt-in background worker advances a two-height proof
+  horizon and reports a healthy completed pass through the ordinary status API.
+
+The full-scale measurements remain the M4 JMT and pruned-MPF results. Runtime qualification deliberately uses
+small roots to exercise lifecycle, concurrency, crash, and multi-root correctness quickly; it does not relabel
+the single-snapshot benchmark as steady-state annual storage.

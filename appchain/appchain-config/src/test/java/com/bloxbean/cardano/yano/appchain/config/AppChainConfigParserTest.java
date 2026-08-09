@@ -104,6 +104,9 @@ class AppChainConfigParserTest {
                         StateCommitmentProfiles.MPF.formatFingerprint()));
         values.put(StateCommitmentIdentity.GENESIS_ID_SETTING, "ab".repeat(32));
         values.put(StateCommitmentIdentity.L1_PROOF_REQUIRED_SETTING, "true");
+        values.put("state.proof-pruning.enabled", "true");
+        values.put("state.proof-pruning.retain-heights", "10000");
+        values.put("state.proof-pruning.interval-seconds", "3600");
 
         AppChainConfig config = AppChainConfigParser.parse(values);
         StateCommitmentIdentity identity = StateCommitmentIdentity.fromSettings(
@@ -114,6 +117,10 @@ class AppChainConfigParserTest {
                 .parseHex("ab".repeat(32)));
         assertThat(config.pluginSettings())
                 .containsEntry(StateCommitmentIdentity.L1_PROOF_REQUIRED_SETTING, "true");
+        assertThat(config.pluginSettings())
+                .containsEntry("state.proof-pruning.enabled", "true")
+                .containsEntry("state.proof-pruning.retain-heights", "10000")
+                .containsEntry("state.proof-pruning.interval-seconds", "3600");
     }
 
     private static Map<String, Object> base() {

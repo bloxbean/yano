@@ -167,6 +167,10 @@ yano:
     #   format-fingerprint: <64 lowercase hex chars>      # canonical encoding fingerprint
     #   genesis-id: <64 lowercase hex chars>              # new-chain authenticated-map identity
     #   l1-proof-consumption-required: true               # reject profiles not verifiable on L1
+    #   proof-pruning:
+    #     enabled: false                                  # experimental MPF-only, node-local
+    #     retain-heights: 10000                           # contiguous proof-generation horizon
+    #     interval-seconds: 3600                          # dedicated background GC cadence
     # L1 anchoring (anchor wallet must be funded):
     # anchor:
     #   enabled: true

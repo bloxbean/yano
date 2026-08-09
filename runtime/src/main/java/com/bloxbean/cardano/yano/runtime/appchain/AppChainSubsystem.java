@@ -80,6 +80,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private final EffectsSettings effectsSettings;
     private final AppChainConsensusProfile consensusProfile;
     private final StateCommitmentIdentity stateCommitmentIdentity;
+    private final StateProofPruningSettings proofPruningSettings;
     private final long protocolMagic;
     private final EventBus eventBus;
     private final Logger log;
@@ -193,6 +194,13 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private volatile ScheduledExecutorService scheduler;
     private volatile ScheduledExecutorService sinkScheduler;
     private volatile ScheduledExecutorService fxScheduler;
+    private volatile ScheduledExecutorService proofPruningScheduler;
+    private final AtomicBoolean proofPruningDegraded = new AtomicBoolean();
+    private volatile String proofPruningFailure;
+    private volatile long proofPruningLastStartedAt;
+    private volatile long proofPruningLastCompletedAt;
+    private volatile long proofPruningLastRetainFrom;
+    private volatile long proofPruningLastDeleted;
     private volatile QueryLane queryLane;
     private volatile EffectRuntime effectRuntime;
     /**
@@ -488,6 +496,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                                     config.pluginSettings(), consensusProfile.maxBlockMessages())
                             .map(index -> baseStateIdentity.withApplicationProfile(index.digest()))
                             .orElse(baseStateIdentity);
+            this.proofPruningSettings = StateProofPruningSettings.from(config);
             this.protocolMagic = protocolMagic;
             this.eventBus = eventBus;
             this.log = Objects.requireNonNull(log, "log");
@@ -3099,7 +3108,53 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             status.put("latestVersion", currentLedger.tipHeight());
             status.put("oldestProvableHeight", currentLedger.stateBackend().oldestProvableHeight());
         }
+        Map<String, Object> pruning = new LinkedHashMap<>();
+        pruning.put("enabled", proofPruningSettings.enabled());
+        pruning.put("experimental", true);
+        pruning.put("retainHeights", proofPruningSettings.retainHeights());
+        pruning.put("intervalSeconds", proofPruningSettings.intervalSeconds());
+        pruning.put("degraded", proofPruningDegraded.get());
+        if (proofPruningFailure != null) {
+            pruning.put("failure", proofPruningFailure);
+        }
+        pruning.put("lastStartedAt", proofPruningLastStartedAt);
+        pruning.put("lastCompletedAt", proofPruningLastCompletedAt);
+        pruning.put("lastRetainFrom", proofPruningLastRetainFrom);
+        pruning.put("lastDeleted", proofPruningLastDeleted);
+        status.put("proofPruning", Map.copyOf(pruning));
         return Map.copyOf(status);
+    }
+
+    private void proofPruningTick() {
+        if (!proofPruningSettings.enabled() || proofPruningDegraded.get()) {
+            return;
+        }
+        proofPruningLastStartedAt = System.currentTimeMillis();
+        try {
+            long[] outcome = requireGenerationUse(() -> {
+                AppLedgerStore currentLedger = ledger;
+                if (currentLedger == null) {
+                    throw new IllegalStateException("App-chain ledger is unavailable");
+                }
+                long retainFrom = proofPruningSettings.retainFrom(currentLedger.tipHeight());
+                if (retainFrom == 0) {
+                    return new long[]{retainFrom, 0};
+                }
+                return new long[]{retainFrom,
+                        currentLedger.pruneStateProofsBefore(retainFrom)};
+            });
+            proofPruningLastRetainFrom = outcome[0];
+            proofPruningLastDeleted = outcome[1];
+            proofPruningLastCompletedAt = System.currentTimeMillis();
+        } catch (Throwable failure) {
+            LifecycleFailures.rethrowIfProcessFatal(failure);
+            proofPruningFailure = failure.getClass().getSimpleName() + ": "
+                    + String.valueOf(failure.getMessage());
+            proofPruningDegraded.set(true);
+            log.error("App-chain '{}' MPF proof pruning degraded and disabled for this "
+                            + "runtime generation (errorType={})",
+                    config.chainId(), failure.getClass().getName(), failure);
+        }
     }
 
     private AppCapabilityManifest capabilityManifest() {
@@ -3613,6 +3668,25 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         exec.scheduleWithFixedDelay(this::connectTick, 0, CONNECT_INTERVAL_SECONDS, TimeUnit.SECONDS);
         exec.scheduleWithFixedDelay(this::keepAliveTick,
                 KEEPALIVE_INTERVAL_SECONDS, KEEPALIVE_INTERVAL_SECONDS, TimeUnit.SECONDS);
+        if (proofPruningSettings.enabled()) {
+            proofPruningDegraded.set(false);
+            proofPruningFailure = null;
+            ScheduledExecutorService pruneExec =
+                    Executors.newSingleThreadScheduledExecutor(r -> {
+                        Thread thread = new Thread(r,
+                                "app-chain-proof-pruning-" + config.chainId());
+                        thread.setDaemon(true);
+                        return thread;
+                    });
+            this.proofPruningScheduler = pruneExec;
+            pruneExec.scheduleWithFixedDelay(this::proofPruningTick,
+                    proofPruningSettings.intervalSeconds(),
+                    proofPruningSettings.intervalSeconds(), TimeUnit.SECONDS);
+            log.warn("App-chain '{}' experimental MPF proof pruning enabled "
+                            + "(retainHeights={}, intervalSeconds={})",
+                    config.chainId(), proofPruningSettings.retainHeights(),
+                    proofPruningSettings.intervalSeconds());
+        }
         exec.scheduleWithFixedDelay(() -> {
             pool.sweepExpired();
             int capEvicted = seenMessageIds.sweep(System.currentTimeMillis() / 1000);
@@ -5057,6 +5131,12 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             closeResource("main scheduler", () -> shutdownScheduler(exec, "main"),
                     cleanupFailures);
         }
+        ScheduledExecutorService pruneExec = proofPruningScheduler;
+        proofPruningScheduler = null;
+        if (pruneExec != null) {
+            closeResource("proof-pruning scheduler",
+                    () -> shutdownScheduler(pruneExec, "proof-pruning"), cleanupFailures);
+        }
         ScheduledExecutorService sinkExec = sinkScheduler;
         sinkScheduler = null;
         if (sinkExec != null) {
@@ -5148,6 +5228,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 || scheduler != null
                 || sinkScheduler != null
                 || fxScheduler != null
+                || proofPruningScheduler != null
                 || queryLane != null
                 || effectRuntime != null
                 || anchorService != null

@@ -543,6 +543,15 @@ public final class YanoPropertyKeys {
         /** Require an MPF profile whose state proofs can be consumed by L1 validators. */
         public static final String STATE_L1_PROOF_CONSUMPTION_REQUIRED =
                 "yano.app-chain.state.l1-proof-consumption-required";
+        /** Node-local opt-in reachability pruning for retained MPF proof roots. */
+        public static final String STATE_PROOF_PRUNING_ENABLED =
+                "yano.app-chain.state.proof-pruning.enabled";
+        /** Number of contiguous finalized app heights kept available for new proofs. */
+        public static final String STATE_PROOF_PRUNING_RETAIN_HEIGHTS =
+                "yano.app-chain.state.proof-pruning.retain-heights";
+        /** Delay between background proof-pruning passes. */
+        public static final String STATE_PROOF_PRUNING_INTERVAL_SECONDS =
+                "yano.app-chain.state.proof-pruning.interval-seconds";
         public static final String ANCHOR_ENABLED = "yano.app-chain.anchor.enabled";
         /** Anchor wallet Ed25519 payment key (hex, 32-byte seed). */
         public static final String ANCHOR_SIGNING_KEY = "yano.app-chain.anchor.signing-key";

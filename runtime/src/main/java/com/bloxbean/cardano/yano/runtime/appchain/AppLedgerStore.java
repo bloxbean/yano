@@ -47,6 +47,8 @@ final class AppLedgerStore implements AutoCloseable {
     /** Durable ADR-028 epoch-observation generation/outbox state (node local). */
     private static final byte[] CF_EPOCH_OBSERVATIONS =
             "app_epoch_observations_v1".getBytes(StandardCharsets.UTF_8);
+    private static final String CF_MPF_GC_MARKS_PREFIX = "marks_";
+    private static final int STANDARD_COLUMN_FAMILY_COUNT = 14;
 
     private static final byte[] KEY_TIP_HEIGHT = "tip_height".getBytes(StandardCharsets.UTF_8);
     private static final byte[] KEY_TIP_HASH = "tip_hash".getBytes(StandardCharsets.UTF_8);
@@ -57,6 +59,10 @@ final class AppLedgerStore implements AutoCloseable {
             "state_commitment_fingerprint".getBytes(StandardCharsets.UTF_8);
     private static final byte[] KEY_STATE_GENESIS_ID =
             "state_commitment_genesis_id".getBytes(StandardCharsets.UTF_8);
+    private static final String KEY_MPF_PROOF_PRUNE_WATERMARK =
+            "mpf_proof_prune_watermark";
+    private static final String KEY_MPF_PROOF_GC_COMPLETED_WATERMARK =
+            "mpf_proof_gc_completed_watermark";
     private static final String KEY_VOTE_LOCK_PREFIX = "vote_lock_";
 
     private final RocksDB db;
@@ -105,7 +111,7 @@ final class AppLedgerStore implements AutoCloseable {
         try (ColumnFamilyOptions defaultCfOptions = new ColumnFamilyOptions();
              ColumnFamilyOptions mpfCfOptions = new ColumnFamilyOptions()
                      .useFixedLengthPrefixExtractor(1)) {
-            List<ColumnFamilyDescriptor> descriptors = List.of(
+            List<ColumnFamilyDescriptor> descriptors = new ArrayList<>(List.of(
                     new ColumnFamilyDescriptor(RocksDB.DEFAULT_COLUMN_FAMILY, defaultCfOptions),
                     new ColumnFamilyDescriptor(CF_BLOCKS, defaultCfOptions),
                     new ColumnFamilyDescriptor(CF_META, defaultCfOptions),
@@ -119,7 +125,10 @@ final class AppLedgerStore implements AutoCloseable {
                     new ColumnFamilyDescriptor(SharedRocksDbJmtStore.CF_ROOTS, defaultCfOptions),
                     new ColumnFamilyDescriptor(SharedRocksDbJmtStore.CF_STALE, defaultCfOptions),
                     new ColumnFamilyDescriptor(SharedRocksDbJmtStore.CF_METADATA, defaultCfOptions),
-                    new ColumnFamilyDescriptor(CF_EPOCH_OBSERVATIONS, defaultCfOptions));
+                    new ColumnFamilyDescriptor(CF_EPOCH_OBSERVATIONS, defaultCfOptions)));
+            for (byte[] staleMarks : staleMpfGcColumnFamilies(path)) {
+                descriptors.add(new ColumnFamilyDescriptor(staleMarks, defaultCfOptions));
+            }
             try {
                 openedDb = RocksDB.open(openedOptions, path, descriptors, cfHandles);
             } catch (RocksDBException failure) {
@@ -141,6 +150,7 @@ final class AppLedgerStore implements AutoCloseable {
                     cfHandles.get(8), cfHandles.get(9), cfHandles.get(10),
                     cfHandles.get(11), cfHandles.get(12));
             this.epochObservationsCf = cfHandles.get(13);
+            dropStaleMpfGcColumnFamilies();
             this.stateBackend = StateCommitmentProfiles.MPF.id().equals(profileId)
                     ? new MpfAuthenticatedStateBackend(
                     this, mpfNodeStore, stateCommitmentIdentity, stateCommitFaults)
@@ -168,6 +178,50 @@ final class AppLedgerStore implements AutoCloseable {
 
     int pruneStateProofsBefore(long retainFromHeight) {
         return stateBackend.pruneBefore(retainFromHeight);
+    }
+
+    long mpfProofPruneWatermark() {
+        return metaLong(KEY_MPF_PROOF_PRUNE_WATERMARK, 1);
+    }
+
+    long mpfProofGcCompletedWatermark() {
+        return metaLong(KEY_MPF_PROOF_GC_COMPLETED_WATERMARK, 0);
+    }
+
+    void advanceMpfProofPruneWatermark(long retainFromHeight) {
+        long current = mpfProofPruneWatermark();
+        if (retainFromHeight < current) {
+            throw new IllegalArgumentException(
+                    "MPF proof prune watermark cannot move backwards");
+        }
+        try (WriteOptions options = new WriteOptions().setSync(true)) {
+            db.put(metaCf, options,
+                    KEY_MPF_PROOF_PRUNE_WATERMARK.getBytes(StandardCharsets.UTF_8),
+                    longBytes(retainFromHeight));
+        } catch (RocksDBException failure) {
+            throw new RuntimeException("Failed to durably advance MPF proof watermark", failure);
+        }
+    }
+
+    void completeMpfProofGc(long retainFromHeight) {
+        putMpfWatermark(KEY_MPF_PROOF_GC_COMPLETED_WATERMARK, retainFromHeight,
+                "complete MPF proof GC");
+    }
+
+    private void putMpfWatermark(String key, long value, String operation) {
+        try (WriteOptions options = new WriteOptions().setSync(true)) {
+            db.put(metaCf, options, key.getBytes(StandardCharsets.UTF_8), longBytes(value));
+        } catch (RocksDBException failure) {
+            throw new RuntimeException("Failed to durably " + operation, failure);
+        }
+    }
+
+    void compactMpfNodes() {
+        try {
+            db.compactRange(mpfNodeStore.nodesHandle());
+        } catch (RocksDBException failure) {
+            throw new RuntimeException("Failed to compact MPF node storage", failure);
+        }
     }
 
     StateCommitmentIdentity stateCommitmentIdentity() {
@@ -205,6 +259,39 @@ final class AppLedgerStore implements AutoCloseable {
                 || !Arrays.equals(stateCommitmentIdentity.genesisId(), retainedGenesis)) {
             throw new IllegalStateException(
                     "Retained state-commitment profile, fingerprint, or genesis id is incompatible");
+        }
+    }
+
+    private static List<byte[]> staleMpfGcColumnFamilies(String path) {
+        File current = new File(path, "CURRENT");
+        if (!current.isFile()) {
+            return List.of();
+        }
+        try (Options options = new Options()) {
+            return RocksDB.listColumnFamilies(options, path).stream()
+                    .filter(name -> new String(name, StandardCharsets.UTF_8)
+                            .startsWith(CF_MPF_GC_MARKS_PREFIX))
+                    .map(byte[]::clone)
+                    .toList();
+        } catch (RocksDBException failure) {
+            throw new RuntimeException(
+                    "Failed to inspect app ledger column families at " + path, failure);
+        }
+    }
+
+    /** Recover a process death during CCL's on-disk mark phase before normal use. */
+    private void dropStaleMpfGcColumnFamilies() {
+        while (cfHandles.size() > STANDARD_COLUMN_FAMILY_COUNT) {
+            ColumnFamilyHandle handle = cfHandles.removeLast();
+            try {
+                db.dropColumnFamily(handle);
+            } catch (RocksDBException failure) {
+                handle.close();
+                throw new RuntimeException(
+                        "Failed to remove an interrupted MPF GC mark column family", failure);
+            }
+            handle.close();
+            log.warn("Removed an interrupted MPF GC mark column family during app-ledger startup");
         }
     }
 

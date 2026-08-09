@@ -1,2 +1,3 @@
 com.bloxbean.cardano.yano.appchain.showcase.ShowcaseCompositeStateMachineProvider
 com.bloxbean.cardano.yano.appchain.showcase.DocumentReviewStateMachineProvider
+com.bloxbean.cardano.yano.appchain.showcase.CardanoHistoryPilotStateMachineProvider

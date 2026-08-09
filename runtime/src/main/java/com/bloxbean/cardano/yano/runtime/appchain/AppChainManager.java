@@ -66,6 +66,21 @@ public final class AppChainManager implements Subsystem, AppChainGateways {
         return Collections.unmodifiableCollection(chains.values());
     }
 
+    /** Wire the host's epoch-pinned ledger view after ledger-state assembly completes. */
+    public void wireL1EpochState(
+            com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochStateProvider provider) {
+        wireL1EpochState(lifecycleChains, provider);
+    }
+
+    /** Package-private deterministic wiring seam for tests and assembly validation. */
+    static void wireL1EpochState(
+            List<? extends ManagedChain> chains,
+            com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochStateProvider provider) {
+        Objects.requireNonNull(chains, "chains");
+        Objects.requireNonNull(provider, "provider");
+        chains.forEach(chain -> chain.wireL1EpochState(provider));
+    }
+
     // ------------------------------------------------------------------
     // Shared inbound front (one agent per protocol per session)
     // ------------------------------------------------------------------
@@ -306,6 +321,11 @@ public final class AppChainManager implements Subsystem, AppChainGateways {
         void start();
 
         void stop();
+
+        default void wireL1EpochState(
+                com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochStateProvider provider) {
+            // Lifecycle-only test doubles do not need host epoch state.
+        }
     }
 
     private record SubsystemManagedChain(AppChainSubsystem subsystem) implements ManagedChain {
@@ -322,6 +342,12 @@ public final class AppChainManager implements Subsystem, AppChainGateways {
         @Override
         public void stop() {
             subsystem.stop();
+        }
+
+        @Override
+        public void wireL1EpochState(
+                com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochStateProvider provider) {
+            subsystem.wireL1EpochState(provider);
         }
     }
 

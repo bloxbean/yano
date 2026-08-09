@@ -257,6 +257,7 @@ tasks.register('verifyShowcasePluginArtifact') {
                         pluginManifest,
                         'com/bloxbean/cardano/yano/appchain/showcase/ShowcaseCompositeStateMachineProvider.class',
                         'com/bloxbean/cardano/yano/appchain/showcase/DocumentReviewStateMachineProvider.class',
+                        'com/bloxbean/cardano/yano/appchain/showcase/CardanoHistoryPilotStateMachineProvider.class',
                         'com/bloxbean/cardano/yano/appchain/showcase/ShowcaseAuthenticatedMapConfig.class',
                         'com/bloxbean/cardano/yano/appchain/showcase/ShowcaseOutboxExecutorFactory.class',
                         'com/bloxbean/cardano/yano/appchain/showcase/ShowcaseEutxoTransactions.class'
@@ -279,6 +280,7 @@ tasks.register('verifyShowcasePluginArtifact') {
                         || contributions != Set.of(
                         'app-state-machine:showcase-composite',
                         'app-state-machine:document-review',
+                        'app-state-machine:cardano-history-pilot',
                         'effect-executor:showcase-outbox')) {
                     throw new GradleException('Unexpected showcase plugin manifest')
                 }
