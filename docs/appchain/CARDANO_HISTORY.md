@@ -24,6 +24,14 @@ The plugin contributes bounded, read-only routes below
 `chain=<chain-id>`. Routes cover status, epochs, protocol parameters, stake, DRep distribution, and
 proposal history.
 
+A fresh Cardano History generation does not synthesize a fact for the epoch already in progress.
+It commits its first fact after observing the first stable L1 epoch transition while the product is
+enabled. Until then, generic app-chain status, capability-discovery, and anchor endpoints remain
+available, while the product `status` and epoch routes return HTTP 404 and the CLI reports data as
+unavailable (exit code 3). This is expected initialization behavior, not a plugin failure. In
+particular, a retained-chainstate public-network deployment created mid-epoch waits for the next
+epoch rather than fabricating a current-epoch attestation.
+
 Responses identify the exact `committedHeight` and `stateRoot` and return typed proof coordinates,
 not proof bytes. Stake, DRep, and proposal reads query the fact and completeness metadata in one
 composite aggregate operation. An incomplete dataset returns `complete=false` and
