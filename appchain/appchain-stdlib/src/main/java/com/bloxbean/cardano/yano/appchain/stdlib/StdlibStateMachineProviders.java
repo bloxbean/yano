@@ -12,6 +12,7 @@ import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import com.bloxbean.cardano.yano.api.appchain.transition.FinalizedMessageIndexedStateMachine;
 import com.bloxbean.cardano.yano.appchain.config.AppChainApprovalsConfig;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochParamsContract;
 
 import java.util.Arrays;
 import java.util.HexFormat;
@@ -187,6 +188,16 @@ public final class StdlibStateMachineProviders {
         @Override
         public AppStateMachine create() {
             return new DocTrailStateMachine();
+        }
+    }
+
+    public static final class EpochParamsProvider implements AppStateMachineProvider {
+        @Override public String id() { return EpochParamsContract.STATE_MACHINE_ID; }
+        @Override public AppStateMachine create() { return new EpochParamsStateMachine(); }
+        @Override public AppStateMachine create(AppStateMachineContext context) {
+            return new EpochParamsStateMachine(context.settings().getOrDefault(
+                    "machines.epoch-params.observer-id",
+                    EpochParamsContract.DEFAULT_OBSERVER_ID));
         }
     }
 }

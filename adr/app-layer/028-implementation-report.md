@@ -75,3 +75,38 @@ Verification:
 - restart re-offers the same unacknowledged record, and acknowledgement advances exactly one chunk;
 - proposer rotation preserves verification records and begins offering only after the member becomes proposer;
 - complete `:core-api:test`, `:appchain-config:test`, `:plugin-catalog:test`, and `:runtime:test` suites pass.
+
+## M3 — protocol-parameter history
+
+Status: complete
+
+Implemented:
+
+- added the RocksDB-backed host adapter that resolves the first block of the latest completed epoch boundary and
+  opens a close-guarded `L1EpochState` without exposing it to app-state execution;
+- added a canonical positional protocol-parameter CBOR profile covering the complete public parameter snapshot;
+  every decimal/rational is encoded as an exact numerator/denominator pair;
+- added the `l1-epoch-params-v1` stdlib observer and independently selectable `epoch-params` state machine;
+- the machine consumes only verified observations from `AppBlockExecutionContext`, writes immutable
+  `params/<epoch>` leaves plus `params/latest`, and never opens current or historical L1 state during replay;
+- added stable claim/query/key contracts, capability discovery, ServiceLoader/catalog registration, and the typed
+  `EpochParamsClient` query facade;
+- wired the host provider automatically when the node uses the persistent default account-state store.
+
+Review and iteration:
+
+- the canonical codec uses a frozen array rather than an object/map shape, preventing property-name or reflection
+  ordering from entering consensus bytes; nested cost-model maps are sorted explicitly;
+- state writes are idempotent only for byte-identical repeats; a conflicting value for an existing historical epoch
+  fails closed rather than mutating history;
+- the provider resolves boundary identity from retained canonical chain indexes, while the app machine proves the
+  G6 replay property using only retained app-block observation bytes.
+
+Verification:
+
+- `StateMachineConformance` passes across three independent executions, restart, snapshot restore, and replay;
+- full stdlib, appchain-client, core-api, ledger-state, and plugin-catalog test suites pass;
+- focused runtime epoch-coordinator regression tests pass.
+
+The live preprod source comparison is retained as part of the final preprod qualification because it requires the
+new Cardano History chain to observe an actual epoch boundary after deployment.

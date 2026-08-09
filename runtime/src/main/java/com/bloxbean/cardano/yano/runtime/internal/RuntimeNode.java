@@ -676,6 +676,14 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                     appChainConfig, protocolMagic, eventBus, null, appChainStoragePath.toString(),
                     pluginEnvironment.classLoader(), pluginEnvironment.providers(), log);
             subsystem.wireL1(this::submitTransaction, this::getUtxoState);
+            getDefaultAccountStateStore().ifPresent(store -> {
+                EpochParamProvider params = getEpochParamProvider();
+                if (params != null) {
+                    subsystem.wireL1EpochState(
+                            new com.bloxbean.cardano.yano.runtime.appchain
+                                    .DefaultL1EpochStateProvider(store, chainState, params));
+                }
+            });
             subsystem.wireTxEvaluation(this);
             subsystem.wireAnchorFees(this::anchorFeeParams);
             subsystem.wireAnchorProtocolParams(this::anchorCclProtocolParams);
