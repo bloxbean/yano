@@ -44,8 +44,10 @@ while IFS= read -r CHAIN; do
      (.anchor.lastAnchorTx | test("^[0-9a-f]{64}$"))' >/dev/null
   while IFS= read -r CAPABILITY; do
     printf '%s' "$LEADER" | jq -e --arg capability "$CAPABILITY" \
-      '.capabilityManifest.crossCutting
-       | any(.capabilityId == $capability and .enabled == true)' >/dev/null
+      '(.capabilityManifest.components
+        | any(.id == $capability)) or
+       (.capabilityManifest.crossCutting
+        | any(.capabilityId == $capability and .enabled == true))' >/dev/null
   done < <(jq -r --arg chain "$CHAIN" \
     '.chains[] | select(.chainId == $chain) | .expectedCapabilities[]' "$CATALOG")
 
