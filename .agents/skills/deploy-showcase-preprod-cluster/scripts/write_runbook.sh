@@ -49,7 +49,8 @@ transactions:
 Do not use a settlement deposit or withdrawal as a health check; those are real
 preprod custody flows.
 
-Use `./showcase.sh describe light` for the authoritative twelve-chain catalog.
+Use `./showcase.sh describe light` for the authoritative thirteen-chain catalog,
+including the Cardano History product in its low-cost `params-only-v1` profile.
 The console capability matrix at `http://127.0.0.1:17070/ui/app-chain/` is
 derived from each chain's immutable capability manifest.
 

@@ -10,14 +10,12 @@ SOURCE_KEYS="/Users/satya/Downloads/yano-cluster/keys"
 SKIP_BUILD=false
 CONFIRM_PUBLIC=false
 SMOKE=false
-CARDANO_HISTORY_PILOT=false
 
 usage() {
   cat <<'EOF'
 Usage: deploy.sh [--repo PATH] [--target PATH] [--instance NAME]
                  [--chainstate PATH] [--keys PATH] [--skip-build]
                  [--confirm-public-preprod] [--smoke]
-                 [--cardano-history-pilot]
 
 A fresh deployment requires --confirm-public-preprod. An existing deployment
 is resumed and validated without replacing retained data or identity.
@@ -34,7 +32,6 @@ while [ "$#" -gt 0 ]; do
     --skip-build) SKIP_BUILD=true; shift;;
     --confirm-public-preprod) CONFIRM_PUBLIC=true; shift;;
     --smoke) SMOKE=true; shift;;
-    --cardano-history-pilot) CARDANO_HISTORY_PILOT=true; shift;;
     -h|--help) usage; exit 0;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 64;;
   esac
@@ -116,7 +113,7 @@ if [ -f "$SOURCE_KEYS/$SETTLEMENT_RECORD" ]; then
 fi
 
 # Deploy the operator-specific L1 settlement identity from a disposable
-# eleven-chain bootstrap instance. The final app-chain instance is created
+# stock-catalog bootstrap instance. The final app-chain instance is created
 # only after the production settlement block is in the catalog position; no
 # app-chain marker, root, or ledger is migrated into the final deployment.
 BOOTSTRAP_INSTANCE="${INSTANCE}-settlement-bootstrap"
@@ -166,15 +163,8 @@ python3 "$SCRIPT_DIR/adopt_settlement_config.py" \
 ./showcase.sh stop --instance "$BOOTSTRAP_INSTANCE"
 ./showcase.sh reset --instance "$BOOTSTRAP_INSTANCE" --yes
 
-if [ "$CARDANO_HISTORY_PILOT" = true ]; then
-  python3 "$SCRIPT_DIR/add_cardano_history_pilot.py" \
-    yano/config/application-appchain.yml \
-    catalog/showcase-catalog-v1.json \
-    tools/showcase_catalog.py
-fi
-
-# Create the final deployment from a clean app-chain generation. The optional
-# ADR-028 qualification chain is added before identity materialization.
+# Create the final deployment from a clean app-chain generation. The ADR-035
+# Cardano History product is already part of the stock catalog.
 ./showcase.sh prepare --profile light --network preprod --nodes 3 \
   --instance "$INSTANCE" --http-base 17070 --server-base 17337 \
   --anchor-chain all --anchor-key-file "$PWD/private-anchor/anchor.seed" \
