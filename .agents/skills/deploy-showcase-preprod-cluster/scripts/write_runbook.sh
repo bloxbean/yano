@@ -54,6 +54,14 @@ including the Cardano History product in its low-cost `params-only-v1` profile.
 The console capability matrix at `http://127.0.0.1:17070/ui/app-chain/` is
 derived from each chain's immutable capability manifest.
 
+Cardano History intentionally creates no synthetic fact for an epoch already in
+progress. In a fresh retained-chainstate deployment its capability manifest and
+SCRIPT anchor are available immediately, but its product `status` and epoch
+routes can return HTTP 404 until the next stable L1 epoch transition. Confirm
+the chain itself through
+`/api/v1/app-chain/chains/cardano-history-chain/status`; do not treat the empty
+history view as a plugin startup failure.
+
 ## Validate from the repository
 
 ```bash

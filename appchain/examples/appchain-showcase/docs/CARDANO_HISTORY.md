@@ -32,6 +32,13 @@ Enable larger L1 datasets explicitly at genesis:
 SHA-256. Changing these options requires another instance. Use `--disable-cardano-history` only
 when demonstrating the base catalog without the product chain.
 
+Cardano History does not invent an attestation for the epoch already in progress when a new chain
+is created. Its first history fact is committed after the next stable L1 epoch transition observed
+while the product is enabled. Before that transition, the generic chain status, capability, and
+anchor views are live, but Cardano History `status` and epoch queries return HTTP 404 (CLI exit code
+3). This is normal for a retained-chainstate preprod deployment created mid-epoch; wait for the next
+epoch instead of treating the empty product view as a plugin failure.
+
 ## Enable per-epoch authenticated snapshots
 
 Stake and DRep datasets can use the reusable logical-snapshot capability. It cannot be selected
