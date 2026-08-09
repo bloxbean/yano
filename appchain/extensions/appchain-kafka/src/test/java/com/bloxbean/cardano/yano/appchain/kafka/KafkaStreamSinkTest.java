@@ -127,7 +127,7 @@ class KafkaStreamSinkTest {
     }
 
     private static AppBlock sampleBlock(long height) {
-        return new AppBlock(2, "chain-1", height, new byte[32], 0, new byte[0], 1000L,
+        return new AppBlock(AppBlock.BLOCK_VERSION, "chain-1", height, new byte[32], 0, new byte[0], 1000L,
                 new byte[32], new byte[32], List.of(), new byte[32],
                 new FinalityCert(FinalityCert.SCHEME_ED25519, List.of()));
     }

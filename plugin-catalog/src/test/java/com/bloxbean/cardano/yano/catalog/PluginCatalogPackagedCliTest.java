@@ -55,7 +55,7 @@ class PluginCatalogPackagedCliTest {
         assertThat(validate.exitCode()).isEqualTo(PluginCatalogCli.EXIT_OK);
         assertThat(validate.standardError()).isEmpty();
         assertThat(validate.standardOutput())
-                .startsWith("VALID apiMajor=2 apiLevel=3 bundles=1 selected=1")
+                .startsWith("VALID apiMajor=3 apiLevel=4 bundles=1 selected=1")
                 .contains("fingerprint=sha256:")
                 .doesNotContain(temporary.toString());
 
@@ -160,7 +160,7 @@ class PluginCatalogPackagedCliTest {
                       "schemaVersion": 1,
                       "id": "%s",
                       "version": "1.0.0",
-                      "yanoApi": {"min": 2, "max": 2, "minLevel": 3},
+                      "yanoApi": {"min": 3, "max": 3, "minLevel": 4},
                       "dependencies": [],
                       "contributions": [{
                         "kind": "health",

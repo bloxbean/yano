@@ -1,5 +1,5 @@
 ; =============================================================================
-; Yano App-Chain: App Block and Finality Certificate (v1)
+; Yano App-Chain: App Block and Finality Certificate (v2)
 ; =============================================================================
 ; One finalized app-chain block: a batch of verified app messages given a
 ; total order by the sequencer, binding the post-state commitment root.
@@ -29,7 +29,7 @@
 ; =============================================================================
 
 app-block = [
-    version       : uint,             ; block format version, currently 1
+    version       : 2,                ; clean-break marker for tagged L1 observations
     chain-id      : tstr .size (1..128), ; valid UTF-8, byte length bound
     height        : uint,             ; global per-chain sequence, first block = 1
     prev-hash     : bstr .size 32,    ; 32 zero bytes at height 1

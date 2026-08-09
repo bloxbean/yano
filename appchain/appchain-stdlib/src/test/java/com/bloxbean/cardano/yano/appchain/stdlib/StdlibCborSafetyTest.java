@@ -89,7 +89,7 @@ class StdlibCborSafetyTest {
     }
 
     private static AppBlock block(AppMessage message) {
-        return new AppBlock(1, "chain", 1, new byte[32], 0, new byte[0], 1,
+        return new AppBlock(AppBlock.BLOCK_VERSION, "chain", 1, new byte[32], 0, new byte[0], 1,
                 new byte[32], new byte[32], List.of(message), new byte[32],
                 FinalityCert.empty());
     }

@@ -223,7 +223,7 @@ com.example.MyPlugin
   "schemaVersion": 1,
   "id": "com.example.myplugin",
   "version": "1.0.0",
-  "yanoApi": { "min": 1, "max": 1, "minLevel": 1 },
+  "yanoApi": { "min": 3, "max": 3, "minLevel": 4 },
   "dependencies": [],
   "contributions": [
     {

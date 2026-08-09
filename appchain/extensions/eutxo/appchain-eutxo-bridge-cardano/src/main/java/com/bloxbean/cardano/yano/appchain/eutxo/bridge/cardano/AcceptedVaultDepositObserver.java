@@ -69,7 +69,7 @@ final class AcceptedVaultDepositObserver implements L1Observer {
         for (TransactionBody transaction : block.getTransactionBodies()) {
             EutxoDepositClaim claim = claim(slot, blockHash, transaction);
             if (claim != null) {
-                observations.add(new L1Observation(
+                observations.add(L1Observation.transaction(
                         observerId,
                         HexUtil.decodeHexString(transaction.getTxHash()),
                         slot,

@@ -352,7 +352,7 @@ class PluginTcclBoundaryTest {
         byte[] txHash = new byte[32];
         byte[] blockHash = new byte[32];
         byte[] claim = new byte[]{1, 2, 3};
-        L1Observation retained = new L1Observation(
+        L1Observation retained = L1Observation.transaction(
                 "retained", txHash, 7, blockHash, claim);
         L1Observer rawObserver = new L1Observer() {
             @Override public String observerId() { return "retained"; }
@@ -380,7 +380,7 @@ class PluginTcclBoundaryTest {
         byte[] exposed = snapshot.claim();
         exposed[1] = 9;
 
-        assertThat(snapshot.txHash()).containsOnly(0);
+        assertThat(snapshot.transactionAnchor().transactionHash()).containsOnly(0);
         assertThat(snapshot.blockHash()).containsOnly(0);
         assertThat(snapshot.claim()).containsExactly(1, 2, 3);
     }
@@ -394,7 +394,7 @@ class PluginTcclBoundaryTest {
         ContextProbe probe = new ContextProbe(plugin);
         byte[] blockHash = new byte[32];
         InfiniteProbeList<L1Observation> observations = new InfiniteProbeList<>(
-                probe, rogue, ignored -> new L1Observation(
+                probe, rogue, ignored -> L1Observation.transaction(
                         "observer-instance", new byte[32], 9, blockHash,
                         new byte[PluginSpiFacades.MAX_OBSERVATION_CLAIM_BYTES]));
         L1Observer rawObserver = new L1Observer() {
@@ -449,7 +449,7 @@ class PluginTcclBoundaryTest {
                 callbackInput.set(callbackHash);
                 if (mutateCallback.get() != 0) {
                     callbackHash[0] = 2;
-                    return List.of(new L1Observation(
+                    return List.of(L1Observation.transaction(
                             "observer-instance", new byte[32], slot,
                             callbackHash, new byte[0]));
                 }
@@ -470,19 +470,19 @@ class PluginTcclBoundaryTest {
         Thread.currentThread().setContextClassLoader(caller);
         try {
             L1Observer observer = provider.create("observer-instance", Map.of());
-            result.set(new L1Observation(
+            result.set(L1Observation.transaction(
                     "wrong-observer", new byte[32], 9, blockHash, new byte[0]));
             assertThatThrownBy(() -> observer.observe(9, blockHash, null))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessage("L1 observation id does not match configured observer");
 
-            result.set(new L1Observation(
+            result.set(L1Observation.transaction(
                     "observer-instance", new byte[32], 10, blockHash, new byte[0]));
             assertThatThrownBy(() -> observer.observe(9, blockHash, null))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessage("L1 observation slot does not match callback slot");
 
-            result.set(new L1Observation(
+            result.set(L1Observation.transaction(
                     "observer-instance", new byte[32], 9, new byte[32], new byte[0]));
             assertThatThrownBy(() -> observer.observe(9, blockHash, null))
                     .isInstanceOf(IllegalArgumentException.class)
@@ -1336,7 +1336,7 @@ class PluginTcclBoundaryTest {
         ClassLoader plugin = new MarkerClassLoader(original);
         ClassLoader rogue = new MarkerClassLoader(original);
         ContextProbe probe = new ContextProbe(plugin);
-        L1Observation observation = new L1Observation(
+        L1Observation observation = L1Observation.transaction(
                 "observer-instance", new byte[32], 1, new byte[32], new byte[0]);
 
         SequencerMode mode = new SequencerMode() {
@@ -1398,7 +1398,8 @@ class PluginTcclBoundaryTest {
                     .satisfies(snapshot -> {
                         assertThat(snapshot.observerId()).isEqualTo(observation.observerId());
                         assertThat(snapshot.slot()).isEqualTo(observation.slot());
-                        assertThat(snapshot.txHash()).isEqualTo(observation.txHash());
+                        assertThat(snapshot.transactionAnchor().transactionHash())
+                                .isEqualTo(observation.transactionAnchor().transactionHash());
                         assertThat(snapshot.blockHash()).isEqualTo(observation.blockHash());
                         assertThat(snapshot.claim()).isEqualTo(observation.claim());
                     });
@@ -1418,7 +1419,7 @@ class PluginTcclBoundaryTest {
         ContextProbe probe = new ContextProbe(plugin);
         InfiniteProbeMap sequencerStatus = new InfiniteProbeMap(probe, rogue);
         InfiniteProbeMap observerStatus = new InfiniteProbeMap(probe, rogue);
-        L1Observation observation = new L1Observation(
+        L1Observation observation = L1Observation.transaction(
                 "observer-instance", new byte[32], 1, new byte[32], new byte[0]);
         InfiniteProbeList<L1Observation> observations = new InfiniteProbeList<>(
                 probe, rogue, ignored -> observation);
@@ -2797,7 +2798,7 @@ class PluginTcclBoundaryTest {
         @Override public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
             probe.check();
             return new ProbeList<>(probe,
-                    new L1Observation("instance", new byte[32], slot,
+                    L1Observation.transaction("instance", new byte[32], slot,
                             new byte[32], new byte[0]));
         }
         @Override public Map<String, Object> status() {

@@ -10,6 +10,7 @@ import com.bloxbean.cardano.client.crypto.config.CryptoConfiguration;
 import com.bloxbean.cardano.vds.core.api.NodeStore;
 import com.bloxbean.cardano.vds.jmt.JmtProfile;
 import com.bloxbean.cardano.vds.mpf.MpfTrie;
+import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
@@ -134,7 +135,8 @@ public final class ProofVerifier {
         }
         try {
             AppChainClient.CertifiedBlockHeader block = proof.block();
-            if (block.version() != 1 || block.height() != proof.committedHeight()
+            if (block.version() != AppBlock.BLOCK_VERSION
+                    || block.height() != proof.committedHeight()
                     || block.height() <= 0 || block.l1Slot() < 0 || block.timestamp() < 0
                     || !proof.stateRootHex().equals(block.stateRootHex())) {
                 return false;

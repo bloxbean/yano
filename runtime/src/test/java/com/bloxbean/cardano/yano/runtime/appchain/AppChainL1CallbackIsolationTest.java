@@ -485,7 +485,7 @@ class AppChainL1CallbackIsolationTest {
                 controls.observationEntered.countDown();
                 awaitUninterruptibly(controls.releaseObservation);
             }
-            return List.of(new L1Observation(observerId, fill(32, Math.toIntExact(slot)),
+            return List.of(L1Observation.transaction(observerId, fill(32, Math.toIntExact(slot)),
                     slot, blockHash.clone(), new byte[]{1}));
         }
     }

@@ -8,6 +8,7 @@ import co.nstant.in.cbor.model.UnsignedInteger;
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.client.crypto.config.CryptoConfiguration;
+import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.vds.core.api.NodeStore;
 import com.bloxbean.cardano.vds.jmt.JellyfishMerkleTree;
 import com.bloxbean.cardano.vds.jmt.JmtProfile;
@@ -74,11 +75,11 @@ class ProofVerifierProfileTest {
         byte[] wire = trie.getProofWire(key).orElseThrow();
 
         AppChainClient.CertifiedBlockHeader unsignedHeader = new AppChainClient.CertifiedBlockHeader(
-                1, 1, "00".repeat(32), 0, "", 1234,
+                AppBlock.BLOCK_VERSION, 1, "00".repeat(32), 0, "", 1234,
                 "33".repeat(32), Hex.encode(root), "00".repeat(32));
         byte[] blockHash = blockHash(CHAIN, unsignedHeader);
         AppChainClient.CertifiedBlockHeader header = new AppChainClient.CertifiedBlockHeader(
-                1, 1, unsignedHeader.prevHashHex(), 0, "", 1234,
+                AppBlock.BLOCK_VERSION, 1, unsignedHeader.prevHashHex(), 0, "", 1234,
                 unsignedHeader.messagesRootHex(), Hex.encode(root), Hex.encode(blockHash));
         byte[] seed = new byte[32];
         java.util.Arrays.fill(seed, (byte) 7);
@@ -105,7 +106,7 @@ class ProofVerifierProfileTest {
                         ProofVerifier.MPF_BLAKE2B256_V1, "55".repeat(32),
                         Set.of(Hex.encode(publicKey)), 1))).isFalse();
         AppChainClient.CertifiedBlockHeader wrongRoot = new AppChainClient.CertifiedBlockHeader(
-                1, 1, header.prevHashHex(), 0, "", 1234, header.messagesRootHex(),
+                AppBlock.BLOCK_VERSION, 1, header.prevHashHex(), 0, "", 1234, header.messagesRootHex(),
                 "66".repeat(32), header.blockHashHex());
         AppChainClient.Proof substituted = new AppChainClient.Proof(
                 proof.keyHex(), proof.chainId(), proof.stateRootHex(), proof.proofWireHex(),

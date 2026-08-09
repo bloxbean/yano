@@ -68,7 +68,7 @@ final class MetadataLabelObserver implements L1Observer {
             byte[] labelValue = extractLabel(auxData.getMetadataCbor());
             if (labelValue == null)
                 continue;
-            observations.add(new L1Observation(observerId,
+            observations.add(L1Observation.transaction(observerId,
                     HexUtil.decodeHexString(txs.get(txIndex).getTxHash()),
                     slot, blockHash, labelValue));
         }

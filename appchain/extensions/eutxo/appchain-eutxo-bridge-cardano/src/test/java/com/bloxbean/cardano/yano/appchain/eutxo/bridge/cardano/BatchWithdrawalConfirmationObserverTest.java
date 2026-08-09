@@ -75,7 +75,7 @@ class BatchWithdrawalConfirmationObserverTest {
     @Test
     void everyBatchConfirmationSharesTheSameFrameworkKey() {
         // A single observation per settlement tx keeps one framework key
-        // (observerId/txHash/slot) — the whole reason a batch payload exists.
+        // (observerId/tx:txHash/slot) — the whole reason a batch payload exists.
         EutxoBatchSettlementMarker marker =
                 new EutxoBatchSettlementMarker(1, CLAIM_IDS.subList(0, 1));
         Block block = block(List.of(
@@ -88,7 +88,7 @@ class BatchWithdrawalConfirmationObserverTest {
                 observer().observe(1_000L, fill(32, 9), block);
         assertThat(observations).hasSize(1);
         assertThat(observations.get(0).key())
-                .isEqualTo("bridge-withdrawals/" + "11".repeat(32) + "/1000");
+                .isEqualTo("bridge-withdrawals/tx:" + "11".repeat(32) + "/1000");
     }
 
     @Test

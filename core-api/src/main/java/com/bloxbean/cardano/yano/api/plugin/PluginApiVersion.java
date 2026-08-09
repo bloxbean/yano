@@ -4,7 +4,7 @@ package com.bloxbean.cardano.yano.api.plugin;
 public final class PluginApiVersion {
 
     /** Current plugin API major understood by this Yano release. */
-    public static final int CURRENT_MAJOR = 2;
+    public static final int CURRENT_MAJOR = 3;
 
     /**
      * Current global additive plugin API level.
@@ -13,7 +13,7 @@ public final class PluginApiVersion {
      * symbol or contribution kind. It is monotonic across major-version
      * changes and therefore never resets when {@link #CURRENT_MAJOR} changes.</p>
      */
-    public static final int CURRENT_LEVEL = 3;
+    public static final int CURRENT_LEVEL = 4;
 
     private PluginApiVersion() {
     }

@@ -1276,7 +1276,7 @@ final class AppChainEngine implements AutoCloseable {
                 || block.cert() == null
                 || proposal && (block.cert().scheme() != FinalityCert.SCHEME_ED25519
                 || !block.cert().signatures().isEmpty())) {
-            log.warn("{} is outside the app-block v1 structural profile — rejecting", source);
+            log.warn("{} is outside the app-block v2 structural profile — rejecting", source);
             return false;
         }
         Set<String> messageIds = new HashSet<>();

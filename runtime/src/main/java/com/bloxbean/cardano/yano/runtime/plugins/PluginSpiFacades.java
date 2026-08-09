@@ -1517,7 +1517,7 @@ final class PluginSpiFacades {
                                 + MAX_OBSERVATION_CLAIM_BYTES + " bytes");
             }
             return new ObservationSnapshot(
-                    new L1Observation(observerId, observation.txHash(),
+                    new L1Observation(observerId, observation.anchor(),
                             observation.slot(), observation.blockHash(), claim),
                     claim.length);
         }

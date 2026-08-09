@@ -333,7 +333,7 @@ class CompositeRoutingAndEffectsTest {
     }
 
     private static AppBlock rawBlock(long height, AppMessage... messages) {
-        return new AppBlock(1, "chain", height, new byte[32], 0, new byte[0], height,
+        return new AppBlock(AppBlock.BLOCK_VERSION, "chain", height, new byte[32], 0, new byte[0], height,
                 AppBlockCodec.messagesRoot(List.of(messages)), new byte[32],
                 List.of(messages), new byte[32], FinalityCert.empty());
     }

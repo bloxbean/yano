@@ -51,8 +51,8 @@ class PluginCatalogCliTest {
         assertThat(firstTable.exit()).isZero();
         assertThat(firstTable.err()).isEmpty();
         assertThat(firstTable.out()).isEqualTo(secondTable.out())
-                .contains("PLUGIN_API_MAJOR\t2")
-                .contains("PLUGIN_API_LEVEL\t3")
+                .contains("PLUGIN_API_MAJOR\t3")
+                .contains("PLUGIN_API_LEVEL\t4")
                 .contains("ID\tVERSION\tSTATUS")
                 .contains(BUNDLE_ID)
                 .contains("health/" + BUNDLE_ID)
@@ -62,8 +62,8 @@ class PluginCatalogCliTest {
         assertThat(firstJson.out()).isEqualTo(secondJson.out())
                 .doesNotContain(temporary.toString());
         JsonNode json = new ObjectMapper().readTree(firstJson.out());
-        assertThat(json.path("pluginApiMajor").asInt()).isEqualTo(2);
-        assertThat(json.path("pluginApiLevel").asInt()).isEqualTo(3);
+        assertThat(json.path("pluginApiMajor").asInt()).isEqualTo(3);
+        assertThat(json.path("pluginApiLevel").asInt()).isEqualTo(4);
         assertThat(json.path("bundles").get(0).path("id").asText()).isEqualTo(BUNDLE_ID);
         assertThat(json.path("bundles").get(0).path("source").asText())
                 .isEqualTo("DIRECTORY");
@@ -81,7 +81,7 @@ class PluginCatalogCliTest {
 
         assertThat(result.exit()).isZero();
         assertThat(result.out())
-                .startsWith("VALID apiMajor=2 apiLevel=3 bundles=1 selected=1")
+                .startsWith("VALID apiMajor=3 apiLevel=4 bundles=1 selected=1")
                 .contains("fingerprint=sha256:");
         assertThat(System.getProperty(INITIALIZED)).isNull();
         assertThat(System.getProperty(CONSTRUCTED)).isNull();
@@ -123,15 +123,21 @@ class PluginCatalogCliTest {
         assertThat(incompatible.err())
                 .contains("does not support Yano plugin API major 1");
 
-        Path newLevel = healthArtifact("new-level", 4);
+        Path oldPlugin = healthArtifact("old-api", 2, 4);
+        Result rejectedOldPlugin = run("validate", oldPlugin.toString());
+        assertThat(rejectedOldPlugin.exit()).isEqualTo(PluginCatalogCli.EXIT_INVALID_CATALOG);
+        assertThat(rejectedOldPlugin.err())
+                .contains("does not support Yano plugin API major 3");
+
+        Path newLevel = healthArtifact("new-level", 5);
         Result oldHost = run("validate", newLevel.toString());
         assertThat(oldHost.exit()).isEqualTo(PluginCatalogCli.EXIT_INVALID_CATALOG);
-        assertThat(oldHost.err()).contains("API major 2 level 3");
+        assertThat(oldHost.err()).contains("API major 3 level 4");
 
         Result currentEnough = run(
-                "validate", "--api-level", "4", newLevel.toString());
+                "validate", "--api-level", "5", newLevel.toString());
         assertThat(currentEnough.exit()).isZero();
-        assertThat(currentEnough.out()).startsWith("VALID apiMajor=2 apiLevel=4");
+        assertThat(currentEnough.out()).startsWith("VALID apiMajor=3 apiLevel=5");
 
         Result invalidLevel = run(
                 "inspect", "--api-level", "0", valid.toString());
@@ -140,17 +146,21 @@ class PluginCatalogCliTest {
     }
 
     private Path healthArtifact(String name) throws IOException {
-        return healthArtifact(name, 3);
+        return healthArtifact(name, 3, 4);
     }
 
     private Path healthArtifact(String name, int minLevel) throws IOException {
+        return healthArtifact(name, 3, minLevel);
+    }
+
+    private Path healthArtifact(String name, int apiMajor, int minLevel) throws IOException {
         Path root = Files.createDirectories(temporary.resolve(name));
         String manifest = """
                 {
                   "schemaVersion": 1,
                   "id": "com.example.health",
                   "version": "1.0.0",
-                  "yanoApi": {"min": 2, "max": 2, "minLevel": %d},
+                  "yanoApi": {"min": %d, "max": %d, "minLevel": %d},
                   "dependencies": [],
                   "contributions": [{
                     "kind": "health",
@@ -158,7 +168,7 @@ class PluginCatalogCliTest {
                     "provider": "%s"
                   }]
                 }
-                """.formatted(minLevel, PROVIDER);
+                """.formatted(apiMajor, apiMajor, minLevel, PROVIDER);
         write(root, BundleManifestParser.RESOURCE_DIRECTORY + BUNDLE_ID + ".json", manifest);
         write(root, servicePath(), PROVIDER + "\n");
         writeProviderBytes(root);

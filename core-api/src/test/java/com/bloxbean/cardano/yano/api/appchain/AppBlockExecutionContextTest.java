@@ -89,7 +89,7 @@ class AppBlockExecutionContextTest {
     }
 
     private static L1Observation observation(String id, long slot, int value) {
-        return new L1Observation(id, filled(value), slot, filled(value + 1),
+        return L1Observation.transaction(id, filled(value), slot, filled(value + 1),
                 new byte[]{(byte) value});
     }
 
