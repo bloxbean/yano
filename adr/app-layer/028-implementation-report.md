@@ -185,3 +185,61 @@ Verification:
 M4 therefore accepts direct MPF for M5. End-to-end boundary-to-anchor timing, three-member operation during L1
 sync, process-death/rotation against the concrete stake machine, rollback cancellation, replay, and annualized
 real-data growth remain hard M5/M8 qualification gates rather than being inferred from this component benchmark.
+
+## M5 — epoch-stake history and semantic proofs
+
+Status: complete for the reusable component; three-member source/anchor qualification remains the M8 deployment
+gate.
+
+Implemented:
+
+- added a consistent RocksDB snapshot view that streams retained end-of-epoch stake in canonical
+  `(credentialType, credentialHash)` order without copying the dataset into memory;
+- expanded startup reconciliation across the retained snapshot horizon, so a fresh or interrupted member can
+  rebuild every available boundary rather than observing only the latest one;
+- added the independently selectable `l1-epoch-stake-v1` observer and `epoch-stake` state machine, registered in
+  both the plugin catalog and legacy ServiceLoader discovery;
+- implemented deterministic two-pass generation, a manifest followed by fixed 25,000-entry chunks, at most one
+  data chunk per app block, exact per-chunk entry counts, cross-chunk ordering, immutable leaves/chunk hashes, and
+  final snapshot-root recomputation;
+- made reads complete-only and added a typed client for `[coin, poolHash]` values and authenticated metadata;
+- wired deep-rollback detection into the durable epoch spool: unfinalized jobs above the target are invalidated,
+  while crossing any finalized epoch boundary latches
+  `DEEP_ROLLBACK_BELOW_FINALIZED_EPOCH_ATTESTATION` and permanently removes the member from voting;
+- generalized strict MPF normalization to both non-membership terminal forms (missing branch and conflicting
+  leaf), closing the absence-proof gap discovered while implementing this milestone;
+- upgraded the compiled same-root verifier to bind the requested physical keys, strictly decode canonical stake
+  and completeness CBOR, and enforce amount-only, pool-only, combined minimum, exact, or absence predicates.
+
+Review and iteration:
+
+- semantic manifest validation is kept outside the manifest/chunk decode fallback, so a well-formed but
+  profile-incompatible manifest cannot be reinterpreted as a chunk;
+- global canonical order is persisted as a cursor across blocks; checking only order within each chunk would have
+  permitted a reordered dataset with a valid per-chunk encoding;
+- duplicate chunks are no-ops only when their committed chunk hash is byte-identical; conflicting history remains
+  fail-closed and write-once;
+- the first on-chain CBOR decoder used a generic loop. Replacing it with bounded preferred-encoding branches both
+  satisfies Julc's immutable-variable rules and makes the hostile-input cost explicit;
+- absence conversion independently verifies the native wire proof before emitting its bounded terminal/fold
+  representation; neither the client nor validator treats an empty query response as absence without an MPF
+  non-membership proof and a complete metadata proof at the same root.
+
+Verification:
+
+- `HistoricalEpochStateViewTest` proves canonical iteration, point-in-time snapshot isolation, and close guards;
+- `EpochStakeStateMachineTest` covers deterministic passes, rejected host reordering, incomplete-state hiding,
+  missing/reordered/root-mismatched chunks, duplicate idempotency, three-member-equivalent conformance, restart,
+  snapshot restore, and replay from block-bound observations alone;
+- coordinator tests cover publisher independence, durable resume, proposer rotation, unfinalized rollback
+  invalidation, and permanent fail-closed behavior after a finalized-boundary rollback;
+- real MPF missing-branch and conflicting-leaf proof wires normalize and reconstruct their original roots;
+- the compiled Plutus verifier passes all four positive stake predicates with eight total folds. The worst measured
+  positive vector uses 419,652,476 CPU, 1,427,673 memory, and a 1,475-byte redeemer, below the pinned
+  10,000,000,000 CPU / 14,000,000 memory / 16 KiB limits; absence plus completeness also passes those limits;
+- complete ledger-state, proof-contract, stdlib-contract, stdlib, client, proof-onchain, and runtime suites pass.
+
+The 1.3M-entry storage/ingestion evidence remains the M4 result because M5 deliberately uses the same frozen
+keys, values, 25,000-entry batches, CCL MPF backend, and per-chunk commit boundary. M8 must still demonstrate the
+30-minute post-stability SLA, proposer rotation, three-member root identity, L1 anchoring, and independent source
+agreement in the deployed reference chain; those claims are not inferred from component tests.

@@ -6,6 +6,7 @@ import com.bloxbean.cardano.vds.core.api.NodeStore;
 import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
 import com.bloxbean.cardano.yano.appchain.proofs.MpfNormalizedProof;
+import com.bloxbean.cardano.yano.appchain.proofs.MpfNormalizedNonMembershipProof;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -74,6 +75,26 @@ class MpfProofConverterTest {
                 .hasMessageContaining("root-fixed");
     }
 
+    @Test
+    void missingBranchAndConflictingLeafAbsenceProofsNormalize() {
+        MpfTrie trie = new MpfTrie(new MapNodeStore());
+        for (int i = 0; i < 24; i++) {
+            trie.put(("claim-key-" + i).getBytes(StandardCharsets.US_ASCII),
+                    ("claim-value-" + i).getBytes(StandardCharsets.US_ASCII));
+        }
+        byte[] root = trie.getRootHash();
+        for (String missing : java.util.List.of("absent", "claim-key-240")) {
+            byte[] key = missing.getBytes(StandardCharsets.US_ASCII);
+            AppChainClient.Proof wire = proof(trie, root, key, null);
+            MpfNormalizedNonMembershipProof converted =
+                    MpfProofConverter.convertAbsence(wire);
+
+            assertThat(converted.verify()).isTrue();
+            assertThat(converted.stateRoot()).isEqualTo(root);
+            assertThat(converted.key()).isEqualTo(key);
+        }
+    }
+
     private static AppChainClient.Proof proof(
             MpfTrie trie,
             byte[] root,
@@ -86,7 +107,7 @@ class MpfProofConverterTest {
                 HexFormat.of().formatHex(root),
                 HexFormat.of().formatHex(
                         trie.getProofWire(key).orElseThrow()),
-                HexFormat.of().formatHex(value),
+                value == null ? null : HexFormat.of().formatHex(value),
                 42L,
                 42L);
     }

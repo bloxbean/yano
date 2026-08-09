@@ -24,6 +24,8 @@ public final class EpochStakeContract {
     public static final String OBSERVER_TYPE = "l1-epoch-stake-v1";
     public static final String DEFAULT_OBSERVER_ID = "epoch-stake";
     public static final String PROOF_SUBJECT = "cardano-history/epoch-stake-v1";
+    public static final String QUERY_PATH = "epoch-stake/get";
+    public static final String META_QUERY_PATH = "epoch-stake/meta";
     private static final byte[] ROOT_DOMAIN = "yano-epoch-stake-root-v1\0"
             .getBytes(StandardCharsets.US_ASCII);
 
@@ -108,6 +110,41 @@ public final class EpochStakeContract {
         }
     }
 
+    public record Query(long epoch, int credType, byte[] credHash) {
+        public Query {
+            if (epoch < 0 || credType < 0 || credType > 255
+                    || credHash == null || credHash.length != 28) {
+                throw new IllegalArgumentException("invalid epoch-stake query");
+            }
+            credHash = credHash.clone();
+        }
+        @Override public byte[] credHash() { return credHash.clone(); }
+        @Override public boolean equals(Object other) {
+            return other instanceof Query that && epoch == that.epoch
+                    && credType == that.credType && Arrays.equals(credHash, that.credHash);
+        }
+        @Override public int hashCode() {
+            return 31 * Objects.hash(epoch, credType) + Arrays.hashCode(credHash);
+        }
+    }
+
+    public record Value(BigInteger coin, byte[] poolHash) {
+        public Value {
+            if (coin == null || coin.signum() < 0 || poolHash == null || poolHash.length != 28) {
+                throw new IllegalArgumentException("invalid epoch-stake value");
+            }
+            poolHash = poolHash.clone();
+        }
+        @Override public byte[] poolHash() { return poolHash.clone(); }
+        @Override public boolean equals(Object other) {
+            return other instanceof Value that && coin.equals(that.coin)
+                    && Arrays.equals(poolHash, that.poolHash);
+        }
+        @Override public int hashCode() {
+            return 31 * coin.hashCode() + Arrays.hashCode(poolHash);
+        }
+    }
+
     public static byte[] encodeManifest(Manifest value) {
         Array array = new Array();
         array.add(new UnsignedInteger(VERSION));
@@ -170,6 +207,31 @@ public final class EpochStakeContract {
         array.add(new UnsignedInteger(entry.coin()));
         array.add(new ByteString(entry.poolHash()));
         return HistoryContractCbor.encode(array);
+    }
+
+    public static Value decodeValue(byte[] bytes) {
+        Array values = HistoryContractCbor.decodeArray(bytes, 2);
+        return new Value(unsigned(values.getDataItems().get(0)),
+                HistoryContractCbor.bytes(values.getDataItems().get(1), 28));
+    }
+
+    public static byte[] encodeQuery(Query query) {
+        Array array = new Array();
+        array.add(new UnsignedInteger(VERSION));
+        array.add(new UnsignedInteger(query.epoch()));
+        array.add(new UnsignedInteger(query.credType()));
+        array.add(new ByteString(query.credHash()));
+        return HistoryContractCbor.encode(array);
+    }
+
+    public static Query decodeQuery(byte[] bytes) {
+        Array values = HistoryContractCbor.decodeArray(bytes, 4);
+        if (HistoryContractCbor.uintInt(values.getDataItems().get(0)) != VERSION) {
+            throw HistoryContractCbor.malformed();
+        }
+        return new Query(HistoryContractCbor.uint(values.getDataItems().get(1)),
+                HistoryContractCbor.uintInt(values.getDataItems().get(2)),
+                HistoryContractCbor.bytes(values.getDataItems().get(3), 28));
     }
 
     public static byte[] encodeMeta(Meta value) {
@@ -235,6 +297,16 @@ public final class EpochStakeContract {
     }
     public static byte[] chunkKey(long epoch, int index) {
         return ("stake/" + epoch + "/chunks/" + index).getBytes(StandardCharsets.US_ASCII);
+    }
+    public static byte[] cursorKey(long epoch) {
+        return ("stake/" + epoch + "/cursor").getBytes(StandardCharsets.US_ASCII);
+    }
+
+    public static byte[] credentialOrderKey(int credType, byte[] credHash) {
+        if (credType < 0 || credType > 255 || credHash == null || credHash.length != 28) {
+            throw new IllegalArgumentException("invalid stake credential order key");
+        }
+        return ByteBuffer.allocate(29).put((byte) credType).put(credHash).array();
     }
     public static int chunks(long total, int chunkEntries) {
         return total == 0 ? 0 : Math.toIntExact((total + chunkEntries - 1) / chunkEntries);
