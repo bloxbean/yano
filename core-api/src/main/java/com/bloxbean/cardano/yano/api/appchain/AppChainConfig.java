@@ -95,7 +95,7 @@ public record AppChainConfig(String chainId,
     public static final int MAX_CHAIN_ID_BYTES = 128;
     /** Maximum membership size representable by the v1 finality/evidence/anchor profile. */
     public static final int MAX_MEMBERS = 32;
-    /** Maximum serialized app-block size accepted by the v1 runtime/evidence profile. */
+    /** Maximum serialized app-block size accepted by the v2 runtime/evidence profile. */
     public static final long MAX_BLOCK_BYTES = 16L * 1024 * 1024;
     /** Conservative non-body bytes for one maximal v1 message and block header. */
     public static final int BLOCK_ENVELOPE_HEADROOM_BYTES = 1_024;

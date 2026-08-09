@@ -68,7 +68,7 @@ class AppChainEngineIdentityValidationTest {
         try {
             AppBlock wrongChain = block(AppBlock.BLOCK_VERSION, FOREIGN_CHAIN,
                     List.of(), signer.publicKey());
-            AppBlock wrongVersion = block(AppBlock.BLOCK_VERSION + 1, CHAIN,
+            AppBlock wrongVersion = block(AppBlock.BLOCK_VERSION - 1, CHAIN,
                     List.of(), signer.publicKey());
             AppMessage foreignMessage = signedMessage(signer, FOREIGN_CHAIN, "payload", 7);
             AppMessage validMessage = signedMessage(signer, CHAIN, "payload", 8);
@@ -112,7 +112,7 @@ class AppChainEngineIdentityValidationTest {
             engine.onConsensusMessage(proposal(signer, l1SlotWithoutHash, 6));
             engine.onConsensusMessage(proposal(signer, tooManyMessages, 7));
             verify(logger, timeout(5_000).times(4)).warn(
-                    "{} is outside the app-block v1 structural profile — rejecting", "Proposal");
+                    "{} is outside the app-block v2 structural profile — rejecting", "Proposal");
             engine.onConsensusMessage(proposal(signer, duplicateMessages, 8));
             verify(logger, timeout(5_000)).warn(
                     "{} has duplicate or malformed message identities — rejecting", "Proposal");
@@ -128,7 +128,7 @@ class AppChainEngineIdentityValidationTest {
                     new byte[]{1}, 9);
             AppMessage oversizedBody = signedMessage(signer, CHAIN,
                     "identity-test", new byte[config.maxMessageBytes() + 1], 10);
-            byte[] oversizedObservationBody = new L1Observation(
+            byte[] oversizedObservationBody = L1Observation.transaction(
                     "test-observer", filled(91), 0, filled(92),
                     new byte[config.maxMessageBytes()]).encode();
             assertThat(oversizedObservationBody.length).isGreaterThan(config.maxMessageBytes());
@@ -201,7 +201,7 @@ class AppChainEngineIdentityValidationTest {
             engine.onCertifiedBlocks(List.of(AppBlockCodec.serialize(l1SlotWithoutHash)));
             engine.onCertifiedBlocks(List.of(AppBlockCodec.serialize(tooManyMessages)));
             verify(logger, timeout(5_000).times(4)).warn(
-                    "{} is outside the app-block v1 structural profile — rejecting",
+                    "{} is outside the app-block v2 structural profile — rejecting",
                     "Catch-up block");
             engine.onCertifiedBlocks(List.of(AppBlockCodec.serialize(duplicateMessages)));
             verify(logger, timeout(5_000)).warn(

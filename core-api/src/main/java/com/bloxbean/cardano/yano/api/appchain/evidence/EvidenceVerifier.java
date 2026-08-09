@@ -145,7 +145,7 @@ public final class EvidenceVerifier {
         AppBlock target = first;
         if (target.messages() == null
                 || target.messages().size() > AppChainConfig.MAX_BLOCK_MESSAGES) {
-            return Result.fail("app-block exceeds v1 work bounds");
+            return Result.fail("app-block exceeds structural work bounds");
         }
         byte[] messageId = HexUtil.decodeHexString(bundle.messageIdHex());
         long targetOccurrences = target.messages().stream()
@@ -175,7 +175,7 @@ public final class EvidenceVerifier {
                     || encodedBlockBytes < 0
                     || EvidenceBundleCodec.exceedsTotalBlockBudget(
                     totalBlockBytes, encodedBlockBytes)) {
-                return Result.fail("app-block exceeds v1 work bounds");
+                return Result.fail("app-block exceeds structural work bounds");
             }
             totalBlockBytes += encodedBlockBytes;
             if (!bundle.chainId().equals(block.chainId())) {

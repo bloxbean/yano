@@ -985,7 +985,8 @@ public final class EutxoStateMachine implements AppStateMachine {
     private EutxoDepositClaim acceptedDeposit(L1Observation observation) {
         if (observation == null
                 || !bridge.topic().equals(observation.topic())
-                || !bridge.observerId().equals(observation.observerId())) {
+                || !bridge.observerId().equals(observation.observerId())
+                || !(observation.anchor() instanceof L1Observation.TransactionAnchor)) {
             throw new IllegalArgumentException("invalid bridge observation envelope");
         }
         EutxoDepositClaim claim = EutxoDepositClaim.decode(observation.claim());
@@ -993,7 +994,8 @@ public final class EutxoStateMachine implements AppStateMachine {
                 || !bridge.vaultAddress().equals(claim.vaultAddress())
                 || !bridge.vaultScriptHash().equals(claim.vaultScriptHash())
                 || !claim.acceptedOutpoint().transactionId().equals(
-                java.util.HexFormat.of().formatHex(observation.txHash()))
+                java.util.HexFormat.of().formatHex(
+                        observation.transactionAnchor().transactionHash()))
                 || claim.l1Slot() != observation.slot()
                 || !java.util.Arrays.equals(claim.l1BlockHash(), observation.blockHash())) {
             throw new IllegalArgumentException("bridge observation does not match its configured identity");
@@ -1142,14 +1144,16 @@ public final class EutxoStateMachine implements AppStateMachine {
     private EutxoWithdrawalConfirmation withdrawalConfirmation(L1Observation observation) {
         if (observation == null
                 || !bridge.confirmationTopic().equals(observation.topic())
-                || !bridge.confirmationObserverId().equals(observation.observerId())) {
+                || !bridge.confirmationObserverId().equals(observation.observerId())
+                || !(observation.anchor() instanceof L1Observation.TransactionAnchor)) {
             throw new IllegalArgumentException(
                     "invalid bridge withdrawal confirmation envelope");
         }
         EutxoWithdrawalConfirmation confirmation =
                 EutxoWithdrawalConfirmation.decode(observation.claim());
         String observedTransactionId =
-                java.util.HexFormat.of().formatHex(observation.txHash());
+                java.util.HexFormat.of().formatHex(
+                        observation.transactionAnchor().transactionHash());
         if (!bridge.chainId().equals(confirmation.chainId())
                 || bridge.bridgeEpoch() != confirmation.bridgeEpoch()
                 || !observedTransactionId.equals(
@@ -1209,14 +1213,16 @@ public final class EutxoStateMachine implements AppStateMachine {
     ) {
         if (observation == null
                 || !bridge.confirmationTopic().equals(observation.topic())
-                || !bridge.confirmationObserverId().equals(observation.observerId())) {
+                || !bridge.confirmationObserverId().equals(observation.observerId())
+                || !(observation.anchor() instanceof L1Observation.TransactionAnchor)) {
             throw new IllegalArgumentException(
                     "invalid bridge batch withdrawal confirmation envelope");
         }
         EutxoBatchWithdrawalConfirmation confirmation =
                 EutxoBatchWithdrawalConfirmation.decode(observation.claim());
         String observedTransactionId =
-                java.util.HexFormat.of().formatHex(observation.txHash());
+                java.util.HexFormat.of().formatHex(
+                        observation.transactionAnchor().transactionHash());
         if (!bridge.chainId().equals(confirmation.chainId())
                 || bridge.bridgeEpoch() != confirmation.bridgeEpoch()
                 || !observedTransactionId.equals(

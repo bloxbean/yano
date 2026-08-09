@@ -123,7 +123,7 @@ class EutxoValidityIntegrationTest {
                 fill(32, 5),
                 new EutxoOutpoint("33".repeat(32), 0),
                 100);
-        L1Observation observation = new L1Observation(
+        L1Observation observation = L1Observation.transaction(
                 "bridge-deposits",
                 HexFormat.of().parseHex(accepted.transactionId()),
                 10,

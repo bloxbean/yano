@@ -265,7 +265,7 @@ final class AppChainPluginScaffolder {
                   "schemaVersion": 1,
                   "id": "%s",
                   "version": "1.0.0",
-                  "yanoApi": { "min": 2, "max": 2, "minLevel": 3 },
+                  "yanoApi": { "min": 3, "max": 3, "minLevel": 4 },
                   "dependencies": [],
                   "contributions": [
                     { "kind": "%s", "name": "%s", "provider": "%s" }

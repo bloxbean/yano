@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "com.bloxbean.cardano.yano.appchain.evidence-profile",
   "version": "0.1.0-pre11",
-  "yanoApi": { "min": 2, "max": 2, "minLevel": 3 },
+  "yanoApi": { "min": 3, "max": 3, "minLevel": 4 },
   "dependencies": [
     {
       "id": "com.bloxbean.cardano.yano.appchain.stdlib",

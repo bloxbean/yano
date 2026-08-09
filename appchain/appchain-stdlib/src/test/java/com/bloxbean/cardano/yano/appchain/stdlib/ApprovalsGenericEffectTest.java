@@ -215,7 +215,7 @@ class ApprovalsGenericEffectTest {
     }
 
     private static AppBlock block(long height, long timestamp, AppMessage... messages) {
-        return new AppBlock(1, "chain", height, new byte[32], 0, new byte[0], timestamp,
+        return new AppBlock(AppBlock.BLOCK_VERSION, "chain", height, new byte[32], 0, new byte[0], timestamp,
                 new byte[32], new byte[32], List.of(messages), new byte[32],
                 FinalityCert.empty());
     }

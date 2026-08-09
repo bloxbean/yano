@@ -73,7 +73,7 @@ final class BatchWithdrawalConfirmationObserver implements L1Observer {
                 continue;
             }
             if (confirmation != null) {
-                observations.add(new L1Observation(
+                observations.add(L1Observation.transaction(
                         observerId,
                         HexUtil.decodeHexString(transaction.getTxHash()),
                         slot,

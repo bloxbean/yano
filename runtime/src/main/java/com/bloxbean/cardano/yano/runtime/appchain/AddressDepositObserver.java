@@ -57,7 +57,7 @@ final class AddressDepositObserver implements L1Observer {
             BigInteger deposited = depositedLovelace(tx);
             if (deposited.signum() <= 0)
                 continue;
-            observations.add(new L1Observation(observerId,
+            observations.add(L1Observation.transaction(observerId,
                     HexUtil.decodeHexString(tx.getTxHash()),
                     slot, blockHash, claim(deposited)));
         }

@@ -359,7 +359,7 @@ class EutxoStateMachineTest {
                 fill(32, 4),
                 new EutxoOutpoint("33".repeat(32), 0),
                 1_000);
-        L1Observation observation = new L1Observation(
+        L1Observation observation = L1Observation.transaction(
                 "bridge-deposits",
                 java.util.HexFormat.of().parseHex("22".repeat(32)),
                 100,
@@ -411,7 +411,7 @@ class EutxoStateMachineTest {
         MemoryAppState state = new MemoryAppState();
         EutxoDepositClaim depositClaim = depositClaim(
                 vaultAddress, vaultScriptHash, BigInteger.valueOf(25));
-        L1Observation depositObservation = new L1Observation(
+        L1Observation depositObservation = L1Observation.transaction(
                 "bridge-deposits",
                 java.util.HexFormat.of().parseHex(
                         depositClaim.acceptedOutpoint().transactionId()),
@@ -492,7 +492,7 @@ class EutxoStateMachineTest {
                         BigInteger.ZERO,
                         200,
                         fill(32, 7));
-        L1Observation confirmationObservation = new L1Observation(
+        L1Observation confirmationObservation = L1Observation.transaction(
                 "bridge-withdrawals",
                 java.util.HexFormat.of().parseHex("77".repeat(32)),
                 200,
@@ -560,7 +560,7 @@ class EutxoStateMachineTest {
                 BigInteger.TEN,
                 300,
                 fill(32, 9));
-        L1Observation observation = new L1Observation(
+        L1Observation observation = L1Observation.transaction(
                 "bridge-withdrawals",
                 java.util.HexFormat.of().parseHex("99".repeat(32)),
                 300,

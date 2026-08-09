@@ -218,7 +218,7 @@ class CompositeIsolationTest {
     private static AppBlock block(AppMessage... messages) {
         byte[] previous = new byte[32];
         Arrays.fill(previous, (byte) 2);
-        return new AppBlock(1, "chain", 1, previous, 0, new byte[]{3}, 4,
+        return new AppBlock(AppBlock.BLOCK_VERSION, "chain", 1, previous, 0, new byte[]{3}, 4,
                 new byte[32], new byte[32], List.of(messages), new byte[32],
                 FinalityCert.empty());
     }

@@ -117,7 +117,7 @@ class AppChainSystemTopicAdmissionTest {
         long finalizedTip = subsystem.tipHeight();
         assertThat(subsystem.status()).containsEntry("poolSize", 0);
 
-        L1Observation oversizedLocalObservation = new L1Observation(
+        L1Observation oversizedLocalObservation = L1Observation.transaction(
                 "test-observer", filled(74), 1, filled(75),
                 new byte[config.maxMessageBytes() + 1]);
         Method injectObservation = AppChainSubsystem.class.getDeclaredMethod(

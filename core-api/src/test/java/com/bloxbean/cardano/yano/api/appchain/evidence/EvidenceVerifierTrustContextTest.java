@@ -103,7 +103,7 @@ class EvidenceVerifierTrustContextTest {
         assertInvalid(bundle(CHAIN, target, List.of(first, crossChain), 6,
                 AppBlockCodec.blockHash(crossChain), List.of(MEMBER_A), 1));
 
-        AppBlock unsupported = signedBlock(2, CHAIN, 5, filled(9),
+        AppBlock unsupported = signedBlock(AppBlock.BLOCK_VERSION - 1, CHAIN, 5, filled(9),
                 List.of(target), SEED_A, FinalityCert.SCHEME_ED25519,
                 KeyGenUtil.getPublicKeyFromPrivateKey(SEED_A));
         assertInvalid(bundle(CHAIN, target, List.of(unsupported), 5,
@@ -360,7 +360,7 @@ class EvidenceVerifierTrustContextTest {
                 .satisfies(result -> {
                     assertThat(result.valid()).isFalse();
                     assertThat(result.failure())
-                            .isEqualTo("app-block exceeds v1 work bounds");
+                            .isEqualTo("app-block exceeds structural work bounds");
                 });
     }
 

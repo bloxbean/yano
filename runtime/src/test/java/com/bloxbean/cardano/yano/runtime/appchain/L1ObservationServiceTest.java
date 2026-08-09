@@ -110,7 +110,8 @@ class L1ObservationServiceTest {
                 .containsExactlyInAnyOrder("deposits", "registry");
         for (L1Observation observation : observed) {
             assertThat(observation.slot()).isEqualTo(100);
-            assertThat(observation.txHash()).isEqualTo(HexUtil.decodeHexString("aa".repeat(32)));
+            assertThat(observation.transactionAnchor().transactionHash())
+                    .isEqualTo(HexUtil.decodeHexString("aa".repeat(32)));
             // Codec round-trip
             L1Observation decoded = L1Observation.decode(observation.encode());
             assertThat(decoded).isNotNull();
@@ -341,25 +342,28 @@ class L1ObservationServiceTest {
                 .isEqualTo(AppChainEngine.L1RefVerdict.OK);
 
         // MISMATCH: tampered claim (fail-closed)
-        L1Observation tampered = new L1Observation(deposit.observerId(), deposit.txHash(),
+        L1Observation tampered = L1Observation.transaction(deposit.observerId(),
+                deposit.transactionAnchor().transactionHash(),
                 deposit.slot(), deposit.blockHash(), new byte[]{0x00});
         assertThat(follower.verify(sequenced(tampered)))
                 .isEqualTo(AppChainEngine.L1RefVerdict.MISMATCH);
 
         // MISMATCH: wrong L1 block hash at that slot
-        L1Observation wrongBlock = new L1Observation(deposit.observerId(), deposit.txHash(),
+        L1Observation wrongBlock = L1Observation.transaction(deposit.observerId(),
+                deposit.transactionAnchor().transactionHash(),
                 deposit.slot(), fill(32, 9), deposit.claim());
         assertThat(follower.verify(sequenced(wrongBlock)))
                 .isEqualTo(AppChainEngine.L1RefVerdict.MISMATCH);
 
         // MISMATCH: fabricated observation at an in-window slot we saw
-        L1Observation fabricated = new L1Observation("deposits", fill(32, 7), 110,
+        L1Observation fabricated = L1Observation.transaction("deposits", fill(32, 7), 110,
                 fill(32, 2), deposit.claim());
         assertThat(follower.verify(sequenced(fabricated)))
                 .isEqualTo(AppChainEngine.L1RefVerdict.MISMATCH);
 
         // AHEAD: newer than our L1 view
-        L1Observation ahead = new L1Observation(deposit.observerId(), deposit.txHash(),
+        L1Observation ahead = L1Observation.transaction(deposit.observerId(),
+                deposit.transactionAnchor().transactionHash(),
                 999, deposit.blockHash(), deposit.claim());
         assertThat(follower.verify(sequenced(ahead)))
                 .isEqualTo(AppChainEngine.L1RefVerdict.AHEAD);
@@ -382,7 +386,7 @@ class L1ObservationServiceTest {
         // Rollback below an observed slot: the observation is forgotten and
         // the slot is now AHEAD of the rolled-back view
         follower.onL1Rollback(150);
-        L1Observation later = new L1Observation("deposits", fill(32, 5), 300,
+        L1Observation later = L1Observation.transaction("deposits", fill(32, 5), 300,
                 fill(32, 3), deposit.claim());
         assertThat(follower.verify(sequenced(later)))
                 .isEqualTo(AppChainEngine.L1RefVerdict.AHEAD);

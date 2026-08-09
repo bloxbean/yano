@@ -48,7 +48,7 @@ final class WithdrawalConfirmationObserver implements L1Observer {
             EutxoWithdrawalConfirmation confirmation =
                     confirmation(slot, blockHash, transaction);
             if (confirmation != null) {
-                observations.add(new L1Observation(
+                observations.add(L1Observation.transaction(
                         observerId,
                         HexUtil.decodeHexString(transaction.getTxHash()),
                         slot,

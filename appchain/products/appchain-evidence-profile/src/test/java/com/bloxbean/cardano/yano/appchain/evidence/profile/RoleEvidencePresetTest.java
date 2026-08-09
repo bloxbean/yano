@@ -213,7 +213,7 @@ class RoleEvidencePresetTest {
     }
 
     private static AppBlock block(long height, AppMessage... messages) {
-        return new AppBlock(1, CHAIN, height, new byte[32], 0, new byte[0],
+        return new AppBlock(AppBlock.BLOCK_VERSION, CHAIN, height, new byte[32], 0, new byte[0],
                 1_700_000_000_000L + height, new byte[32], new byte[32],
                 List.of(messages), MEMBER, FinalityCert.empty());
     }

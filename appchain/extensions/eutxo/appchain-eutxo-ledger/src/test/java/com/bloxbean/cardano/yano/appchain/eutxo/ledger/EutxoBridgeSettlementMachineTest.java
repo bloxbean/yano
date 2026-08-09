@@ -260,7 +260,7 @@ class EutxoBridgeSettlementMachineTest {
                         List.of(new EutxoBatchWithdrawalConfirmation.Entry(
                                 claim.claimId(), 0, ALICE.address(),
                                 BigInteger.valueOf(8_000_000L))));
-        L1Observation observation = new L1Observation(
+        L1Observation observation = L1Observation.transaction(
                 "bridge-withdrawals",
                 HexFormat.of().parseHex("77".repeat(32)),
                 200,
@@ -589,7 +589,7 @@ class EutxoBridgeSettlementMachineTest {
                         List.of(new EutxoOutpoint("40" + "22".repeat(31), 1)),
                         new EutxoOutpoint("88".repeat(32), entries.size()),
                         BigInteger.valueOf(1_000_000L), 250, fill(32, 8), entries);
-        L1Observation observation = new L1Observation(
+        L1Observation observation = L1Observation.transaction(
                 "bridge-withdrawals", HexFormat.of().parseHex("88".repeat(32)),
                 250, fill(32, 8), confirmation.encode());
         apply(machine, block(height, observationMessage(0xB1, observation)),
@@ -633,7 +633,7 @@ class EutxoBridgeSettlementMachineTest {
                         List.of(new EutxoBatchWithdrawalConfirmation.Entry(
                                 claim.claimId(), 0, claim.destinationAddress(),
                                 claim.lovelace())));
-        L1Observation observation = new L1Observation(
+        L1Observation observation = L1Observation.transaction(
                 "bridge-withdrawals", HexFormat.of().parseHex("99".repeat(32)),
                 260, fill(32, 9), forged.encode());
         apply(machine, block(height, observationMessage(0xB7, observation)),
@@ -723,7 +723,7 @@ class EutxoBridgeSettlementMachineTest {
             EutxoStateMachine machine, MemoryAppState state, long lovelace,
             long height, int nonceByte) throws Exception {
         EutxoDepositClaim claim = depositClaimNonce(BigInteger.valueOf(lovelace), nonceByte);
-        L1Observation observation = new L1Observation(
+        L1Observation observation = L1Observation.transaction(
                 "bridge-deposits",
                 HexFormat.of().parseHex(claim.acceptedOutpoint().transactionId()),
                 claim.l1Slot(), claim.l1BlockHash(), claim.encode());
@@ -784,7 +784,7 @@ class EutxoBridgeSettlementMachineTest {
                                 50L, 1_800L, 86_400L, 0L),
                         1);
         EutxoDepositClaim deposit = depositClaim(BigInteger.valueOf(20_000_000L));
-        L1Observation observation = new L1Observation(
+        L1Observation observation = L1Observation.transaction(
                 "bridge-deposits",
                 HexFormat.of().parseHex(deposit.acceptedOutpoint().transactionId()),
                 deposit.l1Slot(),
@@ -863,7 +863,7 @@ class EutxoBridgeSettlementMachineTest {
             EutxoStateMachine machine, MemoryAppState state, long lovelace)
             throws Exception {
         EutxoDepositClaim claim = depositClaim(BigInteger.valueOf(lovelace));
-        L1Observation observation = new L1Observation(
+        L1Observation observation = L1Observation.transaction(
                 "bridge-deposits",
                 HexFormat.of().parseHex(claim.acceptedOutpoint().transactionId()),
                 claim.l1Slot(),

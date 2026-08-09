@@ -1,27 +1,36 @@
 ; =============================================================================
-; Yano App-Chain: L1 observation wire format (v1) — ADR app-layer/008.4 §3.1
+; Yano App-Chain: L1 observation wire format (v1) — ADR app-layer/028 M1
 ; =============================================================================
-; Body of a `~l1/<observer-id>` message: a pointer + claim. The pointer names
-; an L1 transaction; the claim is observer-specific CBOR that every member
-; recomputes from its OWN L1 view. Follower verification is consensus-critical:
-; a proposed observation whose claim differs from the follower's own
-; recomputation rejects the proposal (fail-closed); observations ahead of the
-; follower's L1 view defer-retry; observations older than the verification
-; window are accepted (the certified chain vouches — same semantics as l1-refs).
+; Body of a `~l1/<observer-id>` message: a tagged pointer plus a canonical
+; observer-specific claim. Transaction observers use tag 0. Epoch observers
+; use tag 1 and identify the first applied block of the new epoch. The former
+; preview form with tx-hash directly in field 2 is not part of this grammar.
 
 l1-observation = [
     version     : 1,
-    observer-id : tstr,            ; configured instance id (= topic suffix)
-    tx-hash     : bstr .size 32,   ; L1 transaction the claim points at
-    slot        : uint,            ; L1 slot of the containing block
-    block-hash  : bstr .size 32,   ; L1 block hash at that slot
-    claim       : bstr,            ; observer-specific claim (CBOR)
+    observer-id : tstr .size (1..128),
+    anchor      : transaction-anchor / epoch-anchor,
+    slot        : uint,
+    block-hash  : bstr .size 32,
+    claim       : bstr,
 ]
 
-; Built-in claim payloads:
+transaction-anchor = [
+    tag     : 0,
+    tx-hash : bstr .size 32,
+]
+
+epoch-anchor = [
+    tag       : 1,
+    new-epoch : uint,
+]
+
+; Built-in transaction claim payloads:
 ;
-; metadata-label observer (watch tx metadata label N):
+; metadata-label observer:
 ;   claim = the raw CBOR bytes of the watched label's metadata value
 ;
-; address-deposit observer (watch payments to an address):
-;   claim = [ address : tstr, lovelace : uint ]   ; total paid to address in tx
+; address-deposit observer:
+;   claim = [ address : tstr, lovelace : uint ]
+;
+; Epoch observer claim schemas are independently versioned by ADR-028.
