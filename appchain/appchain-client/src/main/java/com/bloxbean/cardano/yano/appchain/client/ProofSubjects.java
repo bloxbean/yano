@@ -7,9 +7,12 @@ import com.bloxbean.cardano.yano.appchain.roles.contracts.ApprovalProposalV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowKeys;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.DocTrailContract;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochGovernanceContract;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochParamsContract;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochStakeContract;
+import com.bloxbean.cardano.yano.api.appchain.l1view.ProtocolParamsCanonicalCodec;
 
-import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
+import java.math.BigInteger;
 import java.util.Objects;
 import java.util.function.Function;
 
@@ -67,19 +70,54 @@ public final class ProofSubjects {
             String componentId,
             long epoch
     ) {
-        return componentSubject("l1-epoch-protocol-parameters-v1", componentId,
-                HistoricalL1StateKeys.protocolParameters(epoch), byte[]::clone);
+        return componentSubject(EpochParamsContract.PROOF_SUBJECT, componentId,
+                HistoricalL1StateKeys.protocolParameters(epoch),
+                value -> ProtocolParamsCanonicalCodec.validate(epoch, value));
     }
 
-    public static StateProofSubject<byte[]> epochStake(
+    public static StateProofSubject<EpochStakeContract.Value> epochStake(
             String componentId,
             long epoch,
             int credentialType,
             byte[] credentialHash
     ) {
-        return componentSubject("l1-epoch-stake-v1", componentId,
+        return componentSubject(EpochStakeContract.PROOF_SUBJECT, componentId,
                 HistoricalL1StateKeys.epochStake(epoch, credentialType, credentialHash),
-                byte[]::clone);
+                EpochStakeContract::decodeValue);
+    }
+
+    public static StateProofSubject<EpochStakeContract.Meta> epochStakeCompleteness(
+            String componentId, long epoch) {
+        return componentSubject(EpochStakeContract.PROOF_SUBJECT + "/completeness",
+                componentId, EpochStakeContract.metaKey(epoch), EpochStakeContract::decodeMeta);
+    }
+
+    public static StateProofSubject<EpochGovernanceContract.ProposalValue> governanceProposal(
+            String componentId, long epoch, byte[] transactionId, int governanceActionIndex) {
+        return componentSubject(EpochGovernanceContract.PROPOSAL_PROOF_SUBJECT, componentId,
+                EpochGovernanceContract.proposalKey(epoch, transactionId, governanceActionIndex),
+                EpochGovernanceContract::decodeProposalValue);
+    }
+
+    public static StateProofSubject<EpochGovernanceContract.ProposalMeta>
+    governanceProposalCompleteness(String componentId, long epoch) {
+        return componentSubject(EpochGovernanceContract.PROPOSAL_PROOF_SUBJECT + "/completeness",
+                componentId, EpochGovernanceContract.proposalMetaKey(epoch),
+                EpochGovernanceContract::decodeProposalMeta);
+    }
+
+    public static StateProofSubject<BigInteger> drepDistribution(
+            String componentId, long epoch, int drepType, byte[] drepHash) {
+        return componentSubject(EpochGovernanceContract.DREP_PROOF_SUBJECT, componentId,
+                EpochGovernanceContract.drepKey(epoch, drepType, drepHash),
+                EpochGovernanceContract::decodeCoin);
+    }
+
+    public static StateProofSubject<EpochGovernanceContract.DRepMeta>
+    drepDistributionCompleteness(String componentId, long epoch) {
+        return componentSubject(EpochGovernanceContract.DREP_PROOF_SUBJECT + "/completeness",
+                componentId, EpochGovernanceContract.drepMetaKey(epoch),
+                EpochGovernanceContract::decodeDRepMeta);
     }
 
     public static StateProofSubject<byte[]> compositeProfile() {
@@ -142,31 +180,15 @@ public final class ProofSubjects {
 
     /** Canonical ADR-028 local state keys. */
     public static final class HistoricalL1StateKeys {
-        private static final byte[] PARAMS = "params/".getBytes(StandardCharsets.US_ASCII);
-        private static final byte[] STAKE = "stake/".getBytes(StandardCharsets.US_ASCII);
-
         private HistoricalL1StateKeys() {
         }
 
         public static byte[] protocolParameters(long epoch) {
-            requireEpoch(epoch);
-            return ByteBuffer.allocate(PARAMS.length + Long.BYTES)
-                    .put(PARAMS).putLong(epoch).array();
+            return EpochParamsContract.stateKey(epoch);
         }
 
         public static byte[] epochStake(long epoch, int credentialType, byte[] credentialHash) {
-            requireEpoch(epoch);
-            if (credentialType < 0 || credentialType > 1
-                    || credentialHash == null || credentialHash.length != 28) {
-                throw new IllegalArgumentException("invalid Cardano stake credential");
-            }
-            return ByteBuffer.allocate(STAKE.length + Long.BYTES + 1 + 28)
-                    .put(STAKE).putLong(epoch).put((byte) credentialType)
-                    .put(credentialHash).array();
-        }
-
-        private static void requireEpoch(long epoch) {
-            if (epoch < 0) throw new IllegalArgumentException("epoch must be non-negative");
+            return EpochStakeContract.entryKey(epoch, credentialType, credentialHash);
         }
     }
 }

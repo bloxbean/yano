@@ -3,8 +3,17 @@ package com.bloxbean.cardano.yano.appchain.proofs.onchain;
 import com.bloxbean.cardano.julc.core.PlutusData;
 import com.bloxbean.cardano.julc.core.Program;
 import com.bloxbean.cardano.julc.core.cbor.PlutusDataCborEncoder;
+import com.bloxbean.cardano.julc.ledger.Address;
+import com.bloxbean.cardano.julc.ledger.Credential;
+import com.bloxbean.cardano.julc.ledger.OutputDatum;
+import com.bloxbean.cardano.julc.ledger.PolicyId;
+import com.bloxbean.cardano.julc.ledger.ScriptHash;
+import com.bloxbean.cardano.julc.ledger.TokenName;
 import com.bloxbean.cardano.julc.ledger.TxId;
+import com.bloxbean.cardano.julc.ledger.TxInInfo;
 import com.bloxbean.cardano.julc.ledger.TxOutRef;
+import com.bloxbean.cardano.julc.ledger.TxOut;
+import com.bloxbean.cardano.julc.ledger.Value;
 import com.bloxbean.cardano.julc.testkit.ContractTest;
 import com.bloxbean.cardano.vds.core.api.NodeStore;
 import com.bloxbean.cardano.vds.mpf.MpfTrie;
@@ -13,21 +22,36 @@ import com.bloxbean.cardano.yano.appchain.client.MpfProofConverter;
 import com.bloxbean.cardano.yano.appchain.client.ProofVerifier;
 import com.bloxbean.cardano.yano.appchain.proofs.MpfNormalizedProof;
 import com.bloxbean.cardano.yano.appchain.proofs.MpfNormalizedNonMembershipProof;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochGovernanceContract;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
 import java.io.ByteArrayOutputStream;
+import java.math.BigInteger;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class MpfPairOnChainVerifierTest extends ContractTest {
     private static final long MAX_TX_CPU = 10_000_000_000L;
     private static final long MAX_TX_MEM = 14_000_000L;
+    private static final byte[] THREAD_POLICY = filled(0x31, 28);
+    private static final byte[] THREAD_ASSET = "cardano-history".getBytes(
+            java.nio.charset.StandardCharsets.US_ASCII);
+    private static final byte[] ANCHOR_SCRIPT = filled(0x32, 28);
+    private static final byte[] CHAIN_GENESIS = filled(0x33, 32);
+    private static final byte[] APPLICATION = "cardano-history-v1".getBytes(
+            java.nio.charset.StandardCharsets.US_ASCII);
+    private static final byte[] PROFILE = ProofVerifier.MPF_BLAKE2B256_V1.getBytes(
+            java.nio.charset.StandardCharsets.US_ASCII);
+    private static final byte[] FINGERPRINT = HexFormat.of().parseHex(
+            ProofVerifier.profileMetadata(ProofVerifier.MPF_BLAKE2B256_V1)
+                    .orElseThrow().formatFingerprintHex());
     private static Program program;
 
     @BeforeAll
@@ -43,8 +67,9 @@ class MpfPairOnChainVerifierTest extends ContractTest {
             var result = evaluate(program(), spendingContext(
                             new TxOutRef(new TxId(filled(0x61 + mode, 32)),
                                     java.math.BigInteger.ZERO),
-                            PlutusData.bytes(fixture.root()))
+                            PlutusData.UNIT)
                     .redeemer(pairData(fixture, mode, 1_012_345L, pool))
+                    .referenceInput(anchorInput(fixture.root()))
                     .buildPlutusData());
 
             assertSuccess(result);
@@ -65,8 +90,9 @@ class MpfPairOnChainVerifierTest extends ContractTest {
         wrong[0] ^= 1;
         var result = evaluate(program(), spendingContext(
                         new TxOutRef(new TxId(filled(0x62, 32)), java.math.BigInteger.ZERO),
-                        PlutusData.bytes(wrong))
+                        PlutusData.UNIT)
                 .redeemer(pairData(fixture, 0, 1_012_345L, new byte[0]))
+                .referenceInput(anchorInput(wrong))
                 .buildPlutusData());
 
         assertFailure(result);
@@ -77,8 +103,9 @@ class MpfPairOnChainVerifierTest extends ContractTest {
         Fixture fixture = fixture();
         var result = evaluate(program(), spendingContext(
                         new TxOutRef(new TxId(filled(0x69, 32)), java.math.BigInteger.ZERO),
-                        PlutusData.bytes(fixture.root()))
+                        PlutusData.UNIT)
                 .redeemer(absencePairData(fixture))
+                .referenceInput(anchorInput(fixture.root()))
                 .buildPlutusData());
 
         assertSuccess(result);
@@ -87,11 +114,75 @@ class MpfPairOnChainVerifierTest extends ContractTest {
                 .isLessThan(16 * 1024);
     }
 
+    @Test
+    void proposalAndDRepPredicatesVerifyAtOneRootWithinCardanoBudget() {
+        SemanticFixture proposal = proposalFixture();
+        byte[] expectedStatusReason = new byte[]{
+                (byte) EpochGovernanceContract.ProposalStatus.ENACTED.ordinal(),
+                (byte) EpochGovernanceContract.ProposalReason.ENACTED.ordinal()};
+        var proposalResult = evaluate(program(), spendingContext(
+                        new TxOutRef(new TxId(filled(0x70, 32)), BigInteger.ZERO),
+                        PlutusData.UNIT)
+                .redeemer(pairData(proposal, 5,
+                        EpochGovernanceContract.ActionType.PARAMETER_CHANGE.ordinal(),
+                        expectedStatusReason))
+                .referenceInput(anchorInput(proposal.root()))
+                .buildPlutusData());
+        assertSuccess(proposalResult);
+        assertBudgetUnder(proposalResult, MAX_TX_CPU, MAX_TX_MEM);
+
+        SemanticFixture drep = drepFixture();
+        for (int mode = 6; mode <= 7; mode++) {
+            var result = evaluate(program(), spendingContext(
+                            new TxOutRef(new TxId(filled(0x70 + mode, 32)), BigInteger.ZERO),
+                            PlutusData.UNIT)
+                    .redeemer(pairData(drep, mode,
+                            mode == 6 ? 4_000_000L : 5_000_000L, new byte[0]))
+                    .referenceInput(anchorInput(drep.root()))
+                    .buildPlutusData());
+            assertSuccess(result);
+            assertBudgetUnder(result, MAX_TX_CPU, MAX_TX_MEM);
+        }
+    }
+
+    @Test
+    void rejectsAProofPairWithoutTheUniqueAnchorReferenceInput() {
+        Fixture fixture = fixture();
+        var result = evaluate(program(), spendingContext(
+                        new TxOutRef(new TxId(filled(0x78, 32)), BigInteger.ZERO),
+                        PlutusData.UNIT)
+                .redeemer(pairData(fixture, 0, 1_012_345L, new byte[0]))
+                .buildPlutusData());
+        assertFailure(result);
+    }
+
     private Program program() {
         if (program == null) {
-            program = compileValidator(MpfPairOnChainVerifier.class).program();
+            program = compileValidator(MpfPairOnChainVerifier.class).program().applyParams(
+                    PlutusData.bytes(THREAD_POLICY), PlutusData.bytes(THREAD_ASSET),
+                    PlutusData.bytes(ANCHOR_SCRIPT), PlutusData.bytes(CHAIN_GENESIS),
+                    PlutusData.bytes(APPLICATION), PlutusData.bytes(PROFILE),
+                    PlutusData.bytes(FINGERPRINT));
         }
         return program;
+    }
+
+    private static TxInInfo anchorInput(byte[] stateRoot) {
+        PlutusData datum = PlutusData.constr(0,
+                PlutusData.integer(1), PlutusData.bytes(THREAD_ASSET),
+                PlutusData.bytes(CHAIN_GENESIS), PlutusData.bytes(APPLICATION),
+                PlutusData.bytes(PROFILE), PlutusData.bytes(FINGERPRINT),
+                PlutusData.integer(42), PlutusData.bytes(filled(0x34, 32)),
+                PlutusData.bytes(stateRoot),
+                PlutusData.list(PlutusData.bytes(filled(0x35, 32))),
+                PlutusData.integer(1));
+        Address address = new Address(
+                new Credential.ScriptCredential(new ScriptHash(ANCHOR_SCRIPT)), Optional.empty());
+        Value value = Value.lovelace(BigInteger.valueOf(2_000_000L)).merge(
+                Value.singleton(new PolicyId(THREAD_POLICY),
+                        new TokenName(THREAD_ASSET), BigInteger.ONE));
+        return new TxInInfo(new TxOutRef(new TxId(filled(0x36, 32)), BigInteger.ZERO),
+                new TxOut(address, value, new OutputDatum.OutputDatumInline(datum), Optional.empty()));
     }
 
     private static Fixture fixture() {
@@ -158,6 +249,14 @@ class MpfPairOnChainVerifierTest extends ContractTest {
                 PlutusData.bytes(fixture.factKey()), PlutusData.bytes(fixture.completeKey()),
                 PlutusData.integer(predicate), PlutusData.integer(coin),
                 PlutusData.bytes(poolHash));
+    }
+
+    private static PlutusData pairData(SemanticFixture fixture, long predicate,
+                                       long expected, byte[] auxiliary) {
+        return PlutusData.constr(0, proofData(fixture.fact()), proofData(fixture.complete()),
+                PlutusData.bytes(fixture.factKey()), PlutusData.bytes(fixture.completeKey()),
+                PlutusData.integer(predicate), PlutusData.integer(expected),
+                PlutusData.bytes(auxiliary));
     }
 
     private static PlutusData proofData(MpfNormalizedProof proof) {
@@ -227,10 +326,52 @@ class MpfPairOnChainVerifierTest extends ContractTest {
         return out.toByteArray();
     }
 
+    private static SemanticFixture proposalFixture() {
+        MpfTrie trie = new MpfTrie(new MapNodeStore());
+        byte[] txId = filled(0x35, 32);
+        var proposal = new EpochGovernanceContract.Proposal(
+                500, txId, 2, EpochGovernanceContract.ActionType.PARAMETER_CHANGE,
+                EpochGovernanceContract.ProposalStatus.ENACTED,
+                EpochGovernanceContract.ProposalReason.ENACTED, 490, 510);
+        byte[] factKey = EpochGovernanceContract.proposalKey(500, txId, 2);
+        byte[] factValue = EpochGovernanceContract.encodeProposalValue(proposal);
+        byte[] completeKey = EpochGovernanceContract.proposalMetaKey(500);
+        byte[] completeValue = EpochGovernanceContract.encodeProposalMeta(
+                new EpochGovernanceContract.ProposalMeta(
+                        500, 1, filled(0x36, 32), 1, true));
+        trie.put(factKey, factValue);
+        trie.put(completeKey, completeValue);
+        byte[] root = trie.getRootHash();
+        return new SemanticFixture(root, factKey, completeKey,
+                normalized(trie, root, factKey, factValue),
+                normalized(trie, root, completeKey, completeValue));
+    }
+
+    private static SemanticFixture drepFixture() {
+        MpfTrie trie = new MpfTrie(new MapNodeStore());
+        byte[] drepHash = filled(0x45, 28);
+        byte[] factKey = EpochGovernanceContract.drepKey(500, 0, drepHash);
+        byte[] factValue = EpochGovernanceContract.encodeCoin(BigInteger.valueOf(5_000_000L));
+        byte[] completeKey = EpochGovernanceContract.drepMetaKey(500);
+        byte[] completeValue = EpochGovernanceContract.encodeDRepMeta(
+                new EpochGovernanceContract.DRepMeta(
+                        500, 1, 25_000, 1, filled(0x46, 32), 1, true));
+        trie.put(factKey, factValue);
+        trie.put(completeKey, completeValue);
+        byte[] root = trie.getRootHash();
+        return new SemanticFixture(root, factKey, completeKey,
+                normalized(trie, root, factKey, factValue),
+                normalized(trie, root, completeKey, completeValue));
+    }
+
     private record Fixture(byte[] root, byte[] factKey, byte[] absentKey,
                            byte[] completeKey, byte[] poolHash, MpfNormalizedProof fact,
                            MpfNormalizedNonMembershipProof absence,
                            MpfNormalizedProof complete) { }
+
+    private record SemanticFixture(byte[] root, byte[] factKey, byte[] completeKey,
+                                   MpfNormalizedProof fact,
+                                   MpfNormalizedProof complete) { }
 
     private static final class MapNodeStore implements NodeStore {
         private final Map<String, byte[]> nodes = new HashMap<>();

@@ -2,7 +2,7 @@
 
 ## Protocol parameters, stake, and governance
 
-**Status:** Accepted — M1–M6 implemented; M7–M8 in progress
+**Status:** Accepted — M1–M7 implemented; M8 in progress
 **Date:** 2026-08-09
 **Depends on:** ADR app-layer/027 §2.4 (deep-rollback detection) — implementation and devnet work may
 proceed, but this is **blocking for every production/preprod epoch attestation**, including M3 and
@@ -389,10 +389,12 @@ payload is bigger.
 ### 5.7 Authenticated storage decision
 
 **Decision: Variant A with MPF is the v1 reference profile.** Stake and DRep entries live directly in
-the authenticated map, and the chain pins `mpf-blake2b256-v1` with
-`state.l1-proof-consumption-required=true`. This is required for direct on-chain inclusion and
-exclusion proofs. JMT remains a permitted off-chain-only deployment choice, but it does not satisfy
-this ADR's reference-chain on-chain requirement.
+the authenticated map. A chain that needs Cardano validators to consume its proofs pins
+`mpf-blake2b256-v1` with `state.l1-proof-consumption-required=true`. A chain may instead select
+`jmt-blake2b256-v1` at initial creation for off-chain verification. The selection is part of the
+immutable `StateCommitmentIdentity`; it is not a mutable Cardano-History-specific setting and cannot
+change without creating a fresh chain generation. Classic JMT does not satisfy this ADR's on-chain
+verification requirement.
 
 M4 is a feasibility gate for this decision, not an invitation to substitute an unauthenticated
 derived index. If direct MPF insertion is operationally infeasible, M5 stops and a follow-up ADR must
@@ -402,6 +404,14 @@ B is not accepted because an index rebuilt from block bodies alone is not a trus
 
 `retention.enabled: false` remains mandatory for the reference chain because from-genesis replay of
 the state machine requires retained observation bodies.
+
+MPF reachability pruning is a separate, node-local authenticated-state storage policy. It may remove
+construction nodes and roots below a configured proof-retention boundary, but never application
+entries reachable from any retained root. Because Cardano History is append-only, its latest root
+still authenticates every completed historical epoch. Pruning only changes which older anchor-height
+roots the node can use to generate a new proof; an already-issued proof remains independently
+verifiable from its root. The feature is opt-in and disabled by default until the M4/M8 tests prove
+restart, retained-root inclusion/absence proofs, rollback safety, and multi-epoch storage behavior.
 
 ### 5.8 Module boundaries
 
@@ -527,8 +537,10 @@ the chain operator, and no dependency on the chain still running.
 **On-chain verification** uses the already-implemented ADR-031 Phase 6 path:
 `mpf-proof-wire-v1`, the strict normalized-proof converter, the generic `MpfOnChainVerifier`, and
 the eleven-field anchor datum that binds chain/application/commitment identity and state root.
-The reference chain pins `mpf-blake2b256-v1` and
-`state.l1-proof-consumption-required=true`. JMT remains off-chain-only. The bounded on-chain MPF
+The on-chain reference chain pins `mpf-blake2b256-v1` and
+`state.l1-proof-consumption-required=true`. A `jmt-blake2b256-v1` Cardano History chain exposes the
+same typed subjects and anchor binding to off-chain clients, but must advertise and enforce
+`state.l1-proof-consumption-required=false`; it has no Cardano validator proof path. The bounded on-chain MPF
 envelope permits keys up to 256 bytes, values up to 8 KiB, and at most 32 folds; every concrete
 params/stake/governance value and key must be tested against those existing limits.
 
@@ -562,6 +574,10 @@ yano:
         format-fingerprint: <profile-fingerprint-32B-hex>
         genesis-id: <fresh-chain-generation-id-32B-hex>
         l1-proof-consumption-required: true
+        proof-pruning:
+          enabled: false                # opt-in MPF pilot; never inferred from retention.enabled
+          retain-heights: 10000         # retain this contiguous proof-generation horizon
+          interval-seconds: 3600
       l1:
         stability-depth: 36
         epoch-stability-depth: 2160     # = k; cheap at a 5-day cadence
@@ -584,6 +600,19 @@ yano:
           snapshot-semantics: end-of-epoch
 ```
 
+For an off-chain-only deployment, create the chain with the classic JMT identity instead:
+
+```yaml
+      state:
+        commitment-profile: jmt-blake2b256-v1
+        format-fingerprint: <classic-jmt-profile-fingerprint-32B-hex>
+        genesis-id: <fresh-chain-generation-id-32B-hex>
+        l1-proof-consumption-required: false
+```
+
+The profile and fingerprint should normally be materialized by the app-chain launcher. A copied MPF
+fingerprint with a JMT profile, or `l1-proof-consumption-required: true` with JMT, fails startup.
+
 **Hard startup gates** (fail to start, same shape as the existing
 `observers require stability-depth > 0` check):
 
@@ -599,6 +628,9 @@ yano:
    persistence; DRep distribution additionally requires the requested epoch snapshot to be retained.
 6. `state.l1-proof-consumption-required=true` requires the MPF commitment profile, and configured
    chunk/message/block/state-operation budgets must be mutually valid.
+7. `state.proof-pruning.enabled=true` is accepted only for MPF during the pilot, requires a positive
+   retained-height horizon and interval, and must never prune the current root. A failed GC or
+   retained-root verification leaves pruning degraded/disabled without stopping consensus.
 
 ## 11. Milestones
 
@@ -607,7 +639,7 @@ yano:
 | **M1** | Replace preview observation wire with the tagged baseline + CDDL + new golden vectors | transaction and epoch anchors strict; old preview bytes rejected |
 | **M2** | Streaming `L1EpochObserver` / `L1EpochState` / provider SPI; asynchronous first-new-epoch `BlockAppliedEvent` coordinator; durable bounded spool/outbox; block-depth `epoch-stability-depth`; startup gates | publisher latency is independent of snapshot size; two-member devnet agrees on a synthetic epoch fact; restart and proposer rotation resume the next chunk |
 | **M3** | `epoch-params` state machine using ADR-031 `AppBlockExecutionContext` + client + `StateMachineConformance` + devnet e2e | preprod params match yaci-store `epoch_param` and Koios; no historical L1 handle is used during replay |
-| **M4** | **MPF feasibility benchmark**: canonical two-pass stake/DRep generation, 25k-entry chunks, authenticated-map insertion, storage/replay/proof generation, and combined stake+completeness on-chain verification at mainnet scale | direct MPF profile meets published CPU/memory/storage/latency/Plutus budgets; otherwise M5 stops for a two-level-proof ADR |
+| **M4** | **Authenticated-state feasibility benchmarks**: canonical two-pass stake/DRep generation, 25k-entry chunks, direct MPF baseline, reachability-pruned MPF, classic JMT, storage/restart/proof generation, and combined MPF stake+completeness on-chain verification at mainnet scale | direct MPF meets correctness/Plutus gates; MPF pruning preserves every retained root; JMT publishes comparable off-chain CPU/storage/proof results |
 | **M5** | MPF `epoch-stake` machine with mandatory `[coin, poolHash]` values — **blocked on M4 and, for production, ADR-027 §2.4** | mainnet-scale epoch attested within the configured ingestion SLA; amount-only, pool-only, combined, and absence+completeness proofs pass on-chain without exceeding any per-block budget |
 | **M6** | `epoch-governance` component: rollback-safe proposal history plus chunked DRep distribution — **blocked on M4 and ADR-027 §2.4** | proposal and DRep claims match independent sources; proposal-only configuration performs no DRep traversal |
 | **M7** | Typed proof surface and application semantic decoders on top of the implemented ADR-031 REST/client/evidence/generic MPF verifier | third party verifies params, stake amount/pool predicates, proposal status, and DRep amount from the anchor output alone |
@@ -618,19 +650,23 @@ whole idea** and is worth building before committing to M5.
 
 ### 11.1 M4 questions and M5 acceptance decision
 
-M4 evaluates the fixed MPF/authenticated-map candidate rather than comparing underspecified storage
-models. It records, on representative mainnet-scale data:
+M4 evaluates the released MPF and classic-JMT authenticated-map profiles rather than comparing
+underspecified storage models. MPF remains the on-chain decision; JMT is an optional off-chain
+choice. It records, on representative mainnet-scale data:
 
 1. canonical-CBOR bytes and chunk count for 25,000-entry `[coin, poolHash]` chunks;
 2. wall time, peak heap/native memory, and restart behavior of both generation passes;
-3. wall time and RocksDB growth for approximately 1.3M MPF inserts on every member;
+3. wall time and RocksDB growth for approximately 1.3M MPF and JMT inserts on every member;
 4. time from L1 boundary detection until the complete epoch is app-final and L1 anchored;
 5. three-member agreement while normal L1 synchronization continues without publisher-thread delay;
 6. replay/catch-up time and retained storage growth per epoch and projected per year;
 7. inclusion/exclusion proof generation latency, normalized proof size, and fold count;
 8. combined Plutus CPU/memory/redeemer size for a stake leaf plus same-root completeness proof;
 9. process death in each spool state and proposer rotation during a partially ingested epoch; and
-10. rollback before stability, ensuring the asynchronous job and partial spool are cancelled.
+10. rollback before stability, ensuring the asynchronous job and partial spool are cancelled; and
+11. MPF mark/sweep duration, nodes and bytes reclaimed, post-compaction size, restart, and proof
+    verification from every retained root. The unpruned 3.84 GB single-epoch result is a baseline,
+    not the claimed steady-state cost per epoch, until this reachability test completes.
 
 Before M4 is declared complete, the implementation report publishes the accepted ingestion SLA and
 operator CPU/memory/storage budgets. Hard correctness gates are already fixed: no app block may
