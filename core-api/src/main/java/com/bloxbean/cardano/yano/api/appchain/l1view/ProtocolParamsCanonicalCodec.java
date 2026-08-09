@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.TreeMap;
+import java.util.Arrays;
 
 /** Canonical positional CBOR profile for ADR-028 protocol-parameter facts. */
 public final class ProtocolParamsCanonicalCodec {
@@ -88,6 +89,34 @@ public final class ProtocolParamsCanonicalCodec {
             return CBOR.writeValueAsBytes(fields);
         } catch (Exception failure) {
             throw new IllegalArgumentException("Unable to encode canonical protocol parameters", failure);
+        }
+    }
+
+    /**
+     * Strictly validate a persisted canonical value and bind its embedded epoch.
+     * This is intentionally a validator rather than a second mutable DTO codec:
+     * proof consumers can authenticate the frozen bytes without losing fields.
+     */
+    public static byte[] validate(long expectedEpoch, byte[] canonical) {
+        if (expectedEpoch < 0 || canonical == null || canonical.length == 0
+                || canonical.length > 8 * 1024) {
+            throw new IllegalArgumentException("Invalid canonical protocol parameters");
+        }
+        try {
+            List<?> fields = CBOR.readValue(canonical, List.class);
+            if (fields.size() != 56
+                    || !(fields.get(0) instanceof Number version)
+                    || version.longValue() != VERSION
+                    || !(fields.get(1) instanceof Number epoch)
+                    || epoch.longValue() != expectedEpoch
+                    || !Arrays.equals(canonical, CBOR.writeValueAsBytes(fields))) {
+                throw new IllegalArgumentException("Invalid canonical protocol parameters");
+            }
+            return canonical.clone();
+        } catch (IllegalArgumentException failure) {
+            throw failure;
+        } catch (Exception failure) {
+            throw new IllegalArgumentException("Invalid canonical protocol parameters", failure);
         }
     }
 

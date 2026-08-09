@@ -52,8 +52,11 @@ class L1EpochObservationCoordinatorTest {
                     .isLessThan(TimeUnit.MILLISECONDS.toNanos(50));
 
             release.countDown();
-            await(() -> memberA.status().toString().contains("ready=1"));
-            await(() -> memberB.status().toString().contains("ready=1"));
+            // Member A already observed a stable block while preparation was paused, so the
+            // completed record can move directly from READY to OFFERED without exposing READY
+            // to this polling thread. Assert the durable outcome instead of that transient state.
+            await(() -> first.size() == 1, memberA::status);
+            await(() -> memberB.status().toString().contains("ready=1"), memberB::status);
             memberA.onBlockApplied(1_020, 510, bytes(0x13));
             memberB.onBlockApplied(1_020, 510, bytes(0x13));
             await(() -> first.size() == 1 && second.size() == 1);

@@ -12,6 +12,7 @@ dependencies {
     testImplementation libs.cardano.client.mpf
     testImplementation libs.cardano.client.mpf.rocksdb
     testImplementation libs.cardano.client.jmt
+    testImplementation libs.cardano.client.jmt.rocksdb
     testImplementation libs.rocksdb
 }
 
@@ -82,6 +83,43 @@ tasks.register('benchmarkEpochStakeMpf', JavaExec) {
             providers.gradleProperty('adr028BenchmarkEntries').getOrElse('1300000'),
             providers.gradleProperty('adr028ChunkEntries').getOrElse('25000')
     outputs.file(report)
+}
+
+tasks.register('benchmarkEpochStakeMpfPruned', JavaExec) {
+    group = 'verification'
+    description = 'Runs ADR-028 MPF workload and reachability-prunes to its retained final root'
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochStakeMpfBenchmark'
+    maxHeapSize = '4g'
+    def report = layout.buildDirectory.file('reports/adr028/m4-epoch-stake-mpf-pruned.json')
+    args report.get().asFile.absolutePath,
+            providers.gradleProperty('adr028BenchmarkEntries').getOrElse('1300000'),
+            providers.gradleProperty('adr028ChunkEntries').getOrElse('25000'),
+            'prune'
+    outputs.file(report)
+}
+
+tasks.register('benchmarkEpochStakeJmt', JavaExec) {
+    group = 'verification'
+    description = 'Runs the ADR-028 mainnet-scale classic-JMT off-chain feasibility workload'
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochStakeJmtBenchmark'
+    maxHeapSize = '4g'
+    def report = layout.buildDirectory.file('reports/adr028/m4-epoch-stake-jmt.json')
+    args report.get().asFile.absolutePath,
+            providers.gradleProperty('adr028BenchmarkEntries').getOrElse('1300000'),
+            providers.gradleProperty('adr028ChunkEntries').getOrElse('25000')
+    outputs.file(report)
+}
+
+tasks.register('benchmarkEpochStakeProfiles') {
+    group = 'verification'
+    description = 'Runs comparable ADR-028 MPF, pruned-MPF, and classic-JMT workloads'
+    dependsOn tasks.named('benchmarkEpochStakeMpf'),
+            tasks.named('benchmarkEpochStakeMpfPruned'),
+            tasks.named('benchmarkEpochStakeJmt')
 }
 
 tasks.register('benchmarkAuthenticatedMapSchema', JavaExec) {

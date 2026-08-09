@@ -34,7 +34,7 @@ public final class EpochStakeContract {
 
     public record Entry(int credType, byte[] credHash, BigInteger coin, byte[] poolHash) {
         public Entry {
-            if (credType < 0 || credType > 255 || credHash == null || credHash.length != 28
+            if (credType < 0 || credType > 1 || credHash == null || credHash.length != 28
                     || coin == null || coin.signum() < 0
                     || poolHash == null || poolHash.length != 28) {
                 throw new IllegalArgumentException("invalid epoch-stake entry");
@@ -112,7 +112,7 @@ public final class EpochStakeContract {
 
     public record Query(long epoch, int credType, byte[] credHash) {
         public Query {
-            if (epoch < 0 || credType < 0 || credType > 255
+            if (epoch < 0 || credType < 0 || credType > 1
                     || credHash == null || credHash.length != 28) {
                 throw new IllegalArgumentException("invalid epoch-stake query");
             }
@@ -285,7 +285,7 @@ public final class EpochStakeContract {
     }
 
     public static byte[] entryKey(long epoch, int credType, byte[] credHash) {
-        if (epoch < 0 || credType < 0 || credType > 255 || credHash.length != 28) {
+        if (epoch < 0 || credType < 0 || credType > 1 || credHash.length != 28) {
             throw new IllegalArgumentException("invalid stake entry key");
         }
         return ("stake/" + epoch + "/" + String.format("%02x", credType)
@@ -303,7 +303,7 @@ public final class EpochStakeContract {
     }
 
     public static byte[] credentialOrderKey(int credType, byte[] credHash) {
-        if (credType < 0 || credType > 255 || credHash == null || credHash.length != 28) {
+        if (credType < 0 || credType > 1 || credHash == null || credHash.length != 28) {
             throw new IllegalArgumentException("invalid stake credential order key");
         }
         return ByteBuffer.allocate(29).put((byte) credType).put(credHash).array();

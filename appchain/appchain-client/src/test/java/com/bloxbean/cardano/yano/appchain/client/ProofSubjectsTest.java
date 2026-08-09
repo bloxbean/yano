@@ -8,10 +8,11 @@ import com.bloxbean.cardano.yano.appchain.roles.contracts.RecordStatus;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowKeys;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.DocTrailContract;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochGovernanceContract;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochParamsContract;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochStakeContract;
 import org.junit.jupiter.api.Test;
 
-import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
 
@@ -40,19 +41,29 @@ class ProofSubjectsTest {
     }
 
     @Test
-    void epochSubjectsUseBinaryEpochAndCanonicalCredentialBytes() {
+    void epochSubjectsUseTheExactStateMachineContractKeys() {
         byte[] credential = filled(3, 28);
         byte[] parameterKey = ProofSubjects.HistoricalL1StateKeys.protocolParameters(500);
-        assertThat(parameterKey).containsExactly(ByteBuffer.allocate(7 + Long.BYTES)
-                .put("params/".getBytes(StandardCharsets.US_ASCII)).putLong(500).array());
+        assertThat(parameterKey).containsExactly(EpochParamsContract.stateKey(500));
 
         byte[] stakeKey = ProofSubjects.HistoricalL1StateKeys.epochStake(500, 1, credential);
-        assertThat(stakeKey).containsExactly(ByteBuffer.allocate(6 + Long.BYTES + 1 + 28)
-                .put("stake/".getBytes(StandardCharsets.US_ASCII)).putLong(500)
-                .put((byte) 1).put(credential).array());
+        assertThat(stakeKey).containsExactly(EpochStakeContract.entryKey(500, 1, credential));
         assertThat(ProofSubjects.epochStake("epoch-stake", 500, 1, credential)
                 .canonicalKey()).containsExactly(CompositeCommitmentV1.componentKey(
                 "epoch-stake", stakeKey));
+        assertThat(ProofSubjects.epochStakeCompleteness("epoch-stake", 500).canonicalKey())
+                .containsExactly(CompositeCommitmentV1.componentKey(
+                        "epoch-stake", EpochStakeContract.metaKey(500)));
+
+        byte[] txId = filled(4, 32);
+        assertThat(ProofSubjects.governanceProposal(
+                "epoch-governance", 500, txId, 2).canonicalKey())
+                .containsExactly(CompositeCommitmentV1.componentKey("epoch-governance",
+                        EpochGovernanceContract.proposalKey(500, txId, 2)));
+        assertThat(ProofSubjects.drepDistribution(
+                "epoch-governance", 500, 0, credential).canonicalKey())
+                .containsExactly(CompositeCommitmentV1.componentKey("epoch-governance",
+                        EpochGovernanceContract.drepKey(500, 0, credential)));
     }
 
     @Test

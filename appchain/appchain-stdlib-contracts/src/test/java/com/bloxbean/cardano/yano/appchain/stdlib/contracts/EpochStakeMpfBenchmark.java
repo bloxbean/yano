@@ -4,6 +4,9 @@ import co.nstant.in.cbor.CborDecoder;
 import co.nstant.in.cbor.model.Array;
 import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.vds.mpf.rocksdb.RocksDbNodeStore;
+import com.bloxbean.cardano.vds.mpf.rocksdb.gc.GcOptions;
+import com.bloxbean.cardano.vds.mpf.rocksdb.gc.GcReport;
+import com.bloxbean.cardano.vds.mpf.rocksdb.gc.strategy.OnDiskMarkSweepStrategy;
 import org.rocksdb.WriteBatch;
 import org.rocksdb.WriteOptions;
 
@@ -26,11 +29,15 @@ public final class EpochStakeMpfBenchmark {
     }
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 3) throw new IllegalArgumentException(
-                "usage: REPORT ENTRY_COUNT CHUNK_ENTRIES");
+        if (args.length < 3 || args.length > 4) throw new IllegalArgumentException(
+                "usage: REPORT ENTRY_COUNT CHUNK_ENTRIES [prune]");
         Path report = Path.of(args[0]);
         int entries = Integer.parseInt(args[1]);
         int chunkEntries = Integer.parseInt(args[2]);
+        boolean prune = args.length == 4 && "prune".equals(args[3]);
+        if (args.length == 4 && !prune) {
+            throw new IllegalArgumentException("fourth argument must be prune");
+        }
         if (entries <= 0 || chunkEntries <= 0
                 || chunkEntries > EpochStakeContract.MAX_CHUNK_ENTRIES) {
             throw new IllegalArgumentException("invalid benchmark workload");
@@ -56,7 +63,13 @@ public final class EpochStakeMpfBenchmark {
         int maximumProofBytes = 0;
         int maximumProofSteps = 0;
         int maximumCombinedProofBytes = 0;
+        long databaseBytesBeforePrune;
+        long databaseBytesAfterDelete;
         long databaseBytes;
+        long gcMarked = 0;
+        long gcTotal = 0;
+        long gcDeleted = 0;
+        long gcMillis = 0;
         try {
             long insertionStarted = System.nanoTime();
             try (RocksDbNodeStore store = new RocksDbNodeStore(database.toString())) {
@@ -97,6 +110,26 @@ public final class EpochStakeMpfBenchmark {
                 stateRoot = trie.getRootHash();
             }
             insertionNanos = System.nanoTime() - insertionStarted;
+            databaseBytesBeforePrune = directoryBytes(database);
+
+            if (prune) {
+                try (RocksDbNodeStore store = new RocksDbNodeStore(database.toString())) {
+                    GcOptions options = new GcOptions();
+                    options.deleteBatchSize = 20_000;
+                    GcReport gc = new OnDiskMarkSweepStrategy().run(
+                            store, null, ignored -> List.of(stateRoot), options);
+                    gcMarked = gc.marked;
+                    gcTotal = gc.total;
+                    gcDeleted = gc.deleted;
+                    gcMillis = gc.durationMillis;
+                }
+                databaseBytesAfterDelete = directoryBytes(database);
+                try (RocksDbNodeStore store = new RocksDbNodeStore(database.toString())) {
+                    store.db().compactRange(store.nodesHandle());
+                }
+            } else {
+                databaseBytesAfterDelete = databaseBytesBeforePrune;
+            }
             databaseBytes = directoryBytes(database);
 
             long restartStarted = System.nanoTime();
@@ -144,6 +177,7 @@ public final class EpochStakeMpfBenchmark {
 
         String json = "{\n"
                 + "  \"profile\": \"mpf-blake2b256-v1\",\n"
+                + "  \"pruningEnabled\": " + prune + ",\n"
                 + "  \"entries\": " + entries + ",\n"
                 + "  \"chunkEntries\": " + chunkEntries + ",\n"
                 + "  \"chunkCount\": " + firstPass.chunkCount + ",\n"
@@ -153,7 +187,13 @@ public final class EpochStakeMpfBenchmark {
                 + "  \"secondPassMillis\": " + millis(secondPassNanos) + ",\n"
                 + "  \"insertionMillis\": " + millis(insertionNanos) + ",\n"
                 + "  \"restartMillis\": " + millis(restartNanos) + ",\n"
+                + "  \"rocksDbBytesBeforePrune\": " + databaseBytesBeforePrune + ",\n"
+                + "  \"rocksDbBytesAfterDelete\": " + databaseBytesAfterDelete + ",\n"
                 + "  \"rocksDbBytes\": " + databaseBytes + ",\n"
+                + "  \"gcMarkedNodes\": " + gcMarked + ",\n"
+                + "  \"gcTotalNodes\": " + gcTotal + ",\n"
+                + "  \"gcDeletedNodes\": " + gcDeleted + ",\n"
+                + "  \"gcMillis\": " + gcMillis + ",\n"
                 + "  \"sampleProofAverageMicros\": " + (proofNanos / PROOF_SAMPLE_COUNT / 1_000) + ",\n"
                 + "  \"maximumProofBytes\": " + maximumProofBytes + ",\n"
                 + "  \"maximumProofSteps\": " + maximumProofSteps + ",\n"
@@ -167,7 +207,7 @@ public final class EpochStakeMpfBenchmark {
         System.out.println(json);
     }
 
-    private static Generation generate(int entries, int chunkEntries) {
+    static Generation generate(int entries, int chunkEntries) {
         List<byte[]> chunkHashes = new ArrayList<>();
         long canonicalBytes = 0;
         int maximumChunkBytes = 0;
@@ -184,7 +224,7 @@ public final class EpochStakeMpfBenchmark {
                 EpochStakeContract.snapshotRoot(chunkHashes));
     }
 
-    private static long directoryBytes(Path directory) throws Exception {
+    static long directoryBytes(Path directory) throws Exception {
         try (var paths = Files.walk(directory)) {
             return paths.filter(Files::isRegularFile).mapToLong(path -> {
                 try { return Files.size(path); }
@@ -203,21 +243,21 @@ public final class EpochStakeMpfBenchmark {
         return steps.getDataItems().size();
     }
 
-    private record Generation(long canonicalBytes, int maximumChunkBytes,
-                              int chunkCount, byte[] datasetRoot) { }
+    record Generation(long canonicalBytes, int maximumChunkBytes,
+                      int chunkCount, byte[] datasetRoot) { }
 
-    private static List<EpochStakeContract.Entry> entries(int from, int to) {
+    static List<EpochStakeContract.Entry> entries(int from, int to) {
         List<EpochStakeContract.Entry> result = new ArrayList<>(to - from);
         for (int index = from; index < to; index++) result.add(entry(index));
         return result;
     }
 
-    private static EpochStakeContract.Entry entry(long index) {
+    static EpochStakeContract.Entry entry(long index) {
         return new EpochStakeContract.Entry(0, credential(index),
                 BigInteger.valueOf(1_000_000L + index), pool(index % 1_000));
     }
 
-    private static byte[] credential(long value) {
+    static byte[] credential(long value) {
         byte[] result = new byte[28];
         ByteBuffer.wrap(result, 20, 8).putLong(value);
         return result;
@@ -229,10 +269,10 @@ public final class EpochStakeMpfBenchmark {
         return result;
     }
 
-    private static long usedHeap() {
+    static long usedHeap() {
         Runtime runtime = Runtime.getRuntime();
         return runtime.totalMemory() - runtime.freeMemory();
     }
 
-    private static long millis(long nanos) { return nanos / 1_000_000; }
+    static long millis(long nanos) { return nanos / 1_000_000; }
 }

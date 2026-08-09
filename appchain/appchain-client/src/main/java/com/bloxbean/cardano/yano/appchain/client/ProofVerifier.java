@@ -11,6 +11,7 @@ import com.bloxbean.cardano.vds.core.api.NodeStore;
 import com.bloxbean.cardano.vds.jmt.JmtProfile;
 import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.anchor.AnchorDatumV1;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
@@ -81,6 +82,37 @@ public final class ProofVerifier {
             case JMT_POSEIDON_BLS12381_V1 -> POSEIDON_JMT_PROFILE;
             default -> null;
         });
+    }
+
+    /**
+     * Convert a caller-selected, L1-verified anchor output into the exact trusted
+     * state identity used by proof verification. The caller remains responsible
+     * for selecting the expected thread-token output and confirming L1 stability.
+     */
+    public static TrustedStateRoot trustedRootFromCardanoAnchor(
+            AnchorDatumV1 anchor,
+            String expectedChainId,
+            byte[] expectedGenesisId,
+            String expectedApplicationId
+    ) {
+        Objects.requireNonNull(anchor, "anchor");
+        if (!Objects.equals(anchor.chainId(), expectedChainId)
+                || !Objects.equals(anchor.applicationId(), expectedApplicationId)
+                || expectedGenesisId == null
+                || !Arrays.equals(anchor.chainGenesisId(), expectedGenesisId)) {
+            throw new IllegalArgumentException("Cardano anchor commitment identity mismatch");
+        }
+        ProfileMetadata profile = profileMetadata(anchor.commitmentProfileId())
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Cardano anchor uses an unsupported commitment profile"));
+        if (!profile.verifierAvailable()
+                || !Arrays.equals(anchor.formatFingerprint(),
+                Hex.decode(profile.formatFingerprintHex()))) {
+            throw new IllegalArgumentException("Cardano anchor commitment format mismatch");
+        }
+        return new TrustedStateRoot(anchor.chainId(), anchor.commitmentProfileId(),
+                Hex.encode(anchor.chainGenesisId()), anchor.height(),
+                Hex.encode(anchor.stateRoot()), TrustedRootSource.CARDANO_ANCHOR);
     }
 
     /**
