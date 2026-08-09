@@ -20,7 +20,6 @@ AUTHMAP_JMT_CHAIN_INDEX=9
 SETTLEMENT_CHAIN_ID=payment-chain-settlement
 SETTLEMENT_CHAIN_INDEX=10
 CARDANO_HISTORY_CHAIN_ID=cardano-history-chain
-CARDANO_HISTORY_CHAIN_INDEX=12
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 note() { printf '%s\n' "$*"; }
@@ -67,6 +66,10 @@ AUTHENTICATED_SNAPSHOT_EXPLICIT=false
 AUTHENTICATED_SNAPSHOT_PROFILE="mpf-blake2b256-v1"
 AUTHENTICATED_SNAPSHOT_MPF_PRUNING_SELECTION=""
 AUTHENTICATED_SNAPSHOT_MPF_PRUNING_EXPLICIT=false
+CARDANO_HISTORY_PROFILE="params-only-v1"
+CARDANO_HISTORY_PROFILE_EXPLICIT=false
+CARDANO_HISTORY_ENABLED=true
+CARDANO_HISTORY_ENABLED_EXPLICIT=false
 FOLLOW=false
 YES=false
 OUTPUT=""
@@ -125,6 +128,10 @@ parse() {
       --enable-authenticated-snapshot-mpf-pruning=*)
         AUTHENTICATED_SNAPSHOT_MPF_PRUNING_SELECTION="${1#*=}"
         AUTHENTICATED_SNAPSHOT_MPF_PRUNING_EXPLICIT=true; shift;;
+      --cardano-history-profile)
+        CARDANO_HISTORY_PROFILE="${2:-}"; CARDANO_HISTORY_PROFILE_EXPLICIT=true; shift 2;;
+      --disable-cardano-history)
+        CARDANO_HISTORY_ENABLED=false; CARDANO_HISTORY_ENABLED_EXPLICIT=true; shift;;
       --chain) AUTHMAP_CHAIN="${2:-}"; shift 2;;
       --collection) AUTHMAP_COLLECTION="${2:-}"; shift 2;;
       --actor) AUTHMAP_ACTOR="${2:-}"; shift 2;;
@@ -204,6 +211,14 @@ canonical_authenticated_snapshot_chains() {
   printf '%s' "$seen"
 }
 
+cardano_history_chain_index() {
+  local index
+  for ((index=0;index<${#LIGHT_CHAINS[@]};index++)); do
+    [ "${LIGHT_CHAINS[$index]}" = "$CARDANO_HISTORY_CHAIN_ID" ] && { printf '%d' "$index"; return; }
+  done
+  return 1
+}
+
 validate_common() {
   [[ "$INSTANCE" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || die "invalid instance name"
   case "$PROFILE" in light|evidence|eutxo) ;; *) die "profile must be light, evidence, or eutxo";; esac
@@ -234,10 +249,27 @@ validate_common() {
     mpf-blake2b256-v1|jmt-blake2b256-v1) ;;
     *) die "authenticated snapshot profile must be mpf-blake2b256-v1 or jmt-blake2b256-v1";;
   esac
+  case "$CARDANO_HISTORY_PROFILE" in
+    params-only|params-only-v1) CARDANO_HISTORY_PROFILE=params-only-v1;;
+    params-stake|params-stake-v1) CARDANO_HISTORY_PROFILE=params-stake-v1;;
+    params-governance|params-governance-v1) CARDANO_HISTORY_PROFILE=params-governance-v1;;
+    full|full-v1) CARDANO_HISTORY_PROFILE=full-v1;;
+    *) die "Cardano History profile must be params-only, params-stake, params-governance, or full";;
+  esac
+  if [ "$CARDANO_HISTORY_ENABLED" != true ]; then
+    [ "$CARDANO_HISTORY_PROFILE_EXPLICIT" != true ] \
+      || die "--disable-cardano-history cannot be combined with --cardano-history-profile"
+    [ -z "$AUTHENTICATED_SNAPSHOT_SELECTION" ] \
+      || die "authenticated snapshots require Cardano History"
+  fi
   AUTHENTICATED_SNAPSHOT_SELECTION="$(canonical_authenticated_snapshot_chains \
     "$AUTHENTICATED_SNAPSHOT_SELECTION")"
   AUTHENTICATED_SNAPSHOT_MPF_PRUNING_SELECTION="$(canonical_authenticated_snapshot_chains \
     "$AUTHENTICATED_SNAPSHOT_MPF_PRUNING_SELECTION")"
+  if [ -n "$AUTHENTICATED_SNAPSHOT_SELECTION" ] \
+      && [ "$CARDANO_HISTORY_PROFILE" = params-only-v1 ]; then
+    die "authenticated snapshots require a Cardano History stake or governance profile"
+  fi
   if [ -n "$AUTHENTICATED_SNAPSHOT_MPF_PRUNING_SELECTION" ]; then
     [ "$AUTHENTICATED_SNAPSHOT_PROFILE" = mpf-blake2b256-v1 ] \
       || die "authenticated snapshot MPF pruning requires mpf-blake2b256-v1"
@@ -269,6 +301,13 @@ plugin_file() {
   local matches=("$YANO_HOME"/plugins/yano-appchain-showcase-*-bundle.jar)
   [ "${#matches[@]}" -eq 1 ] && [ -f "${matches[0]}" ] \
     || die "expected exactly one showcase plugin bundle"
+  printf '%s' "${matches[0]}"
+}
+
+cardano_history_plugin_file() {
+  local matches=("$YANO_HOME"/plugins/yano-appchain-cardano-history-*-bundle.jar)
+  [ "${#matches[@]}" -eq 1 ] && [ -f "${matches[0]}" ] \
+    || die "expected exactly one Cardano History product bundle"
   printf '%s' "${matches[0]}"
 }
 
@@ -433,6 +472,20 @@ adopt_marker() {
   HTTP_BASE="$(marker_value httpBase)"
   SERVER_BASE="$(marker_value serverBase)"
   load_marker_chains
+  local retained_history_profile
+  local retained_history_enabled
+  retained_history_enabled="$(marker_value cardanoHistory.enabled)"
+  retained_history_profile="$(marker_value cardanoHistory.profile)"
+  if [ "$CARDANO_HISTORY_ENABLED_EXPLICIT" = true ] \
+      && [ "$CARDANO_HISTORY_ENABLED" != "$retained_history_enabled" ]; then
+    die "requested Cardano History enablement differs from retained identity; use a new instance or reset"
+  fi
+  if [ "$CARDANO_HISTORY_PROFILE_EXPLICIT" = true ] \
+      && [ "$CARDANO_HISTORY_PROFILE" != "$retained_history_profile" ]; then
+    die "requested Cardano History profile differs from retained identity; use a new instance or reset"
+  fi
+  CARDANO_HISTORY_PROFILE="$retained_history_profile"
+  CARDANO_HISTORY_ENABLED="$retained_history_enabled"
   local retained_finalized
   retained_finalized="$(marker_finalized_index_chains)"
   if [ "$FINALIZED_INDEX_EXPLICIT" = true ] \
@@ -472,7 +525,11 @@ adopt_marker() {
 }
 
 write_node_configs() {
-  local count="$1" directory="$(node_config_dir)" i file
+  local count="$1" directory="$(node_config_dir)" i file cardano_history_index=""
+  if [ "$CARDANO_HISTORY_ENABLED" = true ]; then
+    cardano_history_index="$(cardano_history_chain_index)" \
+      || die "Cardano History is enabled but absent from the retained chain set"
+  fi
   [ -f "$(authenticated_map_properties)" ] \
     || die "authenticated-map genesis is missing; prepare the instance first"
   mkdir -p "$directory" "$(outbox_dir)"
@@ -511,23 +568,48 @@ write_node_configs() {
           printf 'yano.app-chain.chains[%d].machines.finalized-message-index.max-messages-per-block=1000\n' "$index"
         done
       fi
-      if chain_in_csv "$AUTHENTICATED_SNAPSHOT_SELECTION" "$CARDANO_HISTORY_CHAIN_ID"; then
+      if [ "$CARDANO_HISTORY_ENABLED" = true ] \
+          && chain_in_csv "$AUTHENTICATED_SNAPSHOT_SELECTION" "$CARDANO_HISTORY_CHAIN_ID"; then
+        local snapshot_series=""
+        case "$CARDANO_HISTORY_PROFILE" in
+          params-stake-v1) snapshot_series="epoch-stake.distribution";;
+          params-governance-v1) snapshot_series="epoch-governance.drep-distribution";;
+          full-v1) snapshot_series="epoch-stake.distribution,epoch-governance.drep-distribution";;
+        esac
         printf 'yano.app-chain.chains[%d].capabilities.authenticated-snapshots.enabled=true\n' \
-          "$CARDANO_HISTORY_CHAIN_INDEX"
-        printf 'yano.app-chain.chains[%d].capabilities.authenticated-snapshots.series=epoch-stake.distribution,epoch-governance.drep-distribution\n' \
-          "$CARDANO_HISTORY_CHAIN_INDEX"
+          "$cardano_history_index"
+        printf 'yano.app-chain.chains[%d].capabilities.authenticated-snapshots.series=%s\n' \
+          "$cardano_history_index" "$snapshot_series"
         printf 'yano.app-chain.chains[%d].capabilities.authenticated-snapshots.archive-directory=%s/node%d/appchain-snapshot-archives\n' \
-          "$CARDANO_HISTORY_CHAIN_INDEX" "$(cluster_dir)" "$i"
-        printf 'yano.app-chain.chains[%d].machines.epoch-stake.snapshot-profile=%s\n' \
-          "$CARDANO_HISTORY_CHAIN_INDEX" "$AUTHENTICATED_SNAPSHOT_PROFILE"
-        printf 'yano.app-chain.chains[%d].machines.epoch-governance.drep-snapshot-profile=%s\n' \
-          "$CARDANO_HISTORY_CHAIN_INDEX" "$AUTHENTICATED_SNAPSHOT_PROFILE"
+          "$cardano_history_index" "$(cluster_dir)" "$i"
         if chain_in_csv "$AUTHENTICATED_SNAPSHOT_MPF_PRUNING_SELECTION" \
             "$CARDANO_HISTORY_CHAIN_ID"; then
           printf 'yano.app-chain.chains[%d].capabilities.authenticated-snapshots.storage.mpf-pruning-enabled=true\n' \
-            "$CARDANO_HISTORY_CHAIN_INDEX"
+            "$cardano_history_index"
         fi
       fi
+      if [ "$CARDANO_HISTORY_ENABLED" = true ]; then
+        printf 'yano.app-chain.chains[%d].machines.cardano-history.preset=%s\n' \
+          "$cardano_history_index" "$CARDANO_HISTORY_PROFILE"
+      fi
+      case "$CARDANO_HISTORY_ENABLED:$CARDANO_HISTORY_PROFILE" in
+        true:params-stake-v1|true:full-v1)
+          printf 'yano.app-chain.chains[%d].machines.epoch-stake.chunk-entries=25000\n' "$cardano_history_index"
+          printf 'yano.app-chain.chains[%d].machines.epoch-stake.snapshot-profile=%s\n' "$cardano_history_index" "$AUTHENTICATED_SNAPSHOT_PROFILE"
+          printf 'yano.app-chain.chains[%d].observers.epoch-stake.type=l1-epoch-stake-v1\n' "$cardano_history_index"
+          printf 'yano.app-chain.chains[%d].observers.epoch-stake.chain-id=%s\n' "$cardano_history_index" "$CARDANO_HISTORY_CHAIN_ID"
+          printf 'yano.app-chain.chains[%d].observers.epoch-stake.chunk-entries=25000\n' "$cardano_history_index";;
+      esac
+      case "$CARDANO_HISTORY_ENABLED:$CARDANO_HISTORY_PROFILE" in
+        true:params-governance-v1|true:full-v1)
+          printf 'yano.app-chain.chains[%d].machines.epoch-governance.drep-chunk-entries=25000\n' "$cardano_history_index"
+          printf 'yano.app-chain.chains[%d].machines.epoch-governance.drep-snapshot-profile=%s\n' "$cardano_history_index" "$AUTHENTICATED_SNAPSHOT_PROFILE"
+          printf 'yano.app-chain.chains[%d].observers.epoch-governance.type=l1-epoch-governance-v1\n' "$cardano_history_index"
+          printf 'yano.app-chain.chains[%d].observers.epoch-governance.chain-id=%s\n' "$cardano_history_index" "$CARDANO_HISTORY_CHAIN_ID"
+          printf 'yano.app-chain.chains[%d].observers.epoch-governance.include-proposals=true\n' "$cardano_history_index"
+          printf 'yano.app-chain.chains[%d].observers.epoch-governance.include-drep-distribution=true\n' "$cardano_history_index"
+          printf 'yano.app-chain.chains[%d].observers.epoch-governance.drep-chunk-entries=25000\n' "$cardano_history_index";;
+      esac
     } > "$file"
     chmod 600 "$file"
   done
@@ -544,6 +626,7 @@ prepare_light() {
   # preprod instance impossible to start or restart because its shared YAML no
   # longer matched its marker.
   [ "$NETWORK" = devnet ] || strip_devnet_settlement_chain
+  [ "$CARDANO_HISTORY_ENABLED" = true ] || strip_cardano_history_chain
   candidate="$(generate_authenticated_map_candidate)"
   local jmt_candidate
   jmt_candidate="$(generate_authenticated_map_jmt_candidate)" || { rm -f -- "$candidate"; return 1; }
@@ -557,7 +640,10 @@ prepare_light() {
     --authenticated-snapshot-selection "$AUTHENTICATED_SNAPSHOT_SELECTION"
     --authenticated-snapshot-profile "$AUTHENTICATED_SNAPSHOT_PROFILE"
     --authenticated-snapshot-mpf-pruning-selection \
-      "$AUTHENTICATED_SNAPSHOT_MPF_PRUNING_SELECTION")
+      "$AUTHENTICATED_SNAPSHOT_MPF_PRUNING_SELECTION"
+    --cardano-history-profile "$CARDANO_HISTORY_PROFILE"
+    --cardano-history-plugin "$(cardano_history_plugin_file)")
+  [ "$CARDANO_HISTORY_ENABLED" = true ] || args+=(--disable-cardano-history)
   if [ "$ANCHOR" = true ]; then args+=(--anchor --anchor-mode "$ANCHOR_MODE"); fi
   if [ "$ANCHOR" = true ]; then
     local -a anchor_chains=()
@@ -579,6 +665,7 @@ prepare_light() {
   note "  config:  $YANO_HOME/config/application-appchain.yml"
   note "  marker:  $(marker)"
   note "  plugin:  $plugin"
+  note "  history: $CARDANO_HISTORY_ENABLED ($CARDANO_HISTORY_PROFILE)"
   note "  map:     $(authenticated_map_genesis)"
 }
 
@@ -708,6 +795,12 @@ snapshot_operation() {
       curl -fsS -H "X-API-Key: $API_KEY" "$base/admin/snapshots/jobs/$series" | jq .;;
     *) die "snapshots accepts status, list, descriptor, archive, restore, evict, or job";;
   esac
+}
+
+run_cardano_history() {
+  [ "$CARDANO_HISTORY_ENABLED" = true ] || die "Cardano History is disabled for this instance"
+  curl -fsS "http://127.0.0.1:$((HTTP_BASE + NODE))/api/v1/plugins/com.bloxbean.cardano.yano.appchain.cardano-history/status?chain=$CARDANO_HISTORY_CHAIN_ID" \
+    | jq .
 }
 
 run_orders() {
@@ -1618,6 +1711,18 @@ settlement_yml_value() {
 
 settlement_script_dir() { printf '%s/config/settlement' "$YANO_HOME"; }
 
+# Cardano History is the final light-profile chain so a source-tree-independent
+# installation can omit the product without renumbering any preceding chain.
+strip_cardano_history_chain() {
+  local config="$YANO_HOME/config/application-appchain.yml" tmp
+  grep -q "chain-id: \"$CARDANO_HISTORY_CHAIN_ID\"" "$config" 2>/dev/null || return 0
+  tmp="$config.without-history.$$"
+  awk '/^    # ADR-035 product:/ { exit } { print }' "$config" > "$tmp"
+  grep -q "chain-id: \"$CARDANO_HISTORY_CHAIN_ID\"" "$tmp" \
+    && { rm -f -- "$tmp"; die "could not remove Cardano History chain block"; }
+  mv -f -- "$tmp" "$config"
+}
+
 # The packaged settlement chain carries the DEVNET-only profile and demo
 # identity. If it ever activates on a public network the chain-id retains that
 # profile digest, and the real identity can never be adopted under the same id.
@@ -2061,7 +2166,9 @@ Common options: --instance, --network devnet|preprod, --nodes, --threshold,
 --enable-finalized-message-index[=chain-id,chain-id],
 --enable-authenticated-snapshots[=cardano-history-chain],
 --authenticated-snapshot-profile mpf-blake2b256-v1|jmt-blake2b256-v1,
---enable-authenticated-snapshot-mpf-pruning[=cardano-history-chain]. Load options:
+--enable-authenticated-snapshot-mpf-pruning[=cardano-history-chain],
+--cardano-history-profile params-only|params-stake|params-governance|full,
+--disable-cardano-history. Load options:
 --concurrency, --payload-bytes, --duration, --rate, --sample, --spread,
 --node, and --report-dir.
 EOF
@@ -2100,6 +2207,9 @@ PY
     [ -x "$YANO_HOME/appchain-cluster/loadtest.sh" ] || die "packaged burst load driver missing"
     [ -x "$YANO_HOME/appchain-cluster/soaktest.sh" ] || die "packaged soak driver missing"
     plugin_file >/dev/null
+    cardano_history_plugin_file >/dev/null
+    [ -x "$SHOWCASE_HOME/tools/cardano-history/bin/yano-cardano-history" ] \
+      || die "packaged Cardano History CLI missing"
     [ "$PROFILE" != evidence ] || need docker
     [ "$PROFILE" != eutxo ] || [ -x "$YANO_HOME/yano.sh" ] || die "maintained EUTxO CLI missing"
     note "doctor: Java $java_version, $(python3 --version 2>&1), curl, jq, and packaged artifacts are present"
@@ -2164,9 +2274,9 @@ PY
         approvals) run_approvals "${POSITIONAL[1]:-}";; balances) run_balances;;
         documents) run_documents "${POSITIONAL[1]:-}";; document-review) run_document_review "${POSITIONAL[1]:-}";;
         composite) run_composite "${POSITIONAL[1]:-}";;
-        roles) run_roles;; eutxo) run_eutxo;; cardano-history) snapshot_operation status;;
+        roles) run_roles;; eutxo) run_eutxo;; cardano-history) run_cardano_history;;
         anchor) cluster_env; "$CLUSTER" status;;
-        all) run_orders; run_registry; run_authenticated_map; run_approvals; run_balances; run_documents; run_document_review; run_composite; run_roles; run_eutxo; snapshot_operation status;;
+        all) run_orders; run_registry; run_authenticated_map; run_approvals; run_balances; run_documents; run_document_review; run_composite; run_roles; run_eutxo; [ "$CARDANO_HISTORY_ENABLED" != true ] || run_cardano_history;;
         *) die "unknown run scenario";; esac
     fi;;
   snapshots)

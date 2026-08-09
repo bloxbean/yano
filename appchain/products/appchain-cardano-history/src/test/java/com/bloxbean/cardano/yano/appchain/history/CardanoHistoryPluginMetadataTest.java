@@ -3,10 +3,11 @@ package com.bloxbean.cardano.yano.appchain.history;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider;
 import com.bloxbean.cardano.yano.api.plugin.ui.UiExtensionProvider;
+import com.bloxbean.cardano.yano.catalog.BundleManifestParser;
+import com.bloxbean.cardano.yano.catalog.ContributionKind;
 import org.junit.jupiter.api.Test;
 
 import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.ServiceLoader;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -31,11 +32,18 @@ class CardanoHistoryPluginMetadataTest {
         String path = "META-INF/yano/plugins/" + CardanoHistoryProduct.BUNDLE_ID + ".json";
         try (InputStream input = getClass().getClassLoader().getResourceAsStream(path)) {
             assertThat(input).isNotNull();
-            String manifest = new String(input.readAllBytes(), StandardCharsets.UTF_8);
-            assertThat(manifest).contains("\"kind\": \"app-state-machine\"")
-                    .contains("\"kind\": \"domain-api\"")
-                    .contains("\"kind\": \"ui-extension\"")
-                    .contains("\"name\": \"cardano-history\"");
+            var manifest = new BundleManifestParser().parse(path, input);
+            assertThat(manifest.id()).isEqualTo(CardanoHistoryProduct.BUNDLE_ID);
+            assertThat(manifest.contributions()).extracting(contribution -> contribution.kind())
+                    .containsExactlyInAnyOrder(
+                            ContributionKind.APP_STATE_MACHINE,
+                            ContributionKind.DOMAIN_API,
+                            ContributionKind.UI_EXTENSION);
+            assertThat(manifest.contributions()).extracting(contribution -> contribution.name())
+                    .containsExactlyInAnyOrder(
+                            CardanoHistoryProduct.STATE_MACHINE_ID,
+                            CardanoHistoryProduct.BUNDLE_ID,
+                            CardanoHistoryProduct.BUNDLE_ID);
         }
     }
 }

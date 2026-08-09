@@ -41,9 +41,10 @@ class ShowcaseCatalogManifestTest {
         }
         assertThat(classifications).containsExactlyInAnyOrderEntriesOf(Map.of(
                 "foundation", 7,
-                "reference", 4,
+                "reference", 3,
                 "backend-comparison", 1,
-                "l1-boundary", 1));
+                "l1-boundary", 1,
+                "product", 1));
         Matcher matcher = Pattern.compile(
                 "(?m)^      chain-id: \\\"?([^\\\"\\s]+)\\\"?$")
                 .matcher(Files.readString(YAML));

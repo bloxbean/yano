@@ -17,6 +17,7 @@ dependencies {
     testImplementation project(':appchain-stdlib')
     testImplementation project(':appchain-stdlib-contracts')
     testImplementation project(':appchain-testkit')
+    testImplementation project(':plugin-catalog')
     testImplementation libs.assertj.core
     testImplementation libs.junit.jupiter.api
     testRuntimeOnly libs.junit.jupiter.engine
@@ -42,6 +43,11 @@ tasks.named('shadowJar') {
     exclude 'com/bloxbean/cardano/yano/api/**'
     exclude 'com/bloxbean/cardano/yano/appchain/composite/**'
     exclude 'com/bloxbean/cardano/yano/appchain/stdlib/**'
+    // Logging is supplied by the host. Shipping another SLF4J API/provider in
+    // the product bundle breaks the parent-first plugin boundary and can make
+    // provider discovery depend on artifact ordering.
+    exclude 'org/slf4j/**'
+    exclude 'META-INF/maven/org.slf4j/**'
     exclude 'META-INF/*.SF', 'META-INF/*.RSA', 'META-INF/*.DSA', 'module-info.class'
 }
 
@@ -51,7 +57,8 @@ tasks.register('verifyBundleBoundary') {
     doLast {
         def forbidden = ['com/bloxbean/cardano/yano/api/',
                          'com/bloxbean/cardano/yano/appchain/composite/',
-                         'com/bloxbean/cardano/yano/appchain/stdlib/']
+                         'com/bloxbean/cardano/yano/appchain/stdlib/',
+                         'org/slf4j/']
         def entries = zipTree(tasks.named('shadowJar').get().archiveFile.get().asFile)
                 .matching { include '**/*.class' }.files
         def bad = entries.findAll { file -> forbidden.any { file.path.replace('\\', '/').contains(it) } }

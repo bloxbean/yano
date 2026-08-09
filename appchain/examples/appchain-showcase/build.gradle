@@ -76,6 +76,8 @@ tasks.named('shadowJar') {
 }
 
 def appDistribution = project(':app').tasks.named('yanoDistZip', Zip)
+def cardanoHistoryBundle = project(':appchain-cardano-history').tasks.named('shadowJar')
+def cardanoHistoryCli = project(':appchain-cardano-history-cli').tasks.named('distZip', Zip)
 def evidenceRunner = project(':appchain-evidence-demo-runner').tasks.named('shadowJar')
 def evidenceBundles = [
         project(':appchain-kafka').tasks.named('shadowJar'),
@@ -109,6 +111,20 @@ def stripEmbeddedYanoRoot = { details ->
     details.relativePath = org.gradle.api.file.RelativePath.parse(
             details.relativePath.file,
             rewritten.join('/'))
+}
+def stripCardanoHistoryCliRoot = { details ->
+    def segments = details.relativePath.segments.toList()
+    def rootIndex = segments.findIndexOf { it.startsWith('yano-cardano-history-') }
+    if (rootIndex < 0) {
+        throw new GradleException("Unexpected Cardano History CLI path: ${segments.join('/')}")
+    }
+    if (rootIndex == segments.size() - 1) {
+        details.exclude()
+        return
+    }
+    def rewritten = segments.take(rootIndex) + segments.drop(rootIndex + 1)
+    details.relativePath = org.gradle.api.file.RelativePath.parse(
+            details.relativePath.file, rewritten.join('/'))
 }
 
 distributions {
@@ -165,6 +181,20 @@ distributions {
             from(tasks.named('shadowJar').flatMap { it.archiveFile }) {
                 into 'plugins'
             }
+            from(cardanoHistoryBundle.flatMap { it.archiveFile }) {
+                into 'yano/plugins'
+            }
+            from(cardanoHistoryBundle.flatMap { it.archiveFile }) {
+                into 'plugins'
+            }
+            from({ zipTree(cardanoHistoryCli.get().archiveFile.get().asFile) }) {
+                into 'tools/cardano-history'
+                eachFile stripCardanoHistoryCliRoot
+                includeEmptyDirs = false
+                filesMatching(['**/bin/*']) {
+                    permissions { unix('755') }
+                }
+            }
 
             // Maintained evidence harness plus immutable, already-built
             // artifacts. The harness stages these through
@@ -211,6 +241,8 @@ distributions {
 def showcaseDistributionInputs = [
         appDistribution,
         tasks.named('shadowJar'),
+        cardanoHistoryBundle,
+        cardanoHistoryCli,
         evidenceRunner,
         tasks.named('generateShowcaseVersion')
 ] + evidenceBundles
@@ -257,7 +289,6 @@ tasks.register('verifyShowcasePluginArtifact') {
                         pluginManifest,
                         'com/bloxbean/cardano/yano/appchain/showcase/ShowcaseCompositeStateMachineProvider.class',
                         'com/bloxbean/cardano/yano/appchain/showcase/DocumentReviewStateMachineProvider.class',
-                        'com/bloxbean/cardano/yano/appchain/showcase/CardanoHistoryPilotStateMachineProvider.class',
                         'com/bloxbean/cardano/yano/appchain/showcase/ShowcaseAuthenticatedMapConfig.class',
                         'com/bloxbean/cardano/yano/appchain/showcase/ShowcaseOutboxExecutorFactory.class',
                         'com/bloxbean/cardano/yano/appchain/showcase/ShowcaseEutxoTransactions.class'
@@ -280,7 +311,6 @@ tasks.register('verifyShowcasePluginArtifact') {
                         || contributions != Set.of(
                         'app-state-machine:showcase-composite',
                         'app-state-machine:document-review',
-                        'app-state-machine:cardano-history-pilot',
                         'effect-executor:showcase-outbox')) {
                     throw new GradleException('Unexpected showcase plugin manifest')
                 }

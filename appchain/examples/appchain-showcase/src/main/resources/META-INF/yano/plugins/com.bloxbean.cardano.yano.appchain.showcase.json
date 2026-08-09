@@ -27,11 +27,6 @@
       "provider": "com.bloxbean.cardano.yano.appchain.showcase.DocumentReviewStateMachineProvider"
     },
     {
-      "kind": "app-state-machine",
-      "name": "cardano-history-pilot",
-      "provider": "com.bloxbean.cardano.yano.appchain.showcase.CardanoHistoryPilotStateMachineProvider"
-    },
-    {
       "kind": "effect-executor",
       "name": "showcase-outbox",
       "provider": "com.bloxbean.cardano.yano.appchain.showcase.ShowcaseOutboxExecutorFactory"

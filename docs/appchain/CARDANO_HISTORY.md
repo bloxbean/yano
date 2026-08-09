@@ -80,10 +80,13 @@ parameter, stake, DRep, and proposal queries, and exposes proof coordinates in a
 runs in the standard opaque-origin sandbox and can use only the declared read-only host bridge; it
 does not receive an API key and cannot open its own network connection.
 
-The Proof Lab generates, imports, copies, and locally verifies
+The Proof Lab generates, imports, downloads, and locally verifies
 `cardano-history-browser-proof-v1` bundles. It verifies the released MPF wire profile,
-chain/key/value/height/root/profile binding, same-root completeness, and available typed history
-semantics without asking the node to verify its own proof. Independent Cardano L1 anchor
+locally derives the canonical key from the typed epoch/credential/proposal subject, and verifies
+key/value/height/root/profile binding, same-root completeness, snapshot descriptors, and selected
+stake/DRep predicates without asking the node to verify its own proof. It supports primary
+parameter/proposal proofs and nested authenticated-snapshot stake/DRep inclusion or absence
+proofs. Independent Cardano L1 anchor
 verification remains available through `yano-cardano-history verify`, and the UI labels that trust
 boundary explicitly. Stake and governance tabs appear only when the selected chain exposes those
 components.
@@ -98,3 +101,22 @@ than caller-selected redeemer values.
 Stake amount, pool, combined, and absence-with-completeness predicates use tags 0–4; proposal exact
 status uses 5; DRep minimum/exact uses 6–7. JMT is deliberately excluded from this module because it
 is off-chain-only.
+
+## Showcase distribution
+
+The showcase ZIP contains the product bundle in `yano/plugins` and the standalone CLI below
+`tools/cardano-history`. The default light profile enables `params-only-v1`; use a fresh instance
+for another genesis-time preset:
+
+```bash
+./showcase.sh quickstart --instance history-params
+./showcase.sh quickstart --instance history-full \
+  --cardano-history-profile full
+./showcase.sh quickstart --instance history-snapshots \
+  --cardano-history-profile full \
+  --enable-authenticated-snapshots=cardano-history-chain
+./showcase.sh quickstart --instance without-history --disable-cardano-history
+```
+
+The retained `showcase-identity.json` binds enablement, preset, and product-bundle SHA-256. A
+restart cannot silently change any of them.
