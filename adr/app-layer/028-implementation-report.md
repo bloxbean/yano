@@ -243,3 +243,58 @@ The 1.3M-entry storage/ingestion evidence remains the M4 result because M5 delib
 keys, values, 25,000-entry batches, CCL MPF backend, and per-chunk commit boundary. M8 must still demonstrate the
 30-minute post-stability SLA, proposer rotation, three-member root identity, L1 anchoring, and independent source
 agreement in the deployed reference chain; those claims are not inferred from component tests.
+
+## M6 — governance proposal and DRep history
+
+Status: complete for the reusable component; independent preprod source comparison remains part of the M8
+deployment qualification so it is performed against the actual three-member Cardano History chain.
+
+Implemented:
+
+- added rollback-safe, epoch-pinned proposal lifecycle records in canonical
+  `(transactionId, governanceActionIndex)` order, including carried-forward terminal states and explicit reasons;
+- fixed the existing DRep-distribution persistence path so every per-epoch write now has a matching boundary
+  delta operation, and added explicit snapshot markers so an empty snapshot is distinguishable from an absent one;
+- exposed proposal and DRep iterators through the same close-scoped RocksDB snapshot used by epoch stake, with
+  governance datasets pinned to `newEpoch` and stake remaining pinned to `previousEpoch`;
+- added the independently selectable `l1-epoch-governance-v1` observer and `epoch-governance` state machine with
+  consensus-critical proposal/DRep flags and a fixed DRep chunk size;
+- made proposal and DRep completeness independent: proposal lifecycle is ingested one record per block, while
+  DRep voting stake uses bounded 25,000-entry chunks and the same complete-only query discipline as epoch stake;
+- added canonical header, proposal, DRep chunk, metadata, state-key, query, and value contracts plus a typed
+  `EpochGovernanceClient`;
+- registered both contributions for plugin-catalog and legacy ServiceLoader discovery and exposed separate proof
+  subjects for proposal status and DRep amount.
+
+Review and iteration:
+
+- the rollback audit found that the pre-existing `storeDRepDistEntry` path wrote directly to a boundary batch
+  without a `DeltaOp`; rollback/replay could therefore retain voting power from a reverted boundary. The write and
+  empty-snapshot marker are now journaled atomically with the governance ratification phase;
+- the host persists lifecycle snapshots during boundary processing instead of asking the observer to infer history
+  from active proposals. Enacted and expired proposals retain their terminal state; superseded siblings and
+  invalidated descendants retain closed dropped reasons;
+- terminal transitions are journaled during governance phase 1 without publishing snapshot completeness, then
+  folded into the phase-2 snapshot. A crash after enactment therefore cannot erase the history needed by the
+  ratification retry after the active proposal record has already been removed;
+- proposal-only mode is structurally lazy: it neither checks DRep snapshot availability nor invokes the DRep
+  iterator. A source double that throws on any DRep access protects this cost/isolation contract;
+- both datasets persist a global cursor and recompute their committed roots before setting completeness, closing
+  cross-block reorder, missing-record, fabricated-record, and partial-snapshot paths;
+- zero-entry datasets are complete at header application only when the host supplied an explicit persisted
+  snapshot marker; absence of a source snapshot remains a generation failure.
+
+Verification:
+
+- real-RocksDB rollback/replay restores proposal records, DRep entries, and both snapshot markers exactly;
+- the historical view proves canonical proposal order, explicit empty DRep presence, snapshot isolation, and
+  close guards;
+- governance observer/state-machine tests cover proposal-only zero-DRep access, independent completeness,
+  complete-only queries, rejected missing/reordered/fabricated claims, and deterministic restart/snapshot/replay
+  through `StateMachineConformance`;
+- canonical contract round trips, malformed/tag/order rejection, and released MPF key/value envelope limits pass;
+- complete ledger-state, stdlib-contract, stdlib, client, runtime, and plugin-catalog suites pass.
+
+M8 must compare the generated proposal and DRep roots/claims with Yaci Store, Koios, and the available DBSync
+datasets after the refreshed preprod nodes have crossed a boundary with this persistence format. This report does
+not substitute comparisons between external sources for comparison of the deployed attestation itself.

@@ -9,6 +9,7 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.ledgerstate.governance.model.CommitteeMemberRecord;
 import com.bloxbean.cardano.yano.ledgerstate.governance.model.DRepStateRecord;
 import com.bloxbean.cardano.yano.ledgerstate.governance.model.GovActionRecord;
+import com.bloxbean.cardano.yano.ledgerstate.governance.model.ProposalLifecycleRecord;
 
 import java.math.BigInteger;
 import java.util.HashSet;
@@ -81,6 +82,35 @@ public final class GovernanceCborCodec {
 
         return new GovActionRecord(deposit, returnAddress, proposedInEpoch, expiresAfterEpoch,
                 actionType, prevActionTxHash, prevActionIndex, govAction, proposalSlot);
+    }
+
+    // --- ProposalLifecycleRecord (prefix 0x71) ---
+    // [actionType, status, reason, proposedEpoch, expiresAfterEpoch]
+
+    public static byte[] encodeProposalLifecycle(ProposalLifecycleRecord rec) {
+        Array array = new Array();
+        array.add(new UnsignedInteger(rec.actionType().ordinal()));
+        array.add(new UnsignedInteger(rec.status().ordinal()));
+        array.add(new UnsignedInteger(rec.reason().ordinal()));
+        array.add(new UnsignedInteger(rec.proposedEpoch()));
+        array.add(new UnsignedInteger(rec.expiresAfterEpoch()));
+        return CborSerializationUtil.serialize(array, true);
+    }
+
+    public static ProposalLifecycleRecord decodeProposalLifecycle(byte[] bytes) {
+        Array array = (Array) CborSerializationUtil.deserializeOne(bytes);
+        if (array.getDataItems().size() != 5) {
+            throw new IllegalArgumentException("invalid proposal lifecycle record");
+        }
+        int actionType = CborSerializationUtil.toInt(array.getDataItems().get(0));
+        int status = CborSerializationUtil.toInt(array.getDataItems().get(1));
+        int reason = CborSerializationUtil.toInt(array.getDataItems().get(2));
+        return new ProposalLifecycleRecord(
+                com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceActionType.values()[actionType],
+                com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatus.values()[status],
+                com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatusReason.values()[reason],
+                CborSerializationUtil.toInt(array.getDataItems().get(3)),
+                CborSerializationUtil.toInt(array.getDataItems().get(4)));
     }
 
     // --- DRepStateRecord (prefix 0x62) ---

@@ -291,7 +291,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         if (!enabled || db == null || cfEpochSnapshot == null) {
             throw new IllegalStateException("persistent historical epoch state is unavailable");
         }
-        return new HistoricalEpochStateView(db, cfEpochSnapshot);
+        return new HistoricalEpochStateView(db, cfEpochSnapshot, cfState);
     }
 
     /**

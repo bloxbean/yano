@@ -8,6 +8,7 @@ import com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore.DeltaOp;
 import com.bloxbean.cardano.yano.ledgerstate.governance.model.CommitteeMemberRecord;
 import com.bloxbean.cardano.yano.ledgerstate.governance.model.DRepStateRecord;
 import com.bloxbean.cardano.yano.ledgerstate.governance.model.GovActionRecord;
+import com.bloxbean.cardano.yano.ledgerstate.governance.model.ProposalLifecycleRecord;
 import org.rocksdb.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,6 +46,9 @@ public class GovernanceStateStore {
     static final byte PREFIX_NUM_DORMANT_EPOCHS = 0x6E; // Singleton key for cumulative dormant epoch counter (Haskell flush semantics)
     static final byte PREFIX_ERA_FIRST_EPOCH = 0x6F;    // Per-protocol-version first epoch: key = 0x6F + protoMajor(1 byte)
     static final byte PREFIX_COMMITTEE_PRESENT = 0x70;  // Singleton key: 1 = SJust committee, 0 = SNothing committee
+    static final byte PREFIX_PROPOSAL_LIFECYCLE = 0x71; // Epoch-pinned proposal lifecycle history
+    static final byte PREFIX_PROPOSAL_SNAPSHOT = 0x72;  // Epoch snapshot presence, including empty snapshots
+    static final byte PREFIX_DREP_DIST_SNAPSHOT = 0x73; // Epoch snapshot presence, including empty snapshots
 
     // Delta op types — same values as DefaultAccountStateStore
     private static final byte OP_PUT = 0x01;
@@ -166,6 +170,35 @@ public class GovernanceStateStore {
         prefix[0] = PREFIX_DREP_DIST;
         ByteBuffer.wrap(prefix, 1, 4).order(ByteOrder.BIG_ENDIAN).putInt(epoch);
         return prefix;
+    }
+
+    /** Key: PREFIX_PROPOSAL_LIFECYCLE(1) + epoch(4 BE) + txHash(32) + govIdx(2 BE). */
+    static byte[] proposalLifecycleKey(int epoch, GovActionId id) {
+        byte[] hash = HexUtil.decodeHexString(id.getTransactionId());
+        if (hash.length != 32 || id.getGov_action_index() < 0 || id.getGov_action_index() > 0xFFFF) {
+            throw new IllegalArgumentException("invalid governance action id");
+        }
+        byte[] key = new byte[39];
+        key[0] = PREFIX_PROPOSAL_LIFECYCLE;
+        ByteBuffer.wrap(key, 1, 4).order(ByteOrder.BIG_ENDIAN).putInt(epoch);
+        System.arraycopy(hash, 0, key, 5, 32);
+        key[37] = (byte) (id.getGov_action_index() >>> 8);
+        key[38] = id.getGov_action_index().byteValue();
+        return key;
+    }
+
+    static byte[] proposalLifecycleEpochPrefix(int epoch) {
+        byte[] prefix = new byte[5];
+        prefix[0] = PREFIX_PROPOSAL_LIFECYCLE;
+        ByteBuffer.wrap(prefix, 1, 4).order(ByteOrder.BIG_ENDIAN).putInt(epoch);
+        return prefix;
+    }
+
+    private static byte[] epochSnapshotKey(byte prefix, int epoch) {
+        byte[] key = new byte[5];
+        key[0] = prefix;
+        ByteBuffer.wrap(key, 1, 4).order(ByteOrder.BIG_ENDIAN).putInt(epoch);
+        return key;
     }
 
     /** Key: PREFIX_EPOCH_PROPOSALS_FLAG(1) + epoch(4 BE) */
@@ -537,10 +570,77 @@ public class GovernanceStateStore {
     // ===== DRep Distribution Snapshot =====
 
     public void storeDRepDistEntry(int epoch, int credType, String drepHash, BigInteger stake,
-                                   WriteBatch batch) throws RocksDBException {
+                                   WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
         byte[] key = drepDistKey(epoch, credType, drepHash);
         byte[] val = GovernanceCborCodec.encodeDRepDistStake(stake);
+        byte[] prev = db.get(cfState, key);
         batch.put(cfState, key, val);
+        deltaOps.add(new DeltaOp(OP_PUT, key, prev));
+    }
+
+    public void storeDRepDistributionSnapshotMarker(int epoch, WriteBatch batch,
+                                                     List<DeltaOp> deltaOps) throws RocksDBException {
+        storeSnapshotMarker(PREFIX_DREP_DIST_SNAPSHOT, epoch, batch, deltaOps);
+    }
+
+    public void storeProposalLifecycleSnapshot(int epoch,
+                                                Map<GovActionId, ProposalLifecycleRecord> records,
+                                                WriteBatch batch, List<DeltaOp> deltaOps)
+            throws RocksDBException {
+        storeProposalLifecycleEntries(epoch, records, batch, deltaOps);
+        storeSnapshotMarker(PREFIX_PROPOSAL_SNAPSHOT, epoch, batch, deltaOps);
+    }
+
+    /**
+     * Persist lifecycle entries without publishing snapshot availability. Phase 1
+     * uses this for crash-safe terminal transitions; Phase 2 completes the full
+     * snapshot and writes the marker.
+     */
+    public void storeProposalLifecycleEntries(int epoch,
+                                               Map<GovActionId, ProposalLifecycleRecord> records,
+                                               WriteBatch batch, List<DeltaOp> deltaOps)
+            throws RocksDBException {
+        for (var entry : records.entrySet()) {
+            byte[] key = proposalLifecycleKey(epoch, entry.getKey());
+            byte[] prev = db.get(cfState, key);
+            batch.put(cfState, key, GovernanceCborCodec.encodeProposalLifecycle(entry.getValue()));
+            deltaOps.add(new DeltaOp(OP_PUT, key, prev));
+        }
+    }
+
+    public Map<GovActionId, ProposalLifecycleRecord> getProposalLifecycleSnapshot(int epoch)
+            throws RocksDBException {
+        Map<GovActionId, ProposalLifecycleRecord> result = new LinkedHashMap<>();
+        byte[] prefix = proposalLifecycleEpochPrefix(epoch);
+        try (RocksIterator it = db.newIterator(cfState)) {
+            it.seek(prefix);
+            while (it.isValid() && startsWith(it.key(), prefix)) {
+                byte[] key = it.key();
+                if (key.length != 39) throw new IllegalStateException("invalid proposal lifecycle key");
+                String txHash = HexUtil.encodeHexString(Arrays.copyOfRange(key, 5, 37));
+                int index = ((key[37] & 0xFF) << 8) | (key[38] & 0xFF);
+                result.put(new GovActionId(txHash, index),
+                        GovernanceCborCodec.decodeProposalLifecycle(it.value()));
+                it.next();
+            }
+        }
+        return result;
+    }
+
+    public boolean hasProposalLifecycleSnapshot(int epoch) throws RocksDBException {
+        return db.get(cfState, epochSnapshotKey(PREFIX_PROPOSAL_SNAPSHOT, epoch)) != null;
+    }
+
+    public boolean hasDRepDistributionSnapshot(int epoch) throws RocksDBException {
+        return db.get(cfState, epochSnapshotKey(PREFIX_DREP_DIST_SNAPSHOT, epoch)) != null;
+    }
+
+    private void storeSnapshotMarker(byte prefix, int epoch, WriteBatch batch,
+                                     List<DeltaOp> deltaOps) throws RocksDBException {
+        byte[] key = epochSnapshotKey(prefix, epoch);
+        byte[] prev = db.get(cfState, key);
+        batch.put(cfState, key, new byte[]{1});
+        deltaOps.add(new DeltaOp(OP_PUT, key, prev));
     }
 
     public Map<CredentialKey, BigInteger> getDRepDistribution(int epoch) throws RocksDBException {

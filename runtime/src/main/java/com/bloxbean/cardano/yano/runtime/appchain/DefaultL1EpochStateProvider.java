@@ -109,14 +109,26 @@ public final class DefaultL1EpochStateProvider implements L1EpochStateProvider {
             requireStakeEpoch(epoch);
             historical.forEachStakeEntry(Math.toIntExact(epoch), consumer::accept);
         }
-        @Override public boolean hasProposalStatusSnapshot(long epoch) { requireOpen(); return false; }
-        @Override public boolean hasDRepDistributionSnapshot(long epoch) { requireOpen(); return false; }
+        @Override public boolean hasProposalStatusSnapshot(long epoch) {
+            requireOpen();
+            requireGovernanceEpoch(epoch);
+            return historical.hasProposalStatusSnapshot(Math.toIntExact(epoch));
+        }
+        @Override public boolean hasDRepDistributionSnapshot(long epoch) {
+            requireOpen();
+            requireGovernanceEpoch(epoch);
+            return historical.hasDRepDistributionSnapshot(Math.toIntExact(epoch));
+        }
         @Override public void forEachProposalStatus(long epoch, ProposalStatusConsumer consumer) {
-            requireOpen(); throw new UnsupportedOperationException("epoch-governance is not enabled yet");
+            requireOpen();
+            requireGovernanceEpoch(epoch);
+            historical.forEachProposalStatus(Math.toIntExact(epoch), consumer::accept);
         }
         @Override public void forEachDRepDistributionEntry(long epoch,
                                                            DRepDistributionConsumer consumer) {
-            requireOpen(); throw new UnsupportedOperationException("epoch-governance is not enabled yet");
+            requireOpen();
+            requireGovernanceEpoch(epoch);
+            historical.forEachDRepDistributionEntry(Math.toIntExact(epoch), consumer::accept);
         }
         @Override public void close() {
             if (!closed) {
@@ -127,6 +139,11 @@ public final class DefaultL1EpochStateProvider implements L1EpochStateProvider {
         private void requireStakeEpoch(long epoch) {
             if (epoch != boundary.previousEpoch()) {
                 throw new IllegalArgumentException("Stake snapshot is not boundary-pinned");
+            }
+        }
+        private void requireGovernanceEpoch(long epoch) {
+            if (epoch != boundary.newEpoch()) {
+                throw new IllegalArgumentException("Governance snapshot is not boundary-pinned");
             }
         }
         private void requireOpen() {
