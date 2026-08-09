@@ -262,7 +262,7 @@ public final class PluginCatalogInspector {
         return switch (kind) {
             case NODE_PLUGIN -> PluginTrustTier.REQUIRED;
             case APP_STATE_MACHINE, AUTHENTICATED_MAP_VALIDATOR,
-                    SEQUENCER_MODE, L1_OBSERVER ->
+                    SEQUENCER_MODE, L1_OBSERVER, L1_EPOCH_OBSERVER ->
                     PluginTrustTier.CONSENSUS;
             case SIGNER_PROVIDER, EFFECT_EXECUTOR, DOMAIN_API ->
                     PluginTrustTier.PRIVILEGED_LOCAL;

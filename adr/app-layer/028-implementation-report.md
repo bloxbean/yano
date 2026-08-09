@@ -39,3 +39,39 @@ Verification:
 One unrelated HTTP direct-connection test could not acquire a local socket while the workstation's ephemeral
 port range was exhausted by pre-existing long-running Gradle jobs. Its neighboring proof suite passed and this
 environmental test will be rerun during later milestone/full-build qualification after the sockets age out.
+
+## M2 — asynchronous epoch observation foundation
+
+Status: complete
+
+Implemented:
+
+- added the narrow `L1EpochObserver`, provider, boundary, manifest, sink, and epoch-pinned state SPIs;
+- added catalog discovery, legacy ServiceLoader discovery, trust-tier enforcement, and guarded plugin facades for
+  the new contribution kind;
+- added `l1.epoch-stability-depth`, defaulting to the ordinary L1 stability depth, and committed it in consensus
+  profile v2 so members cannot run different epoch-finality policies;
+- integrated a dedicated single-threaded coordinator whose block callback performs only epoch arithmetic,
+  atomic bookkeeping, and a coalesced wake-up;
+- added a byte-bounded RocksDB spool with `GENERATING -> READY -> OFFERED -> FINALIZED` records, exact canonical
+  verification indexes, rollback invalidation, restart recovery, and fail-closed voting health;
+- bounded injection to one outstanding record per job and made finalization acknowledgement advance the next
+  record, preserving records on non-proposers for independent verification;
+- added hard startup gates for a persistent source, retained snapshots, disabled app-block pruning, and positive
+  block-depth stability.
+
+Review and iteration:
+
+- a stress test found that repeated coalesced wake-ups could offer later chunks before the first offered chunk was
+  finalized. The spool now refuses another offer while any record in that job is `OFFERED`.
+- wake-up reconciliation now uses a monotonic generation counter, closing the small end-of-run lost-wake window.
+- proposal handling checks source health both before execution and immediately before persisting a vote lock;
+  a source failure therefore cannot silently produce a threshold vote.
+
+Verification:
+
+- synthetic two-member generation produces byte-identical canonical observations;
+- publisher latency remains independent of a deliberately blocked observer callback;
+- restart re-offers the same unacknowledged record, and acknowledgement advances exactly one chunk;
+- proposer rotation preserves verification records and begins offering only after the member becomes proposer;
+- complete `:core-api:test`, `:appchain-config:test`, `:plugin-catalog:test`, and `:runtime:test` suites pass.

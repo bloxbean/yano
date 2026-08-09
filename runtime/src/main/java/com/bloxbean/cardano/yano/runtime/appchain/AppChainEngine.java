@@ -23,6 +23,7 @@ import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -99,6 +100,8 @@ final class AppChainEngine implements AutoCloseable {
     private volatile L1RefValidator l1RefValidator;
     /** Follower-side check of proposed ~l1/* observations (008.4 I3.2); null = accept. */
     private volatile ObservationValidator observationValidator;
+    /** Fail-closed readiness gate for deterministic external inputs used while voting. */
+    private volatile BooleanSupplier votingHealth = () -> true;
     /** Proposals deferred because their l1-ref is ahead of the local L1 view: id → first deferral time. */
     private final Map<String, Long> deferredProposals = new HashMap<>();
 
@@ -127,7 +130,7 @@ final class AppChainEngine implements AutoCloseable {
      * verdict semantics as {@link L1RefValidator}.
      */
     interface ObservationValidator {
-        L1RefVerdict check(SequencedL1Observation observation);
+        L1RefVerdict check(SequencedL1Observation observation, boolean historicalCatchUp);
     }
 
     void setL1RefSupplier(java.util.function.Supplier<L1Ref> supplier) {
@@ -140,6 +143,10 @@ final class AppChainEngine implements AutoCloseable {
 
     void setObservationValidator(ObservationValidator validator) {
         this.observationValidator = validator;
+    }
+
+    void setVotingHealth(BooleanSupplier votingHealth) {
+        this.votingHealth = Objects.requireNonNull(votingHealth, "votingHealth");
     }
 
     AppChainEngine(AppChainConfig config,
@@ -473,6 +480,9 @@ final class AppChainEngine implements AutoCloseable {
 
     private void doProposeTick() {
         try {
+            if (!votingHealthy()) {
+                return;
+            }
             if (pendingRound != null) {
                 if (System.currentTimeMillis() - pendingRound.startedAt > roundTimeoutMs) {
                     log.warn("App-chain round at height {} timed out ({} of {} votes)",
@@ -748,6 +758,10 @@ final class AppChainEngine implements AutoCloseable {
             deferProposal(envelope, block, "ahead of local tip (expected " + expectedHeight + ")");
             return;
         }
+        if (!votingHealthy()) {
+            deferProposal(envelope, block, "external observation source is unhealthy");
+            return;
+        }
         if (pendingRound != null
                 && Arrays.equals(pendingRound.blockHash, AppBlockCodec.blockHash(block))) {
             return; // already tracking this exact round (own proposal / re-gossip echo)
@@ -838,6 +852,12 @@ final class AppChainEngine implements AutoCloseable {
             return;
         }
 
+        if (!votingHealthy()) {
+            applied.close();
+            deferProposal(envelope, block, "external observation source became unhealthy");
+            return;
+        }
+
         PendingRound round = publishPendingRound(block, blockHash, applied);
         try {
             ledger.putVoteLock(block.height(), blockHash);
@@ -865,6 +885,17 @@ final class AppChainEngine implements AutoCloseable {
                 throw runtime;
             }
             throw new IllegalStateException("Failed to handle app-chain proposal", failure);
+        }
+    }
+
+    private boolean votingHealthy() {
+        try {
+            return votingHealth.getAsBoolean();
+        } catch (Throwable failure) {
+            log.warn("Voting health check failed closed (errorType={})",
+                    callbackFailureType(failure));
+            rethrowIfJvmFatal(failure);
+            return false;
         }
     }
 
@@ -1377,6 +1408,7 @@ final class AppChainEngine implements AutoCloseable {
     ) {
         AppBlock block = executionContext.block();
         ObservationValidator validator = observationValidator;
+        Set<String> observationIdentities = new HashSet<>();
         for (SequencedL1Observation sequenced : executionContext.l1Observations()) {
             AppMessage message = block.messages().get(sequenced.originalMessageIndex());
             if (validator == null) {
@@ -1389,6 +1421,14 @@ final class AppChainEngine implements AutoCloseable {
             // l1-ref slot — a fact may only finalize once it is stability-deep
             // (the app chain never rolls back). Fail-closed on undecodable.
             var observation = sequenced.observation();
+            String observationIdentity = HexUtil.encodeHexString(
+                    com.bloxbean.cardano.client.crypto.Blake2bUtil.blake2bHash256(
+                            observation.encode()));
+            if (!observationIdentities.add(observationIdentity)) {
+                log.warn("Proposal at height {} repeats the same L1 observation — rejecting",
+                        block.height());
+                return false;
+            }
             if (observation.slot() > block.l1Slot()) {
                 log.warn("Proposal observation {} at height {} is undecodable or not yet "
                         + "stability-deep (obs slot {} > block l1-ref {}) — rejecting",
@@ -1397,7 +1437,7 @@ final class AppChainEngine implements AutoCloseable {
                 deferredProposals.remove(envelope.getMessageIdHex());
                 return false;
             }
-            L1RefVerdict verdict = validator.check(sequenced);
+            L1RefVerdict verdict = validator.check(sequenced, false);
             switch (verdict) {
                 case OK, UNKNOWN -> { /* verified, or below window: chain vouches */ }
                 case MISMATCH -> {
@@ -1451,7 +1491,7 @@ final class AppChainEngine implements AutoCloseable {
                         + "l1-ref — rejecting", message.getMessageIdHex(), block.height());
                 return false;
             }
-            L1RefVerdict verdict = validator.check(sequenced);
+            L1RefVerdict verdict = validator.check(sequenced, true);
             if (verdict == L1RefVerdict.MISMATCH) {
                 log.warn("Catch-up observation {} does not match our own L1 recomputation at height {} "
                         + "— rejecting", message.getMessageIdHex(), block.height());

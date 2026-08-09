@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.catalog;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
 import com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValueValidatorFactory;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochObserverProvider;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider;
 import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerModeProvider;
 import com.bloxbean.cardano.yano.api.appchain.signer.SignerProviderFactory;
@@ -27,6 +28,8 @@ public enum ContributionKind {
     SEQUENCER_MODE("sequencer-mode", SequencerModeProvider.class, false),
     /** App-chain L1 observation provider. */
     L1_OBSERVER("l1-observer", L1ObserverProvider.class, false),
+    /** App-chain epoch-boundary L1 observation provider. */
+    L1_EPOCH_OBSERVER("l1-epoch-observer", L1EpochObserverProvider.class, false),
     /** Local signer provider factory. */
     SIGNER_PROVIDER("signer-provider", SignerProviderFactory.class, false),
     /** Local app-effect executor factory. */

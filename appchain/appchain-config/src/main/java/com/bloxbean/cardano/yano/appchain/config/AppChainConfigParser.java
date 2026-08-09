@@ -25,7 +25,7 @@ public final class AppChainConfigParser {
             "anchor.max-interval-minutes", "anchor.metadata-label",
             "anchor.validity-slots", "anchor.fallback-fee-lovelace",
             "anchor.mode", "anchor.script.validator", "anchor.script.thread-policy",
-            "l1.stability-depth", "webhooks", "retention.enabled",
+            "l1.stability-depth", "l1.epoch-stability-depth", "webhooks", "retention.enabled",
             "retention.keep-blocks", "pool.max-messages",
             "message.enforce-sender-seq");
 
@@ -138,6 +138,8 @@ public final class AppChainConfigParser {
                                         stringOf(settings.get("anchor.script.thread-policy"), "")))
                         : null,
                 (int) parseLong(settings.get("l1.stability-depth"), 0),
+                (int) parseLong(settings.get("l1.epoch-stability-depth"),
+                        parseLong(settings.get("l1.stability-depth"), 0)),
                 webhookUrls,
                 booleanOf(settings.get("retention.enabled"), false),
                 (int) parseLong(settings.get("retention.keep-blocks"), 0),

@@ -64,7 +64,8 @@ class AppChainEngineIdentityValidationTest {
                 new MemberGroup(members, 1),
                 new AlwaysSequencer(), 60_000, 10, config.blockMaxBytes(),
                 (topic, body) -> null, logger);
-        engine.setObservationValidator(message -> AppChainEngine.L1RefVerdict.UNKNOWN);
+        engine.setObservationValidator((message, historical) ->
+                AppChainEngine.L1RefVerdict.UNKNOWN);
         try {
             AppBlock wrongChain = block(AppBlock.BLOCK_VERSION, FOREIGN_CHAIN,
                     List.of(), signer.publicKey());

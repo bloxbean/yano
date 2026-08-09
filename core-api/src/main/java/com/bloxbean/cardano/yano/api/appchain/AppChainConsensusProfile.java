@@ -25,6 +25,7 @@ public record AppChainConsensusProfile(
         int maxBlockMessages,
         long maxBlockBytes,
         int l1StabilityDepth,
+        int epochStabilityDepth,
         boolean enforceSenderSeq,
         boolean effectsEnabled,
         int effectsMaxPerBlock,
@@ -36,12 +37,13 @@ public record AppChainConsensusProfile(
         boolean effectsStrictReservedPrefix,
         List<String> effectResultSigners
 ) {
-    public static final int SCHEMA_VERSION = 1;
+    public static final int SCHEMA_VERSION = 2;
     private static final Pattern MEMBER_KEY = Pattern.compile("[0-9a-f]{64}");
 
     public AppChainConsensusProfile {
         if (schemaVersion != SCHEMA_VERSION) {
-            throw new IllegalArgumentException("consensus profile schemaVersion must be 1");
+            throw new IllegalArgumentException("consensus profile schemaVersion must be "
+                    + SCHEMA_VERSION);
         }
         if (maxMessageBytes <= 0 || maxMessageBytes > AppChainConfig.MAX_MESSAGE_BYTES) {
             throw new IllegalArgumentException("maxMessageBytes is outside the app-chain v1 profile");
@@ -61,6 +63,9 @@ public record AppChainConsensusProfile(
         }
         if (l1StabilityDepth < 0) {
             throw new IllegalArgumentException("l1StabilityDepth must be nonnegative");
+        }
+        if (epochStabilityDepth < 0) {
+            throw new IllegalArgumentException("epochStabilityDepth must be nonnegative");
         }
         effectsDefaultGate = Objects.requireNonNull(effectsDefaultGate, "effectsDefaultGate");
         if (effectsDefaultGate == FinalityGate.CHAIN_DEFAULT) {

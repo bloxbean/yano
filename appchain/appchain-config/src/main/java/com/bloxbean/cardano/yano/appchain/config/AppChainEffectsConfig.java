@@ -103,7 +103,8 @@ public record AppChainEffectsConfig(
         return new AppChainConsensusProfile(
                 AppChainConsensusProfile.SCHEMA_VERSION,
                 config.maxMessageBytes(), config.maxBlockMessages(), config.blockMaxBytes(),
-                config.l1StabilityDepth(), config.enforceSenderSeq(), enabled, maxPerBlock,
+                config.l1StabilityDepth(), config.epochStabilityDepth(),
+                config.enforceSenderSeq(), enabled, maxPerBlock,
                 maxPayloadBytes, maxExpiryBlocks, resultWindowBlocks, defaultGate,
                 outcomeCommitment, strictReservedPrefix,
                 resultSigners.stream().sorted().toList());

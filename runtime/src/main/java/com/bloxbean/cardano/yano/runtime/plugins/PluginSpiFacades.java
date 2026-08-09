@@ -23,6 +23,12 @@ import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectExecutorOperationalSnapshot;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
 import com.bloxbean.cardano.yano.api.appchain.effects.PendingEffect;
+import com.bloxbean.cardano.yano.api.appchain.l1view.EpochObservationManifest;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochBoundary;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochObservationSink;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochObserver;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochObserverProvider;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochState;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observer;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider;
@@ -371,6 +377,9 @@ final class PluginSpiFacades {
                     products, callbacks);
             case L1_OBSERVER -> new ObserverProviderFacade(
                     (L1ObserverProvider) delegate, effectiveLoader, activation,
+                    products, callbacks);
+            case L1_EPOCH_OBSERVER -> new EpochObserverProviderFacade(
+                    (L1EpochObserverProvider) delegate, effectiveLoader, activation,
                     products, callbacks);
             case SIGNER_PROVIDER -> new SignerFactoryFacade(
                     (SignerProviderFactory) delegate, effectiveLoader, activation,
@@ -1412,6 +1421,114 @@ final class PluginSpiFacades {
                         value, observer -> new ObserverFacade(
                                 observer, observerId, loader, activation, callbacks));
             }));
+        }
+    }
+
+    private record EpochObserverProviderFacade(
+            L1EpochObserverProvider delegate,
+            ClassLoader loader,
+            ActivationContext activation,
+            ProductReservations products,
+            CallbackTracker callbacks
+    ) implements L1EpochObserverProvider {
+        private EpochObserverProviderFacade {
+            Objects.requireNonNull(delegate, "delegate");
+        }
+
+        @Override
+        public String type() {
+            return pluginCall(callbacks, loader, delegate::type);
+        }
+
+        @Override
+        public L1EpochObserver create(String observerId, Map<String, String> settings) {
+            return activation.call("create L1-epoch-observer product", () -> callbacks.call(() -> {
+                L1EpochObserver value = PluginThreadContext.call(
+                        loader, () -> delegate.create(observerId, settings));
+                return products.facadeForNewInvocation(
+                        value, observer -> new EpochObserverFacade(
+                                observer, observerId, loader, activation, callbacks));
+            }));
+        }
+    }
+
+    private record EpochObserverFacade(
+            L1EpochObserver delegate,
+            String configuredObserverId,
+            ClassLoader loader,
+            ActivationContext activation,
+            CallbackTracker callbacks
+    ) implements L1EpochObserver {
+        private static final int MAX_EPOCH_CHUNKS = 1_000_000;
+
+        private EpochObserverFacade {
+            Objects.requireNonNull(delegate, "delegate");
+        }
+
+        @Override
+        public String observerId() {
+            return activation.call("identify L1-epoch-observer product", () -> {
+                String actual = pluginCall(callbacks, loader, delegate::observerId);
+                if (!Objects.equals(configuredObserverId, actual)) {
+                    throw new IllegalStateException(
+                            "L1-epoch-observer product id does not match configured id");
+                }
+                return actual;
+            });
+        }
+
+        @Override
+        public EpochObservationManifest prepare(
+                L1EpochBoundary boundary,
+                L1EpochState state
+        ) {
+            Objects.requireNonNull(boundary, "boundary");
+            Objects.requireNonNull(state, "state");
+            EpochObservationManifest manifest = activation.call(
+                    "prepare L1 epoch observations", () -> pluginCall(
+                            callbacks, loader, () -> delegate.prepare(boundary, state)));
+            Objects.requireNonNull(manifest, "L1 epoch manifest must not be null");
+            if (!configuredObserverId.equals(manifest.observerId())
+                    || manifest.previousEpoch() != boundary.previousEpoch()
+                    || manifest.newEpoch() != boundary.newEpoch()
+                    || manifest.chunkCount() > MAX_EPOCH_CHUNKS) {
+                throw new IllegalArgumentException(
+                        "L1 epoch manifest does not match the configured boundary");
+            }
+            return manifest;
+        }
+
+        @Override
+        public void writeObservations(
+                EpochObservationManifest manifest,
+                L1EpochState state,
+                L1EpochObservationSink sink
+        ) {
+            Objects.requireNonNull(manifest, "manifest");
+            Objects.requireNonNull(state, "state");
+            Objects.requireNonNull(sink, "sink");
+            if (!configuredObserverId.equals(manifest.observerId())) {
+                throw new IllegalArgumentException("L1 epoch manifest observer does not match");
+            }
+            activation.run("write L1 epoch observations", () -> pluginRun(
+                    callbacks, loader, () -> delegate.writeObservations(
+                            manifest, state, (index, claim) -> {
+                                byte[] snapshot = Objects.requireNonNull(
+                                        claim, "L1 epoch claim must not be null").clone();
+                                if (snapshot.length > MAX_OBSERVATION_CLAIM_BYTES) {
+                                    throw new IllegalArgumentException(
+                                            "L1 epoch claim exceeds the message claim bound");
+                                }
+                                sink.write(index, snapshot);
+                            })));
+        }
+
+        @Override
+        public Map<String, Object> status() {
+            return activation.call("read L1-epoch-observer product status", () ->
+                    callbacks.call(() -> snapshotMap(
+                            PluginThreadContext.call(loader, delegate::status),
+                            loader, callbacks)));
         }
     }
 
