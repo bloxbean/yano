@@ -281,6 +281,11 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
     // --- Optional subsystem wiring ---
 
+    /** Number of epoch snapshots retained by this store. */
+    public int snapshotRetentionEpochs() {
+        return snapshotRetentionEpochs;
+    }
+
     /**
      * Set the UtxoState reference for UTXO balance aggregation at epoch boundary.
      * Must be called before epoch snapshots with amounts are needed.

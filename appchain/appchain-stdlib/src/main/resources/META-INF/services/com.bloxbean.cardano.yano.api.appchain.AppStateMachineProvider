@@ -3,3 +3,4 @@ com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders$KvRegistry
 com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders$ApprovalsProvider
 com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders$BalancesProvider
 com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders$DocTrailProvider
+com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders$EpochParamsProvider

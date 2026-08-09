@@ -1,0 +1,109 @@
+package com.bloxbean.cardano.yano.runtime.appchain;
+
+import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
+import com.bloxbean.cardano.yaci.core.storage.ChainState;
+import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import com.bloxbean.cardano.yano.api.EpochParamProvider;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochBoundary;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochState;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochStateProvider;
+import com.bloxbean.cardano.yano.api.appchain.l1view.ProtocolParamsCanonicalCodec;
+import com.bloxbean.cardano.yano.api.appchain.l1view.ProtocolParamsView;
+import com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore;
+import com.bloxbean.cardano.yano.ledgerstate.EpochBoundaryProcessor;
+
+import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
+
+/** RocksDB-backed, epoch-pinned L1 view used by ADR-028 observers. */
+public final class DefaultL1EpochStateProvider implements L1EpochStateProvider {
+    private final DefaultAccountStateStore store;
+    private final ChainState chainState;
+    private final EpochParamProvider epochParams;
+
+    public DefaultL1EpochStateProvider(DefaultAccountStateStore store,
+                                       ChainState chainState,
+                                       EpochParamProvider epochParams) {
+        this.store = Objects.requireNonNull(store, "store");
+        this.chainState = Objects.requireNonNull(chainState, "chainState");
+        this.epochParams = Objects.requireNonNull(epochParams, "epochParams");
+    }
+
+    @Override public boolean persistent() { return store.isEnabled(); }
+    @Override public int snapshotRetentionEpochs() { return store.snapshotRetentionEpochs(); }
+    @Override public long epochAtSlot(long slot) {
+        return epochParams.getEpochSlotCalc().slotToEpoch(slot);
+    }
+
+    @Override
+    public List<L1EpochBoundary> completedBoundaries(long afterNewEpoch, int limit) {
+        if (limit <= 0) return List.of();
+        int[] state = store.getLastBoundaryState();
+        if (state == null || state[1] < EpochBoundaryProcessor.STEP_COMPLETE
+                || state[0] <= afterNewEpoch || state[0] <= 0) {
+            return List.of();
+        }
+        long newEpoch = state[0];
+        long startSlot = epochParams.getEpochSlotCalc().epochToStartSlot((int) newEpoch);
+        Point point = chainState.findNextBlock(new Point(Math.max(0, startSlot - 1), null));
+        if (point == null || epochAtSlot(point.getSlot()) != newEpoch) {
+            return List.of();
+        }
+        Long blockNumber = chainState.getBlockNumberBySlot(point.getSlot());
+        if (blockNumber == null || point.getHash() == null) return List.of();
+        byte[] hash = HexUtil.decodeHexString(point.getHash());
+        if (hash.length != 32) return List.of();
+        return List.of(new L1EpochBoundary(newEpoch - 1, newEpoch,
+                point.getSlot(), hash, blockNumber));
+    }
+
+    @Override
+    public Optional<L1EpochState> open(L1EpochBoundary boundary) {
+        if (store.getBoundaryStep(Math.toIntExact(boundary.newEpoch()))
+                < EpochBoundaryProcessor.STEP_COMPLETE) {
+            return Optional.empty();
+        }
+        return Optional.of(new State(boundary));
+    }
+
+    private final class State implements L1EpochState {
+        private final L1EpochBoundary boundary;
+        private boolean closed;
+
+        private State(L1EpochBoundary boundary) { this.boundary = boundary; }
+        @Override public long previousEpoch() { requireOpen(); return boundary.previousEpoch(); }
+        @Override public long newEpoch() { requireOpen(); return boundary.newEpoch(); }
+
+        @Override
+        public ProtocolParamsView protocolParams(long effectiveEpoch) {
+            requireOpen();
+            if (effectiveEpoch != boundary.newEpoch()) {
+                throw new IllegalArgumentException("Protocol parameters are not boundary-pinned");
+            }
+            var snapshot = store.getProtocolParameters(Math.toIntExact(effectiveEpoch))
+                    .orElseThrow(() -> new IllegalStateException(
+                            "Protocol parameters unavailable for epoch " + effectiveEpoch));
+            return new ProtocolParamsView(effectiveEpoch,
+                    ProtocolParamsCanonicalCodec.encode(snapshot));
+        }
+
+        @Override public boolean hasStakeSnapshot(long epoch) { requireOpen(); return false; }
+        @Override public void forEachStakeEntry(long epoch, StakeEntryConsumer consumer) {
+            requireOpen(); throw new UnsupportedOperationException("epoch-stake is not enabled yet");
+        }
+        @Override public boolean hasProposalStatusSnapshot(long epoch) { requireOpen(); return false; }
+        @Override public boolean hasDRepDistributionSnapshot(long epoch) { requireOpen(); return false; }
+        @Override public void forEachProposalStatus(long epoch, ProposalStatusConsumer consumer) {
+            requireOpen(); throw new UnsupportedOperationException("epoch-governance is not enabled yet");
+        }
+        @Override public void forEachDRepDistributionEntry(long epoch,
+                                                           DRepDistributionConsumer consumer) {
+            requireOpen(); throw new UnsupportedOperationException("epoch-governance is not enabled yet");
+        }
+        @Override public void close() { closed = true; }
+        private void requireOpen() {
+            if (closed) throw new IllegalStateException("L1 epoch state handle is closed");
+        }
+    }
+}
