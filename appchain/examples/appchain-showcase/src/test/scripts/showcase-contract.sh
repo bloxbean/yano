@@ -382,6 +382,12 @@ jq -e '.network == "preprod" and (.chainIds | length) == 12
   "$ROOT/data/showcase/light-preprod/showcase-identity.json" >/dev/null
 ! grep -q 'chain-id: "payment-chain-settlement"' \
   "$ROOT/yano/config/application-appchain.yml"
+python3 - "$ROOT/yano/config/application-appchain.yml" <<'PY'
+import pathlib,re,sys
+config = pathlib.Path(sys.argv[1]).read_text()
+indexes = [int(value) for value in re.findall(r'^    chains\[(\d+)]\s*:', config, re.MULTILINE)]
+assert indexes == list(range(12)), indexes
+PY
 
 # The production settlement ConfigBlock has nested observer/indexer chain-id
 # fields. Adoption validates only declarations directly under chains[n], so a
@@ -424,6 +430,8 @@ config = pathlib.Path(sys.argv[1]).read_text()
 actual = re.findall(r'^ {6}chain-id:\s*["\']?([^"\'\s]+)', config, re.MULTILINE)
 expected = [row['chainId'] for row in json.loads(pathlib.Path(sys.argv[2]).read_text())['chains']]
 assert actual == expected, (actual, expected)
+indexes = [int(value) for value in re.findall(r'^    chains\[(\d+)]\s*:', config, re.MULTILINE)]
+assert indexes == list(range(len(expected))), indexes
 PY
 
 # Product installation and chain activation are independent: disabling the
