@@ -43,7 +43,10 @@ public final class AppChainConfigParser {
                     StateCommitmentIdentity.PROFILE_SETTING,
                     StateCommitmentIdentity.FINGERPRINT_SETTING,
                     StateCommitmentIdentity.GENESIS_ID_SETTING,
-                    StateCommitmentIdentity.L1_PROOF_REQUIRED_SETTING));
+                    StateCommitmentIdentity.L1_PROOF_REQUIRED_SETTING,
+                    "state.proof-pruning.enabled",
+                    "state.proof-pruning.retain-heights",
+                    "state.proof-pruning.interval-seconds"));
 
     private AppChainConfigParser() {
     }

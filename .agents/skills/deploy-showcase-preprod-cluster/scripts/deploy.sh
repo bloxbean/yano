@@ -10,12 +10,14 @@ SOURCE_KEYS="/Users/satya/Downloads/yano-cluster/keys"
 SKIP_BUILD=false
 CONFIRM_PUBLIC=false
 SMOKE=false
+CARDANO_HISTORY_PILOT=false
 
 usage() {
   cat <<'EOF'
 Usage: deploy.sh [--repo PATH] [--target PATH] [--instance NAME]
                  [--chainstate PATH] [--keys PATH] [--skip-build]
                  [--confirm-public-preprod] [--smoke]
+                 [--cardano-history-pilot]
 
 A fresh deployment requires --confirm-public-preprod. An existing deployment
 is resumed and validated without replacing retained data or identity.
@@ -32,6 +34,7 @@ while [ "$#" -gt 0 ]; do
     --skip-build) SKIP_BUILD=true; shift;;
     --confirm-public-preprod) CONFIRM_PUBLIC=true; shift;;
     --smoke) SMOKE=true; shift;;
+    --cardano-history-pilot) CARDANO_HISTORY_PILOT=true; shift;;
     -h|--help) usage; exit 0;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 64;;
   esac
@@ -163,7 +166,15 @@ python3 "$SCRIPT_DIR/adopt_settlement_config.py" \
 ./showcase.sh stop --instance "$BOOTSTRAP_INSTANCE"
 ./showcase.sh reset --instance "$BOOTSTRAP_INSTANCE" --yes
 
-# Create the final twelve-chain deployment from a clean app-chain generation.
+if [ "$CARDANO_HISTORY_PILOT" = true ]; then
+  python3 "$SCRIPT_DIR/add_cardano_history_pilot.py" \
+    yano/config/application-appchain.yml \
+    catalog/showcase-catalog-v1.json \
+    tools/showcase_catalog.py
+fi
+
+# Create the final deployment from a clean app-chain generation. The optional
+# ADR-028 qualification chain is added before identity materialization.
 ./showcase.sh prepare --profile light --network preprod --nodes 3 \
   --instance "$INSTANCE" --http-base 17070 --server-base 17337 \
   --anchor-chain all --anchor-key-file "$PWD/private-anchor/anchor.seed" \

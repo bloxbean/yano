@@ -26,6 +26,10 @@ validation separate from fresh deployment or smoke traffic.
      --confirm-public-preprod --smoke
    ```
 
+   Add `--cardano-history-pilot` for the ADR-028 qualification deployment. It
+   materializes a fresh thirteenth MPF chain, reconciles ten retained epoch
+   boundaries, and leaves experimental MPF pruning disabled by default.
+
 5. The script never replaces an existing target. If a clean redeploy is
    requested, move the old deployment to a reviewed backup path or select a new
    `--target`; do not delete it implicitly.
@@ -44,8 +48,10 @@ validation separate from fresh deployment or smoke traffic.
 
 The script uses a disposable bootstrap instance to deploy the operator-specific
 production settlement identity, adopts its generated config block at the
-catalog position, then creates the final twelve-chain app-chain generation
-from scratch. It makes three independent APFS clone-on-write L1 stores while
+catalog position, then creates the final app-chain generation from scratch.
+The default has twelve chains; `--cardano-history-pilot` adds the ADR-028
+thirteenth chain before identity materialization. It makes three independent
+APFS clone-on-write L1 stores while
 excluding any legacy `chainstate/appchains` content and copies keys with
 owner-only permissions. No app-chain state or identity is migrated from the
 bootstrap instance. Each final node must expose sibling `chainstate`,

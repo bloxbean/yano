@@ -281,6 +281,18 @@ public final class AppChainPropertyRegistry {
                 PropertyType.BOOLEAN, "false", PropertyScope.CONSENSUS_SHARED,
                 ChangePolicy.NEW_CHAIN_REQUIRED, true,
                 "Require an MPF commitment profile consumable by L1 validators"));
+        definitions.add(plain(YanoPropertyKeys.AppChain.STATE_PROOF_PRUNING_ENABLED,
+                PropertyType.BOOLEAN, "false", PropertyScope.NODE_LOCAL,
+                ChangePolicy.RESTART_REQUIRED, true,
+                "Opt in to experimental MPF reachability pruning"));
+        definitions.add(bounded(YanoPropertyKeys.AppChain.STATE_PROOF_PRUNING_RETAIN_HEIGHTS,
+                PropertyType.LONG, "10000", 1L, null, PropertyScope.NODE_LOCAL,
+                ChangePolicy.RESTART_REQUIRED,
+                "Contiguous finalized-height horizon retained for proof generation"));
+        definitions.add(bounded(YanoPropertyKeys.AppChain.STATE_PROOF_PRUNING_INTERVAL_SECONDS,
+                PropertyType.LONG, "3600", 1L, null, PropertyScope.NODE_LOCAL,
+                ChangePolicy.RESTART_REQUIRED,
+                "Interval between experimental MPF pruning passes"));
         definitions.add(plain(YanoPropertyKeys.AppChain.ANCHOR_ENABLED, PropertyType.BOOLEAN,
                 "false", PropertyScope.CONSENSUS_SHARED, ChangePolicy.GOVERNED_ACTIVATION, true,
                 "Enable Cardano L1 anchoring"));

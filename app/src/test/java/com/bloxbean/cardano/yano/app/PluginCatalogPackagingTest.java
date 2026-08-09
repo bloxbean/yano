@@ -350,7 +350,8 @@ class PluginCatalogPackagingTest {
                             "com.bloxbean.cardano.yano.appchain.role-workflow"),
                     environment.selectedBundleIds());
             assertEquals(Set.of("approvals", "authenticated-map", "balances",
-                            "doc-trail", "kv-registry", "role-approvals"),
+                            "doc-trail", "epoch-governance", "epoch-params", "epoch-stake",
+                            "kv-registry", "role-approvals"),
                     Set.copyOf(environment.providers().names(AppStateMachineProvider.class)));
             assertTrue(environment.providers().names(FinalizedStreamSinkFactory.class).isEmpty());
             assertTrue(environment.providers().names(AppEffectExecutorFactory.class).isEmpty());

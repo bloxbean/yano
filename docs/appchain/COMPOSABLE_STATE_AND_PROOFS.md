@@ -91,6 +91,24 @@ Classic `jmt-blake2b256-v1` is an off-chain proof profile. Its versioned proofs 
 watermark are supported by the client, but configuration rejects it when
 `state.l1-proof-consumption-required=true`.
 
+MPF reachability pruning is available as an experimental node-local policy. It is disabled by
+default and does not change the commitment identity:
+
+```yaml
+state:
+  proof-pruning:
+    enabled: false
+    retain-heights: 10000
+    interval-seconds: 3600
+```
+
+When enabled, the node retains every root in the configured contiguous height horizon, advances
+`oldestProvableHeight` before destructive work, verifies each retained root after the sweep, and
+compacts the MPF column family. A failure disables further pruning for that runtime generation and
+is reported under `stateCommitment.proofPruning`; consensus continues. Cardano History is
+append-only, so a recent retained root still proves facts from older epochs even when the node no
+longer generates a proof against an older anchor height. Already-issued proofs remain verifiable.
+
 ## MPF proof verification in a Cardano validator
 
 The on-chain path is intentionally MPF-specific:
