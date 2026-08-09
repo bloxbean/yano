@@ -6,7 +6,8 @@ const IDENTIFIER = /^[0-9a-f]{64}$/;
 const OUTPOINT = /^([0-9a-f]{64})#([0-9]|[1-9][0-9]{0,4})$/;
 
 export function isEutxoChain(status: AppChainStatus | null): boolean {
-  return status?.stateMachine === EUTXO_STATE_MACHINE_ID;
+  return status?.capabilityManifest?.components.some(
+    (component) => component.id === EUTXO_STATE_MACHINE_ID) === true;
 }
 
 export function canonicalEutxoIdentifier(value: string): string {

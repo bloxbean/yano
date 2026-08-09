@@ -6,8 +6,15 @@ import {
 
 describe('EUTxO console model', () => {
   it('recognizes only the bundled EUTxO state machine', () => {
-    expect(isEutxoChain({ stateMachine: 'eutxo-ledger' })).toBe(true);
-    expect(isEutxoChain({ stateMachine: 'ordered-log' })).toBe(false);
+    const manifest = {
+      schemaVersion: 1, applicationId: 'eutxo-ledger', applicationVersion: '1',
+      manifestDigest: 'aa'.repeat(32),
+      components: [{ id: 'eutxo-ledger', version: '1', configurationId: 'demo',
+        stateNamespace: 'application/v1', topics: [], querySubjects: [], origin: 'INTRINSIC' as const }],
+      workflows: [], crossCutting: [], proofSubjects: []
+    };
+    expect(isEutxoChain({ stateMachine: 'custom', capabilityManifest: manifest })).toBe(true);
+    expect(isEutxoChain({ stateMachine: 'eutxo-ledger' })).toBe(false);
     expect(isEutxoChain(null)).toBe(false);
   });
 

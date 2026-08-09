@@ -11,9 +11,9 @@ MPF proofs, plugins, effects, and Cardano anchoring. The light showcase
 assembles existing capabilities through one `AppStateMachine` contract. Its
 three deliberate business compositions are orders + approval + effects,
 documents + roles + approval, and authenticated map + direct role/approval.
-The current light distribution directly contains the first and third; ADR-033
-adds the lean `document-review-chain` form of the already proven role-evidence
-reuse path. It does not introduce another consensus implementation.”
+All three are present in the light catalog. `document-review-chain` is the lean
+form of the proven role-evidence reuse path and does not introduce another
+consensus or approval implementation.”
 
 Also explain that `payment-chain-settlement` starts in the default light
 profile. It demonstrates L1 observers and settlement effects, but it does not
@@ -43,6 +43,7 @@ converged roots, and prints the UI URL.
 Expected checkpoints:
 
 - all three nodes become ready;
+- all twelve catalog chains expose deterministic capability manifests;
 - every named chain reports the same root on all nodes;
 - opaque, canonical-CBOR, schema-validated, and plugin-validated map values
   finalize while two deliberately invalid values are filtered before
@@ -157,6 +158,18 @@ balance negative; it finalizes as a deterministic no-op.
 
 Expected: a per-entity count/head-hash state leaf and proof. Documents remain
 off-chain; hashes and references form the ordered trail.
+
+### Document review — reused roles + approval + document transitions
+
+```bash
+./showcase.sh run document-review --instance master-demo
+```
+
+Narrate the committed trace: issuer proposal → two auditor organizations →
+approved role proposal → document-head mutation → one-use application receipt.
+The application is a normal `AppStateMachine` assembled from the same actor,
+role-approval, authorization, and document-transition implementations used by
+the standalone foundations.
 
 ## 10. Composite approval → effect flow, one step at a time
 

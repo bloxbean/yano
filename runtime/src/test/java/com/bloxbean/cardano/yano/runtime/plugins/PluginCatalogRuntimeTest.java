@@ -1935,7 +1935,7 @@ class PluginCatalogRuntimeTest {
                 BundleManifest.CURRENT_SCHEMA_VERSION,
                 OpaqueVersionDependentSink.ID,
                 SemVersion.parse("1.0.0"),
-                new YanoApiRange(1, 1, 1),
+                currentApiRange(),
                 List.of(new BundleDependency(OpaqueVersionLegacyPlugin.ID,
                         SemVersion.parse("1.0.0"), null)),
                 List.of(new BundleContribution(ContributionKind.FINALIZED_SINK,
@@ -2780,7 +2780,7 @@ class PluginCatalogRuntimeTest {
                 BundleManifest.CURRENT_SCHEMA_VERSION,
                 OpaqueVersionDependentSink.ID,
                 SemVersion.parse("1.0.0"),
-                new YanoApiRange(1, 1, 1),
+                currentApiRange(),
                 List.of(),
                 List.of(new BundleContribution(ContributionKind.FINALIZED_SINK,
                         OpaqueVersionDependentSink.SCHEME,
@@ -3085,7 +3085,7 @@ class PluginCatalogRuntimeTest {
                 BundleManifest.CURRENT_SCHEMA_VERSION,
                 id,
                 SemVersion.parse("1.0.0"),
-                new YanoApiRange(1, 1, 1),
+                currentApiRange(),
                 List.of(),
                 List.of(new BundleContribution(
                         ContributionKind.NODE_PLUGIN, id, provider.getName())));
@@ -3102,7 +3102,7 @@ class PluginCatalogRuntimeTest {
                 BundleManifest.CURRENT_SCHEMA_VERSION,
                 id,
                 SemVersion.parse("1.0.0"),
-                new YanoApiRange(1, 1, 1),
+                currentApiRange(),
                 List.of(),
                 List.of(new BundleContribution(
                         ContributionKind.FINALIZED_SINK, selector, provider)));
@@ -3756,13 +3756,16 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
                   "schemaVersion": 1,
                   "id": "%s",
                   "version": "1.0.0",
-                  "yanoApi": {"min": 1, "max": 1, "minLevel": %d},
+                  "yanoApi": {"min": %d, "max": %d, "minLevel": %d},
                   "dependencies": [%s],
                   "contributions": [
                     {"kind": "finalized-sink", "name": "%s", "provider": "%s"}
                   ]
                 }
-                """.formatted(id, minLevel, dependencyJson, name, provider))
+                """.formatted(id,
+                PluginCatalogBuilder.PLUGIN_API_MAJOR,
+                PluginCatalogBuilder.PLUGIN_API_MAJOR,
+                minLevel, dependencyJson, name, provider))
                 .getBytes(StandardCharsets.UTF_8);
     }
 
@@ -3790,7 +3793,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
                     BundleManifest.CURRENT_SCHEMA_VERSION,
                     deepCatalogBundleId(index),
                     SemVersion.parse("1.0.0"),
-                    new YanoApiRange(1, 1, 1),
+                    currentApiRange(),
                     dependencies,
                     List.of());
             bundles.add(new IndexedBundle(
@@ -3801,6 +3804,13 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 
     private static String deepCatalogBundleId(int index) {
         return "com.example.deep.bundle%04d".formatted(index);
+    }
+
+    private static YanoApiRange currentApiRange() {
+        return new YanoApiRange(
+                PluginCatalogBuilder.PLUGIN_API_MAJOR,
+                PluginCatalogBuilder.PLUGIN_API_MAJOR,
+                PluginCatalogBuilder.PLUGIN_API_LEVEL);
     }
 
     private static byte[] emptyIndexBytes() {

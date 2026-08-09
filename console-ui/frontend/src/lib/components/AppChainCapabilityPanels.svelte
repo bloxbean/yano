@@ -1,12 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { AnchorCommitment, AppChainStatus, ProofVerificationResult,
+  import type { AnchorCommitment, AppCapabilityManifest, AppChainStatus, ProofVerificationResult,
     StateProofEnvelope } from '$lib/api/types';
   import { YanoApi, apiFailureMessage } from '$lib/api/client';
   import { discoverChainCapabilities } from '$lib/appchain/capabilities';
   import { effectStatsView } from '$lib/appchain/effect-stats';
   import { assessProofBinding, parseProofEnvelope } from '$lib/appchain/proof-verification';
-  import { asciiHex, boundedPretty, hexSha256, PRODUCT_ID, SHA256, STATE_KEY } from '$lib/appchain/verification';
+  import { asciiHex, boundedPretty, finalizedMessageStateKey, hexSha256, PRODUCT_ID, SHA256, STATE_KEY } from '$lib/appchain/verification';
   import { numberValue, objectList, objectValue, shortHash, stringValue } from '$lib/appchain/value';
   import CopyValue from './CopyValue.svelte';
   import MetricCard from './MetricCard.svelte';
@@ -28,11 +28,14 @@
   let proposalId = $state('');
   let proposal = $state('');
   let proposalError = $state('');
+  let documentEntityId = $state('');
+  let documentReviewState = $state('');
   let messageId = $state('');
   let stateKey = $state('');
   let expectedPayloadHash = $state('');
   let expectedProofValueHash = $state('');
   let evidence = $state('');
+  let messageProof = $state('');
   let proof = $state('');
   let proofEnvelope = $state<StateProofEnvelope>();
   let expectedProofRoot = $state('');
@@ -45,6 +48,7 @@
   let verificationError = $state('');
   let busy = $state(false);
   let capabilities = $derived(discoverChainCapabilities(status, pluginBundleIds));
+  let manifest: AppCapabilityManifest | undefined = $derived(status.capabilityManifest);
   let effectView = $derived(effectStatsView(effectStats));
   let showOverview = $derived(section === 'all' || section === 'overview');
   let showVerification = $derived(section === 'all' || section === 'verification');
@@ -108,14 +112,38 @@
     } catch (cause) { proposalError = apiFailureMessage(cause, 'Proposal unavailable'); }
   }
 
+  async function queryDocumentReview(): Promise<void> {
+    documentReviewState = '';
+    proposalError = '';
+    if (!PRODUCT_ID.test(proposalId) || !PRODUCT_ID.test(documentEntityId)) {
+      proposalError = 'Enter canonical proposal and document entity ids.';
+      return;
+    }
+    try {
+      const [policy, proposalResult, head, receipt] = await Promise.all([
+        api.chainQuery(chainId, 'components/role-approvals/policy',
+          asciiHex('document-release')),
+        api.chainQuery(chainId, 'components/role-approvals/proposal', asciiHex(proposalId)),
+        api.chainQuery(chainId, 'components/documents/head', asciiHex(documentEntityId)),
+        api.chainQuery(chainId, 'components/document-review-receipts/receipt', asciiHex(proposalId))
+      ]);
+      documentReviewState = boundedPretty({ policy, proposal: proposalResult,
+        documentHead: head, approvalConsumptionReceipt: receipt });
+    } catch (cause) {
+      proposalError = apiFailureMessage(cause, 'Document-review state unavailable');
+    }
+  }
+
   async function loadEvidence(): Promise<void> {
-    evidence = ''; payloadDigest = ''; verificationError = '';
+    evidence = ''; messageProof = ''; payloadDigest = ''; verificationError = '';
     if (!SHA256.test(messageId)) { verificationError = 'Message id must be 64 lowercase hex characters.'; return; }
     try {
-      const [bundle, message] = await Promise.all([
-        api.chainEvidence(chainId, messageId), api.chainMessage(chainId, messageId)
+      const [bundle, message, inclusion] = await Promise.all([
+        api.chainEvidence(chainId, messageId), api.chainMessage(chainId, messageId),
+        api.chainMessageProof(chainId, messageId)
       ]);
       evidence = boundedPretty(bundle);
+      messageProof = boundedPretty(inclusion);
       if (typeof message.bodyHex === 'string') payloadDigest = await hexSha256(message.bodyHex);
     } catch (cause) { verificationError = apiFailureMessage(cause, 'Evidence unavailable'); }
   }
@@ -217,6 +245,15 @@
     proofVerification = undefined;
   }
 
+  async function useFinalizedMessageStateKey(): Promise<void> {
+    if (!SHA256.test(messageId)) {
+      verificationError = 'Message id must be 64 lowercase hex characters.';
+      return;
+    }
+    stateKey = await finalizedMessageStateKey(messageId);
+    verificationError = '';
+  }
+
   const match = (digest: string, expected: string) => !expected ? 'computed locally'
     : !SHA256.test(expected) ? 'invalid expected hash'
       : digest === expected ? 'MATCH' : 'MISMATCH';
@@ -229,9 +266,51 @@
       <span class="badge badge-ok">EVIDENCE BUNDLES</span><span class="badge badge-ok">STATE PROOFS</span>
       {#if capabilities.effects}<span class="badge badge-ok">EFFECTS</span>{/if}
       {#if capabilities.roleApprovals}<span class="badge badge-ok">ROLE APPROVALS</span>{/if}
+      {#if capabilities.finalizedMessageIndex}<span class="badge badge-ok">MESSAGE STATE INDEX</span>{/if}
+      <span class="badge">{capabilities.commitmentTarget.toUpperCase()}</span>
     </div>
     <p class="mb-0 mt-3 text-xs text-slate-500">Source: {capabilities.sources.join(' · ')}</p>
   </section>
+
+  {#if manifest}
+    <div class="section-title">Application composition</div>
+    <section class="card p-5">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div><strong>{manifest.applicationId}</strong>
+          <span class="ml-2 text-xs text-slate-500">v{manifest.applicationVersion}</span></div>
+        <CopyValue value={manifest.manifestDigest} width={22} label="capability manifest digest" />
+      </div>
+      <div class="mt-4 grid gap-4 lg:grid-cols-3">
+        <div><h3 class="mt-0 text-xs uppercase tracking-wide text-slate-500">Components</h3>
+          {#each manifest.components as component}
+            <div class="mb-2 rounded-lg border border-slate-800 p-2 text-xs">
+              <strong>{component.id}</strong><div class="text-slate-500">{component.origin} · {component.stateNamespace}</div>
+            </div>
+          {:else}<p class="text-xs text-slate-500">Standalone application state.</p>{/each}
+        </div>
+        <div><h3 class="mt-0 text-xs uppercase tracking-wide text-slate-500">Workflows</h3>
+          {#each manifest.workflows as workflow}
+            <div class="mb-2 rounded-lg border border-slate-800 p-2 text-xs">
+              <strong>{workflow.id}</strong><div class="text-slate-500">{workflow.participantComponentIds.join(' → ')}</div>
+            </div>
+          {:else}<p class="text-xs text-slate-500">No cross-component workflow.</p>{/each}
+        </div>
+        <div><h3 class="mt-0 text-xs uppercase tracking-wide text-slate-500">Cross-cutting</h3>
+          {#each manifest.crossCutting.filter((item) => item.enabled) as capability}
+            <div class="mb-2 rounded-lg border border-slate-800 p-2 text-xs">
+              <strong>{capability.capabilityId}</strong><div class="text-slate-500">{capability.origin}</div>
+            </div>
+          {/each}
+        </div>
+      </div>
+      {#if manifest.workflows.length}
+        <div class="mt-4 rounded-lg border border-violet-500/25 bg-violet-500/5 p-3 text-xs">
+          <span class="text-slate-400">Committed transition trace:</span>
+          <strong class="ml-2">command → authorization / approval → application mutation → consumption / effect receipt</strong>
+        </div>
+      {/if}
+    </section>
+  {/if}
 
   {#if capabilities.roleApprovals}
     <div class="section-title">Committed proposal</div>
@@ -241,6 +320,23 @@
         <button class="rounded-lg bg-violet-500 px-4 py-2 text-sm font-semibold" onclick={queryProposal}>Query</button></div>
       {#if proposalError}<p class="text-sm text-rose-300">{proposalError}</p>{/if}
       {#if proposal}<pre class="mt-4 max-h-96 overflow-auto rounded-lg bg-slate-950 p-3 text-xs">{proposal}</pre>{/if}
+    </section>
+  {/if}
+
+  {#if manifest?.applicationId === 'document-review'}
+    <div class="section-title">Document-review transition trace</div>
+    <section class="card p-5">
+      <p class="mt-0 text-sm text-slate-400">Reads the committed stock role policy and proposal, reused document head, and application-owned approval-consumption receipt at root-fixed heights.</p>
+      <div class="grid gap-2 md:grid-cols-[1fr_1fr_auto]">
+        <input class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+               bind:value={proposalId} placeholder="proposal id" />
+        <input class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+               bind:value={documentEntityId} placeholder="document entity id" />
+        <button class="rounded-lg bg-violet-500 px-4 py-2 text-sm font-semibold"
+                onclick={queryDocumentReview}>Read trace</button>
+      </div>
+      {#if proposalError}<p class="text-sm text-rose-300">{proposalError}</p>{/if}
+      {#if documentReviewState}<pre class="mt-4 max-h-96 overflow-auto rounded-lg bg-slate-950 p-3 text-xs">{documentReviewState}</pre>{/if}
     </section>
   {/if}
 {/if}
@@ -397,6 +493,9 @@
     <p class="text-xs text-slate-500">Fetch the finalized bundle and message, then SHA-256 the exact payload bytes in this browser.</p>
     <div class="flex gap-2"><input class="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs" bind:value={messageId} placeholder="64-character message id" />
       <button type="button" class="rounded-lg bg-blue-500 px-3 py-2 text-sm font-semibold" onclick={loadEvidence}>Load</button></div>
+    <p class="mb-0 mt-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-2 text-xs text-amber-100">
+      Finality and state inclusion prove identity and position, not continued message-body availability.
+    </p>
     <label class="mt-3 block text-xs text-slate-400">Expected payload SHA-256 (optional)
       <input class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono"
              bind:value={expectedPayloadHash} placeholder="64 lowercase hex characters" />
@@ -410,14 +509,25 @@
         <div class="mt-1 flex justify-start"><CopyValue value={payloadDigest} width={64} label="payload SHA-256" /></div>
       </div>
     {/if}
-    {#if evidence}<pre class="mt-4 max-h-96 overflow-auto rounded-lg bg-slate-950 p-3 text-xs">{evidence}</pre>{/if}
+    {#if messageProof}
+      <h3 class="mb-1 mt-4 text-xs uppercase tracking-wide text-slate-500">Message → messagesRoot path</h3>
+      <pre class="max-h-64 overflow-auto rounded-lg bg-slate-950 p-3 text-xs">{messageProof}</pre>
+    {/if}
+    {#if evidence}
+      <h3 class="mb-1 mt-4 text-xs uppercase tracking-wide text-slate-500">Signed block / finality evidence</h3>
+      <pre class="max-h-96 overflow-auto rounded-lg bg-slate-950 p-3 text-xs">{evidence}</pre>
+    {/if}
   </section>
   <section class="card p-5">
     <h2 class="mt-0 text-sm font-semibold">Profile-aware state proof</h2>
     <p class="text-xs text-slate-500">Dispatches to this release's bounded MPF or classic-JMT verifier. Mathematical validity is reported separately from chain/profile/root/height trust.</p>
     <input class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs"
-           bind:value={stateKey} placeholder="state key hex (message id for ordered-log)" />
+           bind:value={stateKey} placeholder="state key hex" />
     <div class="mt-2 flex flex-wrap gap-2">
+      {#if capabilities.finalizedMessageIndex}
+        <button type="button" class="rounded-lg border border-violet-500/50 px-3 py-2 text-sm text-violet-200"
+                onclick={useFinalizedMessageStateKey}>Use message state key</button>
+      {/if}
       <button type="button" class="rounded-lg bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950"
               onclick={loadProof}>Load current proof</button>
       <button type="button" class="rounded-lg border border-cyan-500/50 px-3 py-2 text-sm text-cyan-200"

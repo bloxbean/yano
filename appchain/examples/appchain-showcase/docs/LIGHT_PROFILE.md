@@ -12,7 +12,7 @@ standard library; there is no `pip` install or virtual environment.
 ./showcase.sh status --instance five-node
 ```
 
-The shared YAML starts eleven chains. `payment-chain-settlement` is part of the
+The shared YAML starts twelve chains. `payment-chain-settlement` is part of the
 default light profile; it does not need a separate chain-start command.
 Membership, keys, peers, proposer, and threshold are injected by the maintained
 cluster launcher; the same YAML works at every node count.
@@ -21,13 +21,27 @@ cluster launcher; the same YAML works at every node count.
 |---|---|---|
 | Standalone foundations | `orders-chain`, `registry-chain`, `approvals-chain`, `balances-chain`, `documents-chain`, `roles-chain`, `payments-chain` | one stock application behavior at a time |
 | Cross-cutting application | `workflow-chain` | orders + approval + audit + outbox effects |
+| Cross-cutting application | `document-review-chain` | documents + actors/roles + approval + consumption receipt |
 | Authorization application/backend comparison | `authenticated-map-chain`, `authenticated-map-jmt-chain` | direct actor/role authorization and approval, with MPF/JMT proof behavior |
 | L1 application boundary | `payment-chain-settlement` | L1 observers + EUTxO + settlement effects + derived indexer |
 
-ADR app-layer/033 adds `document-review-chain` to the target light catalog for
-the remaining deliberate composition: document trail + domain actors/roles +
-actor approval. It will reuse the ADR-019/031 components rather than copy the
-role-evidence workflow or introduce another approval implementation.
+`document-review-chain` reuses the ADR-019/031 actor registry, role-aware
+approvals, role authorization capability, and document transitions. It does
+not copy the role-evidence workflow or introduce another approval model.
+
+Every status response includes an immutable `capabilityManifest`. The console
+uses it for the cross-chain matrix and composition panels; it does not infer
+business capabilities from a state-machine name. Start an indexed generation
+with either opt-in form:
+
+```bash
+./showcase.sh up --instance indexed --enable-finalized-message-index
+./showcase.sh up --instance selected \
+  --enable-finalized-message-index=documents-chain,workflow-chain
+```
+
+The selection is consensus state, not the rebuildable SQL indexer. It is
+retained in the instance identity and cannot be changed on restart.
 
 `membership.mode=governed` is enabled independently on the chains. That is
 app-chain member-set governance, not application actor authorization or

@@ -5,7 +5,11 @@ TARGET="${1:?target is required}"
 INSTANCE="${2:?instance is required}"
 HTTP_BASE="${3:?HTTP base is required}"
 MARKER="$TARGET/data/showcase/$INSTANCE/showcase-identity.json"
+CATALOG="$TARGET/catalog/showcase-catalog-v1.json"
 [ -f "$MARKER" ] || { echo "Missing retained identity: $MARKER" >&2; exit 66; }
+[ -f "$CATALOG" ] || { echo "Missing showcase catalog: $CATALOG" >&2; exit 66; }
+diff -u <(python3 "$TARGET/tools/showcase_catalog.py" "$CATALOG" list) \
+  <(jq -r '.chainIds[]' "$MARKER")
 
 CLUSTER_ROOT="$TARGET/data/showcase/$INSTANCE/cluster"
 for NODE in 0 1 2; do
@@ -33,7 +37,14 @@ while IFS= read -r CHAIN; do
   printf '%s' "$LEADER" | jq -e \
     '.anchor.enabled == true and .anchor.mode == "script" and
      .anchor.bootstrapped == true and
+     (.capabilityManifest.manifestDigest | test("^[0-9a-f]{64}$")) and
      (.anchor.lastAnchorTx | test("^[0-9a-f]{64}$"))' >/dev/null
+  while IFS= read -r CAPABILITY; do
+    printf '%s' "$LEADER" | jq -e --arg capability "$CAPABILITY" \
+      '.capabilityManifest.crossCutting
+       | any(.capabilityId == $capability and .enabled == true)' >/dev/null
+  done < <(jq -r --arg chain "$CHAIN" \
+    '.chains[] | select(.chainId == $chain) | .expectedCapabilities[]' "$CATALOG")
 
   REFERENCE=""
   for PORT in "$HTTP_BASE" "$((HTTP_BASE + 1))" "$((HTTP_BASE + 2))"; do
@@ -45,7 +56,7 @@ while IFS= read -r CHAIN; do
        (.stateCommitment.genesisId | test("^[0-9a-f]{64}$"))' >/dev/null
     CURRENT="$(printf '%s' "$STATUS" | jq -r \
       '[.tipHeight,.stateRoot,.stateCommitment.profile,
-        .stateCommitment.genesisId] | @tsv')"
+        .stateCommitment.genesisId,.capabilityManifest.manifestDigest] | @tsv')"
     [ -n "$REFERENCE" ] || REFERENCE="$CURRENT"
     [ "$REFERENCE" = "$CURRENT" ] || {
       echo "State disagreement for $CHAIN on HTTP $PORT" >&2

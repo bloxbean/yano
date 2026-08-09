@@ -9,6 +9,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
+import com.bloxbean.cardano.yano.api.appchain.transition.FinalizedMessageIndex;
 import com.bloxbean.cardano.zeroj.bbs.BbsKeyPair;
 import com.bloxbean.cardano.zeroj.verifier.core.VerifierRegistry;
 import org.junit.jupiter.api.Test;
@@ -45,7 +46,7 @@ class ZkApplyConsensusTest {
         byte[] forged = new ZkProofBody("demo", "groth16", "bls12381",
                 "FORGED".getBytes(StandardCharsets.UTF_8), List.of()).encode();
         apply(machine, block(forged), writer);
-        assertThat(writer.map.keySet()).containsOnly("~tip"); // only the tip marker, no message record
+        assertThat(writer.map.keySet()).containsOnly(stateKey(FinalizedMessageIndex.TIP_KEY));
 
         // A valid proof IS recorded
         MapWriter writer2 = new MapWriter();
@@ -158,6 +159,10 @@ class ZkApplyConsensusTest {
         byte[] seed = new byte[32];
         java.util.Arrays.fill(seed, (byte) fill);
         return seed;
+    }
+
+    private static String stateKey(byte[] key) {
+        return new String(key, StandardCharsets.UTF_8);
     }
 
     /** Minimal in-memory writer standing in for the MPF staged writer. */

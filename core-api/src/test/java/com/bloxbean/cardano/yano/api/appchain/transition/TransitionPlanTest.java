@@ -66,11 +66,11 @@ class TransitionPlanTest {
                 writer, AppEffectEmitter.rejecting("effects forbidden"));
 
         FinalizedMessageIndex.MessageRecord record = FinalizedMessageIndex.decode(
-                writer.get(selected.getMessageId()).orElseThrow());
+                writer.get(FinalizedMessageIndex.messageKey(selected.getMessageId())).orElseThrow());
         assertThat(record.height()).isEqualTo(8);
         assertThat(record.originalMessageIndex()).isEqualTo(1);
         assertThat(record.topic()).isEqualTo("orders");
-        assertThat(writer.get(hidden.getMessageId())).isEmpty();
+        assertThat(writer.get(FinalizedMessageIndex.messageKey(hidden.getMessageId()))).isEmpty();
         assertThat(writer.get(FinalizedMessageIndex.TIP_KEY)).isPresent();
     }
 

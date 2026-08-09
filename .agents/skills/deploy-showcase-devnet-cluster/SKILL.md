@@ -36,6 +36,8 @@ changing cluster identity or data.
 - N2N: `13337-13339`
 - Nodes/threshold: `3/2`
 - Anchors: SCRIPT mode, every configured chain
+- Catalog: packaged `catalog/showcase-catalog-v1.json`; retained order and
+  declared capabilities are validated against it
 - Per-node stores: `chainstate`, `appchain-chainstate`, `appchain-indexers`
 
 Override the repository, target, or instance only when the user explicitly
@@ -53,6 +55,8 @@ places a different deployment in scope. Run `deploy.sh --help` for options.
   verified Cardano anchor.
 - Follower status may omit `.anchor`; node 0 owns the anchor writer. Require
   identical tip/root/profile/genesis values on all three nodes.
+- Require identical capability-manifest digests on all three nodes and verify
+  every catalog-declared capability from status.
 - Reject a derived-index checkpoint above its authoritative app-chain tip and
   reject any legacy derived index below the L1 chainstate root.
 

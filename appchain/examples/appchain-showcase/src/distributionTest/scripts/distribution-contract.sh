@@ -73,6 +73,10 @@ grep -q 'Python 3 standard library only' "$ROOT/README.md"
 "$ROOT/showcase.sh" prepare --instance distribution-contract --nodes 3 \
   --http-base 29770 --server-base 29370 >/dev/null
 MAP_ROOT="$ROOT/data/showcase/distribution-contract"
+jq -e '.schemaVersion == 1 and .profileId == "light-v1" and (.chains | length) == 12' \
+  "$ROOT/catalog/showcase-catalog-v1.json" >/dev/null
+grep -q 'chain-id: "document-review-chain"' "$ROOT/yano/config/application-appchain.yml"
+grep -q 'document-review-chain' "$ROOT/docs/CAPABILITY_CATALOG.md"
 [ -s "$MAP_ROOT/authenticated-map.properties" ]
 [ -s "$MAP_ROOT/authenticated-map-genesis.hex" ]
 [ "$(grep -c '^yano.app-chain.chains\[8\]\.' \
@@ -102,8 +106,10 @@ JMT_INFO="$("$ROOT/yano/yano.sh" appchain state validators \
 printf '%s' "$JMT_INFO" | jq -e '
   .chainId == "authenticated-map-jmt-chain" and
   .profile == "jmt-blake2b256-v1" and
-  .validatorCount == 0 and
-  ([.collections[].id] | sort == ["documents", "kv-open", "notes"])
+  .validatorCount == 2 and
+  ([.collections[].id] | sort ==
+    ["attachments", "canonical-events", "governed-catalog", "gtins",
+     "products", "released-products"])
 ' >/dev/null
 
 # ADR-UTXO-008: the packaged light profile carries the bridge chain with its

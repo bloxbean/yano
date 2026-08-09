@@ -206,7 +206,7 @@ class PluginCatalogCollisionPolicyTest {
                 BundleManifest.CURRENT_SCHEMA_VERSION,
                 id,
                 SemVersion.parse("1.0.0"),
-                new YanoApiRange(1, 1, 1),
+                currentApiRange(),
                 List.of(),
                 List.of(new BundleContribution(
                         ContributionKind.FINALIZED_SINK, SHARED_SCHEME, provider)));
@@ -221,7 +221,7 @@ class PluginCatalogCollisionPolicyTest {
                   "schemaVersion": 1,
                   "id": "%s",
                   "version": "1.0.0",
-                  "yanoApi": {"min": 1, "max": 1, "minLevel": 1},
+                  "yanoApi": {"min": %d, "max": %d, "minLevel": %d},
                   "dependencies": [],
                   "contributions": [{
                     "kind": "finalized-sink",
@@ -229,7 +229,18 @@ class PluginCatalogCollisionPolicyTest {
                     "provider": "%s"
                   }]
                 }
-                """.formatted(id, SHARED_SCHEME, provider).getBytes(StandardCharsets.UTF_8);
+                """.formatted(id,
+                PluginCatalogBuilder.PLUGIN_API_MAJOR,
+                PluginCatalogBuilder.PLUGIN_API_MAJOR,
+                PluginCatalogBuilder.PLUGIN_API_LEVEL,
+                SHARED_SCHEME, provider).getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static YanoApiRange currentApiRange() {
+        return new YanoApiRange(
+                PluginCatalogBuilder.PLUGIN_API_MAJOR,
+                PluginCatalogBuilder.PLUGIN_API_MAJOR,
+                PluginCatalogBuilder.PLUGIN_API_LEVEL);
     }
 
     private static String manifestPath(String id) {

@@ -1,4 +1,4 @@
-import type { AppChainStatus } from '$lib/api/types';
+import type { AppCapabilityManifest, AppChainStatus } from '$lib/api/types';
 
 export interface ChainCapabilities {
   effects: boolean;
@@ -8,37 +8,33 @@ export interface ChainCapabilities {
   roleDomainBundle: string | null;
   evidenceBundles: boolean;
   stateProofs: boolean;
+  finalizedMessageIndex: boolean;
+  commitmentTarget: string;
   sources: string[];
 }
 
 const ROLE_BUNDLE = 'com.bloxbean.cardano.yano.appchain.role-workflow';
-const EVIDENCE_BUNDLE = 'com.bloxbean.cardano.yano.appchain.evidence-profile';
-const AUTHENTICATED_MAP_MACHINE = 'authenticated-map';
+const hasCapability = (manifest: AppCapabilityManifest | undefined, id: string) =>
+  manifest?.crossCutting.some((capability) => capability.enabled && capability.capabilityId === id) === true;
+const hasComponent = (manifest: AppCapabilityManifest | undefined, id: string) =>
+  manifest?.components.some((component) => component.id === id) === true;
 
 export function discoverChainCapabilities(status: AppChainStatus | null,
-                                          pluginBundleIds: readonly string[] = []): ChainCapabilities {
-  const machine = status?.stateMachine ?? '';
-  const effects = isObject(status?.effects) && status?.effects?.enabled === true;
-  const roleDomainBundle = machine === 'role-approvals' ? ROLE_BUNDLE
-    : machine === 'role-evidence' ? EVIDENCE_BUNDLE : null;
-  const catalogConfirmed = roleDomainBundle !== null && pluginBundleIds.includes(roleDomainBundle);
-  const authenticatedMap = machine === AUTHENTICATED_MAP_MACHINE;
-  const sources = ['app-chain core'];
-  if (effects) sources.push('status:effects.enabled');
-  if (roleDomainBundle || authenticatedMap) sources.push(`status:stateMachine=${machine}`);
-  if (catalogConfirmed) sources.push(`plugin-catalog:${roleDomainBundle}`);
+                                          _pluginBundleIds: readonly string[] = []): ChainCapabilities {
+  const manifest = status?.capabilityManifest;
+  const roleApprovals = hasCapability(manifest, 'approval:actor-role-v1');
+  const mpf = hasCapability(manifest, 'state-commitment:mpf-blake2b256-v1');
+  const jmt = hasCapability(manifest, 'state-commitment:jmt-blake2b256-v1');
   return {
-    effects,
-    eutxoExplorer: machine === 'eutxo-ledger',
-    authenticatedMap,
-    roleApprovals: roleDomainBundle !== null,
-    roleDomainBundle,
+    effects: hasCapability(manifest, 'effects:outbox-v1'),
+    eutxoExplorer: hasComponent(manifest, 'eutxo-ledger'),
+    authenticatedMap: hasComponent(manifest, 'authenticated-map'),
+    roleApprovals,
+    roleDomainBundle: roleApprovals ? ROLE_BUNDLE : null,
     evidenceBundles: !!status?.chainId,
-    stateProofs: !!status?.chainId,
-    sources
+    stateProofs: mpf || jmt,
+    finalizedMessageIndex: hasCapability(manifest, 'state-index:finalized-message-v1'),
+    commitmentTarget: mpf ? 'off-chain + on-chain' : jmt ? 'off-chain only' : 'not declared',
+    sources: manifest ? [`capabilityManifest:${manifest.manifestDigest}`] : ['capability manifest unavailable']
   };
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }

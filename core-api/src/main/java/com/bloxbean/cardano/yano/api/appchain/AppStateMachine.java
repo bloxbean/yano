@@ -76,6 +76,11 @@ public interface AppStateMachine {
         return java.util.Map.of();
     }
 
+    /** Immutable application/composition discovery data; never used as mutable health state. */
+    default AppCapabilityManifest capabilityManifest() {
+        return AppCapabilityManifest.application(id());
+    }
+
     /**
      * Deterministic transition with block-scoped, replayable inputs and effect
      * emission (ADR-031). This is the only execution entry point.

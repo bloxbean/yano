@@ -1644,7 +1644,10 @@ class PluginTcclBoundaryTest {
                 BundleManifest.CURRENT_SCHEMA_VERSION,
                 bundleId,
                 SemVersion.parse("1.0.0"),
-                new YanoApiRange(1, 1, 1),
+                new YanoApiRange(
+                        PluginCatalogBuilder.PLUGIN_API_MAJOR,
+                        PluginCatalogBuilder.PLUGIN_API_MAJOR,
+                        PluginCatalogBuilder.PLUGIN_API_LEVEL),
                 List.of(new BundleDependency(dependencyId, null, null)),
                 List.of());
         CatalogPluginProviderRegistry.Entry entry =
@@ -1715,7 +1718,10 @@ class PluginTcclBoundaryTest {
                 BundleManifest.CURRENT_SCHEMA_VERSION,
                 bundleId,
                 SemVersion.parse("1.0.0"),
-                new YanoApiRange(1, 1, 1),
+                new YanoApiRange(
+                        PluginCatalogBuilder.PLUGIN_API_MAJOR,
+                        PluginCatalogBuilder.PLUGIN_API_MAJOR,
+                        PluginCatalogBuilder.PLUGIN_API_LEVEL),
                 List.of(),
                 List.of());
         CatalogPluginProviderRegistry.Entry entry =

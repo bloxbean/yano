@@ -3,6 +3,8 @@ package com.bloxbean.cardano.yano.appchain.composite;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
+import com.bloxbean.cardano.yano.api.appchain.AppCapabilityIds;
+import com.bloxbean.cardano.yano.api.appchain.AppCapabilityManifest;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
@@ -28,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 /** Deterministic routing, isolation, query, and effect-ownership boundary. */
 public final class CompositeStateMachine implements AppStateMachine {
@@ -403,6 +406,71 @@ public final class CompositeStateMachine implements AppStateMachine {
             status.put("components", Map.copyOf(componentStatuses));
         }
         return Map.copyOf(status);
+    }
+
+    @Override
+    public AppCapabilityManifest capabilityManifest() {
+        AppCapabilityManifest.Builder manifest = AppCapabilityManifest.builder(
+                machineId, profile.profileVersion());
+        for (ComponentDescriptor component : profile.components()) {
+            manifest.component(new AppCapabilityManifest.Component(
+                    component.componentId(), component.semanticVersion(),
+                    component.configurationId(),
+                    "component/" + component.componentId() + "/v1",
+                    component.topics(), component.queryPaths(),
+                    AppCapabilityManifest.Origin.COMPOSED));
+        }
+        for (WorkflowDescriptor workflow : profile.workflows()) {
+            manifest.workflow(new AppCapabilityManifest.Workflow(
+                    workflow.workflowId(), workflow.semanticVersion(),
+                    workflow.participants().stream()
+                            .map(ComponentGeneration::componentId).distinct().toList(),
+                    workflow.topic(), workflow.maxEffectsPerBlock() > 0
+                    ? List.of("outbox") : List.of(),
+                    AppCapabilityManifest.Origin.COMPOSED));
+        }
+        Set<String> componentIds = profile.components().stream()
+                .map(ComponentDescriptor::componentId).collect(java.util.stream.Collectors.toSet());
+        if (componentIds.contains("approvals")) {
+            manifest.crossCutting(capability(AppCapabilityIds.BASIC_APPROVAL,
+                    "composite-profile:" + HexFormat.of().formatHex(profile.digest())));
+        }
+        if (componentIds.contains("domain-actors")
+                && componentIds.contains("role-approvals")) {
+            manifest.crossCutting(capability(AppCapabilityIds.ACTOR_ROLE_APPROVAL,
+                    "composite-profile:" + HexFormat.of().formatHex(profile.digest())));
+        }
+        if (componentIds.contains("authenticated-map")
+                && componentIds.contains("domain-actors")) {
+            manifest.crossCutting(capability(AppCapabilityIds.DIRECT_ROLE,
+                    "composite-profile:" + HexFormat.of().formatHex(profile.digest())));
+        }
+        if (profile.components().stream().anyMatch(value -> value.maxEffectsPerBlock() > 0)
+                || profile.workflows().stream().anyMatch(value -> value.maxEffectsPerBlock() > 0)) {
+            manifest.crossCutting(capability(AppCapabilityIds.OUTBOX_EFFECTS,
+                    "composite-profile:" + HexFormat.of().formatHex(profile.digest())));
+        }
+        for (ComponentDescriptor component : profile.components()) {
+            for (String path : component.queryPaths()) {
+                manifest.proofSubject(new AppCapabilityManifest.ProofSubject(
+                        proofSubjectId(component.componentId(), path), component.componentId(),
+                        "component/" + component.componentId() + "/v1",
+                        "state-proof"));
+            }
+        }
+        return manifest.build();
+    }
+
+    private static AppCapabilityManifest.CrossCutting capability(
+            String id, String configurationDigest) {
+        return new AppCapabilityManifest.CrossCutting(id, "1.0.0", true,
+                configurationDigest, Map.of(), AppCapabilityManifest.Origin.COMPOSED);
+    }
+
+    private static String proofSubjectId(String component, String path) {
+        return ("query:" + component + ":" + path)
+                .toLowerCase(java.util.Locale.ROOT)
+                .replaceAll("[^a-z0-9:._-]", "-");
     }
 
     @Override

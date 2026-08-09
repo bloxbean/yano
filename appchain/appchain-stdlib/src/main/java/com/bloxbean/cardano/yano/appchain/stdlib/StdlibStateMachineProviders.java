@@ -9,6 +9,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfile;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
+import com.bloxbean.cardano.yano.api.appchain.transition.FinalizedMessageIndexedStateMachine;
 import com.bloxbean.cardano.yano.appchain.config.AppChainApprovalsConfig;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
 
@@ -73,15 +74,23 @@ public final class StdlibStateMachineProviders {
             }
             StateCommitmentIdentity stateIdentity = context.stateCommitmentIdentity()
                     .orElseGet(() -> StateCommitmentIdentity.fromSettings(context.settings()));
-            if (!stateIdentity.profile().equals(profile)
-                    || !Arrays.equals(stateIdentity.genesisId(),
-                    AuthenticatedMapContract.genesisId(genesis))) {
-                throw new IllegalArgumentException(
-                        "authenticated-map genesis differs from the runtime state commitment identity");
-            }
             AppChainConsensusProfile consensus = context.consensusProfile()
                     .orElseThrow(() -> new IllegalArgumentException(
                             "authenticated-map requires the normalized consensus profile"));
+            StateCommitmentIdentity baseIdentity =
+                    StateCommitmentIdentity.explicit(
+                            profile, AuthenticatedMapContract.genesisId(genesis));
+            StateCommitmentIdentity expectedIdentity =
+                    FinalizedMessageIndexedStateMachine.configuration(
+                            context.settings(), consensus.maxBlockMessages())
+                    .map(index -> baseIdentity.withApplicationProfile(index.digest()))
+                    .orElse(baseIdentity);
+            if (!stateIdentity.profile().equals(profile)
+                    || !Arrays.equals(stateIdentity.genesisId(),
+                    expectedIdentity.genesisId())) {
+                throw new IllegalArgumentException(
+                        "authenticated-map genesis differs from the runtime state commitment identity");
+            }
             if (!Arrays.equals(AppChainConsensusProfileCommitment.digest(consensus),
                     genesis.frameworkConsensusProfileDigest())) {
                 throw new IllegalArgumentException(

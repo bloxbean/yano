@@ -9,7 +9,7 @@ with [MASTER_DEMO.md](docs/MASTER_DEMO.md), use the
 ./showcase.sh quickstart --profile light --nodes 3 --instance demo
 ```
 
-The light profile runs eleven app chains on one local multi-node Yano cluster,
+The light profile runs twelve app chains on one local multi-node Yano cluster,
 including `payment-chain-settlement`, with no Kafka, object store, IPFS, or
 separate effect service. Seven chains present standalone foundations; the
 remaining reference chains demonstrate how ADR-031 composes those foundations
@@ -18,14 +18,13 @@ with cross-cutting concerns instead of creating another application SPI:
 | Reference application | Reused capabilities |
 |---|---|
 | `workflow-chain` | orders + basic approval + audit + finality-gated outbox effect |
+| `document-review-chain` | document trail + domain actors/roles + actor approval + one-use receipt |
 | `authenticated-map-chain` | authenticated map + direct actor/role authorization + multi-organization approval |
 | `payment-chain-settlement` | EUTxO + L1 observers + settlement effects + rebuildable lifecycle index |
 
-The ADR-033 target light catalog adds `document-review-chain` as the third
-business-composition example: document trail + domain actors/roles + actor
-approval. That workflow already has a proven reusable implementation in the
-role-evidence product, but it is not claimed as a light-profile chain until the
-ADR-033 catalog implementation lands.
+`authenticated-map-jmt-chain` uses the same collections, policies, actors,
+commands, and receipts as the MPF chain; only its commitment backend and
+off-chain-only verification target differ.
 
 The built-in `authenticated-map` scenario demonstrates multiple collections,
 opaque and canonical-CBOR values, a declarative schema, the first-party GS1
@@ -76,8 +75,9 @@ State stays below `data/showcase/<instance>/` by default. `stop` preserves it;
 `restart` validates the retained deployment marker and reuses it. The marker
 also binds the generated authenticated-map settings and genesis to the actual
 bootstrap members and release validator digest. Identity drift fails closed;
-the only supported marker evolution is an explicit, additive `anchor enable`
-migration. `reset --instance <name> --yes` is the only showcase command that
+the finalized-message-index scope is also retained and changes the state
+generation identity. The only supported marker evolution is explicit,
+additive `anchor enable`. `reset --instance <name> --yes` is the only showcase command that
 deletes the named instance.
 
 ```bash
@@ -123,6 +123,7 @@ other nodes still validate the effect intent and its incorporated result.
 ## Profiles and docs
 
 - [LIGHT_PROFILE.md](docs/LIGHT_PROFILE.md)
+- [CAPABILITY_CATALOG.md](docs/CAPABILITY_CATALOG.md)
 - [EVIDENCE_PROFILE.md](docs/EVIDENCE_PROFILE.md)
 - [EUTXO_PROFILE.md](docs/EUTXO_PROFILE.md)
 - [GOVERNANCE_DEMO.md](docs/GOVERNANCE_DEMO.md)
@@ -135,7 +136,6 @@ other nodes still validate the effect intent and its incorporated result.
 - [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
 - [PRESENTERS.md](docs/PRESENTERS.md)
 
-Architecture and product/demo boundaries are recorded in ADR-023 in the Yano
-source repository. The post-ADR-031 reference catalog and capability-discovery
-plan are recorded in ADR app-layer/033. No Yano consensus/core code is changed
-by this module.
+Architecture and product/demo boundaries are recorded in ADR-023. ADR-033
+defines the catalog, manifest discovery contract, generic finalized-message
+index wrapper, console presentation, and qualification requirements.

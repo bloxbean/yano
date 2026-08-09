@@ -132,8 +132,15 @@ describe('authenticated-map envelope identity gates', () => {
 
 describe('capability and labelling helpers', () => {
   it('detects the state machine and direct-submit authorization modes', () => {
-    expect(isAuthenticatedMapChain({ stateMachine: 'authenticated-map' })).toBe(true);
-    expect(isAuthenticatedMapChain({ stateMachine: 'eutxo-ledger' })).toBe(false);
+    const manifest = {
+      schemaVersion: 1, applicationId: 'custom-map', applicationVersion: '1',
+      manifestDigest: 'aa'.repeat(32),
+      components: [{ id: 'authenticated-map', version: '1', configurationId: 'demo',
+        stateNamespace: 'application/v1', topics: [], querySubjects: [], origin: 'COMPOSED' as const }],
+      workflows: [], crossCutting: [], proofSubjects: []
+    };
+    expect(isAuthenticatedMapChain({ stateMachine: 'custom', capabilityManifest: manifest })).toBe(true);
+    expect(isAuthenticatedMapChain({ stateMachine: 'authenticated-map' })).toBe(false);
     expect(directSubmitAllowed(PRODUCTS)).toBe(true);
     expect(directSubmitAllowed({ ...PRODUCTS, authorization: 3 })).toBe(false);
     expect(directSubmitAllowed(undefined)).toBe(false);

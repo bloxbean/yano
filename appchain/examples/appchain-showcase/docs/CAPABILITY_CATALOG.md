@@ -1,0 +1,72 @@
+# ADR-033 Capability Catalog and Proof Lab
+
+Use this page as the short presenter narrative for the default `light`
+profile. The machine-readable source of truth is
+`catalog/showcase-catalog-v1.json` in the distribution; `showcase.sh describe
+light` renders it directly.
+
+| Chain | Kind | Demonstrates | Proof target |
+|---|---|---|---|
+| `orders-chain` | foundation | ordered log + intrinsic finalized-message record | MPF, off-chain + on-chain |
+| `registry-chain` | foundation | conditional key/value state | MPF, off-chain + on-chain |
+| `approvals-chain` | foundation | basic sender-quorum approval | MPF, off-chain + on-chain |
+| `balances-chain` | foundation | deterministic balances | MPF, off-chain + on-chain |
+| `documents-chain` | foundation | document head/history transitions | MPF, off-chain + on-chain |
+| `workflow-chain` | composition | orders + approval + audit + effects | MPF, off-chain + on-chain |
+| `roles-chain` | foundation | actors, roles, policies, actor approvals | MPF, off-chain + on-chain |
+| `payments-chain` | foundation | virtual no-real-funds EUTxO | MPF, off-chain + on-chain |
+| `authenticated-map-chain` | composition | authenticated map + direct roles + approval | MPF, off-chain + on-chain |
+| `authenticated-map-jmt-chain` | backend contrast | identical map business profile on classic JMT | JMT, off-chain only |
+| `payment-chain-settlement` | L1 boundary | L1 observers + EUTxO + settlement effects/indexer | MPF, off-chain + on-chain |
+| `document-review-chain` | composition | documents + roles + approval + consumption receipt | MPF, off-chain + on-chain |
+
+The console’s matrix and composition panel are populated from each
+application’s `capabilityManifest`. Membership governance and executable
+profile governance are displayed separately from business authorization and
+approval.
+
+## Optional finalized-message state proof
+
+Every finalized block already has a message-inclusion path to `messagesRoot`.
+The optional index additionally stores a compact authenticated record
+containing height, original message index, topic, and sender. It does not copy
+the body and does not prove continued body availability.
+
+```bash
+# Default: off for non-intrinsic applications.
+./showcase.sh up --instance default
+
+# Selected applications.
+./showcase.sh up --instance selected \
+  --enable-finalized-message-index=documents-chain,workflow-chain
+
+# Every configured application. orders-chain remains intrinsically indexed.
+./showcase.sh up --instance all-indexed \
+  --enable-finalized-message-index
+```
+
+The scope, policy, cost bound, and digest are retained in
+`showcase-identity.json`; selected applications receive a distinct
+state-generation identity. Restart with a conflicting option fails closed.
+
+In the UI, select a message, inspect its block inclusion, choose “Use message
+state key,” retrieve the authenticated state proof, and compare the state root
+with the latest applicable L1 anchor. MPF proof wires can also be consumed by
+the reference on-chain verifier. JMT proofs are intentionally off-chain-only.
+
+## Three composition traces
+
+```bash
+./showcase.sh run composite --instance demo
+./showcase.sh run document-review --instance demo
+./showcase.sh run authenticated-map --instance demo
+```
+
+Explain each as a committed trace, not a log-derived claim:
+
+```text
+command -> authorization/approval -> application mutation -> effect/consumption receipt
+```
+
+`payment-chain-settlement` starts in light for discoverability, but public
+script deployment, owner keys, deposits, and withdrawals remain explicit.

@@ -62,13 +62,13 @@ public final class ShowcaseAuthenticatedMapConfig {
             Options options = Options.parse(arguments);
             Map<String, String> settings;
             String prefix;
+            byte[] closureDigest = catalogArtifactClosure(
+                    options.runtimeJar(), VALIDATOR_BUNDLE_ID);
             if (JMT_CHAIN_ID.equals(options.chainId())) {
-                settings = jmtSettings(
-                        options.chainId(), options.members(), options.threshold());
+                settings = jmtSettings(options.chainId(), options.members(),
+                        options.threshold(), closureDigest);
                 prefix = JMT_PREFIX;
             } else {
-                byte[] closureDigest = catalogArtifactClosure(
-                        options.runtimeJar(), VALIDATOR_BUNDLE_ID);
                 settings = settings(options.chainId(), options.members(),
                         options.threshold(), closureDigest);
                 prefix = PREFIX;
@@ -80,14 +80,13 @@ public final class ShowcaseAuthenticatedMapConfig {
         }
     }
 
-    /**
-     * The contrasting second map chain: classic-JMT backend with a basic
-     * (ungoverned) authorization profile — open, owner, and member
-     * collections and no genesis validators — so the console's basic-only
-     * views and the JMT commitment identity can be demonstrated next to the
-     * governed MPF chain.
-     */
     static Map<String, String> jmtSettings(String chainId, List<String> members, int threshold) {
+        return jmtSettings(chainId, members, threshold, new byte[32]);
+    }
+
+    /** Same governed business profile as MPF, with only the proof backend changed. */
+    static Map<String, String> jmtSettings(
+            String chainId, List<String> members, int threshold, byte[] validatorArtifactClosure) {
         if (!JMT_CHAIN_ID.equals(chainId)) {
             throw new IllegalArgumentException("unexpected authenticated-map JMT chain id");
         }
@@ -105,21 +104,14 @@ public final class ShowcaseAuthenticatedMapConfig {
                 .stateMachineId(AuthenticatedMapContract.STATE_MACHINE_ID)
                 .pluginSettings(Map.of("membership.mode", "governed"))
                 .build();
-        List<AuthenticatedMapContract.CollectionDescriptor> collections = List.of(
-                collection("kv-open", AuthenticatedMapContract.AUTH_OPEN,
-                        64, 1_024, AuthenticatedMapContract.VALUE_ENCODING_OPAQUE, ""),
-                collection("documents", AuthenticatedMapContract.AUTH_OWNER,
-                        64, 8_192, AuthenticatedMapContract.VALUE_ENCODING_OPAQUE, ""),
-                collection("notes", AuthenticatedMapContract.AUTH_MEMBER,
-                        64, 2_048, AuthenticatedMapContract.VALUE_ENCODING_CANONICAL_CBOR,
-                        ""));
+        Profile profile = businessProfile(validatorArtifactClosure);
         AuthenticatedMapContract.Genesis genesis = AuthenticatedMapGenesisFactory.classicJmt(
                 config,
                 new byte[32],
                 32,
                 AppChainConfig.DEFAULT_MAX_MESSAGE_BYTES,
-                collections,
-                List.of());
+                profile.collections(), profile.validators(), List.of(),
+                governedGenesis(chainId));
         return Collections.unmodifiableMap(
                 new TreeMap<>(AuthenticatedMapGenesisFactory.settings(genesis)));
     }
@@ -149,16 +141,26 @@ public final class ShowcaseAuthenticatedMapConfig {
                 .pluginSettings(Map.of("membership.mode", "governed"))
                 .build();
 
+        Profile profile = businessProfile(validatorArtifactClosure);
+        AuthenticatedMapContract.Genesis genesis = AuthenticatedMapGenesisFactory.mpf(
+                config,
+                new byte[32],
+                32,
+                AppChainConfig.DEFAULT_MAX_MESSAGE_BYTES,
+                profile.collections(), profile.validators(), List.of(),
+                governedGenesis(chainId));
+        return Collections.unmodifiableMap(
+                new TreeMap<>(AuthenticatedMapGenesisFactory.settings(genesis)));
+    }
+
+    private static Profile businessProfile(byte[] validatorArtifactClosure) {
         AuthenticatedMapContract.ValidatorDescriptor productSchema =
                 AuthenticatedMapContract.ValidatorDescriptor.schema(
                         "product-v1", productSchemaDefinition());
         AuthenticatedMapContract.ValidatorDescriptor gtinValidator =
                 AuthenticatedMapContract.ValidatorDescriptor.plugin(
-                        VALIDATOR_DESCRIPTOR_ID,
-                        VALIDATOR_PROVIDER_ID,
-                        validatorArtifactClosure,
-                        EMPTY_CBOR_MAP);
-
+                        VALIDATOR_DESCRIPTOR_ID, VALIDATOR_PROVIDER_ID,
+                        validatorArtifactClosure, EMPTY_CBOR_MAP);
         List<AuthenticatedMapContract.CollectionDescriptor> collections = List.of(
                 collection("attachments", AuthenticatedMapContract.AUTH_OWNER,
                         64, 32_768, AuthenticatedMapContract.VALUE_ENCODING_OPAQUE, ""),
@@ -178,18 +180,7 @@ public final class ShowcaseAuthenticatedMapConfig {
                         "released-products", AuthenticatedMapContract.AUTH_APPROVAL,
                         APPROVAL_POLICY_ID, false, 64, 4_096,
                         AuthenticatedMapContract.VALUE_ENCODING_OPAQUE, ""));
-
-        AuthenticatedMapContract.Genesis genesis = AuthenticatedMapGenesisFactory.mpf(
-                config,
-                new byte[32],
-                32,
-                AppChainConfig.DEFAULT_MAX_MESSAGE_BYTES,
-                collections,
-                List.of(gtinValidator, productSchema),
-                List.of(),
-                governedGenesis(chainId));
-        return Collections.unmodifiableMap(
-                new TreeMap<>(AuthenticatedMapGenesisFactory.settings(genesis)));
+        return new Profile(collections, List.of(gtinValidator, productSchema));
     }
 
     static final String DIRECT_POLICY_ID = "issuer-write";
@@ -219,6 +210,20 @@ public final class ShowcaseAuthenticatedMapConfig {
      * distinct organizations before an approved action executes.
      */
     static GovernedGenesisV1 governedGenesis(String chainId) {
+        return governedGenesis(chainId, List.of(new DirectRolePolicyV1(
+                        DIRECT_POLICY_ID, 1, RecordStatus.ACTIVE, "issuer", 100)),
+                APPROVAL_POLICY_ID);
+    }
+
+    static GovernedGenesisV1 documentReviewGenesis(String chainId) {
+        return governedGenesis(chainId, List.of(), DocumentReviewPreset.POLICY_ID);
+    }
+
+    private static GovernedGenesisV1 governedGenesis(
+            String chainId,
+            List<DirectRolePolicyV1> directPolicies,
+            String approvalPolicyId
+    ) {
         OrganizationRecordV1 manufacturer = new OrganizationRecordV1(
                 "acme-manufacturing", 1, RecordStatus.ACTIVE, new byte[0]);
         OrganizationRecordV1 guildA = new OrganizationRecordV1(
@@ -236,17 +241,15 @@ public final class ShowcaseAuthenticatedMapConfig {
                         guildB.organizationId(), List.of("auditor")));
         AdministratorAuthorityV1 authority = new AdministratorAuthorityV1(
                 AUTHORITY_ID, 1, List.of("registry-admin-a"), 1, 1_000);
-        DirectRolePolicyV1 directPolicy = new DirectRolePolicyV1(
-                DIRECT_POLICY_ID, 1, RecordStatus.ACTIVE, "issuer", 100);
         ApprovalPolicyV1 approvalPolicy = new ApprovalPolicyV1(
-                APPROVAL_POLICY_ID, 1, RecordStatus.ACTIVE, List.of("issuer"),
+                approvalPolicyId, 1, RecordStatus.ACTIVE, List.of("issuer"),
                 List.of(new ApprovalPolicyV1.RequiredClause(
                         "independent-auditors", "auditor", 2,
                         ApprovalPolicyV1.DistinctBy.ORGANIZATION)),
                 ApprovalPolicyV1.RejectionMode.ANY_ELIGIBLE, 600);
         return new GovernedGenesisV1(
                 chainId, authority, List.of(manufacturer, guildA, guildB), actors,
-                List.of(directPolicy), List.of(approvalPolicy),
+                directPolicies, List.of(approvalPolicy),
                 GovernedAuthorizationLimitsV1.defaults());
     }
 
@@ -359,6 +362,11 @@ public final class ShowcaseAuthenticatedMapConfig {
             }
         }
         return List.copyOf(unique);
+    }
+
+    private record Profile(
+            List<AuthenticatedMapContract.CollectionDescriptor> collections,
+            List<AuthenticatedMapContract.ValidatorDescriptor> validators) {
     }
 
     private record Options(Path runtimeJar, String chainId, List<String> members, int threshold) {

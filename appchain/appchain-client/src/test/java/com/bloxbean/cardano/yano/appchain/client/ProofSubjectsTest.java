@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.client;
 
 import com.bloxbean.cardano.yano.appchain.composite.contracts.CompositeCommitmentV1;
+import com.bloxbean.cardano.yano.api.appchain.transition.FinalizedMessageIndex;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ApprovalPolicyV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ApprovalProposalV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RecordStatus;
@@ -22,7 +23,7 @@ class ProofSubjectsTest {
         byte[] messageId = filled(1, 32);
         assertThat(ProofSubjects.compositeFinalizedMessage("ordered-log", messageId)
                 .canonicalKey()).containsExactly(CompositeCommitmentV1.componentKey(
-                "ordered-log", messageId));
+                "ordered-log", FinalizedMessageIndex.messageKey(messageId)));
         assertThat(ProofSubjects.documentHead("doc-trail", "invoice-7").canonicalKey())
                 .containsExactly(CompositeCommitmentV1.componentKey(
                         "doc-trail", DocTrailContract.entityKey("invoice-7")));

@@ -14,6 +14,8 @@ import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -21,7 +23,11 @@ import java.util.Objects;
 /** Reusable authenticated index proving that finalized messages occupied block positions. */
 public final class FinalizedMessageIndex {
     public static final int SCHEMA_VERSION = 1;
-    public static final byte[] TIP_KEY = "~tip".getBytes(StandardCharsets.US_ASCII);
+    public static final String LOGICAL_NAMESPACE = "~yano/finalized-message/v1/";
+    public static final byte[] NAMESPACE =
+            LOGICAL_NAMESPACE.getBytes(StandardCharsets.US_ASCII);
+    public static final byte[] CONFIG_KEY = key("config".getBytes(StandardCharsets.US_ASCII));
+    public static final byte[] TIP_KEY = key("tip".getBytes(StandardCharsets.US_ASCII));
 
     public enum InclusionPolicy {
         ALL,
@@ -46,6 +52,10 @@ public final class FinalizedMessageIndex {
 
         public static Config allMessages() {
             return new Config(InclusionPolicy.ALL, AppChainConfig.MAX_BLOCK_MESSAGES);
+        }
+
+        public static Config applicationOnly(int maxMessagesPerBlock) {
+            return new Config(InclusionPolicy.APPLICATION_ONLY, maxMessagesPerBlock);
         }
 
         /** Stable bytes suitable for a component or application genesis profile. */
@@ -112,6 +122,14 @@ public final class FinalizedMessageIndex {
                 ((ByteString) fields.get(4)).getBytes());
     }
 
+    /** Physical reserved state key for the public finalized-message-v1 subject. */
+    public static byte[] messageKey(byte[] messageId) {
+        if (messageId == null || messageId.length != 32) {
+            throw new IllegalArgumentException("messageId must contain 32 bytes");
+        }
+        return key(messageId);
+    }
+
     private static StateMutation messageMutation(TransitionContext context) {
         MessageRecord record = new MessageRecord(context.height(), context.originalMessageIndex(),
                 context.topic(), context.sender());
@@ -121,12 +139,23 @@ public final class FinalizedMessageIndex {
         value.add(new UnsignedInteger(record.originalMessageIndex()));
         value.add(new UnicodeString(record.topic()));
         value.add(new ByteString(record.sender()));
-        return StateMutation.put(context.messageId(), CborSerializationUtil.serialize(value));
+        return StateMutation.put(messageKey(context.messageId()),
+                CborSerializationUtil.serialize(value));
     }
 
     private static StateMutation tipMutation(long height) {
         return StateMutation.put(TIP_KEY,
                 CborSerializationUtil.serialize(new UnsignedInteger(height)));
+    }
+
+    private static byte[] key(byte[] suffix) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            digest.update(NAMESPACE);
+            return digest.digest(suffix);
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
     }
 
     public record MessageRecord(

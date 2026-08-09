@@ -22,6 +22,8 @@ import com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerModeProvider;
 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 import com.bloxbean.cardano.yano.api.appchain.state.StateSnapshot;
+import com.bloxbean.cardano.yano.api.appchain.transition.FinalizedMessageIndex;
+import com.bloxbean.cardano.yano.api.appchain.transition.FinalizedMessageIndexedStateMachine;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.events.AppBlockFinalizedEvent;
 import com.bloxbean.cardano.yano.api.events.AppMessageReceivedEvent;
@@ -472,8 +474,17 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             Set<String> normalizedMembers = AppChainConfigSemantics.validate(config);
             this.effectsSettings = EffectsSettings.from(config);
             this.consensusProfile = effectsSettings.consensusProfile(config);
-            this.stateCommitmentIdentity = StateCommitmentIdentity.fromSettings(
+            String effectiveStateMachineId = stateMachine == null
+                    ? config.stateMachineId()
+                    : Objects.requireNonNull(stateMachine.id(), "AppStateMachine.id returned null");
+            StateCommitmentIdentity baseStateIdentity = StateCommitmentIdentity.fromSettings(
                     config.pluginSettings());
+            this.stateCommitmentIdentity = OrderedLogStateMachine.ID.equals(
+                    effectiveStateMachineId) ? baseStateIdentity
+                    : FinalizedMessageIndexedStateMachine.configuration(
+                                    config.pluginSettings(), consensusProfile.maxBlockMessages())
+                            .map(index -> baseStateIdentity.withApplicationProfile(index.digest()))
+                            .orElse(baseStateIdentity);
             this.protocolMagic = protocolMagic;
             this.eventBus = eventBus;
             this.log = Objects.requireNonNull(log, "log");
@@ -482,10 +493,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             this.group = new MemberGroup(normalizedMembers, config.threshold());
             this.seenMessageIds = new SeenMessageIds(SEEN_IDS_HARD_CAP);
             this.pool = new AppMsgPool(config.poolMaxMessages());
-            this.stateMachine = stateMachine != null
-                    ? stateMachine
-                    : resolveStateMachine(config.stateMachineId(), pluginProviders,
-                            new com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext() {
+            AppStateMachineContext stateMachineContext =
+                    new com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext() {
                                 @Override public String chainId() { return config.chainId(); }
                                 @Override public java.util.Map<String, String> settings() {
                                     return config.pluginSettings();
@@ -515,7 +524,14 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                                                 epoch.threshold());
                                     });
                                 }
-                            }, log);
+                            };
+            AppStateMachine resolvedStateMachine = stateMachine != null
+                    ? stateMachine
+                    : resolveStateMachine(config.stateMachineId(), pluginProviders,
+                            stateMachineContext, log);
+            this.stateMachine = OrderedLogStateMachine.ID.equals(effectiveStateMachineId)
+                    ? resolvedStateMachine
+                    : maybeFinalizedMessageIndexed(resolvedStateMachine, stateMachineContext);
             this.ledgerPath = (ledgerPath != null
                     ? ledgerPath : YanoConfig.DEFAULT_APP_CHAIN_STORAGE_PATH)
                     + "/" + config.chainId();
@@ -781,6 +797,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             }
 
             @Override
+            public AppCapabilityManifest capabilityManifest() {
+                return delegate.capabilityManifest();
+            }
+
+            @Override
             public void apply(
                     AppBlockExecutionContext context,
                     AppStateWriter writer,
@@ -804,6 +825,21 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 return delegate.query(path, params, state);
             }
         };
+    }
+
+    private static AppStateMachine maybeFinalizedMessageIndexed(
+            AppStateMachine machine,
+            AppStateMachineContext context
+    ) {
+        int frameworkLimit = context.consensusProfile().orElseThrow(() ->
+                new IllegalArgumentException(
+                        "finalized-message index requires normalized consensus profile"))
+                .maxBlockMessages();
+        return FinalizedMessageIndexedStateMachine.configuration(
+                        context.settings(), frameworkLimit)
+                .<AppStateMachine>map(index ->
+                        new FinalizedMessageIndexedStateMachine(machine, index))
+                .orElse(machine);
     }
 
     private static com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode
@@ -2824,6 +2860,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             status.put("tipHeight", tipHeight());
             status.put("stateRoot", HexUtil.encodeHexString(stateRoot()));
             status.put("stateMachine", stateMachine.id());
+            status.put("capabilityManifest", capabilityManifest());
             Map<String, Object> machineStatus = stateMachine.operationalStatus();
             if (machineStatus != null && !machineStatus.isEmpty()) {
                 status.put("stateMachineStatus", Map.copyOf(machineStatus));
@@ -2973,6 +3010,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         status.put("tipHeight", 0L);
         status.put("stateRoot", HexUtil.encodeHexString(new byte[32]));
         status.put("stateMachine", stateMachine.id());
+        status.put("capabilityManifest", capabilityManifest());
         Map<String, Object> machineStatus = stateMachine.operationalStatus();
         if (machineStatus != null && !machineStatus.isEmpty()) {
             status.put("stateMachineStatus", Map.copyOf(machineStatus));
@@ -3044,6 +3082,58 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             status.put("oldestProvableHeight", currentLedger.stateBackend().oldestProvableHeight());
         }
         return Map.copyOf(status);
+    }
+
+    private AppCapabilityManifest capabilityManifest() {
+        AppCapabilityManifest manifest = Objects.requireNonNull(
+                stateMachine.capabilityManifest(), "state-machine capability manifest");
+        String profile = stateCommitmentIdentity.profile().id();
+        String capabilityId = profile.startsWith("jmt-")
+                ? AppCapabilityIds.JMT : AppCapabilityIds.MPF;
+        manifest = appendCapability(manifest, new AppCapabilityManifest.CrossCutting(
+                capabilityId, "1.0.0", true,
+                HexUtil.encodeHexString(stateCommitmentIdentity.profile().formatFingerprint()),
+                Map.of("backend", stateCommitmentIdentity.profile().backendFamily().name()
+                                .toLowerCase(Locale.ROOT),
+                        "verificationTarget", profile.startsWith("jmt-")
+                                ? "off-chain" : "off-chain,on-chain"),
+                AppCapabilityManifest.Origin.RUNTIME_CONFIGURED));
+        if (effectsSettings.enabled()) {
+            manifest = appendCapability(manifest, new AppCapabilityManifest.CrossCutting(
+                    AppCapabilityIds.OUTBOX_EFFECTS, "1.0.0", true,
+                    HexUtil.encodeHexString(
+                            AppChainConsensusProfileCommitment.digest(consensusProfile)),
+                    Map.of("maxPerBlock", Integer.toString(effectsSettings.maxPerBlock())),
+                    AppCapabilityManifest.Origin.RUNTIME_CONFIGURED));
+        }
+        Set<String> observerTypes = new TreeSet<>();
+        config.pluginSettings().forEach((key, value) -> {
+            if (key.startsWith("observers.") && key.endsWith(".type")) {
+                observerTypes.add(value);
+            }
+        });
+        for (String observerType : observerTypes) {
+            String id = switch (observerType) {
+                case "eutxo-vault-deposit-v1" -> AppCapabilityIds.L1_VAULT_DEPOSIT;
+                case "eutxo-batch-withdrawal-confirmation-v1" ->
+                        AppCapabilityIds.L1_WITHDRAWAL_CONFIRMATION;
+                default -> "l1-observer:" + observerType;
+            };
+            manifest = appendCapability(manifest, new AppCapabilityManifest.CrossCutting(
+                    id, "1.0.0", true, "observer-type:" + observerType,
+                    Map.of("observerType", observerType),
+                    AppCapabilityManifest.Origin.RUNTIME_CONFIGURED));
+        }
+        return manifest;
+    }
+
+    private static AppCapabilityManifest appendCapability(
+            AppCapabilityManifest manifest,
+            AppCapabilityManifest.CrossCutting capability
+    ) {
+        boolean present = manifest.crossCutting().stream().anyMatch(
+                value -> value.capabilityId().equals(capability.capabilityId()));
+        return present ? manifest : manifest.withCrossCutting(capability);
     }
 
     // ------------------------------------------------------------------

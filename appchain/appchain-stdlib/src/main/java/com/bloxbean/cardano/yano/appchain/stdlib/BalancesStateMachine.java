@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.appchain.stdlib;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppCapabilityManifest;
 import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
@@ -62,6 +63,16 @@ public final class BalancesStateMachine implements AppStateMachine {
     @Override
     public String id() {
         return ID;
+    }
+
+    @Override
+    public AppCapabilityManifest capabilityManifest() {
+        return StdlibCapabilityManifests.component(
+                        ID, com.bloxbean.cardano.yano.appchain.stdlib.contracts
+                                .BalancesContract.DEFAULT_TOPIC)
+                .proofSubject(new AppCapabilityManifest.ProofSubject(
+                        "account-balance-v1", "", "b/", "state-proof"))
+                .build();
     }
 
     @Override

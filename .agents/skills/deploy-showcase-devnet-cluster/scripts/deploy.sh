@@ -85,6 +85,7 @@ if [ "$SMOKE" = true ]; then
   ./showcase.sh run orders --instance "$INSTANCE"
   ./showcase.sh run registry --instance "$INSTANCE"
   ./showcase.sh run authenticated-map --instance "$INSTANCE"
+  ./showcase.sh run document-review --instance "$INSTANCE"
 fi
 
 "$SCRIPT_DIR/validate_cluster.sh" "$TARGET" "$INSTANCE" 7070

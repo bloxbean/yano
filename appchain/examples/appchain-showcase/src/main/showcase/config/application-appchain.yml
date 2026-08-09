@@ -240,3 +240,18 @@ yano:
             vault-script-file: "${yano.home}/config/settlement/settlement-vault.script"
             shard-script-file: "${yano.home}/config/settlement/settlement-shard.script"
             round-timeout-ms: "15000"
+
+    # ADR-033: lean composition of the stock domain-actor registry,
+    # role-aware approvals, document-trail transitions, and an
+    # application-owned one-use approval-consumption receipt.
+    chains[11]:
+      chain-id: "document-review-chain"
+      state-machine: "document-review"
+      state:
+        commitment-profile: "mpf-blake2b256-v1"
+        format-fingerprint: "91ee14091200f1e24659112d640e877e9177779dcc81dd06117f013e9190082b"
+        genesis-id: "ebf7c4423f5ca66ed1d37fe6c0cef9473e734e723f812d8bcd17692f0aaff63a"
+      membership:
+        mode: "governed"
+      block:
+        interval-ms: "1000"

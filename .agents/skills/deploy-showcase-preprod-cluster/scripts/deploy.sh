@@ -78,6 +78,7 @@ if [ -e "$TARGET" ]; then
     ./showcase.sh run orders --instance "$INSTANCE"
     ./showcase.sh run registry --instance "$INSTANCE"
     ./showcase.sh run authenticated-map --instance "$INSTANCE"
+    ./showcase.sh run document-review --instance "$INSTANCE"
   fi
   "$SCRIPT_DIR/validate_cluster.sh" "$TARGET" "$INSTANCE" 17070
   "$SCRIPT_DIR/write_runbook.sh" "$TARGET" "$INSTANCE"
@@ -105,13 +106,23 @@ mkdir -m 700 private-anchor private-settlement
 cp "$SOURCE_KEYS/anchor.seed" private-anchor/anchor.seed
 cp "$SOURCE_KEYS/operator.seed" private-settlement/operator.seed
 chmod 600 private-anchor/anchor.seed private-settlement/operator.seed
+SETTLEMENT_RECORD="settlement-deployment-payment-chain-settlement.properties"
+if [ -f "$SOURCE_KEYS/$SETTLEMENT_RECORD" ]; then
+  cp "$SOURCE_KEYS/$SETTLEMENT_RECORD" "private-settlement/$SETTLEMENT_RECORD"
+  chmod 600 "private-settlement/$SETTLEMENT_RECORD"
+fi
 
+# Deploy the operator-specific L1 settlement identity from a disposable
+# eleven-chain bootstrap instance. The final app-chain instance is created
+# only after the production settlement block is in the catalog position; no
+# app-chain marker, root, or ledger is migrated into the final deployment.
+BOOTSTRAP_INSTANCE="${INSTANCE}-settlement-bootstrap"
 ./showcase.sh prepare --profile light --network preprod --nodes 3 \
-  --instance "$INSTANCE" --http-base 17070 --server-base 17337 \
+  --instance "$BOOTSTRAP_INSTANCE" --http-base 17070 --server-base 17337 \
   --anchor-chain all --anchor-key-file "$PWD/private-anchor/anchor.seed" \
   --confirm-public-anchor preprod
 
-CLUSTER_ROOT="$TARGET/data/showcase/$INSTANCE/cluster"
+CLUSTER_ROOT="$TARGET/data/showcase/$BOOTSTRAP_INSTANCE/cluster"
 for NODE in 0 1 2; do
   mkdir -p "$CLUSTER_ROOT/node$NODE"
   cp -cR "$SOURCE_STATE" "$CLUSTER_ROOT/node$NODE/chainstate-import"
@@ -124,6 +135,50 @@ for NODE in 0 1 2; do
 done
 
 # Create and retain deployment/L1 identity markers before adopting copied DBs.
+./showcase.sh up --instance "$BOOTSTRAP_INSTANCE"
+./showcase.sh stop --instance "$BOOTSTRAP_INSTANCE"
+for NODE in 0 1 2; do
+  mv "$CLUSTER_ROOT/node$NODE/chainstate" \
+    "$CLUSTER_ROOT/node$NODE/chainstate-bootstrap-empty"
+  mv "$CLUSTER_ROOT/node$NODE/chainstate-import" \
+    "$CLUSTER_ROOT/node$NODE/chainstate"
+done
+./showcase.sh up --instance "$BOOTSTRAP_INSTANCE"
+
+SETTLEMENT_LOG="$TARGET/settlement-bootstrap.log"
+set +e
+./showcase.sh settlement bootstrap --instance "$BOOTSTRAP_INSTANCE" \
+  --settlement-key-file "$PWD/private-settlement/operator.seed" \
+  --confirm-public-settlement preprod 2>&1 | tee "$SETTLEMENT_LOG"
+SETTLEMENT_STATUS="${PIPESTATUS[0]}"
+set -e
+if [ -f "private-settlement/$SETTLEMENT_RECORD" ]; then
+  cp "private-settlement/$SETTLEMENT_RECORD" "$SOURCE_KEYS/$SETTLEMENT_RECORD"
+  chmod 600 "$SOURCE_KEYS/$SETTLEMENT_RECORD"
+fi
+[ "$SETTLEMENT_STATUS" -eq 0 ] || exit "$SETTLEMENT_STATUS"
+python3 "$SCRIPT_DIR/adopt_settlement_config.py" \
+  yano/config/application-appchain.yml "$SETTLEMENT_LOG" \
+  catalog/showcase-catalog-v1.json
+./showcase.sh stop --instance "$BOOTSTRAP_INSTANCE"
+./showcase.sh reset --instance "$BOOTSTRAP_INSTANCE" --yes
+
+# Create the final twelve-chain deployment from a clean app-chain generation.
+./showcase.sh prepare --profile light --network preprod --nodes 3 \
+  --instance "$INSTANCE" --http-base 17070 --server-base 17337 \
+  --anchor-chain all --anchor-key-file "$PWD/private-anchor/anchor.seed" \
+  --confirm-public-anchor preprod
+
+CLUSTER_ROOT="$TARGET/data/showcase/$INSTANCE/cluster"
+for NODE in 0 1 2; do
+  mkdir -p "$CLUSTER_ROOT/node$NODE"
+  cp -cR "$SOURCE_STATE" "$CLUSTER_ROOT/node$NODE/chainstate-import"
+  LEGACY_APPCHAINS="$CLUSTER_ROOT/node$NODE/chainstate-import/appchains"
+  if [ -d "$LEGACY_APPCHAINS" ]; then
+    find "$LEGACY_APPCHAINS" -depth -delete
+  fi
+done
+
 ./showcase.sh up --instance "$INSTANCE"
 ./showcase.sh stop --instance "$INSTANCE"
 for NODE in 0 1 2; do
@@ -133,25 +188,13 @@ for NODE in 0 1 2; do
     "$CLUSTER_ROOT/node$NODE/chainstate"
 done
 ./showcase.sh up --instance "$INSTANCE"
-
 ./showcase.sh anchor bootstrap all --instance "$INSTANCE"
-
-SETTLEMENT_LOG="$TARGET/data/showcase/$INSTANCE/settlement-bootstrap.log"
-./showcase.sh settlement bootstrap --instance "$INSTANCE" \
-  --settlement-key-file "$PWD/private-settlement/operator.seed" \
-  --confirm-public-settlement preprod 2>&1 | tee "$SETTLEMENT_LOG"
-python3 "$SCRIPT_DIR/adopt_settlement_config.py" \
-  yano/config/application-appchain.yml "$SETTLEMENT_LOG"
-./showcase.sh chain add payment-chain-settlement --instance "$INSTANCE"
-./showcase.sh anchor enable payment-chain-settlement --instance "$INSTANCE" \
-  --anchor-key-file "$PWD/private-anchor/anchor.seed" \
-  --confirm-public-anchor preprod
-./showcase.sh anchor bootstrap payment-chain-settlement --instance "$INSTANCE"
 
 if [ "$SMOKE" = true ]; then
   ./showcase.sh run orders --instance "$INSTANCE"
   ./showcase.sh run registry --instance "$INSTANCE"
   ./showcase.sh run authenticated-map --instance "$INSTANCE"
+  ./showcase.sh run document-review --instance "$INSTANCE"
 fi
 
 "$SCRIPT_DIR/validate_cluster.sh" "$TARGET" "$INSTANCE" 17070

@@ -1,6 +1,6 @@
 # ADR app-layer/033: Showcase reference catalog and capability discovery
 
-**Status:** Accepted — implementation pending
+**Status:** Accepted — implemented
 **Date:** 2026-08-09
 **Scope:** App-chain showcase catalog, reusable-capability visibility, console presentation, and
 optional finalized-message indexing
@@ -210,8 +210,11 @@ The app-chain overview will render `capabilityManifest` as:
 * whether each item is intrinsic, composed, or launcher-enabled.
 
 A compact capability matrix across all running chains will make the showcase story visible without
-selecting chains one by one. Membership governance and executable-profile governance appear in a
-separate governance group so they are not labeled as business approval.
+selecting chains one by one. It lives in a dedicated **Capabilities** tab within the app-chain page,
+so the default **Operations** tab retains its operational density and vertical space. The matrix is
+loaded on demand, and each row links back to that chain's operational view. Membership governance
+and executable-profile governance appear in a separate governance group so they are not labeled as
+business approval.
 
 ### 5.2 Finalized-message proof lab
 
@@ -380,6 +383,53 @@ need catalog updates; their submission engines do not change.
     or move funds.
 
 ## 10. Consequences
+
+### Implementation record (2026-08-09)
+
+All phases are complete on `feat/033_refactor_showcase`:
+
+* the light profile is catalog-driven and starts twelve chains, with seven foundations, three
+  business reference compositions, one JMT backend-comparison chain, and one distinct L1 boundary;
+* `document-review-chain` composes the existing domain-actor, role-approval, role-authorization,
+  document-transition, and approval-consumption capabilities without a parallel role model;
+* every `AppStateMachine` exposes a deterministic `AppCapabilityManifest`; stock, composite,
+  launcher, state-backend, effect, and L1-observer capabilities appear in the existing status
+  response and the console consumes that manifest;
+* the generic finalized-message decorator, reserved key derivation, state-generation binding,
+  retained launcher selection, selected/all validation, and proof-subject discovery are implemented;
+* the console includes an on-demand Capabilities tab with the cross-chain matrix and composition
+  view, plus a compact message proof and optional state-proof lab, explicit availability warning,
+  and committed-receipt workflow traces;
+* scripts, distribution contracts, load aliases, catalog documentation, runbooks, and the devnet
+  and preprod deployment skills consume or validate the packaged catalog.
+
+Live qualification used fresh three-node devnet instances in default, selected
+(`documents-chain,workflow-chain`), and all-chain index modes. All twelve chains agreed on height,
+root, state genesis, commitment profile, and manifest digest. Selected and all modes survived
+three-node restart. A selected document message produced both a compact `messagesRoot` proof and an
+MPF inclusion proof; an unselected registry message produced the compact proof and an MPF exclusion
+proof for the same typed subject. The all mode also produced and verified the corresponding JMT
+inclusion proof off-chain. MPF reference on-chain-verifier regressions pass.
+
+A fresh public-preprod qualification then started three nodes with the twelve-chain catalog and the
+owner-supplied anchor and settlement keys. The production settlement identity was deployed once and
+retained outside the disposable node state. All twelve SCRIPT anchors were bootstrapped and observed
+on L1. The orders, registry, authenticated-map, and document-review scenarios completed, and every
+node exposed identical roots, identities, profiles, and manifests. No deposit or withdrawal was
+performed. During this qualification:
+
+* the production settlement adoption helper was fixed to insert at catalog order and to distinguish
+  top-level chain declarations from nested observer/indexer `chain-id` fields;
+* settlement bootstrap was made resumable across partial public-network completion by detecting the
+  already-held root and complete shard-token set, rejecting partial shard sets, and waiting for token
+  ownership rather than an intermediate change output; and
+* the non-secret settlement deployment identity is retained next to the owner-supplied keys so a
+  clean cluster recreation reuses the deployed contracts instead of minting a new identity.
+
+Final fresh devnet and preprod deployments both passed the catalog, three-node agreement, anchor,
+storage-layout, capability, and reference-workflow validators. The release candidate also passed
+`./gradlew clean build` and the packaged showcase distribution contract. The staged ZIP SHA-256 is
+`52dbfaf24768630cc35b83e08a5d6dc21fa730d46416b1f8a1281531133062a4`.
 
 ### Positive
 

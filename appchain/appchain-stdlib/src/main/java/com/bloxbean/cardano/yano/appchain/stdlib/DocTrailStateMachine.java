@@ -2,7 +2,10 @@ package com.bloxbean.cardano.yano.appchain.stdlib;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppCapabilityManifest;
 import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
+import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
+import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
@@ -12,6 +15,9 @@ import com.bloxbean.cardano.yano.api.appchain.transition.TransitionPlans;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.DocTrailContract;
 
 import java.util.List;
+import java.nio.ByteBuffer;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Standard-library state machine {@code doc-trail} (ADR app-layer/006 E2.4):
@@ -36,11 +42,21 @@ import java.util.List;
 public final class DocTrailStateMachine implements AppStateMachine {
 
     public static final String ID = "doc-trail";
+    public static final String QUERY_HEAD = "head";
     private final DocTrailTransitions transitions = new DocTrailTransitions();
 
     @Override
     public String id() {
         return ID;
+    }
+
+    @Override
+    public AppCapabilityManifest capabilityManifest() {
+        return StdlibCapabilityManifests.component(
+                        ID, DocTrailContract.DEFAULT_TOPIC, List.of(QUERY_HEAD))
+                .proofSubject(new AppCapabilityManifest.ProofSubject(
+                        "document-head-v1", "", "e/", "state-proof"))
+                .build();
     }
 
     @Override
@@ -70,6 +86,24 @@ public final class DocTrailStateMachine implements AppStateMachine {
                     TransitionContext.of(block, originalIndex, message),
                     DocTrailTransitions.facts(writer, command));
             TransitionPlans.commitIfApproved(decision, writer, effects);
+        }
+    }
+
+    @Override
+    public byte[] query(String path, byte[] params, AppQueryContext state) {
+        if (!QUERY_HEAD.equals(path)) {
+            throw new AppQueryException(AppQueryException.Code.UNSUPPORTED,
+                    "unsupported document-trail query");
+        }
+        try {
+            String entityId = StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(params)).toString();
+            return state.get(DocTrailContract.entityKey(entityId)).orElse(new byte[0]);
+        } catch (Exception invalid) {
+            throw new AppQueryException(AppQueryException.Code.INVALID_REQUEST,
+                    "document head query requires a bounded UTF-8 entity id");
         }
     }
 

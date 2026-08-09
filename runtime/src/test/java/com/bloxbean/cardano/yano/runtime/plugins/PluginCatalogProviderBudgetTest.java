@@ -51,7 +51,10 @@ class PluginCatalogProviderBudgetTest {
                 BundleManifest.CURRENT_SCHEMA_VERSION,
                 id,
                 SemVersion.parse("1.0.0"),
-                new YanoApiRange(1, 1, 1),
+                new YanoApiRange(
+                        PluginCatalogBuilder.PLUGIN_API_MAJOR,
+                        PluginCatalogBuilder.PLUGIN_API_MAJOR,
+                        PluginCatalogBuilder.PLUGIN_API_LEVEL),
                 List.of(),
                 List.of(new BundleContribution(
                         ContributionKind.FINALIZED_SINK, name, provider)));

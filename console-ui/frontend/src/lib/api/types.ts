@@ -154,6 +154,19 @@ export interface AppChainMessage {
   bodyHex?: string;
 }
 
+export interface MessageInclusionProof {
+  schemaVersion: number;
+  treeId: string;
+  chainId: string;
+  blockHeight: number;
+  blockHash: string;
+  messagesRoot: string;
+  messageId: string;
+  messageIndex: number;
+  leafCount: number;
+  siblings: string[];
+}
+
 export interface AppChainBlockDetail {
   chainId: string;
   height: number;
@@ -197,6 +210,53 @@ export interface AppChainStatus {
   effects?: Record<string, unknown>;
   stateMachineStatus?: Record<string, unknown>;
   stateCommitment?: StateCommitmentStatus;
+  capabilityManifest?: AppCapabilityManifest;
+}
+
+export interface AppCapabilityComponent {
+  id: string;
+  version: string;
+  configurationId: string;
+  stateNamespace: string;
+  topics: string[];
+  querySubjects: string[];
+  origin: 'INTRINSIC' | 'COMPOSED' | 'LAUNCHER_ENABLED' | 'RUNTIME_CONFIGURED';
+}
+
+export interface AppCapabilityWorkflow {
+  id: string;
+  version: string;
+  participantComponentIds: string[];
+  topic: string;
+  effectTypes: string[];
+  origin: AppCapabilityComponent['origin'];
+}
+
+export interface AppCrossCuttingCapability {
+  capabilityId: string;
+  version: string;
+  enabled: boolean;
+  configurationDigest: string;
+  attributes: Record<string, string>;
+  origin: AppCapabilityComponent['origin'];
+}
+
+export interface AppProofSubject {
+  subjectId: string;
+  componentId: string;
+  keyNamespace: string;
+  verificationTarget: string;
+}
+
+export interface AppCapabilityManifest {
+  schemaVersion: number;
+  applicationId: string;
+  applicationVersion: string;
+  manifestDigest: string;
+  components: AppCapabilityComponent[];
+  workflows: AppCapabilityWorkflow[];
+  crossCutting: AppCrossCuttingCapability[];
+  proofSubjects: AppProofSubject[];
 }
 
 export interface PluginOperationsSummary {

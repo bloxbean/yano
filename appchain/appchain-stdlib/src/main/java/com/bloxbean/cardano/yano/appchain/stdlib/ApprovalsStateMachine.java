@@ -9,6 +9,8 @@ import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppCapabilityIds;
+import com.bloxbean.cardano.yano.api.appchain.AppCapabilityManifest;
 import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
@@ -97,6 +99,18 @@ public final class ApprovalsStateMachine implements AppStateMachine {
     @Override
     public String id() {
         return ID;
+    }
+
+    @Override
+    public AppCapabilityManifest capabilityManifest() {
+        return StdlibCapabilityManifests.component(ID, ApprovalsContract.DEFAULT_TOPIC)
+                .crossCutting(new AppCapabilityManifest.CrossCutting(
+                        AppCapabilityIds.BASIC_APPROVAL, "1.0.0", true,
+                        "approvals-state-v1", java.util.Map.of(),
+                        AppCapabilityManifest.Origin.INTRINSIC))
+                .proofSubject(new AppCapabilityManifest.ProofSubject(
+                        "basic-approval-outcome-v1", "", "i/", "state-proof"))
+                .build();
     }
 
     @Override

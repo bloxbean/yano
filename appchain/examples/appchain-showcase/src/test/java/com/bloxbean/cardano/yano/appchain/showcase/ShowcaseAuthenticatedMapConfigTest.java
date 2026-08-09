@@ -132,7 +132,7 @@ class ShowcaseAuthenticatedMapConfigTest {
     }
 
     @Test
-    void buildsBasicClassicJmtGenesisForTheContrastChain() {
+    void buildsBusinessEquivalentClassicJmtGenesisForTheContrastChain() {
         Map<String, String> settings = ShowcaseAuthenticatedMapConfig.jmtSettings(
                 ShowcaseAuthenticatedMapConfig.JMT_CHAIN_ID,
                 List.of("11".repeat(32), "22".repeat(32), "33".repeat(32)),
@@ -142,16 +142,29 @@ class ShowcaseAuthenticatedMapConfigTest {
                         StdlibStateMachineProviders.AUTHENTICATED_MAP_GENESIS_SETTING)));
         assertThat(genesis.chainId()).isEqualTo("authenticated-map-jmt-chain");
         assertThat(genesis.commitmentProfileId()).isEqualTo("jmt-blake2b256-v1");
-        assertThat(genesis.collections())
-                .extracting(AuthenticatedMapContract.CollectionDescriptor::id)
-                .containsExactly("documents", "kv-open", "notes");
-        assertThat(genesis.collections())
-                .extracting(AuthenticatedMapContract.CollectionDescriptor::authorization)
-                .containsExactly(AuthenticatedMapContract.AUTH_OWNER,
-                        AuthenticatedMapContract.AUTH_OPEN,
-                        AuthenticatedMapContract.AUTH_MEMBER);
-        assertThat(genesis.validators()).isEmpty();
-        assertThat(genesis.governedGenesis()).isNull();
+        Map<String, String> mpfSettings = ShowcaseAuthenticatedMapConfig.settings(
+                ShowcaseAuthenticatedMapConfig.CHAIN_ID,
+                List.of("11".repeat(32), "22".repeat(32), "33".repeat(32)),
+                2, new byte[32]);
+        AuthenticatedMapContract.Genesis mpf = AuthenticatedMapContract.decodeGenesis(
+                HexFormat.of().parseHex(mpfSettings.get(
+                        StdlibStateMachineProviders.AUTHENTICATED_MAP_GENESIS_SETTING)));
+        assertThat(genesis.collections()).isEqualTo(mpf.collections());
+        assertThat(genesis.validators())
+                .extracting(AuthenticatedMapContract.ValidatorDescriptor::id,
+                        AuthenticatedMapContract.ValidatorDescriptor::kind,
+                        AuthenticatedMapContract.ValidatorDescriptor::providerId,
+                        AuthenticatedMapContract.ValidatorDescriptor::contractVersion)
+                .containsExactlyElementsOf(mpf.validators().stream()
+                        .map(value -> org.assertj.core.groups.Tuple.tuple(
+                                value.id(), value.kind(), value.providerId(),
+                                value.contractVersion()))
+                        .toList());
+        assertThat(genesis.governedGenesis()).isNotNull();
+        assertThat(genesis.governedGenesis().directPolicies())
+                .isEqualTo(mpf.governedGenesis().directPolicies());
+        assertThat(genesis.governedGenesis().approvalPolicies())
+                .isEqualTo(mpf.governedGenesis().approvalPolicies());
         assertThat(settings.get("state.commitment-profile")).isEqualTo("jmt-blake2b256-v1");
         assertThatThrownBy(() -> ShowcaseAuthenticatedMapConfig.jmtSettings(
                 "authenticated-map-chain", List.of("11".repeat(32)), 1))

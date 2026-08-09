@@ -39,7 +39,22 @@ public final class Gs1GtinValidatorFactory
             throw new IllegalArgumentException(
                     "gs1-gtin-v1 requires its exact provider, contract, and empty parameters");
         }
-        return Gs1GtinValidatorFactory::validateGtin;
+        // A factory invocation belongs to one configured chain. Do not return a
+        // non-capturing method-reference here: the JVM may cache it as a singleton,
+        // which would leak the same plugin product across MPF/JMT chain instances.
+        return new Gs1GtinValidator();
+    }
+
+    private static final class Gs1GtinValidator
+            implements AuthenticatedMapValueValidator {
+        @Override
+        public ValidatorVerdict validate(
+                String collectionId,
+                byte[] applicationKey,
+                byte[] value
+        ) {
+            return validateGtin(collectionId, applicationKey, value);
+        }
     }
 
     private static ValidatorVerdict validateGtin(

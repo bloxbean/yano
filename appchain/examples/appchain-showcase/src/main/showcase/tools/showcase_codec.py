@@ -92,6 +92,16 @@ def main() -> None:
     order.add_argument("json")
     digest = sub.add_parser("blake2b")
     digest.add_argument("value")
+    digest_hex = sub.add_parser("blake2b-hex")
+    digest_hex.add_argument("value")
+    review = sub.add_parser("document-review")
+    review.add_argument("proposal")
+    review.add_argument("entity")
+    review.add_argument("document_hash")
+    review.add_argument("reference")
+    composite_key = sub.add_parser("composite-key")
+    composite_key.add_argument("component")
+    composite_key.add_argument("local_key_hex")
     state_key = sub.add_parser("state-key")
     state_key.add_argument("kind", choices=("approval", "balance", "document", "release"))
     state_key.add_argument("value")
@@ -139,6 +149,29 @@ def main() -> None:
         print(canonical_order(args.json).decode("utf-8"))
     elif args.command == "blake2b":
         print(hashlib.blake2b(args.value.encode(), digest_size=32).hexdigest())
+    elif args.command == "blake2b-hex":
+        if re.fullmatch(r"(?:[0-9a-f]{2})+", args.value) is None:
+            raise ValueError("blake2b-hex requires canonical non-empty hex")
+        print(hashlib.blake2b(bytes.fromhex(args.value), digest_size=32).hexdigest())
+    elif args.command == "document-review":
+        if re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", args.proposal) is None \
+                or re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", args.entity) is None \
+                or re.fullmatch(r"[0-9a-f]{64}", args.document_hash) is None:
+            raise ValueError("invalid document-review fields")
+        emit(array(uint(1), text(args.proposal), text("document-release"), uint(1),
+                   text(args.entity), bstr(bytes.fromhex(args.document_hash)),
+                   text(args.reference)))
+    elif args.command == "composite-key":
+        if re.fullmatch(r"[a-z][a-z0-9-]{0,62}", args.component) is None \
+                or re.fullmatch(r"(?:[0-9a-f]{2})+", args.local_key_hex) is None:
+            raise ValueError("invalid composite key fields")
+        domain = b"yano-composite-state-v1\0"
+        component = args.component.encode("ascii")
+        local = bytes.fromhex(args.local_key_hex)
+        if len(domain) + 1 + len(component) + 2 + len(local) > 256:
+            raise ValueError("composite key exceeds 256 bytes")
+        emit(domain + bytes([len(component)]) + component
+             + len(local).to_bytes(2, "big") + local)
     elif args.command == "state-key":
         prefixes = {"approval": "i/", "balance": "b/", "document": "e/", "release": "r/"}
         print((prefixes[args.kind] + args.value).encode().hex())

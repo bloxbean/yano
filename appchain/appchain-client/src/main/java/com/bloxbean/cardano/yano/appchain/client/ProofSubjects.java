@@ -25,14 +25,16 @@ public final class ProofSubjects {
     public static StateProofSubject<FinalizedMessageIndex.MessageRecord> finalizedMessage(
             byte[] messageId
     ) {
-        return subject("finalized-message-v1", exact32(messageId, "messageId"),
+        return subject("finalized-message-v1",
+                FinalizedMessageIndex.messageKey(exact32(messageId, "messageId")),
                 FinalizedMessageIndex::decode);
     }
 
     public static StateProofSubject<FinalizedMessageIndex.MessageRecord>
     compositeFinalizedMessage(String componentId, byte[] messageId) {
         return componentSubject("finalized-message-v1", componentId,
-                exact32(messageId, "messageId"), FinalizedMessageIndex::decode);
+                FinalizedMessageIndex.messageKey(exact32(messageId, "messageId")),
+                FinalizedMessageIndex::decode);
     }
 
     public static StateProofSubject<DocTrailContract.Head> documentHead(

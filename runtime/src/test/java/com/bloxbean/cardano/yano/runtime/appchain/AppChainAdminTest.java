@@ -7,6 +7,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
+import com.bloxbean.cardano.yano.api.appchain.AppCapabilityManifest;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -168,6 +169,74 @@ class AppChainAdminTest {
         assertThatThrownBy(node::resetMembers)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("disabled while composite profile governance is active");
+    }
+
+    @Test
+    void governedMembershipDoesNotImplyBusinessAuthorizationOrApproval() {
+        String pubA = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_A));
+        AppChainConfig config = AppChainConfig.builder("membership-only-governed-chain")
+                .signingKeyHex(HexUtil.encodeHexString(KEY_A))
+                .memberKeysHex(Set.of(pubA)).proposerKeyHex(pubA).threshold(1)
+                .pluginSettings(Map.of("membership.mode", "governed"))
+                .blockIntervalMs(300)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .build();
+        AppStateMachine machine = new AppStateMachine() {
+            @Override public String id() { return "document-only"; }
+            @Override public Map<String, Object> operationalStatus() {
+                return Map.of("businessAuthorization", "none", "businessApproval", "none");
+            }
+            @Override
+            public void apply(AppBlockExecutionContext context, AppStateWriter writer,
+                              AppEffectEmitter effects) { }
+        };
+        node = new AppChainSubsystem(config, 42, null, machine,
+                tempDir.resolve("membership-only-governed-ledger").toString(), null, log);
+        node.start();
+
+        assertThat(node.status())
+                .containsEntry("membershipMode", "governed")
+                .containsEntry("stateMachine", "document-only");
+        assertThat(node.status().get("stateMachineStatus")).isEqualTo(Map.of(
+                "businessAuthorization", "none", "businessApproval", "none"));
+        assertThat(node.status().get("capabilityManifest"))
+                .isInstanceOfSatisfying(AppCapabilityManifest.class, manifest -> {
+                    assertThat(manifest.applicationId()).isEqualTo("document-only");
+                    assertThat(manifest.crossCutting())
+                            .extracting(capability -> capability.capabilityId())
+                            .containsExactly("state-commitment:mpf-blake2b256-v1");
+                });
+    }
+
+    @Test
+    void finalizedMessageIndexWrapsLibrarySuppliedStateMachine() {
+        String pubA = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_A));
+        AppChainConfig config = AppChainConfig.builder("library-indexed-chain")
+                .signingKeyHex(HexUtil.encodeHexString(KEY_A))
+                .memberKeysHex(Set.of(pubA)).proposerKeyHex(pubA).threshold(1)
+                .pluginSettings(Map.of(
+                        "machines.finalized-message-index.enabled", "true",
+                        "machines.finalized-message-index.policy", "APPLICATION_ONLY"))
+                .blockIntervalMs(300)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .build();
+        AppStateMachine machine = new AppStateMachine() {
+            @Override public String id() { return "library-custom"; }
+            @Override
+            public void apply(AppBlockExecutionContext context, AppStateWriter writer,
+                              AppEffectEmitter effects) { }
+        };
+        node = new AppChainSubsystem(config, 42, null, machine,
+                tempDir.resolve("library-indexed-ledger").toString(), null, log);
+        node.start();
+
+        assertThat(node.status().get("capabilityManifest"))
+                .isInstanceOfSatisfying(AppCapabilityManifest.class, manifest ->
+                        assertThat(manifest.crossCutting())
+                                .extracting(capability -> capability.capabilityId())
+                                .contains("state-index:finalized-message-v1"));
+        assertThat(node.stateCommitmentIdentity().orElseThrow().genesisId())
+                .isNotEqualTo(TestStateCommitments.MPF.genesisId());
     }
 
     private static void awaitTrue(String what, BooleanSupplier condition) throws InterruptedException {

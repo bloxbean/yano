@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 MODULE="$(cd "$(dirname "$0")/../../.." && pwd -P)"
+REPO="$(cd "$MODULE/../../.." && pwd -P)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/yano-showcase-contract.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT INT TERM
 ROOT="$WORK/showcase"
 mkdir -p "$ROOT/yano/appchain-cluster" "$ROOT/yano/config" "$ROOT/yano/plugins" "$ROOT/tools" \
+  "$ROOT/catalog" \
   "$ROOT/profiles/evidence/demo/config" "$ROOT/profiles/evidence/artifacts" "$WORK/bin"
 cp -R "$MODULE/src/main/showcase/." "$ROOT/"
 cp "$MODULE/src/main/showcase/config/application-appchain.yml" "$ROOT/yano/config/"
+cp "$MODULE/src/main/showcase/config/showcase-catalog-v1.json" "$ROOT/catalog/"
 printf 'fake jar\n' > "$ROOT/yano/yano.jar"
 printf 'fake plugin\n' > "$ROOT/yano/plugins/yano-appchain-showcase-test-bundle.jar"
 cat > "$ROOT/yano/appchain-cluster/cluster.sh" <<'SH'
@@ -104,9 +107,9 @@ grep -q '^light' <<< "$PROFILES"
 grep -q 'governance activate' <<< "$("$ROOT/showcase.sh" help)"
 "$ROOT/showcase.sh" prepare --instance three --nodes 3 --http-base 19770 --server-base 19370
 [ -f "$ROOT/data/showcase/three/showcase-identity.json" ]
-jq -e '.chainIds | length == 11' \
+jq -e '.chainIds | length == 12' \
   "$ROOT/data/showcase/three/showcase-identity.json" >/dev/null
-jq -e '.chainIds[10] == "payment-chain-settlement"' \
+jq -e '.chainIds[10] == "payment-chain-settlement" and .chainIds[11] == "document-review-chain"' \
   "$ROOT/data/showcase/three/showcase-identity.json" >/dev/null
 jq -e '.authenticatedMapConfigSha256 | test("^[0-9a-f]{64}$")' \
   "$ROOT/data/showcase/three/showcase-identity.json" >/dev/null
@@ -159,30 +162,27 @@ if "$ROOT/showcase.sh" prepare --instance three --nodes 5 --http-base 19770 --se
 fi
 grep -q 'differs from retained showcase identity' "$WORK/drift.log"
 
-# ADR-UTXO-009: chain add payment-chain-settlement migrates a retained
-# 10-chain (V10) instance to the packaged 11-chain set without touching the
-# retained authenticated-map geneses.
-python3 - "$ROOT/data/showcase/three/showcase-identity.json" \
-  "$ROOT/data/showcase/three/cluster/cluster-appchain-identity.json" <<'PY'
-import json, pathlib, sys
-marker = pathlib.Path(sys.argv[1])
-doc = json.loads(marker.read_text())
-assert doc["chainIds"][-1] == "payment-chain-settlement"
-doc["chainIds"] = doc["chainIds"][:-1]
-marker.write_text(json.dumps(doc, sort_keys=True, separators=(",", ":")) + "\n")
-cluster = pathlib.Path(sys.argv[2])
-if cluster.exists():
-    cdoc = json.loads(cluster.read_text())
-    cdoc["chainIds"] = cdoc["chainIds"][:-1]
-    cluster.write_text(json.dumps(cdoc, sort_keys=True, separators=(",", ":")) + "\n")
-PY
-"$ROOT/showcase.sh" chain add payment-chain-settlement --instance three
-jq -e '.chainIds | length == 11' \
-  "$ROOT/data/showcase/three/showcase-identity.json" >/dev/null
-jq -e '.chainIds[10] == "payment-chain-settlement"' \
-  "$ROOT/data/showcase/three/showcase-identity.json" >/dev/null
-SETTLEMENT_ADD_AGAIN="$("$ROOT/showcase.sh" chain add payment-chain-settlement --instance three)"
-grep -q 'already has payment-chain-settlement' <<< "$SETTLEMENT_ADD_AGAIN"
+# ADR-033: selected/all index scopes are canonical, retained, and exported to
+# every node as consensus settings. Drift and malformed scopes fail closed.
+"$ROOT/showcase.sh" prepare --instance indexed --http-base 19570 --server-base 19170 \
+  --enable-finalized-message-index=documents-chain,workflow-chain
+jq -e '.finalizedMessageIndex.chainIds == ["documents-chain", "workflow-chain"]' \
+  "$ROOT/data/showcase/indexed/showcase-identity.json" >/dev/null
+grep -q 'chains\[4\].machines.finalized-message-index.enabled=true' \
+  "$ROOT/data/showcase/indexed/node-config/node0.properties"
+grep -q 'chains\[5\].machines.finalized-message-index.enabled=true' \
+  "$ROOT/data/showcase/indexed/node-config/node2.properties"
+if "$ROOT/showcase.sh" prepare --instance indexed \
+    --enable-finalized-message-index=workflow-chain >"$WORK/index-drift.log" 2>&1; then
+  echo "finalized-message index drift was accepted" >&2; exit 1
+fi
+grep -q 'differs from retained showcase identity' "$WORK/index-drift.log"
+if "$ROOT/showcase.sh" prepare --instance invalid-index \
+    --enable-finalized-message-index=documents-chain,documents-chain \
+    >"$WORK/index-invalid.log" 2>&1; then
+  echo "duplicate finalized-message index scope was accepted" >&2; exit 1
+fi
+grep -q 'duplicate finalized-message index chain' "$WORK/index-invalid.log"
 
 # Anchoring is an additive retained-identity migration. Start with the default
 # workflow scope, add one existing chain, then expand to all chains without
@@ -192,7 +192,7 @@ grep -q 'already has payment-chain-settlement' <<< "$SETTLEMENT_ADD_AGAIN"
 ANCHOR_ROOT="$ROOT/data/showcase/anchor-expand"
 # Fresh instances anchor-ENABLE every chain by default (config-only; spending
 # starts at per-chain bootstrap).
-jq -e '.schemaVersion == 2 and (.anchor.chainIds | length == 11)' \
+jq -e '.schemaVersion == 2 and (.anchor.chainIds | length == 12)' \
   "$ANCHOR_ROOT/showcase-identity.json" >/dev/null
 # Downgrade the retained scope to the legacy workflow-only shape so the
 # additive enable migrations below keep their pre-default coverage.
@@ -223,7 +223,7 @@ document = {
     "chainIds": ["orders-chain", "registry-chain", "approvals-chain", "balances-chain",
                  "documents-chain", "workflow-chain", "roles-chain", "payments-chain",
                  "authenticated-map-chain", "authenticated-map-jmt-chain",
-                 "payment-chain-settlement"],
+                 "payment-chain-settlement", "document-review-chain"],
     "anchor": {"enabled": True, "mode": "script", "signerFingerprint": fingerprint,
                "chainId": "workflow-chain"},
 }
@@ -248,11 +248,11 @@ grep -q '^ANCHOR_CHAINS=registry-chain,workflow-chain$' \
 grep -q -- '--anchor-chain registry-chain --anchor-chain workflow-chain' "$WORK/cluster.log"
 
 "$ROOT/showcase.sh" anchor enable all --instance anchor-expand
-jq -e '.anchor.chainIds | length == 11' "$ANCHOR_ROOT/showcase-identity.json" >/dev/null
-jq -e '.anchor.chainIds | length == 11' \
+jq -e '.anchor.chainIds | length == 12' "$ANCHOR_ROOT/showcase-identity.json" >/dev/null
+jq -e '.anchor.chainIds | length == 12' \
   "$ANCHOR_ROOT/cluster/cluster-appchain-identity.json" >/dev/null
 PATH="$WORK/bin:$PATH" "$ROOT/showcase.sh" anchor bootstrap all --instance anchor-expand
-[ "$(grep -c '^anchor-bootstrap .*' "$WORK/cluster.log")" = 11 ]
+[ "$(grep -c '^anchor-bootstrap .*' "$WORK/cluster.log")" = 12 ]
 
 "$ROOT/showcase.sh" prepare --instance five --nodes 5 --http-base 19870 --server-base 19470
 [ "$(find "$ROOT/data/showcase/five/node-config" -type f -name 'node*.properties' | wc -l | tr -d ' ')" = 5 ]
@@ -312,11 +312,54 @@ grep -q "^evidence prepare .* --network preprod .* --anchor-key-file $WORK/ancho
   --instance light-preprod --http-base 17070 --server-base 17337 \
   --anchor-chain all --anchor-key-file "$WORK/anchor.seed" \
   --confirm-public-anchor preprod
-jq -e '.network == "preprod" and (.chainIds | length) == 10
-  and (.anchor.chainIds | length) == 10
+jq -e '.network == "preprod" and (.chainIds | length) == 11
+  and (.anchor.chainIds | length) == 11
   and (.chainIds | index("payment-chain-settlement")) == null' \
   "$ROOT/data/showcase/light-preprod/showcase-identity.json" >/dev/null
 ! grep -q 'chain-id: "payment-chain-settlement"' \
   "$ROOT/yano/config/application-appchain.yml"
 
-echo "PASS: showcase facade preserves identity, scaling, redaction, join, and governance contracts"
+# The production settlement ConfigBlock has nested observer/indexer chain-id
+# fields. Adoption validates only declarations directly under chains[n], so a
+# valid public bootstrap is not rejected after it has submitted its L1 tx.
+cat > "$WORK/settlement-bootstrap.log" <<'LOG'
+ConfigBlock : chains[0]:
+      chain-id: "payment-chain-settlement"
+      state-machine: "eutxo-ledger"
+      state:
+        commitment-profile: "mpf-blake2b256-v1"
+      machines:
+        eutxo:
+          profile: "yano-eutxo-v3-bridge-settlement"
+          expected-profile-digest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          l1:
+            deposits:
+              chain-id: "nested-deposit-source"
+            withdrawals:
+              chain-id: "nested-withdrawal-source"
+          settlement:
+            enabled: true
+            operator-key-id: "contract"
+            vault-script-hash: "0123456789abcdef"
+            thread-policy-id: "0123456789abcdef"
+            thread-asset-name: "contract"
+            confirmations: 1
+            scan-depth: 100
+            effect-type: "eutxo.settlement.v1"
+            indexer-enabled: true
+            observer-enabled: true
+
+LOG
+python3 "$REPO/.agents/skills/deploy-showcase-preprod-cluster/scripts/adopt_settlement_config.py" \
+  "$ROOT/yano/config/application-appchain.yml" "$WORK/settlement-bootstrap.log" \
+  "$ROOT/catalog/showcase-catalog-v1.json" >/dev/null
+python3 - "$ROOT/yano/config/application-appchain.yml" \
+  "$ROOT/catalog/showcase-catalog-v1.json" <<'PY'
+import json,pathlib,re,sys
+config = pathlib.Path(sys.argv[1]).read_text()
+actual = re.findall(r'^ {6}chain-id:\s*["\']?([^"\'\s]+)', config, re.MULTILINE)
+expected = [row['chainId'] for row in json.loads(pathlib.Path(sys.argv[2]).read_text())['chains']]
+assert actual == expected, (actual, expected)
+PY
+
+echo "PASS: showcase facade preserves catalog, index identity, scaling, redaction, join, and governance contracts"

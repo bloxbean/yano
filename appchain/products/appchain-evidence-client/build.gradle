@@ -1,5 +1,11 @@
 dependencies {
-    api project(':appchain-client')
+    // This companion uses AppChainClient's transport/value API but deliberately
+    // does not activate the node/runtime SPI carried by core-api. Keep the rest
+    // of the lightweight client verifier closure transitive.
+    api(project(':appchain-client')) {
+        exclude group: 'com.bloxbean.cardano', module: 'core-api'
+    }
+    compileOnly project(':core-api')
     api project(':appchain-evidence-contracts')
     api project(':appchain-composite-contracts')
 
@@ -7,6 +13,7 @@ dependencies {
     testRuntimeOnly libs.junit.jupiter.engine
     testRuntimeOnly libs.junit.platform.launcher
     testImplementation libs.assertj.core
+    testImplementation project(':core-api')
 }
 
 java {

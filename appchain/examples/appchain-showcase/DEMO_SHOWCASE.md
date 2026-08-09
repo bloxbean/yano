@@ -1,7 +1,7 @@
 # Yano App-Chain Showcase — Full Demo Guide
 
 One guide to demonstrate every app-chain capability with the packaged
-showcase: all eleven chains and their state machines, regular and bulk
+showcase: all twelve chains and their state machines, regular and bulk
 submission, deterministic effects, L1 anchoring on devnet and preprod,
 verifiable reads with historical versioning, the browser console, and the
 Java client (including a runnable fat jar).
@@ -20,12 +20,13 @@ Last verified live: 2026-08-05 on a 3-node cluster.
    - [approvals-chain — threshold approvals](#approvals-chain--threshold-approvals)
    - [balances-chain — token balances](#balances-chain--token-balances)
    - [documents-chain — document trail](#documents-chain--document-trail)
+   - [document-review-chain — roles + approval + documents](#document-review-chain--roles--approval--documents)
    - [workflow-chain — composite + effects](#workflow-chain--composite--effects)
    - [roles-chain — role approvals](#roles-chain--role-approvals)
    - [payments-chain — EUTxO ledger](#payments-chain--eutxo-ledger)
    - [payment-chain-settlement — L1 custody boundary](#payment-chain-settlement--l1-custody-boundary)
    - [authenticated-map-chain — governed MPF map](#authenticated-map-chain--governed-mpf-map)
-   - [authenticated-map-jmt-chain — basic classic-JMT map](#authenticated-map-jmt-chain--basic-classic-jmt-map)
+   - [authenticated-map-jmt-chain — governed classic-JMT contrast](#authenticated-map-jmt-chain--governed-classic-jmt-contrast)
 6. [Deterministic effects deep-dive](#6-deterministic-effects-deep-dive)
 7. [Bulk load and soak](#7-bulk-load-and-soak)
 8. [Java client (fat jar)](#8-java-client-fat-jar)
@@ -75,17 +76,17 @@ chmod 600 ./private-anchor/anchor.seed
 ```
 
 Node 0's API is `http://127.0.0.1:7070/api/v1` (`--http-base` shifts it).
-All eleven chains report at `GET /api/v1/app-chain/chains`.
+All twelve chains report at `GET /api/v1/app-chain/chains`.
 
 ### The ADR-031 capability story
 
 Present the chains as foundations plus a small number of meaningful
-compositions, not as eleven unrelated state-machine implementations:
+compositions, not as twelve unrelated state-machine implementations:
 
 | Demo | Composition or boundary |
 |---|---|
 | `workflow-chain` | orders + approval + audit + deterministic effect intent/result |
-| role-evidence profile today; target `document-review-chain` in ADR-033 | documents + domain actors/roles + actor approval and one-use consumption |
+| `document-review-chain` | documents + domain actors/roles + actor approval and one-use consumption |
 | `authenticated-map-chain` | authenticated map + direct actor/role evidence + multi-organization approval |
 | `authenticated-map-jmt-chain` | backend comparison; ADR-033 makes its business policy identical to the MPF chain |
 | `payment-chain-settlement` | EUTxO + stability-gated L1 observers + settlement effects + derived lifecycle index |
@@ -94,6 +95,13 @@ All of these remain `AppStateMachine` applications. Membership governance is
 shown separately because it is not a substitute for business authorization or
 approval. `payment-chain-settlement` starts with light; public-network script
 deployment and fund-moving operations remain explicit.
+
+For the cross-chain capability table, optional finalized-message-index setup,
+and proof-lab narration, use
+[`docs/CAPABILITY_CATALOG.md`](docs/CAPABILITY_CATALOG.md). The index is off by
+default for non-intrinsic applications; the launcher accepts either the
+all-chain flag or a canonical comma-separated chain selection for a fresh
+instance.
 
 ## 3. Everyday cluster operations
 
@@ -131,9 +139,9 @@ curl -X POST http://127.0.0.1:7070/api/v1/app-chain/chains/orders-chain/messages
 | `/ui/status/` , `/ui/observability/` | L1 node status, Prometheus charts |
 | `/ui/plugins/` | plugin operations (privileged; needs API key) |
 
-The current console shows effects, proofs, role proposals, authenticated-map
-governance, and EUTxO lifecycle data. ADR-033 adds a manifest-driven capability
-matrix, composition/workflow view, and a finalized-message proof lab so custom
+The console shows effects, proofs, role proposals, authenticated-map
+governance, EUTxO lifecycle data, a manifest-driven capability matrix,
+composition/workflow views, and a finalized-message proof lab. Custom
 machines are not classified by hard-coded state-machine names.
 
 ## 5. Chain-by-chain demos
@@ -186,6 +194,18 @@ Hash-committed document references per entity.
 
 ```bash
 ./showcase.sh run documents --instance demo
+```
+
+### document-review-chain — roles + approval + documents
+
+This reference application reuses the actor registry, role-aware approval,
+role authorization, and document-transition components. The scripted path
+proposes as the issuer, obtains approvals from two auditor organizations,
+mutates the document head, writes a one-use consumption receipt, and proves
+the committed document leaf.
+
+```bash
+./showcase.sh run document-review --instance demo
 ```
 
 ### workflow-chain — composite + effects
@@ -246,30 +266,17 @@ every offline-signing step. Private key: `--seed-file <64-hex raw Ed25519
 seed>` for a real actor; without it the deterministic DEMO seed for the named
 showcase actor is derived (showcase-only material). Full curl anatomy: §11.
 
-### authenticated-map-jmt-chain — basic classic-JMT map
+### authenticated-map-jmt-chain — governed classic-JMT contrast
 
-The contrast chain: `jmt-blake2b256-v1` backend, ungoverned collections
-`kv-open` (open) / `documents` (owner) / `notes` (member, canonical-CBOR).
-Console shows basic-only views — compare side by side with the governed MPF
-chain.
+The contrast chain has the same collections, policies, actors, commands, and
+receipt semantics as `authenticated-map-chain`. Only the commitment backend
+changes to `jmt-blake2b256-v1`: verification is off-chain-only, while MPF also
+has the reference on-chain verifier.
 
 ```bash
-# ships in new builds; adopt on an EXISTING instance (history retained):
-#   copy showcase.sh, tools/showcase_identity.py,
-#   yano/config/application-appchain.yml and the showcase plugin bundle jar
-#   from a newly built ZIP, then:
-./showcase.sh chain add authenticated-map-jmt-chain --instance demo
-./showcase.sh governance activate --instance demo     # first block
-
-./showcase.sh authmap put kv-open k1 "v1" --chain authenticated-map-jmt-chain --instance demo
-./showcase.sh authmap put notes note-1 \
-  "$(python3 tools/showcase_codec.py authmap-value event audit-note 1)" \
-  --chain authenticated-map-jmt-chain --instance demo   # member-gated, CBOR value
+./showcase.sh authmap put attachments k1 "v1" \
+  --chain authenticated-map-jmt-chain --instance demo
 ```
-
-Authorization modes on this chain: `kv-open` anyone writes; `documents`
-first writer owns the key; `notes` only current chain members write
-(height-versioned membership — rotated-out members lose access).
 
 ### payment-chain-settlement — L1 custody boundary
 
@@ -353,7 +360,7 @@ page has an Effects panel showing the same lifecycle.
 
 # authenticated-map bulk load via the Java client (see §8):
 java -jar yano-showcase-client-*-all.jar authmap http://127.0.0.1:7070/api/v1 \
-  authenticated-map-jmt-chain load kv-open 100
+  authenticated-map-jmt-chain load attachments 100
 ```
 
 The Java `load` prints submit throughput, applied/rejected counts, end-to-end
@@ -372,11 +379,11 @@ application looks like, using the release-matched `appchain-client`.
 JAR=yano-showcase-client-*-all.jar
 API=http://127.0.0.1:7070/api/v1
 
-java -jar $JAR authmap $API authenticated-map-jmt-chain basic-put kv-open jk1 jv1
+java -jar $JAR authmap $API authenticated-map-jmt-chain basic-put attachments jk1 jv1
 java -jar $JAR authmap $API authenticated-map-chain     governed-put gk1 gv1
-java -jar $JAR authmap $API authenticated-map-jmt-chain reads kv-open jk1
-java -jar $JAR authmap $API authenticated-map-jmt-chain verified-entry kv-open jk1
-java -jar $JAR authmap $API authenticated-map-jmt-chain load kv-open 100
+java -jar $JAR authmap $API authenticated-map-jmt-chain reads attachments jk1
+java -jar $JAR authmap $API authenticated-map-jmt-chain verified-entry attachments jk1
+java -jar $JAR authmap $API authenticated-map-jmt-chain load attachments 100
 ```
 
 - Writes print the four trust levels: accepted → finalized → APPLIED/REJECTED
@@ -423,7 +430,7 @@ Entries carry a logical `revision`; old values are read at **previous
 heights**, each with a merkle proof against that height's co-signed root:
 
 ```bash
-PK=$(curl -s "$DOMAIN/authenticated-map/entries/kv-open/$(printf 'k1' | xxd -p)?chain=authenticated-map-jmt-chain" | jq -r .proofKey)
+PK=$(curl -s "$DOMAIN/authenticated-map/entries/attachments/$(printf 'k1' | xxd -p)?chain=authenticated-map-jmt-chain" | jq -r .proofKey)
 C=$BASE/app-chain/chains/authenticated-map-jmt-chain
 curl -s "$C/state/proof/$PK"            | jq '{h:.committedHeight, presence, valueHex}'   # current revision
 curl -s "$C/state/proof/$PK?height=3"   | jq '{h:.committedHeight, presence, valueHex}'   # value as of height 3

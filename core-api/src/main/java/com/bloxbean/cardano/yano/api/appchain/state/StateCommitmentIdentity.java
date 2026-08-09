@@ -29,6 +29,8 @@ public record StateCommitmentIdentity(
 
     private static final byte[] DIGEST_DOMAIN =
             "yano-state-commitment-identity-v1\0".getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] APPLICATION_PROFILE_DOMAIN =
+            "yano-state-application-profile-v1\0".getBytes(StandardCharsets.US_ASCII);
     private static final byte[] MARKER_KEY =
             "~yano/state-commitment/v1".getBytes(StandardCharsets.US_ASCII);
 
@@ -128,6 +130,18 @@ public record StateCommitmentIdentity(
         System.arraycopy(DIGEST_DOMAIN, 0, input, 0, DIGEST_DOMAIN.length);
         System.arraycopy(canonical, 0, input, DIGEST_DOMAIN.length, canonical.length);
         return Blake2bUtil.blake2bHash256(input);
+    }
+
+    /** Derive a fresh state generation for a committed application wrapper/profile. */
+    public StateCommitmentIdentity withApplicationProfile(byte[] profileDigest) {
+        byte[] profile = Objects.requireNonNull(profileDigest, "profileDigest").clone();
+        if (profile.length != 32) {
+            throw new IllegalArgumentException("application profile digest must contain 32 bytes");
+        }
+        byte[] input = ByteBuffer.allocate(
+                        APPLICATION_PROFILE_DOMAIN.length + genesisId.length + profile.length)
+                .put(APPLICATION_PROFILE_DOMAIN).put(genesisId).put(profile).array();
+        return explicit(this.profile, Blake2bUtil.blake2bHash256(input));
     }
 
     public static byte[] markerKey() {

@@ -7,11 +7,13 @@ YANO_HOME="$SHOWCASE_HOME/yano"
 CLUSTER="$YANO_HOME/appchain-cluster/cluster.sh"
 CODEC="$SHOWCASE_HOME/tools/showcase_codec.py"
 IDENTITY="$SHOWCASE_HOME/tools/showcase_identity.py"
+CATALOG="$SHOWCASE_HOME/catalog/showcase-catalog-v1.json"
+CATALOG_TOOL="$SHOWCASE_HOME/tools/showcase_catalog.py"
 VERSION="$(tr -d '\r\n' < "$SHOWCASE_HOME/VERSION" 2>/dev/null || printf development)"
 API_KEY="${YANO_CLUSTER_API_KEY:-yano-local-cluster-full-key}"
-LIGHT_CHAINS=(orders-chain registry-chain approvals-chain balances-chain
-  documents-chain workflow-chain roles-chain payments-chain authenticated-map-chain
-  authenticated-map-jmt-chain payment-chain-settlement)
+LIGHT_CHAINS=()
+while IFS= read -r chain_id; do LIGHT_CHAINS+=("$chain_id"); done \
+  < <(python3 "$CATALOG_TOOL" "$CATALOG" list)
 AUTHMAP_GENERATOR=com.bloxbean.cardano.yano.appchain.showcase.ShowcaseAuthenticatedMapConfig
 AUTHMAP_CHAIN_INDEX=8
 AUTHMAP_JMT_CHAIN_INDEX=9
@@ -56,6 +58,8 @@ RATE=25
 SAMPLE=5
 SPREAD=false
 REPORT_DIR=""
+FINALIZED_INDEX_SELECTION=""
+FINALIZED_INDEX_EXPLICIT=false
 FOLLOW=false
 YES=false
 OUTPUT=""
@@ -89,6 +93,10 @@ parse() {
       --sample) SAMPLE="${2:-}"; shift 2;;
       --spread) SPREAD=true; shift;;
       --report-dir) REPORT_DIR="${2:-}"; shift 2;;
+      --enable-finalized-message-index)
+        FINALIZED_INDEX_SELECTION=all; FINALIZED_INDEX_EXPLICIT=true; shift;;
+      --enable-finalized-message-index=*)
+        FINALIZED_INDEX_SELECTION="${1#*=}"; FINALIZED_INDEX_EXPLICIT=true; shift;;
       --chain) AUTHMAP_CHAIN="${2:-}"; shift 2;;
       --collection) AUTHMAP_COLLECTION="${2:-}"; shift 2;;
       --actor) AUTHMAP_ACTOR="${2:-}"; shift 2;;
@@ -126,6 +134,30 @@ canonical_anchor_chains() {
   printf '%s' "$result"
 }
 
+canonical_finalized_index_chains() {
+  local requested="$1" item cid seen="" result=""
+  local -a values=()
+  [ -n "$requested" ] || { printf ''; return; }
+  [ "$requested" != all ] || requested="$(IFS=,; printf '%s' "${LIGHT_CHAINS[*]}")"
+  [ -n "$requested" ] || die "finalized-message index scope cannot be empty"
+  IFS=',' read -r -a values <<< "$requested"
+  for item in "${values[@]}"; do
+    [[ "$item" =~ ^[A-Za-z0-9._~-]{1,128}$ ]] \
+      || die "invalid finalized-message index chain id: $item"
+    [ "$item" != all ] || die "finalized-message index cannot mix all with chain ids"
+    chain_in_csv "$seen" "$item" \
+      && die "duplicate finalized-message index chain: $item"
+    seen+="${seen:+,}$item"
+    local found=false
+    for cid in "${LIGHT_CHAINS[@]}"; do [ "$cid" != "$item" ] || found=true; done
+    [ "$found" = true ] || die "unknown finalized-message index chain: $item"
+  done
+  for cid in "${LIGHT_CHAINS[@]}"; do
+    chain_in_csv "$seen" "$cid" && result+="${result:+,}$cid"
+  done
+  printf '%s' "$result"
+}
+
 validate_common() {
   [[ "$INSTANCE" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || die "invalid instance name"
   case "$PROFILE" in light|evidence|eutxo) ;; *) die "profile must be light, evidence, or eutxo";; esac
@@ -148,6 +180,10 @@ validate_common() {
     [ -n "$ANCHOR_KEY_FILE" ] || die "preprod anchoring requires --anchor-key-file"
   fi
   case "$ANCHOR_MODE" in script|metadata) ;; *) die "anchor mode must be script or metadata";; esac
+  [ "$FINALIZED_INDEX_EXPLICIT" != true ] || [ -n "$FINALIZED_INDEX_SELECTION" ] \
+    || die "finalized-message index selection cannot be empty"
+  FINALIZED_INDEX_SELECTION="$(canonical_finalized_index_chains \
+    "$FINALIZED_INDEX_SELECTION")"
 }
 
 instance_root() {
@@ -315,6 +351,10 @@ load_marker_chains() {
   LIGHT_CHAINS=("${configured[@]}")
 }
 
+marker_finalized_index_chains() {
+  jq -r '.finalizedMessageIndex.chainIds | join(",")' "$(marker)"
+}
+
 adopt_marker() {
   [ -f "$(marker)" ] || return 0
   PROFILE="$(marker_value profile)"
@@ -325,6 +365,13 @@ adopt_marker() {
   HTTP_BASE="$(marker_value httpBase)"
   SERVER_BASE="$(marker_value serverBase)"
   load_marker_chains
+  local retained_finalized
+  retained_finalized="$(marker_finalized_index_chains)"
+  if [ "$FINALIZED_INDEX_EXPLICIT" = true ] \
+      && [ "$FINALIZED_INDEX_SELECTION" != "$retained_finalized" ]; then
+    die "requested finalized-message index scope differs from retained identity; use a new instance or reset"
+  fi
+  FINALIZED_INDEX_SELECTION="$retained_finalized"
   ANCHOR="$(marker_value anchor.enabled)"
   ANCHOR_MODE="$(marker_value anchor.mode)"
   [ "$ANCHOR_MODE" = none ] && ANCHOR_MODE=script
@@ -361,12 +408,23 @@ write_node_configs() {
       while IFS= read -r property || [ -n "$property" ]; do
         printf '%s\n' "$property"
       done < "$(authenticated_map_properties)"
-      # Legacy nine-chain instances have no JMT contrast chain; the chain add
-      # migration installs this file before it regenerates node configs.
       if [ -f "$(authenticated_map_jmt_properties)" ]; then
         while IFS= read -r property || [ -n "$property" ]; do
           printf '%s\n' "$property"
         done < "$(authenticated_map_jmt_properties)"
+      fi
+      if [ -n "$FINALIZED_INDEX_SELECTION" ]; then
+        local index cid
+        for ((index=0;index<${#LIGHT_CHAINS[@]};index++)); do
+          cid="${LIGHT_CHAINS[$index]}"
+          chain_in_csv "$FINALIZED_INDEX_SELECTION" "$cid" || continue
+          # ordered-log already owns this intrinsic state index and retains
+          # its ALL policy; the launcher selection records it but adds no wrapper.
+          [ "$cid" = orders-chain ] && continue
+          printf 'yano.app-chain.chains[%d].machines.finalized-message-index.enabled=true\n' "$index"
+          printf 'yano.app-chain.chains[%d].machines.finalized-message-index.policy=APPLICATION_ONLY\n' "$index"
+          printf 'yano.app-chain.chains[%d].machines.finalized-message-index.max-messages-per-block=1000\n' "$index"
+        done
       fi
     } > "$file"
     chmod 600 "$file"
@@ -387,12 +445,13 @@ prepare_light() {
   candidate="$(generate_authenticated_map_candidate)"
   local jmt_candidate
   jmt_candidate="$(generate_authenticated_map_jmt_candidate)" || { rm -f -- "$candidate"; return 1; }
-  args=(ensure --marker "$(marker)" --version "$VERSION" --profile light
+  args=(ensure --marker "$(marker)" --catalog "$CATALOG" --version "$VERSION" --profile light
     --variant default --network "$NETWORK" --nodes "$NODES" --threshold "$THRESHOLD"
     --http-base "$HTTP_BASE" --server-base "$SERVER_BASE"
     --config "$YANO_HOME/config/application-appchain.yml" --plugin "$plugin"
     --authenticated-map-config "$candidate"
-    --authenticated-map-jmt-config "$jmt_candidate")
+    --authenticated-map-jmt-config "$jmt_candidate"
+    --finalized-message-index-selection "$FINALIZED_INDEX_SELECTION")
   if [ "$ANCHOR" = true ]; then args+=(--anchor --anchor-mode "$ANCHOR_MODE"); fi
   if [ "$ANCHOR" = true ]; then
     local -a anchor_chains=()
@@ -921,6 +980,65 @@ run_documents() {
     | jq '{chainId,committedHeight,stateRoot,valueHex}'
 }
 
+document_review_statement() {
+  local actor="$1" action="$2" proposal="$3" payload_hash="$4" deadline="$5" clause="$6"
+  local seed_file seed="$7" yano="$YANO_HOME/yano.sh"
+  seed_file="$(mktemp "$(instance_root)/.document-review-seed.XXXXXX")"
+  chmod 600 "$seed_file"; printf '%s' "$seed" > "$seed_file"
+  local args=(appchain role sign --action "$action"
+    --chain document-review-chain --proposal "$proposal"
+    --policy document-release --policy-revision 1
+    --payload-domain document.review.release.v1 --payload-hash "$payload_hash"
+    --deadline-height "$deadline" --actor "$actor" --actor-revision 1
+    --key "$actor-k1" --seed-file "$seed_file")
+  [ -z "$clause" ] || args+=(--clause "$clause")
+  "$yano" "${args[@]}"
+  rm -f -- "$seed_file"
+}
+
+document_review_propose() {
+  local proposal="$1" payload_hash="$2" height deadline statement id
+  height="$(curl -fsS "http://127.0.0.1:$HTTP_BASE/api/v1/app-chain/chains/document-review-chain/tip" | jq -r .height)"
+  deadline=$((height + 300))
+  statement="$(document_review_statement issuer-a PROPOSE "$proposal" "$payload_hash" \
+    "$deadline" '' "$(demo_actor_seed issuer-a)")"
+  id="$(submit_hex document-review-chain role-approvals.command.v1 "$statement" 0)"
+  wait_message document-review-chain "$id" >/dev/null
+  printf '%s:%s' "$deadline" "$id"
+}
+
+run_document_review() {
+  local suffix="${1:-$(date +%s)}" proposal entity content_hash command commitment
+  local proposed deadline id statement receipt local_key physical_key auditor
+  proposal="document-review-$suffix"; entity="document-$suffix"
+  content_hash="$(python3 -c 'import hashlib,sys;print(hashlib.sha256(sys.argv[1].encode()).hexdigest())' \
+    "approved-document-$suffix")"
+  command="$(python3 "$CODEC" document-review "$proposal" "$entity" "$content_hash" \
+    "showcase://documents/$entity")"
+  commitment="$(python3 "$CODEC" blake2b-hex "$command")"
+  proposed="$(document_review_propose "$proposal" "$commitment")"
+  deadline="${proposed%%:*}"
+  for auditor in auditor-a auditor-b; do
+    statement="$(document_review_statement "$auditor" APPROVE "$proposal" "$commitment" \
+      "$deadline" independent-auditors "$(demo_actor_seed "$auditor")")"
+    id="$(submit_hex document-review-chain role-approvals.command.v1 "$statement" 0)"
+    wait_message document-review-chain "$id" >/dev/null
+  done
+  id="$(submit_hex document-review-chain document-review.release.v1 "$command" 0)"
+  wait_message document-review-chain "$id" >/dev/null
+  receipt="$(curl -fsS -X POST \
+    "http://127.0.0.1:$HTTP_BASE/api/v1/app-chain/chains/document-review-chain/query/components/document-review-receipts/receipt" \
+    -H 'Content-Type: application/json' -d "$(jq -nc --arg p "$(printf '%s' "$proposal" | od -An -v -tx1 | tr -d ' \n')" '{paramsHex:$p}')")"
+  [ -n "$(printf '%s' "$receipt" | jq -r '.payloadHex // empty')" ] \
+    || die "document-review approval-consumption receipt is absent"
+  local_key="$(python3 "$CODEC" state-key document "$entity")"
+  physical_key="$(python3 "$CODEC" composite-key documents "$local_key")"
+  note "DOCUMENT REVIEW: issuer proposed, two organizations approved, document head mutated, approval consumed once"
+  printf '%s' "$receipt" | jq '{chainId,stateMachineId,committedHeight,stateRoot,payloadHex}'
+  proof_key document-review-chain "$physical_key" \
+    | jq '{chainId,committedHeight,stateRoot,presence,valueHex}'
+}
+
 composite_register() {
   local key="$1" order="$2" canonical body id
   canonical="$(python3 "$CODEC" order "$order")"
@@ -1176,6 +1294,9 @@ activation_submit() {
     roles-chain)
       body="$(python3 "$CODEC" role-probe "$suffix")"
       submit_hex "$cid" actors.command.v1 "$body" 0;;
+    document-review-chain)
+      body="$(python3 -c 'import hashlib,sys;print(hashlib.blake2b(sys.argv[1].encode(),digest_size=32).hexdigest())' "$suffix")"
+      document_review_propose "$suffix" "$body" | cut -d: -f2;;
     payments-chain)
       result="$(submit_eutxo_payment)"
       wait_message "$cid" "$(printf '%s' "$result" | jq -r .messageId)" >/dev/null
@@ -1188,8 +1309,8 @@ activation_submit() {
       submit_hex "$cid" authenticated-map.command.v1 "$body" 0;;
     authenticated-map-jmt-chain)
       value="$(python3 "$CODEC" authmap-value opaque "$suffix")"
-      body="$(authmap_basic_body open \
-        "$(python3 "$CODEC" authmap put kv-open "$suffix" "$value")")"
+      body="$(authmap_basic_body owner \
+        "$(python3 "$CODEC" authmap put attachments "$suffix" "$value")")"
       submit_hex "$cid" authenticated-map.command.v1 "$body" 0;;
     "$SETTLEMENT_CHAIN_ID")
       # The settlement chain admits only eutxo transactions and proposer-injected
@@ -1367,8 +1488,8 @@ settlement_script_dir() { printf '%s/config/settlement' "$YANO_HOME"; }
 # The packaged settlement chain carries the DEVNET-only profile and demo
 # identity. If it ever activates on a public network the chain-id retains that
 # profile digest, and the real identity can never be adopted under the same id.
-# Strip it before any node starts; it is the last chain, so indices stay
-# contiguous. The bootstrapped block is adopted afterwards.
+# Strip it before any node starts and close the following chain-index gap.
+# The bootstrapped public-network block is adopted afterwards.
 strip_devnet_settlement_chain() {
   local config="$YANO_HOME/config/application-appchain.yml" tmp
   grep -q "chain-id: \"$SETTLEMENT_CHAIN_ID\"" "$config" 2>/dev/null || return 0
@@ -1381,7 +1502,10 @@ strip_devnet_settlement_chain() {
   awk -v cid="$SETTLEMENT_CHAIN_ID" '
     function flush(   i) {
       if (nbuf > 0) {
-        if (keep) { printf "%s", pending; for (i = 1; i <= nbuf; i++) print buf[i] }
+        if (keep) {
+          gsub("chains\\[11\\]", "chains[10]", buf[1])
+          printf "%s", pending; for (i = 1; i <= nbuf; i++) print buf[i]
+        }
         nbuf = 0
       }
       pending = ""
@@ -1564,8 +1688,8 @@ run_settlement_bootstrap() {
       --network "$NETWORK" --operator-seed-file "$SETTLEMENT_KEY_FILE" \
       $(settlement_member_args) \
       --output "$(settlement_script_dir)"
-    note "bootstrap complete. Adopt the generated chain block, then restart:"
-    note "  ./showcase.sh chain add $SETTLEMENT_CHAIN_ID --instance $INSTANCE"
+    note "bootstrap complete. Adopt the generated production config block, then start a fresh"
+    note "preview instance; ADR-033 deliberately provides no app-chain state migration."
     return 0
   fi
   note "deploying the settlement identity on the devnet L1 (idempotent)..."
@@ -1709,7 +1833,7 @@ anchor_enable() {
   IFS=',' read -r -a desired_chains <<< "$desired"
   for target in "${desired_chains[@]}"; do migrate+=(--anchor-chain "$target"); done
   [ -z "$ANCHOR_KEY_FILE" ] || migrate+=(--anchor-key-file "$ANCHOR_KEY_FILE")
-  python3 "$IDENTITY" "${migrate[@]}" >/dev/null
+  python3 "$IDENTITY" "${migrate[@]}" --catalog "$CATALOG" >/dev/null
 
   adopt_marker
   up_light
@@ -1770,12 +1894,11 @@ Yano unified app-chain showcase
   ./showcase.sh prepare|up|quickstart [--profile light] [--nodes 3|5|7]
   ./showcase.sh status|ui|logs|restart|stop|reset [--instance name]
   ./showcase.sh config show|paths|export <file>
-  ./showcase.sh run orders|registry|authenticated-map|approvals|balances|documents|composite|roles|eutxo|anchor|all
+  ./showcase.sh run orders|registry|authenticated-map|approvals|balances|documents|document-review|composite|roles|eutxo|anchor|all
   ./showcase.sh authmap put <collection> <key> <value> [--chain id]
   ./showcase.sh authmap governed-put <key> <value> [--chain id] [--collection C] [--actor A] [--seed-file F]
   ./showcase.sh authmap entry <collection> <key> [--chain id]
   ./showcase.sh authmap receipt <message-id> [--chain id]
-  ./showcase.sh chain add authenticated-map-jmt-chain|payment-chain-settlement
   ./showcase.sh settlement info                      (vault/shard/root facts + next steps)
   ./showcase.sh settlement bootstrap                 (deploy the L1 settlement identity, devnet)
   ./showcase.sh settlement deposit|withdraw|status   (L1 deposit, L2 claim, autonomous settlement)
@@ -1787,7 +1910,7 @@ Yano unified app-chain showcase
   ./showcase.sh composite approve <id> <member-node>
   ./showcase.sh composite release <release> <key> <proposal>
   ./showcase.sh composite verify <release>
-  ./showcase.sh load <orders|registry|approvals|documents|composite> --count N
+  ./showcase.sh load <orders|registry|approvals|documents|document-review|composite> --count N
   ./showcase.sh load-test <orders|registry> --count N [--concurrency N] [--spread]
   ./showcase.sh soak-test orders [--duration SEC] [--rate MSG_PER_SEC] [--spread]
   ./showcase.sh member join <next-index>
@@ -1798,7 +1921,8 @@ Yano unified app-chain showcase
 
 Common options: --instance, --network devnet|preprod, --nodes, --threshold,
 --http-base, --server-base, --data-dir, --variant, --anchor-mode, --anchor-chain,
---anchor-key-file, --confirm-public-anchor preprod. Load options:
+--anchor-key-file, --confirm-public-anchor preprod,
+--enable-finalized-message-index[=chain-id,chain-id]. Load options:
 --concurrency, --payload-bytes, --duration, --rate, --sample, --spread,
 --node, and --report-dir.
 EOF
@@ -1816,7 +1940,9 @@ case "$COMMAND" in
     note "eutxo     maintained virtual-ledger, bridge, and ZK demos (ledger|bridge|zk)";;
   describe)
     case "${POSITIONAL[0]:-$PROFILE}" in
-      light) note "Nine chains, including authenticated-map collections/validation, MPF proofs, governance, effects, and optional L1 anchor.";;
+      light)
+        note "Twelve-chain reference catalog: foundations, three reusable compositions, MPF/JMT proof contrast, and safe L1 settlement."
+        python3 "$CATALOG_TOOL" "$CATALOG" describe;;
       evidence) note "Maintained evidence product deployment; Docker required. Evidence is the product, this is its demo harness.";;
       eutxo) note "Maintained experimental EUTxO scenarios; no real funds in the ledger variant.";;
       *) die "unknown profile";; esac;;
@@ -1897,9 +2023,10 @@ PY
         orders) run_orders "${POSITIONAL[1]:-}";; registry) run_registry "${POSITIONAL[1]:-}" "${POSITIONAL[2]:-}";;
         authenticated-map|authmap) run_authenticated_map "${POSITIONAL[1]:-}";;
         approvals) run_approvals "${POSITIONAL[1]:-}";; balances) run_balances;;
-        documents) run_documents "${POSITIONAL[1]:-}";; composite) run_composite "${POSITIONAL[1]:-}";;
+        documents) run_documents "${POSITIONAL[1]:-}";; document-review) run_document_review "${POSITIONAL[1]:-}";;
+        composite) run_composite "${POSITIONAL[1]:-}";;
         roles) run_roles;; eutxo) run_eutxo;; anchor) cluster_env; "$CLUSTER" status;;
-        all) run_orders; run_registry; run_authenticated_map; run_approvals; run_balances; run_documents; run_composite; run_roles; run_eutxo;;
+        all) run_orders; run_registry; run_authenticated_map; run_approvals; run_balances; run_documents; run_document_review; run_composite; run_roles; run_eutxo;;
         *) die "unknown run scenario";; esac
     fi;;
   approvals)
@@ -1923,80 +2050,10 @@ PY
     for ((load_index=1;load_index<=COUNT;load_index++)); do
       suffix="load-$(date +%s)-$load_index"
       case "${POSITIONAL[0]:-}" in orders) run_orders "$suffix";; registry) run_registry "$suffix" "value-$load_index";;
-        approvals) run_approvals "$suffix";; documents) run_documents "$suffix";; composite) run_composite "$suffix";;
+        approvals) run_approvals "$suffix";; documents) run_documents "$suffix";;
+        document-review) run_document_review "$suffix";; composite) run_composite "$suffix";;
         *) die "unsupported load scenario";; esac
     done;;
-  chain)
-    adopt_marker
-    [ "${POSITIONAL[0]:-}" = add ] \
-      || die "usage: chain add authenticated-map-jmt-chain|payment-chain-settlement"
-    [ "$PROFILE" = light ] || die "chain add applies only to the light profile"
-    case "${POSITIONAL[1]:-}" in
-    authenticated-map-jmt-chain)
-      grep -q 'chain-id: "authenticated-map-jmt-chain"' \
-        "$YANO_HOME/config/application-appchain.yml" \
-        || die "packaged application-appchain.yml lacks the JMT chain; replace showcase.sh, tools/, yano/config/application-appchain.yml, and the plugin bundle from a newly built showcase ZIP first"
-      cluster_env; "$CLUSTER" stop || true
-      chain_add_candidate="$(generate_authenticated_map_jmt_candidate)"
-      if ! chain_add_state="$(python3 "$IDENTITY" chain-add --marker "$(marker)" \
-          --config "$YANO_HOME/config/application-appchain.yml" \
-          --plugin "$(plugin_file)" \
-          --authenticated-map-config "$(authenticated_map_properties)" \
-          --authenticated-map-jmt-config "$chain_add_candidate" \
-          --cluster-marker "$(cluster_dir)/cluster-appchain-identity.json")"; then
-        rm -f -- "$chain_add_candidate"
-        die "chain add migration failed; the instance identity is unchanged"
-      fi
-      if [ "$chain_add_state" = already-migrated ] \
-          && [ "$(jq -r '.chainIds | length' "$(marker)")" != "${#LIGHT_CHAINS[@]}" ]; then
-        rm -f -- "$chain_add_candidate"
-        up_light
-        resume_joined_nodes
-        die "instance already has the JMT chain but predates payment-chain-settlement; run: ./showcase.sh chain add payment-chain-settlement --instance $INSTANCE"
-      fi
-      install_authenticated_map_jmt_candidate "$chain_add_candidate"
-      write_node_configs "$NODES"
-      up_light
-      resume_joined_nodes
-      note "authenticated-map-jmt-chain added; verify with: ./showcase.sh status --instance $INSTANCE";;
-    "$SETTLEMENT_CHAIN_ID")
-      # On a public network the chain block is generated by `settlement
-      # bootstrap` from the operator's OWN identity and adopted by hand. This
-      # command then migrates the instance marker to match it — it never
-      # splices the packaged devnet block.
-      if [ "$NETWORK" != devnet ]; then
-        grep -q "chain-id: \"$SETTLEMENT_CHAIN_ID\"" \
-          "$YANO_HOME/config/application-appchain.yml" || die \
-          "on $NETWORK you must adopt your own settlement block first:" \
-          "  ./showcase.sh settlement bootstrap --instance $INSTANCE --settlement-key-file <file> --confirm-public-settlement $NETWORK" \
-          "then append the printed configBlock to $YANO_HOME/config/application-appchain.yml (docs/PREPROD_SETTLEMENT.md)"
-        grep -q 'profile: "yano-eutxo-v3-bridge-settlement-devnet"' \
-          "$YANO_HOME/config/application-appchain.yml" && die \
-          "the adopted settlement block carries the DEVNET-only profile; on $NETWORK it must be yano-eutxo-v3-bridge-settlement"
-      fi
-      grep -q 'chain-id: "payment-chain-settlement"' \
-        "$YANO_HOME/config/application-appchain.yml" \
-        || die "packaged application-appchain.yml lacks the settlement chain; replace showcase.sh, tools/, yano/config/application-appchain.yml, and the plugin bundle from a newly built showcase ZIP first"
-      [ -f "$(authenticated_map_jmt_properties)" ] \
-        || die "this instance predates the JMT chain; run: ./showcase.sh chain add authenticated-map-jmt-chain --instance $INSTANCE (it adopts the settlement chain too)"
-      cluster_env; "$CLUSTER" stop || true
-      if ! settlement_add_state="$(python3 "$IDENTITY" chain-add-settlement --marker "$(marker)" \
-          --config "$YANO_HOME/config/application-appchain.yml" \
-          --plugin "$(plugin_file)" \
-          --authenticated-map-config "$(authenticated_map_properties)" \
-          --authenticated-map-jmt-config "$(authenticated_map_jmt_properties)" \
-          --cluster-marker "$(cluster_dir)/cluster-appchain-identity.json")"; then
-        die "chain add migration failed; the instance identity is unchanged"
-      fi
-      [ "$settlement_add_state" != already-migrated ] \
-        || note "instance already has $SETTLEMENT_CHAIN_ID; refreshing configs and restarting"
-      write_node_configs "$NODES"
-      up_light
-      resume_joined_nodes
-      note "$SETTLEMENT_CHAIN_ID added (config-only; bootstrap the L1 identity next)"
-      note "next: ./showcase.sh settlement bootstrap --instance $INSTANCE";;
-    *) die "chain add currently supports: authenticated-map-jmt-chain, payment-chain-settlement";;
-    esac;;
   authmap)
     adopt_marker
     case "${POSITIONAL[0]:-}" in

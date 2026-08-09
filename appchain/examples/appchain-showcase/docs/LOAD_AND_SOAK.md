@@ -10,10 +10,11 @@ result/proof. Use it to demonstrate correctness under repeated business flows.
 
 ```bash
 ./showcase.sh load orders --count 25 --instance demo
+./showcase.sh load document-review --count 5 --instance demo
 ./showcase.sh load composite --count 10 --instance demo
 ```
 
-Approval and composite iterations intentionally contain several dependent
+Approval, document-review, and composite iterations intentionally contain several dependent
 messages and finality waits. Their iteration rate is not raw message throughput.
 
 ## Parallel burst

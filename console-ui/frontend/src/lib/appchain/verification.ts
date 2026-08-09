@@ -20,6 +20,18 @@ export async function hexSha256(value: string): Promise<string> {
   return Array.from(digest, (item) => item.toString(16).padStart(2, '0')).join('');
 }
 
+export async function finalizedMessageStateKey(messageId: string): Promise<string> {
+  if (!SHA256.test(messageId)) throw new Error('Message id must be 64 lowercase hex characters');
+  const namespace = new TextEncoder().encode('~yano/finalized-message/v1/');
+  const material = new Uint8Array(namespace.length + 32);
+  material.set(namespace);
+  for (let index = 0; index < 32; index++) {
+    material[namespace.length + index] = Number.parseInt(messageId.slice(index * 2, index * 2 + 2), 16);
+  }
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', material));
+  return Array.from(digest, (item) => item.toString(16).padStart(2, '0')).join('');
+}
+
 export function boundedPretty(value: unknown, max = 32 * 1024): string {
   const rendered = JSON.stringify(value, null, 2) ?? String(value);
   return rendered.length <= max ? rendered : `${rendered.slice(0, max)}\n… output truncated in console …`;

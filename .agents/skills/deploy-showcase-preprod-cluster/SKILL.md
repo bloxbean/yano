@@ -42,12 +42,19 @@ validation separate from fresh deployment or smoke traffic.
 - N2N: `17337-17339`
 - Nodes/threshold: `3/2`
 
-The script makes three independent APFS clone-on-write L1 stores while
-excluding any legacy `chainstate/appchains` content, creates cluster identity
-markers before adopting them, copies keys with owner-only permissions, deploys
-the operator-specific production settlement profile, and adopts its generated
-config block. Each node must expose sibling `chainstate`,
+The script uses a disposable bootstrap instance to deploy the operator-specific
+production settlement identity, adopts its generated config block at the
+catalog position, then creates the final twelve-chain app-chain generation
+from scratch. It makes three independent APFS clone-on-write L1 stores while
+excluding any legacy `chainstate/appchains` content and copies keys with
+owner-only permissions. No app-chain state or identity is migrated from the
+bootstrap instance. Each final node must expose sibling `chainstate`,
 `appchain-chainstate`, and `appchain-indexers` roots.
+
+The non-secret settlement deployment record is retained beside the source
+keys, including after a partial bootstrap. A later clean deployment reuses
+that record so the one-shot L1 mint resumes the same identity instead of
+selecting new seed UTxOs.
 
 ## Safety and proof rules
 
@@ -58,6 +65,8 @@ config block. Each node must expose sibling `chainstate`,
 - Never regenerate retained state, anchor, or settlement identity.
 - Require the three nodes to agree on tip/root/profile/genesis for each chain.
   Only node 0 needs an anchor writer view.
+- Require the retained chain order and capability manifests to match the
+  packaged ADR-033 catalog.
 - Reject a derived-index checkpoint above its authoritative app-chain tip and
   reject any legacy derived index below the L1 chainstate root.
 - A caller-pinned proof verifies mechanics, not L1 trust. Call a proof anchored

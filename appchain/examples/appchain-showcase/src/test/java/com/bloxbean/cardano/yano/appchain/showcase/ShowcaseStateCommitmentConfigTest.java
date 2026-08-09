@@ -58,7 +58,7 @@ class ShowcaseStateCommitmentConfigTest {
         }
 
         assertThat(seenIndexes).containsExactlyInAnyOrderElementsOf(
-                java.util.stream.IntStream.rangeClosed(0, 10).boxed().toList());
-        assertThat(genesisIds).hasSize(9);
+                java.util.stream.IntStream.rangeClosed(0, 11).boxed().toList());
+        assertThat(genesisIds).hasSize(10);
     }
 }

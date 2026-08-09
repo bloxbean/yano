@@ -232,6 +232,10 @@ export class YanoApi {
   chainMessage(chainId: string, messageId: string, signal?: AbortSignal) {
     return this.json<AppChainMessage>(`${chainPath(chainId)}/messages/${encodeURIComponent(messageId)}`, signal);
   }
+  chainMessageProof(chainId: string, messageId: string, signal?: AbortSignal) {
+    return this.json<import('./types').MessageInclusionProof>(
+      `${chainPath(chainId)}/messages/${encodeURIComponent(messageId)}/proof`, signal);
+  }
   chainEffects(chainId: string, signal?: AbortSignal) {
     return this.json<EffectPage>(`${chainPath(chainId)}/effects?fromHeight=0&limit=100`, signal);
   }

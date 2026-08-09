@@ -30,7 +30,8 @@ const MAX_BATCH_BYTES = 1_048_576;
 const STATE_MACHINE_VERSION = 1;
 
 export function isAuthenticatedMapChain(status: AppChainStatus | null): boolean {
-  return status?.stateMachine === AUTHMAP_STATE_MACHINE_ID;
+  return status?.capabilityManifest?.components.some(
+    (component) => component.id === AUTHMAP_STATE_MACHINE_ID) === true;
 }
 
 const AUTHORIZATION_LABELS = ['open', 'owner', 'member', 'governed-role', 'approval'];

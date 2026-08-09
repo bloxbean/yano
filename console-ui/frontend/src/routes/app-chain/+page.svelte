@@ -7,6 +7,7 @@
   import CopyValue from '$lib/components/CopyValue.svelte';
   import Pager from '$lib/components/Pager.svelte';
   import AppChainCapabilityPanels from '$lib/components/AppChainCapabilityPanels.svelte';
+  import AppChainCapabilityMatrix from '$lib/components/AppChainCapabilityMatrix.svelte';
   import { apiFailureMessage, resolveApiBase, YanoApi } from '$lib/api/client';
   import type {
     AppChainBlock, AppChainBlockDetail, AppChainBlocks, AppChainMessage, AppChainStatus,
@@ -26,6 +27,7 @@
   const CHAIN_KEY = 'yano.console.app-chain.selected.v1';
   const PAGE_SIZE = 25;
   const MESSAGE_WINDOW = 50;
+  type AppChainView = 'operations' | 'capabilities';
   let api: YanoApi | null = null;
   let apiBase = '/api/v1';
   let config: NodeConfig | null = null;
@@ -62,6 +64,10 @@
   let inspectedBlockError = '';
   let inspectedBlockLoading = false;
   let pluginBundleIds: string[] = [];
+  let capabilityStatuses: AppChainStatus[] = [];
+  let capabilityMatrixLoading = false;
+  let capabilityMatrixError = '';
+  let activeView: AppChainView = 'operations';
   const cursor = new StreamCursor();
 
   const fmt = (value: unknown) => Number.isFinite(Number(value)) ? Number(value).toLocaleString() : '-';
@@ -109,7 +115,10 @@
             .filter((id) => id !== '');
         }).catch(() => { pluginBundleIds = []; });
         if (disposed) return;
-        const queryChain = new URLSearchParams(location.search).get('chain');
+        const parameters = new URLSearchParams(location.search);
+        activeView = parameters.get('view') === 'capabilities' ? 'capabilities' : 'operations';
+        if (activeView === 'capabilities') void loadCapabilityMatrix();
+        const queryChain = parameters.get('chain');
         const remembered = localStorage.getItem(CHAIN_KEY);
         selectedChain = chains.some((chain) => chain.chainId === queryChain) ? queryChain!
           : chains.some((chain) => chain.chainId === remembered) ? remembered! : chains[0]?.chainId ?? '';
@@ -166,6 +175,9 @@
       historyState = result.state;
       samples = mergeSamples(durableSamples, history?.values() ?? []);
       status = nextStatus;
+      capabilityStatuses = capabilityStatuses.some((item) => item.chainId === nextStatus.chainId)
+        ? capabilityStatuses.map((item) => item.chainId === nextStatus.chainId ? nextStatus : item)
+        : [...capabilityStatuses, nextStatus];
       latestBlocks = nextBlocks;
       if (blockPageIndex === 0) {
         // Keep one coherent tip snapshot while the operator pages backward.
@@ -181,6 +193,30 @@
         pageError = apiFailureMessage(cause, 'App-chain status request failed');
       }
     }
+  }
+
+  async function loadCapabilityMatrix(): Promise<void> {
+    if (!api) return;
+    capabilityMatrixLoading = true;
+    capabilityMatrixError = '';
+    try {
+      const results = await Promise.allSettled(chains.map((chain) => api!.chainStatus(chain.chainId)));
+      capabilityStatuses = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
+      const failures = results.length - capabilityStatuses.length;
+      if (failures > 0) capabilityMatrixError = `${failures} capability manifest${failures === 1 ? '' : 's'} could not be loaded.`;
+    } finally {
+      capabilityMatrixLoading = false;
+    }
+  }
+
+  function selectView(view: AppChainView): void {
+    activeView = view;
+    const parameters = new URLSearchParams(location.search);
+    if (view === 'capabilities') parameters.set('view', view);
+    else parameters.delete('view');
+    const query = parameters.toString();
+    window.history.replaceState({}, '', `${base}/app-chain/${query ? `?${query}` : ''}`);
+    if (view === 'capabilities') void loadCapabilityMatrix();
   }
 
   async function loadDurableHistory(chainId: string): Promise<void> {
@@ -341,9 +377,9 @@
 <div data-console-route="app-chain" class="mb-4 flex flex-wrap items-end justify-between gap-3">
   <div>
     <p class="m-0 text-xs font-semibold uppercase tracking-[.18em] text-violet-400">Application ledger</p>
-    <h1 class="mt-1 text-2xl font-bold">App-chain operations</h1>
+    <h1 class="mt-1 text-2xl font-bold">{activeView === 'operations' ? 'App-chain operations' : 'App-chain capabilities'}</h1>
   </div>
-  <div class="flex flex-wrap items-end gap-2">
+  {#if activeView === 'operations'}<div class="flex flex-wrap items-end gap-2">
     <label class="text-xs text-slate-400">Chain
       <select class="ml-2 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
               value={selectedChain} onchange={(event) => activateChain(event.currentTarget.value)}>
@@ -362,10 +398,33 @@
          href={`${base}/app-chain/authenticated-map/?chain=${encodeURIComponent(selectedChain)}`}>Authenticated Map</a>
     {/if}
     <span class="rounded-md border border-slate-700 px-2 py-1 text-xs font-mono text-slate-400">{requestMs || '-'} ms</span>
-  </div>
+  </div>{/if}
 </div>
 
 {#if pageError}<div class="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-300">{pageError}</div>{/if}
+
+<nav aria-label="App-chain views" class="mb-5 flex w-fit rounded-xl border border-slate-800 bg-slate-900/70 p-1">
+  <button type="button"
+          class="rounded-lg px-4 py-2 text-sm font-semibold transition {activeView === 'operations' ? 'bg-violet-500/20 text-violet-200' : 'text-slate-400 hover:text-slate-200'}"
+          aria-current={activeView === 'operations' ? 'page' : undefined}
+          onclick={() => selectView('operations')}>Operations</button>
+  <button type="button"
+          class="rounded-lg px-4 py-2 text-sm font-semibold transition {activeView === 'capabilities' ? 'bg-violet-500/20 text-violet-200' : 'text-slate-400 hover:text-slate-200'}"
+          aria-current={activeView === 'capabilities' ? 'page' : undefined}
+          onclick={() => selectView('capabilities')}>Capabilities</button>
+</nav>
+
+{#if activeView === 'capabilities'}
+  <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
+    <p class="m-0 max-w-3xl text-sm text-slate-400">Compare the reusable components, cross-cutting concerns, and verification profiles declared by every running application.</p>
+    <button type="button" class="rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-300 hover:border-slate-500"
+            disabled={capabilityMatrixLoading} onclick={() => void loadCapabilityMatrix()}>
+      {capabilityMatrixLoading ? 'Refreshing…' : 'Refresh manifests'}
+    </button>
+  </div>
+  {#if capabilityMatrixError}<div class="mb-4 text-xs text-amber-300">{capabilityMatrixError}</div>{/if}
+  <AppChainCapabilityMatrix statuses={capabilityStatuses} />
+{:else}
 {#if streamError}<div class="mb-4 text-xs text-amber-300">Live feed reconnecting: {streamError}</div>{/if}
 
 <section class="card overflow-hidden p-5">
@@ -580,6 +639,7 @@
                                 section="effects" />
     </div>
   {/key}
+{/if}
 {/if}
 
 <dialog bind:this={dialog} class="m-auto w-[min(900px,calc(100%-2rem))] rounded-2xl border border-slate-700 bg-slate-900 p-0 text-slate-100 backdrop:bg-slate-950/80">

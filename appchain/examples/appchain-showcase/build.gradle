@@ -14,6 +14,7 @@ dependencies {
     compileOnly project(':appchain-stdlib')
     compileOnly project(':appchain-stdlib-contracts')
     compileOnly project(':appchain-role-workflow-contracts')
+    compileOnly project(':appchain-role-workflow')
     compileOnly project(':appchain-config')
     compileOnly project(':appchain-eutxo-contracts')
     compileOnly libs.cbor
@@ -28,6 +29,7 @@ dependencies {
     testImplementation project(':appchain-stdlib')
     testImplementation project(':appchain-stdlib-contracts')
     testImplementation project(':appchain-role-workflow-contracts')
+    testImplementation project(':appchain-role-workflow')
     testImplementation project(':appchain-config')
     testImplementation project(':appchain-eutxo-contracts')
     // ADR-UTXO-008: golden derivation of the bridge chain's deterministic
@@ -150,6 +152,9 @@ distributions {
             from('src/main/showcase/config/application-appchain.yml') {
                 into 'yano/config'
             }
+            from('src/main/showcase/config/showcase-catalog-v1.json') {
+                into 'catalog'
+            }
             from(project(':app').file('config/application-appchain.yml')) {
                 into 'yano/config'
                 rename { 'application-appchain-standard.yml' }
@@ -251,6 +256,7 @@ tasks.register('verifyShowcasePluginArtifact') {
                         effectExecutorService,
                         pluginManifest,
                         'com/bloxbean/cardano/yano/appchain/showcase/ShowcaseCompositeStateMachineProvider.class',
+                        'com/bloxbean/cardano/yano/appchain/showcase/DocumentReviewStateMachineProvider.class',
                         'com/bloxbean/cardano/yano/appchain/showcase/ShowcaseAuthenticatedMapConfig.class',
                         'com/bloxbean/cardano/yano/appchain/showcase/ShowcaseOutboxExecutorFactory.class',
                         'com/bloxbean/cardano/yano/appchain/showcase/ShowcaseEutxoTransactions.class'
@@ -272,6 +278,7 @@ tasks.register('verifyShowcasePluginArtifact') {
                         || manifest.version != project.version.toString()
                         || contributions != Set.of(
                         'app-state-machine:showcase-composite',
+                        'app-state-machine:document-review',
                         'effect-executor:showcase-outbox')) {
                     throw new GradleException('Unexpected showcase plugin manifest')
                 }

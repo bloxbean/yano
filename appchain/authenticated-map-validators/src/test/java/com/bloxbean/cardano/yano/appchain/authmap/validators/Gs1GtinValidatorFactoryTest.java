@@ -48,6 +48,11 @@ class Gs1GtinValidatorFactoryTest {
                 .hasMessageContaining("empty parameters");
     }
 
+    @Test
+    void createsAnIndependentValidatorForEveryConfiguredChain() {
+        assertThat(factory()).isNotSameAs(factory());
+    }
+
     private static AuthenticatedMapValueValidator factory() {
         return new Gs1GtinValidatorFactory().create(new ValidatorInitContext(
                 "gtin", Gs1GtinValidatorFactory.ID,

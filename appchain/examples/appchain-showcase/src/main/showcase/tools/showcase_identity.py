@@ -13,19 +13,25 @@ import stat
 import sys
 
 
-LIGHT_CHAINS = [
-    "orders-chain", "registry-chain", "approvals-chain", "balances-chain",
-    "documents-chain", "workflow-chain", "roles-chain", "payments-chain",
-    "authenticated-map-chain", "authenticated-map-jmt-chain",
-    "payment-chain-settlement",
-]
-# Instances prepared before the ADR-UTXO-009 settlement chain existed.
-LIGHT_CHAINS_V10 = LIGHT_CHAINS[:-1]
-# Instances prepared before the classic-JMT contrast chain existed.
-LEGACY_LIGHT_CHAINS = LIGHT_CHAINS[:-2]
+LIGHT_CHAINS: list[str] = []
+LIGHT_CHAINS_WITHOUT_SETTLEMENT: list[str] = []
 CHAIN_ID = re.compile(r"[A-Za-z0-9._~-]{1,128}")
 HEX_32 = re.compile(r"[0-9a-f]{64}")
 CONFIG_CHAIN_ID = re.compile(r'^\s{6}chain-id:\s*"([A-Za-z0-9._~-]{1,128})"\s*$', re.MULTILINE)
+
+
+def load_catalog(path: pathlib.Path) -> list[str]:
+    catalog = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
+    chains = catalog.get("chains") if isinstance(catalog, dict) else None
+    if (catalog.get("schemaVersion") != 1 or catalog.get("profileId") != "light-v1"
+            or not isinstance(chains, list) or len(chains) != 12):
+        raise ValueError("unsupported showcase catalog")
+    ids = [chain.get("chainId") for chain in chains if isinstance(chain, dict)]
+    if (len(ids) != 12 or len(ids) != len(set(ids))
+            or any(not isinstance(chain, str) or not CHAIN_ID.fullmatch(chain) for chain in ids)
+            or "payment-chain-settlement" not in ids):
+        raise ValueError("showcase catalog contains an invalid chain set")
+    return ids
 
 
 def sha256(path: pathlib.Path) -> str:
@@ -56,7 +62,7 @@ def requested_anchor_chains(values: list[str], configured: list[str]) -> list[st
 def configured_chain_ids(path: pathlib.Path) -> list[str]:
     chains = CONFIG_CHAIN_ID.findall(path.read_text(encoding="utf-8"))
     if (not chains or len(chains) != len(set(chains))
-            or chains not in (LIGHT_CHAINS, LIGHT_CHAINS_V10, LEGACY_LIGHT_CHAINS)):
+            or chains not in (LIGHT_CHAINS, LIGHT_CHAINS_WITHOUT_SETTLEMENT)):
         raise ValueError("showcase config contains an unsupported chain set")
     return chains
 
@@ -104,6 +110,17 @@ def document(args: argparse.Namespace) -> dict:
     plugin = pathlib.Path(args.plugin).resolve()
     chains = configured_chain_ids(config) if args.profile == "light" else []
     selected = requested_anchor_chains(args.anchor_chain, chains) if args.anchor else []
+    finalized = ([] if not args.finalized_message_index_selection else
+                 args.finalized_message_index_selection.split(","))
+    if (len(finalized) != len(set(finalized))
+            or any(chain not in chains for chain in finalized)
+            or finalized != [chain for chain in chains if chain in set(finalized)]):
+        raise ValueError("finalized-message index selection is not canonical")
+    finalized_digest = hashlib.sha256(canonical({
+        "policy": "APPLICATION_ONLY",
+        "maxMessagesPerBlock": 1000,
+        "chainIds": finalized,
+    })).hexdigest()
     return {
         "schemaVersion": 2 if len(selected) > 1 else 1,
         "kind": "yano.showcase.deployment",
@@ -124,6 +141,12 @@ def document(args: argparse.Namespace) -> dict:
             pathlib.Path(args.authenticated_map_config).resolve()),
         "authenticatedMapJmtConfigSha256": sha256(
             pathlib.Path(args.authenticated_map_jmt_config).resolve()),
+        "finalizedMessageIndex": {
+            "chainIds": finalized,
+            "configurationDigest": finalized_digest,
+            "policy": "APPLICATION_ONLY",
+            "maxMessagesPerBlock": 1000,
+        },
         "anchor": anchor_identity(
             args.anchor,
             args.anchor_mode,
@@ -229,18 +252,27 @@ def validate_deployment_identity(document: dict) -> None:
         "protocolMagic", "bootstrapNodeCount", "bootstrapThreshold", "httpBase",
         "serverBase", "runtime", "chainIds", "configSha256", "pluginSha256", "anchor",
         "authenticatedMapConfigSha256",
+        "authenticatedMapJmtConfigSha256", "finalizedMessageIndex",
     }
-    if document.get("chainIds") in (LIGHT_CHAINS, LIGHT_CHAINS_V10):
-        expected = expected | {"authenticatedMapJmtConfigSha256"}
-        if (not isinstance(document.get("authenticatedMapJmtConfigSha256"), str)
-                or not HEX_32.fullmatch(document["authenticatedMapJmtConfigSha256"])):
-            raise ValueError("showcase deployment identity is malformed")
+    finalized = document.get("finalizedMessageIndex")
+    if (not isinstance(document.get("authenticatedMapJmtConfigSha256"), str)
+            or not HEX_32.fullmatch(document["authenticatedMapJmtConfigSha256"])
+            or not isinstance(finalized, dict)
+            or set(finalized) != {"chainIds", "configurationDigest", "policy",
+                                  "maxMessagesPerBlock"}
+            or not isinstance(finalized.get("chainIds"), list)
+            or finalized.get("chainIds") != [chain for chain in document.get("chainIds", [])
+                                               if chain in set(finalized.get("chainIds", []))]
+            or finalized.get("policy") != "APPLICATION_ONLY"
+            or finalized.get("maxMessagesPerBlock") != 1000
+            or not isinstance(finalized.get("configurationDigest"), str)
+            or not HEX_32.fullmatch(finalized["configurationDigest"])):
+        raise ValueError("showcase finalized-message index identity is malformed")
     anchor = document.get("anchor")
     if (set(document) != expected or document.get("profile") != "light"
             or document.get("network") not in ("devnet", "preprod")
             or document.get("protocolMagic") != (1 if document.get("network") == "preprod" else 42)
-            or document.get("chainIds") not in (
-                LIGHT_CHAINS, LIGHT_CHAINS_V10, LEGACY_LIGHT_CHAINS)
+            or document.get("chainIds") not in (LIGHT_CHAINS, LIGHT_CHAINS_WITHOUT_SETTLEMENT)
             or not isinstance(document.get("authenticatedMapConfigSha256"), str)
             or not HEX_32.fullmatch(document["authenticatedMapConfigSha256"])
             or type(document.get("bootstrapNodeCount")) is not int
@@ -360,8 +392,7 @@ def migrate_anchor(args: argparse.Namespace) -> None:
         raise ValueError("authenticated-map genesis differs from the retained showcase identity")
     configured = deployment.get("chainIds")
     if (deployment.get("profile") != "light" or not isinstance(configured, list)
-            or configured not in (
-                LIGHT_CHAINS, LIGHT_CHAINS_V10, LEGACY_LIGHT_CHAINS)):
+            or configured not in (LIGHT_CHAINS, LIGHT_CHAINS_WITHOUT_SETTLEMENT)):
         raise ValueError("anchor enable is supported only for the maintained light profile")
     if "authenticatedMapJmtConfigSha256" in deployment:
         if (not args.authenticated_map_jmt_config
@@ -425,113 +456,9 @@ def migrate_anchor(args: argparse.Namespace) -> None:
     print(",".join(selected))
 
 
-def migrate_chain_add(args: argparse.Namespace) -> None:
-    """Additive migration: adopt the classic-JMT contrast chain on a legacy
-    nine-chain instance. Re-records the packaged config/plugin digests (the
-    upgrade replaced those files) after verifying the retained
-    authenticated-map genesis is untouched."""
-    marker = pathlib.Path(args.marker)
-    deployment = parsed_identity(marker, "yano.showcase.deployment")
-    validate_deployment_identity(deployment)
-    required = (args.config, args.plugin, args.authenticated_map_config,
-                args.authenticated_map_jmt_config)
-    if not all(required):
-        raise ValueError("chain-add requires --config, --plugin, "
-                         "--authenticated-map-config, and --authenticated-map-jmt-config")
-    if (sha256(pathlib.Path(args.authenticated_map_config).resolve())
-            != deployment.get("authenticatedMapConfigSha256")):
-        raise ValueError("retained authenticated-map genesis does not match the marker; "
-                         "refusing to migrate a tampered instance")
-    jmt_sha = sha256(pathlib.Path(args.authenticated_map_jmt_config).resolve())
-    if deployment.get("chainIds") in (LIGHT_CHAINS, LIGHT_CHAINS_V10):
-        if deployment.get("authenticatedMapJmtConfigSha256") != jmt_sha:
-            raise ValueError("instance already has a different JMT chain identity")
-        print("already-migrated")
-        return
-    if deployment.get("chainIds") != LEGACY_LIGHT_CHAINS:
-        raise ValueError("chain add supports only the maintained light profile")
-    deployment["chainIds"] = list(LIGHT_CHAINS)
-    deployment["configSha256"] = sha256(pathlib.Path(args.config).resolve())
-    deployment["pluginSha256"] = sha256(pathlib.Path(args.plugin).resolve())
-    deployment["authenticatedMapJmtConfigSha256"] = jmt_sha
-    validate_deployment_identity(deployment)
-    if args.cluster_marker and pathlib.Path(args.cluster_marker).exists():
-        cluster_marker_path = pathlib.Path(args.cluster_marker)
-        cluster = parsed_identity(cluster_marker_path, "yano.cluster.appchain-identity")
-        validate_cluster_identity(cluster, LEGACY_LIGHT_CHAINS)
-        cluster["chainIds"] = list(LIGHT_CHAINS)
-        validate_cluster_identity(cluster, list(LIGHT_CHAINS))
-        write_atomic(cluster_marker_path, canonical(cluster))
-    write_atomic(marker, canonical(deployment))
-    print("migrated")
-
-
-def migrate_chain_add_settlement(args: argparse.Namespace) -> None:
-    """Additive migration: adopt the ADR-UTXO-009 settlement chain on an
-    instance that already has the classic-JMT chain (10 chains). The chain
-    is config-only (its L1 identity is deployed separately by
-    `settlement bootstrap`), so no new genesis is generated; the packaged
-    config/plugin digests are re-recorded after verifying both retained
-    authenticated-map geneses are untouched."""
-    marker = pathlib.Path(args.marker)
-    deployment = parsed_identity(marker, "yano.showcase.deployment")
-    validate_deployment_identity(deployment)
-    required = (args.config, args.plugin, args.authenticated_map_config,
-                args.authenticated_map_jmt_config)
-    if not all(required):
-        raise ValueError("chain-add requires --config, --plugin, "
-                         "--authenticated-map-config, and --authenticated-map-jmt-config")
-    if (sha256(pathlib.Path(args.authenticated_map_config).resolve())
-            != deployment.get("authenticatedMapConfigSha256")):
-        raise ValueError("retained authenticated-map genesis does not match the marker; "
-                         "refusing to migrate a tampered instance")
-    if deployment.get("chainIds") == LIGHT_CHAINS:
-        # Already listed. Re-record the packaged digests so an operator who
-        # legitimately edited the config — on a public network the settlement
-        # block is generated from THEIR identity and adopted by hand — is not
-        # locked out by the retained-config check.
-        deployment["configSha256"] = sha256(pathlib.Path(args.config).resolve())
-        deployment["pluginSha256"] = sha256(pathlib.Path(args.plugin).resolve())
-        validate_deployment_identity(deployment)
-        # The cluster marker is bound to the chain set too. An instance whose
-        # settlement chain was adopted after creation (public networks) still
-        # carries the pre-adoption list, so bring it forward as well.
-        if args.cluster_marker and pathlib.Path(args.cluster_marker).exists():
-            cluster_path = pathlib.Path(args.cluster_marker)
-            cluster = parsed_identity(cluster_path, "yano.cluster.appchain-identity")
-            if cluster.get("chainIds") != list(LIGHT_CHAINS):
-                cluster["chainIds"] = list(LIGHT_CHAINS)
-                validate_cluster_identity(cluster, list(LIGHT_CHAINS))
-                write_atomic(cluster_path, canonical(cluster))
-        write_atomic(marker, canonical(deployment))
-        print("already-migrated")
-        return
-    if deployment.get("chainIds") != LIGHT_CHAINS_V10:
-        raise ValueError("chain add payment-chain-settlement requires the JMT chain first; "
-                         "run: chain add authenticated-map-jmt-chain")
-    if (sha256(pathlib.Path(args.authenticated_map_jmt_config).resolve())
-            != deployment.get("authenticatedMapJmtConfigSha256")):
-        raise ValueError("retained authenticated-map JMT genesis does not match the marker; "
-                         "refusing to migrate a tampered instance")
-    deployment["chainIds"] = list(LIGHT_CHAINS)
-    deployment["configSha256"] = sha256(pathlib.Path(args.config).resolve())
-    deployment["pluginSha256"] = sha256(pathlib.Path(args.plugin).resolve())
-    validate_deployment_identity(deployment)
-    if args.cluster_marker and pathlib.Path(args.cluster_marker).exists():
-        cluster_marker_path = pathlib.Path(args.cluster_marker)
-        cluster = parsed_identity(cluster_marker_path, "yano.cluster.appchain-identity")
-        validate_cluster_identity(cluster, LIGHT_CHAINS_V10)
-        cluster["chainIds"] = list(LIGHT_CHAINS)
-        validate_cluster_identity(cluster, list(LIGHT_CHAINS))
-        write_atomic(cluster_marker_path, canonical(cluster))
-    write_atomic(marker, canonical(deployment))
-    print("migrated")
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("ensure", "show", "export", "anchor-enable",
-                                           "chain-add", "chain-add-settlement"))
+    parser.add_argument("action", choices=("ensure", "show", "export", "anchor-enable"))
     parser.add_argument("--marker", required=True)
     parser.add_argument("--version", default="development")
     parser.add_argument("--profile", default="light")
@@ -545,6 +472,7 @@ def main() -> None:
     parser.add_argument("--plugin")
     parser.add_argument("--authenticated-map-config")
     parser.add_argument("--authenticated-map-jmt-config")
+    parser.add_argument("--finalized-message-index-selection", default="")
     parser.add_argument("--anchor", action="store_true")
     parser.add_argument("--anchor-mode", default="script")
     parser.add_argument("--anchor-chain", action="append", default=[])
@@ -552,18 +480,21 @@ def main() -> None:
     parser.add_argument("--cluster-marker")
     parser.add_argument("--cluster-env")
     parser.add_argument("--output")
+    parser.add_argument("--catalog")
     args = parser.parse_args()
+    global LIGHT_CHAINS, LIGHT_CHAINS_WITHOUT_SETTLEMENT
+    if args.action not in ("show", "export"):
+        if not args.catalog:
+            raise ValueError("this action requires --catalog")
+        LIGHT_CHAINS = load_catalog(pathlib.Path(args.catalog).resolve())
+        LIGHT_CHAINS_WITHOUT_SETTLEMENT = [
+            chain for chain in LIGHT_CHAINS if chain != "payment-chain-settlement"
+        ]
     marker = pathlib.Path(args.marker)
     if args.action == "anchor-enable":
         if not args.cluster_marker or not args.cluster_env:
             raise ValueError("anchor-enable requires --cluster-marker and --cluster-env")
         migrate_anchor(args)
-        return
-    if args.action == "chain-add":
-        migrate_chain_add(args)
-        return
-    if args.action == "chain-add-settlement":
-        migrate_chain_add_settlement(args)
         return
     if args.action == "show":
         parsed = json.loads(secure_existing(marker))

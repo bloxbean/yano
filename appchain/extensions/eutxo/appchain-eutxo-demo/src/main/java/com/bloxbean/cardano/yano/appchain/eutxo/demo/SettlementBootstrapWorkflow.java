@@ -17,9 +17,11 @@ import com.bloxbean.cardano.client.transaction.spec.Asset;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * ADR-UTXO-009: deploys a settlement identity's L1 side — the two one-shot
@@ -110,23 +112,52 @@ public final class SettlementBootstrapWorkflow {
         String rootUnit = plan.rootThreadPolicyIdHex()
                 + HexFormat.of().formatHex(
                 ShowcaseSettlementPlan.ROOT_TOKEN.getBytes());
-        submit(quickTx, operatorAddress, operator, new ScriptTx()
-                .collectFrom(utxoAt(backend, operatorAddress, rootSeed))
-                .mintAsset(plan.rootThreadPolicy(),
-                        List.of(new Asset(ShowcaseSettlementPlan.ROOT_TOKEN,
-                                BigInteger.ONE)),
-                        BigIntPlutusData.of(0),
-                        operatorAddress));
-        List<Asset> shardAssets = new ArrayList<>();
-        for (int index = 0; index < 16; index++) {
-            shardAssets.add(new Asset(
-                    "0x" + HexFormat.of().formatHex(new byte[] {(byte) index}),
-                    BigInteger.ONE));
+        Set<String> heldUnits = heldUnits(backend, operatorAddress);
+        if (!heldUnits.contains(rootUnit)) {
+            submit(quickTx, operatorAddress, operator,
+                    new ScriptTx()
+                            .collectFrom(utxoAt(
+                                    backend, operatorAddress, rootSeed))
+                            .mintAsset(plan.rootThreadPolicy(),
+                                    List.of(new Asset(
+                                            ShowcaseSettlementPlan.ROOT_TOKEN,
+                                            BigInteger.ONE)),
+                                    BigIntPlutusData.of(0), operatorAddress));
+            awaitUnits(backend, operatorAddress, Set.of(rootUnit));
         }
-        submit(quickTx, operatorAddress, operator, new ScriptTx()
-                .collectFrom(utxoAt(backend, operatorAddress, shardSeed))
-                .mintAsset(plan.shardThreadPolicy(), shardAssets,
-                        BigIntPlutusData.of(0), operatorAddress));
+        List<Asset> shardAssets = new ArrayList<>();
+        Set<String> shardUnits = new HashSet<>();
+        for (int index = 0; index < 16; index++) {
+            String assetName = HexFormat.of().formatHex(
+                    new byte[] {(byte) index});
+            shardAssets.add(new Asset(
+                    "0x" + assetName,
+                    BigInteger.ONE));
+            shardUnits.add(plan.shardThreadPolicyIdHex() + assetName);
+        }
+        heldUnits = heldUnits(backend, operatorAddress);
+        long heldShardCount = shardUnits.stream().filter(heldUnits::contains).count();
+        if (heldShardCount != 0 && heldShardCount != SHARD_COUNT) {
+            throw new IllegalStateException(
+                    "operator address holds only " + heldShardCount + " of "
+                            + SHARD_COUNT + " settlement shard tokens");
+        }
+        if (heldShardCount == 0) {
+            submit(quickTx, operatorAddress, operator,
+                    new ScriptTx()
+                            .collectFrom(utxoAt(
+                                    backend, operatorAddress, shardSeed))
+                            .mintAsset(plan.shardThreadPolicy(), shardAssets,
+                                    BigIntPlutusData.of(0), operatorAddress));
+            awaitUnits(backend, operatorAddress, shardUnits);
+        }
+
+        heldUnits = heldUnits(backend, operatorAddress);
+        if (!heldUnits.contains(rootUnit)
+                || !heldUnits.containsAll(shardUnits)) {
+            throw new IllegalStateException(
+                    "settlement mint outputs are not yet visible at the operator address");
+        }
 
         Tx genesis = new Tx()
                 .payToContract(plan.rootAddress(),
@@ -224,5 +255,36 @@ public final class SettlementBootstrapWorkflow {
         }
         throw new IllegalStateException(
                 "transaction " + transactionId + " did not appear at " + address);
+    }
+
+    private static Set<String> heldUnits(
+            BackendService backend, String address) throws Exception {
+        Set<String> units = new HashSet<>();
+        for (Utxo utxo : new DefaultUtxoSupplier(backend.getUtxoService())
+                .getAll(address)) {
+            for (Amount amount : utxo.getAmount()) {
+                if (amount.getUnit() != null
+                        && !"lovelace".equals(amount.getUnit())
+                        && amount.getQuantity() != null
+                        && amount.getQuantity().signum() > 0) {
+                    units.add(amount.getUnit());
+                }
+            }
+        }
+        return units;
+    }
+
+    private static void awaitUnits(
+            BackendService backend, String address, Set<String> expected)
+            throws Exception {
+        long deadline = System.currentTimeMillis() + 120_000;
+        while (System.currentTimeMillis() < deadline) {
+            if (heldUnits(backend, address).containsAll(expected)) {
+                return;
+            }
+            Thread.sleep(1_000);
+        }
+        throw new IllegalStateException(
+                "settlement mint units did not appear at " + address);
     }
 }

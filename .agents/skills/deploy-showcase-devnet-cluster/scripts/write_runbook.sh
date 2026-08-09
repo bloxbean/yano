@@ -35,8 +35,13 @@ cd {target}
 ./showcase.sh run orders --instance {instance}
 ./showcase.sh run registry --instance {instance}
 ./showcase.sh run authenticated-map --instance {instance}
+./showcase.sh run document-review --instance {instance}
 ./showcase.sh run all --instance {instance}
 ```
+
+Use `./showcase.sh describe light` for the authoritative twelve-chain catalog.
+The console capability matrix at `http://127.0.0.1:7070/ui/app-chain/` is
+manifest-driven and separates membership governance from business approval.
 
 All configured chains use SCRIPT anchors. Check or bootstrap them with:
 

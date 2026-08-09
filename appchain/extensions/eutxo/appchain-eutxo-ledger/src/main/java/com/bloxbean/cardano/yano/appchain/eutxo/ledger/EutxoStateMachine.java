@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.appchain.eutxo.ledger;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppCapabilityManifest;
 import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
@@ -144,6 +145,18 @@ public final class EutxoStateMachine implements AppStateMachine {
     @Override
     public String id() {
         return ID;
+    }
+
+    @Override
+    public AppCapabilityManifest capabilityManifest() {
+        return AppCapabilityManifest.builder(ID, profile.id())
+                .component(new AppCapabilityManifest.Component(
+                        ID, profile.id(), profile.digestHex(), "application/v1",
+                        List.of(TOPIC), List.of("transactions/receipt", "utxos/address"),
+                        AppCapabilityManifest.Origin.INTRINSIC))
+                .proofSubject(new AppCapabilityManifest.ProofSubject(
+                        "eutxo-transaction-receipt-v1", "", "tx/", "state-proof"))
+                .build();
     }
 
     @Override

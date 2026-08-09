@@ -1278,6 +1278,11 @@ final class PluginSpiFacades {
         }
 
         @Override
+        public com.bloxbean.cardano.yano.api.appchain.AppCapabilityManifest capabilityManifest() {
+            return pluginCall(callbacks, loader, delegate::capabilityManifest);
+        }
+
+        @Override
         public void apply(
                 AppBlockExecutionContext context,
                 AppStateWriter writer,
