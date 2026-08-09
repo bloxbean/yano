@@ -50,3 +50,17 @@ Conformance covers invalid paths/media/digests, duplicate assets, unsupported pe
 versions, wrong-chain capability requirements, forged nonces, undeclared bridge methods,
 cross-namespace asset access, and lifecycle cleanup. The production console contains no
 Cardano-History-specific source or asset.
+
+## P2 — product assembly
+
+Status: complete
+
+The optional `appchain-cardano-history` module contributes the stable `cardano-history` provider.
+Its four immutable presets construct the existing `EpochParamsStateMachine`,
+`EpochStakeStateMachine`, and `EpochGovernanceStateMachine` through `ComposableAppStateMachine`.
+The product contains no observation, transition, key, value, or snapshot implementation.
+
+Startup validates exact preset/observer agreement, bounded chunk sizes, authenticated-state
+identity, and MPF whenever L1 proof consumption is required. `params-only-v1` activates neither
+stake/governance traversal nor a secondary authenticated-snapshot series. Artifact checks reject
+host API, composition, or stdlib classes in the deterministic bundle jar.
