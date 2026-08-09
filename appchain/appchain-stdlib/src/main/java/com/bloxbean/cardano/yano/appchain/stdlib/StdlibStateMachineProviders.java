@@ -13,6 +13,7 @@ import com.bloxbean.cardano.yano.api.appchain.transition.FinalizedMessageIndexed
 import com.bloxbean.cardano.yano.appchain.config.AppChainApprovalsConfig;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochParamsContract;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochGovernanceContract;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochStakeContract;
 
 import java.util.Arrays;
@@ -218,6 +219,30 @@ public final class StdlibStateMachineProviders {
             return new EpochStakeStateMachine(context.settings().getOrDefault(
                     "machines.epoch-stake.observer-id",
                     EpochStakeContract.DEFAULT_OBSERVER_ID), chunkEntries);
+        }
+    }
+
+    public static final class EpochGovernanceProvider implements AppStateMachineProvider {
+        @Override public String id() { return EpochGovernanceContract.STATE_MACHINE_ID; }
+        @Override public AppStateMachine create() { return new EpochGovernanceStateMachine(); }
+        @Override public AppStateMachine create(AppStateMachineContext context) {
+            boolean proposals = booleanSetting(context, "machines.epoch-governance.include-proposals", true);
+            boolean dreps = booleanSetting(context, "machines.epoch-governance.include-drep-distribution", false);
+            int chunks;
+            try { chunks = Integer.parseInt(context.settings().getOrDefault(
+                    "machines.epoch-governance.drep-chunk-entries",
+                    Integer.toString(EpochGovernanceContract.DEFAULT_DREP_CHUNK_ENTRIES))); }
+            catch (NumberFormatException e) { throw new IllegalArgumentException(
+                    "machines.epoch-governance.drep-chunk-entries must be an integer", e); }
+            return new EpochGovernanceStateMachine(context.settings().getOrDefault(
+                    "machines.epoch-governance.observer-id", EpochGovernanceContract.DEFAULT_OBSERVER_ID),
+                    proposals, dreps, chunks);
+        }
+        private static boolean booleanSetting(AppStateMachineContext context, String key, boolean fallback) {
+            String value = context.settings().get(key); if (value == null) return fallback;
+            if ("true".equalsIgnoreCase(value)) return true;
+            if ("false".equalsIgnoreCase(value)) return false;
+            throw new IllegalArgumentException(key + " must be true or false");
         }
     }
 }
