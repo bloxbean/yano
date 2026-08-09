@@ -36,7 +36,7 @@ curl localhost:18081/api/v1/app-chain/tip
 curl localhost:18082/api/v1/app-chain/tip
 
 # a state proof from a follower — verifiable client-side (appchain-client SDK)
-curl localhost:18083/api/v1/app-chain/proof/<keyHex>
+curl localhost:18083/api/v1/app-chain/state/proof/<keyHex>
 ```
 
 ## Customize

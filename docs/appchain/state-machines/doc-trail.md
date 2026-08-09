@@ -185,7 +185,7 @@ The physical state key is UTF-8 `e/<entityId>`:
 STATE_KEY_HEX=$(python3 -c 'print("e/product-42".encode().hex())')
 
 curl -sS \
-  "http://127.0.0.1:7070/api/v1/app-chain/chains/document-trail-chain/proof/$STATE_KEY_HEX" \
+  "http://127.0.0.1:7070/api/v1/app-chain/chains/document-trail-chain/state/proof/$STATE_KEY_HEX" \
   | jq .
 ```
 

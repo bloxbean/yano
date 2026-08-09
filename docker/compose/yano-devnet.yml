@@ -5,4 +5,5 @@ services:
       YANO_NETWORK: ${YANO_NETWORK:-devnet}
     volumes:
       - ${YANO_CHAINSTATE_PATH:-../chainstate-devnet}:/app/chainstate
-      - ${YANO_APPCHAIN_STATE_PATH:-../appchain-state-devnet}:/app/appchain-state
+      - ${YANO_APPCHAIN_STATE_PATH:-../appchain-chainstate-devnet}:/app/appchain-chainstate
+      - ${YANO_APPCHAIN_INDEXER_PATH:-../appchain-indexers-devnet}:/app/appchain-indexers

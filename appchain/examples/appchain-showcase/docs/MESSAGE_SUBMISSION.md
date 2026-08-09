@@ -37,7 +37,7 @@ done
 printf '%s\n' "$FINALIZED" | jq '{messageId,height,index,topic,bodyHex}'
 
 curl -fsS \
-  "$BASE/api/v1/app-chain/chains/orders-chain/proof/$MESSAGE_ID" | jq .
+  "$BASE/api/v1/app-chain/chains/orders-chain/state/proof/$MESSAGE_ID" | jq .
 ```
 
 The packaged helper is the same operation, kept deliberately visible:

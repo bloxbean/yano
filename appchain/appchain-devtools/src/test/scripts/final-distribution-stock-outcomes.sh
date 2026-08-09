@@ -28,12 +28,12 @@ audit="$(curl -fsS -H 'content-type: application/json' \
   "$api/orders-chain/messages")"
 audit_id="$(jq -er '.messageId' <<<"$audit")"
 for _ in $(seq 1 60); do
-  curl -fsS "$api/orders-chain/proof/$audit_id" 2>/dev/null \
+  curl -fsS "$api/orders-chain/state/proof/$audit_id" 2>/dev/null \
     | jq -e --arg id "$audit_id" '.key == $id and .proofWireHex != ""' >/dev/null \
     && break
   sleep 1
 done
-curl -fsS "$api/orders-chain/proof/$audit_id" \
+curl -fsS "$api/orders-chain/state/proof/$audit_id" \
   | jq -e --arg id "$audit_id" '.key == $id and .proofWireHex != ""' >/dev/null
 
 # recipe-owned-registry: first writer owns a committed value with a state proof.
@@ -41,7 +41,7 @@ curl -fsS "$api/orders-chain/proof/$audit_id" \
   >/dev/null
 registry_key="$(printf 'supplier-42' | od -An -tx1 | tr -d ' \n')"
 for _ in $(seq 1 60); do
-  registry="$(curl -fsS "$api/registry-chain/proof/$registry_key" 2>/dev/null || true)"
+  registry="$(curl -fsS "$api/registry-chain/state/proof/$registry_key" 2>/dev/null || true)"
   [ "$(jq -r '.valueHex // empty' <<<"$registry" 2>/dev/null)" != "" ] && break
   sleep 1
 done

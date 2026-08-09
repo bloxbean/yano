@@ -191,7 +191,8 @@ start_fake_node() {
     "-Dquarkus.http.port=$(http_port "$i")" \
     "-Dyano.server.port=$(server_port "$i")" \
     "-Dyano.storage.path=$(node_dir "$i")/chainstate" \
-    "-Dyano.app-chain.storage.path=$(node_dir "$i")/appchain-state" &
+    "-Dyano.app-chain.storage.path=$(node_dir "$i")/appchain-chainstate" \
+    "-Dyano.app-chain.indexer.storage.path=$(node_dir "$i")/appchain-indexers" &
   STARTED_PID=$!
 }
 
@@ -236,7 +237,8 @@ start_term_ignoring_node() {
     "-Dquarkus.http.port=$(http_port "$i")" \
     "-Dyano.server.port=$(server_port "$i")" \
     "-Dyano.storage.path=$(node_dir "$i")/chainstate" \
-    "-Dyano.app-chain.storage.path=$(node_dir "$i")/appchain-state" &
+    "-Dyano.app-chain.storage.path=$(node_dir "$i")/appchain-chainstate" \
+    "-Dyano.app-chain.indexer.storage.path=$(node_dir "$i")/appchain-indexers" &
   STARTED_PID=$!
   for attempt in {1..100}; do
     [ -f "$WORK/ignore-term-ready.$STARTED_PID" ] && return 0

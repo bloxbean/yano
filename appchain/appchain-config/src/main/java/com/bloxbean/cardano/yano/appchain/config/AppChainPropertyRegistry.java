@@ -204,6 +204,10 @@ public final class AppChainPropertyRegistry {
                 PropertyType.STRING, YanoConfig.DEFAULT_APP_CHAIN_STORAGE_PATH,
                 PropertyScope.NODE_LOCAL,
                 "Node-local root directory containing hosted app-chain ledgers"));
+        definitions.add(runtimeDefined(YanoPropertyKeys.AppChain.INDEXER_STORAGE_PATH,
+                PropertyType.STRING, YanoConfig.DEFAULT_APP_CHAIN_INDEXER_STORAGE_PATH,
+                PropertyScope.NODE_LOCAL,
+                "Node-local root directory containing rebuildable app-chain indexes"));
         definitions.add(plain(YanoPropertyKeys.AppChain.CHAINS, PropertyType.OBJECT, null,
                 PropertyScope.CLUSTER_SHARED, ChangePolicy.NEW_CHAIN_REQUIRED, false,
                 "Container for indexed multi-chain configuration"));

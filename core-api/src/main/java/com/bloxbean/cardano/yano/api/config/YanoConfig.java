@@ -17,7 +17,8 @@ import java.util.Objects;
 @Builder(toBuilder = true)
 public class YanoConfig implements NodeConfig {
 
-    public static final String DEFAULT_APP_CHAIN_STORAGE_PATH = "appchain-state";
+    public static final String DEFAULT_APP_CHAIN_STORAGE_PATH = "appchain-chainstate";
+    public static final String DEFAULT_APP_CHAIN_INDEXER_STORAGE_PATH = "appchain-indexers";
 
     // Remote node configuration (client mode)
     private String remoteHost;

@@ -203,21 +203,28 @@ distributions {
     }
 }
 
+def showcaseDistributionInputs = [
+        appDistribution,
+        tasks.named('shadowJar'),
+        evidenceRunner,
+        tasks.named('generateShowcaseVersion')
+] + evidenceBundles
+
 tasks.named('distZip') {
-    dependsOn appDistribution, tasks.named('shadowJar'), evidenceRunner,
-            tasks.named('generateShowcaseVersion')
-    dependsOn evidenceBundles
+    dependsOn showcaseDistributionInputs
     archiveFileName = "yano-showcase-${project.version}.zip"
     reproducibleFileOrder = true
     preserveFileTimestamps = false
 }
 
 tasks.named('distTar') {
-    dependsOn appDistribution, tasks.named('shadowJar'), evidenceRunner,
-            tasks.named('generateShowcaseVersion')
-    dependsOn evidenceBundles
+    dependsOn showcaseDistributionInputs
     reproducibleFileOrder = true
     preserveFileTimestamps = false
+}
+
+tasks.named('installDist') {
+    dependsOn showcaseDistributionInputs
 }
 
 def stateMachineService =

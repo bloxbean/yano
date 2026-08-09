@@ -2312,7 +2312,7 @@ prepare_host_state_links() {
   for i in 0 1 2; do
     root="$L1_ROOT/host-cluster/node$i"
     target="$DATA_ROOT/app-chain/node$i"
-    link="$root/appchain-state"
+    link="$root/appchain-chainstate"
     mkdir -p "$root" "$target"
     if [ -e "$link" ] && [ ! -L "$link" ]; then
       die "host app-chain path is not the managed symlink: $link"

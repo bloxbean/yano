@@ -239,7 +239,8 @@ final class SqliteEutxoIndexStoreTest extends EutxoIndexStoreConformance {
         }
         IndexIdentity other = new IndexIdentity(
                 "devnet", "other-chain", "eutxo-ledger",
-                EutxoIndexFixtures.identity().ledgerProfileDigest(), 1, "");
+                EutxoIndexFixtures.identity().ledgerProfileDigest(),
+                EutxoIndexFixtures.identity().stateGenesisId(), 1, "");
         assertThatThrownBy(() -> SqliteEutxoIndexStore.open(
                 context(other, identityData)))
                 .isInstanceOf(IllegalStateException.class)

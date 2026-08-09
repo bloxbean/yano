@@ -14,6 +14,9 @@ default and starts only when the node hosts an `eutxo-ledger` chain:
 ```yaml
 yano:
   app-chain:
+    indexer:
+      storage:
+        path: appchain-indexers
     eutxo-indexer:
       enabled: true
       store:
@@ -29,11 +32,13 @@ yano:
 The default database is:
 
 ```text
-<yano-storage-path>/appchains/<chain-id>/indexes/eutxo-lifecycle.db
+<yano.app-chain.indexer.storage.path>/<chain-id>/eutxo-lifecycle.db
 ```
 
-Every owned directory includes `.yano-eutxo-index`, which binds cleanup and
-rebuild operations to the configured chain identity. An explicit JDBC URL is
+This rebuildable root must remain separate from both `yano.storage.path` and
+`yano.app-chain.storage.path`. Every owned directory includes
+`.yano-eutxo-index`, which binds cleanup and rebuild operations to the network,
+chain, state-machine profile, and authenticated-state genesis identity. An explicit JDBC URL is
 supported only for a node with one EUTxO chain. SQLite files must be on a local
 filesystem, not NFS or another network filesystem.
 

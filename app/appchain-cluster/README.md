@@ -306,7 +306,7 @@ Read it back:
 ```bash
 curl -s localhost:7070/api/v1/app-chain/chains/orders-chain/blocks | jq .
 # kv membership proof for key "color" (hex 636f6c6f72) against the state root:
-curl -s localhost:7070/api/v1/app-chain/chains/registry-chain/proof/636f6c6f72 | jq .
+curl -s localhost:7070/api/v1/app-chain/chains/registry-chain/state/proof/636f6c6f72 | jq .
 ```
 
 ## Load / throughput testing
@@ -428,7 +428,8 @@ are strict and fail early when busy or overlapping.
 
 The data directory defaults to `/tmp/yano-appchain-cluster`. Each node stores
 L1 state in `nodeN/chainstate` and app-chain state independently in
-`nodeN/appchain-state`. When using a custom `--data-dir`, pass it to later
+`nodeN/appchain-chainstate`. Rebuildable read indexes live separately in
+`nodeN/appchain-indexers`. When using a custom `--data-dir`, pass it to later
 commands so they can locate that cluster's saved ports.
 
 `cluster.env` and PID metadata are strictly parsed data files; they are never
@@ -579,6 +580,7 @@ activate an unpackaged target.
   follower's copy differs from node 0, the launcher refuses to overwrite it:
   restore the original file or use `clean` for disposable state.
 - Everything lives under `--data-dir` (logs, per-node `chainstate`, per-node
-  `appchain-state`, genesis copies); `./cluster.sh clean` wipes it. Stop the
+  `appchain-chainstate`, per-node `appchain-indexers`, genesis copies);
+  `./cluster.sh clean` wipes it. Stop the
   cluster before manually removing its directory so live processes do not
   become orphaned.

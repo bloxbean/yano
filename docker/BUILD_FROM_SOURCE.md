@@ -197,10 +197,11 @@ For another network, use the matching command:
 ./yano.sh config:devnet | grep 'image:'
 ```
 
-Each network uses separate L1 and app-chain state directories by default, such
-as `chainstate-preprod` and `appchain-state-preprod`. The launcher creates both
-on `start` or `restart`. Set `YANO_CHAINSTATE_PATH` and
-`YANO_APPCHAIN_STATE_PATH` in `compose/.env` when you want custom host paths.
+Each network uses separate L1, app-chain, and derived-index directories by
+default, such as `chainstate-preprod`, `appchain-chainstate-preprod`, and
+`appchain-indexers-preprod`. The launcher creates all three on `start` or
+`restart`. Set `YANO_CHAINSTATE_PATH`, `YANO_APPCHAIN_STATE_PATH`, and
+`YANO_APPCHAIN_INDEXER_PATH` in `compose/.env` for custom host paths.
 
 Switch to the native image by editing `compose/.env`:
 

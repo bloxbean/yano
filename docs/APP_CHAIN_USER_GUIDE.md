@@ -279,7 +279,7 @@ curl -s -X POST http://nodeA:8080/api/v1/app-chain/messages \
 curl -s http://nodeB:8080/api/v1/app-chain/tip
 # → {"chainId":"acme-audit-log","height":1,"stateRoot":"95edf7..."}  (same on A!)
 
-curl -s http://nodeB:8080/api/v1/app-chain/proof/6d1be691...
+curl -s http://nodeB:8080/api/v1/app-chain/state/proof/6d1be691...
 # → MPF inclusion proof for the message against the shared state root
 ```
 
@@ -360,7 +360,7 @@ a single-chain convenience.
 | `GET /tip` | `{chainId, height, stateRoot}` of the last finalized block. |
 | `GET /blocks/{height}` | Finalized block: hashes, roots, proposer, cert signature count, full message list. |
 | `GET /blocks?from=&limit=` | Paged block summaries, ascending (default: window ending at the tip) (§15). |
-| `GET /proof/{keyHex}` | MPF inclusion proof (wire format) for a state key against the committed root. For `ordered-log` the key **is** the message id; the response includes the value and `finalizedAtHeight`. |
+| `GET /state/proof/{keyHex}` | MPF inclusion proof (wire format) for a state key against the committed root. For `ordered-log` the key **is** the message id; the response includes the value and `finalizedAtHeight`. |
 | `GET /evidence/{messageIdHex}` | Portable, offline-verifiable evidence bundle for a finalized message (§13). |
 | `GET /stream?fromHeight=&topic=` | SSE stream of finalized messages: replay, then live (§10). |
 | `POST /snapshot` | Atomic ledger snapshot for fast member onboarding (§14). Body: `{"path": "<fresh dir>"}`. |
@@ -599,7 +599,7 @@ verified.
 
 **Any state entry (e.g. a kv-registry key) against the anchored root:**
 
-`GET /api/v1/app-chain/chains/{chainId}/proof/{keyHex}` returns an **MPF
+`GET /api/v1/app-chain/chains/{chainId}/state/proof/{keyHex}` returns an **MPF
 inclusion proof** verifiable against the `state-root` in the L1 datum with
 any independent MPF implementation (the `vds-mpf` Java library or Aiken's
 `merkle-patricia-forestry` — same construction, so on-chain verification in
@@ -612,7 +612,7 @@ read-class API calls are:
 
 ```text
 GET  /api/v1/app-chain/chains/{chainId}/anchor/commitment
-GET  /api/v1/app-chain/chains/{chainId}/proof/{keyHex}?height={height}
+GET  /api/v1/app-chain/chains/{chainId}/state/proof/{keyHex}?height={height}
 POST /api/v1/app-chain/chains/{chainId}/proof/verify
 ```
 
@@ -848,13 +848,26 @@ App-chain state has its own node-local storage root:
 yano:
   app-chain:
     storage:
-      path: appchain-state  # default
+      path: appchain-chainstate  # default
 ```
 
 An absolute value is used as-is. A relative value uses the process working
 directory, like `yano.storage.path`. With the usual working directory and L1
-state at `./chainstate`, the default produces `./appchain-state`. Multi-node
+state at `./chainstate`, the default produces `./appchain-chainstate`. Multi-node
 launchers must assign a distinct app-chain storage path to every node.
+
+Rebuildable app-chain read indexes use a third node-local root:
+
+```yaml
+yano:
+  app-chain:
+    indexer:
+      storage:
+        path: appchain-indexers  # default
+```
+
+Never restore this derived index root as part of either authoritative
+chainstate. It can be deleted and rebuilt from finalized app-chain blocks.
 
 Current v1 `effects.*` consensus settings—including `result.signers`, caps,
 commitment mode and root/record algorithms—are immutable after chain launch.

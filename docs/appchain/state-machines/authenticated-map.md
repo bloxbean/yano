@@ -365,7 +365,7 @@ For a native inclusion proof, derive the physical state key:
 ```bash
 STATE_KEY_HEX="$(python3 "$CODEC" authmap state-key products sku-42)"
 curl -fsS \
-  "$BASE/api/v1/app-chain/chains/authenticated-map-chain/proof/$STATE_KEY_HEX" \
+  "$BASE/api/v1/app-chain/chains/authenticated-map-chain/state/proof/$STATE_KEY_HEX" \
   | jq .
 ```
 

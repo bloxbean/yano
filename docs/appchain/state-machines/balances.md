@@ -104,7 +104,7 @@ Query the proof for state key `b/alice` (hex `622f616c696365`):
 
 ```bash
 curl -sS \
-  http://localhost:7070/api/v1/app-chain/chains/credits-chain/proof/622f616c696365 \
+  http://localhost:7070/api/v1/app-chain/chains/credits-chain/state/proof/622f616c696365 \
   -H "X-API-Key: $YANO_API_KEY"
 ```
 

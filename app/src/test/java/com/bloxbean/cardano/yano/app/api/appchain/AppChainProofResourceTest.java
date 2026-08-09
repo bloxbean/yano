@@ -93,7 +93,7 @@ class AppChainProofResourceTest {
         AppChainResource.ChainScopedResource resource =
                 new AppChainResource.ChainScopedResource(gateway);
 
-        Response response = resource.proof("0a", 4L);
+        Response response = resource.stateProof("0a", 4L);
         assertEquals(200, response.getStatus());
         Map<?, ?> proof = (Map<?, ?>) response.getEntity();
         assertEquals("mpf-blake2b256-v1", proof.get("profile"));

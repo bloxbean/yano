@@ -80,7 +80,7 @@ curl -fsS -X POST "$CHAIN_PATH/query/authenticated-map/entry-v1" \
   -d "$(jq -nc --arg params "$QUERY_HEX" '{paramsHex:$params}')" | jq .
 
 echo "Current native proof envelope:"
-curl -fsS "$CHAIN_PATH/proof/$STATE_KEY_HEX" | jq .
+curl -fsS "$CHAIN_PATH/state/proof/$STATE_KEY_HEX" | jq .
 
 echo "Chain tip (obtain the trusted root independently before relying on proof verification):"
 curl -fsS "$CHAIN_PATH/tip" | jq .

@@ -501,7 +501,7 @@ class EvidenceClientTest {
             }
             server.createContext("/api/v1/app-chain/chains/" + CHAIN + "/query/evidence/get",
                     this::query);
-            server.createContext("/api/v1/app-chain/chains/" + CHAIN + "/proof",
+            server.createContext("/api/v1/app-chain/chains/" + CHAIN + "/state/proof",
                     this::proof);
             server.createContext("/api/v1/app-chain/chains/" + CHAIN + "/messages",
                     this::message);

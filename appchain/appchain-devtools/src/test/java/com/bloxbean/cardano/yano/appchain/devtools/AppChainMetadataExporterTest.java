@@ -37,7 +37,7 @@ class AppChainMetadataExporterTest {
                 .isEqualTo("PARTIAL");
         assertThat(appChain.path("properties").path("storage")
                 .path("properties").path("path").path("default").asText())
-                .isEqualTo("appchain-state");
+                .isEqualTo("appchain-chainstate");
         assertThat(appChain.path("patternProperties").path("^chains\\[[0-9]+]$")
                 .path("properties").path("block").path("properties")
                 .path("max-bytes").path("maximum").asLong()).isPositive();

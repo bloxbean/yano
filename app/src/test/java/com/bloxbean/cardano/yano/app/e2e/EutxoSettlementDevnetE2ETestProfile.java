@@ -134,11 +134,11 @@ public final class EutxoSettlementDevnetE2ETestProfile extends DevnetTestProfile
                 new LinkedHashMap<>(super.getConfigOverrides());
         config.put("yaci.plugins.enabled", "true");
         config.put("yano.app-chain.enabled", "true");
-        // Fresh app-chain state per run — the default appchain-state/ dir
+        // Fresh app-chain state per run — the default appchain-chainstate/ dir
         // would leak L2 state across devnet restarts.
         config.put("yano.app-chain.storage.path",
                 DevnetTestProfile.TEMP_STORAGE_DIR
-                        .resolve("appchain-state").toString());
+                        .resolve("appchain-chainstate").toString());
         config.put(PREFIX + "chain-id", CHAIN_ID);
         config.put(PREFIX + "signing-key", MEMBER_SIGNING_SEED);
         config.put(PREFIX + "members", MEMBER);

@@ -15,7 +15,8 @@ services:
       - "${YANO_N2N_PORT:-13337}:13337"
     volumes:
       - ${YANO_CHAINSTATE_PATH:-../chainstate-preprod}:/app/chainstate
-      - ${YANO_APPCHAIN_STATE_PATH:-../appchain-state-preprod}:/app/appchain-state
+      - ${YANO_APPCHAIN_STATE_PATH:-../appchain-chainstate-preprod}:/app/appchain-chainstate
+      - ${YANO_APPCHAIN_INDEXER_PATH:-../appchain-indexers-preprod}:/app/appchain-indexers
       - ../logs:/app/logs
       - ../config/application.yml:/app/config/application.yml:ro
       - ../config/network:/app/config/network

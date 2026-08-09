@@ -79,6 +79,19 @@ describe('Yano API client', () => {
     expect(headers.get('X-API-Key')).toBe('secret');
   });
 
+  it('uses the canonical state proof endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ presence: 'PRESENT' })
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await new YanoApi('/api/v1').chainProof('orders', '01', 42);
+
+    expect(fetchMock.mock.calls[0][0])
+      .toBe('/api/v1/app-chain/chains/orders/state/proof/01?height=42');
+  });
+
   it('uses the authenticated fetch client for encoded app-chain SSE', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, body: {} });
     vi.stubGlobal('fetch', fetchMock);

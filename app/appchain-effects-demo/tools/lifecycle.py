@@ -2198,7 +2198,7 @@ def _target_specs(
         for index in range(3):
             links.append(
                 ManagedHostLink(
-                    l1_root / "host-cluster" / f"node{index}" / "appchain-state",
+                    l1_root / "host-cluster" / f"node{index}" / "appchain-chainstate",
                     data_root / "app-chain" / f"node{index}",
                 )
             )

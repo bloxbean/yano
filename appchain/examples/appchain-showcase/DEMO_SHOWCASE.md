@@ -77,6 +77,24 @@ chmod 600 ./private-anchor/anchor.seed
 Node 0's API is `http://127.0.0.1:7070/api/v1` (`--http-base` shifts it).
 All eleven chains report at `GET /api/v1/app-chain/chains`.
 
+### The ADR-031 capability story
+
+Present the chains as foundations plus a small number of meaningful
+compositions, not as eleven unrelated state-machine implementations:
+
+| Demo | Composition or boundary |
+|---|---|
+| `workflow-chain` | orders + approval + audit + deterministic effect intent/result |
+| role-evidence profile today; target `document-review-chain` in ADR-033 | documents + domain actors/roles + actor approval and one-use consumption |
+| `authenticated-map-chain` | authenticated map + direct actor/role evidence + multi-organization approval |
+| `authenticated-map-jmt-chain` | backend comparison; ADR-033 makes its business policy identical to the MPF chain |
+| `payment-chain-settlement` | EUTxO + stability-gated L1 observers + settlement effects + derived lifecycle index |
+
+All of these remain `AppStateMachine` applications. Membership governance is
+shown separately because it is not a substitute for business authorization or
+approval. `payment-chain-settlement` starts with light; public-network script
+deployment and fund-moving operations remain explicit.
+
 ## 3. Everyday cluster operations
 
 ```bash
@@ -113,6 +131,11 @@ curl -X POST http://127.0.0.1:7070/api/v1/app-chain/chains/orders-chain/messages
 | `/ui/status/` , `/ui/observability/` | L1 node status, Prometheus charts |
 | `/ui/plugins/` | plugin operations (privileged; needs API key) |
 
+The current console shows effects, proofs, role proposals, authenticated-map
+governance, and EUTxO lifecycle data. ADR-033 adds a manifest-driven capability
+matrix, composition/workflow view, and a finalized-message proof lab so custom
+machines are not classified by hard-coded state-machine names.
+
 ## 5. Chain-by-chain demos
 
 Every chain has a scripted one-liner (`./showcase.sh run <name> --instance demo`)
@@ -126,7 +149,7 @@ Plain text messages, total ordering, per-message inclusion proof.
 ```bash
 ./showcase.sh run orders --instance demo
 # manual: submit text (above), then
-curl -s $BASE/app-chain/chains/orders-chain/proof/<messageIdHex> | jq '{committedHeight,stateRoot}'
+curl -s $BASE/app-chain/chains/orders-chain/state/proof/<messageIdHex> | jq '{committedHeight,stateRoot}'
 ```
 
 ### registry-chain — key/value
@@ -402,9 +425,9 @@ heights**, each with a merkle proof against that height's co-signed root:
 ```bash
 PK=$(curl -s "$DOMAIN/authenticated-map/entries/kv-open/$(printf 'k1' | xxd -p)?chain=authenticated-map-jmt-chain" | jq -r .proofKey)
 C=$BASE/app-chain/chains/authenticated-map-jmt-chain
-curl -s "$C/proof/$PK"            | jq '{h:.committedHeight, presence, valueHex}'   # current revision
-curl -s "$C/proof/$PK?height=3"   | jq '{h:.committedHeight, presence, valueHex}'   # value as of height 3
-curl -s "$C/proof/$PK?height=2"   | jq '{h:.committedHeight, presence}'             # provably ABSENT before creation
+curl -s "$C/state/proof/$PK"            | jq '{h:.committedHeight, presence, valueHex}'   # current revision
+curl -s "$C/state/proof/$PK?height=3"   | jq '{h:.committedHeight, presence, valueHex}'   # value as of height 3
+curl -s "$C/state/proof/$PK?height=2"   | jq '{h:.committedHeight, presence}'             # provably ABSENT before creation
 curl -s "$C/state/oldest-provable" | jq                                             # retention fence
 ```
 
@@ -479,7 +502,7 @@ curl -fsS "$DOMAIN/authenticated-map?chain=$CHAIN" | jq .record      # catalog +
 KEY=$(printf 'sku-1001' | xxd -p)
 ENTRY=$(curl -fsS "$DOMAIN/authenticated-map/entries/products/$KEY?chain=$CHAIN")
 PK=$(echo "$ENTRY" | jq -r .proofKey)
-PROOF=$(curl -fsS "$BASE/app-chain/chains/$CHAIN/proof/$PK")
+PROOF=$(curl -fsS "$BASE/app-chain/chains/$CHAIN/state/proof/$PK")
 curl -fsS -X POST "$BASE/app-chain/chains/$CHAIN/proof/verify" -H 'Content-Type: application/json' \
   -d "$(echo "$PROOF" | jq '{mode:"inclusion", profile, presence, expectedRootHex:.stateRoot, keyHex:.key, valueHex, proofWireHex}')" | jq .valid
 ```

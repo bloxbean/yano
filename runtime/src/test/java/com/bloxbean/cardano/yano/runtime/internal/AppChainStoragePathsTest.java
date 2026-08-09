@@ -19,7 +19,7 @@ class AppChainStoragePathsTest {
 
         Path resolved = AppChainStoragePaths.resolve(l1Path.toString(), null);
 
-        assertThat(resolved).isEqualTo(Path.of("appchain-state").toAbsolutePath());
+        assertThat(resolved).isEqualTo(Path.of("appchain-chainstate").toAbsolutePath());
     }
 
     @Test

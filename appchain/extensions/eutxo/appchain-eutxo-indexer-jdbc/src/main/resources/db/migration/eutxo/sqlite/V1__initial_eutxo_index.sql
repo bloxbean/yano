@@ -5,6 +5,7 @@ CREATE TABLE index_metadata (
     chain_id TEXT NOT NULL,
     state_machine_id TEXT NOT NULL,
     ledger_profile_digest TEXT NOT NULL,
+    state_genesis_id TEXT NOT NULL,
     bridge_abi INTEGER NOT NULL,
     validity_profile_digest TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP

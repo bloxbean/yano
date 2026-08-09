@@ -140,7 +140,11 @@ yano:
     # Node-local app-chain RocksDB root. Relative paths use the process working
     # directory, so the default is separate from ./chainstate.
     storage:
-      path: ${YANO_APP_CHAIN_STORAGE_PATH:appchain-state}
+      path: ${YANO_APP_CHAIN_STORAGE_PATH:appchain-chainstate}
+    # Rebuildable indexes are intentionally outside both authoritative stores.
+    indexer:
+      storage:
+        path: ${YANO_APP_CHAIN_INDEXER_STORAGE_PATH:appchain-indexers}
     # enabled: false        # absent = disabled; an EXPLICIT false also suppresses
     #                       # chains[i] auto-enable (operator override)
     # chain-id: "my-app-chain"

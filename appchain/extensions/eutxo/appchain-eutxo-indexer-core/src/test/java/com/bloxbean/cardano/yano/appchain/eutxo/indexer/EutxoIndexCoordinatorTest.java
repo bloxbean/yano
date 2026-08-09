@@ -184,6 +184,25 @@ class EutxoIndexCoordinatorTest {
         }
     }
 
+    @Test
+    void checkpointAheadOfAuthoritativeTipFailsClosed() {
+        AtomicReference<AppChainGateway.FinalizedBlockListener> listener =
+                new AtomicReference<>();
+        AppChainGateway gateway = gateway(Map.of(), Map.of(), listener);
+        InMemoryEutxoIndexStore store = new InMemoryEutxoIndexStore(
+                EutxoIndexFixtures.identity());
+        new EutxoProjector(store).apply(
+                EutxoIndexFixtures.point(1), List.of(), IndexCoverage.FULL);
+
+        try (EutxoIndexCoordinator coordinator =
+                     new EutxoIndexCoordinator(gateway, store)) {
+            assertThat(coordinator.health().status())
+                    .isEqualTo(IndexHealth.Status.FAILED);
+            assertThat(coordinator.health().diagnostic())
+                    .contains("ahead of authoritative app-chain tip");
+        }
+    }
+
     private static AppChainGateway gateway(
         Map<Long, AppBlock> blocks,
             Map<String, EutxoTransactionSummary> summaries,

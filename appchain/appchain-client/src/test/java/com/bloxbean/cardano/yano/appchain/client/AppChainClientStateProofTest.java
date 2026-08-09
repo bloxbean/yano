@@ -43,7 +43,7 @@ class AppChainClientStateProofTest {
 
         AppChainClient.Proof proof = client().proof(new byte[]{1}).orElseThrow();
 
-        assertThat(path.get()).isEqualTo("/api/v1/app-chain/chains/c1/proof/01");
+        assertThat(path.get()).isEqualTo("/api/v1/app-chain/chains/c1/state/proof/01");
         assertThat(proof.keyHex()).isEqualTo("01");
         assertThat(proof.chainId()).isEqualTo("c1");
         assertThat(proof.stateRootHex()).isEqualTo(ROOT);
@@ -152,6 +152,38 @@ class AppChainClientStateProofTest {
         assertThatThrownBy(() -> client().proof(new byte[]{1}))
                 .isInstanceOf(AppChainClient.AppChainClientException.class)
                 .hasMessageContaining("differs from this client release");
+    }
+
+    @Test
+    void proofAcceptsBoundedNonConsensusImplementationMetadata() throws Exception {
+        String metadata = """
+                ,"implementation":{"compatibility":"Cardano Client Lib MPF compatible",
+                  "testedImplementations":["cardano-client-lib"],
+                  "verifierAvailable":true,"verificationTarget":"off-chain-and-on-chain"}
+                """.strip();
+        String envelope = INCLUSION.strip();
+        String response = envelope.substring(0, envelope.length() - 1) + metadata + "}";
+        start(exchange -> respond(exchange, 200, response));
+
+        AppChainClient.Proof proof = client().proof(new byte[]{1}).orElseThrow();
+
+        assertThat(proof.profile()).isEqualTo(ProofVerifier.MPF_BLAKE2B256_V1);
+    }
+
+    @Test
+    void proofRejectsMalformedImplementationMetadata() throws Exception {
+        String metadata = """
+                ,"implementation":{"compatibility":"Cardano Client Lib MPF compatible",
+                  "testedImplementations":["cardano-client-lib"],
+                  "verifierAvailable":true,"verificationTarget":"on-chain-only"}
+                """.strip();
+        String envelope = INCLUSION.strip();
+        String response = envelope.substring(0, envelope.length() - 1) + metadata + "}";
+        start(exchange -> respond(exchange, 200, response));
+
+        assertThatThrownBy(() -> client().proof(new byte[]{1}))
+                .isInstanceOf(AppChainClient.AppChainClientException.class)
+                .hasMessage("Invalid app-chain state implementation metadata");
     }
 
     @Test

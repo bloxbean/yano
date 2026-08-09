@@ -83,7 +83,7 @@ curl -fsS "$api0/blocks/$height0" \
       '.stateRoot == $root and .certSignatures == 2 and .messages[0].messageId == $id' >/dev/null
 curl -fsS "$api0/messages/$message_id" \
   | jq -e --arg id "$message_id" '.messageId == $id and .height > 0' >/dev/null
-curl -fsS "$api0/proof/$message_id" \
+curl -fsS "$api0/state/proof/$message_id" \
   | jq -e --arg id "$message_id" --arg root "$root0" \
       '.key == $id and .stateRoot == $root and .proofWireHex != ""' >/dev/null
 curl -fsS "$api0/evidence/$message_id" \

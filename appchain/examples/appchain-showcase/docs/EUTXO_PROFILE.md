@@ -168,7 +168,9 @@ Workspace map (under `data/showcase/<instance>/eutxo-<variant>/`):
 
 ```
 project/logs/node<i>.log            node logs (first stop for failures)
-project/data/node<i>/...            L1 chainstate + appchain state + eutxo-lifecycle.db
+project/data/node<i>/chainstate                 authoritative L1 state
+project/data/node<i>/appchain-chainstate        authoritative app-chain state
+project/data/node<i>/appchain-indexers/...      rebuildable eutxo-lifecycle.db
 project/runtime/validity/           zk ceremony keys, lifecycle state, proofs
 runtime/journal/operations.json     the resumable step journal
 artifacts/{l1,l2,proofs,reports}/   retained transactions, transitions, reports

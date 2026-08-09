@@ -25,6 +25,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -43,7 +44,7 @@ final class EutxoLifecycleIndexers implements AutoCloseable {
             AppChainGateways gateways,
             LocalReadModelHost host,
             String network,
-            Path nodeData,
+            Path indexerStorageRoot,
             String configuredJdbcUrl,
             String configuredValidityPath,
             MeterRegistry meterRegistry
@@ -61,10 +62,8 @@ final class EutxoLifecycleIndexers implements AutoCloseable {
         try {
             for (AppChainGateway gateway : eutxo) {
                 IndexIdentity identity = identity(gateway, network);
-                Path data = nodeData.toAbsolutePath().normalize()
-                        .resolve("appchains")
-                        .resolve(gateway.chainId())
-                        .resolve("indexes");
+                Path data = indexerStorageRoot.toAbsolutePath().normalize()
+                        .resolve(gateway.chainId());
                 Map<String, String> settings = configuredJdbcUrl.isBlank()
                         ? Map.of()
                         : Map.of("jdbc.url", configuredJdbcUrl);
@@ -173,6 +172,11 @@ final class EutxoLifecycleIndexers implements AutoCloseable {
                 gateway.chainId(),
                 profile.stateMachineId(),
                 ledgerDigest,
+                gateway.stateCommitmentIdentity()
+                        .map(identity -> HexFormat.of().formatHex(
+                                identity.genesisId()))
+                        .orElseThrow(() -> new IllegalStateException(
+                                "EUTxO index requires authenticated-state identity")),
                 1,
                 validityDigest);
     }

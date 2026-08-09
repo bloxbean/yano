@@ -88,7 +88,10 @@ lists use commas between profile names.
 
 The jar and native zip distributions keep L1 and app-chain RocksDB state in
 separate roots. `yano.storage.path` defaults to `./chainstate`, while
-`yano.app-chain.storage.path` defaults to `./appchain-state`.
+`yano.app-chain.storage.path` defaults to `./appchain-chainstate`.
+
+Rebuildable app-chain indexes use a third root. The default
+`yano.app-chain.indexer.storage.path` is `./appchain-indexers`.
 
 For a separate chainstate directory, set a property or environment override:
 
@@ -100,7 +103,7 @@ For an app-chain node, set a distinct app-chain path as well when the default
 is not suitable:
 
 ```bash
-YANO_APP_CHAIN_STORAGE_PATH=./appchain-state-mydevnet \
+YANO_APP_CHAIN_STORAGE_PATH=./appchain-chainstate-mydevnet \
   ./yano.sh start:mydevnet,appchain
 ```
 

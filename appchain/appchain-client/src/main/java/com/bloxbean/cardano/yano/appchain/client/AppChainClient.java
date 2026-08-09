@@ -109,13 +109,15 @@ public final class AppChainClient {
             "profile", "backend", "commitmentFormatId", "formatFingerprint",
             "genesisId", "proofEncodingId", "presence",
             "nativeVersioning", "physicalDelete", "schemaVersion", "version",
-            "oldestProvableHeight", "blockHash", "block", "finalityCertificate");
+            "oldestProvableHeight", "implementation", "blockHash", "block",
+            "finalityCertificate");
     private static final Set<String> STATE_ENTRY_RESPONSE_FIELDS = Set.of(
             "key", "chainId", "stateRoot", "valueHex", "finalizedAtHeight",
             "committedHeight", "proofSchemaVersion", "profile", "backend",
             "commitmentFormatId", "formatFingerprint", "genesisId",
             "proofEncodingId", "presence", "nativeVersioning", "physicalDelete",
-            "schemaVersion", "version", "oldestProvableHeight", "blockHash");
+            "schemaVersion", "version", "oldestProvableHeight", "implementation",
+            "blockHash");
     private static final Set<String> PROFILE_ENTRY_FIELDS = Set.of(
             "proofSchemaVersion", "profile", "backend", "commitmentFormatId",
             "formatFingerprint", "genesisId", "proofEncodingId",
@@ -128,6 +130,9 @@ public final class AppChainClient {
             "scheme", "signatures");
     private static final Set<String> FINALITY_SIGNATURE_FIELDS = Set.of(
             "signer", "signature");
+    private static final Set<String> IMPLEMENTATION_METADATA_FIELDS = Set.of(
+            "compatibility", "testedImplementations", "verifierAvailable",
+            "verificationTarget");
     private static final ObjectMapper STRICT_RESPONSE_JSON = JsonMapper.builder()
             .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
             .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
@@ -418,7 +423,7 @@ public final class AppChainClient {
                     "state proof key must contain 1-256 bytes");
         }
         byte[] requestedKey = stateKey.clone();
-        String endpoint = chainPath("/proof/" + Hex.encode(requestedKey))
+        String endpoint = chainPath("/state/proof/" + Hex.encode(requestedKey))
                 + (height != null ? "?height=" + height : "");
         try {
             HttpRequest request = requestBuilder(endpoint)
@@ -562,6 +567,7 @@ public final class AppChainClient {
             throw new AppChainClientException(
                     "App-chain state entry profile metadata differs from this client release");
         }
+        validateImplementationMetadata(response.get("implementation"));
         return response.deepCopy();
     }
 
@@ -688,7 +694,41 @@ public final class AppChainClient {
             throw new AppChainClientException(
                     "App-chain state proof profile metadata differs from this client release");
         }
+        validateImplementationMetadata(response.get("implementation"));
         return proof;
+    }
+
+    private static void validateImplementationMetadata(JsonNode implementation) {
+        if (implementation == null) {
+            return;
+        }
+        if (!implementation.isObject()
+                || !hasOnlyFields(implementation, IMPLEMENTATION_METADATA_FIELDS)
+                || !hasRequiredFields(implementation, IMPLEMENTATION_METADATA_FIELDS)) {
+            throw new AppChainClientException(
+                    "Invalid app-chain state implementation metadata");
+        }
+        JsonNode compatibility = implementation.get("compatibility");
+        JsonNode tested = implementation.get("testedImplementations");
+        JsonNode verifier = implementation.get("verifierAvailable");
+        JsonNode target = implementation.get("verificationTarget");
+        if (!compatibility.isTextual() || compatibility.textValue().isBlank()
+                || compatibility.textValue().length() > 256
+                || !tested.isArray() || tested.size() > 32
+                || !verifier.isBoolean() || !target.isTextual()
+                || !Set.of("off-chain-and-on-chain", "off-chain-only", "unavailable")
+                .contains(target.textValue())) {
+            throw new AppChainClientException(
+                    "Invalid app-chain state implementation metadata");
+        }
+        for (JsonNode implementationId : tested) {
+            if (!implementationId.isTextual()
+                    || !implementationId.textValue().matches(
+                    "[A-Za-z0-9][A-Za-z0-9._-]{0,127}")) {
+                throw new AppChainClientException(
+                        "Invalid app-chain state implementation metadata");
+            }
+        }
     }
 
     private static CertifiedBlockHeader parseCertifiedBlock(JsonNode block) {

@@ -42,7 +42,7 @@ proof endpoint:
 KEY_HEX=$(python3 -c 'print("supplier-42".encode().hex())')
 
 curl -s \
-  "http://127.0.0.1:7070/api/v1/app-chain/chains/registry-chain/proof/$KEY_HEX" \
+  "http://127.0.0.1:7070/api/v1/app-chain/chains/registry-chain/state/proof/$KEY_HEX" \
   | jq .
 ```
 
@@ -76,7 +76,7 @@ Check the value again:
 
 ```bash
 curl -s \
-  "http://127.0.0.1:7070/api/v1/app-chain/chains/registry-chain/proof/$KEY_HEX" \
+  "http://127.0.0.1:7070/api/v1/app-chain/chains/registry-chain/state/proof/$KEY_HEX" \
   | jq .
 ```
 
@@ -86,7 +86,7 @@ Now update through the owner and verify the proof changes:
 ./yano.sh appchain cluster kv registry-chain set supplier-42 suspended --node 1
 sleep 3
 curl -s \
-  "http://127.0.0.1:7070/api/v1/app-chain/chains/registry-chain/proof/$KEY_HEX" \
+  "http://127.0.0.1:7070/api/v1/app-chain/chains/registry-chain/state/proof/$KEY_HEX" \
   | jq .
 ```
 

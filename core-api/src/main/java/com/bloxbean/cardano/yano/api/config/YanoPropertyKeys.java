@@ -502,6 +502,9 @@ public final class YanoPropertyKeys {
         public static final String ENABLED = "yano.app-chain.enabled";
         /** Node-local root directory containing one RocksDB ledger per hosted app chain. */
         public static final String STORAGE_PATH = "yano.app-chain.storage.path";
+        /** Node-local root for rebuildable, non-consensus app-chain indexes. */
+        public static final String INDEXER_STORAGE_PATH =
+                "yano.app-chain.indexer.storage.path";
         /**
          * Multi-chain config (ADR 006 E5.2): runtime-globals key holding a
          * List of Maps of suffix-keyed chain settings, populated by adapters

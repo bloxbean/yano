@@ -12,6 +12,7 @@ public record IndexIdentity(
         String chainId,
         String stateMachineId,
         String ledgerProfileDigest,
+        String stateGenesisId,
         int bridgeAbi,
         String validityProfileDigest
 ) {
@@ -20,6 +21,7 @@ public record IndexIdentity(
         chainId = bounded(chainId, "chainId", 120);
         stateMachineId = bounded(stateMachineId, "stateMachineId", 120);
         ledgerProfileDigest = digest(ledgerProfileDigest, "ledgerProfileDigest");
+        stateGenesisId = digest(stateGenesisId, "stateGenesisId");
         if (bridgeAbi < 0) {
             throw new IllegalArgumentException("bridgeAbi cannot be negative");
         }
@@ -33,7 +35,8 @@ public record IndexIdentity(
 
     public String digest() {
         String canonical = network + "\n" + chainId + "\n" + stateMachineId
-                + "\n" + ledgerProfileDigest + "\n" + bridgeAbi + "\n"
+                + "\n" + ledgerProfileDigest + "\n" + stateGenesisId
+                + "\n" + bridgeAbi + "\n"
                 + validityProfileDigest;
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")

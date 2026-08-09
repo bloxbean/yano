@@ -12,7 +12,10 @@ yano:
     path: /app/chainstate
   app-chain:
     storage:
-      path: /app/appchain-state
+      path: /app/appchain-chainstate
+    indexer:
+      storage:
+        path: /app/appchain-indexers
 
 yaci:
   plugins:

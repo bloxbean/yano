@@ -416,7 +416,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     /**
      * @param stateMachine custom state machine (library mode); null = resolve
      *                     from config.stateMachineId() (built-ins)
-     * @param ledgerPath   base dir for the app ledger; null = "appchain-state"
+     * @param ledgerPath   base dir for the app ledger; null = "appchain-chainstate"
      */
     public AppChainSubsystem(AppChainConfig config, long protocolMagic, EventBus eventBus,
                              AppStateMachine stateMachine, String ledgerPath, Logger log) {

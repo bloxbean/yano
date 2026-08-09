@@ -460,7 +460,7 @@ ADR-022 review, added after parity:
   (`POST …/query/{path}`) once the generic `role-approvals` provider lands
   (ADR-022 M2);
 - portable evidence bundle and MPF proof viewer
-  (`…/evidence/{messageIdHex}`, `…/proof/{keyHex}`) with in-browser SHA-256
+  (`…/evidence/{messageIdHex}`, `…/state/proof/{keyHex}`) with in-browser SHA-256
   payload re-verification (ported concept from the evidence demo UI);
 - panels render **conditionally on discovered capability**: driven by chain
   `status`/profile fields and the plugin catalog, never by hardcoded

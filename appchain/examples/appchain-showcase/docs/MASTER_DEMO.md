@@ -8,8 +8,17 @@ rehearsal.
 
 Say: “Yano provides sequencing, member finality, deterministic state roots,
 MPF proofs, plugins, effects, and Cardano anchoring. The light showcase
-assembles existing capabilities plus one demo-only composite/outbox plugin. It
-does not introduce another consensus implementation.”
+assembles existing capabilities through one `AppStateMachine` contract. Its
+three deliberate business compositions are orders + approval + effects,
+documents + roles + approval, and authenticated map + direct role/approval.
+The current light distribution directly contains the first and third; ADR-033
+adds the lean `document-review-chain` form of the already proven role-evidence
+reuse path. It does not introduce another consensus implementation.”
+
+Also explain that `payment-chain-settlement` starts in the default light
+profile. It demonstrates L1 observers and settlement effects, but it does not
+automatically deploy public-network scripts or move funds. Membership
+governance is a separate concern from application roles and approvals.
 
 ```bash
 ./showcase.sh profiles

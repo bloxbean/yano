@@ -23,6 +23,10 @@ yano:
     chains[0]:
       chain-id: "orders-chain"
       state-machine: ordered-log
+      state:
+        commitment-profile: mpf-blake2b256-v1
+        format-fingerprint: 91ee14091200f1e24659112d640e877e9177779dcc81dd06117f013e9190082b
+        genesis-id: c2b9c92a865dfa7c218a1a6e49f1dd88163372e40466009876458c01609d0d70
       membership:
         mode: governed
       block:
@@ -31,6 +35,10 @@ yano:
     chains[1]:
       chain-id: "registry-chain"
       state-machine: kv-registry
+      state:
+        commitment-profile: mpf-blake2b256-v1
+        format-fingerprint: 91ee14091200f1e24659112d640e877e9177779dcc81dd06117f013e9190082b
+        genesis-id: cd4f0bac8a0d8c7fd5700510eae8c69256172814b219e9e3b1a914fc89c358b3
       membership:
         mode: governed
       block:
@@ -42,6 +50,10 @@ yano:
     chains[2]:
       chain-id: "approvals-chain"
       state-machine: approvals
+      state:
+        commitment-profile: mpf-blake2b256-v1
+        format-fingerprint: 91ee14091200f1e24659112d640e877e9177779dcc81dd06117f013e9190082b
+        genesis-id: 63281a4424bed827004e10185a663bce10de4228953d3959e2ed20aa3a4a9f0b
       membership:
         mode: governed
       block:
@@ -50,6 +62,10 @@ yano:
     chains[3]:
       chain-id: "balances-chain"
       state-machine: balances
+      state:
+        commitment-profile: mpf-blake2b256-v1
+        format-fingerprint: 91ee14091200f1e24659112d640e877e9177779dcc81dd06117f013e9190082b
+        genesis-id: cf15ea567aa815de08aeba9e20799a71c8c1629ab692cce2812dfa763e5ad116
       membership:
         mode: governed
       block:
@@ -58,6 +74,10 @@ yano:
     chains[4]:
       chain-id: "documents-chain"
       state-machine: doc-trail
+      state:
+        commitment-profile: mpf-blake2b256-v1
+        format-fingerprint: 91ee14091200f1e24659112d640e877e9177779dcc81dd06117f013e9190082b
+        genesis-id: 653ed9c753b919420ce200de0957a072bdf02e270fd1a5dc09a67dea344e5390
       membership:
         mode: governed
       block:
@@ -66,6 +86,10 @@ yano:
     chains[5]:
       chain-id: "workflow-chain"
       state-machine: showcase-composite
+      state:
+        commitment-profile: mpf-blake2b256-v1
+        format-fingerprint: 91ee14091200f1e24659112d640e877e9177779dcc81dd06117f013e9190082b
+        genesis-id: 0384867b7ec051bc614ffb4f28bbb8931864cad4f24487ed90c33c259bf57794
       membership:
         mode: governed
       block:
@@ -91,6 +115,10 @@ yano:
     chains[6]:
       chain-id: "roles-chain"
       state-machine: role-approvals
+      state:
+        commitment-profile: mpf-blake2b256-v1
+        format-fingerprint: 91ee14091200f1e24659112d640e877e9177779dcc81dd06117f013e9190082b
+        genesis-id: 2a3636f52dac2ea66fbda83ba0c3690f9e7cb9685dacf4caab63a39032877a09
       membership:
         mode: governed
       block:
@@ -101,6 +129,10 @@ yano:
     chains[7]:
       chain-id: "payments-chain"
       state-machine: eutxo-ledger
+      state:
+        commitment-profile: mpf-blake2b256-v1
+        format-fingerprint: 91ee14091200f1e24659112d640e877e9177779dcc81dd06117f013e9190082b
+        genesis-id: 6b65c806708ba062f207aab15f98fee9bed631ce9c8c4d2f2bd83189a210f7d6
       membership:
         mode: governed
       block:
@@ -157,6 +189,10 @@ yano:
         interval-ms: "1000"
       l1:
         stability-depth: "2"
+      state:
+        commitment-profile: "mpf-blake2b256-v1"
+        format-fingerprint: "91ee14091200f1e24659112d640e877e9177779dcc81dd06117f013e9190082b"
+        genesis-id: "efa0112f8a2b755521b2d16489835a8f38afe90b01c3ce2db749e8c899e6e560"
       machines:
         eutxo:
           profile: "yano-eutxo-v3-bridge-settlement-devnet"

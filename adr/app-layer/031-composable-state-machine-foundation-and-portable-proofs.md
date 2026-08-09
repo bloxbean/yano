@@ -1175,6 +1175,8 @@ convenience are deleted. State REST reads now serve only certified, profile-tagg
 `StateProofEnvelope` data and historical requests fail at the retained proof boundary. Tests use
 explicit profile identities rather than synthesizing legacy proof envelopes. The old eUTxO-local
 converter names and documentation now point to the shared `MpfProofConverter` and proof contracts.
+The duplicate preview `GET /proof/{key}` route is also removed; `GET /state/proof/{key}` is the
+single canonical state-proof endpoint used by the client, console UI, examples, and tooling.
 
 The anchor module now has one canonical loader and conformance suite for the exact pinned Aiken
 release artifact. Duplicate tests that loaded the same bytes from a second path were removed;

@@ -3,13 +3,13 @@
   "recipes": [
     {
       "id":"audit-log","version":"1","name":"Replicated audit log","category":"application","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,
-      "trustStatement":"First-party Yano recipe using only built-in packaged runtime capabilities.","description":"A replicated append-only log for opaque application records.","primaryOutcome":"One opaque record is threshold-finalized in the shared application order.","firstCommand":"submit <topic> <payload>","verificationQuery":"messages/{messageId} and proof/{messageId}",
+      "trustStatement":"First-party Yano recipe using only built-in packaged runtime capabilities.","description":"A replicated append-only log for opaque application records.","primaryOutcome":"One opaque record is threshold-finalized in the shared application order.","firstCommand":"submit <topic> <payload>","verificationQuery":"messages/{messageId} and state/proof/{messageId}",
       "capabilities":["state:ordered-log","sequencer:fixed"],"recommended":{"blockIntervalMs":"1000"},"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime"],"nativePosture":"bundled",
       "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"documentation":"docs/appchain/state-machines/ordered-log.md","acceptanceScenario":"recipe-audit-log"
     },
     {
       "id":"owned-registry","version":"1","name":"Owned registry","category":"application","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,
-      "trustStatement":"First-party Yano recipe using the bundled standard-library registry.","description":"A first-writer-owned key/value registry with committed query proofs.","primaryOutcome":"The first writer owns a named value that is readable with a committed state proof.","firstCommand":"kv put <key> <value>","verificationQuery":"proof/{hex(key)} decodes to owner and value",
+      "trustStatement":"First-party Yano recipe using the bundled standard-library registry.","description":"A first-writer-owned key/value registry with committed query proofs.","primaryOutcome":"The first writer owns a named value that is readable with a committed state proof.","firstCommand":"kv put <key> <value>","verificationQuery":"state/proof/{hex(key)} decodes to owner and value",
       "capabilities":["state:kv-registry","sequencer:fixed"],"recommended":{"blockIntervalMs":"2000"},"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-stdlib"],"nativePosture":"bundled",
       "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"documentation":"docs/appchain/state-machines/kv-registry.md","acceptanceScenario":"recipe-owned-registry"
     },
@@ -21,7 +21,7 @@
     },
     {
       "id":"approval-workflow","version":"1","name":"Threshold approval workflow","category":"application","availability":"BUNDLED","maturity":"stable","scope":"chain","selectable":true,
-      "trustStatement":"First-party Yano recipe using the bundled generic approval state machine.","description":"Validator members propose, approve, reject, and prove terminal decisions.","primaryOutcome":"Distinct validator-member decisions produce a provable terminal approval or rejection.","firstCommand":"propose <itemId> <payload> <required>","verificationQuery":"proof/{hex(i/itemId)} decodes to the decision trail",
+      "trustStatement":"First-party Yano recipe using the bundled generic approval state machine.","description":"Validator members propose, approve, reject, and prove terminal decisions.","primaryOutcome":"Distinct validator-member decisions produce a provable terminal approval or rejection.","firstCommand":"propose <itemId> <payload> <required>","verificationQuery":"state/proof/{hex(i/itemId)} decodes to the decision trail",
       "capabilities":["state:approval-workflow","sequencer:fixed"],"recommended":{"blockIntervalMs":"1000"},"runtimeTypes":["jvm","native"],"deploymentTargets":["host","docker-compose"],"artifacts":["yano-runtime","appchain-stdlib"],"nativePosture":"bundled",
       "externalPrerequisites":[],"bootstrapRequirements":[],"nonSecretAnswers":[],"documentation":"docs/appchain/state-machines/approvals.md","acceptanceScenario":"recipe-approval-workflow"
     },

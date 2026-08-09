@@ -156,6 +156,11 @@ public class YanoProducer {
             defaultValue = YanoConfig.DEFAULT_APP_CHAIN_STORAGE_PATH)
     String appChainStoragePath;
 
+    @ConfigProperty(
+            name = YanoPropertyKeys.AppChain.INDEXER_STORAGE_PATH,
+            defaultValue = YanoConfig.DEFAULT_APP_CHAIN_INDEXER_STORAGE_PATH)
+    String appChainIndexerStoragePath;
+
     @ConfigProperty(name = YanoPropertyKeys.AUTO_SYNC_START, defaultValue = "false")
     boolean autoSyncStart;
 
@@ -1402,7 +1407,7 @@ public class YanoProducer {
                 assembledYano.localReadModels().orElseThrow(() ->
                         unavailableRole("LocalReadModelHost")),
                 network,
-                java.nio.file.Path.of(storagePath),
+                java.nio.file.Path.of(appChainIndexerStoragePath),
                 eutxoIndexerJdbcUrl.orElse("").trim(),
                 eutxoIndexerValidityPath.orElse("").trim(),
                 meterRegistry);

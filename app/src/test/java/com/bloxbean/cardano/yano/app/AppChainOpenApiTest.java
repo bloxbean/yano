@@ -28,7 +28,9 @@ class AppChainOpenApiTest {
                 .body(Matchers.containsString("/app-chain/chains/{chainId}/status"))
                 .body(Matchers.containsString("/app-chain/chains/{chainId}/messages"))
                 .body(Matchers.containsString("/app-chain/chains/{chainId}/evidence/{messageIdHex}"))
-                .body(Matchers.containsString("/app-chain/chains/{chainId}/proof/{keyHex}"))
+                .body(Matchers.containsString("/app-chain/chains/{chainId}/state/proof/{keyHex}"))
+                .body(Matchers.not(Matchers.containsString(
+                        "/app-chain/chains/{chainId}/proof/{keyHex}")))
                 .body(Matchers.containsString("/app-chain/chains"));
     }
 
@@ -45,9 +47,19 @@ class AppChainOpenApiTest {
                 "chain-less /app-chain/status should be hidden from OpenAPI");
         org.junit.jupiter.api.Assertions.assertFalse(doc.contains("app-chain/evidence/{messageIdHex}\""),
                 "chain-less /app-chain/evidence should be hidden from OpenAPI");
-        org.junit.jupiter.api.Assertions.assertFalse(doc.contains("app-chain/proof/{keyHex}\""),
-                "chain-less /app-chain/proof should be hidden from OpenAPI");
+        org.junit.jupiter.api.Assertions.assertFalse(doc.contains("app-chain/state/proof/{keyHex}\""),
+                "chain-less /app-chain/state/proof should be hidden from OpenAPI");
         org.junit.jupiter.api.Assertions.assertFalse(doc.contains("app-chain/admin/pause\""),
                 "chain-less /app-chain/admin/pause should be hidden from OpenAPI");
+    }
+
+    @Test
+    void duplicateStateProofRoutesAreRemoved() {
+        given()
+                .when().get("/api/v1/app-chain/chains/example/proof/00")
+                .then().statusCode(404);
+        given()
+                .when().get("/api/v1/app-chain/proof/00")
+                .then().statusCode(404);
     }
 }

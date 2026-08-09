@@ -58,7 +58,7 @@ n-of-m for availability. Anchor every N blocks. Suggested body: JSON
 `{"event":"access-granted","actor":"...","object":"...","ts":"..."}`.
 
 **Verification.** Auditor takes any entry, asks any node for
-`GET /proof/{messageId}`, fetches the anchor tx from Cardano, checks the MPF
+`GET /state/proof/{messageId}`, fetches the anchor tx from Cardano, checks the MPF
 proof against the anchored `state_root`. Neither org — nor Yano — is trusted.
 
 ### A2. Neutral consortium message queue ("Kafka with neutrality")
@@ -151,7 +151,7 @@ proofs.
 **How.** State machine interprets `set:`/`del:` commands (tutorial example),
 or richer CBOR commands with per-key ownership rules in `apply()` (e.g. only
 the key's original creator may update it — sender identity is in the
-envelope). Reads: `GET /proof/{keyHex}` returns value + proof in one call.
+envelope). Reads: `GET /state/proof/{keyHex}` returns value + proof in one call.
 
 **This is the closest thing to "smart-contract state" the framework offers
 today** — deterministic multi-party state transitions with provable results,

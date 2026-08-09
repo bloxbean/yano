@@ -782,10 +782,13 @@ class AppChainProjectTest {
                         assertThat(yamlValues(project.resolve("config/nodes/node0.yaml")))
                                 .containsEntry("yano.storage.path", "/app/chainstate")
                                 .containsEntry("yano.app-chain.storage.path",
-                                        "/app/appchain-state");
+                                        "/app/appchain-chainstate")
+                                .containsEntry("yano.app-chain.indexer.storage.path",
+                                        "/app/appchain-indexers");
                         assertThat(Files.readString(project.resolve("compose.yaml")))
                                 .contains("node0-data:/app/chainstate")
-                                .contains("node0-appchain-data:/app/appchain-state")
+                                .contains("node0-appchain-data:/app/appchain-chainstate")
+                                .contains("node0-appchain-indexers:/app/appchain-indexers")
                                 .doesNotContain("node0-data:/project");
                     }
                 }
@@ -1134,7 +1137,9 @@ class AppChainProjectTest {
         assertThat(yamlValues(first.resolve("files/node0.yaml")))
                 .containsEntry("yano.storage.path", "/var/lib/yano/chainstate")
                 .containsEntry("yano.app-chain.storage.path",
-                        "/var/lib/yano/appchain-state")
+                        "/var/lib/yano/appchain-chainstate")
+                .containsEntry("yano.app-chain.indexer.storage.path",
+                        "/var/lib/yano/appchain-indexers")
                 .containsEntry("yano.app-chain.chains[0].peers",
                         "node1:13337,node2:13337");
         assertThat(Files.readString(first.resolve("node0.yaml")))

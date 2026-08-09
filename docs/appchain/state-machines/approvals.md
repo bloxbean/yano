@@ -231,7 +231,7 @@ Request an MPF proof by hex-encoding the physical key:
 ITEM_KEY_HEX=$(python3 -c 'print("i/release-2026-07".encode().hex())')
 
 curl -sS \
-  "http://127.0.0.1:7070/api/v1/app-chain/chains/effects-chain/proof/$ITEM_KEY_HEX" \
+  "http://127.0.0.1:7070/api/v1/app-chain/chains/effects-chain/state/proof/$ITEM_KEY_HEX" \
   | jq .
 ```
 

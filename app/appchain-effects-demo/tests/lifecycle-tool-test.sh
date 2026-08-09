@@ -804,7 +804,7 @@ atomic_acquire "$HOST_CLEAN_NETWORK" hostold host \
   "$TMP/host-clean-app.json" "$TMP/host-clean-lease.json" >/dev/null
 atomic_release "$HOST_CLEAN_NETWORK" host "$TMP/host-clean-lease.json"
 HOST_DATA="$HOST_CLEAN_NETWORK/instances/hostold/host"
-HOST_LINK="$HOST_CLEAN_NETWORK/l1/host/host-cluster/node0/appchain-state"
+HOST_LINK="$HOST_CLEAN_NETWORK/l1/host/host-cluster/node0/appchain-chainstate"
 mkdir -p "$HOST_DATA/app-chain/node0" "$(dirname "$HOST_LINK")" "$TMP/wrong-host-target"
 ln -s "$TMP/wrong-host-target" "$HOST_LINK"
 HOST_RUNTIME_PARENT="$TMP/absent-host-runtime/hostold"
@@ -840,7 +840,7 @@ for index in 0 1 2; do
   mkdir -p "$HOST_ALL_DATA/app-chain/node$index" \
     "$HOST_ALL_L1/host-cluster/node$index/chainstate"
   ln -s "$HOST_ALL_DATA/app-chain/node$index" \
-    "$HOST_ALL_L1/host-cluster/node$index/appchain-state"
+    "$HOST_ALL_L1/host-cluster/node$index/appchain-chainstate"
 done
 printf 'l1\n' > "$HOST_ALL_L1/sentinel"
 HOST_ALL_RUNTIME_PARENT="$TMP/absent-host-all-runtime/hostall"
@@ -860,9 +860,9 @@ assert_file "$HOST_ALL_DATA/appchain-identity.json"
 assert_file "$HOST_ALL_L1/sentinel"
 rm "$HOST_ALL_L1/host-cluster/node0/chainstate/unmanaged"
 
-rm "$HOST_ALL_L1/host-cluster/node2/appchain-state"
+rm "$HOST_ALL_L1/host-cluster/node2/appchain-chainstate"
 ln -s "$HOST_ALL_DATA/app-chain/node1" \
-  "$HOST_ALL_L1/host-cluster/node2/appchain-state"
+  "$HOST_ALL_L1/host-cluster/node2/appchain-chainstate"
 expect_failure "host all wrong managed link" cleanup_execute "$HOST_ALL_NETWORK" \
   "$HOST_ALL_RUNTIME_PARENT" "$TMP/host-all-plan.json"
 grep -Fq 'points outside its exact app-chain target' "$TMP/failure.err" \
@@ -870,9 +870,9 @@ grep -Fq 'points outside its exact app-chain target' "$TMP/failure.err" \
 assert_absent "$HOST_ALL_NETWORK/.yano-cleanup-transaction.json"
 assert_file "$HOST_ALL_DATA/appchain-identity.json"
 assert_file "$HOST_ALL_L1/sentinel"
-rm "$HOST_ALL_L1/host-cluster/node2/appchain-state"
+rm "$HOST_ALL_L1/host-cluster/node2/appchain-chainstate"
 ln -s "$HOST_ALL_DATA/app-chain/node2" \
-  "$HOST_ALL_L1/host-cluster/node2/appchain-state"
+  "$HOST_ALL_L1/host-cluster/node2/appchain-chainstate"
 
 cleanup_execute "$HOST_ALL_NETWORK" "$HOST_ALL_RUNTIME_PARENT" \
   "$TMP/host-all-plan.json" >/dev/null

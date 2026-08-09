@@ -22,7 +22,7 @@ public final class EutxoIndexFixtures {
     public static IndexIdentity identity() {
         return new IndexIdentity(
                 "devnet", "payments", "eutxo-ledger",
-                EutxoProfile.V2.digestHex(), 1, "");
+                EutxoProfile.V2.digestHex(), "11".repeat(32), 1, "");
     }
 
     public static SourcePoint point(long height) {

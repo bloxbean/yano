@@ -90,14 +90,18 @@ chainstate-preprod/
 chainstate-mainnet/
 chainstate-preview/
 chainstate-devnet/
-appchain-state-preprod/
-appchain-state-mainnet/
-appchain-state-preview/
-appchain-state-devnet/
+appchain-chainstate-preprod/
+appchain-chainstate-mainnet/
+appchain-chainstate-preview/
+appchain-chainstate-devnet/
+appchain-indexers-preprod/
+appchain-indexers-mainnet/
+appchain-indexers-preview/
+appchain-indexers-devnet/
 ```
 
 `start:sanchonet` and custom profiles use the same `chainstate-<profile>/` and
-`appchain-state-<profile>/` conventions.
+`appchain-chainstate-<profile>/` conventions.
 
 To use a custom host chainstate path, set `YANO_CHAINSTATE_PATH` in `compose/.env` or for one command:
 
@@ -108,9 +112,12 @@ YANO_CHAINSTATE_PATH=/data/yano-mainnet ./yano.sh start:mainnet
 Set `YANO_APPCHAIN_STATE_PATH` the same way when app-chain state should live at
 a custom host path.
 
-If you want to run multiple networks or multiple Yano instances at the same time, use separate extracted distribution directories or set different `YANO_CHAINSTATE_PATH`, `YANO_APPCHAIN_STATE_PATH`, `INSTANCE_NAME`, `YANO_HTTP_PORT`, and `YANO_N2N_PORT` values.
+Set `YANO_APPCHAIN_INDEXER_PATH` for the rebuildable app-chain read-index root.
+Do not place it below either authoritative state directory.
 
-The container runs as UID/GID from `YANO_UID` and `YANO_GID`, defaulting to `1000:1000`. On Linux hosts with a different user ID, set these values in `compose/.env` to match the user that owns `chainstate-*`, `appchain-state-*`, `logs/`, `plugins/`, and `config/network`.
+If you want to run multiple networks or multiple Yano instances at the same time, use separate extracted distribution directories or set different `YANO_CHAINSTATE_PATH`, `YANO_APPCHAIN_STATE_PATH`, `YANO_APPCHAIN_INDEXER_PATH`, `INSTANCE_NAME`, `YANO_HTTP_PORT`, and `YANO_N2N_PORT` values.
+
+The container runs as UID/GID from `YANO_UID` and `YANO_GID`, defaulting to `1000:1000`. On Linux hosts with a different user ID, set these values in `compose/.env` to match the user that owns `chainstate-*`, `appchain-chainstate-*`, `logs/`, `plugins/`, and `config/network`.
 
 For a custom network, add its files under `config/network/<name>` and run with a matching custom Quarkus profile:
 

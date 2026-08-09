@@ -983,7 +983,7 @@ def pluginConformanceRuntimeArguments = { int httpPort, int nodePort,
     def genesisDirectory = project.file('config/network/preprod').toPath()
             .toAbsolutePath().normalize()
     def appChainStateDirectory = stateDirectory.resolveSibling(
-            stateDirectory.fileName.toString() + '-appchain-state')
+            stateDirectory.fileName.toString() + '-appchain-chainstate')
     def arguments = [
             '-Dquarkus.http.host=127.0.0.1',
             "-Dquarkus.http.port=${httpPort}",

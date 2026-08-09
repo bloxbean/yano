@@ -9,17 +9,34 @@ with [MASTER_DEMO.md](docs/MASTER_DEMO.md), use the
 ./showcase.sh quickstart --profile light --nodes 3 --instance demo
 ```
 
-The light profile runs nine app chains on one local multi-node Yano cluster,
-with no Kafka, object store, IPFS, or separate effect service. Its built-in
-`authenticated-map` scenario demonstrates multiple collections, opaque and
-canonical-CBOR values, a declarative schema, the first-party GS1 validator
-SPI example, and the ADR-025.2 governed flows: a direct-role collection
-written with externally signed actor evidence and an approval collection
-executed only after two auditors from distinct organizations approve. The
-packaged console renders every governed record at
-`/ui/app-chain/authenticated-map/`. It also includes one clearly demo-only plugin,
-`showcase-composite` / `showcase-outbox`, to make the deterministic-intent →
-finality-gate → external-execution → on-chain-result flow visible.
+The light profile runs eleven app chains on one local multi-node Yano cluster,
+including `payment-chain-settlement`, with no Kafka, object store, IPFS, or
+separate effect service. Seven chains present standalone foundations; the
+remaining reference chains demonstrate how ADR-031 composes those foundations
+with cross-cutting concerns instead of creating another application SPI:
+
+| Reference application | Reused capabilities |
+|---|---|
+| `workflow-chain` | orders + basic approval + audit + finality-gated outbox effect |
+| `authenticated-map-chain` | authenticated map + direct actor/role authorization + multi-organization approval |
+| `payment-chain-settlement` | EUTxO + L1 observers + settlement effects + rebuildable lifecycle index |
+
+The ADR-033 target light catalog adds `document-review-chain` as the third
+business-composition example: document trail + domain actors/roles + actor
+approval. That workflow already has a proven reusable implementation in the
+role-evidence product, but it is not claimed as a light-profile chain until the
+ADR-033 catalog implementation lands.
+
+The built-in `authenticated-map` scenario demonstrates multiple collections,
+opaque and canonical-CBOR values, a declarative schema, the first-party GS1
+validator SPI example, and the ADR-025.2 governed flows: a direct-role
+collection written with externally signed actor evidence and an approval
+collection executed only after two auditors from distinct organizations
+approve. The packaged console renders every governed record at
+`/ui/app-chain/authenticated-map/`. The light profile also includes one clearly
+demo-only plugin, `showcase-composite` / `showcase-outbox`, to make the
+deterministic-intent → finality-gate → external-execution → on-chain-result
+flow visible.
 
 `showcase-composite`, its `order-approval-outbox-v1` preset, and the local
 `showcase-outbox` executor are demo-only showcase artifacts. They are not
@@ -119,4 +136,6 @@ other nodes still validate the effect intent and its incorporated result.
 - [PRESENTERS.md](docs/PRESENTERS.md)
 
 Architecture and product/demo boundaries are recorded in ADR-023 in the Yano
-source repository. No Yano consensus/core code is changed by this module.
+source repository. The post-ADR-031 reference catalog and capability-discovery
+plan are recorded in ADR app-layer/033. No Yano consensus/core code is changed
+by this module.

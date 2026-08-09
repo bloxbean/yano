@@ -242,8 +242,8 @@ printf '%s\n' "$ORIGINAL_ANCHOR_SEED" > "$KEYS/anchor.seed"
 chmod 400 "$KEYS/anchor.seed"
 
 CLUSTER_DIR="$WORK/unmarked-retained-state"
-mkdir -p "$CLUSTER_DIR/node0/appchain-state/private-key-test"
-touch "$CLUSTER_DIR/node0/appchain-state/private-key-test/CURRENT"
+mkdir -p "$CLUSTER_DIR/node0/appchain-chainstate/private-key-test"
+touch "$CLUSTER_DIR/node0/appchain-chainstate/private-key-test/CURRENT"
 validate_cluster_key_inputs 2
 if ( ensure_cluster_identity 2 ) > "$WORK/unmarked-retained.log" 2>&1; then
   die_test "unmarked retained state was silently adopted"

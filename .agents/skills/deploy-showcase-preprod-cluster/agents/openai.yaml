@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deploy Showcase Preprod Cluster"
+  short_description: "Deploy and validate the three-node preprod showcase"
+  default_prompt: "Use $deploy-showcase-preprod-cluster to deploy and validate the anchored three-node preprod showcase from the retained chainstate and keys."

@@ -340,7 +340,7 @@ final class AppChainGitOpsExporter {
                 %s
                 The runtime image must accept `YANO_PROFILE`, `QUARKUS_CONFIG_LOCATIONS`, ports
                 8080/13337, `/var/lib/yano/chainstate`, and
-                `/var/lib/yano/appchain-state`. Generated manifests reference
+                `/var/lib/yano/appchain-chainstate`. Generated manifests reference
                 per-node Kubernetes Secrets but never contain private values. Signed third-party
                 plugin artifacts must be verified and added to the runtime image separately.
                 """.formatted(resolution.recipe().id(),

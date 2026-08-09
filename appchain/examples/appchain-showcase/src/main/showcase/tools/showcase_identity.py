@@ -25,6 +25,7 @@ LIGHT_CHAINS_V10 = LIGHT_CHAINS[:-1]
 LEGACY_LIGHT_CHAINS = LIGHT_CHAINS[:-2]
 CHAIN_ID = re.compile(r"[A-Za-z0-9._~-]{1,128}")
 HEX_32 = re.compile(r"[0-9a-f]{64}")
+CONFIG_CHAIN_ID = re.compile(r'^\s{6}chain-id:\s*"([A-Za-z0-9._~-]{1,128})"\s*$', re.MULTILINE)
 
 
 def sha256(path: pathlib.Path) -> str:
@@ -50,6 +51,14 @@ def requested_anchor_chains(values: list[str], configured: list[str]) -> list[st
     if any(not CHAIN_ID.fullmatch(chain) for chain in requested):
         raise ValueError("anchor chain id is invalid")
     return [chain for chain in configured if chain in set(requested)]
+
+
+def configured_chain_ids(path: pathlib.Path) -> list[str]:
+    chains = CONFIG_CHAIN_ID.findall(path.read_text(encoding="utf-8"))
+    if (not chains or len(chains) != len(set(chains))
+            or chains not in (LIGHT_CHAINS, LIGHT_CHAINS_V10, LEGACY_LIGHT_CHAINS)):
+        raise ValueError("showcase config contains an unsupported chain set")
+    return chains
 
 
 def anchor_scope(anchor: dict, configured: list[str]) -> list[str]:
@@ -93,7 +102,7 @@ def anchor_identity(enabled: bool, mode: str, chains: list[str], key_reference: 
 def document(args: argparse.Namespace) -> dict:
     config = pathlib.Path(args.config).resolve()
     plugin = pathlib.Path(args.plugin).resolve()
-    chains = LIGHT_CHAINS if args.profile == "light" else []
+    chains = configured_chain_ids(config) if args.profile == "light" else []
     selected = requested_anchor_chains(args.anchor_chain, chains) if args.anchor else []
     return {
         "schemaVersion": 2 if len(selected) > 1 else 1,

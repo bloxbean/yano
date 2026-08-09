@@ -100,7 +100,7 @@ class StdlibAuthenticatedMapProofCompositeTest {
                 .orElseThrow();
 
         assertThat(requestedPath.get()).isEqualTo(
-                "/api/v1/app-chain/chains/c1/proof/" + Hex.encode(compositeKey));
+                "/api/v1/app-chain/chains/c1/state/proof/" + Hex.encode(compositeKey));
         assertThat(requestedPath.get()).contains(
                 Hex.encode("yano-composite-state-v1".getBytes(StandardCharsets.US_ASCII)));
         assertThat(verified.value().revision()).isEqualTo(1);

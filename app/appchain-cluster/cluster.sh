@@ -1147,7 +1147,7 @@ l1_state_present() {
 
 appchain_state_present() {
   local path
-  for path in "$CLUSTER_DIR"/node*/appchain-state/*/CURRENT; do
+  for path in "$CLUSTER_DIR"/node*/appchain-chainstate/*/CURRENT; do
     [ -e "$path" ] && return 0
   done
   return 1
@@ -1839,7 +1839,8 @@ validate_managed_process() {
   local expected_server="${6:-$(server_port "$i")}"
   python3 - "$pid" "$(id -u)" "$start" \
     "-Dyano.storage.path=$(node_dir "$i")/chainstate" \
-    "-Dyano.app-chain.storage.path=$(node_dir "$i")/appchain-state" \
+    "-Dyano.app-chain.storage.path=$(node_dir "$i")/appchain-chainstate" \
+    "-Dyano.app-chain.indexer.storage.path=$(node_dir "$i")/appchain-indexers" \
     "-Dquarkus.http.port=$expected_http" \
     "-Dyano.server.port=$expected_server" "$signal" <<'PY' >/dev/null 2>&1
 import hashlib
@@ -1851,8 +1852,8 @@ import sys
 pid = int(sys.argv[1])
 expected_uid = int(sys.argv[2])
 expected_start = sys.argv[3]
-expected_args = sys.argv[4:8]
-requested_signal = int(sys.argv[8])
+expected_args = sys.argv[4:9]
+requested_signal = int(sys.argv[9])
 
 def ps_value(column):
     result = subprocess.run(
@@ -2559,7 +2560,8 @@ launch_node() {
     "-Dquarkus.http.port=$(http_port "$i")"
     "-Dyano.server.port=$(server_port "$i")"
     "-Dyano.storage.path=$dir/chainstate"
-    "-Dyano.app-chain.storage.path=$dir/appchain-state"
+    "-Dyano.app-chain.storage.path=$dir/appchain-chainstate"
+    "-Dyano.app-chain.indexer.storage.path=$dir/appchain-indexers"
     # Relay source-port reuse binds every upstream dial to the node's own server
     # port — a NAT-traversal aid for real relays, but on a localhost cluster all
     # followers dialing node 0 (plus app-peers) collide on the 4-tuple and wedge
@@ -3147,7 +3149,7 @@ cmd_node_join() {
   node_record_artifacts_exist "$index" \
     && die "node $index has an incomplete or stale launcher record; inspect it before joining"
   if [ "$operation" = "resume" ]; then
-    [ -d "$(node_dir "$index")/appchain-state" ] \
+    [ -d "$(node_dir "$index")/appchain-chainstate" ] \
       || die "node $index has no retained app-chain state; use 'node join $index' for first admission"
   fi
   resolve_runtime

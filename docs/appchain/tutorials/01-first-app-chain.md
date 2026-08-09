@@ -121,7 +121,7 @@ MESSAGE_ID=$(echo "$RESPONSE" | jq -r .messageId)
 sleep 3
 
 curl -s \
-  "http://127.0.0.1:7070/api/v1/app-chain/chains/orders-chain/proof/$MESSAGE_ID" \
+  "http://127.0.0.1:7070/api/v1/app-chain/chains/orders-chain/state/proof/$MESSAGE_ID" \
   | jq .
 ```
 

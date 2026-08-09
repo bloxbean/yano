@@ -260,7 +260,7 @@ export class YanoApi {
   chainProof(chainId: string, keyHex: string, height?: number, signal?: AbortSignal) {
     const query = height === undefined ? '' : `?height=${encodeURIComponent(height)}`;
     return this.json<StateProofEnvelope>(
-      `${chainPath(chainId)}/proof/${encodeURIComponent(keyHex)}${query}`, signal);
+      `${chainPath(chainId)}/state/proof/${encodeURIComponent(keyHex)}${query}`, signal);
   }
   verifyChainProof(chainId: string, request: ProofVerificationRequest, signal?: AbortSignal) {
     return this.post<ProofVerificationResult>(

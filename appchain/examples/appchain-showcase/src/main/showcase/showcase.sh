@@ -35,9 +35,10 @@ ANCHOR_MODE="script"
 ANCHOR_KEY_FILE=""
 SETTLEMENT_KEY_FILE=""
 SETTLEMENT_CONFIRM=""
-# All chains are anchor-ENABLED by default (config-only, no L1 spend);
-# bootstrap stays selective and per-chain — that is where spending starts.
-ANCHOR_CHAINS="$(IFS=,; printf '%s' "${LIGHT_CHAINS[*]}")"
+# All configured chains are anchor-ENABLED by default (config-only, no L1
+# spend). Keep this symbolic until the deployment config is resolved: a fresh
+# public-network instance intentionally omits the devnet settlement chain.
+ANCHOR_CHAINS="all"
 ANCHOR_MODE_EXPLICIT=false
 ANCHOR_KEY_EXPLICIT=false
 PUBLIC_CONFIRM=""
@@ -301,6 +302,19 @@ else:
 PY
 }
 
+load_marker_chains() {
+  local cid
+  local -a configured=()
+  while IFS= read -r cid; do
+    [[ "$cid" =~ ^[A-Za-z0-9._~-]{1,128}$ ]] \
+      || die "retained showcase identity contains an invalid chain id"
+    configured+=("$cid")
+  done < <(jq -r '.chainIds[]' "$(marker)")
+  [ "${#configured[@]}" -gt 0 ] \
+    || die "retained showcase identity contains no chains"
+  LIGHT_CHAINS=("${configured[@]}")
+}
+
 adopt_marker() {
   [ -f "$(marker)" ] || return 0
   PROFILE="$(marker_value profile)"
@@ -310,6 +324,7 @@ adopt_marker() {
   THRESHOLD="$(marker_value bootstrapThreshold)"
   HTTP_BASE="$(marker_value httpBase)"
   SERVER_BASE="$(marker_value serverBase)"
+  load_marker_chains
   ANCHOR="$(marker_value anchor.enabled)"
   ANCHOR_MODE="$(marker_value anchor.mode)"
   [ "$ANCHOR_MODE" = none ] && ANCHOR_MODE=script
@@ -364,6 +379,11 @@ prepare_light() {
   local root="$(instance_root)" plugin="$(plugin_file)" candidate args=()
   if [ -e "$root" ] && [ -L "$root" ]; then die "instance root must not be a symlink"; fi
   mkdir -p "$root"; chmod 700 "$root"
+  # Resolve the actual public-network chain set before retaining the config
+  # digest and chain IDs. Doing this after identity creation made a prepared
+  # preprod instance impossible to start or restart because its shared YAML no
+  # longer matched its marker.
+  [ "$NETWORK" = devnet ] || strip_devnet_settlement_chain
   candidate="$(generate_authenticated_map_candidate)"
   local jmt_candidate
   jmt_candidate="$(generate_authenticated_map_jmt_candidate)" || { rm -f -- "$candidate"; return 1; }
@@ -387,7 +407,7 @@ prepare_light() {
   fi
   install_authenticated_map_candidate "$candidate"
   install_authenticated_map_jmt_candidate "$jmt_candidate"
-  [ "$NETWORK" = devnet ] || strip_devnet_settlement_chain
+  load_marker_chains
   write_node_configs "$NODES"
   note "Prepared light instance '$INSTANCE'"
   note "  data:    $root"
@@ -495,7 +515,7 @@ submit_text() {
 }
 
 proof_key() {
-  curl -fsS "http://127.0.0.1:$((HTTP_BASE + NODE))/api/v1/app-chain/chains/$1/proof/$2"
+  curl -fsS "http://127.0.0.1:$((HTTP_BASE + NODE))/api/v1/app-chain/chains/$1/state/proof/$2"
 }
 
 run_orders() {
@@ -1445,7 +1465,11 @@ run_settlement_info() {
   note "  ./showcase.sh settlement deposit   --instance $INSTANCE   # L1 deposit -> mirrored L2 funds"
   note "  ./showcase.sh settlement withdraw  --instance $INSTANCE   # L2 claim -> watch the node settle"
   note "  ./showcase.sh settlement status    --instance $INSTANCE   # claims and their settlement state"
-  note "DEVNET-ONLY demo profile (relaxed fallback floor); PUBLIC demo keys."
+  if [[ "$profile" == *-devnet ]]; then
+    note "DEVNET-ONLY demo profile (relaxed fallback floor); PUBLIC demo keys."
+  else
+    note "Public-network settlement profile; operator key is supplied by the deployment owner."
+  fi
 }
 
 # The packaged settlement actors are derived from a PUBLISHED formula, so on
@@ -1818,6 +1842,7 @@ PY
   prepare)
     case "$PROFILE" in light) prepare_light;; evidence) delegate_evidence prepare;; eutxo) delegate_eutxo prepare;; esac;;
   up)
+    adopt_marker
     case "$PROFILE" in light) up_light;; evidence) delegate_evidence up;; eutxo) delegate_eutxo up;; esac;;
   quickstart)
     if [ "$PROFILE" = light ]; then

@@ -88,8 +88,10 @@ assert_launcher_props_present() {
     || die_test "capture omitted the launcher HTTP property"
   grep -Fqx -- "-Dyano.storage.path=$CLUSTER_DIR/node0/chainstate" "$capture" \
     || die_test "capture omitted the launcher storage property"
-  grep -Fqx -- "-Dyano.app-chain.storage.path=$CLUSTER_DIR/node0/appchain-state" "$capture" \
+  grep -Fqx -- "-Dyano.app-chain.storage.path=$CLUSTER_DIR/node0/appchain-chainstate" "$capture" \
     || die_test "capture omitted the launcher app-chain storage property"
+  grep -Fqx -- "-Dyano.app-chain.indexer.storage.path=$CLUSTER_DIR/node0/appchain-indexers" "$capture" \
+    || die_test "capture omitted the launcher app-chain indexer storage property"
 }
 
 CAPTURE_FILE="$WORK/native.args"; CAPTURE_LOCATION_FILE="$WORK/native.location"
@@ -132,7 +134,8 @@ printf '%s\n' \
   '-Dquarkus.http.port=19071' \
   '-Dyano.server.port=19338' \
   "-Dyano.storage.path=$CLUSTER_DIR/node1/chainstate" \
-  "-Dyano.app-chain.storage.path=$CLUSTER_DIR/node1/appchain-state" \
+  "-Dyano.app-chain.storage.path=$CLUSTER_DIR/node1/appchain-chainstate" \
+  "-Dyano.app-chain.indexer.storage.path=$CLUSTER_DIR/node1/appchain-indexers" \
   '-Dyano.relay.connection.source-port-reuse=false' \
   '-Dyano.relay.connection.max-connections-per-ip=500' \
   '-Doverlay-test=true' > "$EXPECTED_UNSET"
@@ -377,7 +380,11 @@ grep -q 'unexpected per-node config filename' "$WORK/name.log" \
 PREFLIGHT_HOME="$WORK/preflight-home"
 PREFLIGHT_DATA="$WORK/must-not-be-created"
 mkdir -m 700 -p "$PREFLIGHT_HOME/config"
-printf 'yano.app-chain.chains[0].chain-id: "preflight"\n' \
+printf '%s\n' \
+  'yano:' \
+  '  app-chain:' \
+  '    chains[0]:' \
+  '      chain-id: "preflight"' \
   > "$PREFLIGHT_HOME/config/application-appchain.yml"
 if ( YANO_HOME="$PREFLIGHT_HOME"
      CONFIG_FILE="$PREFLIGHT_HOME/config/application-appchain.yml"
@@ -389,7 +396,8 @@ if ( YANO_HOME="$PREFLIGHT_HOME"
   die_test "cmd_start accepted a missing overlay directory"
 fi
 grep -q 'per-node config directory does not exist or is not a directory' "$WORK/preflight.log" \
-  || die_test "cmd_start preflight produced the wrong diagnostic"
+  || { cat "$WORK/preflight.log" >&2;
+       die_test "cmd_start preflight produced the wrong diagnostic"; }
 [ ! -e "$PREFLIGHT_DATA" ] \
   || die_test "overlay validation occurred after cluster data creation"
 

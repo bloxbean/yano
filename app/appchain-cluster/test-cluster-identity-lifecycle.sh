@@ -109,7 +109,7 @@ attach_appchain_state() {
   for i in 0 1; do
     root="$CLUSTER_DIR/node$i"
     target="$WORK/instances/$instance/node$i"
-    link="$root/appchain-state"
+    link="$root/appchain-chainstate"
     mkdir -p "$root" "$target/$chain"
     touch "$target/$chain/CURRENT"
     if [ -e "$link" ] && [ ! -L "$link" ]; then
@@ -381,9 +381,9 @@ STANDALONE_MARKER="$(cluster_app_identity_file)"
 [ -f "$STANDALONE_MARKER" ] || die_test "standalone app-chain marker was not installed"
 STANDALONE_DIGEST="$(file_digest "$STANDALONE_MARKER")"
 mkdir -p "$CLUSTER_DIR/node0/chainstate" \
-  "$CLUSTER_DIR/node0/appchain-state/$SELECTED_CHAIN"
+  "$CLUSTER_DIR/node0/appchain-chainstate/$SELECTED_CHAIN"
 touch "$CLUSTER_DIR/node0/chainstate/CURRENT"
-touch "$CLUSTER_DIR/node0/appchain-state/$SELECTED_CHAIN/CURRENT"
+touch "$CLUSTER_DIR/node0/appchain-chainstate/$SELECTED_CHAIN/CURRENT"
 
 select_member_profile "$KEYS_B"
 select_anchor_profile "$ANCHOR_A"

@@ -75,7 +75,8 @@ flavor), exposes REST on `7070` and N2N on `13337`, and mounts:
 | `config/application.yml` | `/app/config/application.yml` | `yano.app-chain.*` settings |
 | `plugins/` | `/app/plugins` | JVM-image plugin bundles (`yaci.plugins.directory` is preset; native images ignore directory JARs) |
 | `chainstate-*/` | `/app/chainstate` | persistent L1 ledger |
-| `appchain-state-*/` | `/app/appchain-state` | persistent app-chain ledgers |
+| `appchain-chainstate-*/` | `/app/appchain-chainstate` | persistent app-chain ledgers |
+| `appchain-indexers-*/` | `/app/appchain-indexers` | rebuildable app-chain read indexes |
 
 For the two-node tutorial cluster below, run two copies of the compose bundle
 with distinct `INSTANCE_NAME`, `YANO_HTTP_PORT` and `YANO_N2N_PORT`, and point
@@ -139,7 +140,8 @@ cd app
 java -Dquarkus.profile=devnet -Dquarkus.http.port=7070 \
   -Dyano.genesis.shelley-genesis-file=/tmp/appchain-tutorial/genesis-a.json \
   -Dyano.storage.path=/tmp/appchain-tutorial/chainstate-a \
-  -Dyano.app-chain.storage.path=/tmp/appchain-tutorial/appchain-state-a \
+  -Dyano.app-chain.storage.path=/tmp/appchain-tutorial/appchain-chainstate-a \
+  -Dyano.app-chain.indexer.storage.path=/tmp/appchain-tutorial/appchain-indexers-a \
   -Dyano.app-chain.enabled=true \
   -Dyano.app-chain.chain-id=tutorial-chain \
   -Dyano.app-chain.signing-key=0101010101010101010101010101010101010101010101010101010101010101 \
@@ -174,7 +176,8 @@ cp /tmp/appchain-tutorial/genesis-a.json /tmp/appchain-tutorial/genesis-b.json
 java -Dquarkus.profile=devnet -Dquarkus.http.port=7071 \
   -Dyano.genesis.shelley-genesis-file=/tmp/appchain-tutorial/genesis-b.json \
   -Dyano.storage.path=/tmp/appchain-tutorial/chainstate-b \
-  -Dyano.app-chain.storage.path=/tmp/appchain-tutorial/appchain-state-b \
+  -Dyano.app-chain.storage.path=/tmp/appchain-tutorial/appchain-chainstate-b \
+  -Dyano.app-chain.indexer.storage.path=/tmp/appchain-tutorial/appchain-indexers-b \
   -Dyano.server.port=13338 \
   -Dyano.block-producer.enabled=false \
   -Dyano.dev-mode=false \
@@ -251,7 +254,7 @@ MSG_ID=<messageId from step 1.6>
 
 # MPF inclusion proof: this message was finalized at this position,
 # verifiable against the state root — the same root that gets anchored to L1
-curl -s http://localhost:7071/api/v1/app-chain/proof/$MSG_ID
+curl -s http://localhost:7071/api/v1/app-chain/state/proof/$MSG_ID
 # → {"key":"...","stateRoot":"95edf7...","proofWireHex":"82d879...","finalizedAtHeight":1}
 
 # The anchor: node A submitted a Cardano tx with the state root as metadata
@@ -484,7 +487,7 @@ sleep 3
 
 # ...and read the replicated, PROVABLE value from B: for the kv-store machine
 # the state key is your own key ("color" = hex 636f6c6f72)
-curl -s http://localhost:7071/api/v1/app-chain/proof/636f6c6f72
+curl -s http://localhost:7071/api/v1/app-chain/state/proof/636f6c6f72
 # → {"key":"636f6c6f72","stateRoot":"...","proofWireHex":"...","valueHex":"626c7565"}  ("blue")
 
 # Malformed commands are rejected at admission and never enter a block

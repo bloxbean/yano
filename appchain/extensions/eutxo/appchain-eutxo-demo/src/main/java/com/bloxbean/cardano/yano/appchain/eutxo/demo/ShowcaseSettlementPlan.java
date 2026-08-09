@@ -16,6 +16,8 @@ import com.bloxbean.cardano.client.transaction.spec.Value;
 import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoOutpoint;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoProfile;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
@@ -128,6 +130,10 @@ public final class ShowcaseSettlementPlan {
             byte[] operatorSeed, String operatorSeedFile,
             String networkName, String scriptDir) {
         Map<String, String> config = new LinkedHashMap<>();
+        StateCommitmentIdentity identity = StateCommitmentIdentity.explicit(
+                StateCommitmentProfiles.MPF,
+                stateGenesisId(plan, chainId));
+        config.putAll(new java.util.TreeMap<>(identity.settings()));
         config.put("machines.eutxo.profile", plan.profile().id());
         config.put("machines.eutxo.expected-profile-digest",
                 plan.profile().digestHex());
@@ -199,6 +205,26 @@ public final class ShowcaseSettlementPlan {
         }
         config.put(executor + "round-timeout-ms", "15000");
         return config;
+    }
+
+    private static byte[] stateGenesisId(SettlementBootstrapPlan plan, String chainId) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            digest.update("yano-showcase-settlement-state-genesis-v1\0"
+                    .getBytes(StandardCharsets.US_ASCII));
+            digest.update(chainId.getBytes(StandardCharsets.US_ASCII));
+            digest.update((byte) 0);
+            digest.update(plan.profile().digestHex().getBytes(StandardCharsets.US_ASCII));
+            digest.update((byte) 0);
+            digest.update(plan.rootThreadPolicyIdHex().getBytes(StandardCharsets.US_ASCII));
+            digest.update((byte) 0);
+            digest.update(plan.shardThreadPolicyIdHex().getBytes(StandardCharsets.US_ASCII));
+            digest.update((byte) 0);
+            digest.update(plan.vaultScriptHash());
+            return digest.digest();
+        } catch (Exception impossible) {
+            throw new IllegalStateException(impossible);
+        }
     }
 
     /** Inline-seed, file-script variant — the packaged devnet demo chain. */

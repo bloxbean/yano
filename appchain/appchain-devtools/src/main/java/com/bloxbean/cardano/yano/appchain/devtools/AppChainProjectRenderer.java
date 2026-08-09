@@ -350,9 +350,13 @@ final class AppChainProjectRenderer {
                 : compose ? "/app/chainstate"
                 : "${YANO_APPCHAIN_DATA_ROOT}/node" + node + "/chainstate");
         values.put("yano.app-chain.storage.path", kubernetes
-                ? "/var/lib/yano/appchain-state"
-                : compose ? "/app/appchain-state"
-                : "${YANO_APPCHAIN_DATA_ROOT}/node" + node + "/appchain-state");
+                ? "/var/lib/yano/appchain-chainstate"
+                : compose ? "/app/appchain-chainstate"
+                : "${YANO_APPCHAIN_DATA_ROOT}/node" + node + "/appchain-chainstate");
+        values.put("yano.app-chain.indexer.storage.path", kubernetes
+                ? "/var/lib/yano/appchain-indexers"
+                : compose ? "/app/appchain-indexers"
+                : "${YANO_APPCHAIN_DATA_ROOT}/node" + node + "/appchain-indexers");
         if ("devnet".equals(resolution.blueprint().spec().network())) {
             values.put("yano.genesis.shelley-genesis-file", "${YANO_APPCHAIN_GENESIS_FILE}");
             if (node == 0) {
@@ -1202,7 +1206,9 @@ final class AppChainProjectRenderer {
                     .append("      - ./:/project:ro\n")
                     .append("      - node").append(index).append("-data:/app/chainstate\n")
                     .append("      - node").append(index)
-                    .append("-appchain-data:/app/appchain-state\n")
+                    .append("-appchain-data:/app/appchain-chainstate\n")
+                    .append("      - node").append(index)
+                    .append("-appchain-indexers:/app/appchain-indexers\n")
                     .append("    ports:\n")
                     .append("      - \"").append(httpBase + index).append(":8080\"\n")
                     .append("      - \"").append(serverBase + index).append(":13337\"\n")
@@ -1217,6 +1223,7 @@ final class AppChainProjectRenderer {
         for (int index = 0; index < members; index++) {
             output.append("  node").append(index).append("-data: {}\n");
             output.append("  node").append(index).append("-appchain-data: {}\n");
+            output.append("  node").append(index).append("-appchain-indexers: {}\n");
         }
         return output.toString();
     }

@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.eutxo.demo;
 
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
@@ -46,6 +48,8 @@ class ShowcaseSettlementPlanTest {
                         "eutxo-batch-withdrawal-confirmation-v1")
                 .containsEntry("effects.executors.eutxo-settlement.owner",
                         "false");
+        assertThat(StateCommitmentIdentity.fromSettings(config).profile())
+                .isEqualTo(StateCommitmentProfiles.MPF);
         assertThat(config.get("effects.executors.eutxo-settlement.vault-script"))
                 .isNotBlank();
         assertThat(ShowcaseSettlementPlan.yamlBlock(

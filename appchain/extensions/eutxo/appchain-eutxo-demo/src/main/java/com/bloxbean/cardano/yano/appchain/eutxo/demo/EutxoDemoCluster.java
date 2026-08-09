@@ -265,9 +265,8 @@ public final class EutxoDemoCluster {
     private Path indexDirectory(int node) {
         return workspace.project().resolve("data")
                 .resolve("node" + node)
-                .resolve("chainstate/appchains")
+                .resolve("appchain-indexers")
                 .resolve(workspace.manifest().chainId())
-                .resolve("indexes")
                 .toAbsolutePath().normalize();
     }
 

@@ -76,7 +76,7 @@ ORDER_ID="$(submit_text 7070 orders-chain orders.command.v1 \
 wait_finalized orders-chain "$ORDER_ID" | jq '{messageId,height,index,topic}'
 
 curl -fsS \
-  "http://127.0.0.1:7070/api/v1/app-chain/chains/orders-chain/proof/$ORDER_ID" \
+  "http://127.0.0.1:7070/api/v1/app-chain/chains/orders-chain/state/proof/$ORDER_ID" \
   | jq '{chainId,committedHeight,stateRoot,finalizedAtHeight}'
 ```
 
@@ -93,7 +93,7 @@ wait_finalized registry-chain "$KV_ID" | jq '{messageId,height,topic}'
 
 KEY_HEX="$(printf '%s' product:A-200 | od -An -v -tx1 | tr -d ' \n')"
 curl -fsS \
-  "http://127.0.0.1:7070/api/v1/app-chain/chains/registry-chain/proof/$KEY_HEX" \
+  "http://127.0.0.1:7070/api/v1/app-chain/chains/registry-chain/state/proof/$KEY_HEX" \
   | jq '{chainId,committedHeight,stateRoot,valueHex}'
 ```
 
@@ -139,7 +139,7 @@ curl -fsS -X POST \
 
 STATE_KEY="$(python3 "$CODEC" authmap state-key products "$PRODUCT_KEY")"
 curl -fsS \
-  "http://127.0.0.1:7070/api/v1/app-chain/chains/authenticated-map-chain/proof/$STATE_KEY" \
+  "http://127.0.0.1:7070/api/v1/app-chain/chains/authenticated-map-chain/state/proof/$STATE_KEY" \
   | jq '{chainId,committedHeight,stateRoot,valueHex,proofWireHex}'
 ```
 
@@ -166,7 +166,7 @@ wait_finalized approvals-chain "$ID" >/dev/null
 
 STATE_KEY="$(python3 "$CODEC" state-key approval "$PROPOSAL")"
 curl -fsS \
-  "http://127.0.0.1:7070/api/v1/app-chain/chains/approvals-chain/proof/$STATE_KEY" \
+  "http://127.0.0.1:7070/api/v1/app-chain/chains/approvals-chain/state/proof/$STATE_KEY" \
   | jq '{chainId,committedHeight,stateRoot,valueHex}'
 ```
 

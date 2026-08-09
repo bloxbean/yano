@@ -188,6 +188,8 @@ __pycache__/
 /node-app/chainstate-preprod/
 **/chainstate*/
 **/appchain-state*/
+**/appchain-chainstate*/
+**/appchain-indexers*/
 **/data*/
 
 # Compatibility test data (downloaded haskell cardano-node + scratch state)

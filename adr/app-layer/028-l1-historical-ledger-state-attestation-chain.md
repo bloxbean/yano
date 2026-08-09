@@ -1,8 +1,10 @@
-# ADR app-layer/028: Historical L1 ledger-state attestation chain (epoch protocol params + epoch stake)
+# ADR app-layer/028: Historical L1 ledger-state attestation chain
+
+## Protocol parameters, stake, and governance
 
 **Status:** Proposed — implementation plan, no code written
-**Date:** 2026-08-06
-**Depends on:** ADR app-layer/027 §2.4 (deep-rollback detection) — **blocking for M5**
+**Date:** 2026-08-09
+**Depends on:** ADR app-layer/027 §2.4 (deep-rollback detection) — **blocking for M5–M6**
 **Extends:** ADR app-layer/008.4 §3 (L1View / observations), ADR-025.x (authenticated map)
 **Supersedes nothing.**
 
@@ -16,11 +18,13 @@ No previous app-chain observation wire, state, proof, plugin, or anchor format i
 
 ## 1. Context
 
-Cardano does not retain historical ledger state. Protocol parameters for epoch 400 and the
-stake distribution for epoch 480 are not recoverable from the chain; they exist only in
-whatever indexer happened to record them. Today, answering *"what was `minPoolCost` in epoch
-400?"* or *"what was stake credential X's active stake in epoch 480?"* means **trusting a
-DBSync operator**. There is no proof, and no way for a third party to check.
+Cardano does not retain historical ledger state. Protocol parameters for epoch 400, the
+stake distribution for epoch 480, a proposal's lifecycle status, and the DRep distribution at a
+past epoch are not recoverable from the chain; they exist only in whatever indexer happened to
+record them. Today, answering *"what was `minPoolCost` in epoch 400?"*, *"what was stake
+credential X's active stake in epoch 480?"*, *"was proposal P ratified in epoch E?"*, or *"what
+was DRep D's voting stake in epoch E?"* means **trusting an indexer operator**. There is no proof,
+and no way for a third party to check.
 
 This ADR specifies an app chain whose members each derive these facts **independently from
 their own Cardano ledger state**, agree by threshold, and commit them to an authenticated map
@@ -53,7 +57,8 @@ Epoch-boundary state has three properties arbitrary "state at slot S" lacks:
 - **Low cadence.** One value per epoch (5 days). A k-deep (2160-block) stability wait costs
   ~12 hours on a 5-day-old fact — affordable in a way it never is for a bridge deposit.
 - **Already computed.** `EpochParamProvider` (core-api) exposes per-epoch parameters;
-  `ledger-state` computes epoch stake snapshots; and the node already fires
+  `ledger-state` computes epoch stake snapshots, DRep distributions, and governance ratification;
+  and the node already fires
   `PreEpochTransitionEvent` → `EpochTransitionEvent` (SNAP) → `PostEpochTransitionEvent`,
   all before the first `BlockAppliedEvent` of the new epoch.
 
@@ -65,9 +70,10 @@ Epoch-boundary state has three properties arbitrary "state at slot S" lacks:
 |---|---|
 | G1 | Attest per-epoch protocol parameters as threshold-agreed, provable L2 state |
 | G2 | Attest per-epoch stake distribution (credential → coin, pool) likewise |
-| G3 | Inclusion proofs verifiable **off-chain by anyone**, and on-chain where the profile allows |
-| G4 | **No new trust**: every member re-derives; the proposer supplies but cannot lie |
-| G5 | **Replay-safe forever**: a node joining in 2030 rebuilds epoch 500 with no L1 history |
+| G3 | Attest proposal lifecycle status and per-epoch DRep voting-stake distribution likewise |
+| G4 | Inclusion proofs verifiable **off-chain by anyone**, and on-chain where the profile allows |
+| G5 | **No new trust**: every member re-derives; the proposer supplies but cannot lie |
+| G6 | **Replay-safe forever**: a node joining in 2030 rebuilds epoch 500 with no L1 history |
 
 **Non-goals**
 
@@ -134,9 +140,41 @@ public interface L1EpochState {
      */
     void forEachStakeEntry(long snapshotEpoch, StakeEntryConsumer consumer);
 
+    boolean hasProposalStatusSnapshot(long snapshotEpoch);
+
+    boolean hasDRepDistributionSnapshot(long snapshotEpoch);
+
+    /**
+     * Iterate proposal lifecycle records in canonical order by
+     * (transactionId bytes, governanceActionIndex). The host persists these
+     * epoch-pinned records before exposing the snapshot; the observer must not
+     * reconstruct history from the current active-proposal set.
+     */
+    void forEachProposalStatus(long snapshotEpoch, ProposalStatusConsumer consumer);
+
+    /**
+     * Iterate DRep voting stake in canonical order by (drepType, drepHash).
+     * Virtual DReps use their canonical type and value representation.
+     */
+    void forEachDRepDistributionEntry(long snapshotEpoch,
+                                      DRepDistributionConsumer consumer);
+
     @FunctionalInterface
     interface StakeEntryConsumer {
         void accept(int credType, byte[] credHash, BigInteger coin, byte[] poolHash);
+    }
+
+    @FunctionalInterface
+    interface ProposalStatusConsumer {
+        void accept(byte[] transactionId, int governanceActionIndex,
+                    GovernanceActionType actionType, GovernanceProposalStatus status,
+                    GovernanceProposalStatusReason reason, long proposedEpoch,
+                    long expiresAfterEpoch);
+    }
+
+    @FunctionalInterface
+    interface DRepDistributionConsumer {
+        void accept(int drepType, byte[] drepHash, BigInteger coin);
     }
 }
 ```
@@ -150,10 +188,18 @@ whole list is unnecessary preview debt.
 The host sink writes each bounded observation into a durable local epoch-observation spool keyed by
 `(observerId, epoch, manifestRoot, chunkIndex)`. The callback may not retain the state or sink.
 
-Making ordering the host's contract rather than the plugin's is deliberate: today
-`DefaultAccountStateStore.readStakeSnapshot` returns a `HashMap`, and a plugin author who
-iterates it directly produces a nondeterministic chunking that stalls the chain. The SPI must
-make the wrong thing impossible.
+Making ordering the host's contract rather than the plugin's is deliberate: today some ledger
+views are exposed as maps, and a plugin author who iterates one directly can produce
+nondeterministic chunking that stalls the chain. The SPI must make the wrong thing impossible.
+
+`GovernanceProposalStatus` is a closed wire enum with at least `ACTIVE`, `RATIFIED`, `ENACTED`,
+`EXPIRED`, and `DROPPED`; a dropped record also carries a canonical reason in the concrete claim
+codec. The current read surface is insufficient for this contract: it exposes active/pending
+proposals, while enactment and expiry remove records, and `EpochSnapshotExporter` receives
+ratification results only transiently. The ledger-state implementation must therefore add a
+rollback-safe, epoch-pinned proposal lifecycle history. Every write follows the account-state
+delta rules so rollback and replay cannot duplicate or lose a status transition. DRep distribution
+is already persisted by epoch, but its host adapter must provide the canonical ordered iterator.
 
 ### 5.2 Wire format — tagged `L1Observation` baseline
 
@@ -217,7 +263,7 @@ and composite routing remain deterministic. All first-party consumers move to th
 clean-break change; manual reserved-message decoding is removed rather than retained as a legacy
 path.
 
-Two machines, composable under the existing composite profile.
+Three independently selectable components, composable into any ADR-031 `AppStateMachine`.
 
 **`epoch-params`** — small and self-contained.
 
@@ -249,6 +295,27 @@ the credential entry and `stake/<epoch>/meta.complete = true` at the same state 
 proofs initially, or a later MPF multiproof). An exclusion/zero-stake assertion also requires the
 same completeness proof.
 
+**`epoch-governance`** — proposal lifecycle plus chunked DRep distribution.
+
+| Aspect | Value |
+|---|---|
+| Topic | `~l1/<governance-observer-id>` |
+| Proposal claim | `[epoch, txHash, govActionIndex, actionType, status, reason, proposedEpoch, expiresAfterEpoch]` |
+| DRep manifest | `[epoch, totalEntries, chunkEntries, chunkCount, distributionRoot]` |
+| DRep chunk | `[epoch, distributionRoot, chunkIndex, entries]`, entries = `[[drepType, drepHash, coin], ...]` in canonical order |
+| Proposal state | `governance/<epoch>/proposals/<txHash>/<govActionIndex>` → canonical lifecycle record |
+| DRep state | `governance/<epoch>/dreps/<drepType>/<drepHash>` → coin |
+| Metadata | `governance/<epoch>/proposals/meta` and `governance/<epoch>/dreps/meta` carry independent roots/counts/completeness |
+
+Proposal and DRep completeness are independent so a deployment can attest proposal status without
+paying the DRep-distribution cost. Configuration flags `include-proposals` and
+`include-drep-distribution` are consensus-critical and committed in genesis. A proposal-status
+snapshot contains one record for every proposal known at that boundary; terminal status is carried
+forward so `status(P, E)` has direct point-proof semantics. A proposal-status proof names the epoch
+explicitly and is valid only alongside the same-root proposal completeness proof; it never infers
+a historical outcome from a current active set. A DRep amount or absence proof is likewise valid
+only alongside the same-root DRep completeness proof.
+
 ### 5.6 Who populates what (the three-party split)
 
 | Role | Who | What |
@@ -263,15 +330,43 @@ payload is bigger.
 
 ### 5.7 Storage variant to benchmark
 
-- **Variant A (specified default):** entries live in the authmap. Direct inclusion proofs
-  (G3), larger trie.
-- **Variant B (benchmark-gated):** chunks live in block history; only `stake/<epoch>/meta` in
-  the trie; the map is rebuilt as an off-consensus index. Replay-safe like A, much smaller
+- **Variant A (specified default):** stake and DRep entries live in the authmap. Direct inclusion
+  proofs (G4), larger trie.
+- **Variant B (benchmark-gated):** chunks live in block history; only the stake/DRep epoch metadata
+  lives in the trie; the maps are rebuilt as off-consensus indexes. Replay-safe like A, much smaller
   trie, but proofs need the derived index. **Requires `retention.enabled: false`** — pruning
   bodies destroys the source (`AppLedgerStore.pruneBodiesBelow` strips bodies; its own javadoc
   notes from-genesis catch-up past the horizon then becomes impossible).
 
 Decide between A and B on the M4 benchmark, not in advance.
+
+### 5.8 Module boundaries
+
+Epoch observation is a framework capability. Protocol parameters, epoch stake, and governance are
+out-of-box applications, packaged in the existing standard library but independently selectable.
+They use these module and package boundaries:
+
+| Module/boundary | Responsibility |
+|---|---|
+| `core-api` | `L1EpochObserver`, provider, boundary, manifest, sink, and epoch-pinned `L1EpochState` SPIs only |
+| `runtime` | `PostEpochTransitionEvent` subscription, host `L1EpochState` adapter, stability gate, durable bounded spool, proposal verification, rollback, and lifecycle wiring |
+| `appchain-stdlib-contracts/.../l1/epoch` | Shared canonical snapshot semantics, manifests/chunks, and internal contract utilities |
+| `appchain-stdlib-contracts/.../l1/epoch/params` | Parameter claim codecs, state keys, query records, and typed proof subjects |
+| `appchain-stdlib-contracts/.../l1/epoch/stake` | Stake claim codecs, state keys, completeness records, and typed proof subjects |
+| `appchain-stdlib-contracts/.../l1/epoch/governance` | Proposal-status and DRep-distribution codecs, state keys, completeness records, and typed proof subjects |
+| `appchain-stdlib/.../l1/epoch/params` | First-party parameter observer, component/state-machine transition, provider, query adapter, and configuration |
+| `appchain-stdlib/.../l1/epoch/stake` | First-party chunked stake observer, transition, provider, completeness logic, and configuration |
+| `appchain-stdlib/.../l1/epoch/governance` | First-party governance observer, proposal/DRep transitions, provider, completeness logic, query adapter, and configuration |
+
+All three capabilities ship in the default distribution but are disabled unless selected. Shipping
+code is not permission to traverse stake or DRep snapshots: a params-only deployment performs no
+stake or governance work. They may be composed into one deployed `AppStateMachine`, or reused
+individually inside a custom machine. None is a dependency of the app-chain runtime, and stdlib
+must depend only on the `core-api` epoch view—not concrete `ledger-state` or `runtime` classes.
+Client convenience methods may live in `appchain-client`, consume `appchain-stdlib-contracts`, and
+continue using the generic `state/proof/{key}` endpoint; no epoch-specific core REST routes are
+required. A future artifact split is justified only by heavyweight optional dependencies or a
+genuinely independent release lifecycle, not by data volume alone.
 
 ## 6. Snapshot semantics — the highest-risk detail
 
@@ -289,8 +384,12 @@ anchored, and wrong by two epochs. Therefore:
   (v1 = `end-of-epoch-E`, matching yaci-store `epoch_stake.epoch = E`), so a consumer cannot
   silently reinterpret it as DBSync's active-epoch labeling.
 - Cross-verification against yaci-store **and** DBSync is a **merge gate**, not a nice-to-have
-  (§10). This matches the repo's standing rule that the Haskell ledger is the source of truth
+  (§12). This matches the repo's standing rule that the Haskell ledger is the source of truth
   and yaci-store is the cross-reference.
+- Governance claims carry an explicit boundary epoch. DRep distribution uses the distribution
+  calculated for that boundary epoch. Proposal status is the lifecycle state after that boundary's
+  enact/drop and ratification phases; the discriminator is committed in the governance contract so
+  consumers cannot reinterpret `RATIFIED` as already `ENACTED`.
 
 ## 7. Determinism rules (normative)
 
@@ -303,6 +402,7 @@ anchored, and wrong by two epochs. Therefore:
 | D5 | No `HashMap`/`HashSet` iteration anywhere in observer or machine (the `AppStateMachine` javadoc already forbids this; here it is the single most likely defect) |
 | D6 | Snapshot semantics pinned on the wire (§6) |
 | D7 | Observer config byte-identical on every member — consensus-critical, as for all observers |
+| D8 | Proposal order is `(txHash bytes, govActionIndex)` and DRep order is `(drepType, drepHash bytes)`; status and drop-reason values are closed wire enums |
 
 ## 8. Rollback
 
@@ -319,7 +419,7 @@ is clean and low-cardinality: *"epoch E's attestation is disputed"* — unlike "
 effectively unreachable, but it must fail closed rather than silently.
 
 ### 8.3 Corrections supersede, never mutate
-`params/<epoch>` and `stake/<epoch>/*` are **write-once**. A correction lands as a new
+`params/<epoch>`, `stake/<epoch>/*`, and `governance/<epoch>/*` are **write-once**. A correction lands as a new
 versioned record (`params/<epoch>/v<n>`) authorized by the chain's governance role, with the
 prior version retained. Proofs name the version. This is native to an append-only ledger and
 keeps every previously issued proof verifiable.
@@ -341,13 +441,15 @@ classic JMT. MPF proofs are verifiable inside Plutus (cardano-client-lib MPF + e
 product-local eUTxO validators demonstrate the cryptography), but the generic app-chain proof ABI,
 converter, anchor-reference binding, and reusable validator are ADR-031 Phase 6 work. JMT
 verification is designed as follower-side/off-chain — ADR-008.4 explicitly notes JMT's on-chain
-cost is irrelevant *because* verification is off-chain. **If on-chain verification of protocol-param
-or stake proofs is a requirement, the MPF profile must be pinned**, the ADR-031 generic verifier is
-a dependency, and MPF insert cost at 1.3M entries/epoch is unproven — see R5.
+cost is irrelevant *because* verification is off-chain. **If on-chain verification of
+protocol-param, stake, proposal-status, or DRep-distribution proofs is a requirement, the MPF
+profile must be pinned**, the ADR-031 generic verifier is a dependency, and MPF insert cost at
+1.3M entries/epoch is unproven — see R5.
 
-ADR-031 typed proof subjects hide the physical composite namespace and bind an epoch-param/stake
-claim to its canonical key/value schema. The first reference validator should use the small
-`params/<epoch>` fact before attempting a mainnet-scale stake profile.
+ADR-031 typed proof subjects hide the physical composite namespace and bind an epoch-param, stake,
+proposal-status, or DRep-distribution claim to its canonical key/value schema. The first reference
+validator should use the small `params/<epoch>` fact before attempting a mainnet-scale stake
+profile.
 
 ## 10. Configuration
 
@@ -356,7 +458,7 @@ yano:
   app-chain:
     chains[n]:
       chain-id: cardano-history
-      state-machine: composite          # epoch-params + epoch-stake
+      state-machine: composite          # any configured stdlib/custom components
       membership: { mode: governed }
       block: { interval-ms: 1000 }
       l1:
@@ -371,6 +473,11 @@ yano:
           type: l1-epoch-stake-v1
           chunk-entries: 50000
           include-pool: true
+        epoch-governance:
+          type: l1-epoch-governance-v1
+          include-proposals: true
+          include-drep-distribution: true
+          drep-chunk-entries: 50000
       machines:
         l1state:
           profile: yano-l1state-v1
@@ -385,6 +492,8 @@ yano:
    archival chain) — otherwise the *verification source* is pruned out from under the chain;
 3. `retention.enabled: false` on this chain;
 4. `epoch-stability-depth > 0` when any epoch observer is configured.
+5. the governance observer requires Conway governance tracking plus rollback-safe proposal-history
+   persistence; DRep distribution additionally requires the requested epoch snapshot to be retained.
 
 ## 11. Milestones
 
@@ -393,10 +502,11 @@ yano:
 | **M1** | Replace preview observation wire with the tagged baseline + CDDL + new golden vectors | transaction and epoch anchors strict; old preview bytes rejected |
 | **M2** | Streaming `L1EpochObserver` / `L1EpochState` / provider SPI; `PostEpochTransitionEvent`; durable bounded spool/outbox; `epoch-stability-depth`; startup gates | two-member devnet agrees on a synthetic epoch fact; restart and proposer rotation resume the next chunk |
 | **M3** | `epoch-params` state machine using ADR-031 `AppBlockExecutionContext` + client + `StateMachineConformance` + devnet e2e | preprod params match yaci-store `epoch_param` and Koios; no historical L1 handle is used during replay |
-| **M4** | **Benchmark**: full snapshot recompute + root cost per epoch at mainnet scale; Variant A vs B; MPF vs JMT | decides §5.7 and §9 |
+| **M4** | **Benchmark**: stake and DRep snapshot recompute + root cost per epoch at mainnet scale; Variant A vs B; MPF vs JMT | decides §5.7 and §9 |
 | **M5** | `epoch-stake` machine (chunked) — **blocked on M4 and on ADR-027 §2.4** | mainnet-scale epoch attested within the configured ingestion SLA without exceeding any per-block budget |
-| **M6** | Typed proof surface: REST + client + evidence bundle; ADR-031 generic on-chain MPF verifier if pinned | third party verifies an epoch-param fact from the anchor output alone |
-| **M7** | Preprod pilot, 3 members, ≥10 consecutive epochs | full cross-verification (§12) green |
+| **M6** | `epoch-governance` component: rollback-safe proposal history plus chunked DRep distribution — **blocked on M4 and ADR-027 §2.4** | proposal and DRep claims match independent sources; proposal-only configuration performs no DRep traversal |
+| **M7** | Typed proof surface: REST + client + evidence bundle; ADR-031 generic on-chain MPF verifier if pinned | third party verifies params, stake, proposal status, and DRep amount from the anchor output alone |
+| **M8** | Preprod pilot, 3 members, ≥10 consecutive epochs | full cross-verification (§12) green |
 
 M1–M3 are the useful, self-contained increment. **M3 is the smallest thing that proves the
 whole idea** and is worth building before committing to M5.
@@ -407,21 +517,26 @@ whole idea** and is worth building before committing to M5.
   rejected.
 - **Determinism:** two independently-built members produce **byte-identical** claims over
   ≥1,000 epochs; shuffled source ordering must not change output (guards D1/D2).
-- **Conformance:** `StateMachineConformance` for both machines.
+- **Conformance:** `StateMachineConformance` for every independently selectable component and
+  their supported compositions.
 - **Cross-verification (merge gate, per §6):**
   - preprod protocol params vs yaci-store `epoch_param` + Koios;
   - mainnet epoch stake vs `/Users/satya/work/dbsync-parquet/dbsync-mainnet-parquet` and
     yaci-store `epoch_stake` (schema `mainnet`);
-  - preview vs `epoch_stake_from646.parquet`.
+  - preview vs `epoch_stake_from646.parquet`;
+  - proposal lifecycle status vs Yaci Store and Koios on preprod;
+  - DRep distribution vs Yaci Store, Koios, and the available DBSync preview/mainnet parquet
+    snapshots.
 - **Negative:** fabricated claim → MISMATCH → proposal rejected; missing chunk → epoch never
-  marked complete; reordered chunk → root mismatch; duplicate chunk → deterministic no-op.
+  marked complete; reordered chunk → root mismatch; duplicate chunk → deterministic no-op;
+  current-active state masquerading as historical proposal state → rejected.
 - **Spool/backpressure:** process death during generation and injection resumes durably; proposer
   rotation continues from the next missing chunk; pool pressure never drops an attestation silently;
   configured per-block message/byte budgets are enforced.
 - **Rollback:** rollback below an attested boundary → halt fail-closed (needs ADR-027 §2.4);
   rollback above → pending queue pruned, no state change.
 - **Replay:** a fresh node with **no L1 history** rebuilds attested epochs from block history
-  alone through `AppBlockExecutionContext` and reproduces every state root (this is G5, and the
+  alone through `AppBlockExecutionContext` and reproduces every state root (this is G6, and the
   single most important test).
 
 ## 13. Risks
@@ -431,19 +546,19 @@ whole idea** and is worth building before committing to M5.
 | R1 | Mainnet scale: ~65 MB/epoch, ~4.7 GB/yr, 1.3M authmap inserts/epoch | M4 benchmark gates M5; Variant B fallback |
 | R2 | Every member must run **full ledger state** — raises the bar for membership materially | startup gate + documented operator requirement; not every app-chain member can join this chain |
 | R3 | **Snapshot mislabeling** — well-formed, agreed, anchored, and wrong | §6 wire discriminator + cross-verification merge gate |
-| R4 | Depends on deep-rollback detection that does not exist | ADR-027 §2.4 is a hard prerequisite for M5 |
-| R5 | On-chain proof verification needs the MPF profile, whose cost at this scale is unproven | M4 measures MPF vs JMT; if MPF is infeasible, G3 degrades to off-chain-only and that must be stated, not discovered |
+| R4 | Depends on deep-rollback detection that does not exist | ADR-027 §2.4 is a hard prerequisite for M5–M6 |
+| R5 | On-chain proof verification needs the MPF profile, whose cost at this scale is unproven | M4 measures MPF vs JMT; if MPF is infeasible, G4 degrades to off-chain-only and that must be stated, not discovered |
 | R6 | Catch-up throughput is capped at ~10 blocks/s (50 per 5 s tick) — a chunk-heavy chain lengthens onboarding | snapshot onboarding (§14.3 of the user guide); consider tuning the catch-up tick for this chain |
+| R7 | Current governance reads lose complete enacted/expired history | persist epoch-pinned lifecycle transitions with delta-backed rollback before exposing them through `L1EpochState` |
 
 ## 14. Open questions
 
-1. Should `epoch-params` and `epoch-stake` be one machine or two composed under the composite
-   profile? Two is cleaner for capability gating and lets M3 ship alone; one is fewer moving
-   parts. **Leaning two.**
+1. The three stdlib capabilities remain independently selectable and composable. Should the stock
+   recipe enable all three, or ship params-only and require explicit opt-in for the large stake and
+   DRep datasets? **Leaning params-only by default.**
 2. Does the stake attestation include `poolHash` (delegation target) or only `coin`? Including
    it is ~60% more bytes and makes the chain far more useful for delegation analytics.
    **Leaning include, behind `include-pool`.**
-3. Should attestation extend to DRep distribution and governance state, which have the same
-   canonical/epoch-cadence properties and the same pruning problem? Out of scope here, but the
-   SPI should not preclude it — hence `L1EpochState` being an interface rather than a params
-   record.
+3. Should proposal records include only the lifecycle status and reason, or also the complete
+   proposal payload and vote tallies? **Leaning status and canonical identifiers in v1; add payload
+   and tallies only as separately versioned datasets.**

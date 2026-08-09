@@ -212,14 +212,6 @@ public class AppChainResource {
 
     @GET
     @Operation(hidden = true)
-    @Path("proof/{keyHex}")
-    public Response proof(@Encoded @PathParam("keyHex") String keyHex,
-                          @QueryParam("height") Long height) {
-        return singleChain().proof(keyHex, height);
-    }
-
-    @GET
-    @Operation(hidden = true)
     @Path("state/proof/{keyHex}")
     public Response stateProof(@Encoded @PathParam("keyHex") String keyHex,
                                @QueryParam("height") Long height) {
@@ -1398,14 +1390,6 @@ public class AppChainResource {
 
         /** Profile-tagged native proof for a canonical state key. */
         @GET
-        @Path("proof/{keyHex}")
-        public Response proof(@Encoded @PathParam("keyHex") String keyHex,
-                              @QueryParam("height") Long height) {
-            return stateLookup(keyHex, height, true);
-        }
-
-        /** Canonical state namespace alias for the proof endpoint. */
-        @GET
         @Path("state/proof/{keyHex}")
         public Response stateProof(@Encoded @PathParam("keyHex") String keyHex,
                                    @QueryParam("height") Long height) {
@@ -1517,8 +1501,8 @@ public class AppChainResource {
             return Response.ok(result).build();
         }
 
-        Response proof(String keyHex) {
-            return proof(keyHex, null);
+        Response stateProof(String keyHex) {
+            return stateProof(keyHex, null);
         }
 
         @POST

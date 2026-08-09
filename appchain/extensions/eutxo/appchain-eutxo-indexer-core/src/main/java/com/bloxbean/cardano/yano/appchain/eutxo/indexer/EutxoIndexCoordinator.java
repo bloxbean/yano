@@ -88,6 +88,14 @@ public final class EutxoIndexCoordinator implements AutoCloseable {
     public IndexHealth health() {
         IndexCheckpoint checkpoint = store.checkpoint();
         long finalized = Math.max(gateway.tipHeight(), requestedHeight.get());
+        if (checkpoint.source().appHeight() > finalized) {
+            return new IndexHealth(
+                    IndexHealth.Status.FAILED,
+                    checkpoint,
+                    finalized,
+                    0,
+                    "index checkpoint is ahead of authoritative app-chain tip");
+        }
         long lag = Math.max(0, finalized - checkpoint.source().appHeight());
         Throwable currentFailure = failure;
         if (currentFailure != null) {
@@ -150,6 +158,13 @@ public final class EutxoIndexCoordinator implements AutoCloseable {
         }
         try {
             long target = Math.max(requestedHeight.get(), gateway.tipHeight());
+            long checkpoint = store.checkpoint().source().appHeight();
+            if (checkpoint > target) {
+                throw new IllegalStateException(
+                        "index checkpoint " + checkpoint
+                                + " is ahead of authoritative app-chain tip "
+                                + target);
+            }
             CanonicalRecords records = canonicalRecords();
             for (long height = Math.addExact(
                     store.checkpoint().source().appHeight(), 1);

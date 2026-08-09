@@ -706,15 +706,16 @@ public final class SqliteEutxoIndexStore implements EutxoIndexStore {
                 "INSERT INTO index_metadata("
                         + "singleton_id, identity_digest, network, chain_id,"
                         + " state_machine_id, ledger_profile_digest,"
-                        + " bridge_abi, validity_profile_digest)"
-                        + " VALUES (1, ?, ?, ?, ?, ?, ?, ?)")) {
+                        + " state_genesis_id, bridge_abi, validity_profile_digest)"
+                        + " VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)")) {
             insert.setString(1, identity.digest());
             insert.setString(2, identity.network());
             insert.setString(3, identity.chainId());
             insert.setString(4, identity.stateMachineId());
             insert.setString(5, identity.ledgerProfileDigest());
-            insert.setInt(6, identity.bridgeAbi());
-            insert.setString(7, identity.validityProfileDigest());
+            insert.setString(6, identity.stateGenesisId());
+            insert.setInt(7, identity.bridgeAbi());
+            insert.setString(8, identity.validityProfileDigest());
             insert.executeUpdate();
         }
     }

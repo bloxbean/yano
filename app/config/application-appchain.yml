@@ -24,12 +24,19 @@ yano:
     # Node-local root; each hosted chain gets a <chain-id>/ RocksDB below it.
     # Relative paths use the process working directory.
     storage:
-      path: ${YANO_APP_CHAIN_STORAGE_PATH:appchain-state}
+      path: ${YANO_APP_CHAIN_STORAGE_PATH:appchain-chainstate}
+    indexer:
+      storage:
+        path: ${YANO_APP_CHAIN_INDEXER_STORAGE_PATH:appchain-indexers}
 
     # --- Chain 0: an append-only ordered log, fixed proposer (node 0) --------
     chains[0]:
       chain-id: "orders-chain"
       state-machine: ordered-log        # built-in: append-only log (default)
+      state:
+        commitment-profile: mpf-blake2b256-v1
+        format-fingerprint: 91ee14091200f1e24659112d640e877e9177779dcc81dd06117f013e9190082b
+        genesis-id: c2b9c92a865dfa7c218a1a6e49f1dd88163372e40466009876458c01609d0d70
       membership:
         mode: governed                  # later members join through finalized governance
       block:
@@ -47,6 +54,10 @@ yano:
     chains[1]:
       chain-id: "registry-chain"
       state-machine: kv-registry        # built-in: owner-guarded K/V registry
+      state:
+        commitment-profile: mpf-blake2b256-v1
+        format-fingerprint: 91ee14091200f1e24659112d640e877e9177779dcc81dd06117f013e9190082b
+        genesis-id: cd4f0bac8a0d8c7fd5700510eae8c69256172814b219e9e3b1a914fc89c358b3
       membership:
         mode: governed
       block:
@@ -66,6 +77,10 @@ yano:
     chains[2]:
       chain-id: "effects-chain"
       state-machine: approvals
+      state:
+        commitment-profile: mpf-blake2b256-v1
+        format-fingerprint: 91ee14091200f1e24659112d640e877e9177779dcc81dd06117f013e9190082b
+        genesis-id: 63281a4424bed827004e10185a663bce10de4228953d3959e2ed20aa3a4a9f0b
       membership:
         mode: governed
       block:

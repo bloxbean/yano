@@ -125,6 +125,11 @@ grep -q 'chains\[9\].machines.authenticated-map.genesis-cbor-hex=' \
   "$ROOT/data/showcase/three/node-config/node0.properties"
 ! grep -R 'signing-key\|api-key' "$ROOT/data/showcase/three/node-config" >/dev/null
 
+# A retained instance must restart from its marker without repeating the
+# original non-default ports, membership, network, or chain list.
+"$ROOT/showcase.sh" up --instance three
+grep -q '^start 3 ' "$WORK/cluster.log"
+
 "$ROOT/showcase.sh" load-test orders --count 25 --concurrency 3 \
   --payload-bytes 64 --spread --instance three
 "$ROOT/showcase.sh" load-test registry --count 12 --concurrency 2 \
@@ -294,5 +299,24 @@ chmod 600 "$WORK/anchor.seed"
   --confirm-public-anchor preprod
 grep -q "^evidence prepare .* --network preprod .* --anchor-key-file $WORK/anchor.seed --confirm-public-anchor preprod$" \
   "$WORK/cluster.log"
+
+# A fresh preprod light deployment removes the packaged devnet-only settlement
+# chain before retaining its identity. Prepare is idempotent, and `all` means
+# every chain that is actually configured (the production settlement chain is
+# added only after its operator-specific L1 bootstrap).
+"$ROOT/showcase.sh" prepare --profile light --network preprod \
+  --instance light-preprod --http-base 17070 --server-base 17337 \
+  --anchor-chain all --anchor-key-file "$WORK/anchor.seed" \
+  --confirm-public-anchor preprod
+"$ROOT/showcase.sh" prepare --profile light --network preprod \
+  --instance light-preprod --http-base 17070 --server-base 17337 \
+  --anchor-chain all --anchor-key-file "$WORK/anchor.seed" \
+  --confirm-public-anchor preprod
+jq -e '.network == "preprod" and (.chainIds | length) == 10
+  and (.anchor.chainIds | length) == 10
+  and (.chainIds | index("payment-chain-settlement")) == null' \
+  "$ROOT/data/showcase/light-preprod/showcase-identity.json" >/dev/null
+! grep -q 'chain-id: "payment-chain-settlement"' \
+  "$ROOT/yano/config/application-appchain.yml"
 
 echo "PASS: showcase facade preserves identity, scaling, redaction, join, and governance contracts"

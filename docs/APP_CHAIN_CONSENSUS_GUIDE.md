@@ -299,7 +299,7 @@ The split of responsibilities:
 `stateRoot` is therefore a pure, reproducible commitment to the state
 machine's data — recomputed and byte-compared by every member on every
 block (§4.2 check 13), committed on-chain by anchoring (user guide §5), and
-queryable per key: `GET .../proof/{keyHex}` returns the value and an MPF
+queryable per key: `GET .../state/proof/{keyHex}` returns the value and an MPF
 inclusion proof any independent implementation can verify against an
 anchored root.
 
@@ -365,7 +365,7 @@ catch up the delta (user guide §14.3).
 | `init(reader, info)` | once at start | read-only warm-up; `info` = (chainId, own member key, member count) |
 | `validate(msg)` | admission (pool + block selection) | fast, side-effect-free, MAY run concurrently; envelope auth already done; reject keeps the message out of blocks. `~` system topics bypass it |
 | `apply(block, writer)` | exactly once per finalized block, in height order, on EVERY member | the deterministic transition; all writes via `writer.put/delete` (= MPF entries) |
-| `query(path, params)` | — | **reserved/deferred**: the hook exists but the runtime does not invoke it and no REST `/query` route exists yet. Read state via `stateValue`/`proof/{keyHex}` + the machine's static decode helpers |
+| `query(path, params)` | committed reads | invoked through the chain-scoped REST `/query/{path}` route; state proofs remain available through `state/proof/{keyHex}` |
 
 **Determinism is the contract.** Inside `apply()`: no wall clock (use
 `block.timestamp()`), no randomness, no I/O, no environment reads, no
@@ -417,7 +417,7 @@ recovery details are in `docs/APP_CHAIN_DOMAIN_ROLES.md` and ADR-019.
 The default. Bodies are fully opaque — nothing is validated, everything
 finalizes. Per message it writes `messageId → cbor([height, index, topic,
 sender])` and maintains `~tip → cbor(height)`. The MPF key **is the
-message id**, which is why `proof/{messageIdHex}` proves a message's
+message id**, which is why `state/proof/{messageIdHex}` proves a message's
 finalization at `(height, index)` against an anchored root. The record
 format is shared (`OrderedLog` in core-api) with the ZK gate so proofs never
 diverge.
@@ -472,7 +472,7 @@ There is no typed query API yet (§9). The pattern:
 1. derive the key with the machine's helper (`accountKey("alice")`,
    `itemKey("release-42")`, `entityKey("product-42")`, kv key bytes,
    message id);
-2. `GET .../proof/{keyHex}` (REST) or `stateValue/stateProof` (Java) —
+2. `GET .../state/proof/{keyHex}` (REST) or `stateValue/stateProof` (Java) —
    returns value + MPF proof;
 3. decode with the machine's static helpers (`decodeBalance`, `decodeItem`,
    `decodeOwner`/`decodeValue`, `decodeEntry`).
