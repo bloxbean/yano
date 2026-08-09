@@ -20,6 +20,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class L1EpochObservationCoordinatorTest {
 
@@ -117,6 +118,80 @@ class L1EpochObservationCoordinatorTest {
             await(() -> offered.size() == 1);
             assertThat(coordinator.verify(offered.getFirst(), false))
                     .isEqualTo(AppChainEngine.L1RefVerdict.OK);
+        }
+    }
+
+    @Test
+    void rollbackAboveAnUnfinalizedBoundaryDiscardsItsDurableJob(@TempDir Path dir) {
+        L1EpochBoundary boundary = new L1EpochBoundary(40, 41, 4_000,
+                bytes(0x41), 1_100);
+        EpochObservationManifest manifest = new EpochObservationManifest(
+                1, "synthetic", 40, 41, 41, 0, 1, 0, bytes(0x42));
+        try (AppLedgerStore ledger = ledger(dir.resolve("unfinalized"))) {
+            EpochObservationSpool spool = new EpochObservationSpool(ledger, 1_000_000);
+            spool.begin(boundary, manifest);
+            spool.append(boundary, manifest, 0, new byte[]{0});
+            spool.complete(manifest);
+
+            spool.rollback(3_999);
+
+            assertThat(spool.prepared("synthetic", 41)).isFalse();
+            assertThat(spool.status().toString()).contains("ready=0");
+        }
+    }
+
+    @Test
+    void rollbackBelowFinalizedEpochPermanentlyHaltsCoordinator(@TempDir Path dir)
+            throws Exception {
+        L1EpochBoundary boundary = new L1EpochBoundary(50, 51, 5_000,
+                bytes(0x51), 1_300);
+        FakeProvider provider = new FakeProvider(boundary);
+        List<L1Observation> offered = new CopyOnWriteArrayList<>();
+        try (AppLedgerStore ledger = ledger(dir.resolve("deep-rollback"));
+             L1EpochObservationCoordinator coordinator = coordinator(
+                     observer(null, null), provider, ledger, offered)) {
+            coordinator.start();
+            coordinator.onBlockApplied(5_100, 1_310, bytes(0x52));
+            for (int index = 0; index < 3; index++) {
+                int expected = index + 1;
+                await(() -> offered.size() == expected, coordinator::status);
+                coordinator.onFinalized(offered.get(index));
+                coordinator.onBlockApplied(5_101 + index, 1_311 + index, bytes(0x53));
+            }
+            await(() -> coordinator.status().toString().contains("finalized=1"),
+                    coordinator::status);
+
+            coordinator.onRollback(4_999);
+            await(() -> !coordinator.healthy(), coordinator::status);
+
+            assertThat(coordinator.status().get("unhealthyReason"))
+                    .isEqualTo("DEEP_ROLLBACK_BELOW_FINALIZED_EPOCH_ATTESTATION");
+            coordinator.onBlockApplied(5_200, 1_400, bytes(0x54));
+            Thread.sleep(50);
+            assertThat(coordinator.healthy()).isFalse();
+        }
+    }
+
+    @Test
+    void spoolRejectsRollbackBelowFinalizedBoundary(@TempDir Path dir) {
+        L1EpochBoundary boundary = new L1EpochBoundary(60, 61, 6_000,
+                bytes(0x61), 1_500);
+        EpochObservationManifest manifest = new EpochObservationManifest(
+                1, "synthetic", 60, 61, 61, 1, 1, 1, bytes(0x62));
+        try (AppLedgerStore ledger = ledger(dir.resolve("finalized"))) {
+            EpochObservationSpool spool = new EpochObservationSpool(ledger, 1_000_000);
+            spool.begin(boundary, manifest);
+            spool.append(boundary, manifest, 0, new byte[]{0});
+            spool.append(boundary, manifest, 1, new byte[]{1});
+            spool.complete(manifest);
+            for (EpochObservationSpool.Offered offered : spool.offer(1_500, 2, 65_536)) {
+                assertThat(spool.acknowledge(offered.observation())).isTrue();
+            }
+
+            assertThatThrownBy(() -> spool.rollback(5_999))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("DEEP_ROLLBACK_BELOW_FINALIZED_EPOCH_ATTESTATION");
+            assertThat(spool.prepared("synthetic", 61)).isTrue();
         }
     }
 

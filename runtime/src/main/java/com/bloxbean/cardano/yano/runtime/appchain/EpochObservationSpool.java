@@ -270,6 +270,13 @@ final class EpochObservationSpool {
     }
 
     synchronized void rollback(long rollbackToSlot) {
+        boolean finalizedBoundaryCrossed = jobs().stream().anyMatch(entry ->
+                entry.job().state() == State.FINALIZED
+                        && entry.job().boundary().boundarySlot() > rollbackToSlot);
+        if (finalizedBoundaryCrossed) {
+            throw new IllegalStateException(
+                    "DEEP_ROLLBACK_BELOW_FINALIZED_EPOCH_ATTESTATION");
+        }
         for (JobEntry entry : jobs()) {
             if (entry.job().boundary().boundarySlot() > rollbackToSlot
                     && entry.job().state() != State.FINALIZED) {

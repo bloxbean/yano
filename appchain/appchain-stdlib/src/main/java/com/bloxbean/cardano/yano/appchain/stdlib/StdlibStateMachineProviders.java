@@ -13,6 +13,7 @@ import com.bloxbean.cardano.yano.api.appchain.transition.FinalizedMessageIndexed
 import com.bloxbean.cardano.yano.appchain.config.AppChainApprovalsConfig;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapContract;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochParamsContract;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochStakeContract;
 
 import java.util.Arrays;
 import java.util.HexFormat;
@@ -198,6 +199,25 @@ public final class StdlibStateMachineProviders {
             return new EpochParamsStateMachine(context.settings().getOrDefault(
                     "machines.epoch-params.observer-id",
                     EpochParamsContract.DEFAULT_OBSERVER_ID));
+        }
+    }
+
+    public static final class EpochStakeProvider implements AppStateMachineProvider {
+        @Override public String id() { return EpochStakeContract.STATE_MACHINE_ID; }
+        @Override public AppStateMachine create() { return new EpochStakeStateMachine(); }
+        @Override public AppStateMachine create(AppStateMachineContext context) {
+            int chunkEntries;
+            try {
+                chunkEntries = Integer.parseInt(context.settings().getOrDefault(
+                        "machines.epoch-stake.chunk-entries",
+                        Integer.toString(EpochStakeContract.DEFAULT_CHUNK_ENTRIES)));
+            } catch (NumberFormatException malformed) {
+                throw new IllegalArgumentException(
+                        "machines.epoch-stake.chunk-entries must be an integer", malformed);
+            }
+            return new EpochStakeStateMachine(context.settings().getOrDefault(
+                    "machines.epoch-stake.observer-id",
+                    EpochStakeContract.DEFAULT_OBSERVER_ID), chunkEntries);
         }
     }
 }

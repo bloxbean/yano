@@ -11,7 +11,9 @@ import com.bloxbean.cardano.yano.api.appchain.l1view.ProtocolParamsCanonicalCode
 import com.bloxbean.cardano.yano.api.appchain.l1view.ProtocolParamsView;
 import com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore;
 import com.bloxbean.cardano.yano.ledgerstate.EpochBoundaryProcessor;
+import com.bloxbean.cardano.yano.ledgerstate.HistoricalEpochStateView;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -44,34 +46,43 @@ public final class DefaultL1EpochStateProvider implements L1EpochStateProvider {
                 || state[0] <= afterNewEpoch || state[0] <= 0) {
             return List.of();
         }
-        long newEpoch = state[0];
-        long startSlot = epochParams.getEpochSlotCalc().epochToStartSlot((int) newEpoch);
-        Point point = chainState.findNextBlock(new Point(Math.max(0, startSlot - 1), null));
-        if (point == null || epochAtSlot(point.getSlot()) != newEpoch) {
-            return List.of();
+        long latestNewEpoch = state[0];
+        long first = Math.max(afterNewEpoch + 1,
+                Math.max(1, latestNewEpoch - store.snapshotRetentionEpochs() + 1));
+        List<L1EpochBoundary> result = new ArrayList<>();
+        for (long newEpoch = first; newEpoch <= latestNewEpoch && result.size() < limit; newEpoch++) {
+            long startSlot = epochParams.getEpochSlotCalc().epochToStartSlot((int) newEpoch);
+            Point point = chainState.findNextBlock(new Point(Math.max(0, startSlot - 1), null));
+            if (point == null || epochAtSlot(point.getSlot()) != newEpoch) continue;
+            Long blockNumber = chainState.getBlockNumberBySlot(point.getSlot());
+            if (blockNumber == null || point.getHash() == null) continue;
+            byte[] hash = HexUtil.decodeHexString(point.getHash());
+            if (hash.length != 32) continue;
+            result.add(new L1EpochBoundary(newEpoch - 1, newEpoch,
+                    point.getSlot(), hash, blockNumber));
         }
-        Long blockNumber = chainState.getBlockNumberBySlot(point.getSlot());
-        if (blockNumber == null || point.getHash() == null) return List.of();
-        byte[] hash = HexUtil.decodeHexString(point.getHash());
-        if (hash.length != 32) return List.of();
-        return List.of(new L1EpochBoundary(newEpoch - 1, newEpoch,
-                point.getSlot(), hash, blockNumber));
+        return List.copyOf(result);
     }
 
     @Override
     public Optional<L1EpochState> open(L1EpochBoundary boundary) {
-        if (store.getBoundaryStep(Math.toIntExact(boundary.newEpoch()))
-                < EpochBoundaryProcessor.STEP_COMPLETE) {
+        int[] latest = store.getLastBoundaryState();
+        if (latest == null || latest[1] < EpochBoundaryProcessor.STEP_COMPLETE
+                || boundary.newEpoch() > latest[0]) {
             return Optional.empty();
         }
-        return Optional.of(new State(boundary));
+        return Optional.of(new State(boundary, store.openHistoricalEpochStateView()));
     }
 
     private final class State implements L1EpochState {
         private final L1EpochBoundary boundary;
+        private final HistoricalEpochStateView historical;
         private boolean closed;
 
-        private State(L1EpochBoundary boundary) { this.boundary = boundary; }
+        private State(L1EpochBoundary boundary, HistoricalEpochStateView historical) {
+            this.boundary = boundary;
+            this.historical = historical;
+        }
         @Override public long previousEpoch() { requireOpen(); return boundary.previousEpoch(); }
         @Override public long newEpoch() { requireOpen(); return boundary.newEpoch(); }
 
@@ -88,9 +99,15 @@ public final class DefaultL1EpochStateProvider implements L1EpochStateProvider {
                     ProtocolParamsCanonicalCodec.encode(snapshot));
         }
 
-        @Override public boolean hasStakeSnapshot(long epoch) { requireOpen(); return false; }
+        @Override public boolean hasStakeSnapshot(long epoch) {
+            requireOpen();
+            requireStakeEpoch(epoch);
+            return historical.hasStakeSnapshot(Math.toIntExact(epoch));
+        }
         @Override public void forEachStakeEntry(long epoch, StakeEntryConsumer consumer) {
-            requireOpen(); throw new UnsupportedOperationException("epoch-stake is not enabled yet");
+            requireOpen();
+            requireStakeEpoch(epoch);
+            historical.forEachStakeEntry(Math.toIntExact(epoch), consumer::accept);
         }
         @Override public boolean hasProposalStatusSnapshot(long epoch) { requireOpen(); return false; }
         @Override public boolean hasDRepDistributionSnapshot(long epoch) { requireOpen(); return false; }
@@ -101,7 +118,17 @@ public final class DefaultL1EpochStateProvider implements L1EpochStateProvider {
                                                            DRepDistributionConsumer consumer) {
             requireOpen(); throw new UnsupportedOperationException("epoch-governance is not enabled yet");
         }
-        @Override public void close() { closed = true; }
+        @Override public void close() {
+            if (!closed) {
+                closed = true;
+                historical.close();
+            }
+        }
+        private void requireStakeEpoch(long epoch) {
+            if (epoch != boundary.previousEpoch()) {
+                throw new IllegalArgumentException("Stake snapshot is not boundary-pinned");
+            }
+        }
         private void requireOpen() {
             if (closed) throw new IllegalStateException("L1 epoch state handle is closed");
         }

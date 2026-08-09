@@ -54,6 +54,7 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
             new ConcurrentSkipListMap<>();
     private volatile boolean wasProposer;
     private volatile String unhealthyReason;
+    private volatile String haltReason;
     private volatile long completedJobs;
     private volatile long failures;
 
@@ -236,7 +237,7 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
             if (failure instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
             }
-            fail("asynchronous reconciliation");
+            fail(haltReason != null ? haltReason : "asynchronous reconciliation");
         } finally {
             wakeQueued.set(false);
             if (!closed.get() && processedVersion != wakeVersion.get()) {
@@ -246,9 +247,20 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
     }
 
     private void reconcile() {
+        if (haltReason != null) {
+            throw new IllegalStateException(haltReason);
+        }
         long rollback = pendingRollbackSlot.getAndSet(Long.MAX_VALUE);
         if (rollback != Long.MAX_VALUE) {
-            spool.rollback(rollback);
+            try {
+                spool.rollback(rollback);
+            } catch (IllegalStateException failure) {
+                if ("DEEP_ROLLBACK_BELOW_FINALIZED_EPOCH_ATTESTATION"
+                        .equals(failure.getMessage())) {
+                    haltReason = failure.getMessage();
+                }
+                throw failure;
+            }
         }
         for (L1EpochBoundary boundary : stateProvider.completedBoundaries(
                 -1, RECONCILIATION_BOUNDARIES)) {
@@ -258,7 +270,7 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
             prepareBoundary(boundary);
         }
         offerStable();
-        unhealthyReason = null;
+        if (haltReason == null) unhealthyReason = null;
     }
 
     private void prepareBoundary(L1EpochBoundary boundary) {

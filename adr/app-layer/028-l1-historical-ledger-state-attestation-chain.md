@@ -2,7 +2,7 @@
 
 ## Protocol parameters, stake, and governance
 
-**Status:** Accepted — M1–M4 implemented; M5–M8 in progress
+**Status:** Accepted — M1–M5 implemented; M6–M8 in progress
 **Date:** 2026-08-09
 **Depends on:** ADR app-layer/027 §2.4 (deep-rollback detection) — implementation and devnet work may
 proceed, but this is **blocking for every production/preprod epoch attestation**, including M3 and

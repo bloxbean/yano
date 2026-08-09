@@ -12,10 +12,12 @@ import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
 import com.bloxbean.cardano.yano.appchain.client.MpfProofConverter;
 import com.bloxbean.cardano.yano.appchain.client.ProofVerifier;
 import com.bloxbean.cardano.yano.appchain.proofs.MpfNormalizedProof;
+import com.bloxbean.cardano.yano.appchain.proofs.MpfNormalizedNonMembershipProof;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
+import java.io.ByteArrayOutputStream;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
@@ -34,22 +36,26 @@ class MpfPairOnChainVerifierTest extends ContractTest {
     }
 
     @Test
-    void factAndCompletenessProofVerifyAtOneRootWithinCardanoBudget() {
+    void amountPoolCombinedAndExactPredicatesVerifyAtOneRootWithinCardanoBudget() {
         Fixture fixture = fixture();
-        var result = evaluate(program(), spendingContext(
-                        new TxOutRef(new TxId(filled(0x61, 32)), java.math.BigInteger.ZERO),
-                        PlutusData.bytes(fixture.root()))
-                .redeemer(pairData(fixture.fact(), fixture.complete()))
-                .buildPlutusData());
+        for (int mode = 0; mode <= 3; mode++) {
+            byte[] pool = mode == 0 ? new byte[0] : fixture.poolHash();
+            var result = evaluate(program(), spendingContext(
+                            new TxOutRef(new TxId(filled(0x61 + mode, 32)),
+                                    java.math.BigInteger.ZERO),
+                            PlutusData.bytes(fixture.root()))
+                    .redeemer(pairData(fixture, mode, 1_012_345L, pool))
+                    .buildPlutusData());
 
-        assertSuccess(result);
-        assertBudgetUnder(result, MAX_TX_CPU, MAX_TX_MEM);
-        int bytes = PlutusDataCborEncoder.encode(
-                pairData(fixture.fact(), fixture.complete())).length;
-        assertThat(bytes).isLessThan(16 * 1024);
-        System.out.println("[MpfPairOnChainVerifier] folds="
-                + (fixture.fact().folds().size() + fixture.complete().folds().size())
-                + ", redeemerBytes=" + bytes + ", budget=" + result.budgetConsumed());
+            assertSuccess(result);
+            assertBudgetUnder(result, MAX_TX_CPU, MAX_TX_MEM);
+            int bytes = PlutusDataCborEncoder.encode(pairData(
+                    fixture, mode, 1_012_345L, pool)).length;
+            assertThat(bytes).isLessThan(16 * 1024);
+            System.out.println("[MpfPairOnChainVerifier] predicate=" + mode + ", folds="
+                    + (fixture.fact().folds().size() + fixture.complete().folds().size())
+                    + ", redeemerBytes=" + bytes + ", budget=" + result.budgetConsumed());
+        }
     }
 
     @Test
@@ -60,10 +66,25 @@ class MpfPairOnChainVerifierTest extends ContractTest {
         var result = evaluate(program(), spendingContext(
                         new TxOutRef(new TxId(filled(0x62, 32)), java.math.BigInteger.ZERO),
                         PlutusData.bytes(wrong))
-                .redeemer(pairData(fixture.fact(), fixture.complete()))
+                .redeemer(pairData(fixture, 0, 1_012_345L, new byte[0]))
                 .buildPlutusData());
 
         assertFailure(result);
+    }
+
+    @Test
+    void absenceAndCompletenessVerifyAtOneRootWithinCardanoBudget() {
+        Fixture fixture = fixture();
+        var result = evaluate(program(), spendingContext(
+                        new TxOutRef(new TxId(filled(0x69, 32)), java.math.BigInteger.ZERO),
+                        PlutusData.bytes(fixture.root()))
+                .redeemer(absencePairData(fixture))
+                .buildPlutusData());
+
+        assertSuccess(result);
+        assertBudgetUnder(result, MAX_TX_CPU, MAX_TX_MEM);
+        assertThat(PlutusDataCborEncoder.encode(absencePairData(fixture)).length)
+                .isLessThan(16 * 1024);
     }
 
     private Program program() {
@@ -79,7 +100,7 @@ class MpfPairOnChainVerifierTest extends ContractTest {
         byte[] factValue = null;
         for (int index = 0; index < 20_000; index++) {
             byte[] key = key(index);
-            byte[] value = ByteBuffer.allocate(8).putLong(1_000_000L + index).array();
+            byte[] value = stakeValue(1_000_000L + index, filled(index, 28));
             trie.put(key, value);
             if (index == 12_345) {
                 factKey = key;
@@ -87,11 +108,13 @@ class MpfPairOnChainVerifierTest extends ContractTest {
             }
         }
         byte[] completeKey = "stake/500/meta".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
-        byte[] completeValue = new byte[]{1};
+        byte[] completeValue = completenessValue();
         trie.put(completeKey, completeValue);
         byte[] root = trie.getRootHash();
-        return new Fixture(root,
+        byte[] absentKey = key(99_999);
+        return new Fixture(root, factKey, absentKey, completeKey, filled(12_345, 28),
                 normalized(trie, root, factKey, factValue),
+                absent(trie, root, absentKey),
                 normalized(trie, root, completeKey, completeValue));
     }
 
@@ -112,9 +135,29 @@ class MpfPairOnChainVerifierTest extends ContractTest {
         return MpfProofConverter.convert(wire);
     }
 
-    private static PlutusData pairData(MpfNormalizedProof fact,
-                                       MpfNormalizedProof complete) {
-        return PlutusData.constr(0, proofData(fact), proofData(complete));
+    private static MpfNormalizedNonMembershipProof absent(MpfTrie trie, byte[] root,
+                                                           byte[] key) {
+        ProofVerifier.ProfileMetadata metadata = ProofVerifier.profileMetadata(
+                ProofVerifier.MPF_BLAKE2B256_V1).orElseThrow();
+        AppChainClient.Proof wire = new AppChainClient.Proof(
+                HexFormat.of().formatHex(key), "cardano-history",
+                HexFormat.of().formatHex(root),
+                HexFormat.of().formatHex(trie.getProofWire(key).orElseThrow()),
+                null, 42L, 42L, 1, ProofVerifier.MPF_BLAKE2B256_V1,
+                metadata.backend(), metadata.commitmentFormatId(),
+                metadata.formatFingerprintHex(), "11".repeat(32),
+                metadata.proofEncodingId(), metadata.nativeVersioning(),
+                metadata.physicalDelete(), 42L, AppChainClient.ProofPresence.ABSENT,
+                null, null);
+        return MpfProofConverter.convertAbsence(wire);
+    }
+
+    private static PlutusData pairData(Fixture fixture, long predicate,
+                                       long coin, byte[] poolHash) {
+        return PlutusData.constr(0, proofData(fixture.fact()), proofData(fixture.complete()),
+                PlutusData.bytes(fixture.factKey()), PlutusData.bytes(fixture.completeKey()),
+                PlutusData.integer(predicate), PlutusData.integer(coin),
+                PlutusData.bytes(poolHash));
     }
 
     private static PlutusData proofData(MpfNormalizedProof proof) {
@@ -123,7 +166,26 @@ class MpfPairOnChainVerifierTest extends ContractTest {
                 PlutusData.bytes(proof.leafSuffix()),
                 PlutusData.list(proof.folds().stream()
                         .map(MpfPairOnChainVerifierTest::foldData)
-                        .toArray(PlutusData[]::new)));
+                        .toArray(PlutusData[]::new)),
+                PlutusData.integer(0), PlutusData.bytes(new byte[0]),
+                PlutusData.bytes(new byte[0]));
+    }
+
+    private static PlutusData absencePairData(Fixture fixture) {
+        MpfNormalizedNonMembershipProof absent = fixture.absence();
+        PlutusData proof = PlutusData.constr(0,
+                PlutusData.bytes(absent.key()), PlutusData.bytes(new byte[0]),
+                PlutusData.bytes(absent.conflictingLeafSuffix()),
+                PlutusData.list(absent.folds().stream()
+                        .map(MpfPairOnChainVerifierTest::foldData)
+                        .toArray(PlutusData[]::new)),
+                PlutusData.integer(absent.terminalCursor()),
+                PlutusData.bytes(absent.conflictingKeyHash()),
+                PlutusData.bytes(absent.conflictingValueHash()));
+        return PlutusData.constr(0, proof, proofData(fixture.complete()),
+                PlutusData.bytes(fixture.absentKey()),
+                PlutusData.bytes(fixture.completeKey()), PlutusData.integer(4),
+                PlutusData.integer(0), PlutusData.bytes(new byte[0]));
     }
 
     private static PlutusData foldData(MpfNormalizedProof.FoldStep fold) {
@@ -149,7 +211,25 @@ class MpfPairOnChainVerifierTest extends ContractTest {
         return result;
     }
 
-    private record Fixture(byte[] root, MpfNormalizedProof fact,
+    private static byte[] stakeValue(long coin, byte[] poolHash) {
+        return ByteBuffer.allocate(36).put((byte) 0x82).put((byte) 0x1a)
+                .putInt(Math.toIntExact(coin)).put((byte) 0x58).put((byte) 0x1c)
+                .put(poolHash).array();
+    }
+
+    private static byte[] completenessValue() {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.writeBytes(new byte[]{(byte) 0x89, 0x01, 0x19, 0x01, (byte) 0xf4,
+                0x00, 0x19, 0x4e, 0x20, 0x19, 0x61, (byte) 0xa8, 0x01,
+                0x58, 0x20});
+        out.writeBytes(filled(0x44, 32));
+        out.writeBytes(new byte[]{0x01, 0x01});
+        return out.toByteArray();
+    }
+
+    private record Fixture(byte[] root, byte[] factKey, byte[] absentKey,
+                           byte[] completeKey, byte[] poolHash, MpfNormalizedProof fact,
+                           MpfNormalizedNonMembershipProof absence,
                            MpfNormalizedProof complete) { }
 
     private static final class MapNodeStore implements NodeStore {

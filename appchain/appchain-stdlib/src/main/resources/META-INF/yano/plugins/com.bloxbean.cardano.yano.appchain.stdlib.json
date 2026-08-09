@@ -16,8 +16,10 @@
     { "kind": "app-state-machine", "name": "balances", "provider": "com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders$BalancesProvider" },
     { "kind": "app-state-machine", "name": "doc-trail", "provider": "com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders$DocTrailProvider" },
     { "kind": "app-state-machine", "name": "epoch-params", "provider": "com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders$EpochParamsProvider" },
+    { "kind": "app-state-machine", "name": "epoch-stake", "provider": "com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders$EpochStakeProvider" },
     { "kind": "app-state-machine", "name": "kv-registry", "provider": "com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders$KvRegistryProvider" },
     { "kind": "l1-epoch-observer", "name": "l1-epoch-params-v1", "provider": "com.bloxbean.cardano.yano.appchain.stdlib.EpochParamsObserverProvider" },
+    { "kind": "l1-epoch-observer", "name": "l1-epoch-stake-v1", "provider": "com.bloxbean.cardano.yano.appchain.stdlib.EpochStakeObserverProvider" },
     { "kind": "domain-api", "name": "com.bloxbean.cardano.yano.appchain.stdlib", "provider": "com.bloxbean.cardano.yano.appchain.stdlib.AuthenticatedMapDomainApiProvider" }
   ]
 }
