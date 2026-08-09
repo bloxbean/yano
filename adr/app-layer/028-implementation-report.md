@@ -522,3 +522,21 @@ preprod pilot, compare reconstructed epochs with the independent sources listed 
 archive/restore and an L1-anchored nested MPF proof, and retain the deployment through a live epoch crossing. The
 approximately fifty-day ten-live-epoch production soak and ADR-027 deep-rollback release gate remain explicitly
 open; neither is fabricated by local benchmarks.
+
+### Final local M8c evidence
+
+The product qualification run exercised the generic capability through the plugin facade rather
+than an in-process state machine. Three members independently created the stable series
+`l1-epoch-stake-v1.distribution` and
+`l1-epoch-governance-v1.drep-distribution`, agreed on every observed root, survived a synchronized
+restart, and allowed a late follower to apply certified history despite a hole before its retained
+L1 observation window. Existing contradictory observations and every live proposal remain
+fail-closed.
+
+At an L1-confirmed SCRIPT anchor height, both protocol-parameter and nested stake proof generation
+were fixed to the confirmed height/root and verified independently. A concurrent 30-second
+three-node application soak finalized 300 of 300 accepted messages at 10 messages/s with identical
+roots and zero errors. The complete repository `./gradlew clean build` passed 495 tasks. These local
+facts complete M8c and the implementation portion of M8; they do not replace M8d's independent
+preprod source comparison, live epoch crossing, asymmetric archive/restore pilot, ten-live-epoch
+soak, or ADR-027 production gate.

@@ -1803,7 +1803,15 @@ final class AppChainEngine implements AutoCloseable {
     }
 
     private static String callbackFailureType(Throwable failure) {
-        String type = failure.getClass().getName();
+        Throwable diagnostic = failure;
+        for (int depth = 0; depth < 16; depth++) {
+            Throwable cause = diagnostic.getCause();
+            if (cause == null || cause == diagnostic) {
+                break;
+            }
+            diagnostic = cause;
+        }
+        String type = diagnostic.getClass().getName();
         return type.length() <= MAX_CALLBACK_FAILURE_TYPE_CHARS
                 ? type : type.substring(0, MAX_CALLBACK_FAILURE_TYPE_CHARS);
     }

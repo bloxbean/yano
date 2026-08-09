@@ -26,6 +26,7 @@ class AppChainConfigParserTest {
         values.put("effects.enabled", "true");
         values.put("effects.max-per-block", "42");
         values.put("state.commitment-profile", "mpf-blake2b256-v1");
+        values.put("capabilities.authenticated-snapshots.enabled", "true");
         values.put("unowned.value", "ignored");
 
         AppChainConfig config = AppChainConfigParser.parse(values);
@@ -37,7 +38,8 @@ class AppChainConfigParserTest {
                 "sequencer.proposer", MEMBER,
                 "effects.enabled", "true",
                 "effects.max-per-block", "42",
-                "state.commitment-profile", "mpf-blake2b256-v1"));
+                "state.commitment-profile", "mpf-blake2b256-v1",
+                "capabilities.authenticated-snapshots.enabled", "true"));
         assertThat(AppChainConfigSemantics.validate(config)).containsExactly(MEMBER);
     }
 

@@ -239,7 +239,9 @@ For a separate full-dataset rehearsal use a fresh instance:
 Query a stake credential, select a minimum/pool predicate, generate the nested
 MPF proof, download it, and import it again. Explain the two roots: the entry
 is in the epoch snapshot and its immutable descriptor is in the L1-anchored
-primary app-chain state. See [CARDANO_HISTORY.md](CARDANO_HISTORY.md).
+primary app-chain state. The standalone CLI also pins generation to the exact
+L1-confirmed commitment, so a moving app-chain tip cannot mix roots. See
+[CARDANO_HISTORY.md](CARDANO_HISTORY.md).
 
 ## 12. Load demonstration
 

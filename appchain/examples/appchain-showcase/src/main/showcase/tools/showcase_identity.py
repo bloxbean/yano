@@ -138,9 +138,9 @@ def document(args: argparse.Namespace) -> dict:
         raise ValueError("authenticated snapshots require Cardano History")
     history_series = {
         "params-only-v1": [],
-        "params-stake-v1": ["epoch-stake.distribution"],
-        "params-governance-v1": ["epoch-governance.drep-distribution"],
-        "full-v1": ["epoch-stake.distribution", "epoch-governance.drep-distribution"],
+        "params-stake-v1": ["l1-epoch-stake-v1.distribution"],
+        "params-governance-v1": ["l1-epoch-governance-v1.drep-distribution"],
+        "full-v1": ["l1-epoch-stake-v1.distribution", "l1-epoch-governance-v1.drep-distribution"],
     }[args.cardano_history_profile]
     snapshot_mpf_pruning = ([] if not args.authenticated_snapshot_mpf_pruning_selection else
                             args.authenticated_snapshot_mpf_pruning_selection.split(","))
@@ -337,9 +337,9 @@ def validate_deployment_identity(document: dict) -> None:
         raise ValueError("showcase authenticated snapshot identity is malformed")
     history_profiles = {
         "params-only-v1": [],
-        "params-stake-v1": ["epoch-stake.distribution"],
-        "params-governance-v1": ["epoch-governance.drep-distribution"],
-        "full-v1": ["epoch-stake.distribution", "epoch-governance.drep-distribution"],
+        "params-stake-v1": ["l1-epoch-stake-v1.distribution"],
+        "params-governance-v1": ["l1-epoch-governance-v1.drep-distribution"],
+        "full-v1": ["l1-epoch-stake-v1.distribution", "l1-epoch-governance-v1.drep-distribution"],
     }
     if (not isinstance(history, dict)
             or set(history) != {"enabled", "profile", "bundleSha256"}

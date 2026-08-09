@@ -1,6 +1,7 @@
 # ADR app-layer/035: Cardano History product, console, and distribution
 
-**Status:** Proposed — productization plan, no code written
+**Status:** Accepted and implemented for preview — P0–P7 complete; production remains subject to
+ADR-028 M8d and ADR-027 public-network release gates
 **Date:** 2026-08-09
 **Scope:** Reusable plugin UI contributions plus the optional Cardano History plugin/profile, read
 API, typed client and CLI, plugin-packaged console experience, showcase presets, reference on-chain

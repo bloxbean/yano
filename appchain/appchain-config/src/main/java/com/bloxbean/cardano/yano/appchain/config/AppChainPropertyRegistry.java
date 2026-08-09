@@ -35,6 +35,8 @@ public final class AppChainPropertyRegistry {
     private static final List<AppChainPropertyDefinition> FRAMEWORK_DEFINITIONS =
             frameworkDefinitions();
     private static final List<DynamicNamespaceDefinition> FRAMEWORK_DYNAMIC_NAMESPACES = List.of(
+            dynamic("capabilities.", "extension/capabilities",
+                    "Cross-cutting capability configuration"),
             dynamic("sinks.", "extension/sinks", "External finalized-data sinks"),
             dynamic("zk.", "extension/zk", "Zero-knowledge circuits and verification"),
             dynamic("machines.", "extension/state-machines", "State-machine configuration"),
@@ -358,6 +360,8 @@ public final class AppChainPropertyRegistry {
                 "Enable broad READ/SUBMIT API-key authentication"));
         definitions.add(secret(YanoPropertyKeys.AppChain.API_KEYS,
                 "API keys and optional topic scopes", false));
+        definitions.add(secret(YanoPropertyKeys.AppChain.SNAPSHOT_ADMIN_API_KEYS,
+                "Dedicated authenticated-snapshot lifecycle administration keys", false));
         definitions.add(runtimeDefined(YanoPropertyKeys.AppChain.VALIDATION_STRICT,
                 PropertyType.BOOLEAN, "false", PropertyScope.NODE_LOCAL,
                 "Reject unknown keys only in FULL runtime-owned namespaces"));

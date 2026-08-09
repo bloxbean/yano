@@ -62,7 +62,7 @@ Inspect lifecycle without guessing storage paths:
 ./showcase.sh snapshots status --instance history-mpf
 ./showcase.sh snapshots list cardano-history-chain --instance history-mpf
 ./showcase.sh snapshots descriptor cardano-history-chain \
-  epoch-stake.distribution 0 --instance history-mpf
+  l1-epoch-stake-v1.distribution 0 --instance history-mpf
 ```
 
 Archive, restore, and eviction are explicit node-local administrative jobs. They do not change the
@@ -91,15 +91,23 @@ URL; the CLI never maps an arbitrary instance name to port 7070.
 
 ```bash
 tools/cardano-history/bin/yano-cardano-history status \
-  --url http://127.0.0.1:7070/api/v1 --chain cardano-history-chain
+  --url http://127.0.0.1:7070/api/v1 --chain cardano-history-chain \
+  --api-key "$YANO_CLUSTER_API_KEY"
 
 tools/cardano-history/bin/yano-cardano-history query params --epoch 1 \
-  --url http://127.0.0.1:7070/api/v1 --chain cardano-history-chain
+  --url http://127.0.0.1:7070/api/v1 --chain cardano-history-chain \
+  --api-key "$YANO_CLUSTER_API_KEY"
 
 tools/cardano-history/bin/yano-cardano-history proof params --epoch 1 \
   --output params-proof.json \
-  --url http://127.0.0.1:7070/api/v1 --chain cardano-history-chain
+  --url http://127.0.0.1:7070/api/v1 --chain cardano-history-chain \
+  --api-key "$YANO_CLUSTER_API_KEY"
 ```
+
+Proof generation is fixed to the latest L1-confirmed Cardano History commitment, not merely the
+node's moving app-chain tip. For stake proofs, query a complete epoch first; the latest complete
+stake epoch can lag the latest protocol-parameter epoch because the datasets have different ledger
+semantics and ingestion sizes.
 
 Use `verify --bundle ... --trusted-root ...` with a root independently obtained from the Cardano
 SCRIPT anchor. A proof that only verifies against its bundled root remains explicitly labelled

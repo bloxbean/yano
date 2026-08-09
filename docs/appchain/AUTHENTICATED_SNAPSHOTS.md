@@ -38,7 +38,7 @@ The capability is chain-local. A state machine must declare at least one matchin
 
 ```properties
 yano.app-chain.chains[0].capabilities.authenticated-snapshots.enabled=true
-yano.app-chain.chains[0].capabilities.authenticated-snapshots.series=epoch-stake.distribution,epoch-governance.drep-distribution
+yano.app-chain.chains[0].capabilities.authenticated-snapshots.series=l1-epoch-stake-v1.distribution,l1-epoch-governance-v1.drep-distribution
 yano.app-chain.chains[0].capabilities.authenticated-snapshots.archive-directory=/srv/yano/appchain-snapshot-archives
 
 yano.app-chain.chains[0].capabilities.authenticated-snapshots.proof-service.concurrency=32
@@ -198,6 +198,12 @@ pruning scope so restarts cannot silently target another prepared instance.
   window without requiring an L1 publisher callback to block. A durable app-height cursor starts
   at job creation and advances after each scan, so normal reconciliation never rescans genesis or
   monopolizes the spool monitor during block reads.
+- Observation jobs are offered in epoch order independently for each observer. A later stake (or
+  governance) epoch is never opened while that observer still has an unfinalized logical snapshot,
+  but different observers may progress concurrently. During certified historical catch-up, a late
+  member may lack an epoch-boundary job that occurred before its retained L1 window; the threshold
+  certificate can vouch for that missing fact. An existing local job with different bytes remains a
+  hard mismatch, and live proposals never receive this relaxation.
 - Snapshot lifecycle jobs hold a generation-use lease until their RocksDB work completes. Completed
   audit records are bounded to the newest 4,096 entries; active jobs are never pruned. Each retained
   job records a SHA-256-derived, non-secret principal identifier, never the API key itself.

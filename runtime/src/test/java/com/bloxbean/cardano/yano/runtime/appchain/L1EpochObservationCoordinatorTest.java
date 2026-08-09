@@ -149,6 +149,61 @@ class L1EpochObservationCoordinatorTest {
     }
 
     @Test
+    void verificationDistinguishesOlderThanWindowFromMismatchAndAhead(@TempDir Path dir) {
+        try (AppLedgerStore ledger = ledger(dir.resolve("verification-window"))) {
+            EpochObservationSpool spool = new EpochObservationSpool(ledger, 1_000_000);
+            addPreparedObservation(spool, 4, new byte[]{4});
+            addPreparedObservation(spool, 5, new byte[]{5});
+
+            assertThat(spool.verify(observation(3, new byte[]{3}), false))
+                    .isEqualTo(AppChainEngine.L1RefVerdict.UNKNOWN);
+            assertThat(spool.verify(observation(4, new byte[]{99}), false))
+                    .isEqualTo(AppChainEngine.L1RefVerdict.MISMATCH);
+            assertThat(spool.verify(observation(6, new byte[]{6}), false))
+                    .isEqualTo(AppChainEngine.L1RefVerdict.AHEAD);
+        }
+    }
+
+    @Test
+    void certifiedCatchUpAcceptsAMissingLocalEpochButNotAContradictoryJob(@TempDir Path dir) {
+        try (AppLedgerStore ledger = ledger(dir.resolve("verification-gap"))) {
+            EpochObservationSpool spool = new EpochObservationSpool(ledger, 1_000_000);
+            addPreparedObservation(spool, 4, new byte[]{4});
+            addPreparedObservation(spool, 6, new byte[]{6});
+
+            assertThat(spool.verify(observation(5, new byte[]{5}), true))
+                    .isEqualTo(AppChainEngine.L1RefVerdict.UNKNOWN);
+            assertThat(spool.verify(observation(5, new byte[]{5}), false))
+                    .isEqualTo(AppChainEngine.L1RefVerdict.MISMATCH);
+            assertThat(spool.verify(observation(4, new byte[]{99}), true))
+                    .isEqualTo(AppChainEngine.L1RefVerdict.MISMATCH);
+        }
+    }
+
+    @Test
+    void spoolOffersOnlyTheEarliestUnfinalizedEpochForEachObserver(@TempDir Path dir) {
+        try (AppLedgerStore ledger = ledger(dir.resolve("ordered-offers"))) {
+            EpochObservationSpool spool = new EpochObservationSpool(ledger, 1_000_000);
+            addPreparedObservation(spool, 4, new byte[]{4});
+            addPreparedObservation(spool, 5, new byte[]{5});
+
+            List<EpochObservationSpool.Offered> first =
+                    spool.offer(Long.MAX_VALUE, 10, 65_536);
+            assertThat(first).singleElement()
+                    .satisfies(offered -> assertThat(
+                            offered.observation().epochAnchor().newEpoch()).isEqualTo(4));
+
+            // Repeated offer passes must not skip around an outstanding job.
+            assertThat(spool.offer(Long.MAX_VALUE, 10, 65_536)).isEmpty();
+            assertThat(spool.acknowledge(first.getFirst().observation())).isTrue();
+
+            assertThat(spool.offer(Long.MAX_VALUE, 10, 65_536)).singleElement()
+                    .satisfies(offered -> assertThat(
+                            offered.observation().epochAnchor().newEpoch()).isEqualTo(5));
+        }
+    }
+
+    @Test
     void rollbackBelowFinalizedEpochPermanentlyHaltsCoordinator(@TempDir Path dir)
             throws Exception {
         L1EpochBoundary boundary = new L1EpochBoundary(50, 51, 5_000,
@@ -292,6 +347,22 @@ class L1EpochObservationCoordinatorTest {
 
     private static AppLedgerStore ledger(Path path) {
         return new AppLedgerStore(path.toString(), LoggerFactory.getLogger("epoch-test"));
+    }
+
+    private static void addPreparedObservation(EpochObservationSpool spool, long epoch,
+                                               byte[] claim) {
+        L1EpochBoundary boundary = new L1EpochBoundary(
+                epoch - 1, epoch, epoch * 100, bytes((int) epoch), epoch * 10);
+        EpochObservationManifest manifest = new EpochObservationManifest(
+                1, "synthetic", epoch - 1, epoch, epoch, 0, 1, 0, bytes((int) epoch));
+        spool.begin(boundary, manifest);
+        spool.append(boundary, manifest, 0, claim);
+        spool.complete(manifest);
+    }
+
+    private static L1Observation observation(long epoch, byte[] claim) {
+        return L1Observation.epoch("synthetic", epoch, epoch * 100,
+                bytes((int) epoch), claim);
     }
 
     private static void await(java.util.function.BooleanSupplier condition) throws Exception {

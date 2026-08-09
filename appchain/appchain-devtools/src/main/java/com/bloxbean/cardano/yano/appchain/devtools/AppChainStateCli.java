@@ -35,6 +35,7 @@ final class AppChainStateCli {
                or: ./yano.sh appchain state verify --proof-file <json>
                      --trusted-root <hex> --profile <id> --genesis-id <64-hex>
                      --chain <id> --height <n> [--root-source <source>]
+                     [--block-hash <64-hex>]
                or: ./yano.sh appchain state identity|integrity|oldest --url <api-base> --chain <id> [--api-key <key>]
                or: ./yano.sh appchain state snapshot --url <api-base> --chain <id>
                      --path <server-path> [--api-key <key>]
@@ -125,7 +126,7 @@ final class AppChainStateCli {
 
     private int verify(Map<String, String> options, PrintWriter out) throws IOException {
         rejectUnknown(options, Set.of("proof-file", "trusted-root", "profile", "genesis-id",
-                "chain", "height", "root-source"));
+                "chain", "height", "root-source", "block-hash"));
         Path proofFile = Path.of(required(options, "proof-file"));
         long size = Files.size(proofFile);
         if (size <= 0 || size > MAX_PROOF_FILE_BYTES) {
@@ -138,7 +139,8 @@ final class AppChainStateCli {
                 options.getOrDefault("root-source", "caller-pinned"));
         ProofVerifier.TrustedStateRoot trusted = new ProofVerifier.TrustedStateRoot(
                 required(options, "chain"), required(options, "profile"), genesis,
-                requiredPositiveLong(options, "height"), required(options, "trusted-root"), source);
+                requiredPositiveLong(options, "height"), required(options, "trusted-root"), source,
+                options.getOrDefault("block-hash", ""));
         boolean valid = ProofVerifier.verify(proof, trusted);
         ObjectNode result = json.createObjectNode();
         result.put("valid", valid);

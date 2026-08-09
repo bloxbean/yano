@@ -146,8 +146,17 @@ final class EpochObservationSpool {
                         .thenComparing(value -> value.job().manifest().observerId()))
                 .toList();
         List<Offered> offered = new ArrayList<>();
+        Set<String> visitedObservers = new HashSet<>();
         long bytes = 0;
         for (JobEntry entry : jobs) {
+            // Preserve each observer's epoch order across one offer pass and
+            // later passes. A job may span several app blocks; offering a
+            // later epoch while its predecessor is merely OFFERED can overlap
+            // a single-build authenticated-snapshot series and permanently
+            // stall deterministic application.
+            if (!visitedObservers.add(entry.job().manifest().observerId())) {
+                continue;
+            }
             byte[] jobDigest = digest(entry.key());
             List<AppLedgerStore.EpochSpoolEntry> records = ledger.epochSpoolScan(
                     recordPrefix(jobDigest), MAX_RECORDS_PER_SCAN);
@@ -326,8 +335,43 @@ final class EpochObservationSpool {
         byte[] observationBytes = observation.encode();
         byte[] location = ledger.epochSpoolGet(verifyKey(digest(observationBytes)));
         if (location == null) {
-            return observation.epochAnchor().newEpoch() > latestPreparedEpoch()
-                    ? AppChainEngine.L1RefVerdict.AHEAD
+            long epoch = observation.epochAnchor().newEpoch();
+            List<JobEntry> observerJobs = jobs().stream()
+                    .filter(entry -> entry.job().manifest().observerId()
+                            .equals(observation.observerId()))
+                    .toList();
+            if (observerJobs.isEmpty()) {
+                return AppChainEngine.L1RefVerdict.AHEAD;
+            }
+            List<JobEntry> exactEpochJobs = observerJobs.stream()
+                    .filter(entry -> entry.job().manifest().newEpoch() == epoch)
+                    .toList();
+            if (!exactEpochJobs.isEmpty()) {
+                return exactEpochJobs.stream().anyMatch(entry ->
+                        entry.job().state() == State.GENERATING)
+                        ? AppChainEngine.L1RefVerdict.AHEAD
+                        : AppChainEngine.L1RefVerdict.MISMATCH;
+            }
+            long earliest = observerJobs.stream()
+                    .mapToLong(entry -> entry.job().manifest().newEpoch())
+                    .min().orElseThrow();
+            long latest = observerJobs.stream()
+                    .mapToLong(entry -> entry.job().manifest().newEpoch())
+                    .max().orElseThrow();
+            if (epoch > latest) {
+                return AppChainEngine.L1RefVerdict.AHEAD;
+            }
+            if (historicalCatchUp) {
+                // A late-joining/restarting member can have a retained window
+                // with a hole for a boundary crossed before its L1 catch-up.
+                // Only an existing, different local job is contradictory; an
+                // absent job may be accepted from an already-certified block.
+                return AppChainEngine.L1RefVerdict.UNKNOWN;
+            }
+            // A member that joined after this retained verification window cannot
+            // recompute an older fact. The threshold certificate must vouch for it;
+            // a missing/different fact inside the local window remains a mismatch.
+            return epoch < earliest ? AppChainEngine.L1RefVerdict.UNKNOWN
                     : AppChainEngine.L1RefVerdict.MISMATCH;
         }
         Location resolved = decodeLocation(location);

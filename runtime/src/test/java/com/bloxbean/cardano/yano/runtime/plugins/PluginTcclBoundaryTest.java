@@ -39,6 +39,12 @@ import com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider;
 import com.bloxbean.cardano.yano.api.appchain.signer.SignerProviderFactory;
 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSink;
 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory;
+import com.bloxbean.cardano.yano.api.appchain.snapshot.AuthenticatedSnapshotSeriesDescriptorV1;
+import com.bloxbean.cardano.yano.api.appchain.snapshot.AuthenticatedSnapshotSourceCommitmentV1;
+import com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotDescriptorDraftV1;
+import com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotEntry;
+import com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotSourceBoundary;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import com.bloxbean.cardano.yano.api.config.PluginsOptions;
 import com.bloxbean.cardano.yano.api.plugin.NodePlugin;
 import com.bloxbean.cardano.yano.api.plugin.PluginActivationException;
@@ -174,6 +180,24 @@ class PluginTcclBoundaryTest {
             assertThat(machineStatus).containsEntry("profile", "ready");
             assertThatThrownBy(() -> machineStatus.put("mutate", true))
                     .isInstanceOf(UnsupportedOperationException.class);
+            List<AuthenticatedSnapshotSeriesDescriptorV1> snapshotSeries =
+                    firstMachine.authenticatedSnapshotSeries();
+            assertThat(snapshotSeries)
+                    .extracting(AuthenticatedSnapshotSeriesDescriptorV1::seriesId)
+                    .containsExactly("history");
+            AuthenticatedSnapshotSourceCommitmentV1 source = firstMachine
+                    .authenticatedSnapshotSourceCommitments().getFirst();
+            assertThat(source.seriesId()).isEqualTo("history");
+            assertThat(source.algorithm()).isEqualTo("test");
+            assertThat(source.wireVersion()).isEqualTo("test-v1");
+            assertThat(source.compatibilityId()).isEqualTo("test@test-v1");
+            byte[] accumulator = source.initial(new SnapshotDescriptorDraftV1(
+                    snapshotSeries.getFirst(), 0, "history-0",
+                    new SnapshotSourceBoundary.AppHeight(0), 0, 0, 0,
+                    new byte[32], 0, 0));
+            assertThat(source.append(accumulator, 0, List.of())).containsExactly(2);
+            assertThat(accumulator).containsExactly(1);
+            assertThat(source.finish(accumulator, 0, 0)).containsExactly(3);
             firstMachine.apply(null, null, null);
             firstMachine.onEffectResult(null, null, null, null);
             assertThatThrownBy(() -> firstMachine.query(
@@ -2694,6 +2718,45 @@ class PluginTcclBoundaryTest {
         @Override public Map<String, Object> operationalStatus() {
             probe.check();
             return new ProbeMap<>(probe, Map.of("profile", "ready"));
+        }
+        @Override
+        public List<AuthenticatedSnapshotSeriesDescriptorV1> authenticatedSnapshotSeries() {
+            probe.check();
+            var profile = StateCommitmentProfiles.MPF;
+            return List.of(new AuthenticatedSnapshotSeriesDescriptorV1(
+                    "history", "history-v1",
+                    AuthenticatedSnapshotSeriesDescriptorV1.Trigger.L1_EPOCH_BOUNDARY,
+                    profile.id(), profile.formatFingerprint(), profile.proofEncodingId(),
+                    AuthenticatedSnapshotSeriesDescriptorV1.VerificationTarget.ON_CHAIN,
+                    AuthenticatedSnapshotSeriesDescriptorV1.Visibility.PUBLIC,
+                    "test", "test-v1", 1, 1024, 32, 1024, 1,
+                    AuthenticatedSnapshotSeriesDescriptorV1.RecoveryCoverage.DATASET));
+        }
+        @Override
+        public List<AuthenticatedSnapshotSourceCommitmentV1>
+                authenticatedSnapshotSourceCommitments() {
+            probe.check();
+            return List.of(new AuthenticatedSnapshotSourceCommitmentV1() {
+                @Override public String seriesId() { probe.check(); return "history"; }
+                @Override public String algorithm() { probe.check(); return "test"; }
+                @Override public String wireVersion() { probe.check(); return "test-v1"; }
+                @Override public byte[] initial(SnapshotDescriptorDraftV1 draft) {
+                    probe.check();
+                    return new byte[]{1};
+                }
+                @Override public byte[] append(
+                        byte[] accumulator, long chunkIndex, List<SnapshotEntry> entries
+                ) {
+                    probe.check();
+                    accumulator[0] = 9;
+                    return new byte[]{2};
+                }
+                @Override public byte[] finish(byte[] accumulator, long chunks, long entries) {
+                    probe.check();
+                    accumulator[0] = 8;
+                    return new byte[]{3};
+                }
+            });
         }
         @Override
         public void apply(AppBlockExecutionContext context, AppStateWriter writer,

@@ -70,6 +70,7 @@ class AppChainStateCliTest {
                 "--genesis-id", genesis,
                 "--chain", "cli-chain",
                 "--height", "1",
+                "--block-hash", blockHash,
                 "--root-source", "cardano-anchor");
         Result substituted = run("state", "verify",
                 "--proof-file", proof.toString(),
@@ -109,6 +110,7 @@ class AppChainStateCliTest {
                 .contains("state entry|proof")
                 .contains("[--height <n>]")
                 .contains("state verify")
+                .contains("--block-hash <64-hex>")
                 .contains("state validate")
                 .contains("state validators")
                 .contains("state explain")

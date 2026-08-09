@@ -7,6 +7,8 @@ import com.bloxbean.cardano.yano.api.plugin.ui.UiExtensionDescriptor;
 import com.bloxbean.cardano.yano.api.plugin.ui.UiExtensionGateway;
 import com.bloxbean.cardano.yano.api.plugin.ui.UiExtensionPermission;
 import com.bloxbean.cardano.yano.api.plugin.ui.UiExtensionProvider;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
@@ -24,6 +26,7 @@ import java.util.Optional;
 
 /** Eagerly validates and snapshots active plugin UI assets into host-owned memory. */
 public final class UiExtensionRegistry implements UiExtensionGateway, AutoCloseable {
+    private static final Logger log = LoggerFactory.getLogger(UiExtensionRegistry.class);
     private final PluginProviderRegistry providers;
     private volatile Publication publication = Publication.empty();
     private boolean closed;
@@ -79,6 +82,7 @@ public final class UiExtensionRegistry implements UiExtensionGateway, AutoClosea
         catalog.sort(Comparator.comparing(UiExtensionCatalogEntry::bundleId)
                 .thenComparing(UiExtensionCatalogEntry::extensionId));
         publication = new Publication(List.copyOf(catalog), Map.copyOf(assets));
+        log.info("Activated {} plugin UI extension(s)", catalog.size());
     }
 
     public synchronized void stop() {

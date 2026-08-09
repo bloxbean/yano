@@ -101,7 +101,7 @@ disabled, preserving the direct-state behavior and identity of other chains.
 ./showcase.sh snapshots status --instance history-mpf
 ./showcase.sh snapshots list --instance history-mpf
 ./showcase.sh snapshots descriptor cardano-history-chain \
-  epoch-stake.distribution 0 --instance history-mpf
+  l1-epoch-stake-v1.distribution 0 --instance history-mpf
 ```
 
 The console discovers the capability from the runtime manifest and shows the

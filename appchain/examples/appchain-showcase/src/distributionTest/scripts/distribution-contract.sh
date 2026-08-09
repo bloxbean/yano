@@ -31,10 +31,14 @@ ROOT="$1"
 [ -f "$ROOT/docs/PRESENTERS.md" ]
 [ -f "$ROOT/docs/GOVERNANCE_DEMO.md" ]
 [ -f "$ROOT/docs/PREPROD_ANCHORING.md" ]
+[ -f "$ROOT/docs/CARDANO_HISTORY.md" ]
 [ -f "$ROOT/yano/yano.jar" ]
 [ -f "$ROOT/yano/config/application-appchain.yml" ]
 [ -f "$ROOT/yano/config/application-appchain-standard.yml" ]
 [ "$(find "$ROOT/yano/plugins" -maxdepth 1 -name 'yano-appchain-showcase-*-bundle.jar' | wc -l | tr -d ' ')" = 1 ]
+[ "$(find "$ROOT/yano/plugins" -maxdepth 1 -name 'yano-appchain-cardano-history-*-bundle.jar' | wc -l | tr -d ' ')" = 1 ]
+[ "$(find "$ROOT/plugins" -maxdepth 1 -name 'yano-appchain-cardano-history-*-bundle.jar' | wc -l | tr -d ' ')" = 1 ]
+[ -x "$ROOT/tools/cardano-history/bin/yano-cardano-history" ]
 [ -f "$ROOT/profiles/evidence/artifacts/runner.jar" ]
 [ -f "$ROOT/profiles/evidence/artifacts/yano-context/yano/yano.jar" ]
 [ "$(find "$ROOT/profiles/evidence/artifacts/plugins" -name '*-bundle.jar' | wc -l | tr -d ' ')" = 3 ]
@@ -46,15 +50,22 @@ ROLE_DIGEST="$(java -cp "$ROOT/profiles/evidence/artifacts/yano-context/yano/yan
   --evidence-capacity 8)"
 [[ "$ROLE_DIGEST" =~ ^[0-9a-f]{64}$ ]]
 ! grep -R '/Users/satya/work/bloxbean/yano' "$ROOT" --include='*.sh' --include='*.md' >/dev/null
+! find "$ROOT" -type f \( -name '*.skey' -o -name '*.seed' -o -name 'operator.seed' \) \
+  -print -quit | grep -q .
 PROFILES="$("$ROOT/showcase.sh" profiles)"
 HELP="$("$ROOT/showcase.sh" help)"
+HISTORY_HELP="$("$ROOT/tools/cardano-history/bin/yano-cardano-history" --help)"
 grep -q '^light' <<< "$PROFILES"
 grep -q 'config show|paths|export' <<< "$HELP"
+grep -q 'verify' <<< "$HISTORY_HELP"
 grep -q 'chain-id: "workflow-chain"' "$ROOT/yano/config/application-appchain.yml"
 grep -q 'state-machine: showcase-composite' "$ROOT/yano/config/application-appchain.yml"
 grep -q 'chain-id: "authenticated-map-chain"' "$ROOT/yano/config/application-appchain.yml"
 grep -q 'chain-id: "authenticated-map-jmt-chain"' "$ROOT/yano/config/application-appchain.yml"
 grep -q 'state-machine: authenticated-map' "$ROOT/yano/config/application-appchain.yml"
+grep -q 'chain-id: "cardano-history-chain"' "$ROOT/yano/config/application-appchain.yml"
+grep -q 'state-machine: "cardano-history"' "$ROOT/yano/config/application-appchain.yml"
+grep -q 'preset: "params-only-v1"' "$ROOT/yano/config/application-appchain.yml"
 grep -q 'com.bloxbean.cardano.yano.appchain.authenticated-map-validators' \
   "$ROOT/yano/config/application-appchain.yml"
 grep -q 'addr_test1vrld3msldls64ax7c06vu85nvhk70260q970cssxzjh0hlchc79qg' \
@@ -75,6 +86,21 @@ grep -q 'Python 3 standard library only' "$ROOT/README.md"
 MAP_ROOT="$ROOT/data/showcase/distribution-contract"
 jq -e '.schemaVersion == 1 and .profileId == "light-v1" and (.chains | length) == 13' \
   "$ROOT/catalog/showcase-catalog-v1.json" >/dev/null
+CARDANO_HISTORY_BUNDLE="$(find "$ROOT/yano/plugins" -maxdepth 1 \
+  -name 'yano-appchain-cardano-history-*-bundle.jar' -print -quit)"
+unzip -p "$CARDANO_HISTORY_BUNDLE" \
+  META-INF/yano/plugins/com.bloxbean.cardano.yano.appchain.cardano-history.json \
+  | jq -e '
+      .id as $id |
+      $id == "com.bloxbean.cardano.yano.appchain.cardano-history" and
+      any(.contributions[];
+        .kind == "app-state-machine" and .name == "cardano-history") and
+      any(.contributions[];
+        .kind == "domain-api" and .name == $id) and
+      any(.contributions[]; .kind == "ui-extension")
+    ' >/dev/null
+! unzip -Z1 "$CARDANO_HISTORY_BUNDLE" \
+  | grep -Eq '^(com/bloxbean/cardano/yano/api/|com/bloxbean/cardano/yano/appchain/(composite|stdlib)/|org/slf4j/)'
 grep -q 'chain-id: "document-review-chain"' "$ROOT/yano/config/application-appchain.yml"
 grep -q 'document-review-chain' "$ROOT/docs/CAPABILITY_CATALOG.md"
 [ -s "$MAP_ROOT/authenticated-map.properties" ]

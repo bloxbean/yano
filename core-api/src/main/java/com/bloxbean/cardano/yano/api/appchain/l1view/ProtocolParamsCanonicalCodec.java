@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.api.appchain.l1view;
 
 import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
+import com.bloxbean.cardano.yano.api.util.CostModelUtil;
 import com.fasterxml.jackson.dataformat.cbor.CBORFactory;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -50,8 +51,11 @@ public final class ProtocolParamsCanonicalCodec {
         fields.add(value.minUtxo());
         fields.add(value.minPoolCost());
         fields.add(value.nonce());
-        fields.add(sortedNested(value.costModels()));
-        fields.add(sortedLists(value.costModelsRaw()));
+        // Field 21 is reserved. Named cost-model operations are a derived API projection of the
+        // ledger's positional arrays; authenticating both representations made a real Conway
+        // snapshot exceed the 8 KiB on-chain proof envelope without adding ledger information.
+        fields.add(null);
+        fields.add(compactCostModels(value));
         fields.add(rational(value.priceMem()));
         fields.add(rational(value.priceStep()));
         fields.add(value.maxTxExMem());
@@ -131,16 +135,15 @@ public final class ProtocolParamsCanonicalCodec {
         return List.of(numerator, BigInteger.TEN.pow(scale));
     }
 
-    private static Map<String, Map<String, Long>> sortedNested(
-            Map<String, ? extends Map<String, Long>> input) {
-        if (input == null) return null;
-        Map<String, Map<String, Long>> result = new TreeMap<>();
-        input.forEach((language, model) -> result.put(language,
-                model != null ? new TreeMap<>(model) : null));
-        return result;
-    }
-
     private static Map<String, List<Long>> sortedLists(Map<String, List<Long>> input) {
         return input != null ? new TreeMap<>(input) : null;
+    }
+
+    private static Map<String, List<Long>> compactCostModels(ProtocolParamsSnapshot value) {
+        Map<String, List<Long>> raw = value.costModelsRaw();
+        if (raw == null || raw.isEmpty()) {
+            raw = CostModelUtil.canonicalRawCostModelsTyped(value.costModels());
+        }
+        return sortedLists(raw);
     }
 }
