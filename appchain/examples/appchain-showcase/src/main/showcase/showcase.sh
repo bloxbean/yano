@@ -1726,7 +1726,7 @@ strip_cardano_history_chain() {
 # The packaged settlement chain carries the DEVNET-only profile and demo
 # identity. If it ever activates on a public network the chain-id retains that
 # profile digest, and the real identity can never be adopted under the same id.
-# Strip it before any node starts and close the following chain-index gap.
+# Strip it before any node starts and close every following chain-index gap.
 # The bootstrapped public-network block is adopted afterwards.
 strip_devnet_settlement_chain() {
   local config="$YANO_HOME/config/application-appchain.yml" tmp
@@ -1737,11 +1737,17 @@ strip_devnet_settlement_chain() {
   grep -q 'profile: "yano-eutxo-v3-bridge-settlement-devnet"' "$config" \
     2>/dev/null || return 0
   tmp="$config.public.$$"
-  awk -v cid="$SETTLEMENT_CHAIN_ID" '
+  awk -v cid="$SETTLEMENT_CHAIN_ID" -v removed_index=10 '
     function flush(   i) {
       if (nbuf > 0) {
         if (keep) {
-          gsub("chains\\[11\\]", "chains[10]", buf[1])
+          if (match(buf[1], /chains\[[0-9]+\]/)) {
+            token = substr(buf[1], RSTART, RLENGTH)
+            chain_idx = substr(token, 8, length(token) - 8) + 0
+            if (chain_idx > removed_index) {
+              sub("chains\\[" chain_idx "\\]", "chains[" (chain_idx - 1) "]", buf[1])
+            }
+          }
           printf "%s", pending; for (i = 1; i <= nbuf; i++) print buf[i]
         }
         nbuf = 0
