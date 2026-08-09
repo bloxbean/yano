@@ -158,7 +158,7 @@ class MpfPairOnChainVerifierTest extends ContractTest {
 
     private Program program() {
         if (program == null) {
-            program = compileValidator(MpfPairOnChainVerifier.class).program().applyParams(
+            program = compileValidator(MpfPairAnchorValidator.class).program().applyParams(
                     PlutusData.bytes(THREAD_POLICY), PlutusData.bytes(THREAD_ASSET),
                     PlutusData.bytes(ANCHOR_SCRIPT), PlutusData.bytes(CHAIN_GENESIS),
                     PlutusData.bytes(APPLICATION), PlutusData.bytes(PROFILE),

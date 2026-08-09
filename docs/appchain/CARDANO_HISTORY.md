@@ -71,3 +71,14 @@ verified Cardano source.
 
 See [Authenticated snapshots](AUTHENTICATED_SNAPSHOTS.md) for retention and
 [Plugin UI extensions](PLUGIN_UI_EXTENSIONS.md) for frontend isolation.
+
+## On-chain consumption
+
+`appchain-cardano-history-onchain` fixes the Cardano History application ID, MPF profile, canonical
+component/snapshot keys, dataset series, and predicate tags. Its compiled parameter and pair
+validators compose the reusable MPF anchor, inclusion, same-root completeness, and authenticated
+snapshot libraries. Protected keys, epoch, predicate, and operands are script parameters rather
+than caller-selected redeemer values.
+Stake amount, pool, combined, and absence-with-completeness predicates use tags 0–4; proposal exact
+status uses 5; DRep minimum/exact uses 6–7. JMT is deliberately excluded from this module because it
+is off-chain-only.
