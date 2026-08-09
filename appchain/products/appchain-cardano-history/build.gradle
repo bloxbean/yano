@@ -7,11 +7,13 @@ description = 'Optional Cardano History app-chain product plugin'
 dependencies {
     compileOnly project(':core-api')
     compileOnly project(':appchain-composite')
+    compileOnly project(':appchain-composite-contracts')
     compileOnly project(':appchain-stdlib')
     compileOnly project(':appchain-stdlib-contracts')
 
     testImplementation project(':core-api')
     testImplementation project(':appchain-composite')
+    testImplementation project(':appchain-composite-contracts')
     testImplementation project(':appchain-stdlib')
     testImplementation project(':appchain-stdlib-contracts')
     testImplementation project(':appchain-testkit')

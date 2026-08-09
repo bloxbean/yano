@@ -64,3 +64,17 @@ Startup validates exact preset/observer agreement, bounded chunk sizes, authenti
 identity, and MPF whenever L1 proof consumption is required. `params-only-v1` activates neither
 stake/governance traversal nor a secondary authenticated-snapshot series. Artifact checks reject
 host API, composition, or stdlib classes in the deterministic bundle jar.
+
+## P3 — Query, client, and CLI
+
+Status: complete
+
+- Added a bundle-owned read-only domain API for status, epoch catalog, parameters, stake, DRep, and
+  proposal history.
+- Stake/governance fact and completeness reads use one `composite/aggregate-v1` query and one
+  committed root. Incomplete datasets never assert absence.
+- Added an explicit-URL/explicit-chain typed client with exact-height proof lookup and root-race
+  rejection.
+- Added a portable canonical snapshot bundle and standalone verifier with distinct invalid,
+  root-only, and independently Cardano-anchored results.
+- Added the `yano-cardano-history` CLI distribution and documented its commands and exit codes.

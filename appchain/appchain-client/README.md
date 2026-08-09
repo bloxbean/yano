@@ -206,8 +206,8 @@ record and proof checks.
 See the full [authenticated-map state-machine guide](../../docs/appchain/state-machines/authenticated-map.md)
 for governed genesis, offline CLI authoring, domain routes, and proof assembly.
 
-`CardanoHistoryProofClient` fetches exact-height typed protocol-parameter, stake,
-proposal-lifecycle, and DRep-distribution proofs. `CardanoHistoryProofBundle` binds those proofs to
+The optional Cardano History companion client fetches exact-height typed protocol-parameter, stake,
+proposal-lifecycle, and DRep-distribution proofs and binds those proofs to
 an independently selected `AnchorDatumV1` and evaluates their application semantics. MPF bundles
 can also be consumed by the reference Cardano validator; classic-JMT bundles provide the same
 semantic checks off-chain only.

@@ -1,5 +1,7 @@
-package com.bloxbean.cardano.yano.appchain.client;
+package com.bloxbean.cardano.yano.appchain.history.client;
 
+import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
+import com.bloxbean.cardano.yano.appchain.client.ProofSubjects;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochGovernanceContract;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochStakeContract;
 

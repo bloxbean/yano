@@ -15,6 +15,11 @@
       "kind": "app-state-machine",
       "name": "cardano-history",
       "provider": "com.bloxbean.cardano.yano.appchain.history.CardanoHistoryStateMachineProvider"
+    },
+    {
+      "kind": "domain-api",
+      "name": "cardano-history-read",
+      "provider": "com.bloxbean.cardano.yano.appchain.history.CardanoHistoryDomainApiProvider"
     }
   ]
 }

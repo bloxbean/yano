@@ -46,6 +46,8 @@ include 'appchain-evidence-registry'
 include 'appchain-evidence-client'
 include 'appchain-evidence-profile'
 include 'appchain-cardano-history'
+include 'appchain-cardano-history-client'
+include 'appchain-cardano-history-cli'
 include 'appchain-evidence-demo-runner'
 include 'appchain-showcase'
 include 'appchain-showcase-client'
@@ -108,6 +110,10 @@ project(':appchain-evidence-profile').projectDir =
         file('appchain/products/appchain-evidence-profile')
 project(':appchain-cardano-history').projectDir =
         file('appchain/products/appchain-cardano-history')
+project(':appchain-cardano-history-client').projectDir =
+        file('appchain/products/appchain-cardano-history-client')
+project(':appchain-cardano-history-cli').projectDir =
+        file('appchain/products/appchain-cardano-history-cli')
 project(':appchain-evidence-demo-runner').projectDir =
         file('appchain/examples/appchain-evidence-demo-runner')
 project(':appchain-showcase').projectDir =
