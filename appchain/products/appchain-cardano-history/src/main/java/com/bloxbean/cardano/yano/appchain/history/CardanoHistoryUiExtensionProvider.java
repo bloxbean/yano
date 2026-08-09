@@ -22,6 +22,7 @@ public final class CardanoHistoryUiExtensionProvider implements UiExtensionProvi
             "index.html", "text/html",
             "assets/app.css", "text/css",
             "assets/app.js", "application/javascript",
+            "assets/mpf-verifier.js", "application/javascript",
             "assets-manifest.json", "application/json");
     private final Map<String, byte[]> bytes;
     private final UiExtensionAssetManifest assets;
@@ -49,7 +50,9 @@ public final class CardanoHistoryUiExtensionProvider implements UiExtensionProvi
                 List.of(UiExtensionPermission.APP_CHAIN_STATUS_READ,
                         UiExtensionPermission.APP_CHAIN_DOMAIN_READ,
                         UiExtensionPermission.APP_CHAIN_PROOF_READ,
-                        UiExtensionPermission.APP_CHAIN_ANCHOR_READ),
+                        UiExtensionPermission.APP_CHAIN_ANCHOR_READ,
+                        UiExtensionPermission.FILE_IMPORT,
+                        UiExtensionPermission.FILE_EXPORT),
                 "assets-manifest.json");
     }
 

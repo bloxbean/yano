@@ -80,9 +80,13 @@ parameter, stake, DRep, and proposal queries, and exposes proof coordinates in a
 runs in the standard opaque-origin sandbox and can use only the declared read-only host bridge; it
 does not receive an API key and cannot open its own network connection.
 
-The browser checks proof-envelope chain, key, height, root, and MPF-profile binding. Full MPF wire
-verification and independent Cardano L1 anchor verification remain available through
-`yano-cardano-history verify`, and the UI labels that distinction explicitly.
+The Proof Lab generates, imports, copies, and locally verifies
+`cardano-history-browser-proof-v1` bundles. It verifies the released MPF wire profile,
+chain/key/value/height/root/profile binding, same-root completeness, and available typed history
+semantics without asking the node to verify its own proof. Independent Cardano L1 anchor
+verification remains available through `yano-cardano-history verify`, and the UI labels that trust
+boundary explicitly. Stake and governance tabs appear only when the selected chain exposes those
+components.
 
 ## On-chain consumption
 
