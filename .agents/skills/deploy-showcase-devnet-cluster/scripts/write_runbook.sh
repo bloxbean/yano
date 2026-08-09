@@ -39,7 +39,8 @@ cd {target}
 ./showcase.sh run all --instance {instance}
 ```
 
-Use `./showcase.sh describe light` for the authoritative twelve-chain catalog.
+Use `./showcase.sh describe light` for the authoritative thirteen-chain catalog,
+including the Cardano History product in its low-cost `params-only-v1` profile.
 The console capability matrix at `http://127.0.0.1:7070/ui/app-chain/` is
 manifest-driven and separates membership governance from business approval.
 
