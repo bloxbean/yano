@@ -110,3 +110,78 @@ Verification:
 
 The live preprod source comparison is retained as part of the final preprod qualification because it requires the
 new Cardano History chain to observe an actual epoch boundary after deployment.
+
+## M4 — direct-MPF feasibility gate
+
+Status: complete for M5 implementation; full-chain timing, three-member agreement, and source cross-verification
+remain M5/M8 release gates because the stake machine did not exist before this milestone.
+
+Implemented:
+
+- froze the v1 end-of-epoch stake manifest, 25,000-entry chunk, `[coin, poolHash]` leaf, chunk-root, state-key,
+  and authenticated completeness-metadata contracts;
+- isolated the 3 MiB/150,016-item history decoder from the ordinary stdlib decoder, whose 1 MiB/2,048-item
+  defensive limits remain unchanged;
+- added a reproducible two-pass mainnet-scale benchmark using the same CCL MPF implementation and a persistent
+  RocksDB node store, committing one 25,000-entry batch at a time as the app-chain runtime does;
+- added a compiled Plutus V3 same-root pair verifier for a fact leaf plus its completeness leaf, including budget
+  and wrong-root conformance tests.
+
+Measured result (`benchmarkEpochStakeMpf`, Apple M4 Max, OpenJDK 25.0.2, bounded 4 GiB Java heap):
+
+| Measure | Result |
+|---|---:|
+| Entries / chunks | 1,300,000 / 52 |
+| Canonical chunk payload | 87,102,264 bytes total; 1,675,044 bytes maximum |
+| First / second canonical generation pass | 2.221 s / 0.909 s |
+| Persistent MPF insertion | 291.122 s |
+| RocksDB growth | 3,837,958,620 bytes per retained epoch |
+| Restart/open fixed root | 534 ms |
+| Sample proof generation | 427 microseconds average |
+| Largest proof wire / steps | 805 bytes / 6 |
+| Largest fact + completeness wire pair | 1,476 bytes |
+| Observed post-run heap growth | 506,915,760 bytes |
+| Compiled pair-validator fixture | 8 folds, 1,300-byte redeemer |
+| Compiled pair-validator budget | 346,086,333 CPU; 1,164,740 memory |
+
+The machine-readable result is retained in
+[`benchmarks/028-m4-epoch-stake-mpf.json`](benchmarks/028-m4-epoch-stake-mpf.json). An initial deliberately
+in-memory run saturated a 4 GiB heap and entered full-GC thrash. That finding changed the benchmark and production
+rule: mainnet-scale MPF nodes must be persisted and committed per chunk; a whole-epoch in-memory node store is not
+a supported implementation.
+
+Accepted budgets and SLA:
+
+- 25,000 entries remains the maximum chunk size: the measured message is below 2 MiB and leaves 7,768 operations
+  of the 32,768-operation block ceiling for metadata, receipts, and composed components;
+- operators allocate at least 4 GiB heap and 8 GiB process memory to a stake/DRep history member;
+- retained authenticated-state growth is budgeted at 4.8 GB/epoch and 350 GB/year per member, including 25%
+  headroom over the synthetic RocksDB result; retained observation bodies require a separate 8 GB/year budget;
+- after the k-block stability wait, a 1.3M-entry epoch must become app-final within 30 minutes and be included in
+  the next configured L1 anchor batch; the total boundary-to-anchor SLA is therefore the stability wait plus at
+  most 60 minutes;
+- proof keys, values, six measured MPF steps, and the proof pair fit the released 256-byte key, 8 KiB value,
+  32-fold, and transaction-budget envelopes with substantial headroom.
+
+Review and iteration:
+
+- the first implementation raised the shared stdlib CBOR limits. Review rejected that broad attack-surface
+  change; only Cardano-history chunks now use the larger strict codec;
+- Java records containing byte arrays again required explicit value equality so round-trip contract comparisons
+  cannot accidentally use array identity;
+- completeness is one authenticated metadata value bound to the manifest and is true iff all chunks were received;
+  positive and negative claims therefore use the same two-proof model;
+- the benchmark now performs two independent canonical passes, uses bounded persistent per-chunk writes, reopens
+  the database at the fixed root, and measures inclusion, exclusion, and completeness proof material.
+
+Verification:
+
+- maximum-size 25,000-entry contract round-trip and malformed/reordered/duplicate tests pass;
+- the complete `appchain-stdlib-contracts` suite passes;
+- the persistent 1.3M-entry benchmark passes under a 4 GiB heap;
+- the pair verifier compiles to the actual Plutus target, accepts two proofs at one root within the pinned Cardano
+  ceilings, and rejects a different root.
+
+M4 therefore accepts direct MPF for M5. End-to-end boundary-to-anchor timing, three-member operation during L1
+sync, process-death/rotation against the concrete stake machine, rollback cancellation, replay, and annualized
+real-data growth remain hard M5/M8 qualification gates rather than being inferred from this component benchmark.
