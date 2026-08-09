@@ -123,7 +123,7 @@ class AppChainCommittedQueryTest {
         assertThat(invalid.getMessage()).doesNotContain("plugin secret");
         assertCode(AppQueryException.Code.FAILED,
                 () -> node.query("unsupported", new byte[0]));
-        assertCode(AppQueryException.Code.FAILED,
+        assertCode(AppQueryException.Code.UNAVAILABLE,
                 () -> node.query("host-owned-code", new byte[0]));
         assertCode(AppQueryException.Code.RESULT_TOO_LARGE,
                 () -> node.query("large", new byte[0]));

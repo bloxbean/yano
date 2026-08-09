@@ -73,7 +73,7 @@ grep -q 'Python 3 standard library only' "$ROOT/README.md"
 "$ROOT/showcase.sh" prepare --instance distribution-contract --nodes 3 \
   --http-base 29770 --server-base 29370 >/dev/null
 MAP_ROOT="$ROOT/data/showcase/distribution-contract"
-jq -e '.schemaVersion == 1 and .profileId == "light-v1" and (.chains | length) == 12' \
+jq -e '.schemaVersion == 1 and .profileId == "light-v1" and (.chains | length) == 13' \
   "$ROOT/catalog/showcase-catalog-v1.json" >/dev/null
 grep -q 'chain-id: "document-review-chain"' "$ROOT/yano/config/application-appchain.yml"
 grep -q 'document-review-chain' "$ROOT/docs/CAPABILITY_CATALOG.md"

@@ -8,34 +8,95 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
+import com.bloxbean.cardano.yano.api.appchain.snapshot.AuthenticatedSnapshotSeriesDescriptorV1;
+import com.bloxbean.cardano.yano.api.appchain.snapshot.AuthenticatedSnapshotSourceCommitmentV1;
+import com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotEntry;
+import com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotBuildTokenV1;
+import com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotSeriesHandle;
+import com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotSourceBoundary;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochGovernanceContract;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 
 /** Replay-only consumer of epoch-pinned proposal lifecycle and DRep distribution claims. */
 public final class EpochGovernanceStateMachine implements AppStateMachine {
+    public static final String DREP_SNAPSHOT_SERIES_ID = "drep-distribution";
+    private static final byte[] DREP_SNAPSHOT_NEXT_SEQUENCE =
+            "snapshot-series/drep-distribution/next".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
     private final String observerId;
     private final boolean includeProposals;
     private final boolean includeDReps;
     private final int drepChunkEntries;
+    private final String drepSnapshotProfile;
 
     public EpochGovernanceStateMachine() {
         this(EpochGovernanceContract.DEFAULT_OBSERVER_ID, true, false,
-                EpochGovernanceContract.DEFAULT_DREP_CHUNK_ENTRIES);
+                EpochGovernanceContract.DEFAULT_DREP_CHUNK_ENTRIES,
+                StateCommitmentProfiles.MPF.id());
     }
     public EpochGovernanceStateMachine(String observerId, boolean includeProposals,
                                        boolean includeDReps, int drepChunkEntries) {
+        this(observerId, includeProposals, includeDReps, drepChunkEntries,
+                StateCommitmentProfiles.MPF.id());
+    }
+
+    public EpochGovernanceStateMachine(String observerId, boolean includeProposals,
+                                       boolean includeDReps, int drepChunkEntries,
+                                       String drepSnapshotProfile) {
         if (observerId == null || observerId.isBlank()) throw new IllegalArgumentException("governance observer id is required");
         if (!includeProposals && !includeDReps) throw new IllegalArgumentException("at least one governance dataset is required");
         if (drepChunkEntries <= 0 || drepChunkEntries > EpochGovernanceContract.MAX_DREP_CHUNK_ENTRIES)
             throw new IllegalArgumentException("DRep chunk entries must be between 1 and 25000");
         this.observerId = observerId; this.includeProposals = includeProposals;
         this.includeDReps = includeDReps; this.drepChunkEntries = drepChunkEntries;
+        this.drepSnapshotProfile = StateCommitmentProfiles.require(drepSnapshotProfile).id();
     }
 
     @Override public String id() { return EpochGovernanceContract.STATE_MACHINE_ID; }
+    @Override public List<AuthenticatedSnapshotSeriesDescriptorV1> authenticatedSnapshotSeries() {
+        if (!includeDReps) return List.of();
+        var profile = StateCommitmentProfiles.require(drepSnapshotProfile);
+        return List.of(new AuthenticatedSnapshotSeriesDescriptorV1(DREP_SNAPSHOT_SERIES_ID,
+                "epoch-drep-distribution-v1",
+                AuthenticatedSnapshotSeriesDescriptorV1.Trigger.L1_EPOCH_BOUNDARY,
+                profile.id(), profile.formatFingerprint(), profile.proofEncodingId(),
+                profile.equals(StateCommitmentProfiles.MPF)
+                        ? AuthenticatedSnapshotSeriesDescriptorV1.VerificationTarget.ON_CHAIN
+                        : AuthenticatedSnapshotSeriesDescriptorV1.VerificationTarget.OFF_CHAIN,
+                AuthenticatedSnapshotSeriesDescriptorV1.Visibility.PUBLIC,
+                "blake2b256", "epoch-drep-source-v1", drepChunkEntries,
+                4 * 1024 * 1024, 256, 8 * 1024, 10_000_000,
+                AuthenticatedSnapshotSeriesDescriptorV1.RecoveryCoverage.DATASET));
+    }
+    @Override public List<AuthenticatedSnapshotSourceCommitmentV1> authenticatedSnapshotSourceCommitments() {
+        if (!includeDReps) return List.of();
+        return List.of(new AuthenticatedSnapshotSourceCommitmentV1() {
+            @Override public String seriesId() { return DREP_SNAPSHOT_SERIES_ID; }
+            @Override public String algorithm() { return "blake2b256"; }
+            @Override public String wireVersion() { return "epoch-drep-source-v1"; }
+            @Override public byte[] initial(com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotDescriptorDraftV1 draft) {
+                return EpochGovernanceContract.initialDRepRoot();
+            }
+            @Override public byte[] append(byte[] accumulator, long chunkIndex, List<SnapshotEntry> entries) {
+                List<EpochGovernanceContract.DRepEntry> sourceEntries = new ArrayList<>(entries.size());
+                for (SnapshotEntry entry : entries) {
+                    byte[] key = entry.key();
+                    if (key.length != 29) throw new IllegalArgumentException("invalid DRep snapshot key");
+                    sourceEntries.add(new EpochGovernanceContract.DRepEntry(Byte.toUnsignedInt(key[0]),
+                            Arrays.copyOfRange(key, 1, 29), EpochGovernanceContract.decodeCoin(entry.value())));
+                }
+                return EpochGovernanceContract.appendDRepRoot(accumulator,
+                        EpochGovernanceContract.drepChunkHash(sourceEntries));
+            }
+            @Override public byte[] finish(byte[] accumulator, long chunks, long entries) {
+                return accumulator.clone();
+            }
+        });
+    }
     @Override public AppCapabilityManifest capabilityManifest() {
         var builder = StdlibCapabilityManifests.component(id(), "~l1/" + observerId,
                 List.of(EpochGovernanceContract.PROPOSAL_QUERY_PATH, EpochGovernanceContract.DREP_QUERY_PATH,
@@ -55,7 +116,7 @@ public final class EpochGovernanceStateMachine implements AppStateMachine {
                     || !(observation.anchor() instanceof L1Observation.EpochAnchor anchor)) continue;
             int type = EpochGovernanceContract.claimType(observation.claim());
             switch (type) {
-                case EpochGovernanceContract.HEADER -> applyHeader(anchor.newEpoch(),
+                case EpochGovernanceContract.HEADER -> applyHeader(anchor.newEpoch(), observation,
                         EpochGovernanceContract.decodeHeader(observation.claim()), writer);
                 case EpochGovernanceContract.PROPOSAL -> {
                     applyProposal(anchor.newEpoch(), EpochGovernanceContract.decodeProposal(observation.claim()), writer);
@@ -71,7 +132,8 @@ public final class EpochGovernanceStateMachine implements AppStateMachine {
         if (dataClaims > 1) throw new IllegalArgumentException("at most one governance data claim is allowed per app block");
     }
 
-    private void applyHeader(long newEpoch, EpochGovernanceContract.Header header, AppStateWriter writer) {
+    private void applyHeader(long newEpoch, L1Observation observation,
+                             EpochGovernanceContract.Header header, AppStateWriter writer) {
         if (header.epoch() != newEpoch || header.includeProposals() != includeProposals
                 || header.includeDReps() != includeDReps
                 || header.drepChunkEntries() != drepChunkEntries)
@@ -88,6 +150,19 @@ public final class EpochGovernanceStateMachine implements AppStateMachine {
                     header.drepCount(), header.drepChunkEntries(), header.drepChunkCount(), header.drepRoot(),
                     0, header.drepChunkCount() == 0);
             putManifestOnce(key, EpochGovernanceContract.encodeDRepMeta(meta), writer, "DRep");
+            writer.capabilities().snapshotSeries(DREP_SNAPSHOT_SERIES_ID).ifPresent(handle -> {
+                long sequence = nextDRepSequence(writer);
+                writer.put(drepEpochSequenceKey(header.epoch()), longBytes(sequence));
+                writer.put(DREP_SNAPSHOT_NEXT_SEQUENCE, longBytes(Math.addExact(sequence, 1)));
+                SnapshotBuildTokenV1 token = handle.begin(sequence, "epoch-drep-" + header.epoch(),
+                        new SnapshotSourceBoundary.L1Epoch(Math.max(0, header.epoch() - 1),
+                                header.epoch(), header.epoch(), observation.slot(),
+                                observation.blockHash()), writer.committedHeight(),
+                        writer.committedHeight(), writer.committedHeight() + 1,
+                        header.drepRoot(), header.drepChunkCount(), header.drepCount());
+                writer.put(drepDraftDigestKey(header.epoch()), token.descriptorDraftDigest());
+                if (header.drepChunkCount() == 0) handle.seal(token);
+            });
         }
     }
 
@@ -155,11 +230,25 @@ public final class EpochGovernanceStateMachine implements AppStateMachine {
         if (previous != null && !chunk.entries().isEmpty()
                 && Arrays.compareUnsigned(previous, EpochGovernanceContract.drepOrderKey(chunk.entries().getFirst())) >= 0)
             throw new IllegalArgumentException("DRep chunks are not globally canonical");
+        SnapshotSeriesHandle snapshot = writer.capabilities().snapshotSeries(DREP_SNAPSHOT_SERIES_ID)
+                .orElse(null);
+        List<SnapshotEntry> snapshotEntries = snapshot != null
+                ? new ArrayList<>(chunk.entries().size()) : List.of();
         for (var entry : chunk.entries()) {
             byte[] key = EpochGovernanceContract.drepKey(chunk.epoch(), entry.drepType(), entry.drepHash());
-            if (writer.get(key).isPresent()) throw new IllegalStateException("historical DRep entry is write-once");
-            writer.put(key, EpochGovernanceContract.encodeCoin(entry.coin()));
+            if (snapshot == null) {
+                if (writer.get(key).isPresent()) {
+                    throw new IllegalStateException("historical DRep entry is write-once");
+                }
+                writer.put(key, EpochGovernanceContract.encodeCoin(entry.coin()));
+            } else {
+                snapshotEntries.add(new SnapshotEntry(
+                        EpochGovernanceContract.drepOrderKey(entry),
+                        EpochGovernanceContract.encodeCoin(entry.coin())));
+            }
         }
+        if (snapshot != null) snapshot.appendChunk(drepTokenForEpoch(writer, chunk.epoch()),
+                chunk.index(), snapshotEntries);
         writer.put(chunkKey, hash);
         if (!chunk.entries().isEmpty()) writer.put(EpochGovernanceContract.drepCursorKey(chunk.epoch()),
                 EpochGovernanceContract.drepOrderKey(chunk.entries().getLast()));
@@ -167,6 +256,7 @@ public final class EpochGovernanceStateMachine implements AppStateMachine {
         if (complete) verifyDRepRoot(meta, chunk.index(), hash, writer);
         writer.put(metaKey, EpochGovernanceContract.encodeDRepMeta(new EpochGovernanceContract.DRepMeta(meta.epoch(),
                 meta.total(), meta.chunkEntries(), meta.chunkCount(), meta.root(), received, complete)));
+        if (complete && snapshot != null) snapshot.seal(drepTokenForEpoch(writer, chunk.epoch()));
     }
 
     private static void verifyDRepRoot(EpochGovernanceContract.DRepMeta meta, int current,
@@ -176,6 +266,37 @@ public final class EpochGovernanceStateMachine implements AppStateMachine {
                 : writer.get(EpochGovernanceContract.drepChunkKey(meta.epoch(), i)).orElseThrow());
         if (!Arrays.equals(EpochGovernanceContract.drepRoot(hashes), meta.root()))
             throw new IllegalArgumentException("DRep distribution root mismatch");
+    }
+
+    private static long nextDRepSequence(AppStateWriter writer) {
+        return writer.get(DREP_SNAPSHOT_NEXT_SEQUENCE)
+                .map(EpochGovernanceStateMachine::decodeLong).orElse(0L);
+    }
+    private static long drepSequenceForEpoch(AppStateWriter writer, long epoch) {
+        return writer.get(drepEpochSequenceKey(epoch)).map(EpochGovernanceStateMachine::decodeLong)
+                .orElseThrow(() -> new IllegalStateException("DRep snapshot sequence is absent"));
+    }
+    private static byte[] drepEpochSequenceKey(long epoch) {
+        return ("snapshot-series/drep-distribution/epoch/" + epoch)
+                .getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+    }
+    private static byte[] drepDraftDigestKey(long epoch) {
+        return ("snapshot-series/drep-distribution/draft/" + epoch)
+                .getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+    }
+    private static SnapshotBuildTokenV1 drepTokenForEpoch(AppStateWriter writer, long epoch) {
+        return new SnapshotBuildTokenV1(drepSequenceForEpoch(writer, epoch),
+                writer.get(drepDraftDigestKey(epoch)).orElseThrow(() ->
+                        new IllegalStateException("DRep snapshot draft digest is absent")));
+    }
+    private static byte[] longBytes(long value) {
+        return java.nio.ByteBuffer.allocate(8).putLong(value).array();
+    }
+    private static long decodeLong(byte[] value) {
+        if (value.length != 8) throw new IllegalStateException("invalid snapshot sequence value");
+        long decoded = java.nio.ByteBuffer.wrap(value).getLong();
+        if (decoded < 0) throw new IllegalStateException("negative snapshot sequence value");
+        return decoded;
     }
 
     @Override public byte[] query(String path, byte[] params, AppQueryContext state) {
@@ -191,8 +312,20 @@ public final class EpochGovernanceStateMachine implements AppStateMachine {
             if (EpochGovernanceContract.DREP_QUERY_PATH.equals(path)) {
                 var q = EpochGovernanceContract.decodeDRepQuery(params);
                 if (!drepComplete(q.epoch(), state)) return new byte[0];
+                Optional<byte[]> snapshotSequence = state.get(drepEpochSequenceKey(q.epoch()));
+                if (snapshotSequence.isPresent()) {
+                    long sequence = decodeLong(snapshotSequence.orElseThrow());
+                    if (!state.authenticatedSnapshotOnline(DREP_SNAPSHOT_SERIES_ID, sequence)) {
+                        throw new AppQueryException(AppQueryException.Code.UNAVAILABLE,
+                                "DRep authenticated snapshot is not local");
+                    }
+                    return state.authenticatedSnapshotValue(DREP_SNAPSHOT_SERIES_ID, sequence,
+                            EpochGovernanceContract.drepOrderKey(
+                                    q.drepType(), q.drepHash())).orElse(new byte[0]);
+                }
                 return state.get(EpochGovernanceContract.drepKey(q.epoch(), q.drepType(), q.drepHash())).orElse(new byte[0]);
             }
+        } catch (AppQueryException declared) { throw declared;
         } catch (RuntimeException malformed) { throw new AppQueryException(AppQueryException.Code.INVALID_REQUEST,
                 "epoch-governance query is malformed"); }
         throw new AppQueryException(AppQueryException.Code.UNSUPPORTED, "unknown epoch-governance query path");

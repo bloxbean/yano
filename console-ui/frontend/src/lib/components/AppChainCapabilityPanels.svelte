@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { AnchorCommitment, AppCapabilityManifest, AppChainStatus, ProofVerificationResult,
+  import type { AnchorCommitment, AppCapabilityManifest, AppChainStatus,
+    AuthenticatedSnapshotStatus, AuthenticatedSnapshotSummary, ProofVerificationResult,
     StateProofEnvelope } from '$lib/api/types';
   import { YanoApi, apiFailureMessage } from '$lib/api/client';
   import { discoverChainCapabilities } from '$lib/appchain/capabilities';
@@ -9,7 +10,6 @@
   import { asciiHex, boundedPretty, finalizedMessageStateKey, hexSha256, PRODUCT_ID, SHA256, STATE_KEY } from '$lib/appchain/verification';
   import { numberValue, objectList, objectValue, shortHash, stringValue } from '$lib/appchain/value';
   import CopyValue from './CopyValue.svelte';
-  import MetricCard from './MetricCard.svelte';
   import MetricRow from './MetricRow.svelte';
 
   type PanelSection = 'all' | 'overview' | 'verification' | 'effects';
@@ -57,8 +57,38 @@
     ? assessProofBinding(proofEnvelope, expectedProofRoot, expectedProofHeight) : undefined);
   let rawEffectStats = $derived(boundedPretty(effectStats, 65_536));
   let statsDialog = $state<HTMLDialogElement>();
+  let snapshotStatus = $state<AuthenticatedSnapshotStatus>();
+  let snapshots = $state<AuthenticatedSnapshotSummary[]>([]);
+  let snapshotDetail = $state('');
+  let snapshotError = $state('');
 
-  onMount(() => { if (showEffects && capabilities.effects) void refreshEffects(); });
+  onMount(() => {
+    if (showEffects && capabilities.effects) void refreshEffects();
+    if (showOverview && capabilities.authenticatedSnapshots) void refreshSnapshots();
+  });
+
+  async function refreshSnapshots(): Promise<void> {
+    snapshotError = '';
+    try {
+      const [statusResult, page] = await Promise.all([
+        api.chainSnapshotStatus(chainId), api.chainSnapshots(chainId)
+      ]);
+      snapshotStatus = statusResult;
+      snapshots = page.items;
+    } catch (cause) {
+      snapshotError = apiFailureMessage(cause, 'Authenticated snapshot status unavailable');
+    }
+  }
+
+  async function inspectSnapshot(item: AuthenticatedSnapshotSummary): Promise<void> {
+    snapshotError = '';
+    try {
+      snapshotDetail = boundedPretty(await api.chainSnapshot(
+        chainId, item.seriesId, item.sequence));
+    } catch (cause) {
+      snapshotError = apiFailureMessage(cause, 'Snapshot descriptor unavailable');
+    }
+  }
 
   async function refreshEffects(): Promise<void> {
     effectError = '';
@@ -267,6 +297,7 @@
       {#if capabilities.effects}<span class="badge badge-ok">EFFECTS</span>{/if}
       {#if capabilities.roleApprovals}<span class="badge badge-ok">ROLE APPROVALS</span>{/if}
       {#if capabilities.finalizedMessageIndex}<span class="badge badge-ok">MESSAGE STATE INDEX</span>{/if}
+      {#if capabilities.authenticatedSnapshots}<span class="badge badge-ok">AUTHENTICATED SNAPSHOTS</span>{/if}
       <span class="badge">{capabilities.commitmentTarget.toUpperCase()}</span>
     </div>
     <p class="mb-0 mt-3 text-xs text-slate-500">Source: {capabilities.sources.join(' · ')}</p>
@@ -308,6 +339,72 @@
           <span class="text-slate-400">Committed transition trace:</span>
           <strong class="ml-2">command → authorization / approval → application mutation → consumption / effect receipt</strong>
         </div>
+      {/if}
+    </section>
+  {/if}
+
+  {#if capabilities.authenticatedSnapshots}
+    <div class="section-title">Authenticated snapshots</div>
+    <section class="card p-5">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 class="m-0 text-sm font-semibold">Logical snapshot series</h2>
+          <p class="mb-0 mt-1 text-xs text-slate-500">
+            Immutable roots remain committed in primary app-chain state; online/archive lifecycle is node-local.
+          </p>
+        </div>
+        <button type="button" class="rounded-lg border border-slate-700 px-3 py-2 text-xs"
+                onclick={refreshSnapshots}>Refresh</button>
+      </div>
+      {#if snapshotStatus}
+        {#if snapshotStatus.disputed}
+          <div class="mt-4 rounded-lg border border-rose-700 bg-rose-950/40 p-3 text-sm text-rose-200">
+            Snapshot lineage is DISPUTED. Proof and lifecycle operations are fail-closed.
+            {#if snapshotStatus.disputeReason}
+              <div class="mt-1 font-mono text-xs">{snapshotStatus.disputeReason}</div>
+            {/if}
+          </div>
+        {/if}
+        <div class="mt-4 grid gap-2 sm:grid-cols-3">
+          {#each [
+            ['Runtime', snapshotStatus.enabled ? 'enabled' : 'disabled'],
+            ['Tip height', snapshotStatus.tipHeight ?? '—'],
+            ['Online storage', snapshotStatus.storage ?? '—']
+          ] as metric}
+            <div class="rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+              <div class="text-[.68rem] uppercase tracking-wide text-slate-500">{metric[0]}</div>
+              <div class="mt-1 font-mono text-sm text-slate-100">{metric[1]}</div>
+            </div>
+          {/each}
+        </div>
+        <p class="mb-0 mt-3 text-xs text-slate-500">
+          Series: {snapshotStatus.series?.join(', ') || 'none'}
+        </p>
+      {/if}
+      {#if snapshotError}<p class="text-sm text-rose-300">{snapshotError}</p>{/if}
+      <div class="mt-4 overflow-x-auto rounded-lg border border-slate-800">
+        <table class="w-full text-left text-xs">
+          <thead class="bg-slate-950/70 text-slate-500"><tr>
+            <th class="p-3">Series / sequence</th><th class="p-3">Profile</th>
+            <th class="p-3">Entries</th><th class="p-3">Completed height</th>
+            <th class="p-3">Lifecycle</th><th class="p-3"></th>
+          </tr></thead>
+          <tbody>
+            {#each snapshots as item}
+              <tr class="border-t border-slate-800">
+                <td class="p-3"><strong>{item.seriesId}</strong><div class="text-slate-500">#{item.sequence}</div></td>
+                <td class="p-3 font-mono">{item.profile}</td>
+                <td class="p-3">{item.entryCount}</td><td class="p-3">{item.completedAppChainHeight}</td>
+                <td class="p-3"><span class="badge {item.lifecycle === 'ONLINE' ? 'badge-ok' : 'badge-warn'}">{item.lifecycle}</span></td>
+                <td class="p-3"><button type="button" class="rounded border border-slate-700 px-2 py-1"
+                  onclick={() => inspectSnapshot(item)}>Descriptor</button></td>
+              </tr>
+            {:else}<tr><td colspan="6" class="p-4 text-slate-500">No completed snapshots yet.</td></tr>{/each}
+          </tbody>
+        </table>
+      </div>
+      {#if snapshotDetail}
+        <pre class="mt-4 max-h-80 overflow-auto rounded-lg bg-slate-950 p-3 text-xs">{snapshotDetail}</pre>
       {/if}
     </section>
   {/if}

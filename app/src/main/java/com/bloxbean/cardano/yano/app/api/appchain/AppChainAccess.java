@@ -21,6 +21,7 @@ public @interface AppChainAccess {
     enum Level {
         READ,
         SUBMIT,
+        SNAPSHOT_ADMIN,
         PRIVILEGED,
         INTERNAL
     }

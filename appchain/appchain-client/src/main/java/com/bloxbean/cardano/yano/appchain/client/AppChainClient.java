@@ -2,6 +2,8 @@ package com.bloxbean.cardano.yano.appchain.client;
 
 import com.bloxbean.cardano.yano.api.appchain.state.StateProofSubject;
 import com.bloxbean.cardano.yano.api.appchain.evidence.MessageInclusionProof;
+import com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotCanonicalCodec;
+import com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotDescriptorV1;
 import com.fasterxml.jackson.core.StreamReadFeature;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -84,6 +86,8 @@ public final class AppChainClient {
             2 * (MAX_STATE_PROOF_KEY_BYTES + MAX_STATE_PROOF_VALUE_BYTES
                     + MAX_STATE_PROOF_WIRE_BYTES) + 64 * 1024;
     private static final int MAX_STATE_METADATA_RESPONSE_BYTES = 128 * 1024;
+    private static final int MAX_SNAPSHOT_CATALOG_RESPONSE_BYTES = 2 * 1024 * 1024;
+    private static final int MAX_SNAPSHOT_PROOF_RESPONSE_BYTES = 8 * 1024 * 1024;
     private static final int MAX_QUERY_PATH_CHARACTERS = 256;
     private static final int MAX_QUERY_PATH_SEGMENTS = 128;
     private static final int MAX_QUERY_REQUEST_BYTES = 64 * 1024;
@@ -840,6 +844,215 @@ public final class AppChainClient {
         request.put("path", path);
         return postJsonBounded(chainPath("/snapshot"), request.toString(), 200,
                 MAX_STATE_METADATA_RESPONSE_BYTES, "App-chain state snapshot");
+    }
+
+    // ------------------------------------------------------------------
+    // Authenticated snapshots (ADR-028 M8)
+    // ------------------------------------------------------------------
+
+    /** Bounded descriptor catalog. Availability is local to the serving node. */
+    public AuthenticatedSnapshotPage authenticatedSnapshots(
+            String seriesId, String cursor, int limit) {
+        if (limit < 1 || limit > 100) {
+            throw new IllegalArgumentException("snapshot list bounds are invalid");
+        }
+        StringBuilder endpoint = new StringBuilder(chainPath("/snapshots?limit=")).append(limit);
+        if (seriesId != null && !seriesId.isBlank()) {
+            requireSnapshotSeries(seriesId);
+            endpoint.append("&series=").append(URLEncoder.encode(seriesId, StandardCharsets.UTF_8));
+        }
+        if (cursor != null && !cursor.isBlank()) {
+            if (!cursor.matches("[A-Za-z0-9_-]{1,684}")) {
+                throw new IllegalArgumentException("snapshot cursor is malformed");
+            }
+            endpoint.append("&cursor=").append(URLEncoder.encode(cursor, StandardCharsets.UTF_8));
+        }
+        JsonNode response = snapshotJson(endpoint.toString(), "Authenticated snapshot catalog",
+                MAX_SNAPSHOT_CATALOG_RESPONSE_BYTES, 200, false);
+        List<AuthenticatedSnapshotSummary> result = new ArrayList<>();
+        JsonNode items = response.get("items");
+        if (items == null || !items.isArray()) {
+            throw new AppChainClientException("Invalid authenticated snapshot catalog response");
+        }
+        for (JsonNode entry : items) {
+            result.add(new AuthenticatedSnapshotSummary(
+                    requiredSnapshotText(entry, "seriesId"),
+                    requiredNonNegativeLong(entry, "sequence"),
+                    requiredSnapshotText(entry, "snapshotId"),
+                    requiredNonNegativeLong(entry, "entryCount"),
+                    requiredNonNegativeLong(entry, "completedAppChainHeight"),
+                    requiredSnapshotText(entry, "profile"),
+                    requiredSnapshotText(entry, "lifecycle")));
+        }
+        String nextCursor = response.hasNonNull("nextCursor")
+                ? requiredSnapshotText(response, "nextCursor") : null;
+        return new AuthenticatedSnapshotPage(List.copyOf(result), nextCursor,
+                requiredNonNegativeLong(response, "viewHeight"),
+                requiredSnapshotHex(response, "viewRootHex", 32, 32));
+    }
+
+    /** One immutable descriptor, decoded from the canonical committed CBOR. */
+    public Optional<AuthenticatedSnapshotDescriptor> authenticatedSnapshot(
+            String seriesId, long sequence) {
+        requireSnapshotSeries(seriesId);
+        if (sequence < 0) throw new IllegalArgumentException("snapshot sequence must be nonnegative");
+        JsonNode response = snapshotJsonOrNull(chainPath("/snapshots/" + seriesId + "/" + sequence),
+                "Authenticated snapshot descriptor", MAX_STATE_METADATA_RESPONSE_BYTES);
+        if (response == null) return Optional.empty();
+        byte[] descriptorBytes = Hex.decode(requiredSnapshotHex(
+                response, "descriptorCborHex", 1, 64 * 1024));
+        SnapshotDescriptorV1 descriptor = SnapshotCanonicalCodec.decodeDescriptor(descriptorBytes);
+        if (!seriesId.equals(descriptor.seriesId()) || sequence != descriptor.sequence()) {
+            throw new AppChainClientException("Authenticated snapshot descriptor identity mismatch");
+        }
+        String commitment = requiredSnapshotHex(response, "descriptorCommitmentHex", 32, 32);
+        if (!commitment.equals(Hex.encode(descriptor.commitment()))) {
+            throw new AppChainClientException("Authenticated snapshot descriptor commitment mismatch");
+        }
+        return Optional.of(new AuthenticatedSnapshotDescriptor(descriptor, descriptorBytes, commitment));
+    }
+
+    /** Generate the anchored primary-descriptor plus secondary-claim proof bundle. */
+    public Optional<AuthenticatedSnapshotProof> authenticatedSnapshotProof(
+            String seriesId, long sequence, byte[] canonicalKey) {
+        return authenticatedSnapshotProof(seriesId, sequence, canonicalKey, null);
+    }
+
+    /** Generate against one exact retained confirmed anchor, or latest when null. */
+    public Optional<AuthenticatedSnapshotProof> authenticatedSnapshotProof(
+            String seriesId, long sequence, byte[] canonicalKey, Long anchorHeight) {
+        requireSnapshotSeries(seriesId);
+        if (sequence < 0) throw new IllegalArgumentException("snapshot sequence must be nonnegative");
+        Objects.requireNonNull(canonicalKey, "canonicalKey");
+        if (canonicalKey.length == 0 || canonicalKey.length > MAX_STATE_PROOF_KEY_BYTES) {
+            throw new IllegalArgumentException("snapshot proof key must contain 1-256 bytes");
+        }
+        ObjectNode body = objectMapper.createObjectNode().put("keyHex", Hex.encode(canonicalKey));
+        if (anchorHeight != null) {
+            if (anchorHeight <= 0) throw new IllegalArgumentException("anchorHeight must be positive");
+            body.put("anchorHeight", anchorHeight);
+        }
+        String endpoint = chainPath("/snapshots/" + seriesId + "/" + sequence + "/proof");
+        JsonNode response = snapshotPostJsonOrUnavailable(endpoint, body.toString(),
+                "Authenticated snapshot proof", MAX_SNAPSHOT_PROOF_RESPONSE_BYTES);
+        if (response == null) return Optional.empty();
+        byte[] descriptorBytes = Hex.decode(requiredSnapshotHex(
+                response, "descriptorCborHex", 1, 64 * 1024));
+        SnapshotDescriptorV1 descriptor = SnapshotCanonicalCodec.decodeDescriptor(descriptorBytes);
+        if (!seriesId.equals(descriptor.seriesId()) || descriptor.sequence() != sequence) {
+            throw new AppChainClientException("Authenticated snapshot proof descriptor mismatch");
+        }
+        SnapshotNativeProof primary = parseSnapshotNativeProof(response.get("primaryProof"));
+        SnapshotNativeProof secondary = parseSnapshotNativeProof(response.get("secondaryProof"));
+        if (!secondary.keyHex().equals(Hex.encode(canonicalKey))
+                || !secondary.stateRootHex().equals(Hex.encode(descriptor.snapshotRoot()))) {
+            throw new AppChainClientException("Authenticated snapshot secondary proof mismatch");
+        }
+        SnapshotAnchor anchor = parseSnapshotAnchor(response.get("anchor"));
+        if (anchorHeight != null && anchor.anchoredHeight() != anchorHeight) {
+            throw new AppChainClientException(
+                    "Authenticated snapshot proof used a different anchor height");
+        }
+        AuthenticatedSnapshotProof proof = new AuthenticatedSnapshotProof(
+                descriptor, descriptorBytes, primary, secondary, anchor,
+                requiredSnapshotHex(response, "statementCommitmentHex", 32, 32),
+                requiredSnapshotHex(response, "bundleCommitmentHex", 32, 32),
+                Hex.decode(requiredSnapshotHex(response, "bundleCborHex", 1,
+                        MAX_SNAPSHOT_PROOF_RESPONSE_BYTES / 2)));
+        if (!ProofVerifier.hasCanonicalSnapshotCommitments(proof)) {
+            throw new AppChainClientException("Authenticated snapshot proof commitments mismatch");
+        }
+        return Optional.of(proof);
+    }
+
+    /** Ask a node to verify one canonical bundle against its exact retained local anchor. */
+    public SnapshotProofVerificationResult verifyAuthenticatedSnapshotProof(
+            byte[] canonicalBundle) {
+        return verifyAuthenticatedSnapshotProof(canonicalBundle, null);
+    }
+
+    /** Verify against a complete caller-authenticated anchor context when supplied. */
+    public SnapshotProofVerificationResult verifyAuthenticatedSnapshotProof(
+            byte[] canonicalBundle, SnapshotPinnedAnchor pinned) {
+        Objects.requireNonNull(canonicalBundle, "canonicalBundle");
+        if (canonicalBundle.length == 0 || canonicalBundle.length > 4 * 1024 * 1024) {
+            throw new IllegalArgumentException("canonical snapshot bundle exceeds limit");
+        }
+        ObjectNode body = objectMapper.createObjectNode()
+                .put("bundleCborHex", Hex.encode(canonicalBundle))
+                .put("trustMode", pinned == null ? "local-anchor" : "caller-pinned-root");
+        if (pinned != null) {
+            body.put("expectedChainId", pinned.chainId())
+                    .put("expectedAnchorMode", pinned.anchorMode())
+                    .put("expectedPrimaryProfile", pinned.primaryProfile())
+                    .put("expectedPrimaryRootHex", pinned.primaryRootHex())
+                    .put("expectedChainGenerationIdHex", pinned.chainGenerationIdHex())
+                    .put("expectedApplicationProfileDigestHex", pinned.applicationProfileDigestHex())
+                    .put("expectedAnchoredHeight", pinned.anchoredHeight())
+                    .put("expectedBlockHashHex", pinned.blockHashHex())
+                    .put("expectedAnchorTransactionHash", pinned.anchorTransactionHash())
+                    .put("expectedL1Slot", pinned.l1Slot());
+        }
+        JsonNode response = snapshotPostJsonOrUnavailable(
+                chainPath("/snapshots/proof/verify"), body.toString(),
+                "Authenticated snapshot proof verification", MAX_SNAPSHOT_PROOF_RESPONSE_BYTES);
+        if (response == null) throw new AppChainClientException(
+                "Authenticated snapshot verification returned no result");
+        return new SnapshotProofVerificationResult(
+                response.path("valid").asBoolean(false),
+                response.path("primaryValid").asBoolean(false),
+                response.path("secondaryValid").asBoolean(false),
+                response.path("disputed").asBoolean(false),
+                response.path("trusted").asBoolean(false),
+                response.path("trust").asText(""));
+    }
+
+    /** Consensus-independent node-local availability and executor status. */
+    public JsonNode authenticatedSnapshotStatus() {
+        return snapshotJson(chainPath("/snapshots/status"), "Authenticated snapshot status",
+                MAX_STATE_METADATA_RESPONSE_BYTES, 200, false);
+    }
+
+    /** Enqueue an idempotent privileged archive/restore/evict operation. */
+    public SnapshotAdminJobRef authenticatedSnapshotAdmin(
+            String operation, String seriesId, long sequence,
+            String idempotencyKey, boolean evictAfterArchive) {
+        if (!Set.of("archive", "restore", "evict").contains(operation)) {
+            throw new IllegalArgumentException("snapshot operation must be archive, restore, or evict");
+        }
+        requireSnapshotSeries(seriesId);
+        if (sequence < 0) throw new IllegalArgumentException("snapshot sequence must be nonnegative");
+        if (idempotencyKey == null || !idempotencyKey.matches("[A-Za-z0-9._:-]{1,128}")) {
+            throw new IllegalArgumentException("snapshot idempotency key is invalid");
+        }
+        ObjectNode body = objectMapper.createObjectNode()
+                .put("idempotencyKey", idempotencyKey)
+                .put("evictAfterArchive", evictAfterArchive);
+        JsonNode response = snapshotJsonPost(chainPath("/admin/snapshots/" + seriesId + "/"
+                        + sequence + "/" + operation), body.toString(),
+                "Authenticated snapshot administration", MAX_STATE_METADATA_RESPONSE_BYTES, 202);
+        return new SnapshotAdminJobRef(requiredSnapshotText(response, "jobId"),
+                requiredSnapshotText(response, "operation"));
+    }
+
+    /** Recent privileged snapshot jobs. */
+    public List<SnapshotAdminJob> authenticatedSnapshotJobs(int limit) {
+        if (limit < 1 || limit > 1000) throw new IllegalArgumentException("invalid snapshot job limit");
+        JsonNode response = snapshotJson(chainPath("/admin/snapshots/jobs?limit=" + limit),
+                "Authenticated snapshot jobs", MAX_SNAPSHOT_CATALOG_RESPONSE_BYTES, 200, true);
+        List<SnapshotAdminJob> jobs = new ArrayList<>();
+        response.forEach(node -> jobs.add(parseSnapshotAdminJob(node)));
+        return List.copyOf(jobs);
+    }
+
+    /** One privileged snapshot job. */
+    public Optional<SnapshotAdminJob> authenticatedSnapshotJob(String jobId) {
+        if (jobId == null || !jobId.matches("[0-9a-f-]{36}")) {
+            throw new IllegalArgumentException("invalid snapshot job id");
+        }
+        JsonNode response = snapshotJsonOrNull(chainPath("/admin/snapshots/jobs/" + jobId),
+                "Authenticated snapshot job", MAX_STATE_METADATA_RESPONSE_BYTES);
+        return Optional.ofNullable(response).map(AppChainClient::parseSnapshotAdminJob);
     }
 
     /**
@@ -1649,6 +1862,174 @@ public final class AppChainClient {
         }
     }
 
+    private JsonNode snapshotJson(String url, String operation, int maximumBytes,
+                                  int expectedStatus, boolean expectArray) {
+        try {
+            HttpResponse<byte[]> response = sendBounded(requestBuilder(url)
+                    .header("Accept", "application/json").GET().build(), maximumBytes, operation);
+            if (response.statusCode() != expectedStatus) {
+                throw boundedHttpFailure(operation, response.statusCode(), response.body());
+            }
+            JsonNode parsed = STRICT_RESPONSE_JSON.readTree(response.body());
+            if (parsed == null || expectArray != parsed.isArray()) {
+                throw new AppChainClientException(operation + " returned malformed JSON");
+            }
+            return parsed;
+        } catch (AppChainClientException failure) {
+            throw failure;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AppChainClientException(operation + " was interrupted", interrupted);
+        } catch (Exception failure) {
+            throw new AppChainClientException(operation + " request failed", failure);
+        }
+    }
+
+    private JsonNode snapshotJsonOrNull(String url, String operation, int maximumBytes) {
+        try {
+            HttpResponse<byte[]> response = sendBounded(requestBuilder(url)
+                    .header("Accept", "application/json").GET().build(), maximumBytes, operation);
+            if (response.statusCode() == 404) return null;
+            if (response.statusCode() != 200) {
+                throw boundedHttpFailure(operation, response.statusCode(), response.body());
+            }
+            JsonNode parsed = STRICT_RESPONSE_JSON.readTree(response.body());
+            if (parsed == null || !parsed.isObject()) {
+                throw new AppChainClientException(operation + " returned malformed JSON");
+            }
+            return parsed;
+        } catch (AppChainClientException failure) {
+            throw failure;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AppChainClientException(operation + " was interrupted", interrupted);
+        } catch (Exception failure) {
+            throw new AppChainClientException(operation + " request failed", failure);
+        }
+    }
+
+    private JsonNode snapshotPostJsonOrUnavailable(String url, String body, String operation,
+                                                   int maximumBytes) {
+        try {
+            HttpRequest request = requestBuilder(url).header("Content-Type", "application/json")
+                    .header("Accept", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8)).build();
+            HttpResponse<byte[]> response = sendBounded(request, maximumBytes, operation);
+            if (response.statusCode() == 404) return null;
+            if (response.statusCode() == 503 || response.statusCode() == 409) {
+                SnapshotProofAvailability availability = SnapshotProofAvailability.UNAVAILABLE;
+                try {
+                    String code = STRICT_RESPONSE_JSON.readTree(response.body()).path("code").asText();
+                    availability = switch (code) {
+                        case "SNAPSHOT_NOT_ANCHORED" -> SnapshotProofAvailability.NOT_ANCHORED;
+                        case "SNAPSHOT_NOT_LOCAL" -> SnapshotProofAvailability.NOT_LOCAL;
+                        case "DISPUTED" -> SnapshotProofAvailability.DISPUTED;
+                        default -> SnapshotProofAvailability.UNAVAILABLE;
+                    };
+                } catch (Exception ignored) {
+                    // The typed availability remains UNAVAILABLE for an invalid error envelope.
+                }
+                throw new SnapshotProofUnavailableException(availability,
+                        operation + " is unavailable on the serving node");
+            }
+            if (response.statusCode() != 200) {
+                throw boundedHttpFailure(operation, response.statusCode(), response.body());
+            }
+            JsonNode parsed = STRICT_RESPONSE_JSON.readTree(response.body());
+            if (parsed == null || !parsed.isObject()) {
+                throw new AppChainClientException(operation + " returned malformed JSON");
+            }
+            return parsed;
+        } catch (AppChainClientException failure) {
+            throw failure;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AppChainClientException(operation + " was interrupted", interrupted);
+        } catch (Exception failure) {
+            throw new AppChainClientException(operation + " request failed", failure);
+        }
+    }
+
+    private JsonNode snapshotJsonPost(String url, String body, String operation,
+                                      int maximumBytes, int expectedStatus) {
+        return postJsonBounded(url, body, expectedStatus, maximumBytes, operation);
+    }
+
+    private static void requireSnapshotSeries(String seriesId) {
+        if (seriesId == null || !seriesId.matches("[a-z0-9][a-z0-9._-]{0,127}")) {
+            throw new IllegalArgumentException("invalid authenticated snapshot series id");
+        }
+    }
+
+    private static String requiredSnapshotText(JsonNode node, String field) {
+        JsonNode value = node != null ? node.get(field) : null;
+        if (value == null || !value.isTextual() || value.textValue().isBlank()) {
+            throw new AppChainClientException("Malformed authenticated snapshot response");
+        }
+        return value.textValue();
+    }
+
+    private static long requiredNonNegativeLong(JsonNode node, String field) {
+        JsonNode value = node != null ? node.get(field) : null;
+        if (value == null || !value.isIntegralNumber() || !value.canConvertToLong()
+                || value.longValue() < 0) {
+            throw new AppChainClientException("Malformed authenticated snapshot response");
+        }
+        return value.longValue();
+    }
+
+    private static String requiredSnapshotHex(JsonNode node, String field,
+                                              int minimumBytes, int maximumBytes) {
+        String value = requiredSnapshotText(node, field);
+        if (!isCanonicalLowerHex(value) || (value.length() & 1) != 0
+                || value.length() / 2 < minimumBytes || value.length() / 2 > maximumBytes) {
+            throw new AppChainClientException("Malformed authenticated snapshot response");
+        }
+        return value;
+    }
+
+    private static SnapshotNativeProof parseSnapshotNativeProof(JsonNode node) {
+        String presence = requiredSnapshotText(node, "presence");
+        if (!Set.of("PRESENT", "ABSENT", "TOMBSTONED").contains(presence)) {
+            throw new AppChainClientException("Malformed authenticated snapshot proof presence");
+        }
+        String value = node.hasNonNull("valueHex")
+                ? requiredSnapshotHex(node, "valueHex", 0, MAX_STATE_PROOF_VALUE_BYTES) : null;
+        if (("ABSENT".equals(presence)) != (value == null)) {
+            throw new AppChainClientException("Authenticated snapshot proof presence/value mismatch");
+        }
+        return new SnapshotNativeProof(requiredSnapshotText(node, "profile"),
+                requiredSnapshotText(node, "backend"),
+                requiredSnapshotText(node, "commitmentFormatId"),
+                requiredSnapshotText(node, "proofEncodingId"),
+                requiredSnapshotText(node, "formatFingerprint"),
+                requiredSnapshotHex(node, "genesisId", 32, 32),
+                requiredNonNegativeLong(node, "version"),
+                requiredSnapshotHex(node, "stateRoot", 32, 32),
+                requiredSnapshotHex(node, "keyHex", 1, MAX_STATE_PROOF_KEY_BYTES),
+                value, presence,
+                requiredSnapshotHex(node, "proofWireHex", 1, MAX_STATE_PROOF_WIRE_BYTES));
+    }
+
+    private static SnapshotAnchor parseSnapshotAnchor(JsonNode node) {
+        return new SnapshotAnchor(requiredSnapshotText(node, "chainId"),
+                requiredSnapshotText(node, "mode"), requiredNonNegativeLong(node, "anchoredHeight"),
+                requiredSnapshotHex(node, "stateRootHex", 32, 32),
+                requiredSnapshotHex(node, "blockHashHex", 32, 32),
+                requiredSnapshotText(node, "transactionHash"),
+                requiredNonNegativeLong(node, "l1Slot"));
+    }
+
+    private static SnapshotAdminJob parseSnapshotAdminJob(JsonNode node) {
+        return new SnapshotAdminJob(requiredSnapshotText(node, "jobId"),
+                requiredSnapshotText(node, "operation"), requiredSnapshotText(node, "seriesId"),
+                requiredNonNegativeLong(node, "sequence"), requiredSnapshotText(node, "state"),
+                requiredNonNegativeLong(node, "startedAt"),
+                node.has("completedAt") ? requiredNonNegativeLong(node, "completedAt") : null,
+                node.hasNonNull("result") ? node.get("result").textValue() : null,
+                node.hasNonNull("errorType") ? node.get("errorType").textValue() : null);
+    }
+
     private static String errorMessage(JsonNode body, String fallback) {
         String error = body.path("error").asText("");
         return error.isBlank() ? fallback : error;
@@ -1659,6 +2040,101 @@ public final class AppChainClient {
     // ------------------------------------------------------------------
 
     public record SubmitResult(String messageId, String chainId, String topic) {
+    }
+
+    public record AuthenticatedSnapshotSummary(
+            String seriesId, long sequence, String snapshotId, long entryCount,
+            long completedAppChainHeight, String profile, String lifecycle) {
+    }
+
+    public record AuthenticatedSnapshotPage(
+            List<AuthenticatedSnapshotSummary> items, String nextCursor,
+            long viewHeight, String viewRootHex) {
+        public AuthenticatedSnapshotPage { items = List.copyOf(items); }
+    }
+
+    public record AuthenticatedSnapshotDescriptor(
+            SnapshotDescriptorV1 descriptor, byte[] descriptorBytes, String descriptorCommitmentHex) {
+        public AuthenticatedSnapshotDescriptor {
+            descriptorBytes = descriptorBytes.clone();
+        }
+        @Override public byte[] descriptorBytes() { return descriptorBytes.clone(); }
+    }
+
+    public record SnapshotNativeProof(String profile, String backend, String commitmentFormatId,
+                                      String proofEncodingId, String formatFingerprintHex,
+                                      String genesisIdHex, long height,
+                                      String stateRootHex, String keyHex,
+                                      String valueHex, String presence, String proofWireHex) {
+    }
+
+    public record SnapshotAnchor(String chainId, String mode, long anchoredHeight,
+                                 String stateRootHex, String blockHashHex,
+                                 String transactionHash, long l1Slot) {
+    }
+
+    public record AuthenticatedSnapshotProof(
+            SnapshotDescriptorV1 descriptor, byte[] descriptorBytes,
+            SnapshotNativeProof primaryProof, SnapshotNativeProof secondaryProof,
+            SnapshotAnchor anchor, String statementCommitmentHex, String bundleCommitmentHex,
+            byte[] canonicalBundleBytes) {
+        public AuthenticatedSnapshotProof {
+            descriptorBytes = descriptorBytes.clone();
+            canonicalBundleBytes = canonicalBundleBytes.clone();
+        }
+        @Override public byte[] descriptorBytes() { return descriptorBytes.clone(); }
+        @Override public byte[] canonicalBundleBytes() { return canonicalBundleBytes.clone(); }
+    }
+
+    public record SnapshotPinnedAnchor(
+            String chainId, String anchorMode, String primaryProfile,
+            String primaryRootHex, String chainGenerationIdHex,
+            String applicationProfileDigestHex, long anchoredHeight,
+            String blockHashHex, String anchorTransactionHash, long l1Slot) {
+        public SnapshotPinnedAnchor {
+            if (chainId == null || chainId.isBlank() || anchorMode == null || anchorMode.isBlank()
+                    || primaryProfile == null || primaryProfile.isBlank()
+                    || !canonicalHex(primaryRootHex, 32)
+                    || !canonicalHex(chainGenerationIdHex, 32)
+                    || !canonicalHex(applicationProfileDigestHex, 32)
+                    || anchoredHeight <= 0 || !canonicalHex(blockHashHex, 32)
+                    || anchorTransactionHash == null || anchorTransactionHash.isBlank()
+                    || l1Slot < 0) {
+                throw new IllegalArgumentException("invalid caller-pinned snapshot anchor context");
+            }
+        }
+    }
+
+    public record SnapshotProofVerificationResult(
+            boolean valid, boolean primaryValid, boolean secondaryValid,
+            boolean disputed, boolean trusted, String trust) {
+    }
+
+    private static boolean canonicalHex(String value, int bytes) {
+        return value != null && value.length() == bytes * 2
+                && value.matches("[0-9a-f]+$");
+    }
+
+    public record SnapshotAdminJobRef(String jobId, String operation) {
+    }
+
+    public record SnapshotAdminJob(String jobId, String operation, String seriesId, long sequence,
+                                   String state, long startedAt, Long completedAt,
+                                   String result, String errorType) {
+    }
+
+    public enum SnapshotProofAvailability { NOT_ANCHORED, NOT_LOCAL, DISPUTED, UNAVAILABLE }
+
+    public static final class SnapshotProofUnavailableException extends AppChainClientException {
+        private final SnapshotProofAvailability availability;
+
+        public SnapshotProofUnavailableException(SnapshotProofAvailability availability,
+                                                   String message) {
+            super(message);
+            this.availability = Objects.requireNonNull(availability, "availability");
+        }
+
+        public SnapshotProofAvailability availability() { return availability; }
     }
 
     public record Tip(String chainId, long height, String stateRootHex) {
@@ -1926,7 +2402,7 @@ public final class AppChainClient {
         PASS_THROUGH
     }
 
-    public static final class AppChainClientException extends RuntimeException {
+    public static class AppChainClientException extends RuntimeException {
         public AppChainClientException(String message) {
             super(message);
         }

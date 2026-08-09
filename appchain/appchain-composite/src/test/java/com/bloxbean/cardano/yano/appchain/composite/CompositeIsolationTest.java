@@ -9,6 +9,8 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.appchain.testkit.AppChainTestProfiles;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
+import com.bloxbean.cardano.yano.api.appchain.snapshot.AuthenticatedSnapshotSeriesDescriptorV1;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import org.junit.jupiter.api.Test;
 
@@ -144,6 +146,32 @@ class CompositeIsolationTest {
         assertThat(state.get(CompositeStateKeys.componentKey("documents", LOCAL_KEY)))
                 .hasValue(bytes("version-1"));
         assertThat(state.get(LOCAL_KEY)).isEmpty();
+    }
+
+    @Test
+    void authenticatedSnapshotSeriesAreScopedLikeComponentState() {
+        ComponentDescriptor descriptor = descriptor("history", "history.v1", 1, 0, 0);
+        AppStateMachine stockMachine = new AppStateMachine() {
+            @Override public String id() { return "stock-history"; }
+            @Override public List<AuthenticatedSnapshotSeriesDescriptorV1> authenticatedSnapshotSeries() {
+                return List.of(new AuthenticatedSnapshotSeriesDescriptorV1("daily", "history-v1",
+                        AuthenticatedSnapshotSeriesDescriptorV1.Trigger.APPLICATION_MESSAGE,
+                        StateCommitmentProfiles.MPF.id(), StateCommitmentProfiles.MPF.formatFingerprint(),
+                        StateCommitmentProfiles.MPF.proofEncodingId(),
+                        AuthenticatedSnapshotSeriesDescriptorV1.VerificationTarget.ON_CHAIN,
+                        AuthenticatedSnapshotSeriesDescriptorV1.Visibility.PUBLIC,
+                        "blake2b256", "history-source-v1", 10, 4096, 256, 8192, 100,
+                        AuthenticatedSnapshotSeriesDescriptorV1.RecoveryCoverage.DATASET));
+            }
+            @Override public void apply(AppBlockExecutionContext execution, AppStateWriter state,
+                                        AppEffectEmitter effects) { }
+        };
+        CompositeStateMachine machine = ComposableAppStateMachine.builder(
+                        "history-service", context(1), "history-profile", "1")
+                .machine(descriptor, stockMachine).build();
+
+        assertThat(machine.authenticatedSnapshotSeries()).singleElement()
+                .satisfies(series -> assertThat(series.seriesId()).isEqualTo("history.daily"));
     }
 
     @Test

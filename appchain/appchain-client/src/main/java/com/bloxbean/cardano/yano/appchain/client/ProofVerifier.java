@@ -12,6 +12,10 @@ import com.bloxbean.cardano.vds.jmt.JmtProfile;
 import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.anchor.AnchorDatumV1;
+import com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotCanonicalCodec;
+import com.bloxbean.cardano.yano.api.appchain.snapshot.AuthenticatedSnapshotProofBundleCodec;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
@@ -42,6 +46,12 @@ public final class ProofVerifier {
     private static final int MAX_MEMBERS = 64;
     private static final byte[] PROFILE_FINGERPRINT_DOMAIN =
             "yano-state-commitment-format-v1\0".getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] SNAPSHOT_STORAGE_DOMAIN =
+            "yano-authenticated-snapshot-storage-v1\0".getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] SNAPSHOT_STATEMENT_DOMAIN =
+            "yano-authenticated-snapshot-statement-v1\0".getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] SNAPSHOT_BUNDLE_DOMAIN =
+            "yano-authenticated-snapshot-proof-bundle-v1\0".getBytes(StandardCharsets.US_ASCII);
     private static final ProfileMetadata MPF_PROFILE = profile(
             MPF_BLAKE2B256_V1, "mpf", 0,
             "mpf-blake2b256-format-v1", "mpf-proof-wire-v1",
@@ -71,6 +81,134 @@ public final class ProofVerifier {
     /** Checks proof/root internal consistency without making an authenticity claim. */
     public static boolean verifyInternalConsistency(AppChainClient.Proof proof) {
         return proof != null && verifyAgainstRoot(proof, proof.stateRootHex());
+    }
+
+    /**
+     * Verify an authenticated-snapshot nested proof against an independently
+     * established L1/finality root. This validates the complete descriptor-key
+     * and secondary-root trust chain; it never trusts the server-reported anchor
+     * by itself.
+     */
+    public static boolean verifyAuthenticatedSnapshot(
+            AppChainClient.AuthenticatedSnapshotProof bundle,
+            TrustedStateRoot trustedPrimaryRoot) {
+        if (bundle == null || trustedPrimaryRoot == null) return false;
+        try {
+            var descriptor = SnapshotCanonicalCodec.decodeDescriptor(bundle.descriptorBytes());
+            byte[] trustedGenesis = Hex.decode(trustedPrimaryRoot.genesisIdHex());
+            byte[] expectedApplicationProfile = StateCommitmentIdentity.explicit(
+                    StateCommitmentProfiles.require(trustedPrimaryRoot.profile()), trustedGenesis).digest();
+            if (!descriptor.equals(bundle.descriptor())
+                    || !Arrays.equals(descriptor.chainGenerationId(),
+                    trustedGenesis)
+                    || !Arrays.equals(descriptor.applicationProfileDigest(),
+                    expectedApplicationProfile)
+                    || !hasCanonicalSnapshotCommitments(bundle)) return false;
+            AppChainClient.SnapshotAnchor anchor = bundle.anchor();
+            if (!anchor.chainId().equals(trustedPrimaryRoot.chainId())
+                    || anchor.anchoredHeight() != trustedPrimaryRoot.height()
+                    || !anchor.stateRootHex().equals(trustedPrimaryRoot.stateRootHex())
+                    || trustedPrimaryRoot.source() == TrustedRootSource.CARDANO_ANCHOR
+                    && !anchor.blockHashHex().equals(trustedPrimaryRoot.blockHashHex())) return false;
+            byte[] descriptorKey = ("snapshots/v1/" + descriptor.seriesId() + "/"
+                    + String.format(Locale.ROOT, "%020d", descriptor.sequence()))
+                    .getBytes(StandardCharsets.US_ASCII);
+            AppChainClient.SnapshotNativeProof primary = bundle.primaryProof();
+            if (!primary.profile().equals(trustedPrimaryRoot.profile())
+                    || !hasCanonicalSnapshotProfile(primary)
+                    || !primary.genesisIdHex().equals(trustedPrimaryRoot.genesisIdHex())
+                    || primary.height() != trustedPrimaryRoot.height()
+                    || !primary.stateRootHex().equals(trustedPrimaryRoot.stateRootHex())
+                    || !primary.keyHex().equals(Hex.encode(descriptorKey))
+                    || !"PRESENT".equals(primary.presence())
+                    || !primary.valueHex().equals(Hex.encode(bundle.descriptorBytes()))
+                    || !verifyNative(primary.profile(), AppChainClient.ProofPresence.PRESENT,
+                    Hex.decode(primary.stateRootHex()), descriptorKey, bundle.descriptorBytes(),
+                    Hex.decode(primary.proofWireHex()))) return false;
+            AppChainClient.SnapshotNativeProof secondary = bundle.secondaryProof();
+            AppChainClient.ProofPresence presence = AppChainClient.ProofPresence.valueOf(
+                    secondary.presence());
+            byte[] value = presence == AppChainClient.ProofPresence.ABSENT
+                    ? null : Hex.decode(secondary.valueHex());
+            byte[] series = descriptor.seriesId().getBytes(StandardCharsets.US_ASCII);
+            byte[] secondaryGenesis = Blake2bUtil.blake2bHash256(ByteBuffer.allocate(
+                            SNAPSHOT_STORAGE_DOMAIN.length + 64 + 8 + 2 + series.length)
+                    .put(SNAPSHOT_STORAGE_DOMAIN).put(descriptor.chainGenerationId())
+                    .put(descriptor.snapshotFormatFingerprint()).putLong(descriptor.sequence())
+                    .putShort((short) series.length).put(series).array());
+            return secondary.profile().equals(descriptor.snapshotProfile())
+                    && hasCanonicalSnapshotProfile(secondary)
+                    && secondary.formatFingerprintHex().equals(
+                    Hex.encode(descriptor.snapshotFormatFingerprint()))
+                    && secondary.proofEncodingId().equals(descriptor.snapshotProofWireVersion())
+                    && secondary.genesisIdHex().equals(Hex.encode(secondaryGenesis))
+                    && secondary.height() == descriptor.completedAppChainHeight()
+                    && secondary.stateRootHex().equals(Hex.encode(descriptor.snapshotRoot()))
+                    && verifyNative(secondary.profile(), presence, descriptor.snapshotRoot(),
+                    Hex.decode(secondary.keyHex()), value, Hex.decode(secondary.proofWireHex()));
+        } catch (RuntimeException | StackOverflowError malformed) {
+            return false;
+        }
+    }
+
+    /** Validate the response commitments before the server-reported anchor is trusted. */
+    public static boolean hasCanonicalSnapshotCommitments(
+            AppChainClient.AuthenticatedSnapshotProof bundle) {
+        if (bundle == null) return false;
+        try {
+            var canonical = AuthenticatedSnapshotProofBundleCodec.decode(
+                    bundle.canonicalBundleBytes());
+            return Arrays.equals(canonical.descriptorBytes(), bundle.descriptorBytes())
+                    && sameProof(canonical.descriptorProof().proof(), bundle.primaryProof())
+                    && sameProof(canonical.snapshotProof(), bundle.secondaryProof())
+                    && sameAnchor(canonical.anchor(), bundle.anchor())
+                    && Hex.encode(canonical.statementCommitment())
+                    .equals(bundle.statementCommitmentHex())
+                    && Hex.encode(canonical.bundleCommitment())
+                    .equals(bundle.bundleCommitmentHex());
+        } catch (RuntimeException malformed) {
+            return false;
+        }
+    }
+
+    private static boolean sameProof(
+            com.bloxbean.cardano.yano.api.appchain.state.StateProof canonical,
+            AppChainClient.SnapshotNativeProof transport) {
+        return canonical.snapshot().identity().profile().id().equals(transport.profile())
+                && Hex.encode(canonical.snapshot().identity().profile().formatFingerprint())
+                .equals(transport.formatFingerprintHex())
+                && canonical.proofEncodingId().equals(transport.proofEncodingId())
+                && Hex.encode(canonical.snapshot().identity().genesisId())
+                .equals(transport.genesisIdHex())
+                && canonical.snapshot().height() == transport.height()
+                && Hex.encode(canonical.snapshot().stateRoot()).equals(transport.stateRootHex())
+                && Hex.encode(canonical.canonicalKey()).equals(transport.keyHex())
+                && canonical.presence().name().equals(transport.presence())
+                && Objects.equals(canonical.value() == null ? null : Hex.encode(canonical.value()),
+                transport.valueHex())
+                && Hex.encode(canonical.nativeProof()).equals(transport.proofWireHex());
+    }
+
+    private static boolean sameAnchor(
+            com.bloxbean.cardano.yano.api.appchain.AppAnchorCommitment canonical,
+            AppChainClient.SnapshotAnchor transport) {
+        return canonical.chainId().equals(transport.chainId())
+                && canonical.mode().equals(transport.mode())
+                && canonical.anchoredHeight() == transport.anchoredHeight()
+                && Hex.encode(canonical.stateRoot()).equals(transport.stateRootHex())
+                && Hex.encode(canonical.blockHash()).equals(transport.blockHashHex())
+                && canonical.transactionHash().equals(transport.transactionHash())
+                && canonical.l1Slot() == transport.l1Slot();
+    }
+
+    private static boolean hasCanonicalSnapshotProfile(AppChainClient.SnapshotNativeProof proof) {
+        Optional<ProfileMetadata> selected = profileMetadata(proof.profile());
+        if (selected.isEmpty()) return false;
+        ProfileMetadata metadata = selected.orElseThrow();
+        return metadata.backend().equals(proof.backend())
+                && metadata.commitmentFormatId().equals(proof.commitmentFormatId())
+                && metadata.proofEncodingId().equals(proof.proofEncodingId())
+                && metadata.formatFingerprintHex().equals(proof.formatFingerprintHex());
     }
 
     /** Exact profile metadata compiled into this release's client verifier. */
@@ -112,7 +250,8 @@ public final class ProofVerifier {
         }
         return new TrustedStateRoot(anchor.chainId(), anchor.commitmentProfileId(),
                 Hex.encode(anchor.chainGenesisId()), anchor.height(),
-                Hex.encode(anchor.stateRoot()), TrustedRootSource.CARDANO_ANCHOR);
+                Hex.encode(anchor.stateRoot()), TrustedRootSource.CARDANO_ANCHOR,
+                Hex.encode(anchor.blockHash()));
     }
 
     /**
@@ -432,8 +571,14 @@ public final class ProofVerifier {
             String genesisIdHex,
             long height,
             String stateRootHex,
-            TrustedRootSource source
+            TrustedRootSource source,
+            String blockHashHex
     ) {
+        public TrustedStateRoot(String chainId, String profile, String genesisIdHex,
+                                long height, String stateRootHex, TrustedRootSource source) {
+            this(chainId, profile, genesisIdHex, height, stateRootHex, source, "");
+        }
+
         public TrustedStateRoot {
             chainId = requireText(chainId, "chainId");
             profile = requireIdentifier(profile, "profile");
@@ -452,6 +597,13 @@ public final class ProofVerifier {
                 throw new IllegalArgumentException("stateRootHex must be 32-byte canonical hex");
             }
             source = Objects.requireNonNull(source, "source");
+            blockHashHex = blockHashHex == null ? "" : blockHashHex;
+            if (!blockHashHex.isEmpty() && !canonicalHex(blockHashHex, HASH_BYTES)) {
+                throw new IllegalArgumentException("blockHashHex must be empty or 32-byte canonical hex");
+            }
+            if (source == TrustedRootSource.CARDANO_ANCHOR && blockHashHex.isEmpty()) {
+                throw new IllegalArgumentException("Cardano anchor trust requires its block hash");
+            }
         }
     }
 

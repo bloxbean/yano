@@ -12,7 +12,7 @@ standard library; there is no `pip` install or virtual environment.
 ./showcase.sh status --instance five-node
 ```
 
-The shared YAML starts twelve chains. `payment-chain-settlement` is part of the
+The shared YAML starts thirteen chains. `payment-chain-settlement` is part of the
 default light profile; it does not need a separate chain-start command.
 Membership, keys, peers, proposer, and threshold are injected by the maintained
 cluster launcher; the same YAML works at every node count.
@@ -24,6 +24,7 @@ cluster launcher; the same YAML works at every node count.
 | Cross-cutting application | `document-review-chain` | documents + actors/roles + approval + consumption receipt |
 | Authorization application/backend comparison | `authenticated-map-chain`, `authenticated-map-jmt-chain` | direct actor/role authorization and approval, with MPF/JMT proof behavior |
 | L1 application boundary | `payment-chain-settlement` | L1 observers + EUTxO + settlement effects + derived indexer |
+| L1 history and authenticated snapshots | `cardano-history-chain` | async epoch protocol parameters, stake, proposals, DRep distribution, and optional per-epoch MPF/JMT roots |
 
 `document-review-chain` reuses the ADR-019/031 actor registry, role-aware
 approvals, role authorization capability, and document transitions. It does
@@ -42,6 +43,15 @@ with either opt-in form:
 
 The selection is consensus state, not the rebuildable SQL indexer. It is
 retained in the instance identity and cannot be changed on restart.
+
+Authenticated snapshots are also a fresh-generation choice. Enable the two
+Cardano history series with `--enable-authenticated-snapshots=cardano-history-chain`.
+MPF is the default and supports the nested on-chain proof path; add
+`--authenticated-snapshot-profile jmt-blake2b256-v1` for the off-chain-only
+comparison. The selected series/profile are retained in the instance identity.
+For MPF, `--enable-authenticated-snapshot-mpf-pruning=cardano-history-chain`
+enables archive-time reachable-node pruning. This node-local choice is retained in the instance
+marker and disabled by default until retained-root qualification is complete.
 
 `membership.mode=governed` is enabled independently on the chains. That is
 app-chain member-set governance, not application actor authorization or

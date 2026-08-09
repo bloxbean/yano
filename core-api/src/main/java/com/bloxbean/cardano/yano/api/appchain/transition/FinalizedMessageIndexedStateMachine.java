@@ -80,6 +80,10 @@ public final class FinalizedMessageIndexedStateMachine implements AppStateMachin
         return delegate.validatePrivilegedSystemSubmission(topic, body);
     }
     @Override public Map<String, Object> operationalStatus() { return delegate.operationalStatus(); }
+    @Override public java.util.List<com.bloxbean.cardano.yano.api.appchain.snapshot
+            .AuthenticatedSnapshotSeriesDescriptorV1> authenticatedSnapshotSeries() {
+        return delegate.authenticatedSnapshotSeries();
+    }
 
     @Override
     public AppCapabilityManifest capabilityManifest() {

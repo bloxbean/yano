@@ -22,7 +22,7 @@ class ShowcaseCatalogManifestTest {
             "src/main/showcase/config/application-appchain.yml");
 
     @Test
-    void catalogIsTheOrderedTwelveChainSourceOfTruthForLightYaml() throws Exception {
+    void catalogIsTheOrderedThirteenChainSourceOfTruthForLightYaml() throws Exception {
         JsonNode root = new ObjectMapper().readTree(Files.readString(CATALOG));
         String capabilityGuide = Files.readString(Path.of("docs/CAPABILITY_CATALOG.md"));
         assertThat(root.path("schemaVersion").asInt()).isEqualTo(1);
@@ -41,7 +41,7 @@ class ShowcaseCatalogManifestTest {
         }
         assertThat(classifications).containsExactlyInAnyOrderEntriesOf(Map.of(
                 "foundation", 7,
-                "reference", 3,
+                "reference", 4,
                 "backend-comparison", 1,
                 "l1-boundary", 1));
         Matcher matcher = Pattern.compile(
@@ -49,6 +49,6 @@ class ShowcaseCatalogManifestTest {
                 .matcher(Files.readString(YAML));
         List<String> yamlIds = new ArrayList<>();
         while (matcher.find()) yamlIds.add(matcher.group(1));
-        assertThat(catalogIds).hasSize(12).containsExactlyElementsOf(yamlIds);
+        assertThat(catalogIds).hasSize(13).containsExactlyElementsOf(yamlIds);
     }
 }

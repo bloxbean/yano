@@ -457,7 +457,12 @@ composed components cannot collide or request another component's series.
 
 Large snapshots are multi-block builds. V1 permits one active build per scoped series. A small
 authenticated primary receipt records series/sequence, source commitment and algorithms, expected
-chunk/entry counts, next chunk, received entries, last canonical key, and current secondary root.
+chunk/entry counts, next chunk, received entries, last canonical key, a fixed-size source
+accumulator, and current secondary root. Every enabled declaration has exactly one matching
+`AuthenticatedSnapshotSourceCommitmentV1`; startup rejects missing, duplicate, or algorithm/wire
+mismatches. The runtime advances that adapter over the same canonical chunks used to build the
+secondary tree and compares `finish(...)` with the declared source root before sealing. The adapter
+is deterministic plugin code under the ordinary state-machine conformance rules and performs no I/O.
 Each block applies only its bounded candidate delta against that finalized root. Duplicate,
 reordered, missing, overlapping, or unexpected chunks/keys reject deterministically. The final seal
 atomically writes the immutable descriptor, advances the series head, and deletes the receipt.
@@ -829,16 +834,16 @@ is above the rollback target. A concurrently running generator observes cancella
 manifest READY; any partial `GENERATING` data is discarded idempotently.
 
 ### 8.2 After finality
-Every production epoch attestation requires **ADR-027 §2.4 deep-rollback detection**, which does not exist today
-(`onL1RollbackWithinGeneration` never compares the rollback target against what has been
-finalized; `BridgeRollbackGuard` is written but has no production caller). Here the predicate
+Every production epoch attestation requires **ADR-027 §2.4 deep-rollback detection**. The epoch
+observation spool now detects rollback below a finalized boundary and permanently removes the chain
+from voting; the authenticated-snapshot runtime durably latches the descriptor lineage as
+`DISPUTED`, including across restart. Here the predicate
 is clean and low-cardinality: *"epoch E's attestation is disputed"* — unlike "which of these
 4,000 deposits is now unbacked." With `epoch-stability-depth = k` the event should be
 effectively unreachable, but it must fail closed rather than silently.
 
-This applies equally to protocol parameters, stake, and governance. M1–M3 implementation and
-devnet testing may proceed without the guard, but no preprod/production pilot may finalize these
-facts until the guard is wired.
+This applies equally to protocol parameters, stake, and governance. Broader ADR-027 governed
+recovery remains a production release gate; there is deliberately no operator-only clear switch.
 
 When the guard identifies a deep rollback that disputes a published snapshot, the chain halts new
 epoch publication fail-closed and records/exposes `DISPUTED` operational status for the affected
@@ -906,34 +911,40 @@ The nested transport is exact canonical CBOR:
 ```cddl
 authenticated-snapshot-proof-bundle-v1 = [
   1,
-  [text, bytes],                   ; anchor evidence wire ID + strict ADR-031 evidence bytes
-  [                                ; primary descriptor proof
-    text, bytes .size 32, text,    ; profile, format fingerprint, proof wire
-    bytes .size 32, uint,          ; primary root and anchored height
-    bytes, bytes,                  ; exact descriptor key and canonical descriptor bytes
-    mpf-inclusion-v1
-  ],
-  [                                ; secondary application proof
-    text, bytes .size 32, text,    ; profile, format fingerprint, proof wire
-    bytes .size 32,                ; must equal descriptor.snapshotRoot
-    bytes, 0 / 1, bytes,           ; application key, ABSENT/PRESENT, exact value (empty if absent)
-    mpf-inclusion-v1 / mpf-absence-v1
-  ],
+  ["app-anchor-commitment-cbor-v1", bytes], ; canonical anchor-evidence-v1 below
+  state-proof-envelope-v1,         ; primary descriptor proof + finality provenance
+  state-proof-v1,                  ; secondary application proof
   [text, uint, text,               ; series, sequence, schema
-   bytes .size 32, bytes .size 32],; descriptor commitment, statement commitment
+   bytes, bytes .size 32, bytes .size 32],
+                                    ; descriptor bytes, descriptor commitment, statement commitment
   bytes .size 32                   ; bundle commitment
 ]
-mpf-inclusion-v1 = [0, bytes, bytes, bytes, [* mpf-fold-v1]]
-mpf-absence-v1 = [1, bytes, uint, bytes, bytes, bytes, [* mpf-fold-v1]]
-mpf-fold-v1 = [uint, bytes, uint,
-               [bytes .size 32, bytes .size 32, bytes .size 32, bytes .size 32],
-               bytes]
+anchor-evidence-v1 = [
+  1, text, text, uint,              ; version, chainId, mode, anchored height
+  bytes .size 32, bytes .size 32,   ; state root, app-block hash
+  text, uint                         ; Cardano transaction hash, L1 slot
+]
+state-proof-envelope-v1 = [
+  [1, text, bytes .size 32, 0,      ; schema, chainId, block hash, Ed25519 scheme
+   [* [bytes .size 32, bytes .size 64]]],
+  state-proof-v1
+]
+state-proof-v1 = [
+  text, bytes .size 32, text,        ; profile, format fingerprint, native proof wire ID
+  bytes .size 32, bytes .size 32,    ; generation/storage identity, root
+  uint, bytes, 0 / 1 / 2, bytes,     ; height, key, PRESENT/ABSENT/TOMBSTONED, value
+  bytes                              ; released profile-native proof wire
+]
 ```
 
-`mpf-inclusion-v1` fields are key, value, encoded leaf suffix, and leaf-to-root folds after its tag;
-`mpf-absence-v1` fields are key, terminal cursor, conflicting suffix/key hash/value hash, and folds.
-Existing ADR-031 anchor evidence remains independently decoded and checked; embedding bytes does not
-turn an operator assertion into a trusted anchor.
+The primary and secondary native proof bytes remain profile-neutral transport: MPF carries
+`mpf-proof-wire-v1`, while classic JMT carries `jmt-proof-cbor-v1` only in off-chain profiles. The
+outer codec strictly bounds keys, values, proofs, signature count, text, and total bytes, rejects
+non-canonical re-encoding, and validates the descriptor/anchor/root identities before returning a
+bundle. Existing ADR-031 anchor evidence remains independently checked; embedding it does not turn
+an operator assertion into a trusted anchor. The core golden vector fixes the complete encoded
+bundle length and SHA-256 fingerprint, while field-tamper tests cover anchor and native-proof
+substitution.
 
 ```text
 statementCommitment = Blake2b-256(
@@ -990,10 +1001,10 @@ are generic runtime endpoints and are present only when the selected chain adver
 | `POST /snapshots/{seriesId}/{sequence}/proof` | series proof policy, bounded | generate a secondary inclusion/absence proof and its primary descriptor proof for a canonical key |
 | `POST /snapshots/proof/verify` | read, bounded | pure verification of a supplied nested bundle; requires no local snapshot |
 | `GET /snapshots/status` | read | cache/executor/online/archive counts and degraded state, with no filesystem path or credential disclosure |
-| `POST /admin/snapshots/{seriesId}/{sequence}/archive` | privileged | enqueue idempotent node-local archive and optional verified eviction |
-| `POST /admin/snapshots/{seriesId}/{sequence}/restore` | privileged | enqueue idempotent verified restore into the online store |
-| `POST /admin/snapshots/{seriesId}/{sequence}/evict` | privileged | explicit local eviction subject to finality/rollback/archive policy |
-| `GET /admin/snapshots/jobs/{jobId}` | privileged | bounded archive/restore/eviction job status with redacted diagnostics |
+| `POST /admin/snapshots/{seriesId}/{sequence}/archive` | snapshot-admin | enqueue idempotent node-local archive and optional verified eviction |
+| `POST /admin/snapshots/{seriesId}/{sequence}/restore` | snapshot-admin | enqueue idempotent verified restore into the online store |
+| `POST /admin/snapshots/{seriesId}/{sequence}/evict` | snapshot-admin | explicit local eviction subject to finality/rollback/archive policy |
+| `GET /admin/snapshots/jobs/{jobId}` | snapshot-admin | bounded archive/restore/eviction job status with redacted diagnostics |
 
 Archive/restore/eviction return `202` and a job ID; they never run storage traversal on an HTTP or
 consensus thread. `404` means no committed descriptor, `409` means incomplete/not yet evictable,
@@ -1019,6 +1030,14 @@ key, and bounded job queue. Archive providers and restore sources come only from
 configuration—request bodies cannot supply arbitrary filesystem paths or URLs. A public proof
 request never triggers restore/download or disk mutation. Proof-cache keys bind chain generation,
 descriptor commitment, snapshot root, profile fingerprint, canonical key, and proof kind.
+
+The dedicated permission is configured independently from generic full/submit keys. Durable jobs
+retain a non-secret hash-derived principal ID, use bounded completed-job retention, and hold the
+current runtime-generation lease for their complete archive/restore/evict operation. Verification
+requests are raw-body bounded and share the chain's proof admission semaphore. `local-anchor`
+resolves the bundle's exact retained height rather than the latest anchor. `caller-pinned-root`
+requires chain ID, anchor mode, primary profile/root/generation/application identity, anchored
+height, block hash, anchor transaction hash, and L1 slot; partial trust contexts are rejected.
 
 The generic client exposes catalog, descriptor, proof, verification, availability, and privileged
 job methods with the same typed status distinctions. Application plugins such as Cardano History

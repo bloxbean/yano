@@ -23,14 +23,14 @@ class ShowcaseCatalogCharacterizationTest {
             "(?m)^      state-machine: \"?([^\"\\s]+)\"?$");
 
     @Test
-    void lightProfilePinsTwelveNamedApplicationsInPresentationOrder() throws Exception {
+    void lightProfilePinsThirteenNamedApplicationsInPresentationOrder() throws Exception {
         Map<String, String> applications = applications(Files.readString(CONFIG));
 
         assertThat(applications.keySet()).containsExactly(
                 "orders-chain", "registry-chain", "approvals-chain", "balances-chain",
                 "documents-chain", "workflow-chain", "roles-chain", "payments-chain",
                 "authenticated-map-chain", "authenticated-map-jmt-chain",
-                "payment-chain-settlement", "document-review-chain");
+                "payment-chain-settlement", "document-review-chain", "cardano-history-chain");
         assertThat(applications).containsAllEntriesOf(Map.ofEntries(
                 Map.entry("orders-chain", "ordered-log"),
                 Map.entry("registry-chain", "kv-registry"),
@@ -43,7 +43,8 @@ class ShowcaseCatalogCharacterizationTest {
                 Map.entry("authenticated-map-chain", "authenticated-map"),
                 Map.entry("authenticated-map-jmt-chain", "authenticated-map"),
                 Map.entry("payment-chain-settlement", "eutxo-ledger"),
-                Map.entry("document-review-chain", "document-review"))).hasSize(12);
+                Map.entry("document-review-chain", "document-review"),
+                Map.entry("cardano-history-chain", "cardano-history-pilot"))).hasSize(13);
     }
 
     @Test
@@ -60,7 +61,8 @@ class ShowcaseCatalogCharacterizationTest {
         assertThat(yaml).contains("preset: order-approval-outbox-v1")
                 .contains("type: \"eutxo-vault-deposit-v1\"")
                 .contains("type: \"eutxo-batch-withdrawal-confirmation-v1\"")
-                .contains("state-machine: \"document-review\"");
+                .contains("state-machine: \"document-review\"")
+                .contains("state-machine: \"cardano-history-pilot\"");
     }
 
     private static Map<String, String> applications(String yaml) {

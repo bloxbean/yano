@@ -128,12 +128,16 @@ against a root supplied only by the redeemer is not authenticated and must be re
 
 ## Historical L1 epoch facts
 
-ADR-031 supplies the replay-safe execution boundary required by proposed ADR-028: an epoch observer
-will read an ephemeral epoch-pinned L1 state during observation, emit canonical claims, and the
-application will consume only those claims after they are sequenced into an app block. The live
-ledger handle is never available inside `apply`. Protocol-parameter and per-credential stake facts
-can then use `ProofSubjects.epochProtocolParameters(...)` and `epochStake(...)`. ADR-028 remains a
-separate proposed implementation; these subject helpers reserve the portable proof contract.
+ADR-028 builds on the replay-safe ADR-031 execution boundary. An epoch observer reads an ephemeral,
+epoch-pinned L1 view asynchronously after the first block of a new epoch, emits canonical claims,
+and the application consumes only claims sequenced into an app block. The live ledger handle is
+never available inside `apply`. Protocol parameters, stake `[coin,poolHash]`, proposal lifecycle,
+and DRep voting stake are independently selectable stdlib components.
+
+Large immutable epoch datasets may opt into the generic authenticated-snapshot capability. Their
+small descriptors remain in primary app-chain state while each dataset has an independently
+archivable MPF or JMT root. See [Authenticated snapshots](AUTHENTICATED_SNAPSHOTS.md) for storage,
+proof, endpoint, retention, and operational details.
 
 ## Testing checklist
 

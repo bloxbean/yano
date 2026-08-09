@@ -1,7 +1,7 @@
 # Yano App-Chain Showcase — Full Demo Guide
 
 One guide to demonstrate every app-chain capability with the packaged
-showcase: all twelve chains and their state machines, regular and bulk
+showcase: all thirteen chains and their state machines, regular and bulk
 submission, deterministic effects, L1 anchoring on devnet and preprod,
 verifiable reads with historical versioning, the browser console, and the
 Java client (including a runnable fat jar).
@@ -76,12 +76,12 @@ chmod 600 ./private-anchor/anchor.seed
 ```
 
 Node 0's API is `http://127.0.0.1:7070/api/v1` (`--http-base` shifts it).
-All twelve chains report at `GET /api/v1/app-chain/chains`.
+All thirteen chains report at `GET /api/v1/app-chain/chains`.
 
 ### The ADR-031 capability story
 
 Present the chains as foundations plus a small number of meaningful
-compositions, not as twelve unrelated state-machine implementations:
+compositions, not as thirteen unrelated state-machine implementations:
 
 | Demo | Composition or boundary |
 |---|---|

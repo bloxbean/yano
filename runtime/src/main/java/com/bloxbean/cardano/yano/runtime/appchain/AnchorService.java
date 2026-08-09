@@ -56,7 +56,7 @@ final class AnchorService {
     private static final String META_ANCHOR_TX = "anchor_last_tx";
     private static final String META_ANCHOR_SLOT = "anchor_last_slot";
     private static final String META_ANCHOR_FROM = "anchor_last_from_height";
-    private static final String META_ANCHOR_HISTORY = "anchor_confirmation_history_v1";
+    static final String META_ANCHOR_HISTORY = "anchor_confirmation_history_v1";
 
     /** Linear fee parameters from the node's current protocol params (I1.5). */
     record FeeParams(long minFeeA, long minFeeB) {

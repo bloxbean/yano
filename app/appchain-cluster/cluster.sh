@@ -2605,6 +2605,7 @@ launch_node() {
   if [ "$RUNTIME" = "native" ]; then
     ( cd "$YANO_HOME" || exit
       export YANO_APP_CHAIN_API_AUTH_ENABLED=false YANO_APP_CHAIN_API_KEYS="$api_key"
+      export YANO_APP_CHAIN_API_SNAPSHOT_ADMIN_KEYS="$api_key"
       # Select through the environment, never a -D selector. The optional
       # operator overlay is ordinal 275; the generated private-key overlay is
       # ordinal 350 and remains below launcher-owned system properties (400).
@@ -2613,6 +2614,7 @@ launch_node() {
   else
     ( cd "$YANO_HOME" || exit
       export YANO_APP_CHAIN_API_AUTH_ENABLED=false YANO_APP_CHAIN_API_KEYS="$api_key"
+      export YANO_APP_CHAIN_API_SNAPSHOT_ADMIN_KEYS="$api_key"
       [ -n "$overlay_location" ] && export QUARKUS_CONFIG_LOCATIONS="$overlay_location"
       exec java ${JAVA_OPTS:-} "${args[@]}" -jar "$JAR" ${YANO_EXTRA_ARGS:-} ) >"$log" 2>&1 &
   fi

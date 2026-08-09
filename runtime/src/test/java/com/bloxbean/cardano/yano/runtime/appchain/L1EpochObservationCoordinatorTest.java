@@ -7,6 +7,10 @@ import com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochState;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochStateProvider;
 import com.bloxbean.cardano.yano.api.appchain.l1view.ProtocolParamsView;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
+import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
+import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
+import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.LoggerFactory;
@@ -18,6 +22,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import org.rocksdb.WriteBatch;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -111,7 +116,7 @@ class L1EpochObservationCoordinatorTest {
                      proposer::get, observation -> {
                          offered.add(observation);
                          return true;
-                     }, "rotation", LoggerFactory.getLogger("epoch-test"))) {
+                     }, ignored -> { }, "rotation", LoggerFactory.getLogger("epoch-test"))) {
             coordinator.start();
             coordinator.onBlockApplied(3_100, 910, bytes(0x32));
             await(() -> coordinator.status().toString().contains("ready=1"));
@@ -198,6 +203,49 @@ class L1EpochObservationCoordinatorTest {
         }
     }
 
+    @Test
+    void restartReconcilesFollowerReadyRecordAlreadyCommittedInAppHistory(@TempDir Path dir) {
+        L1EpochBoundary boundary = new L1EpochBoundary(70, 71, 7_000,
+                bytes(0x71), 1_700);
+        EpochObservationManifest manifest = new EpochObservationManifest(
+                1, "synthetic", 70, 71, 71, 0, 1, 0, bytes(0x72));
+        L1Observation observation = L1Observation.epoch(
+                "synthetic", 71, 7_000, bytes(0x71), new byte[]{9});
+        try (AppLedgerStore ledger = ledger(dir.resolve("ready-crash"))) {
+            EpochObservationSpool spool = new EpochObservationSpool(ledger, 1_000_000);
+            spool.begin(boundary, manifest);
+            spool.append(boundary, manifest, 0, new byte[]{9});
+            spool.complete(manifest);
+
+            AppMessage message = AppMessage.builder().version(1).messageId(bytes(0x73))
+                    .chainId("epoch-test").topic(observation.topic()).sender(bytes(0x74))
+                    .senderSeq(1).expiresAt(Long.MAX_VALUE).body(observation.encode())
+                    .authScheme(0).authProof(new byte[64]).build();
+            AppBlock block = new AppBlock(AppBlock.BLOCK_VERSION, "epoch-test", 1,
+                    AppBlock.GENESIS_PREV_HASH, 7_000, bytes(0x71), 1,
+                    AppBlockCodec.messagesRoot(List.of(message)), bytes(0x75),
+                    List.of(message), bytes(0x76), FinalityCert.empty());
+            try (WriteBatch batch = new WriteBatch()) {
+                ledger.commitBlock(block, AppBlockCodec.blockHash(block), block.stateRoot(), batch);
+            }
+
+            EpochObservationManifest later = new EpochObservationManifest(
+                    1, "synthetic", 71, 72, 72, 0, 1, 0, bytes(0x77));
+            L1EpochBoundary laterBoundary = new L1EpochBoundary(
+                    71, 72, 7_100, bytes(0x78), 1_701);
+            spool.begin(laterBoundary, later);
+            spool.append(laterBoundary, later, 0, new byte[]{10});
+            spool.complete(later);
+
+            assertThat(spool.status().toString()).contains("ready=2");
+            assertThat(spool.reconcileFinalizedBlocks()).isEqualTo(1);
+            assertThat(spool.status().toString()).contains("finalized=1");
+            assertThat(spool.offer(Long.MAX_VALUE, 1, 65_536)).singleElement()
+                    .satisfies(offered -> assertThat(offered.observation().epochAnchor().newEpoch())
+                            .isEqualTo(72));
+        }
+    }
+
     private static L1EpochObservationCoordinator coordinator(
             L1EpochObserver observer, FakeProvider provider, AppLedgerStore ledger,
             List<L1Observation> offered) {
@@ -206,7 +254,7 @@ class L1EpochObservationCoordinatorTest {
                 () -> true, observation -> {
                     offered.add(observation);
                     return true;
-                }, "test", LoggerFactory.getLogger("epoch-test"));
+                }, ignored -> { }, "test", LoggerFactory.getLogger("epoch-test"));
     }
 
     private static L1EpochObserver observer(CountDownLatch entered, CountDownLatch release) {

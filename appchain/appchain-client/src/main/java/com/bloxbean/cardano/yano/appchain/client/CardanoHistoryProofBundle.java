@@ -86,6 +86,54 @@ public final class CardanoHistoryProofBundle {
         }
     }
 
+    /** Nested primary-descriptor + secondary MPF/JMT proof for an epoch-stake entry. */
+    public record SnapshotStake(long epoch, String seriesId, int credentialType,
+                                byte[] credentialHash, StakeMode mode, BigInteger coin,
+                                byte[] poolHash,
+                                AppChainClient.AuthenticatedSnapshotProof proof) {
+        public SnapshotStake {
+            credentialHash = cloneExact(credentialHash, 28, "credentialHash");
+            poolHash = poolHash == null ? new byte[0] : poolHash.clone();
+            Objects.requireNonNull(mode, "mode"); Objects.requireNonNull(coin, "coin");
+            Objects.requireNonNull(proof, "proof");
+            if (coin.signum() < 0 || mode != StakeMode.ABSENT && mode != StakeMode.MINIMUM
+                    && poolHash.length != 28) throw new IllegalArgumentException("invalid stake predicate");
+        }
+        @Override public byte[] credentialHash() { return credentialHash.clone(); }
+        @Override public byte[] poolHash() { return poolHash.clone(); }
+        public boolean verify(AnchorDatumV1 anchor, AnchorIdentity identity) {
+            var descriptor = proof.descriptor();
+            if (!seriesId.equals(descriptor.seriesId()) || !descriptor.complete()
+                    || !"epoch-stake-v1".equals(descriptor.schemaId())
+                    || !"blake2b256".equals(descriptor.sourceCommitmentAlgorithm())
+                    || !"epoch-stake-source-v1".equals(descriptor.sourceCommitmentWireVersion())
+                    || !(descriptor.sourceBoundary()
+                    instanceof com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotSourceBoundary.L1Epoch boundary)
+                    || boundary.datasetEpoch() != epoch || boundary.previousEpoch() != epoch
+                    || epoch == Long.MAX_VALUE || boundary.newEpoch() != epoch + 1
+                    || !Arrays.equals(Hex.decode(proof.secondaryProof().keyHex()),
+                    EpochStakeContract.credentialOrderKey(credentialType, credentialHash))
+                    || !ProofVerifier.verifyAuthenticatedSnapshot(proof, identity.trustedRoot(anchor))) {
+                return false;
+            }
+            if (mode == StakeMode.ABSENT) return "ABSENT".equals(proof.secondaryProof().presence());
+            if (!"PRESENT".equals(proof.secondaryProof().presence())
+                    || proof.secondaryProof().valueHex() == null) return false;
+            EpochStakeContract.Value value = EpochStakeContract.decodeValue(
+                    Hex.decode(proof.secondaryProof().valueHex()));
+            boolean minimum = value.coin().compareTo(coin) >= 0;
+            boolean exact = value.coin().equals(coin);
+            boolean pool = Arrays.equals(value.poolHash(), poolHash);
+            return switch (mode) {
+                case MINIMUM -> minimum;
+                case POOL -> pool;
+                case MINIMUM_AND_POOL -> minimum && pool;
+                case EXACT_AND_POOL -> exact && pool;
+                case ABSENT -> false;
+            };
+        }
+    }
+
     public record Proposal(long epoch, String componentId, byte[] transactionId,
                            int governanceActionIndex,
                            EpochGovernanceContract.ActionType actionType,
@@ -132,6 +180,41 @@ public final class CardanoHistoryProofBundle {
                     || fact.decodedValue() == null) return false;
             return mode == AmountMode.EXACT ? fact.decodedValue().equals(coin)
                     : fact.decodedValue().compareTo(coin) >= 0;
+        }
+    }
+
+    /** Nested primary-descriptor + secondary MPF/JMT proof for a DRep amount. */
+    public record SnapshotDRepAmount(long epoch, String seriesId, int drepType,
+                                     byte[] drepHash, AmountMode mode, BigInteger coin,
+                                     AppChainClient.AuthenticatedSnapshotProof proof) {
+        public SnapshotDRepAmount {
+            drepHash = cloneExact(drepHash, 28, "drepHash");
+            Objects.requireNonNull(mode, "mode"); Objects.requireNonNull(coin, "coin");
+            Objects.requireNonNull(proof, "proof");
+            if (coin.signum() < 0) throw new IllegalArgumentException("coin cannot be negative");
+        }
+        @Override public byte[] drepHash() { return drepHash.clone(); }
+        public boolean verify(AnchorDatumV1 anchor, AnchorIdentity identity) {
+            var descriptor = proof.descriptor();
+            if (!seriesId.equals(descriptor.seriesId()) || !descriptor.complete()
+                    || !"epoch-drep-distribution-v1".equals(descriptor.schemaId())
+                    || !"blake2b256".equals(descriptor.sourceCommitmentAlgorithm())
+                    || !"epoch-drep-source-v1".equals(descriptor.sourceCommitmentWireVersion())
+                    || !(descriptor.sourceBoundary()
+                    instanceof com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotSourceBoundary.L1Epoch boundary)
+                    || boundary.datasetEpoch() != epoch || boundary.newEpoch() != epoch
+                    || boundary.previousEpoch() != (epoch == 0 ? 0 : epoch - 1)
+                    || !Arrays.equals(Hex.decode(proof.secondaryProof().keyHex()),
+                    EpochGovernanceContract.drepOrderKey(drepType, drepHash))
+                    || !ProofVerifier.verifyAuthenticatedSnapshot(proof, identity.trustedRoot(anchor))) {
+                return false;
+            }
+            if (mode == AmountMode.ABSENT) return "ABSENT".equals(proof.secondaryProof().presence());
+            if (!"PRESENT".equals(proof.secondaryProof().presence())
+                    || proof.secondaryProof().valueHex() == null) return false;
+            BigInteger actual = EpochGovernanceContract.decodeCoin(
+                    Hex.decode(proof.secondaryProof().valueHex()));
+            return mode == AmountMode.EXACT ? actual.equals(coin) : actual.compareTo(coin) >= 0;
         }
     }
 

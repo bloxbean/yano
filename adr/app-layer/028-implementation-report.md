@@ -420,6 +420,105 @@ Local pruning qualification:
 - a live one-member app chain produces four blocks while the opt-in background worker advances a two-height proof
   horizon and reports a healthy completed pass through the ordinary status API.
 
-The full-scale measurements remain the M4 JMT and pruned-MPF results. Runtime qualification deliberately uses
-small roots to exercise lifecycle, concurrency, crash, and multi-root correctness quickly; it does not relabel
+The full-scale measurements remain the M4 direct-state results. Runtime qualification deliberately uses small
+primary roots to exercise lifecycle, concurrency, crash, and multi-root correctness quickly; it does not relabel
 the single-snapshot benchmark as steady-state annual storage.
+
+### M8a–M8c authenticated snapshot amendment
+
+The scalable history path is implemented as a reusable `authenticated-snapshots-v1` capability. A state machine
+declares canonical logical series and writes a small immutable descriptor chain into its primary state. Every
+large period or epoch dataset is built in its own secondary authenticated namespace. Chains that do not enable
+the capability keep their existing transition and root behavior; Cardano History is the first consumer, not an
+owner of the generic runtime.
+
+Implemented:
+
+- immutable series descriptors, domain-separated draft continuation tokens, deterministic bounded chunks,
+  write-once seals, primary descriptor/head commitments, rollback/replay reconstruction, and reserved-namespace
+  enforcement across simple and composite state machines;
+- a mandatory per-series incremental source-commitment adapter. The runtime recomputes the source root from
+  canonical chunks and rejects seal when it differs from the declared dataset root; adapter algorithm/wire
+  identity is validated at startup and scoped through compositions;
+- MPF secondary roots for off-chain and Cardano on-chain verification, plus durable incremental classic JMT
+  secondary roots for off-chain-only deployments;
+- a strict nested proof bundle that binds the anchored primary root, the complete descriptor, secondary root,
+  series/sequence/schema/dataset epoch, canonical fact key/value, profile/fingerprint, and both proof wires;
+- an MPF Cardano validator that decodes and binds every canonical descriptor field instead of trusting
+  caller-selected keys or metadata;
+- one shared online RocksDB namespace, verified archive creation, lease-safe eviction, staged validation before
+  restore, interrupted-restore reconciliation, byte-identical proof checks after restore, and durable local admin
+  jobs with idempotency and startup recovery;
+- bounded proof concurrency with `429 + Retry-After`, root-bound opaque catalog cursors, series visibility
+  enforcement, and node-local retention jobs that archive the oldest eligible snapshot outside rollback
+  retention;
+- optional archive-time MPF reachable-node pruning. It is disabled by default and can be enabled per configured
+  showcase chain with `--enable-authenticated-snapshot-mpf-pruning=cardano-history-chain`;
+- generic REST/client/UI surfaces for catalog, descriptors, status, proof generation, proof verification, and
+  privileged archive/restore/evict job management. Cardano History stake and DRep query adapters resolve the
+  logical epoch snapshot without exposing physical keys.
+- one permit around the complete nested proof operation, durable retry of startup-interrupted/saturated admin
+  jobs, sealed-root-reachable MPF integrity validation (unreachable construction garbage is excluded
+  from archives, while every reachable corrupt node fails closed), and a persistent
+  `DISPUTED` latch that fails proof/lifecycle operations closed after rollback below a finalized epoch claim.
+- final review hardening: consensus-only limits at on-chain seal, reconciliation of both proposer
+  `OFFERED` and follower `READY` crash windows, exact reachable-key archive equality, runtime-owned
+  mutation charging, byte-bounded JMT inspection, generation-fenced administration, bounded durable
+  job/audit retention, independently scoped snapshot-admin credentials, and complete caller-pinned
+  anchor provenance.
+
+Independent architecture, scalability, and security re-reviews were repeated after the final
+hardening changes. All three reviewers reported no remaining blocker or high-severity finding. The
+external epoch-crossing/soak gates below remain deployment evidence and are not implied by that code
+review result.
+
+The public REST family is:
+
+| Method and path | Purpose |
+|---|---|
+| `GET /app-chain/chains/{chainId}/snapshots?series=&cursor=&limit=` | Root-bound paged catalog |
+| `GET /app-chain/chains/{chainId}/snapshots/{series}/{sequence}` | Canonical descriptor |
+| `POST /app-chain/chains/{chainId}/snapshots/{series}/{sequence}/proof` | Root-fixed nested proof bundle |
+| `POST /app-chain/chains/{chainId}/snapshots/proof/verify` | Strict local-anchor or caller-pinned-root verification |
+| `GET /app-chain/chains/{chainId}/snapshots/status` | Public series/profile/availability/retention health |
+| `POST /app-chain/chains/{chainId}/admin/snapshots/{series}/{sequence}/{archive\|restore\|evict}` | Idempotent privileged lifecycle job |
+| `GET /app-chain/chains/{chainId}/admin/snapshots/jobs[/{jobId}]` | Privileged durable job status |
+
+Full-scale logical-snapshot measurements on the same Apple M4 Max / OpenJDK 25.0.2 host use 1,300,000 entries,
+52 chunks of 25,000, 32 proof clients, and 4,096 proof requests:
+
+| Measure | MPF with archive pruning | Incremental classic JMT |
+|---|---:|---:|
+| Ingest | 79.425 s | 69.496 s |
+| Restart/open fixed root | 2.432 s | 0.832 s |
+| Online RocksDB | 3,803,984,827 bytes | 325,719,208 bytes |
+| Verified archive | 271,679,025 bytes | 305,921,998 bytes |
+| Archive | 105.766 s | 32.842 s |
+| Local RocksDB after eviction | 2,094,241 bytes | 644,811 bytes |
+| Restore | 17.286 s | 22.263 s |
+| Restored proof | byte-identical | byte-identical |
+| Secondary-runtime proof throughput | 47,336 QPS | 30,037 QPS |
+| Secondary-runtime proof p50 / p95 / p99 | 0.214 / 2.331 / 7.064 ms | 0.778 / 1.698 / 7.821 ms |
+| Verification target | off-chain and on-chain | off-chain only |
+
+Machine-readable results are retained in
+[`benchmarks/028-m8-authenticated-snapshot-mpf.json`](benchmarks/028-m8-authenticated-snapshot-mpf.json) and
+[`benchmarks/028-m8-authenticated-snapshot-jmt.json`](benchmarks/028-m8-authenticated-snapshot-jmt.json).
+The root-reachable MPF archive is 92.9% smaller than the sealed online RocksDB and clears the initial 3.5 GB archive
+budget by a wide margin. This is evidence for an opt-in storage policy, not proof that arbitrary CCL pruning is
+safe: qualification still verifies the exact retained snapshot root and proof before publishing an archive and
+again after restore. The default remains disabled until multi-epoch retained-root and public-network soak evidence
+is accumulated.
+
+These measurements use the production `EpochStakeStateMachine` canonical key/value and source-commitment
+adapter, rather than a benchmark-only dataset contract. Both profiles produced the same source dataset root,
+while their authenticated roots differ as expected. The proof figures are the in-process secondary-runtime
+microbenchmark, not HTTP end-to-end results. The M8c
+HTTP matrix (1/8/32/64 clients, hot/mixed/cold access, overload behavior, memory/file handles/IOPS, and block
+production impact) remains deployment qualification evidence and must not be inferred from this table.
+
+The remaining M8d work is deployment evidence rather than an unimplemented API: recreate the three-member
+preprod pilot, compare reconstructed epochs with the independent sources listed in ADR-028, exercise asymmetric
+archive/restore and an L1-anchored nested MPF proof, and retain the deployment through a live epoch crossing. The
+approximately fifty-day ten-live-epoch production soak and ADR-027 deep-rollback release gate remain explicitly
+open; neither is fabricated by local benchmarks.

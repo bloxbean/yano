@@ -81,6 +81,18 @@ public interface AppStateMachine {
         return AppCapabilityManifest.application(id());
     }
 
+    /** Authenticated snapshot series this machine can populate when enabled by the chain. */
+    default java.util.List<com.bloxbean.cardano.yano.api.appchain.snapshot
+            .AuthenticatedSnapshotSeriesDescriptorV1> authenticatedSnapshotSeries() {
+        return java.util.List.of();
+    }
+
+    /** Incremental source-commitment verifiers for every declared snapshot series. */
+    default java.util.List<com.bloxbean.cardano.yano.api.appchain.snapshot
+            .AuthenticatedSnapshotSourceCommitmentV1> authenticatedSnapshotSourceCommitments() {
+        return java.util.List.of();
+    }
+
     /**
      * Deterministic transition with block-scoped, replayable inputs and effect
      * emission (ADR-031). This is the only execution entry point.

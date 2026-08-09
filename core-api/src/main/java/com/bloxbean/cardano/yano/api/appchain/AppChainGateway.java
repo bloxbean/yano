@@ -109,11 +109,79 @@ public interface AppChainGateway {
         throw new UnsupportedOperationException("Authenticated-state pruning is unavailable");
     }
 
+    /** Enabled authenticated-snapshot series and their latest committed snapshots. */
+    default com.bloxbean.cardano.yano.api.appchain.snapshot.AuthenticatedSnapshotPage
+    authenticatedSnapshots(String seriesId, String cursor, int limit) {
+        throw new UnsupportedOperationException("Authenticated snapshot catalog is unavailable");
+    }
+
+    /** One immutable authenticated-snapshot descriptor. */
+    default java.util.Optional<com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotDescriptorV1>
+    authenticatedSnapshot(String seriesId, long sequence) {
+        return java.util.Optional.empty();
+    }
+
+    /** Anchored nested proof. Implementations never restore missing local data on this path. */
+    default java.util.Optional<com.bloxbean.cardano.yano.api.appchain.snapshot
+            .AuthenticatedSnapshotProofBundleV1> authenticatedSnapshotProof(
+            String seriesId, long sequence, byte[] canonicalKey) {
+        return java.util.Optional.empty();
+    }
+
+    /** Exact retained confirmed-anchor height, or latest when {@code anchorHeight} is null. */
+    default java.util.Optional<com.bloxbean.cardano.yano.api.appchain.snapshot
+            .AuthenticatedSnapshotProofBundleV1> authenticatedSnapshotProof(
+            String seriesId, long sequence, byte[] canonicalKey, Long anchorHeight) {
+        return anchorHeight == null ? authenticatedSnapshotProof(seriesId, sequence, canonicalKey)
+                : java.util.Optional.empty();
+    }
+
+    /** Node-local online/archive/build status; never part of consensus identity. */
+    default Map<String, Object> authenticatedSnapshotStatus() {
+        return Map.of("enabled", false);
+    }
+
+    /** Run CPU/memory-heavy bundle verification under the chain's proof admission limit. */
+    default <T> T withAuthenticatedSnapshotVerificationPermit(
+            java.util.function.Supplier<T> operation) {
+        return java.util.Objects.requireNonNull(operation, "operation").get();
+    }
+
+    /** Start a bounded node-local archive/restore/evict job and return its id. */
+    default String authenticatedSnapshotAdmin(
+            String operation, String seriesId, long sequence,
+            String idempotencyKey, boolean evictAfterArchive) {
+        throw new UnsupportedOperationException("Authenticated snapshot administration is unavailable");
+    }
+
+    /** Same operation with a non-secret authenticated principal identifier for durable audit. */
+    default String authenticatedSnapshotAdmin(
+            String operation, String seriesId, long sequence,
+            String idempotencyKey, boolean evictAfterArchive, String principalId) {
+        return authenticatedSnapshotAdmin(
+                operation, seriesId, sequence, idempotencyKey, evictAfterArchive);
+    }
+
+    /** Bounded node-local snapshot jobs, newest first. */
+    default List<Map<String, Object>> authenticatedSnapshotJobs(int limit) {
+        return List.of();
+    }
+
+    /** One node-local snapshot job. */
+    default java.util.Optional<Map<String, Object>> authenticatedSnapshotJob(String jobId) {
+        return java.util.Optional.empty();
+    }
+
     /**
      * Newest anchor this node has confirmed on L1, bound back to the exact
      * finalized app block and state root held in its ledger.
      */
     default java.util.Optional<AppAnchorCommitment> latestAnchorCommitment() {
+        return java.util.Optional.empty();
+    }
+
+    /** One exact retained L1-confirmed anchor height. */
+    default java.util.Optional<AppAnchorCommitment> anchorCommitment(long height) {
         return java.util.Optional.empty();
     }
 

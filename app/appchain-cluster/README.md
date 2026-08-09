@@ -52,7 +52,7 @@ YANO_NATIVE=/downloads/yano YANO_HOME=/data/yano ./cluster.sh start 3
 | `YANO_HOME` | tree holding `config/` (nodes launch with cwd = here) | the repo's `app/` |
 | `YANO_JAR` | explicit uber-jar path (any location) | auto-detect under `YANO_HOME` |
 | `YANO_NATIVE` | explicit native-binary path | auto-detect under `YANO_HOME` |
-| `YANO_CLUSTER_API_KEY` | full key for privileged local-cluster operations | `yano-local-cluster-full-key` |
+| `YANO_CLUSTER_API_KEY` | full key for privileged operations and the independently configured snapshot-admin realm | `yano-local-cluster-full-key` |
 | `YANO_CLUSTER_NODE_CONFIG_DIR` | optional directory of private per-node configuration overlays | unset |
 | `YANO_CLUSTER_DEVNET_GENESIS_FILE` | optional pre-generated shared devnet Shelley genesis | unset |
 | `YANO_CLUSTER_APPCHAIN_IDENTITY_MARKER` | orchestrator-owned app-chain identity marker when app-chain state is stored separately from L1 | unset |

@@ -12,6 +12,7 @@ public final class AppCapabilityIds {
     public static final String FINALIZED_MESSAGE = "state-index:finalized-message-v1";
     public static final String MPF = "state-commitment:mpf-blake2b256-v1";
     public static final String JMT = "state-commitment:jmt-blake2b256-v1";
+    public static final String AUTHENTICATED_SNAPSHOTS = "authenticated-snapshots-v1";
 
     private AppCapabilityIds() {
     }

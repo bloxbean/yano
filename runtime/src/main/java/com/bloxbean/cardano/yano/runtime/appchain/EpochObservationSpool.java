@@ -21,6 +21,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.HashSet;
+import java.util.Set;
 
 /** Durable, byte-bounded ADR-028 epoch-observation spool and local outbox. */
 final class EpochObservationSpool {
@@ -32,6 +34,8 @@ final class EpochObservationSpool {
     private static final byte[] DIGEST_PREFIX = new byte[]{'d'};
     private static final byte[] RECORD_PREFIX = new byte[]{'r'};
     private static final byte[] VERIFY_PREFIX = new byte[]{'v'};
+    private static final String RECONCILIATION_HEIGHT_META =
+            "epoch_observation_reconciliation_height_v1";
 
     enum State {
         GENERATING,
@@ -66,6 +70,9 @@ final class EpochObservationSpool {
 
     synchronized void begin(L1EpochBoundary boundary, EpochObservationManifest manifest) {
         validateIdentity(boundary, manifest);
+        if (!hasNonFinalizedRecords()) {
+            advanceReconciliationHeight(ledger.tipHeight());
+        }
         byte[] key = jobKey(manifest.observerId(), manifest.newEpoch(), manifest.snapshotRoot());
         byte[] digest = digest(key);
         removeJobIfPresent(key, digest);
@@ -198,6 +205,83 @@ final class EpochObservationSpool {
             if (changed && entry.job().state() == State.OFFERED) {
                 replace(entry.key(), encodeJob(entry.job().withState(State.READY)));
             }
+        }
+    }
+
+    /**
+     * Repair the only crash window that spans two durable stores: an app block may be committed
+     * before its post-commit spool acknowledgement. Scan backwards until every outstanding spool
+     * record already present in finalized app history has been acknowledged.
+     */
+    int reconcileFinalizedBlocks() {
+        Set<String> outstanding = new HashSet<>();
+        long afterHeight;
+        synchronized (this) {
+            for (JobEntry entry : jobs()) {
+                byte[] jobDigest = digest(entry.key());
+                for (AppLedgerStore.EpochSpoolEntry encoded : ledger.epochSpoolScan(
+                        recordPrefix(jobDigest), MAX_RECORDS_PER_SCAN)) {
+                    Record record = decodeRecord(encoded.value());
+                    if (record.state() != State.FINALIZED) {
+                        outstanding.add(java.util.HexFormat.of().formatHex(
+                                digest(record.observationBytes())));
+                    }
+                }
+            }
+            afterHeight = reconciliationHeight();
+        }
+        if (outstanding.isEmpty()) return 0;
+        long tip = ledger.tipHeight();
+        if (afterHeight > tip) {
+            throw new IllegalStateException(
+                    "epoch-observation reconciliation cursor exceeds app-chain tip");
+        }
+        int repaired = 0;
+        for (long height = Math.addExact(afterHeight, 1);
+             height <= tip && !outstanding.isEmpty(); height++) {
+            var block = ledger.block(height).orElse(null);
+            if (block == null) continue;
+            var context = com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext
+                    .fromValidatedBlock(block);
+            for (var sequenced : context.l1Observations()) {
+                L1Observation observation = sequenced.observation();
+                if (!(observation.anchor() instanceof L1Observation.EpochAnchor)) continue;
+                String identity = java.util.HexFormat.of().formatHex(digest(observation.encode()));
+                if (outstanding.remove(identity) && acknowledge(observation)) repaired++;
+            }
+        }
+        advanceReconciliationHeight(tip);
+        return repaired;
+    }
+
+    private synchronized long reconciliationHeight() {
+        String value = ledger.metaString(RECONCILIATION_HEIGHT_META);
+        if (value == null) return 0;
+        try {
+            long height = Long.parseLong(value);
+            if (height < 0) throw new NumberFormatException();
+            return height;
+        } catch (NumberFormatException malformed) {
+            throw new IllegalStateException("invalid epoch-observation reconciliation cursor");
+        }
+    }
+
+    private synchronized boolean hasNonFinalizedRecords() {
+        for (JobEntry entry : jobs()) {
+            byte[] jobDigest = digest(entry.key());
+            for (AppLedgerStore.EpochSpoolEntry encoded : ledger.epochSpoolScan(
+                    recordPrefix(jobDigest), MAX_RECORDS_PER_SCAN)) {
+                if (decodeRecord(encoded.value()).state() != State.FINALIZED) return true;
+            }
+        }
+        return false;
+    }
+
+    private synchronized void advanceReconciliationHeight(long height) {
+        if (height < 0) throw new IllegalArgumentException("negative reconciliation height");
+        long current = reconciliationHeight();
+        if (height > current) {
+            ledger.metaPutString(RECONCILIATION_HEIGHT_META, Long.toString(height));
         }
     }
 

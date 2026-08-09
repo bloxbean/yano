@@ -268,7 +268,17 @@ public final class EpochGovernanceContract {
         return Blake2bUtil.blake2bHash256(encodeDRepChunk(new DRepChunk(0, new byte[32], 0, entries)));
     }
     public static byte[] proposalRoot(List<byte[]> hashes) { return fold(PROPOSAL_ROOT_DOMAIN, hashes); }
-    public static byte[] drepRoot(List<byte[]> hashes) { return fold(DREP_ROOT_DOMAIN, hashes); }
+    public static byte[] drepRoot(List<byte[]> hashes) {
+        byte[] root = initialDRepRoot();
+        for (byte[] hash : hashes) root = appendDRepRoot(root, hash);
+        return root;
+    }
+    public static byte[] initialDRepRoot() { return Blake2bUtil.blake2bHash256(DREP_ROOT_DOMAIN); }
+    public static byte[] appendDRepRoot(byte[] current, byte[] chunkHash) {
+        if (current == null || current.length != 32 || chunkHash == null || chunkHash.length != 32)
+            throw new IllegalArgumentException("DRep and chunk hashes must contain 32 bytes");
+        return Blake2bUtil.blake2bHash256(ByteBuffer.allocate(64).put(current).put(chunkHash).array());
+    }
     public static byte[] outerRoot(Header header, List<byte[]> proposalHashes, List<byte[]> drepHashes) {
         List<byte[]> all = new ArrayList<>(1 + proposalHashes.size() + drepHashes.size());
         all.add(Blake2bUtil.blake2bHash256(encodeHeader(header))); all.addAll(proposalHashes); all.addAll(drepHashes);
@@ -288,7 +298,15 @@ public final class EpochGovernanceContract {
     public static byte[] drepChunkKey(long epoch, int index) { return ("governance/" + epoch + "/dreps/chunks/" + index).getBytes(StandardCharsets.US_ASCII); }
     public static byte[] proposalOrderKey(Proposal p) { return ByteBuffer.allocate(34).put(p.transactionId())
             .putShort((short) p.governanceActionIndex()).array(); }
-    public static byte[] drepOrderKey(DRepEntry e) { return ByteBuffer.allocate(29).put((byte) e.drepType()).put(e.drepHash()).array(); }
+    public static byte[] drepOrderKey(DRepEntry e) {
+        return drepOrderKey(e.drepType(), e.drepHash());
+    }
+    public static byte[] drepOrderKey(int drepType, byte[] drepHash) {
+        if (drepType < 0 || drepType > 2 || drepHash == null || drepHash.length != 28) {
+            throw new IllegalArgumentException("invalid DRep order key");
+        }
+        return ByteBuffer.allocate(29).put((byte) drepType).put(drepHash).array();
+    }
     public static int compare(Proposal l, Proposal r) { int tx = Arrays.compareUnsigned(l.transactionId(), r.transactionId());
         return tx != 0 ? tx : Integer.compare(l.governanceActionIndex(), r.governanceActionIndex()); }
     public static int compare(DRepEntry l, DRepEntry r) { int type = Integer.compare(l.drepType(), r.drepType());

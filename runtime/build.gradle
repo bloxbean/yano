@@ -130,6 +130,24 @@ tasks.register('benchmarkAdr025ClassicJmtRuntime', JavaExec) {
     outputs.file(report)
 }
 
+['Mpf': 'mpf-blake2b256-v1', 'Jmt': 'jmt-blake2b256-v1'].each { suffix, profile ->
+    tasks.register("benchmarkAdr028AuthenticatedSnapshot${suffix}", JavaExec) {
+        group = 'verification'
+        description = "Runs the ADR-028 M8 ${profile} logical-snapshot benchmark"
+        dependsOn tasks.named('testClasses')
+        classpath = sourceSets.test.runtimeClasspath
+        mainClass = 'com.bloxbean.cardano.yano.runtime.appchain.AuthenticatedSnapshotBenchmark'
+        maxHeapSize = '6g'
+        def report = rootProject.layout.projectDirectory.file(
+                "adr/app-layer/benchmarks/028-m8-authenticated-snapshot-${suffix.toLowerCase()}.json")
+        args report.asFile.absolutePath, profile,
+                providers.gradleProperty('adr028SnapshotEntries').getOrElse('1300000'),
+                providers.gradleProperty('adr028SnapshotProofs').getOrElse('4096'),
+                providers.gradleProperty('adr028SnapshotClients').getOrElse('32')
+        outputs.file(report)
+    }
+}
+
 java {
     sourceCompatibility = 25
     targetCompatibility = 25

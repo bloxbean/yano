@@ -19,6 +19,8 @@ AUTHMAP_CHAIN_INDEX=8
 AUTHMAP_JMT_CHAIN_INDEX=9
 SETTLEMENT_CHAIN_ID=payment-chain-settlement
 SETTLEMENT_CHAIN_INDEX=10
+CARDANO_HISTORY_CHAIN_ID=cardano-history-chain
+CARDANO_HISTORY_CHAIN_INDEX=12
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 note() { printf '%s\n' "$*"; }
@@ -60,6 +62,11 @@ SPREAD=false
 REPORT_DIR=""
 FINALIZED_INDEX_SELECTION=""
 FINALIZED_INDEX_EXPLICIT=false
+AUTHENTICATED_SNAPSHOT_SELECTION=""
+AUTHENTICATED_SNAPSHOT_EXPLICIT=false
+AUTHENTICATED_SNAPSHOT_PROFILE="mpf-blake2b256-v1"
+AUTHENTICATED_SNAPSHOT_MPF_PRUNING_SELECTION=""
+AUTHENTICATED_SNAPSHOT_MPF_PRUNING_EXPLICIT=false
 FOLLOW=false
 YES=false
 OUTPUT=""
@@ -97,6 +104,27 @@ parse() {
         FINALIZED_INDEX_SELECTION=all; FINALIZED_INDEX_EXPLICIT=true; shift;;
       --enable-finalized-message-index=*)
         FINALIZED_INDEX_SELECTION="${1#*=}"; FINALIZED_INDEX_EXPLICIT=true; shift;;
+      --enable-authenticated-snapshots)
+        if [ -n "${2:-}" ] && [[ "${2:-}" != --* ]]; then
+          AUTHENTICATED_SNAPSHOT_SELECTION="$2"; shift 2
+        else
+          AUTHENTICATED_SNAPSHOT_SELECTION=all; shift
+        fi
+        AUTHENTICATED_SNAPSHOT_EXPLICIT=true;;
+      --enable-authenticated-snapshots=*)
+        AUTHENTICATED_SNAPSHOT_SELECTION="${1#*=}"; AUTHENTICATED_SNAPSHOT_EXPLICIT=true; shift;;
+      --authenticated-snapshot-profile)
+        AUTHENTICATED_SNAPSHOT_PROFILE="${2:-}"; shift 2;;
+      --enable-authenticated-snapshot-mpf-pruning)
+        if [ -n "${2:-}" ] && [[ "${2:-}" != --* ]]; then
+          AUTHENTICATED_SNAPSHOT_MPF_PRUNING_SELECTION="$2"; shift 2
+        else
+          AUTHENTICATED_SNAPSHOT_MPF_PRUNING_SELECTION=all; shift
+        fi
+        AUTHENTICATED_SNAPSHOT_MPF_PRUNING_EXPLICIT=true;;
+      --enable-authenticated-snapshot-mpf-pruning=*)
+        AUTHENTICATED_SNAPSHOT_MPF_PRUNING_SELECTION="${1#*=}"
+        AUTHENTICATED_SNAPSHOT_MPF_PRUNING_EXPLICIT=true; shift;;
       --chain) AUTHMAP_CHAIN="${2:-}"; shift 2;;
       --collection) AUTHMAP_COLLECTION="${2:-}"; shift 2;;
       --actor) AUTHMAP_ACTOR="${2:-}"; shift 2;;
@@ -158,6 +186,24 @@ canonical_finalized_index_chains() {
   printf '%s' "$result"
 }
 
+canonical_authenticated_snapshot_chains() {
+  local requested="$1" item seen=""
+  local -a values=()
+  [ -n "$requested" ] || { printf ''; return; }
+  [ "$requested" != all ] || requested="$CARDANO_HISTORY_CHAIN_ID"
+  IFS=',' read -r -a values <<< "$requested"
+  for item in "${values[@]}"; do
+    [[ "$item" =~ ^[A-Za-z0-9._~-]{1,128}$ ]] \
+      || die "invalid authenticated-snapshot chain id: $item"
+    [ "$item" = "$CARDANO_HISTORY_CHAIN_ID" ] \
+      || die "chain does not declare authenticated snapshot series: $item"
+    chain_in_csv "$seen" "$item" \
+      && die "duplicate authenticated-snapshot chain: $item"
+    seen+="${seen:+,}$item"
+  done
+  printf '%s' "$seen"
+}
+
 validate_common() {
   [[ "$INSTANCE" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || die "invalid instance name"
   case "$PROFILE" in light|evidence|eutxo) ;; *) die "profile must be light, evidence, or eutxo";; esac
@@ -184,6 +230,20 @@ validate_common() {
     || die "finalized-message index selection cannot be empty"
   FINALIZED_INDEX_SELECTION="$(canonical_finalized_index_chains \
     "$FINALIZED_INDEX_SELECTION")"
+  case "$AUTHENTICATED_SNAPSHOT_PROFILE" in
+    mpf-blake2b256-v1|jmt-blake2b256-v1) ;;
+    *) die "authenticated snapshot profile must be mpf-blake2b256-v1 or jmt-blake2b256-v1";;
+  esac
+  AUTHENTICATED_SNAPSHOT_SELECTION="$(canonical_authenticated_snapshot_chains \
+    "$AUTHENTICATED_SNAPSHOT_SELECTION")"
+  AUTHENTICATED_SNAPSHOT_MPF_PRUNING_SELECTION="$(canonical_authenticated_snapshot_chains \
+    "$AUTHENTICATED_SNAPSHOT_MPF_PRUNING_SELECTION")"
+  if [ -n "$AUTHENTICATED_SNAPSHOT_MPF_PRUNING_SELECTION" ]; then
+    [ "$AUTHENTICATED_SNAPSHOT_PROFILE" = mpf-blake2b256-v1 ] \
+      || die "authenticated snapshot MPF pruning requires mpf-blake2b256-v1"
+    chain_in_csv "$AUTHENTICATED_SNAPSHOT_SELECTION" "$CARDANO_HISTORY_CHAIN_ID" \
+      || die "authenticated snapshot MPF pruning requires snapshots on cardano-history-chain"
+  fi
 }
 
 instance_root() {
@@ -355,6 +415,14 @@ marker_finalized_index_chains() {
   jq -r '.finalizedMessageIndex.chainIds | join(",")' "$(marker)"
 }
 
+marker_authenticated_snapshot_chains() {
+  jq -r '.authenticatedSnapshots.chainIds | join(",")' "$(marker)"
+}
+
+marker_authenticated_snapshot_mpf_pruning_chains() {
+  jq -r '.authenticatedSnapshots.mpfPruningChainIds | join(",")' "$(marker)"
+}
+
 adopt_marker() {
   [ -f "$(marker)" ] || return 0
   PROFILE="$(marker_value profile)"
@@ -372,6 +440,23 @@ adopt_marker() {
     die "requested finalized-message index scope differs from retained identity; use a new instance or reset"
   fi
   FINALIZED_INDEX_SELECTION="$retained_finalized"
+  local retained_snapshots retained_snapshot_profile
+  retained_snapshots="$(marker_authenticated_snapshot_chains)"
+  retained_snapshot_profile="$(marker_value authenticatedSnapshots.profile)"
+  if [ "$AUTHENTICATED_SNAPSHOT_EXPLICIT" = true ] \
+      && { [ "$AUTHENTICATED_SNAPSHOT_SELECTION" != "$retained_snapshots" ] \
+      || [ "$AUTHENTICATED_SNAPSHOT_PROFILE" != "$retained_snapshot_profile" ]; }; then
+    die "requested authenticated-snapshot profile differs from retained identity; use a new instance or reset"
+  fi
+  AUTHENTICATED_SNAPSHOT_SELECTION="$retained_snapshots"
+  AUTHENTICATED_SNAPSHOT_PROFILE="$retained_snapshot_profile"
+  local retained_snapshot_mpf_pruning
+  retained_snapshot_mpf_pruning="$(marker_authenticated_snapshot_mpf_pruning_chains)"
+  if [ "$AUTHENTICATED_SNAPSHOT_MPF_PRUNING_EXPLICIT" = true ] \
+      && [ "$AUTHENTICATED_SNAPSHOT_MPF_PRUNING_SELECTION" != "$retained_snapshot_mpf_pruning" ]; then
+    die "requested authenticated-snapshot MPF pruning scope differs from retained instance; use a new instance or reset"
+  fi
+  AUTHENTICATED_SNAPSHOT_MPF_PRUNING_SELECTION="$retained_snapshot_mpf_pruning"
   ANCHOR="$(marker_value anchor.enabled)"
   ANCHOR_MODE="$(marker_value anchor.mode)"
   [ "$ANCHOR_MODE" = none ] && ANCHOR_MODE=script
@@ -426,6 +511,23 @@ write_node_configs() {
           printf 'yano.app-chain.chains[%d].machines.finalized-message-index.max-messages-per-block=1000\n' "$index"
         done
       fi
+      if chain_in_csv "$AUTHENTICATED_SNAPSHOT_SELECTION" "$CARDANO_HISTORY_CHAIN_ID"; then
+        printf 'yano.app-chain.chains[%d].capabilities.authenticated-snapshots.enabled=true\n' \
+          "$CARDANO_HISTORY_CHAIN_INDEX"
+        printf 'yano.app-chain.chains[%d].capabilities.authenticated-snapshots.series=epoch-stake.distribution,epoch-governance.drep-distribution\n' \
+          "$CARDANO_HISTORY_CHAIN_INDEX"
+        printf 'yano.app-chain.chains[%d].capabilities.authenticated-snapshots.archive-directory=%s/node%d/appchain-snapshot-archives\n' \
+          "$CARDANO_HISTORY_CHAIN_INDEX" "$(cluster_dir)" "$i"
+        printf 'yano.app-chain.chains[%d].machines.epoch-stake.snapshot-profile=%s\n' \
+          "$CARDANO_HISTORY_CHAIN_INDEX" "$AUTHENTICATED_SNAPSHOT_PROFILE"
+        printf 'yano.app-chain.chains[%d].machines.epoch-governance.drep-snapshot-profile=%s\n' \
+          "$CARDANO_HISTORY_CHAIN_INDEX" "$AUTHENTICATED_SNAPSHOT_PROFILE"
+        if chain_in_csv "$AUTHENTICATED_SNAPSHOT_MPF_PRUNING_SELECTION" \
+            "$CARDANO_HISTORY_CHAIN_ID"; then
+          printf 'yano.app-chain.chains[%d].capabilities.authenticated-snapshots.storage.mpf-pruning-enabled=true\n' \
+            "$CARDANO_HISTORY_CHAIN_INDEX"
+        fi
+      fi
     } > "$file"
     chmod 600 "$file"
   done
@@ -451,7 +553,11 @@ prepare_light() {
     --config "$YANO_HOME/config/application-appchain.yml" --plugin "$plugin"
     --authenticated-map-config "$candidate"
     --authenticated-map-jmt-config "$jmt_candidate"
-    --finalized-message-index-selection "$FINALIZED_INDEX_SELECTION")
+    --finalized-message-index-selection "$FINALIZED_INDEX_SELECTION"
+    --authenticated-snapshot-selection "$AUTHENTICATED_SNAPSHOT_SELECTION"
+    --authenticated-snapshot-profile "$AUTHENTICATED_SNAPSHOT_PROFILE"
+    --authenticated-snapshot-mpf-pruning-selection \
+      "$AUTHENTICATED_SNAPSHOT_MPF_PRUNING_SELECTION")
   if [ "$ANCHOR" = true ]; then args+=(--anchor --anchor-mode "$ANCHOR_MODE"); fi
   if [ "$ANCHOR" = true ]; then
     local -a anchor_chains=()
@@ -575,6 +681,33 @@ submit_text() {
 
 proof_key() {
   curl -fsS "http://127.0.0.1:$((HTTP_BASE + NODE))/api/v1/app-chain/chains/$1/state/proof/$2"
+}
+
+snapshot_operation() {
+  local action="${1:-status}" chain="${2:-$CARDANO_HISTORY_CHAIN_ID}"
+  local series="${3:-}" sequence="${4:-}" idempotency="${5:-showcase-$(date +%s)}"
+  local base="http://127.0.0.1:$((HTTP_BASE + NODE))/api/v1/app-chain/chains/$chain"
+  case "$action" in
+    status)
+      curl -fsS -H "X-API-Key: $API_KEY" "$base/snapshots/status" | jq .;;
+    list)
+      curl -fsS -H "X-API-Key: $API_KEY" "$base/snapshots?limit=100" | jq .;;
+    descriptor)
+      [ -n "$series" ] && [ -n "$sequence" ] \
+        || die "snapshots descriptor requires <chain> <series> <sequence>"
+      curl -fsS -H "X-API-Key: $API_KEY" \
+        "$base/snapshots/$series/$sequence" | jq .;;
+    archive|restore|evict)
+      [ -n "$series" ] && [ -n "$sequence" ] \
+        || die "snapshots $action requires <chain> <series> <sequence> [idempotency-key]"
+      curl -fsS -X POST -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' \
+        "$base/admin/snapshots/$series/$sequence/$action" \
+        -d "$(jq -nc --arg key "$idempotency" '{idempotencyKey:$key,evictAfterArchive:false}')" | jq .;;
+    job)
+      [ -n "$series" ] || die "snapshots job requires <chain> <job-id>"
+      curl -fsS -H "X-API-Key: $API_KEY" "$base/admin/snapshots/jobs/$series" | jq .;;
+    *) die "snapshots accepts status, list, descriptor, archive, restore, evict, or job";;
+  esac
 }
 
 run_orders() {
@@ -1894,7 +2027,10 @@ Yano unified app-chain showcase
   ./showcase.sh prepare|up|quickstart [--profile light] [--nodes 3|5|7]
   ./showcase.sh status|ui|logs|restart|stop|reset [--instance name]
   ./showcase.sh config show|paths|export <file>
-  ./showcase.sh run orders|registry|authenticated-map|approvals|balances|documents|document-review|composite|roles|eutxo|anchor|all
+  ./showcase.sh run orders|registry|authenticated-map|approvals|balances|documents|document-review|composite|roles|eutxo|cardano-history|anchor|all
+  ./showcase.sh snapshots status|list [chain]
+  ./showcase.sh snapshots descriptor|archive|restore|evict <chain> <series> <sequence> [idempotency-key]
+  ./showcase.sh snapshots job <chain> <job-id>
   ./showcase.sh authmap put <collection> <key> <value> [--chain id]
   ./showcase.sh authmap governed-put <key> <value> [--chain id] [--collection C] [--actor A] [--seed-file F]
   ./showcase.sh authmap entry <collection> <key> [--chain id]
@@ -1922,7 +2058,10 @@ Yano unified app-chain showcase
 Common options: --instance, --network devnet|preprod, --nodes, --threshold,
 --http-base, --server-base, --data-dir, --variant, --anchor-mode, --anchor-chain,
 --anchor-key-file, --confirm-public-anchor preprod,
---enable-finalized-message-index[=chain-id,chain-id]. Load options:
+--enable-finalized-message-index[=chain-id,chain-id],
+--enable-authenticated-snapshots[=cardano-history-chain],
+--authenticated-snapshot-profile mpf-blake2b256-v1|jmt-blake2b256-v1,
+--enable-authenticated-snapshot-mpf-pruning[=cardano-history-chain]. Load options:
 --concurrency, --payload-bytes, --duration, --rate, --sample, --spread,
 --node, and --report-dir.
 EOF
@@ -1941,7 +2080,7 @@ case "$COMMAND" in
   describe)
     case "${POSITIONAL[0]:-$PROFILE}" in
       light)
-        note "Twelve-chain reference catalog: foundations, three reusable compositions, MPF/JMT proof contrast, and safe L1 settlement."
+        note "Thirteen-chain reference catalog: foundations, reusable compositions, MPF/JMT proof contrast, Cardano history, and safe L1 settlement."
         python3 "$CATALOG_TOOL" "$CATALOG" describe;;
       evidence) note "Maintained evidence product deployment; Docker required. Evidence is the product, this is its demo harness.";;
       eutxo) note "Maintained experimental EUTxO scenarios; no real funds in the ledger variant.";;
@@ -2025,10 +2164,15 @@ PY
         approvals) run_approvals "${POSITIONAL[1]:-}";; balances) run_balances;;
         documents) run_documents "${POSITIONAL[1]:-}";; document-review) run_document_review "${POSITIONAL[1]:-}";;
         composite) run_composite "${POSITIONAL[1]:-}";;
-        roles) run_roles;; eutxo) run_eutxo;; anchor) cluster_env; "$CLUSTER" status;;
-        all) run_orders; run_registry; run_authenticated_map; run_approvals; run_balances; run_documents; run_document_review; run_composite; run_roles; run_eutxo;;
+        roles) run_roles;; eutxo) run_eutxo;; cardano-history) snapshot_operation status;;
+        anchor) cluster_env; "$CLUSTER" status;;
+        all) run_orders; run_registry; run_authenticated_map; run_approvals; run_balances; run_documents; run_document_review; run_composite; run_roles; run_eutxo; snapshot_operation status;;
         *) die "unknown run scenario";; esac
     fi;;
+  snapshots)
+    adopt_marker
+    snapshot_operation "${POSITIONAL[0]:-status}" "${POSITIONAL[1]:-$CARDANO_HISTORY_CHAIN_ID}" \
+      "${POSITIONAL[2]:-}" "${POSITIONAL[3]:-}" "${POSITIONAL[4]:-}";;
   approvals)
     adopt_marker
     case "${POSITIONAL[0]:-}" in

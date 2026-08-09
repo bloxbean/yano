@@ -255,3 +255,45 @@ yano:
         mode: "governed"
       block:
         interval-ms: "1000"
+
+    # ADR-028 qualification product: protocol parameters plus authenticated
+    # epoch-stake and DRep-distribution history. Logical snapshots remain
+    # disabled unless showcase.sh is given --enable-authenticated-snapshots.
+    chains[12]:
+      chain-id: "cardano-history-chain"
+      state-machine: "cardano-history-pilot"
+      state:
+        commitment-profile: "mpf-blake2b256-v1"
+        format-fingerprint: "91ee14091200f1e24659112d640e877e9177779dcc81dd06117f013e9190082b"
+        genesis-id: "2c5e870dbd473d432d4f94734a6cc6a737729e618494a88e7bc4a38544c9bc61"
+        l1-proof-consumption-required: "true"
+      membership:
+        mode: "governed"
+      block:
+        interval-ms: "1000"
+        max-messages: "1000"
+        max-bytes: "8388608"
+      l1:
+        stability-depth: "2"
+        epoch-stability-depth: "2"
+      machines:
+        epoch-stake:
+          chunk-entries: "25000"
+          snapshot-profile: "mpf-blake2b256-v1"
+        epoch-governance:
+          drep-chunk-entries: "25000"
+          drep-snapshot-profile: "mpf-blake2b256-v1"
+      observers:
+        epoch-params:
+          type: "l1-epoch-params-v1"
+          chain-id: "cardano-history-chain"
+        epoch-stake:
+          type: "l1-epoch-stake-v1"
+          chain-id: "cardano-history-chain"
+          chunk-entries: "25000"
+        epoch-governance:
+          type: "l1-epoch-governance-v1"
+          chain-id: "cardano-history-chain"
+          include-proposals: "true"
+          include-drep-distribution: "true"
+          drep-chunk-entries: "25000"
