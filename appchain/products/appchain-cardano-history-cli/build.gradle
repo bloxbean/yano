@@ -1,0 +1,27 @@
+plugins {
+    id 'application'
+}
+
+dependencies {
+    implementation project(':appchain-cardano-history-client')
+    implementation libs.jackson.databind
+
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+}
+
+application {
+    mainClass = 'com.bloxbean.cardano.yano.appchain.history.cli.CardanoHistoryCli'
+    applicationName = 'yano-cardano-history'
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+tasks.named('compileJava') {
+    options.compilerArgs.removeAll { it.startsWith('-Aproject=') }
+}

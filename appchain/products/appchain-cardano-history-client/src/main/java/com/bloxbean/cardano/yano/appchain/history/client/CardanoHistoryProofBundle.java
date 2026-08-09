@@ -1,13 +1,17 @@
-package com.bloxbean.cardano.yano.appchain.client;
+package com.bloxbean.cardano.yano.appchain.history.client;
 
 import com.bloxbean.cardano.yano.api.appchain.anchor.AnchorDatumV1;
 import com.bloxbean.cardano.yano.api.appchain.state.StateProofSubject;
 import com.bloxbean.cardano.yano.api.appchain.l1view.ProtocolParamsCanonicalCodec;
+import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
+import com.bloxbean.cardano.yano.appchain.client.ProofSubjects;
+import com.bloxbean.cardano.yano.appchain.client.ProofVerifier;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochGovernanceContract;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochStakeContract;
 
 import java.math.BigInteger;
 import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.Objects;
 
 /**
@@ -111,7 +115,7 @@ public final class CardanoHistoryProofBundle {
                     instanceof com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotSourceBoundary.L1Epoch boundary)
                     || boundary.datasetEpoch() != epoch || boundary.previousEpoch() != epoch
                     || epoch == Long.MAX_VALUE || boundary.newEpoch() != epoch + 1
-                    || !Arrays.equals(Hex.decode(proof.secondaryProof().keyHex()),
+                    || !Arrays.equals(HexFormat.of().parseHex(proof.secondaryProof().keyHex()),
                     EpochStakeContract.credentialOrderKey(credentialType, credentialHash))
                     || !ProofVerifier.verifyAuthenticatedSnapshot(proof, identity.trustedRoot(anchor))) {
                 return false;
@@ -120,7 +124,7 @@ public final class CardanoHistoryProofBundle {
             if (!"PRESENT".equals(proof.secondaryProof().presence())
                     || proof.secondaryProof().valueHex() == null) return false;
             EpochStakeContract.Value value = EpochStakeContract.decodeValue(
-                    Hex.decode(proof.secondaryProof().valueHex()));
+                    HexFormat.of().parseHex(proof.secondaryProof().valueHex()));
             boolean minimum = value.coin().compareTo(coin) >= 0;
             boolean exact = value.coin().equals(coin);
             boolean pool = Arrays.equals(value.poolHash(), poolHash);
@@ -204,7 +208,7 @@ public final class CardanoHistoryProofBundle {
                     instanceof com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotSourceBoundary.L1Epoch boundary)
                     || boundary.datasetEpoch() != epoch || boundary.newEpoch() != epoch
                     || boundary.previousEpoch() != (epoch == 0 ? 0 : epoch - 1)
-                    || !Arrays.equals(Hex.decode(proof.secondaryProof().keyHex()),
+                    || !Arrays.equals(HexFormat.of().parseHex(proof.secondaryProof().keyHex()),
                     EpochGovernanceContract.drepOrderKey(drepType, drepHash))
                     || !ProofVerifier.verifyAuthenticatedSnapshot(proof, identity.trustedRoot(anchor))) {
                 return false;
@@ -213,7 +217,7 @@ public final class CardanoHistoryProofBundle {
             if (!"PRESENT".equals(proof.secondaryProof().presence())
                     || proof.secondaryProof().valueHex() == null) return false;
             BigInteger actual = EpochGovernanceContract.decodeCoin(
-                    Hex.decode(proof.secondaryProof().valueHex()));
+                    HexFormat.of().parseHex(proof.secondaryProof().valueHex()));
             return mode == AmountMode.EXACT ? actual.equals(coin) : actual.compareTo(coin) >= 0;
         }
     }
@@ -228,7 +232,7 @@ public final class CardanoHistoryProofBundle {
                                            StateProofSubject<T> subject,
                                            ProofVerifier.TrustedStateRoot root) {
         return proof != null && proof.subjectType().equals(subject.subjectType())
-                && Arrays.equals(Hex.decode(proof.proof().keyHex()), subject.canonicalKey())
+                && Arrays.equals(HexFormat.of().parseHex(proof.proof().keyHex()), subject.canonicalKey())
                 && ProofVerifier.verify(proof.proof(), root);
     }
     private static byte[] cloneExact(byte[] value, int length, String field) {

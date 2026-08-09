@@ -27,3 +27,7 @@ Build the drop-in artifact with:
 
 The `-bundle.jar` contains product-owned classes and service metadata only. Yano host APIs,
 composition code, stdlib implementations, and canonical contracts are supplied by the runtime.
+
+The product also contributes a bounded read-only domain API. The independently distributable
+`appchain-cardano-history-client` and `appchain-cardano-history-cli` modules consume that API and the
+generic root-fixed proof surface. See `docs/appchain/CARDANO_HISTORY.md` for usage and trust labels.

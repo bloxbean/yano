@@ -1,4 +1,4 @@
-package com.bloxbean.cardano.yano.appchain.client;
+package com.bloxbean.cardano.yano.appchain.history.client;
 
 import com.bloxbean.cardano.vds.core.api.NodeStore;
 import com.bloxbean.cardano.vds.jmt.JellyfishMerkleTree;
@@ -7,6 +7,9 @@ import com.bloxbean.cardano.vds.jmt.store.InMemoryJmtStore;
 import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.yano.api.appchain.anchor.AnchorDatumV1;
 import com.bloxbean.cardano.yano.api.appchain.state.StateProofSubject;
+import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
+import com.bloxbean.cardano.yano.appchain.client.ProofSubjects;
+import com.bloxbean.cardano.yano.appchain.client.ProofVerifier;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochGovernanceContract;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochStakeContract;
 import com.fasterxml.jackson.dataformat.cbor.CBORFactory;
@@ -43,6 +46,18 @@ class CardanoHistoryProofBundleTest {
         var params = new CardanoHistoryProofBundle.ProtocolParameters(EPOCH, PARAMS,
                 f.present(f.paramsSubject, f.paramsValue));
         assertThat(params.verify(f.anchor, identity)).isTrue();
+        var anchoredRoot = identity.trustedRoot(f.anchor);
+        var portableParams = CardanoHistoryPortableParametersProof.from(params, anchoredRoot);
+        assertThat(portableParams.verify(anchoredRoot))
+                .isEqualTo(CardanoHistoryPortableParametersProof.Verification.L1_ANCHORED_VALID);
+        assertThat(portableParams.verify())
+                .isEqualTo(CardanoHistoryPortableParametersProof.Verification
+                        .ROOT_VERIFIED_ANCHOR_UNCHECKED);
+        var wrongRoot = new ProofVerifier.TrustedStateRoot(CHAIN,
+                ProofVerifier.MPF_BLAKE2B256_V1, HexFormat.of().formatHex(GENESIS), HEIGHT,
+                "ff".repeat(32), ProofVerifier.TrustedRootSource.CALLER_PINNED);
+        assertThat(portableParams.verify(wrongRoot))
+                .isEqualTo(CardanoHistoryPortableParametersProof.Verification.INVALID);
 
         var stake = new CardanoHistoryProofBundle.Stake(EPOCH, STAKE, 0, f.credential,
                 CardanoHistoryProofBundle.StakeMode.MINIMUM_AND_POOL,
@@ -189,7 +204,7 @@ class CardanoHistoryProofBundleTest {
     private static AnchorDatumV1 anchor(String profileId, byte[] root) {
         var profile = ProofVerifier.profileMetadata(profileId).orElseThrow();
         return new AnchorDatumV1(CHAIN, GENESIS, APPLICATION, profileId,
-                Hex.decode(profile.formatFingerprintHex()), HEIGHT, new byte[32], root,
+                HexFormat.of().parseHex(profile.formatFingerprintHex()), HEIGHT, new byte[32], root,
                 List.of(filled(3, 32)), 1);
     }
 
@@ -200,12 +215,12 @@ class CardanoHistoryProofBundleTest {
                 ProofVerifier.JMT_BLAKE2B256_V1).orElseThrow();
         byte[] key = subject.canonicalKey();
         AppChainClient.Proof proof = new AppChainClient.Proof(
-                Hex.encode(key), CHAIN, Hex.encode(root),
-                Hex.encode(tree.getProofWire(key, HEIGHT).orElseThrow()),
-                value == null ? null : Hex.encode(value), HEIGHT, HEIGHT, 1,
+                HexFormat.of().formatHex(key), CHAIN, HexFormat.of().formatHex(root),
+                HexFormat.of().formatHex(tree.getProofWire(key, HEIGHT).orElseThrow()),
+                value == null ? null : HexFormat.of().formatHex(value), HEIGHT, HEIGHT, 1,
                 ProofVerifier.JMT_BLAKE2B256_V1, metadata.backend(),
                 metadata.commitmentFormatId(), metadata.formatFingerprintHex(),
-                Hex.encode(GENESIS), metadata.proofEncodingId(), metadata.nativeVersioning(),
+                HexFormat.of().formatHex(GENESIS), metadata.proofEncodingId(), metadata.nativeVersioning(),
                 metadata.physicalDelete(), HEIGHT, presence, null, null);
         return new AppChainClient.TypedProof<>(subject.subjectType(), proof,
                 value == null ? null : subject.decodePresentValue(value));
@@ -235,10 +250,13 @@ class CardanoHistoryProofBundleTest {
                                                        AppChainClient.ProofPresence presence) {
             var metadata = ProofVerifier.profileMetadata(ProofVerifier.MPF_BLAKE2B256_V1).orElseThrow();
             byte[] key = subject.canonicalKey();
-            AppChainClient.Proof proof = new AppChainClient.Proof(Hex.encode(key), CHAIN, Hex.encode(root),
-                    Hex.encode(trie.getProofWire(key).orElseThrow()), value == null ? null : Hex.encode(value),
+            AppChainClient.Proof proof = new AppChainClient.Proof(HexFormat.of().formatHex(key), CHAIN,
+                    HexFormat.of().formatHex(root),
+                    HexFormat.of().formatHex(trie.getProofWire(key).orElseThrow()),
+                    value == null ? null : HexFormat.of().formatHex(value),
                     HEIGHT, HEIGHT, 1, ProofVerifier.MPF_BLAKE2B256_V1, metadata.backend(),
-                    metadata.commitmentFormatId(), metadata.formatFingerprintHex(), Hex.encode(GENESIS),
+                    metadata.commitmentFormatId(), metadata.formatFingerprintHex(),
+                    HexFormat.of().formatHex(GENESIS),
                     metadata.proofEncodingId(), metadata.nativeVersioning(), metadata.physicalDelete(),
                     HEIGHT, presence, null, null);
             return new AppChainClient.TypedProof<>(subject.subjectType(), proof,
