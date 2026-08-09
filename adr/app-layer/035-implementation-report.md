@@ -78,3 +78,16 @@ Status: complete
 - Added a portable canonical snapshot bundle and standalone verifier with distinct invalid,
   root-only, and independently Cardano-anchored results.
 - Added the `yano-cardano-history` CLI distribution and documented its commands and exit codes.
+
+## P4 — On-chain consumers
+
+Status: complete
+
+The `appchain-cardano-history-onchain` module provides compiled, product-bound parameter and pair
+validators over the generic MPF anchor, inclusion, same-root pair, and authenticated-snapshot
+libraries. The generic anchor entry points remain separately consumable. The product validators
+bind state keys, epoch, predicate, and operands as script parameters, never as caller-controlled
+redeemer authority. Emulator suites cover inclusion, exclusion, same-root completeness, parameter
+values, stake amount/pool/combined, proposal, DRep, and wrong-root/profile cases; product tests
+compile both validators and freeze the canonical keys and predicate mapping. JMT is not exposed as
+an on-chain option.

@@ -1,35 +1,18 @@
 package com.bloxbean.cardano.yano.appchain.proofs.onchain;
 
-import com.bloxbean.cardano.julc.core.PlutusData;
 import com.bloxbean.cardano.julc.core.types.JulcList;
-import com.bloxbean.cardano.julc.ledger.OutputDatum;
-import com.bloxbean.cardano.julc.ledger.ScriptContext;
-import com.bloxbean.cardano.julc.ledger.TxInInfo;
-import com.bloxbean.cardano.julc.ledger.TxOut;
 import com.bloxbean.cardano.julc.stdlib.Builtins;
-import com.bloxbean.cardano.julc.stdlib.annotation.Entrypoint;
-import com.bloxbean.cardano.julc.stdlib.annotation.Param;
-import com.bloxbean.cardano.julc.stdlib.annotation.SpendingValidator;
-import com.bloxbean.cardano.julc.stdlib.lib.ValuesLib;
+import com.bloxbean.cardano.julc.stdlib.annotation.OnchainLibrary;
 
 import java.math.BigInteger;
-import java.util.Optional;
 
-/** Compiled same-root Cardano-history predicate plus authenticated completeness verifier. */
-@SpendingValidator
+/** Reusable same-root MPF predicate plus authenticated-completeness proof library. */
+@OnchainLibrary
 public final class MpfPairOnChainVerifier {
     private static final long PATH_NIBBLES = 64;
     private static final long MAX_KEY_BYTES = 256;
     private static final long MAX_VALUE_BYTES = 8 * 1024;
     private static final long MAX_FOLDS = 32;
-
-    @Param static byte[] anchorThreadPolicyId;
-    @Param static byte[] anchorThreadAssetName;
-    @Param static byte[] anchorScriptHash;
-    @Param static byte[] expectedChainGenesisId;
-    @Param static byte[] expectedApplicationId;
-    @Param static byte[] expectedCommitmentProfileId;
-    @Param static byte[] expectedFormatFingerprint;
 
     public record Fold(BigInteger cursor, byte[] prefix, BigInteger nibble,
                        byte[] neighbor1, byte[] neighbor2, byte[] neighbor3,
@@ -49,17 +32,7 @@ public final class MpfPairOnChainVerifier {
                             byte[] poolHash) { }
 
     private record UInt(BigInteger value, long next) { }
-    private record AnchorRoot(byte[] stateRoot) { }
-
     private MpfPairOnChainVerifier() {
-    }
-
-    @Entrypoint
-    public static boolean validate(PlutusData datum,
-                                   ProofPair proofs,
-                                   ScriptContext context) {
-        Optional<AnchorRoot> anchor = acceptedAnchor(context);
-        return anchor.isPresent() && verifyAtRoot(proofs, anchor.get().stateRoot());
     }
 
     /** Reusable semantic pair check after an application has authenticated the anchor root. */
@@ -76,73 +49,36 @@ public final class MpfPairOnChainVerifier {
                 && semantic(proofs.fact().value(), mode, proofs.coin(), proofs.poolHash());
     }
 
-    private static Optional<AnchorRoot> acceptedAnchor(ScriptContext context) {
-        Optional<AnchorRoot> result = Optional.empty();
-        BigInteger count = BigInteger.ZERO;
-        for (TxInInfo input : context.txInfo().referenceInputs()) {
-            if (ValuesLib.assetOf(input.resolved().value(), anchorThreadPolicyId,
-                    anchorThreadAssetName).equals(BigInteger.ONE)
-                    && atScriptAddress(input.resolved(), anchorScriptHash)) {
-                count = count.add(BigInteger.ONE);
-                result = anchor(input.resolved().datum());
-            }
-        }
-        return count.equals(BigInteger.ONE) ? result : Optional.empty();
+    /** Bind application-selected keys, epoch and operands outside the untrusted redeemer. */
+    public static boolean verifyBoundAtRoot(
+            ProofPair proofs, byte[] stateRoot, byte[] factKey,
+            byte[] completenessKey, BigInteger epoch, BigInteger predicate,
+            BigInteger coin, byte[] auxiliary) {
+        return bindingsMatch(proofs.fact().key(), proofs.completeness().key(),
+                proofs.completeness().value(), factKey, completenessKey, epoch)
+                && verifyAtRoot(new ProofPair(proofs.fact(), proofs.completeness(),
+                factKey, completenessKey, predicate, coin, auxiliary), stateRoot);
     }
 
-    private static Optional<AnchorRoot> anchor(OutputDatum datum) {
-        if (datum instanceof OutputDatum.OutputDatumInline inline) {
-            return anchorData(inline.datum());
-        }
-        return Optional.empty();
+    /** Pure binding check shared by product validators and golden-vector tests. */
+    public static boolean bindingsMatch(
+            byte[] observedFactKey, byte[] observedCompletenessKey,
+            byte[] completenessValue, byte[] factKey,
+            byte[] completenessKey, BigInteger epoch) {
+        return epoch.signum() >= 0
+                && Builtins.equalsByteString(observedFactKey, factKey)
+                && Builtins.equalsByteString(observedCompletenessKey, completenessKey)
+                && completenessEpoch(completenessValue).equals(epoch);
     }
 
-    private static Optional<AnchorRoot> anchorData(PlutusData value) {
-        if (Builtins.constrTag(value) != 0) return Optional.empty();
-        PlutusData fields = Builtins.constrFields(value);
-        BigInteger version = Builtins.unIData(Builtins.headList(fields));
-        PlutusData f1 = Builtins.tailList(fields);
-        byte[] chainId = Builtins.unBData(Builtins.headList(f1));
-        PlutusData f2 = Builtins.tailList(f1);
-        byte[] genesis = Builtins.unBData(Builtins.headList(f2));
-        PlutusData f3 = Builtins.tailList(f2);
-        byte[] application = Builtins.unBData(Builtins.headList(f3));
-        PlutusData f4 = Builtins.tailList(f3);
-        byte[] profile = Builtins.unBData(Builtins.headList(f4));
-        PlutusData f5 = Builtins.tailList(f4);
-        byte[] fingerprint = Builtins.unBData(Builtins.headList(f5));
-        PlutusData f6 = Builtins.tailList(f5);
-        BigInteger height = Builtins.unIData(Builtins.headList(f6));
-        PlutusData f7 = Builtins.tailList(f6);
-        byte[] blockHash = Builtins.unBData(Builtins.headList(f7));
-        PlutusData f8 = Builtins.tailList(f7);
-        byte[] stateRoot = Builtins.unBData(Builtins.headList(f8));
-        PlutusData f9 = Builtins.tailList(f8);
-        PlutusData f10 = Builtins.tailList(f9);
-        PlutusData trailing = Builtins.tailList(f10);
-        if (!version.equals(BigInteger.ONE)
-                || !Builtins.nullList(trailing)
-                || Builtins.lengthOfByteString(chainId) < 1
-                || Builtins.lengthOfByteString(chainId) > 128
-                || height.signum() < 0
-                || Builtins.lengthOfByteString(blockHash) != 32
-                || Builtins.lengthOfByteString(stateRoot) != 32
-                || !Builtins.equalsByteString(genesis, expectedChainGenesisId)
-                || !Builtins.equalsByteString(application, expectedApplicationId)
-                || !Builtins.equalsByteString(profile, expectedCommitmentProfileId)
-                || !Builtins.equalsByteString(fingerprint, expectedFormatFingerprint)) {
-            return Optional.empty();
-        }
-        return Optional.of(new AnchorRoot(stateRoot));
-    }
-
-    private static boolean atScriptAddress(TxOut output, byte[] scriptHash) {
-        PlutusData credential = output.address().credential().toPlutusData();
-        PlutusData fields = Builtins.constrFields(credential);
-        byte[] observed = Builtins.unBData(Builtins.headList(fields));
-        return Builtins.constrTag(credential) == 1
-                && Builtins.nullList(Builtins.tailList(fields))
-                && Builtins.equalsByteString(observed, scriptHash);
+    private static BigInteger completenessEpoch(byte[] value) {
+        long length = Builtins.lengthOfByteString(value);
+        if (length < 3) return BigInteger.valueOf(-1);
+        long header = Builtins.indexByteString(value, 0);
+        if (header != 137 && header != 134 && header != 136) return BigInteger.valueOf(-1);
+        UInt version = readUInt(value, 1);
+        UInt epoch = readUInt(value, version.next());
+        return version.value().equals(BigInteger.ONE) ? epoch.value() : BigInteger.valueOf(-1);
     }
 
     private static boolean semantic(byte[] value, long mode,

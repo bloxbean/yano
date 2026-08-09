@@ -33,7 +33,7 @@ class MpfOnChainVerifierTest extends ContractTest {
 
     @Test
     void referenceValidatorCompilesToTheActualOnChainTarget() {
-        assertThat(compileValidator(MpfOnChainVerifier.class).program()).isNotNull();
+        assertThat(compileValidator(MpfAnchorValidator.class).program()).isNotNull();
     }
 
     private static byte[] nibbles(byte[] path) {
