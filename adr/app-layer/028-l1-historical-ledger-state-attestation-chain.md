@@ -2,7 +2,7 @@
 
 ## Protocol parameters, stake, and governance
 
-**Status:** Proposed — implementation plan, no code written
+**Status:** Accepted — M1–M4 implemented; M5–M8 in progress
 **Date:** 2026-08-09
 **Depends on:** ADR app-layer/027 §2.4 (deep-rollback detection) — implementation and devnet work may
 proceed, but this is **blocking for every production/preprod epoch attestation**, including M3 and
@@ -638,6 +638,13 @@ exceed 32,768 state operations; no message/block may exceed the configured frame
 keys/values/folds must fit the released ADR-031 on-chain envelope; the BlockApplied publisher must do
 no dataset-sized work; and the complete epoch must be finalized before its required L1 source can be
 pruned. If any hard gate fails, M5 does not begin.
+
+**Implementation learning.** Questions 1–3, 6–8, and the persistent restart portion of 9 are the
+pre-M5 feasibility gate. Questions that require the concrete stake machine and a deployed chain—4,
+5, the proposer-rotation portion of 9, and 10—remain hard M5/M8 release gates and may not be inferred
+from the component benchmark. This staging removes the circular requirement to run a stake chain
+before M5 has implemented one without weakening its release criteria. The accepted measurements and
+budgets are published in `028-implementation-report.md`.
 
 ## 12. Test plan (definition of done)
 

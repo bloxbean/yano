@@ -10,7 +10,9 @@ dependencies {
     testImplementation libs.assertj.core
     testImplementation project(':core-api')
     testImplementation libs.cardano.client.mpf
+    testImplementation libs.cardano.client.mpf.rocksdb
     testImplementation libs.cardano.client.jmt
+    testImplementation libs.rocksdb
 }
 
 tasks.register('printAuthenticatedMapGoldenVectors', JavaExec) {
@@ -65,6 +67,20 @@ tasks.register('benchmarkAuthenticatedMapContracts', JavaExec) {
     args report.get().asFile.absolutePath,
             providers.gradleProperty('adr025BenchmarkKeys').getOrElse('100000'),
             providers.gradleProperty('adr025BenchmarkBatch').getOrElse('100')
+    outputs.file(report)
+}
+
+tasks.register('benchmarkEpochStakeMpf', JavaExec) {
+    group = 'verification'
+    description = 'Runs the ADR-028 M4 mainnet-scale direct-MPF feasibility workload'
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochStakeMpfBenchmark'
+    maxHeapSize = '4g'
+    def report = layout.buildDirectory.file('reports/adr028/m4-epoch-stake-mpf.json')
+    args report.get().asFile.absolutePath,
+            providers.gradleProperty('adr028BenchmarkEntries').getOrElse('1300000'),
+            providers.gradleProperty('adr028ChunkEntries').getOrElse('25000')
     outputs.file(report)
 }
 
