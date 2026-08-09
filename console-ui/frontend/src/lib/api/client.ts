@@ -1,4 +1,6 @@
-import type { AnchorCommitment, AppChainBlockDetail, AppChainBlocks, AppChainMessage, AppChainStatus, ChainSummary,
+import type { AnchorCommitment, AppChainBlockDetail, AppChainBlocks, AppChainMessage, AppChainStatus,
+  AuthenticatedSnapshotDescriptor, AuthenticatedSnapshotJob, AuthenticatedSnapshotStatus,
+  AuthenticatedSnapshotPage, ChainSummary,
   CommittedQueryResult,
   EffectPage, EffectStats, MessageSubmitResult, NodeConfig, NodePeers, NodeStatus,
   PluginBundleDetail, PluginBundlePage,
@@ -275,6 +277,47 @@ export class YanoApi {
   }
   chainStateIdentity(chainId: string, signal?: AbortSignal) {
     return this.json<Record<string, unknown>>(`${chainPath(chainId)}/state/identity`, signal);
+  }
+  chainSnapshotStatus(chainId: string, signal?: AbortSignal) {
+    return this.json<AuthenticatedSnapshotStatus>(`${chainPath(chainId)}/snapshots/status`, signal);
+  }
+  chainSnapshots(chainId: string, series?: string, cursor?: string, limit = 20,
+                 signal?: AbortSignal) {
+    const parameters = new URLSearchParams({
+      limit: String(Math.min(100, Math.max(1, limit)))
+    });
+    if (series) parameters.set('series', series);
+    if (cursor) parameters.set('cursor', cursor);
+    return this.json<AuthenticatedSnapshotPage>(
+      `${chainPath(chainId)}/snapshots?${parameters.toString()}`, signal);
+  }
+  chainSnapshot(chainId: string, series: string, sequence: number, signal?: AbortSignal) {
+    return this.json<AuthenticatedSnapshotDescriptor>(
+      `${chainPath(chainId)}/snapshots/${encodeURIComponent(series)}/${encodeURIComponent(sequence)}`, signal);
+  }
+  chainSnapshotProof(chainId: string, series: string, sequence: number, keyHex: string,
+                     signal?: AbortSignal) {
+    return this.post<Record<string, unknown>>(
+      `${chainPath(chainId)}/snapshots/${encodeURIComponent(series)}/${encodeURIComponent(sequence)}/proof`,
+      { keyHex }, signal);
+  }
+  verifyChainSnapshotProof(chainId: string, request: Record<string, unknown>, signal?: AbortSignal) {
+    return this.post<Record<string, unknown>>(`${chainPath(chainId)}/snapshots/proof/verify`, request, signal);
+  }
+  operateChainSnapshot(chainId: string, series: string, sequence: number,
+                       operation: 'archive' | 'restore' | 'evict', idempotencyKey: string,
+                       evictAfterArchive = false, signal?: AbortSignal) {
+    return this.post<{ jobId: string; operation: string }>(
+      `${chainPath(chainId)}/admin/snapshots/${encodeURIComponent(series)}/${encodeURIComponent(sequence)}/${operation}`,
+      { idempotencyKey, evictAfterArchive }, signal);
+  }
+  chainSnapshotJobs(chainId: string, limit = 100, signal?: AbortSignal) {
+    return this.json<AuthenticatedSnapshotJob[]>(
+      `${chainPath(chainId)}/admin/snapshots/jobs?limit=${Math.min(1000, Math.max(1, limit))}`, signal);
+  }
+  chainSnapshotJob(chainId: string, jobId: string, signal?: AbortSignal) {
+    return this.json<AuthenticatedSnapshotJob>(
+      `${chainPath(chainId)}/admin/snapshots/jobs/${encodeURIComponent(jobId)}`, signal);
   }
   domain<T = Record<string, unknown>>(
     bundleId: string, path: string, parameters: Record<string, string>, signal?: AbortSignal

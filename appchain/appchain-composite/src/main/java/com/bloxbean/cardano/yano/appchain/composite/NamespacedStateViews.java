@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.appchain.composite;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
+import com.bloxbean.cardano.yano.api.appchain.AppStateCapabilities;
 
 import java.util.Optional;
 
@@ -65,6 +66,11 @@ final class NamespacedStateViews {
         public void delete(byte[] key) {
             writer.delete(CompositeStateKeys.componentKey(componentId, key));
         }
+
+        @Override
+        public AppStateCapabilities capabilities() {
+            return writer.capabilities().scope(componentId);
+        }
     }
 
     private static final class Query extends Reader implements AppQueryContext {
@@ -78,6 +84,22 @@ final class NamespacedStateViews {
         @Override
         public long committedHeight() {
             return query.committedHeight();
+        }
+
+        @Override
+        public boolean authenticatedSnapshotOnline(String seriesId, long sequence) {
+            return query.authenticatedSnapshotOnline(scopedSeries(seriesId), sequence);
+        }
+
+        @Override
+        public Optional<byte[]> authenticatedSnapshotValue(
+                String seriesId, long sequence, byte[] canonicalKey) {
+            return query.authenticatedSnapshotValue(scopedSeries(seriesId), sequence, canonicalKey)
+                    .map(byte[]::clone);
+        }
+
+        private String scopedSeries(String seriesId) {
+            return componentId + "." + CompositeValidation.id(seriesId, "snapshot seriesId");
         }
     }
 }

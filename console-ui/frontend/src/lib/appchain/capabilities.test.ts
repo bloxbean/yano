@@ -21,6 +21,7 @@ describe('app-chain capability discovery', () => {
     expect(capabilities.effects).toBe(false);
     expect(capabilities.eutxoExplorer).toBe(false);
     expect(capabilities.roleApprovals).toBe(false);
+    expect(capabilities.authenticatedSnapshots).toBe(false);
     expect(capabilities.sources).toContain('capability manifest unavailable');
   });
 
@@ -33,6 +34,12 @@ describe('app-chain capability discovery', () => {
     expect(capabilities.effects).toBe(true);
     expect(capabilities.roleDomainBundle).toContain('role-workflow');
     expect(capabilities.commitmentTarget).toBe('off-chain + on-chain');
+  });
+
+  it('discovers authenticated snapshots only from the runtime manifest', () => {
+    const capabilities = discoverChainCapabilities({ chainId: 'history', stateMachine: 'cardano-history',
+      capabilityManifest: manifest([], ['authenticated-snapshots-v1']) });
+    expect(capabilities.authenticatedSnapshots).toBe(true);
   });
 
   it('gates specialized explorers on declared components', () => {

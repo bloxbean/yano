@@ -14,8 +14,8 @@ def load(path: Path) -> dict:
     if value.get("schemaVersion") != 1 or value.get("profileId") != "light-v1":
         raise ValueError("unsupported showcase catalog")
     chains = value.get("chains")
-    if not isinstance(chains, list) or len(chains) != 12:
-        raise ValueError("light-v1 catalog must contain twelve chains")
+    if not isinstance(chains, list) or len(chains) != 13:
+        raise ValueError("light-v1 catalog must contain thirteen chains")
     ids: set[str] = set()
     scenarios: set[tuple[str, str]] = set()
     for chain in chains:

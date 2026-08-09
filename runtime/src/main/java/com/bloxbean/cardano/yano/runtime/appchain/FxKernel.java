@@ -289,6 +289,11 @@ final class FxKernel {
     private AppStateWriter guardedWriter(AppStateWriter state, boolean strict) {
         return new AppStateWriter() {
             @Override
+            public com.bloxbean.cardano.yano.api.appchain.AppStateCapabilities capabilities() {
+                return state.capabilities();
+            }
+
+            @Override
             public void put(byte[] key, byte[] value) {
                 rejectReserved(key);
                 state.put(key, value);

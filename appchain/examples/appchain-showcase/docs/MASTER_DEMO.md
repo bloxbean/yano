@@ -43,7 +43,7 @@ converged roots, and prints the UI URL.
 Expected checkpoints:
 
 - all three nodes become ready;
-- all twelve catalog chains expose deterministic capability manifests;
+- all thirteen catalog chains expose deterministic capability manifests;
 - every named chain reports the same root on all nodes;
 - opaque, canonical-CBOR, schema-validated, and plugin-validated map values
   finalize while two deliberately invalid values are filtered before

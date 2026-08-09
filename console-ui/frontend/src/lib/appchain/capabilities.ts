@@ -9,6 +9,7 @@ export interface ChainCapabilities {
   evidenceBundles: boolean;
   stateProofs: boolean;
   finalizedMessageIndex: boolean;
+  authenticatedSnapshots: boolean;
   commitmentTarget: string;
   sources: string[];
 }
@@ -34,6 +35,7 @@ export function discoverChainCapabilities(status: AppChainStatus | null,
     evidenceBundles: !!status?.chainId,
     stateProofs: mpf || jmt,
     finalizedMessageIndex: hasCapability(manifest, 'state-index:finalized-message-v1'),
+    authenticatedSnapshots: hasCapability(manifest, 'authenticated-snapshots-v1'),
     commitmentTarget: mpf ? 'off-chain + on-chain' : jmt ? 'off-chain only' : 'not declared',
     sources: manifest ? [`capabilityManifest:${manifest.manifestDigest}`] : ['capability manifest unavailable']
   };

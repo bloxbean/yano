@@ -22,6 +22,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -47,8 +48,16 @@ final class AppLedgerStore implements AutoCloseable {
     /** Durable ADR-028 epoch-observation generation/outbox state (node local). */
     private static final byte[] CF_EPOCH_OBSERVATIONS =
             "app_epoch_observations_v1".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] CF_SNAPSHOT_NODES =
+            "app_snapshot_nodes_v1".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] CF_SNAPSHOT_ROOTS =
+            "app_snapshot_roots_v1".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] CF_SNAPSHOT_BUILDS =
+            "app_snapshot_builds_v1".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] CF_SNAPSHOT_LIFECYCLE =
+            "app_snapshot_lifecycle_v1".getBytes(StandardCharsets.UTF_8);
     private static final String CF_MPF_GC_MARKS_PREFIX = "marks_";
-    private static final int STANDARD_COLUMN_FAMILY_COUNT = 14;
+    private static final int STANDARD_COLUMN_FAMILY_COUNT = 18;
 
     private static final byte[] KEY_TIP_HEIGHT = "tip_height".getBytes(StandardCharsets.UTF_8);
     private static final byte[] KEY_TIP_HASH = "tip_hash".getBytes(StandardCharsets.UTF_8);
@@ -75,6 +84,10 @@ final class AppLedgerStore implements AutoCloseable {
     private final ColumnFamilyHandle fxRecordsCf;
     private final ColumnFamilyHandle fxRuntimeCf;
     private final ColumnFamilyHandle epochObservationsCf;
+    private final ColumnFamilyHandle snapshotNodesCf;
+    private final ColumnFamilyHandle snapshotRootsCf;
+    private final ColumnFamilyHandle snapshotBuildsCf;
+    private final ColumnFamilyHandle snapshotLifecycleCf;
     private final RocksDbNodeStore mpfNodeStore;
     private final SharedRocksDbJmtStore jmtStore;
     private final StateCommitmentIdentity stateCommitmentIdentity;
@@ -125,7 +138,11 @@ final class AppLedgerStore implements AutoCloseable {
                     new ColumnFamilyDescriptor(SharedRocksDbJmtStore.CF_ROOTS, defaultCfOptions),
                     new ColumnFamilyDescriptor(SharedRocksDbJmtStore.CF_STALE, defaultCfOptions),
                     new ColumnFamilyDescriptor(SharedRocksDbJmtStore.CF_METADATA, defaultCfOptions),
-                    new ColumnFamilyDescriptor(CF_EPOCH_OBSERVATIONS, defaultCfOptions)));
+                    new ColumnFamilyDescriptor(CF_EPOCH_OBSERVATIONS, defaultCfOptions),
+                    new ColumnFamilyDescriptor(CF_SNAPSHOT_NODES, defaultCfOptions),
+                    new ColumnFamilyDescriptor(CF_SNAPSHOT_ROOTS, defaultCfOptions),
+                    new ColumnFamilyDescriptor(CF_SNAPSHOT_BUILDS, defaultCfOptions),
+                    new ColumnFamilyDescriptor(CF_SNAPSHOT_LIFECYCLE, defaultCfOptions)));
             for (byte[] staleMarks : staleMpfGcColumnFamilies(path)) {
                 descriptors.add(new ColumnFamilyDescriptor(staleMarks, defaultCfOptions));
             }
@@ -150,6 +167,10 @@ final class AppLedgerStore implements AutoCloseable {
                     cfHandles.get(8), cfHandles.get(9), cfHandles.get(10),
                     cfHandles.get(11), cfHandles.get(12));
             this.epochObservationsCf = cfHandles.get(13);
+            this.snapshotNodesCf = cfHandles.get(14);
+            this.snapshotRootsCf = cfHandles.get(15);
+            this.snapshotBuildsCf = cfHandles.get(16);
+            this.snapshotLifecycleCf = cfHandles.get(17);
             dropStaleMpfGcColumnFamilies();
             this.stateBackend = StateCommitmentProfiles.MPF.id().equals(profileId)
                     ? new MpfAuthenticatedStateBackend(
@@ -174,6 +195,256 @@ final class AppLedgerStore implements AutoCloseable {
 
     AuthenticatedStateBackend stateBackend() {
         return stateBackend;
+    }
+
+    byte[] snapshotNode(byte[] key) {
+        return get(snapshotNodesCf, key, "read authenticated snapshot node");
+    }
+
+    byte[] snapshotRootMetadata(byte[] key) {
+        return get(snapshotRootsCf, key, "read authenticated snapshot root metadata");
+    }
+
+    byte[] snapshotLifecycle(byte[] key) {
+        return get(snapshotLifecycleCf, key, "read authenticated snapshot lifecycle");
+    }
+
+    void stageSnapshotNode(WriteBatch batch, byte[] key, byte[] value) {
+        stagePut(batch, snapshotNodesCf, key, value, "snapshot node");
+    }
+
+    void stageDeleteSnapshotNode(WriteBatch batch, byte[] key) {
+        stageDelete(batch, snapshotNodesCf, key, "snapshot node");
+    }
+
+    SnapshotNodeRecord snapshotFloor(byte[] prefix, byte[] seekKey) {
+        return snapshotFloor(prefix, seekKey, true);
+    }
+
+    SnapshotNodeRecord snapshotFloorBefore(byte[] prefix, byte[] exclusiveKey) {
+        return snapshotFloor(prefix, exclusiveKey, false);
+    }
+
+    private SnapshotNodeRecord snapshotFloor(byte[] prefix, byte[] seekKey, boolean inclusive) {
+        Objects.requireNonNull(prefix, "prefix");
+        Objects.requireNonNull(seekKey, "seekKey");
+        try (ReadOptions options = new ReadOptions().setTotalOrderSeek(true);
+             RocksIterator iterator = db.newIterator(snapshotNodesCf, options)) {
+            iterator.seekForPrev(seekKey);
+            if (!inclusive && iterator.isValid() && Arrays.equals(iterator.key(), seekKey)) {
+                iterator.prev();
+            }
+            if (!iterator.isValid() || !startsWith(iterator.key(), prefix)) return null;
+            iterator.status();
+            return new SnapshotNodeRecord(
+                    Arrays.copyOfRange(iterator.key(), prefix.length, iterator.key().length),
+                    iterator.value());
+        } catch (RocksDBException failure) {
+            throw new RuntimeException("Failed to seek authenticated snapshot node", failure);
+        }
+    }
+
+    void stageSnapshotRoot(WriteBatch batch, byte[] key, byte[] value) {
+        stagePut(batch, snapshotRootsCf, key, value, "snapshot root");
+    }
+
+    void stageSnapshotBuild(WriteBatch batch, byte[] key, byte[] value) {
+        stagePut(batch, snapshotBuildsCf, key, value, "snapshot build");
+    }
+
+    void stageDeleteSnapshotBuild(WriteBatch batch, byte[] key) {
+        stageDelete(batch, snapshotBuildsCf, key, "snapshot build");
+    }
+
+    void stageSnapshotLifecycle(WriteBatch batch, byte[] key, byte[] value) {
+        stagePut(batch, snapshotLifecycleCf, key, value, "snapshot lifecycle");
+    }
+
+    record SnapshotNodeRecord(byte[] key, byte[] value) {
+        SnapshotNodeRecord {
+            key = key.clone();
+            value = value.clone();
+        }
+        @Override public byte[] key() { return key.clone(); }
+        @Override public byte[] value() { return value.clone(); }
+    }
+
+    record SnapshotNodeStats(long nodeCount, long bytes) { }
+
+    SnapshotNodeStats forEachSnapshotNode(byte[] prefix, long maximumNodes, long maximumBytes,
+                                          java.util.function.BiConsumer<byte[], byte[]> consumer) {
+        Objects.requireNonNull(prefix, "prefix");
+        Objects.requireNonNull(consumer, "consumer");
+        long nodes = 0;
+        long bytes = 0;
+        try (RocksIterator iterator = db.newIterator(snapshotNodesCf)) {
+            iterator.seek(prefix);
+            while (iterator.isValid() && startsWith(iterator.key(), prefix)) {
+                byte[] fullKey = iterator.key();
+                byte[] value = iterator.value();
+                nodes = Math.addExact(nodes, 1);
+                bytes = Math.addExact(bytes, fullKey.length - prefix.length + value.length);
+                if (nodes > maximumNodes || bytes > maximumBytes) {
+                    throw new IllegalStateException("authenticated snapshot exceeds archive limits");
+                }
+                consumer.accept(Arrays.copyOfRange(fullKey, prefix.length, fullKey.length), value);
+                iterator.next();
+            }
+            iterator.status();
+            return new SnapshotNodeStats(nodes, bytes);
+        } catch (RocksDBException failure) {
+            throw new RuntimeException("Failed to enumerate authenticated snapshot nodes", failure);
+        }
+    }
+
+    List<SnapshotNodeRecord> snapshotNodes(byte[] prefix, long maximumNodes, long maximumBytes) {
+        List<SnapshotNodeRecord> records = new ArrayList<>();
+        forEachSnapshotNode(prefix, maximumNodes, maximumBytes,
+                (key, value) -> records.add(new SnapshotNodeRecord(key, value)));
+        return List.copyOf(records);
+    }
+
+    int deleteSnapshotNodesExcept(byte[] prefix, java.util.function.Predicate<byte[]> retained,
+                                  long maximumNodes, long maximumBytes) {
+        Objects.requireNonNull(prefix, "prefix");
+        Objects.requireNonNull(retained, "retained");
+        long visited = 0;
+        long bytes = 0;
+        long deleted = 0;
+        Snapshot snapshot = db.getSnapshot();
+        try (ReadOptions readOptions = new ReadOptions().setSnapshot(snapshot);
+             RocksIterator iterator = db.newIterator(snapshotNodesCf, readOptions);
+             WriteOptions writeOptions = new WriteOptions().setSync(true)) {
+            WriteBatch batch = new WriteBatch();
+            try {
+                iterator.seek(prefix);
+                int pending = 0;
+                while (iterator.isValid() && startsWith(iterator.key(), prefix)) {
+                    byte[] fullKey = iterator.key();
+                    byte[] relative = Arrays.copyOfRange(fullKey, prefix.length, fullKey.length);
+                    visited = Math.addExact(visited, 1);
+                    bytes = Math.addExact(bytes, relative.length + iterator.value().length);
+                    if (visited > maximumNodes || bytes > maximumBytes) {
+                        throw new IllegalStateException("authenticated snapshot exceeds pruning limits");
+                    }
+                    if (!retained.test(relative)) {
+                        batch.delete(snapshotNodesCf, fullKey);
+                        deleted = Math.addExact(deleted, 1);
+                        pending++;
+                        if (pending == 10_000) {
+                            db.write(writeOptions, batch);
+                            batch.close();
+                            batch = new WriteBatch();
+                            pending = 0;
+                        }
+                    }
+                    iterator.next();
+                }
+                iterator.status();
+                if (pending > 0) db.write(writeOptions, batch);
+            } finally {
+                batch.close();
+            }
+            byte[] upper = prefixUpperBound(prefix);
+            if (upper != null) db.compactRange(snapshotNodesCf, prefix, upper);
+            return deleted > Integer.MAX_VALUE ? Integer.MAX_VALUE : Math.toIntExact(deleted);
+        } catch (RocksDBException failure) {
+            throw new RuntimeException("Failed to prune authenticated snapshot nodes", failure);
+        } finally {
+            db.releaseSnapshot(snapshot);
+        }
+    }
+
+    void updateSnapshotLifecycle(byte[] prefix, String state) {
+        try (WriteOptions options = new WriteOptions().setSync(true)) {
+            db.put(snapshotLifecycleCf, options, prefix, state.getBytes(StandardCharsets.US_ASCII));
+        } catch (RocksDBException failure) {
+            throw new RuntimeException("Failed to update snapshot lifecycle", failure);
+        }
+    }
+
+    void beginSnapshotRestore(byte[] prefix) {
+        byte[] upper = prefixUpperBound(prefix);
+        if (upper == null) throw new IllegalArgumentException("snapshot prefix has no upper bound");
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions().setSync(true)) {
+            batch.deleteRange(snapshotNodesCf, prefix, upper);
+            stageSnapshotLifecycle(batch, prefix, "RESTORING".getBytes(StandardCharsets.US_ASCII));
+            db.write(options, batch);
+        } catch (RocksDBException failure) {
+            throw new RuntimeException("Failed to begin authenticated snapshot restore", failure);
+        }
+    }
+
+    void importSnapshotNodeBatch(byte[] prefix, List<SnapshotNodeRecord> records) {
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions().setSync(true)) {
+            for (SnapshotNodeRecord record : records) {
+                stageSnapshotNode(batch, ByteBuffer.allocate(prefix.length + record.key().length)
+                        .put(prefix).put(record.key()).array(), record.value());
+            }
+            db.write(options, batch);
+        } catch (RocksDBException failure) {
+            throw new RuntimeException("Failed to import authenticated snapshot node batch", failure);
+        }
+    }
+
+    int evictSnapshotNodes(byte[] prefix) {
+        SnapshotNodeStats stats = forEachSnapshotNode(prefix, Integer.MAX_VALUE, Long.MAX_VALUE,
+                (ignoredKey, ignoredValue) -> { });
+        byte[] upper = prefixUpperBound(prefix);
+        if (upper == null) throw new IllegalArgumentException("snapshot prefix has no upper bound");
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions().setSync(true)) {
+            batch.deleteRange(snapshotNodesCf, prefix, upper);
+            stageSnapshotLifecycle(batch, prefix, "ARCHIVED_ONLY".getBytes(StandardCharsets.US_ASCII));
+            db.write(options, batch);
+            db.compactRange(snapshotNodesCf, prefix, upper);
+            return Math.toIntExact(stats.nodeCount());
+        } catch (RocksDBException failure) {
+            throw new RuntimeException("Failed to evict authenticated snapshot nodes", failure);
+        }
+    }
+
+    private static boolean startsWith(byte[] value, byte[] prefix) {
+        if (value.length < prefix.length) return false;
+        for (int i = 0; i < prefix.length; i++) if (value[i] != prefix[i]) return false;
+        return true;
+    }
+
+    private static byte[] prefixUpperBound(byte[] prefix) {
+        byte[] upper = prefix.clone();
+        for (int index = upper.length - 1; index >= 0; index--) {
+            if ((upper[index] & 0xff) != 0xff) {
+                upper[index]++;
+                return Arrays.copyOf(upper, index + 1);
+            }
+        }
+        throw new IllegalArgumentException("snapshot prefix has no upper bound");
+    }
+
+    private byte[] get(ColumnFamilyHandle handle, byte[] key, String operation) {
+        try {
+            byte[] value = db.get(handle, key);
+            return value != null ? value.clone() : null;
+        } catch (RocksDBException failure) {
+            throw new RuntimeException("Failed to " + operation, failure);
+        }
+    }
+
+    private static void stagePut(WriteBatch batch, ColumnFamilyHandle handle,
+                                 byte[] key, byte[] value, String subject) {
+        try {
+            batch.put(handle, key, value);
+        } catch (RocksDBException failure) {
+            throw new RuntimeException("Failed to stage " + subject, failure);
+        }
+    }
+
+    private static void stageDelete(WriteBatch batch, ColumnFamilyHandle handle,
+                                    byte[] key, String subject) {
+        try {
+            batch.delete(handle, key);
+        } catch (RocksDBException failure) {
+            throw new RuntimeException("Failed to delete staged " + subject, failure);
+        }
     }
 
     int pruneStateProofsBefore(long retainFromHeight) {
@@ -1755,6 +2026,83 @@ final class AppLedgerStore implements AutoCloseable {
             db.put(metaCf, key.getBytes(StandardCharsets.UTF_8), value);
         } catch (RocksDBException e) {
             throw new RuntimeException("Failed to write app ledger meta " + key, e);
+        }
+    }
+
+    void metaPutBytesSync(String key, byte[] value) {
+        try (WriteOptions options = new WriteOptions().setSync(true)) {
+            db.put(metaCf, options, key.getBytes(StandardCharsets.UTF_8), value);
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to durably write app ledger meta " + key, e);
+        }
+    }
+
+    void metaPutBytesAllSync(Map<String, byte[]> values) {
+        if (values.isEmpty()) return;
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions().setSync(true)) {
+            for (var entry : values.entrySet()) {
+                batch.put(metaCf, entry.getKey().getBytes(StandardCharsets.UTF_8),
+                        Objects.requireNonNull(entry.getValue(), "metadata value"));
+            }
+            db.write(options, batch);
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to durably write app ledger metadata", e);
+        }
+    }
+
+    void metaDeleteSync(String key) {
+        try (WriteOptions options = new WriteOptions().setSync(true)) {
+            db.delete(metaCf, options, key.getBytes(StandardCharsets.UTF_8));
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to durably delete app ledger meta " + key, e);
+        }
+    }
+
+    Map<String, byte[]> metaEntries(String prefix, int limit) {
+        if (prefix == null || prefix.isEmpty() || limit <= 0) {
+            throw new IllegalArgumentException("invalid metadata prefix scan");
+        }
+        byte[] keyPrefix = prefix.getBytes(StandardCharsets.UTF_8);
+        Map<String, byte[]> result = new LinkedHashMap<>();
+        try (RocksIterator iterator = db.newIterator(metaCf)) {
+            iterator.seek(keyPrefix);
+            while (iterator.isValid() && startsWith(iterator.key(), keyPrefix)) {
+                if (result.size() >= limit) {
+                    throw new IllegalStateException("metadata prefix scan exceeds configured limit");
+                }
+                result.put(new String(iterator.key(), StandardCharsets.UTF_8), iterator.value());
+                iterator.next();
+            }
+            iterator.status();
+            return Map.copyOf(result);
+        } catch (RocksDBException failure) {
+            throw new RuntimeException("Failed to scan app ledger metadata", failure);
+        }
+    }
+
+    Map<String, byte[]> metaEntriesAfter(String prefix, String afterExclusive, int limit) {
+        if (prefix == null || prefix.isEmpty() || limit <= 0) {
+            throw new IllegalArgumentException("invalid metadata prefix scan");
+        }
+        byte[] keyPrefix = prefix.getBytes(StandardCharsets.UTF_8);
+        byte[] cursor = afterExclusive == null ? null
+                : afterExclusive.getBytes(StandardCharsets.UTF_8);
+        Map<String, byte[]> result = new LinkedHashMap<>();
+        try (RocksIterator iterator = db.newIterator(metaCf)) {
+            iterator.seek(cursor != null ? cursor : keyPrefix);
+            if (cursor != null && iterator.isValid()
+                    && java.util.Arrays.equals(iterator.key(), cursor)) {
+                iterator.next();
+            }
+            while (iterator.isValid() && startsWith(iterator.key(), keyPrefix)
+                    && result.size() < limit) {
+                result.put(new String(iterator.key(), StandardCharsets.UTF_8), iterator.value());
+                iterator.next();
+            }
+            iterator.status();
+            return java.util.Collections.unmodifiableMap(new LinkedHashMap<>(result));
+        } catch (RocksDBException failure) {
+            throw new RuntimeException("Failed to page app ledger metadata", failure);
         }
     }
 

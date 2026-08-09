@@ -588,6 +588,9 @@ public final class YanoPropertyKeys {
          * broad API authentication is enabled.
          */
         public static final String API_KEYS = "yano.app-chain.api.keys";
+        /** Comma-separated keys authorized only for authenticated-snapshot lifecycle administration. */
+        public static final String SNAPSHOT_ADMIN_API_KEYS =
+                "yano.app-chain.api.snapshot-admin-keys";
         /** Reject unknown keys only inside runtime-owned namespaces with FULL metadata coverage. */
         public static final String VALIDATION_STRICT = "yano.app-chain.validation.strict";
         /** Project lock identity exposed only through the privileged diagnostics endpoint. */

@@ -524,6 +524,43 @@ public class AppChainResource {
             }
         }
 
+        @JsonIgnoreProperties(ignoreUnknown = false)
+        public record SnapshotProofRequest(
+                @JsonDeserialize(using = StrictStringDeserializer.class) String keyHex,
+                Long anchorHeight) {
+            @JsonAnySetter public void rejectUnknownField(String name, Object ignored) {
+                throw new IllegalArgumentException("Unknown snapshot proof field: " + name);
+            }
+        }
+
+        @JsonIgnoreProperties(ignoreUnknown = false)
+        public record SnapshotProofVerificationRequest(
+                @JsonDeserialize(using = StrictStringDeserializer.class) String bundleCborHex,
+                @JsonDeserialize(using = StrictStringDeserializer.class) String trustMode,
+                @JsonDeserialize(using = StrictStringDeserializer.class) String expectedChainId,
+                @JsonDeserialize(using = StrictStringDeserializer.class) String expectedAnchorMode,
+                @JsonDeserialize(using = StrictStringDeserializer.class) String expectedPrimaryProfile,
+                @JsonDeserialize(using = StrictStringDeserializer.class) String expectedPrimaryRootHex,
+                @JsonDeserialize(using = StrictStringDeserializer.class) String expectedChainGenerationIdHex,
+                @JsonDeserialize(using = StrictStringDeserializer.class) String expectedApplicationProfileDigestHex,
+                Long expectedAnchoredHeight,
+                @JsonDeserialize(using = StrictStringDeserializer.class) String expectedBlockHashHex,
+                @JsonDeserialize(using = StrictStringDeserializer.class) String expectedAnchorTransactionHash,
+                Long expectedL1Slot) {
+            @JsonAnySetter public void rejectUnknownField(String name, Object ignored) {
+                throw new IllegalArgumentException("Unknown snapshot proof verification field: " + name);
+            }
+        }
+
+        @JsonIgnoreProperties(ignoreUnknown = false)
+        public record SnapshotAdminRequest(
+                @JsonDeserialize(using = StrictStringDeserializer.class) String idempotencyKey,
+                Boolean evictAfterArchive) {
+            @JsonAnySetter public void rejectUnknownField(String name, Object ignored) {
+                throw new IllegalArgumentException("Unknown snapshot admin field: " + name);
+            }
+        }
+
         /** Prevent Jackson's scalar-to-string coercion in the strict query envelope. */
         public static final class StrictStringDeserializer extends JsonDeserializer<String> {
             @Override
@@ -1404,6 +1441,321 @@ public class AppChainResource {
             return stateLookup(keyHex, height, false);
         }
 
+        @GET
+        @Path("snapshots")
+        @AppChainAccess(AppChainAccess.Level.READ)
+        public Response snapshots(@QueryParam("series") String series,
+                                  @QueryParam("cursor") String cursor,
+                                  @QueryParam("limit") @DefaultValue("20") int limit) {
+            if (limit <= 0 || limit > 100) return badRequest("limit must be between 1 and 100");
+            try {
+                var page = gateway.authenticatedSnapshots(series, cursor, limit);
+                Map<String, Object> response = new LinkedHashMap<>();
+                response.put("items", page.items());
+                response.put("nextCursor", page.nextCursor());
+                response.put("viewHeight", page.viewHeight());
+                response.put("viewRootHex", HexUtil.encodeHexString(page.viewRoot()));
+                return Response.ok(response).build();
+            } catch (IllegalArgumentException invalid) {
+                return badRequest(invalid.getMessage());
+            } catch (UnsupportedOperationException unavailable) {
+                return Response.status(Response.Status.NOT_FOUND).entity(Map.of(
+                        "code", "CAPABILITY_DISABLED",
+                        "error", "Authenticated snapshots are not enabled for this chain")).build();
+            }
+        }
+
+        @GET
+        @Path("snapshots/{series}/{sequence}")
+        @AppChainAccess(AppChainAccess.Level.READ)
+        public Response snapshotDescriptor(@PathParam("series") String series,
+                                           @PathParam("sequence") long sequence) {
+            if (!validSnapshotSeries(series) || sequence < 0) {
+                return badRequest("Invalid authenticated snapshot series or sequence");
+            }
+            return gateway.authenticatedSnapshot(series, sequence).map(descriptor -> {
+                Map<String, Object> result = snapshotDescriptorView(descriptor);
+                result.put("descriptorCborHex", HexUtil.encodeHexString(
+                        com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotCanonicalCodec
+                                .encodeDescriptor(descriptor)));
+                result.put("descriptorCommitmentHex", HexUtil.encodeHexString(descriptor.commitment()));
+                return Response.ok(result).build();
+            }).orElse(Response.status(Response.Status.NOT_FOUND)
+                    .entity(Map.of("code", "UNKNOWN_DESCRIPTOR",
+                            "error", "Authenticated snapshot descriptor was not found")).build());
+        }
+
+        @POST
+        @Path("snapshots/{series}/{sequence}/proof")
+        @AppChainAccess(AppChainAccess.Level.READ)
+        public Response snapshotProof(@PathParam("series") String series,
+                                      @PathParam("sequence") long sequence,
+                                      SnapshotProofRequest request) {
+            if (!validSnapshotSeries(series) || sequence < 0 || request == null
+                    || !isCanonicalProofKey(request.keyHex())
+                    || request.anchorHeight() != null && request.anchorHeight() <= 0) {
+                return badRequest("A valid series, sequence, and canonical keyHex are required");
+            }
+            byte[] key = HexUtil.decodeHexString(request.keyHex());
+            if (key.length > MAX_PROOF_KEY_BYTES) {
+                return Response.status(413).entity(Map.of("error", "Snapshot proof key exceeds limit")).build();
+            }
+            var descriptor = gateway.authenticatedSnapshot(series, sequence);
+            if (descriptor.isEmpty()) {
+                return Response.status(Response.Status.NOT_FOUND).entity(Map.of(
+                        "code", "UNKNOWN_DESCRIPTOR", "error", "Snapshot descriptor was not found")).build();
+            }
+            var anchor = request.anchorHeight() == null ? gateway.latestAnchorCommitment()
+                    : gateway.anchorCommitment(request.anchorHeight());
+            if (anchor.isEmpty() || anchor.orElseThrow().anchoredHeight()
+                    < descriptor.orElseThrow().completedAppChainHeight()) {
+                return Response.status(Response.Status.SERVICE_UNAVAILABLE).entity(Map.of(
+                        "code", "SNAPSHOT_NOT_ANCHORED",
+                        "error", "No retained L1-confirmed root covers this snapshot")).build();
+            }
+            try {
+                return gateway.authenticatedSnapshotProof(
+                        series, sequence, key, request.anchorHeight()).map(bundle -> {
+                    Map<String, Object> result = new LinkedHashMap<>();
+                    result.put("schemaVersion", bundle.schemaVersion());
+                    result.put("descriptor", snapshotDescriptorView(
+                            com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotCanonicalCodec
+                                    .decodeDescriptor(bundle.descriptorBytes())));
+                    result.put("descriptorCborHex", HexUtil.encodeHexString(bundle.descriptorBytes()));
+                    result.put("primaryProof", stateProofView(bundle.descriptorProof()));
+                    result.put("secondaryProof", stateProofView(bundle.snapshotProof()));
+                    result.put("anchor", anchorView(bundle.anchor()));
+                    result.put("statementCommitmentHex",
+                            HexUtil.encodeHexString(bundle.statementCommitment()));
+                    result.put("bundleCommitmentHex",
+                            HexUtil.encodeHexString(bundle.bundleCommitment()));
+                    result.put("bundleCborHex", HexUtil.encodeHexString(bundle.canonicalBytes()));
+                    return Response.ok(result).build();
+                }).orElse(Response.status(Response.Status.SERVICE_UNAVAILABLE).entity(Map.of(
+                        "code", "SNAPSHOT_NOT_LOCAL",
+                        "error", "Snapshot nodes are not online on this node; use another member or restore explicitly"))
+                        .build());
+            } catch (java.util.concurrent.RejectedExecutionException saturated) {
+                return Response.status(429).header("Retry-After", "1").entity(Map.of(
+                        "code", "SATURATED",
+                        "error", "Authenticated snapshot proof service is saturated")).build();
+            } catch (com.bloxbean.cardano.yano.api.appchain.snapshot
+                     .AuthenticatedSnapshotDisputedException disputed) {
+                return Response.status(Response.Status.CONFLICT).entity(Map.of(
+                        "code", "DISPUTED", "error", disputed.getMessage())).build();
+            }
+        }
+
+        @POST
+        @Path("snapshots/proof/verify")
+        @AppChainAccess(AppChainAccess.Level.READ)
+        public Response verifySnapshotProof(SnapshotProofVerificationRequest request) {
+            if (request == null) return badRequest("Snapshot proof verification request is required");
+            try {
+                return gateway.withAuthenticatedSnapshotVerificationPermit(
+                        () -> verifySnapshotProofAdmitted(request));
+            } catch (java.util.concurrent.RejectedExecutionException saturated) {
+                return Response.status(429).header("Retry-After", "1").entity(Map.of(
+                        "code", "SATURATED",
+                        "error", "Authenticated snapshot verification is saturated")).build();
+            }
+        }
+
+        private Response verifySnapshotProofAdmitted(SnapshotProofVerificationRequest request) {
+            try {
+                byte[] canonicalBundle = canonicalHexBytes(request.bundleCborHex(), "bundleCborHex");
+                var bundle = com.bloxbean.cardano.yano.api.appchain.snapshot
+                        .AuthenticatedSnapshotProofBundleCodec.decode(canonicalBundle);
+                var descriptor = com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotCanonicalCodec
+                        .decodeDescriptor(bundle.descriptorBytes());
+                var primary = bundle.descriptorProof().proof();
+                var secondary = bundle.snapshotProof();
+                String trustMode = request.trustMode() == null || request.trustMode().isBlank()
+                        ? "local-anchor" : request.trustMode();
+                com.bloxbean.cardano.yano.api.appchain.AppAnchorCommitment confirmedAnchor = null;
+                boolean localDisputed = Boolean.TRUE.equals(
+                        gateway.authenticatedSnapshotStatus().get("disputed"));
+                boolean disputed;
+                if ("local-anchor".equals(trustMode)) {
+                    disputed = localDisputed;
+                    confirmedAnchor = gateway.anchorCommitment(
+                            bundle.anchor().anchoredHeight()).orElseThrow(() ->
+                            new IllegalArgumentException("no locally L1-confirmed anchor is available"));
+                    var primaryIdentity = gateway.stateCommitmentIdentity().orElseThrow(() ->
+                            new IllegalArgumentException("state commitment identity is unavailable"));
+                    if (!sameAnchor(bundle.anchor(), confirmedAnchor)
+                            || !java.util.Arrays.equals(descriptor.chainGenerationId(),
+                            primaryIdentity.genesisId())
+                            || !java.util.Arrays.equals(descriptor.applicationProfileDigest(),
+                            primaryIdentity.digest())) {
+                        return badRequest(
+                                "descriptor/primary root is not bound to the locally confirmed L1 anchor");
+                    }
+                } else if ("caller-pinned-root".equals(trustMode)) {
+                    disputed = false;
+                    byte[] expectedGenesis = fixedHash(request.expectedChainGenerationIdHex(),
+                            "expectedChainGenerationIdHex");
+                    byte[] expectedApplication = fixedHash(request.expectedApplicationProfileDigestHex(),
+                            "expectedApplicationProfileDigestHex");
+                    byte[] expectedRoot = fixedHash(request.expectedPrimaryRootHex(),
+                            "expectedPrimaryRootHex");
+                    byte[] expectedBlockHash = fixedHash(request.expectedBlockHashHex(),
+                            "expectedBlockHashHex");
+                    if (request.expectedChainId() == null || request.expectedChainId().isBlank()
+                            || request.expectedAnchorMode() == null || request.expectedAnchorMode().isBlank()
+                            || request.expectedPrimaryProfile() == null
+                            || request.expectedPrimaryProfile().isBlank()
+                            || request.expectedAnchoredHeight() == null
+                            || request.expectedAnchoredHeight() <= 0
+                            || request.expectedAnchorTransactionHash() == null
+                            || request.expectedAnchorTransactionHash().isBlank()
+                            || request.expectedL1Slot() == null || request.expectedL1Slot() < 0) {
+                        return badRequest("caller-pinned-root requires the complete anchor trust context");
+                    }
+                    if (!java.util.Arrays.equals(descriptor.chainGenerationId(), expectedGenesis)
+                            || !java.util.Arrays.equals(
+                            descriptor.applicationProfileDigest(), expectedApplication)
+                            || !java.util.Arrays.equals(primary.snapshot().stateRoot(), expectedRoot)
+                            || !request.expectedChainId().equals(bundle.anchor().chainId())
+                            || !request.expectedAnchorMode().equals(bundle.anchor().mode())
+                            || !request.expectedPrimaryProfile().equals(
+                            primary.snapshot().identity().profile().id())
+                            || request.expectedAnchoredHeight() != bundle.anchor().anchoredHeight()
+                            || !java.util.Arrays.equals(expectedBlockHash, bundle.anchor().blockHash())
+                            || !request.expectedAnchorTransactionHash().equals(
+                            bundle.anchor().transactionHash())
+                            || request.expectedL1Slot() != bundle.anchor().l1Slot()) {
+                        return badRequest("bundle differs from the caller-pinned root or identity");
+                    }
+                } else {
+                    return badRequest("trustMode must be local-anchor or caller-pinned-root");
+                }
+                boolean primaryValid = ProofVerifier.verifyNative(
+                        primary.snapshot().identity().profile().id(), AppChainClient.ProofPresence.PRESENT,
+                        primary.snapshot().stateRoot(), primary.canonicalKey(), primary.value(),
+                        primary.nativeProof());
+                boolean secondaryValid = ProofVerifier.verifyNative(
+                        secondary.snapshot().identity().profile().id(),
+                        AppChainClient.ProofPresence.valueOf(secondary.presence().name()),
+                        secondary.snapshot().stateRoot(), secondary.canonicalKey(), secondary.value(),
+                        secondary.nativeProof());
+                Map<String, Object> result = new LinkedHashMap<>();
+                result.put("valid", primaryValid && secondaryValid);
+                result.put("primaryValid", primaryValid);
+                result.put("secondaryValid", secondaryValid);
+                result.put("disputed", disputed);
+                result.put("disputeApplicable", "local-anchor".equals(trustMode));
+                result.put("trusted", primaryValid && secondaryValid && !disputed);
+                result.put("descriptorCommitmentHex",
+                        HexUtil.encodeHexString(descriptor.commitment()));
+                result.put("statementCommitmentHex",
+                        HexUtil.encodeHexString(bundle.statementCommitment()));
+                result.put("bundleCommitmentHex",
+                        HexUtil.encodeHexString(bundle.bundleCommitment()));
+                if (confirmedAnchor != null) {
+                    result.put("trust", disputed ? "local-history-disputed"
+                            : "verified-against-node-l1-confirmed-anchor");
+                    result.put("anchorTransactionHash", confirmedAnchor.transactionHash());
+                    result.put("anchorHeight", confirmedAnchor.anchoredHeight());
+                } else {
+                    result.put("trust", "caller-pinned-root-cryptographic-verification");
+                    result.put("trustWarning", "The caller must authenticate the supplied root and identity");
+                }
+                return Response.ok(result).build();
+            } catch (IllegalArgumentException malformed) {
+                return badRequest(malformed.getMessage());
+            }
+        }
+
+        private static boolean sameAnchor(
+                com.bloxbean.cardano.yano.api.appchain.AppAnchorCommitment left,
+                com.bloxbean.cardano.yano.api.appchain.AppAnchorCommitment right) {
+            return left.chainId().equals(right.chainId())
+                    && left.mode().equals(right.mode())
+                    && left.anchoredHeight() == right.anchoredHeight()
+                    && java.util.Arrays.equals(left.stateRoot(), right.stateRoot())
+                    && java.util.Arrays.equals(left.blockHash(), right.blockHash())
+                    && left.transactionHash().equals(right.transactionHash())
+                    && left.l1Slot() == right.l1Slot();
+        }
+
+        @GET
+        @Path("snapshots/status")
+        @AppChainAccess(AppChainAccess.Level.READ)
+        public Response snapshotStatus() {
+            return Response.ok(gateway.authenticatedSnapshotStatus()).build();
+        }
+
+        @POST
+        @Path("admin/snapshots/{series}/{sequence}/{operation:archive|restore|evict}")
+        @AppChainAccess(AppChainAccess.Level.SNAPSHOT_ADMIN)
+        public Response snapshotAdmin(@PathParam("series") String series,
+                                      @PathParam("sequence") long sequence,
+                                      @PathParam("operation") String operation,
+                                      @HeaderParam(AppChainApiKeyFilter.API_KEY_HEADER) String apiKey,
+                                      SnapshotAdminRequest request) {
+            if (!validSnapshotSeries(series) || sequence < 0) {
+                return badRequest("Invalid authenticated snapshot series or sequence");
+            }
+            if (request == null || request.idempotencyKey() == null
+                    || !request.idempotencyKey().matches("[A-Za-z0-9._:-]{1,128}")) {
+                return badRequest("A canonical idempotencyKey is required");
+            }
+            try {
+                String jobId = gateway.authenticatedSnapshotAdmin(operation, series, sequence,
+                        request.idempotencyKey(), Boolean.TRUE.equals(request.evictAfterArchive()),
+                        snapshotAdminPrincipal(apiKey));
+                return Response.accepted(Map.of("jobId", jobId, "operation", operation)).build();
+            } catch (UnsupportedOperationException unavailable) {
+                return Response.status(Response.Status.NOT_IMPLEMENTED).entity(Map.of(
+                        "code", "SNAPSHOT_ADMIN_UNAVAILABLE", "error", unavailable.getMessage())).build();
+            } catch (IllegalArgumentException invalid) {
+                return badRequest(invalid.getMessage());
+            } catch (java.util.concurrent.RejectedExecutionException saturated) {
+                return Response.status(429).header("Retry-After", "1").entity(Map.of(
+                        "code", "SATURATED", "error", "Snapshot administration queue is full")).build();
+            } catch (com.bloxbean.cardano.yano.api.appchain.snapshot
+                     .AuthenticatedSnapshotDisputedException disputed) {
+                return Response.status(Response.Status.CONFLICT).entity(Map.of(
+                        "code", "DISPUTED", "error", disputed.getMessage())).build();
+            } catch (IllegalStateException rejected) {
+                return Response.status(Response.Status.CONFLICT).entity(Map.of(
+                        "code", "SNAPSHOT_OPERATION_REJECTED", "error", rejected.getMessage())).build();
+            }
+        }
+
+        private static String snapshotAdminPrincipal(String apiKey) {
+            if (apiKey == null || apiKey.isBlank()) return "unknown";
+            try {
+                return "api-key-sha256:" + HexUtil.encodeHexString(
+                        java.security.MessageDigest.getInstance("SHA-256")
+                                .digest(apiKey.getBytes(StandardCharsets.UTF_8)));
+            } catch (java.security.NoSuchAlgorithmException impossible) {
+                throw new IllegalStateException(impossible);
+            }
+        }
+
+        @GET
+        @Path("admin/snapshots/jobs")
+        @AppChainAccess(AppChainAccess.Level.SNAPSHOT_ADMIN)
+        public Response snapshotJobs(@QueryParam("limit") @DefaultValue("100") int limit) {
+            if (limit <= 0 || limit > 1000) return badRequest("limit must be between 1 and 1000");
+            return Response.ok(gateway.authenticatedSnapshotJobs(limit)).build();
+        }
+
+        @GET
+        @Path("admin/snapshots/jobs/{jobId}")
+        @AppChainAccess(AppChainAccess.Level.SNAPSHOT_ADMIN)
+        public Response snapshotJob(@PathParam("jobId") String jobId) {
+            if (jobId == null || !jobId.matches("[0-9a-f-]{36}")) {
+                return badRequest("Invalid snapshot job id");
+            }
+            return gateway.authenticatedSnapshotJob(jobId)
+                    .map(value -> Response.ok(value).build())
+                    .orElse(Response.status(Response.Status.NOT_FOUND).entity(Map.of(
+                            "code", "UNKNOWN_JOB", "error", "Snapshot job was not found")).build());
+        }
+
         private Response stateLookup(String keyHex, Long height, boolean includeProof) {
             if (keyHex != null && keyHex.length() > MAX_PROOF_KEY_BYTES * 2) {
                 return Response.status(413)
@@ -1654,6 +2006,83 @@ public class AppChainResource {
             result.put("stateRoot", HexUtil.encodeHexString(stateRoot));
             result.put("oldestProvableHeight", oldestProvableHeight);
             return result;
+        }
+
+        private static Map<String, Object> snapshotDescriptorView(
+                com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotDescriptorV1 descriptor) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("seriesId", descriptor.seriesId());
+            result.put("sequence", descriptor.sequence());
+            result.put("snapshotId", descriptor.snapshotId());
+            result.put("snapshotProfile", descriptor.snapshotProfile());
+            result.put("snapshotFormatFingerprintHex",
+                    HexUtil.encodeHexString(descriptor.snapshotFormatFingerprint()));
+            result.put("snapshotProofWireVersion", descriptor.snapshotProofWireVersion());
+            result.put("snapshotRootHex", HexUtil.encodeHexString(descriptor.snapshotRoot()));
+            result.put("sourceDatasetRootHex", HexUtil.encodeHexString(descriptor.sourceDatasetRoot()));
+            result.put("sourceCommitmentAlgorithm", descriptor.sourceCommitmentAlgorithm());
+            result.put("sourceCommitmentWireVersion", descriptor.sourceCommitmentWireVersion());
+            result.put("schemaId", descriptor.schemaId());
+            result.put("entryCount", descriptor.entryCount());
+            result.put("baseAppChainHeight", descriptor.baseAppChainHeight());
+            result.put("completedAppChainHeight", descriptor.completedAppChainHeight());
+            result.put("coveredFromHeight", descriptor.coveredFromHeight());
+            result.put("coveredThroughHeight", descriptor.coveredThroughHeight());
+            result.put("previousSnapshotCommitmentHex",
+                    HexUtil.encodeHexString(descriptor.previousSnapshotCommitment()));
+            result.put("recoveryCoverage", descriptor.recoveryCoverage().name());
+            result.put("complete", descriptor.complete());
+            return result;
+        }
+
+        private static Map<String, Object> stateProofView(StateProofEnvelope envelope) {
+            Map<String, Object> result = stateProofView(envelope.proof());
+            result.put("proofSchemaVersion", envelope.proofSchemaVersion());
+            result.put("chainId", envelope.chainId());
+            result.put("blockHashHex", HexUtil.encodeHexString(envelope.blockHash()));
+            result.put("finalityCertificate", finalityCertificateView(envelope.finalityCertificate()));
+            return result;
+        }
+
+        private static Map<String, Object> stateProofView(StateProof proof) {
+            Map<String, Object> result = commitmentView(proof.snapshot().identity(),
+                    proof.snapshot().height(), proof.snapshot().stateRoot(), 0);
+            result.put("keyHex", HexUtil.encodeHexString(proof.canonicalKey()));
+            result.put("presence", proof.presence().name());
+            if (proof.value() != null) result.put("valueHex", HexUtil.encodeHexString(proof.value()));
+            result.put("proofWireHex", HexUtil.encodeHexString(proof.nativeProof()));
+            return result;
+        }
+
+        private static Map<String, Object> anchorView(
+                com.bloxbean.cardano.yano.api.appchain.AppAnchorCommitment anchor) {
+            return Map.of("chainId", anchor.chainId(), "mode", anchor.mode(),
+                    "anchoredHeight", anchor.anchoredHeight(),
+                    "stateRootHex", HexUtil.encodeHexString(anchor.stateRoot()),
+                    "blockHashHex", HexUtil.encodeHexString(anchor.blockHash()),
+                    "transactionHash", anchor.transactionHash(), "l1Slot", anchor.l1Slot());
+        }
+
+        private static boolean validSnapshotSeries(String series) {
+            return series != null && series.matches("[a-z0-9][a-z0-9._-]{0,127}");
+        }
+
+        private static byte[] snapshotDescriptorKey(String series, long sequence) {
+            return ("snapshots/v1/" + series + "/" + String.format(Locale.ROOT,
+                    "%020d", sequence)).getBytes(StandardCharsets.US_ASCII);
+        }
+
+        private static byte[] canonicalHexBytes(String value, String name) {
+            if (!isCanonicalHex(value, true)) {
+                throw new IllegalArgumentException(name + " must be canonical lowercase hex");
+            }
+            return HexUtil.decodeHexString(value);
+        }
+
+        private static byte[] fixedHash(String value, String name) {
+            byte[] bytes = canonicalHexBytes(value, name);
+            if (bytes.length != 32) throw new IllegalArgumentException(name + " must contain 32 bytes");
+            return bytes;
         }
 
         private static Map<String, Object> certifiedBlockView(

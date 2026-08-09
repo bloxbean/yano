@@ -73,6 +73,7 @@ final class AppChainEngine implements AutoCloseable {
     private final StateCommitmentGuard stateCommitmentGuard;
     private final AuthenticatedStateBackend stateBackend;
     private final FxKernel fxKernel;
+    private final java.util.Optional<AuthenticatedSnapshotRuntime> authenticatedSnapshots;
     private final FxKernel.FxReader fxReader;
     private final Supplier<WriteBatch> writeBatchFactory;
     /** Sends a body on a system topic to the group (via the subsystem's diffusion). */
@@ -147,6 +148,82 @@ final class AppChainEngine implements AutoCloseable {
 
     void setVotingHealth(BooleanSupplier votingHealth) {
         this.votingHealth = Objects.requireNonNull(votingHealth, "votingHealth");
+    }
+
+    com.bloxbean.cardano.yano.api.appchain.snapshot.AuthenticatedSnapshotPage
+    authenticatedSnapshots(String seriesId, String cursor, int limit) {
+        return authenticatedSnapshots.map(runtime -> runtime.list(
+                seriesId, cursor, limit, ledger.tipHeight())).orElseThrow(() ->
+                new UnsupportedOperationException("Authenticated snapshot catalog is unavailable"));
+    }
+
+    Optional<com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotDescriptorV1>
+    authenticatedSnapshot(String seriesId, long sequence) {
+        return authenticatedSnapshots.flatMap(runtime -> runtime.descriptor(
+                seriesId, sequence, ledger.tipHeight()));
+    }
+
+    Optional<com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotDescriptorV1>
+    authenticatedSnapshotForAdmin(String seriesId, long sequence) {
+        return authenticatedSnapshots.flatMap(runtime -> runtime.descriptorForAdmin(
+                seriesId, sequence, ledger.tipHeight()));
+    }
+
+    Optional<com.bloxbean.cardano.yano.api.appchain.state.StateProof>
+    authenticatedSnapshotStateProof(
+            com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotDescriptorV1 descriptor,
+            byte[] key) {
+        return authenticatedSnapshots.flatMap(runtime -> runtime.stateProof(descriptor, key));
+    }
+
+    <T> T withAuthenticatedSnapshotProofPermit(java.util.function.Supplier<T> operation) {
+        return authenticatedSnapshots.orElseThrow(() -> new UnsupportedOperationException(
+                "Authenticated snapshots are disabled")).withProofPermit(operation);
+    }
+
+    Optional<com.bloxbean.cardano.yano.api.appchain.state.StateProof>
+    authenticatedSnapshotStateProofAdmitted(
+            com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotDescriptorV1 descriptor,
+            byte[] key) {
+        return authenticatedSnapshots.flatMap(runtime -> runtime.stateProofAdmitted(descriptor, key));
+    }
+
+    Map<String, Object> authenticatedSnapshotStatus() {
+        return authenticatedSnapshots.map(runtime -> runtime.status(ledger.tipHeight()))
+                .orElse(Map.of("enabled", false));
+    }
+
+    void markAuthenticatedSnapshotsDisputed(String reason) {
+        authenticatedSnapshots.ifPresent(runtime -> runtime.markDisputed(reason));
+    }
+
+    Optional<com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotDescriptorV1>
+    authenticatedSnapshotRetentionCandidate() {
+        return authenticatedSnapshots.flatMap(runtime -> runtime.retentionCandidate(ledger.tipHeight()));
+    }
+
+    AuthenticatedSnapshotRuntime authenticatedSnapshotRuntime() {
+        return authenticatedSnapshots.orElse(null);
+    }
+
+    java.nio.file.Path archiveAuthenticatedSnapshot(
+            com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotDescriptorV1 descriptor,
+            String archivePath) {
+        return authenticatedSnapshots.orElseThrow(() -> new UnsupportedOperationException(
+                "Authenticated snapshots are disabled")).archive(descriptor, archivePath);
+    }
+
+    void restoreAuthenticatedSnapshot(
+            com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotDescriptorV1 descriptor,
+            String archivePath) {
+        authenticatedSnapshots.orElseThrow(() -> new UnsupportedOperationException(
+                "Authenticated snapshots are disabled")).restore(descriptor, archivePath);
+    }
+
+    int evictAuthenticatedSnapshot(
+            com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotDescriptorV1 descriptor) {
+        return authenticatedSnapshots.orElseThrow(() -> new UnsupportedOperationException(
+                "Authenticated snapshots are disabled")).evict(descriptor);
     }
 
     AppChainEngine(AppChainConfig config,
@@ -267,6 +344,14 @@ final class AppChainEngine implements AutoCloseable {
         this.stateCommitmentGuard = new StateCommitmentGuard(stateBackend.identity());
         this.stateCommitmentGuard.verifyRetained(ledger, config.chainId());
         this.fxKernel = new FxKernel(effectsSettings, consensusProfileGuard);
+        AuthenticatedSnapshotSettings snapshotSettings = AuthenticatedSnapshotSettings.from(config);
+        this.authenticatedSnapshots = AuthenticatedSnapshotRuntime.create(
+                ledger, stateBackend.identity(), snapshotSettings,
+                stateMachine.authenticatedSnapshotSeries(),
+                stateMachine.authenticatedSnapshotSourceCommitments(),
+                Boolean.parseBoolean(config.pluginSettings().getOrDefault(
+                        com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity
+                                .L1_PROOF_REQUIRED_SETTING, "false")), config.chainId());
         this.fxReader = ledger.fxReader();
         if (!effectsSettings.enabled() && ledger.fxOpenCount() > 0) {
             // One-way switch (ADR-010 F12): the expiry sweep only runs while
@@ -1230,7 +1315,13 @@ final class AppChainEngine implements AutoCloseable {
                     committedHeight, baseRoot, block.height());
             stateCommitmentGuard.apply(block.height(), candidate);
             FxKernel.Result[] fxResult = new FxKernel.Result[1];
-            fxResult[0] = fxKernel.apply(stateMachine, executionContext, candidate, fxReader);
+            AuthenticatedSnapshotRuntime.BlockSession snapshotSession = authenticatedSnapshots.isPresent()
+                    ? authenticatedSnapshots.orElseThrow().beginBlock(candidate) : null;
+            AppStateWriter machineState = snapshotSession != null ? snapshotSession.writer() : candidate;
+            fxResult[0] = fxKernel.apply(stateMachine, executionContext, machineState, fxReader);
+            if (snapshotSession != null) {
+                snapshotSession.execute(batch, block.height());
+            }
             var prepared = candidate.prepare();
             if (!(prepared instanceof StagedStateCommit staged)) {
                 prepared.close();

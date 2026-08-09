@@ -273,15 +273,23 @@ public final class EpochStakeContract {
     }
 
     public static byte[] snapshotRoot(List<byte[]> chunkHashes) {
-        byte[] current = Blake2bUtil.blake2bHash256(ROOT_DOMAIN);
+        byte[] current = initialSnapshotRoot();
         for (byte[] chunkHash : chunkHashes) {
-            if (chunkHash == null || chunkHash.length != 32) {
-                throw new IllegalArgumentException("chunk hash must contain 32 bytes");
-            }
-            current = Blake2bUtil.blake2bHash256(
-                    ByteBuffer.allocate(64).put(current).put(chunkHash).array());
+            current = appendSnapshotRoot(current, chunkHash);
         }
         return current;
+    }
+
+    public static byte[] initialSnapshotRoot() {
+        return Blake2bUtil.blake2bHash256(ROOT_DOMAIN);
+    }
+
+    public static byte[] appendSnapshotRoot(byte[] current, byte[] chunkHash) {
+        if (current == null || current.length != 32 || chunkHash == null || chunkHash.length != 32) {
+            throw new IllegalArgumentException("snapshot and chunk hashes must contain 32 bytes");
+        }
+        return Blake2bUtil.blake2bHash256(
+                ByteBuffer.allocate(64).put(current).put(chunkHash).array());
     }
 
     public static byte[] entryKey(long epoch, int credType, byte[] credHash) {

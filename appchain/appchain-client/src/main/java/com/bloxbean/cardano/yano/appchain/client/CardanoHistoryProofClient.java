@@ -28,18 +28,20 @@ public final class CardanoHistoryProofClient {
                 .map(proof -> new CardanoHistoryProofBundle.ProtocolParameters(epoch, paramsComponent, proof));
     }
 
-    public Optional<CardanoHistoryProofBundle.Stake> stake(
+    public Optional<CardanoHistoryProofBundle.SnapshotStake> stake(
             long epoch, int credentialType, byte[] credentialHash,
             CardanoHistoryProofBundle.StakeMode mode, BigInteger coin,
             byte[] poolHash, long anchoredHeight) {
-        var fact = client.proof(ProofSubjects.epochStake(
-                stakeComponent, epoch, credentialType, credentialHash), anchoredHeight);
-        var complete = client.proof(ProofSubjects.epochStakeCompleteness(
-                stakeComponent, epoch), anchoredHeight);
-        if (fact.isEmpty() || complete.isEmpty()) return Optional.empty();
-        return Optional.of(new CardanoHistoryProofBundle.Stake(epoch, stakeComponent,
-                credentialType, credentialHash, mode, coin, poolHash,
-                fact.orElseThrow(), complete.orElseThrow()));
+        String series = stakeComponent + ".distribution";
+        var descriptor = snapshotForEpoch(series, epoch, anchoredHeight, true);
+        if (descriptor.isEmpty()) return Optional.empty();
+        byte[] key = EpochStakeContract.credentialOrderKey(credentialType, credentialHash);
+        var proof = client.authenticatedSnapshotProof(series,
+                descriptor.orElseThrow().descriptor().sequence(), key, anchoredHeight);
+        if (proof.isEmpty()) return Optional.empty();
+        requireAnchorHeight(proof.orElseThrow(), anchoredHeight);
+        return Optional.of(new CardanoHistoryProofBundle.SnapshotStake(epoch, series,
+                credentialType, credentialHash, mode, coin, poolHash, proof.orElseThrow()));
     }
 
     public Optional<CardanoHistoryProofBundle.Proposal> proposal(
@@ -57,17 +59,71 @@ public final class CardanoHistoryProofClient {
                 fact.orElseThrow(), complete.orElseThrow()));
     }
 
-    public Optional<CardanoHistoryProofBundle.DRepAmount> drepAmount(
+    public Optional<CardanoHistoryProofBundle.SnapshotDRepAmount> drepAmount(
             long epoch, int drepType, byte[] drepHash,
             CardanoHistoryProofBundle.AmountMode mode, BigInteger coin,
             long anchoredHeight) {
-        var fact = client.proof(ProofSubjects.drepDistribution(
-                governanceComponent, epoch, drepType, drepHash), anchoredHeight);
-        var complete = client.proof(ProofSubjects.drepDistributionCompleteness(
-                governanceComponent, epoch), anchoredHeight);
-        if (fact.isEmpty() || complete.isEmpty()) return Optional.empty();
-        return Optional.of(new CardanoHistoryProofBundle.DRepAmount(epoch, governanceComponent,
-                drepType, drepHash, mode, coin, fact.orElseThrow(), complete.orElseThrow()));
+        String series = governanceComponent + ".drep-distribution";
+        var descriptor = snapshotForEpoch(series, epoch, anchoredHeight, false);
+        if (descriptor.isEmpty()) return Optional.empty();
+        byte[] key = EpochGovernanceContract.drepOrderKey(drepType, drepHash);
+        var proof = client.authenticatedSnapshotProof(series,
+                descriptor.orElseThrow().descriptor().sequence(), key, anchoredHeight);
+        if (proof.isEmpty()) return Optional.empty();
+        requireAnchorHeight(proof.orElseThrow(), anchoredHeight);
+        return Optional.of(new CardanoHistoryProofBundle.SnapshotDRepAmount(epoch, series,
+                drepType, drepHash, mode, coin, proof.orElseThrow()));
+    }
+
+    private Optional<AppChainClient.AuthenticatedSnapshotDescriptor> snapshotForEpoch(
+            String series, long epoch, long anchoredHeight, boolean stake) {
+        String cursor = null;
+        AppChainClient.AuthenticatedSnapshotDescriptor newest = null;
+        for (int pageIndex = 0; pageIndex < 10_000; pageIndex++) {
+            AppChainClient.AuthenticatedSnapshotPage page =
+                    client.authenticatedSnapshots(series, cursor, 100);
+            for (var summary : page.items()) {
+                var candidate = client.authenticatedSnapshot(series, summary.sequence());
+                if (candidate.isPresent()) {
+                    var value = candidate.orElseThrow();
+                    var descriptor = value.descriptor();
+                    boolean semanticMatch = descriptor.complete()
+                            && descriptor.completedAppChainHeight() <= anchoredHeight
+                            && "blake2b256".equals(descriptor.sourceCommitmentAlgorithm())
+                            && descriptor.sourceBoundary()
+                            instanceof com.bloxbean.cardano.yano.api.appchain.snapshot
+                            .SnapshotSourceBoundary.L1Epoch boundary
+                            && boundary.datasetEpoch() == epoch
+                            && (stake
+                            ? "epoch-stake-v1".equals(descriptor.schemaId())
+                            && "epoch-stake-source-v1".equals(
+                            descriptor.sourceCommitmentWireVersion())
+                            && boundary.previousEpoch() == epoch && epoch != Long.MAX_VALUE
+                            && boundary.newEpoch() == epoch + 1
+                            : "epoch-drep-distribution-v1".equals(descriptor.schemaId())
+                            && "epoch-drep-source-v1".equals(
+                            descriptor.sourceCommitmentWireVersion())
+                            && boundary.newEpoch() == epoch
+                            && boundary.previousEpoch() == (epoch == 0 ? 0 : epoch - 1));
+                    if (semanticMatch && (newest == null
+                            || descriptor.sequence() > newest.descriptor().sequence())) {
+                        newest = value;
+                    }
+                }
+            }
+            cursor = page.nextCursor();
+            if (cursor == null) return Optional.ofNullable(newest);
+        }
+        throw new AppChainClient.AppChainClientException(
+                "Authenticated snapshot catalog exceeds safe traversal bound");
+    }
+
+    private static void requireAnchorHeight(AppChainClient.AuthenticatedSnapshotProof proof,
+                                            long anchoredHeight) {
+        if (proof.anchor().anchoredHeight() != anchoredHeight) {
+            throw new AppChainClient.AppChainClientException(
+                    "Authenticated snapshot proof was served for a different anchored height");
+        }
     }
 
     private static String required(String value) {

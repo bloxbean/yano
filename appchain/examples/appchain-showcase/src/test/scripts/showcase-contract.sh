@@ -107,9 +107,9 @@ grep -q '^light' <<< "$PROFILES"
 grep -q 'governance activate' <<< "$("$ROOT/showcase.sh" help)"
 "$ROOT/showcase.sh" prepare --instance three --nodes 3 --http-base 19770 --server-base 19370
 [ -f "$ROOT/data/showcase/three/showcase-identity.json" ]
-jq -e '.chainIds | length == 12' \
+jq -e '.chainIds | length == 13' \
   "$ROOT/data/showcase/three/showcase-identity.json" >/dev/null
-jq -e '.chainIds[10] == "payment-chain-settlement" and .chainIds[11] == "document-review-chain"' \
+jq -e '.chainIds[10] == "payment-chain-settlement" and .chainIds[11] == "document-review-chain" and .chainIds[12] == "cardano-history-chain"' \
   "$ROOT/data/showcase/three/showcase-identity.json" >/dev/null
 jq -e '.authenticatedMapConfigSha256 | test("^[0-9a-f]{64}$")' \
   "$ROOT/data/showcase/three/showcase-identity.json" >/dev/null
@@ -127,6 +127,44 @@ grep -q 'chains\[8\].machines.authenticated-map.genesis-cbor-hex=' \
 grep -q 'chains\[9\].machines.authenticated-map.genesis-cbor-hex=' \
   "$ROOT/data/showcase/three/node-config/node0.properties"
 ! grep -R 'signing-key\|api-key' "$ROOT/data/showcase/three/node-config" >/dev/null
+! grep -R 'authenticated-snapshots.enabled=true' \
+  "$ROOT/data/showcase/three/node-config" >/dev/null
+
+# ADR-028 M8c: the fresh-instance-only flag selects only declared series,
+# records their profile in deployment identity, and uses node-local archives.
+"$ROOT/showcase.sh" prepare --instance snapshots --http-base 19470 --server-base 19070 \
+  --enable-authenticated-snapshots=cardano-history-chain \
+  --authenticated-snapshot-profile jmt-blake2b256-v1
+jq -e '.authenticatedSnapshots.chainIds == ["cardano-history-chain"] and .authenticatedSnapshots.mpfPruningChainIds == [] and .authenticatedSnapshots.profile == "jmt-blake2b256-v1"' \
+  "$ROOT/data/showcase/snapshots/showcase-identity.json" >/dev/null
+grep -q 'chains\[12\].capabilities.authenticated-snapshots.enabled=true' \
+  "$ROOT/data/showcase/snapshots/node-config/node0.properties"
+grep -q 'chains\[12\].machines.epoch-stake.snapshot-profile=jmt-blake2b256-v1' \
+  "$ROOT/data/showcase/snapshots/node-config/node1.properties"
+grep -q '/node0/appchain-snapshot-archives' \
+  "$ROOT/data/showcase/snapshots/node-config/node0.properties"
+grep -q '/node1/appchain-snapshot-archives' \
+  "$ROOT/data/showcase/snapshots/node-config/node1.properties"
+"$ROOT/showcase.sh" prepare --instance snapshot-pruning --http-base 19570 \
+  --server-base 19170 --enable-authenticated-snapshots=cardano-history-chain \
+  --enable-authenticated-snapshot-mpf-pruning=cardano-history-chain
+jq -e '.authenticatedSnapshots.mpfPruningChainIds == ["cardano-history-chain"] and .authenticatedSnapshots.profile == "mpf-blake2b256-v1"' \
+  "$ROOT/data/showcase/snapshot-pruning/showcase-identity.json" >/dev/null
+grep -q 'capabilities.authenticated-snapshots.storage.mpf-pruning-enabled=true' \
+  "$ROOT/data/showcase/snapshot-pruning/node-config/node0.properties"
+if "$ROOT/showcase.sh" prepare --instance snapshot-pruning-jmt --http-base 19670 \
+    --server-base 19270 --enable-authenticated-snapshots=cardano-history-chain \
+    --authenticated-snapshot-profile jmt-blake2b256-v1 \
+    --enable-authenticated-snapshot-mpf-pruning=cardano-history-chain \
+    >"$WORK/snapshot-pruning-jmt.log" 2>&1; then
+  echo "JMT snapshot profile accepted MPF pruning" >&2; exit 1
+fi
+grep -q 'MPF pruning requires mpf-blake2b256-v1' "$WORK/snapshot-pruning-jmt.log"
+if "$ROOT/showcase.sh" prepare --instance invalid-snapshots \
+    --enable-authenticated-snapshots=orders-chain >"$WORK/snapshot-invalid.log" 2>&1; then
+  echo "unsupported authenticated snapshot chain was accepted" >&2; exit 1
+fi
+grep -q 'does not declare authenticated snapshot series' "$WORK/snapshot-invalid.log"
 
 # A retained instance must restart from its marker without repeating the
 # original non-default ports, membership, network, or chain list.
@@ -192,7 +230,7 @@ grep -q 'duplicate finalized-message index chain' "$WORK/index-invalid.log"
 ANCHOR_ROOT="$ROOT/data/showcase/anchor-expand"
 # Fresh instances anchor-ENABLE every chain by default (config-only; spending
 # starts at per-chain bootstrap).
-jq -e '.schemaVersion == 2 and (.anchor.chainIds | length == 12)' \
+jq -e '.schemaVersion == 2 and (.anchor.chainIds | length == 13)' \
   "$ANCHOR_ROOT/showcase-identity.json" >/dev/null
 # Downgrade the retained scope to the legacy workflow-only shape so the
 # additive enable migrations below keep their pre-default coverage.
@@ -223,7 +261,8 @@ document = {
     "chainIds": ["orders-chain", "registry-chain", "approvals-chain", "balances-chain",
                  "documents-chain", "workflow-chain", "roles-chain", "payments-chain",
                  "authenticated-map-chain", "authenticated-map-jmt-chain",
-                 "payment-chain-settlement", "document-review-chain"],
+                 "payment-chain-settlement", "document-review-chain",
+                 "cardano-history-chain"],
     "anchor": {"enabled": True, "mode": "script", "signerFingerprint": fingerprint,
                "chainId": "workflow-chain"},
 }
@@ -248,11 +287,11 @@ grep -q '^ANCHOR_CHAINS=registry-chain,workflow-chain$' \
 grep -q -- '--anchor-chain registry-chain --anchor-chain workflow-chain' "$WORK/cluster.log"
 
 "$ROOT/showcase.sh" anchor enable all --instance anchor-expand
-jq -e '.anchor.chainIds | length == 12' "$ANCHOR_ROOT/showcase-identity.json" >/dev/null
-jq -e '.anchor.chainIds | length == 12' \
+jq -e '.anchor.chainIds | length == 13' "$ANCHOR_ROOT/showcase-identity.json" >/dev/null
+jq -e '.anchor.chainIds | length == 13' \
   "$ANCHOR_ROOT/cluster/cluster-appchain-identity.json" >/dev/null
 PATH="$WORK/bin:$PATH" "$ROOT/showcase.sh" anchor bootstrap all --instance anchor-expand
-[ "$(grep -c '^anchor-bootstrap .*' "$WORK/cluster.log")" = 12 ]
+[ "$(grep -c '^anchor-bootstrap .*' "$WORK/cluster.log")" = 13 ]
 
 "$ROOT/showcase.sh" prepare --instance five --nodes 5 --http-base 19870 --server-base 19470
 [ "$(find "$ROOT/data/showcase/five/node-config" -type f -name 'node*.properties' | wc -l | tr -d ' ')" = 5 ]
@@ -312,8 +351,8 @@ grep -q "^evidence prepare .* --network preprod .* --anchor-key-file $WORK/ancho
   --instance light-preprod --http-base 17070 --server-base 17337 \
   --anchor-chain all --anchor-key-file "$WORK/anchor.seed" \
   --confirm-public-anchor preprod
-jq -e '.network == "preprod" and (.chainIds | length) == 11
-  and (.anchor.chainIds | length) == 11
+jq -e '.network == "preprod" and (.chainIds | length) == 12
+  and (.anchor.chainIds | length) == 12
   and (.chainIds | index("payment-chain-settlement")) == null' \
   "$ROOT/data/showcase/light-preprod/showcase-identity.json" >/dev/null
 ! grep -q 'chain-id: "payment-chain-settlement"' \

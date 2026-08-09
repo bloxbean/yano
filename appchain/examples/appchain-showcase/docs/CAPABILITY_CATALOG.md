@@ -19,6 +19,7 @@ light` renders it directly.
 | `authenticated-map-jmt-chain` | backend contrast | identical map business profile on classic JMT | JMT, off-chain only |
 | `payment-chain-settlement` | L1 boundary | L1 observers + EUTxO + settlement effects/indexer | MPF, off-chain + on-chain |
 | `document-review-chain` | composition | documents + roles + approval + consumption receipt | MPF, off-chain + on-chain |
+| `cardano-history-chain` | L1 history | protocol parameters, epoch stake, proposals, and DRep distribution | primary MPF; optional MPF/JMT logical snapshots |
 
 The console’s matrix and composition panel are populated from each
 application’s `capabilityManifest`. Membership governance and executable
@@ -70,3 +71,39 @@ command -> authorization/approval -> application mutation -> effect/consumption 
 
 `payment-chain-settlement` starts in light for discoverability, but public
 script deployment, owner keys, deposits, and withdrawals remain explicit.
+
+## Optional authenticated snapshots
+
+`cardano-history-chain` is the first consumer of the reusable
+`authenticated-snapshots-v1` capability. It keeps small descriptors and a
+hash-linked series head in primary MPF state while each large epoch stake or
+DRep distribution gets its own logical authenticated store. The default is
+disabled, preserving the direct-state behavior and identity of other chains.
+
+```bash
+# MPF secondary roots: off-chain and on-chain verification.
+./showcase.sh quickstart --instance history-mpf \
+  --enable-authenticated-snapshots=cardano-history-chain
+
+# Classic JMT secondary roots: off-chain verification only.
+./showcase.sh quickstart --instance history-jmt \
+  --enable-authenticated-snapshots cardano-history-chain \
+  --authenticated-snapshot-profile jmt-blake2b256-v1
+
+# Optional MPF archive-time reachable-node pruning.
+./showcase.sh quickstart --instance history-mpf-pruned \
+  --enable-authenticated-snapshots=cardano-history-chain \
+  --enable-authenticated-snapshot-mpf-pruning=cardano-history-chain
+
+./showcase.sh snapshots status --instance history-mpf
+./showcase.sh snapshots list --instance history-mpf
+./showcase.sh snapshots descriptor cardano-history-chain \
+  epoch-stake.distribution 0 --instance history-mpf
+```
+
+The console discovers the capability from the runtime manifest and shows the
+enabled series, storage mode, completed descriptors, profiles, and node-local
+lifecycle. Archive, restore, and eviction are explicit privileged jobs; proof
+requests never trigger an implicit restore. An MPF nested proof binds the
+entry to its logical snapshot root, the descriptor to the primary app-chain
+root, and that primary root to an independently verified Cardano L1 anchor.

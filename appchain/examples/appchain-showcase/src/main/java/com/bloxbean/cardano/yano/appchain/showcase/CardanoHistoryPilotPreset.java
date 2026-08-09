@@ -35,13 +35,18 @@ public final class CardanoHistoryPilotPreset {
         int drepChunks = positiveInt(context,
                 "machines.epoch-governance.drep-chunk-entries",
                 EpochGovernanceContract.DEFAULT_DREP_CHUNK_ENTRIES);
+        String stakeSnapshotProfile = context.settings().getOrDefault(
+                "machines.epoch-stake.snapshot-profile", "mpf-blake2b256-v1");
+        String drepSnapshotProfile = context.settings().getOrDefault(
+                "machines.epoch-governance.drep-snapshot-profile", stakeSnapshotProfile);
 
         EpochParamsStateMachine params = new EpochParamsStateMachine(
                 EpochParamsContract.DEFAULT_OBSERVER_ID);
         EpochStakeStateMachine stake = new EpochStakeStateMachine(
-                EpochStakeContract.DEFAULT_OBSERVER_ID, stakeChunks);
+                EpochStakeContract.DEFAULT_OBSERVER_ID, stakeChunks, stakeSnapshotProfile);
         EpochGovernanceStateMachine governance = new EpochGovernanceStateMachine(
-                EpochGovernanceContract.DEFAULT_OBSERVER_ID, true, true, drepChunks);
+                EpochGovernanceContract.DEFAULT_OBSERVER_ID, true, true, drepChunks,
+                drepSnapshotProfile);
 
         return ComposableAppStateMachine.builder(ID, context, PROFILE, "1.0.0")
                 .machine(descriptor(PARAMS, "params-v1",

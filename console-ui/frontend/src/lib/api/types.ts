@@ -337,6 +337,84 @@ export interface ProofVerificationResult {
   verifier: string;
 }
 
+export interface AuthenticatedSnapshotSummary {
+  seriesId: string;
+  sequence: number;
+  snapshotId: string;
+  entryCount: number;
+  completedAppChainHeight: number;
+  profile: string;
+  lifecycle: string;
+}
+
+export interface AuthenticatedSnapshotPage {
+  items: AuthenticatedSnapshotSummary[];
+  nextCursor: string | null;
+  viewHeight: number;
+  viewRootHex: string;
+}
+
+export interface AuthenticatedSnapshotStatus {
+  enabled: boolean;
+  series?: string[];
+  tipHeight?: number;
+  storage?: string;
+  seriesDetails?: Array<{
+    seriesId?: string;
+    schemaId?: string;
+    profile?: string;
+    trigger?: string;
+    proofWireVersion?: string;
+    verificationTarget?: string;
+    recoveryMode?: string;
+    latestSequence?: number;
+    latestLifecycle?: string;
+  }>;
+  proofMaxConcurrency?: number;
+  proofAvailablePermits?: number;
+  disputed?: boolean;
+  disputeReason?: string;
+  retentionEnabled?: boolean;
+  keepOnlineCount?: number;
+  mpfPruningEnabled?: boolean;
+}
+
+export interface AuthenticatedSnapshotDescriptor {
+  seriesId: string;
+  sequence: number;
+  snapshotId: string;
+  snapshotProfile: string;
+  snapshotFormatFingerprintHex: string;
+  snapshotProofWireVersion: string;
+  snapshotRootHex: string;
+  sourceDatasetRootHex: string;
+  sourceCommitmentAlgorithm: string;
+  sourceCommitmentWireVersion: string;
+  schemaId: string;
+  entryCount: number;
+  baseAppChainHeight: number;
+  completedAppChainHeight: number;
+  coveredFromHeight: number;
+  coveredThroughHeight: number;
+  previousSnapshotCommitmentHex: string;
+  recoveryCoverage: string;
+  complete: boolean;
+  descriptorCborHex?: string;
+  descriptorCommitmentHex?: string;
+}
+
+export interface AuthenticatedSnapshotJob {
+  id: string;
+  operation: string;
+  seriesId: string;
+  sequence: number;
+  state: string;
+  result?: string;
+  errorType?: string;
+  startedAt: number;
+  completedAt?: number;
+}
+
 export interface AnchorCommitment {
   chainId: string;
   mode: 'metadata' | 'script' | string;

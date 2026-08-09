@@ -131,6 +131,30 @@ describe('Yano API client', () => {
     expect((fetchMock.mock.calls[1][1].headers as Headers).get('X-API-Key')).toBe('operator-key');
   });
 
+  it('uses bounded authenticated-snapshot discovery and privileged lifecycle routes', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    vi.stubGlobal('fetch', fetchMock);
+    const api = new YanoApi('/api/v1', 'operator-key');
+    await api.chainSnapshotStatus('history/east');
+    await api.chainSnapshots('history/east', 'epoch-stake', 'cursor_4', 500);
+    await api.chainSnapshot('history/east', 'epoch-stake', 7);
+    await api.chainSnapshotProof('history/east', 'epoch-stake', 7, '01');
+    await api.operateChainSnapshot('history/east', 'epoch-stake', 7,
+      'archive', 'demo-7', true);
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      '/api/v1/app-chain/chains/history%2Feast/snapshots/status');
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      '/api/v1/app-chain/chains/history%2Feast/snapshots?limit=100&series=epoch-stake&cursor=cursor_4');
+    expect(fetchMock.mock.calls[2][0]).toBe(
+      '/api/v1/app-chain/chains/history%2Feast/snapshots/epoch-stake/7');
+    expect(fetchMock.mock.calls[3][1]).toEqual(expect.objectContaining({
+      method: 'POST', body: '{"keyHex":"01"}'
+    }));
+    expect(fetchMock.mock.calls[4][0]).toBe(
+      '/api/v1/app-chain/chains/history%2Feast/admin/snapshots/epoch-stake/7/archive');
+    expect((fetchMock.mock.calls[4][1].headers as Headers).get('X-API-Key')).toBe('operator-key');
+  });
+
   it('uses the same authenticated client for bounded plugin domain routes', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: [] }) });
     vi.stubGlobal('fetch', fetchMock);

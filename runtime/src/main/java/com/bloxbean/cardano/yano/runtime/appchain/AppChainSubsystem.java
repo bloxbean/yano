@@ -75,6 +75,9 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private static final int MAX_QUERY_REQUEST_BYTES = 64 * 1024;
     private static final int MAX_QUERY_RESULT_BYTES = 1024 * 1024;
     private static final String SYSTEM_TOPIC_PREFIX = "~";
+    private static final String SNAPSHOT_JOB_META_PREFIX = "snapshot_admin_job_v1/";
+    private static final String SNAPSHOT_IDEMPOTENCY_META_PREFIX = "snapshot_admin_idempotency_v1/";
+    private static final int SNAPSHOT_COMPLETED_JOB_RETENTION = 4_096;
 
     private final AppChainConfig config;
     private final EffectsSettings effectsSettings;
@@ -195,6 +198,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private volatile ScheduledExecutorService sinkScheduler;
     private volatile ScheduledExecutorService fxScheduler;
     private volatile ScheduledExecutorService proofPruningScheduler;
+    private volatile java.util.concurrent.ExecutorService snapshotAdminExecutor;
+    private final Map<String, String> snapshotJobIdsByIdempotency = new ConcurrentHashMap<>();
+    private final java.util.concurrent.ConcurrentHashMap<String, SnapshotAdminJob> snapshotJobs =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private final Object snapshotAdminJobLock = new Object();
     private final AtomicBoolean proofPruningDegraded = new AtomicBoolean();
     private volatile String proofPruningFailure;
     private volatile long proofPruningLastStartedAt;
@@ -377,6 +385,13 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 return admitted;
             }
 
+            long generationToken() {
+                if (!admitted || use == null) {
+                    throw new IllegalStateException("generation use was not admitted");
+                }
+                return use.generationToken;
+            }
+
             @Override
             public void close() {
                 if (!closed && admitted) {
@@ -490,12 +505,19 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     : Objects.requireNonNull(stateMachine.id(), "AppStateMachine.id returned null");
             StateCommitmentIdentity baseStateIdentity = StateCommitmentIdentity.fromSettings(
                     config.pluginSettings());
-            this.stateCommitmentIdentity = OrderedLogStateMachine.ID.equals(
+            StateCommitmentIdentity applicationStateIdentity = OrderedLogStateMachine.ID.equals(
                     effectiveStateMachineId) ? baseStateIdentity
                     : FinalizedMessageIndexedStateMachine.configuration(
                                     config.pluginSettings(), consensusProfile.maxBlockMessages())
                             .map(index -> baseStateIdentity.withApplicationProfile(index.digest()))
                             .orElse(baseStateIdentity);
+            AuthenticatedSnapshotSettings snapshotSettings =
+                    AuthenticatedSnapshotSettings.from(config);
+            StateCommitmentIdentity provisionalStateIdentity = snapshotSettings.enabled()
+                    ? applicationStateIdentity.withApplicationProfile(snapshotSettings.identityDigest())
+                    : applicationStateIdentity;
+            AtomicReference<StateCommitmentIdentity> stateIdentityRef =
+                    new AtomicReference<>(provisionalStateIdentity);
             this.proofPruningSettings = StateProofPruningSettings.from(config);
             this.protocolMagic = protocolMagic;
             this.eventBus = eventBus;
@@ -517,7 +539,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                                 }
                                 @Override
                                 public Optional<StateCommitmentIdentity> stateCommitmentIdentity() {
-                                    return Optional.of(AppChainSubsystem.this.stateCommitmentIdentity);
+                                    return Optional.of(stateIdentityRef.get());
                                 }
                                 @Override
                                 public Optional<AuthenticatedMapValidatorResolver>
@@ -541,9 +563,39 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     ? stateMachine
                     : resolveStateMachine(config.stateMachineId(), pluginProviders,
                             stateMachineContext, log);
-            this.stateMachine = OrderedLogStateMachine.ID.equals(effectiveStateMachineId)
+            AppStateMachine effectiveStateMachine = OrderedLogStateMachine.ID.equals(effectiveStateMachineId)
                     ? resolvedStateMachine
                     : maybeFinalizedMessageIndexed(resolvedStateMachine, stateMachineContext);
+            if (snapshotSettings.enabled()) {
+                boolean l1ProofRequired = Boolean.parseBoolean(config.pluginSettings().getOrDefault(
+                        StateCommitmentIdentity.L1_PROOF_REQUIRED_SETTING, "false"));
+                var selected = snapshotSettings.select(
+                        effectiveStateMachine.authenticatedSnapshotSeries(),
+                        applicationStateIdentity.profile(), l1ProofRequired);
+                StateCommitmentIdentity finalIdentity = applicationStateIdentity.withApplicationProfile(
+                        snapshotSettings.capabilityIdentityDigest(selected));
+                stateIdentityRef.set(finalIdentity);
+                if (stateMachine == null && !Arrays.equals(
+                        provisionalStateIdentity.digest(), finalIdentity.digest())) {
+                    resolvedStateMachine = resolveStateMachine(config.stateMachineId(), pluginProviders,
+                            stateMachineContext, log);
+                    effectiveStateMachine = OrderedLogStateMachine.ID.equals(effectiveStateMachineId)
+                            ? resolvedStateMachine
+                            : maybeFinalizedMessageIndexed(resolvedStateMachine, stateMachineContext);
+                    var recreatedSelected = snapshotSettings.select(
+                            effectiveStateMachine.authenticatedSnapshotSeries(),
+                            applicationStateIdentity.profile(), l1ProofRequired);
+                    if (!Arrays.equals(snapshotSettings.capabilityIdentityDigest(selected),
+                            snapshotSettings.capabilityIdentityDigest(recreatedSelected))) {
+                        throw new IllegalStateException("authenticated snapshot declarations changed "
+                                + "while resolving the final application identity");
+                    }
+                }
+                this.stateCommitmentIdentity = finalIdentity;
+            } else {
+                this.stateCommitmentIdentity = applicationStateIdentity;
+            }
+            this.stateMachine = effectiveStateMachine;
             this.ledgerPath = (ledgerPath != null
                     ? ledgerPath : YanoConfig.DEFAULT_APP_CHAIN_STORAGE_PATH)
                     + "/" + config.chainId();
@@ -811,6 +863,19 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             @Override
             public AppCapabilityManifest capabilityManifest() {
                 return delegate.capabilityManifest();
+            }
+
+            @Override
+            public List<com.bloxbean.cardano.yano.api.appchain.snapshot
+                    .AuthenticatedSnapshotSeriesDescriptorV1> authenticatedSnapshotSeries() {
+                return delegate.authenticatedSnapshotSeries();
+            }
+
+            @Override
+            public List<com.bloxbean.cardano.yano.api.appchain.snapshot
+                    .AuthenticatedSnapshotSourceCommitmentV1>
+                    authenticatedSnapshotSourceCommitments() {
+                return delegate.authenticatedSnapshotSourceCommitments();
             }
 
             @Override
@@ -1736,6 +1801,485 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     @Override
+    public com.bloxbean.cardano.yano.api.appchain.snapshot.AuthenticatedSnapshotPage
+    authenticatedSnapshots(String seriesId, String cursor, int limit) {
+        return requireGenerationUse(() -> {
+            if (engine == null) throw new UnsupportedOperationException(
+                    "Authenticated snapshot catalog is unavailable");
+            return engine.authenticatedSnapshots(seriesId, cursor, limit);
+        });
+    }
+
+    @Override
+    public Optional<com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotDescriptorV1>
+    authenticatedSnapshot(String seriesId, long sequence) {
+        return generationUseOr(Optional.empty(), () -> engine != null
+                ? engine.authenticatedSnapshot(seriesId, sequence) : Optional.empty());
+    }
+
+    @Override
+    public Optional<com.bloxbean.cardano.yano.api.appchain.snapshot.AuthenticatedSnapshotProofBundleV1>
+    authenticatedSnapshotProof(String seriesId, long sequence, byte[] canonicalKey) {
+        return authenticatedSnapshotProof(seriesId, sequence, canonicalKey, null);
+    }
+
+    @Override
+    public Optional<com.bloxbean.cardano.yano.api.appchain.snapshot.AuthenticatedSnapshotProofBundleV1>
+    authenticatedSnapshotProof(String seriesId, long sequence, byte[] canonicalKey, Long anchorHeight) {
+        byte[] key = Objects.requireNonNull(canonicalKey, "canonicalKey").clone();
+        return generationUseOr(Optional.empty(), () -> {
+            AppChainEngine currentEngine = engine;
+            if (currentEngine == null) return Optional.empty();
+            var descriptor = currentEngine.authenticatedSnapshot(seriesId, sequence).orElse(null);
+            if (descriptor == null) return Optional.empty();
+            var anchor = anchorHeight == null ? latestAnchorCommitmentWithinGeneration().orElse(null)
+                    : anchorCommitmentWithinGeneration(anchorHeight).orElse(null);
+            if (anchor == null || anchor.anchoredHeight() < descriptor.completedAppChainHeight()) {
+                return Optional.empty();
+            }
+            return currentEngine.withAuthenticatedSnapshotProofPermit(() -> {
+                byte[] descriptorKey = AuthenticatedSnapshotRuntime.descriptorKey(seriesId, sequence);
+                var primaryProof = stateProofEnvelopeAtHeight(anchor.anchoredHeight(), descriptorKey)
+                        .orElse(null);
+                var secondaryProof = currentEngine
+                        .authenticatedSnapshotStateProofAdmitted(descriptor, key).orElse(null);
+                if (primaryProof == null || secondaryProof == null) return Optional.empty();
+                return Optional.of(new com.bloxbean.cardano.yano.api.appchain.snapshot
+                        .AuthenticatedSnapshotProofBundleV1(1,
+                        com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotCanonicalCodec
+                                .encodeDescriptor(descriptor), primaryProof, secondaryProof, anchor));
+            });
+        });
+    }
+
+    @Override
+    public Map<String, Object> authenticatedSnapshotStatus() {
+        return generationUseOr(Map.of("enabled", false), () -> engine != null
+                ? engine.authenticatedSnapshotStatus() : Map.of("enabled", false));
+    }
+
+    @Override
+    public <T> T withAuthenticatedSnapshotVerificationPermit(
+            java.util.function.Supplier<T> operation) {
+        return requireGenerationUse(() -> {
+            AppChainEngine current = engine;
+            if (current == null) throw new UnsupportedOperationException(
+                    "Authenticated snapshot verification is unavailable");
+            return current.withAuthenticatedSnapshotProofPermit(operation);
+        });
+    }
+
+    @Override
+    public String authenticatedSnapshotAdmin(
+            String operation, String seriesId, long sequence,
+            String idempotencyKey, boolean evictAfterArchive) {
+        return authenticatedSnapshotAdmin(operation, seriesId, sequence,
+                idempotencyKey, evictAfterArchive, "internal");
+    }
+
+    @Override
+    public String authenticatedSnapshotAdmin(
+            String operation, String seriesId, long sequence,
+            String idempotencyKey, boolean evictAfterArchive, String principalId) {
+        var submissionUse = generationUseGate.tryAcquire();
+        try (submissionUse) {
+            if (!submissionUse.admitted()) {
+                throw new IllegalStateException("App chain is not running or is stopping");
+            }
+            return authenticatedSnapshotAdminAdmitted(operation, seriesId, sequence,
+                    idempotencyKey, evictAfterArchive, principalId,
+                    submissionUse.generationToken());
+        }
+    }
+
+    private String authenticatedSnapshotAdminAdmitted(
+            String operation, String seriesId, long sequence,
+            String idempotencyKey, boolean evictAfterArchive, String principalId,
+            long expectedGenerationToken) {
+        if (Boolean.TRUE.equals(authenticatedSnapshotStatus().get("disputed"))) {
+            throw new com.bloxbean.cardano.yano.api.appchain.snapshot
+                    .AuthenticatedSnapshotDisputedException(
+                    "authenticated snapshot lineage is DISPUTED");
+        }
+        String normalized = Objects.requireNonNull(operation, "operation").toLowerCase(Locale.ROOT);
+        if (!Set.of("archive", "restore", "evict").contains(normalized)) {
+            throw new IllegalArgumentException("snapshot operation must be archive, restore, or evict");
+        }
+        Optional<com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotDescriptorV1>
+                descriptorLookup = generationUseOr(Optional.empty(), () -> engine != null
+                ? engine.authenticatedSnapshotForAdmin(seriesId, sequence) : Optional.empty())
+                ;
+        com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotDescriptorV1 descriptor =
+                descriptorLookup.orElseThrow(() -> new IllegalArgumentException(
+                        "snapshot descriptor was not found"));
+        if (idempotencyKey == null || !idempotencyKey.matches("[A-Za-z0-9._:-]{1,128}")) {
+            throw new IllegalArgumentException("a canonical snapshot idempotency key is required");
+        }
+        java.util.concurrent.ExecutorService executor = snapshotAdminExecutor;
+        if (executor == null) {
+            throw new UnsupportedOperationException("Authenticated snapshot administration is unavailable");
+        }
+        String operationIdentity = HexUtil.encodeHexString(descriptor.commitment()) + ":"
+                + normalized + ":" + idempotencyKey;
+        String auditPrincipal = requireSnapshotAdminPrincipal(principalId);
+        SnapshotAdminJob job;
+        synchronized (snapshotAdminJobLock) {
+            String existingJobId = snapshotJobIdsByIdempotency.get(operationIdentity);
+            if (existingJobId == null) {
+                AppLedgerStore currentLedger = ledger;
+                String persisted = currentLedger != null
+                        ? currentLedger.metaString(snapshotIdempotencyMetaKey(operationIdentity)) : null;
+                if (persisted != null && snapshotJobs.containsKey(persisted)) {
+                    snapshotJobIdsByIdempotency.put(operationIdentity, persisted);
+                    existingJobId = persisted;
+                }
+            }
+            if (existingJobId != null) {
+                SnapshotAdminJob existing = snapshotJobs.get(existingJobId);
+                if (!retryableSnapshotJob(existing)) return existingJobId;
+                snapshotJobIdsByIdempotency.remove(operationIdentity, existingJobId);
+            }
+            String jobId = java.util.UUID.randomUUID().toString();
+            snapshotJobIdsByIdempotency.put(operationIdentity, jobId);
+            job = new SnapshotAdminJob(jobId, normalized, seriesId, sequence,
+                    System.currentTimeMillis(), operationIdentity, auditPrincipal);
+            snapshotJobs.put(jobId, job);
+            persistNewSnapshotAdminJob(job);
+        }
+        Runnable task = () -> {
+            var generationUse = generationUseGate.tryAcquire(expectedGenerationToken);
+            try (generationUse) {
+                if (!generationUse.admitted()) {
+                    return;
+                }
+                job.state = "RUNNING";
+                persistSnapshotAdminJob(job);
+                try {
+                    AppChainEngine current = engine;
+                    if (current == null) throw new IllegalStateException("app-chain engine is unavailable");
+                    switch (normalized) {
+                        case "archive" -> {
+                            current.archiveAuthenticatedSnapshot(descriptor, null);
+                            if (evictAfterArchive) {
+                                requireSnapshotEvictionEligible(descriptor);
+                                current.evictAuthenticatedSnapshot(descriptor);
+                                job.result = "ARCHIVED_ONLY";
+                            } else {
+                                job.result = "ARCHIVED_VERIFIED";
+                            }
+                        }
+                        case "restore" -> {
+                            current.restoreAuthenticatedSnapshot(descriptor, null);
+                            job.result = "ONLINE";
+                        }
+                        case "evict" -> {
+                            requireSnapshotEvictionEligible(descriptor);
+                            job.result = Integer.toString(current.evictAuthenticatedSnapshot(descriptor));
+                        }
+                        default -> throw new IllegalStateException("unreachable snapshot operation");
+                    }
+                    job.state = "SUCCEEDED";
+                } catch (Throwable failure) {
+                    LifecycleFailures.rethrowIfProcessFatal(failure);
+                    job.state = "FAILED";
+                    job.errorType = snapshotJobErrorType(failure);
+                } finally {
+                    job.completedAt = System.currentTimeMillis();
+                    persistSnapshotAdminJob(job);
+                    pruneCompletedSnapshotAdminJobs();
+                }
+            } catch (Throwable failure) {
+                LifecycleFailures.rethrowIfProcessFatal(failure);
+                // Never touch the mutable ledger field after the exact generation lease
+                // closes. The durable QUEUED record is recovered as PROCESS_INTERRUPTED.
+            }
+        };
+        try {
+            executor.execute(task);
+        } catch (RejectedExecutionException saturated) {
+            job.state = "FAILED";
+            job.errorType = "QUEUE_SATURATED";
+            job.completedAt = System.currentTimeMillis();
+            persistSnapshotAdminJob(job);
+            pruneCompletedSnapshotAdminJobs();
+            throw saturated;
+        }
+        return job.id;
+    }
+
+    @Override
+    public List<Map<String, Object>> authenticatedSnapshotJobs(int limit) {
+        if (limit <= 0 || limit > 1000) throw new IllegalArgumentException("invalid snapshot job limit");
+        return snapshotJobs.values().stream()
+                .sorted(java.util.Comparator.comparingLong((SnapshotAdminJob job) -> job.startedAt)
+                        .reversed()).limit(limit).map(SnapshotAdminJob::view).toList();
+    }
+
+    @Override
+    public Optional<Map<String, Object>> authenticatedSnapshotJob(String jobId) {
+        if (jobId == null) return Optional.empty();
+        SnapshotAdminJob job = snapshotJobs.get(jobId);
+        return job != null ? Optional.of(job.view()) : Optional.empty();
+    }
+
+    private void requireSnapshotEvictionEligible(
+            com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotDescriptorV1 descriptor) {
+        var anchor = latestAnchorCommitmentWithinGeneration().orElseThrow(() ->
+                new IllegalStateException("snapshot eviction requires an L1-confirmed anchor"));
+        if (anchor.anchoredHeight() < descriptor.completedAppChainHeight()) {
+            throw new IllegalStateException("snapshot eviction requires an anchor covering the descriptor");
+        }
+        long rollbackMargin = Math.max(1, config.retentionKeepBlocks());
+        if (tipHeight() - descriptor.completedAppChainHeight() < rollbackMargin) {
+            throw new IllegalStateException("snapshot is inside the configured rollback/retention margin");
+        }
+    }
+
+    private void snapshotRetentionTick() {
+        try {
+            AuthenticatedSnapshotSettings settings = AuthenticatedSnapshotSettings.from(config);
+            if (!settings.enabled() || !settings.retentionEnabled()) return;
+            Optional<com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotDescriptorV1> candidate =
+                    generationUseOr(Optional.empty(), () -> engine != null
+                    ? engine.authenticatedSnapshotRetentionCandidate() : Optional.empty());
+            if (candidate.isEmpty()) return;
+            var descriptor = candidate.orElseThrow();
+            if (settings.evictAfterArchive()) requireSnapshotEvictionEligible(descriptor);
+            String key = "retention-" + descriptor.sequence() + "-"
+                    + HexUtil.encodeHexString(descriptor.commitment()).substring(0, 16);
+            authenticatedSnapshotAdmin("archive", descriptor.seriesId(), descriptor.sequence(),
+                    key, settings.evictAfterArchive());
+        } catch (RejectedExecutionException saturated) {
+            log.debug("Authenticated snapshot retention queue is busy for chain '{}'", config.chainId());
+        } catch (IllegalStateException notEligible) {
+            log.debug("Authenticated snapshot retention is waiting for safety gates on chain '{}'",
+                    config.chainId());
+        } catch (Throwable failure) {
+            LifecycleFailures.rethrowIfProcessFatal(failure);
+            log.warn("Authenticated snapshot retention tick failed for chain '{}' (errorType={})",
+                    config.chainId(), failure.getClass().getSimpleName());
+        }
+    }
+
+    private static final class SnapshotAdminJob {
+        private final String id;
+        private final String operation;
+        private final String seriesId;
+        private final long sequence;
+        private final long startedAt;
+        private volatile long completedAt;
+        private volatile String state = "QUEUED";
+        private volatile String result;
+        private volatile String errorType;
+        private final String operationIdentity;
+        private final String principalId;
+
+        private SnapshotAdminJob(String id, String operation, String seriesId,
+                                 long sequence, long startedAt, String operationIdentity,
+                                 String principalId) {
+            this.id = id; this.operation = operation; this.seriesId = seriesId;
+            this.sequence = sequence; this.startedAt = startedAt;
+            this.operationIdentity = operationIdentity;
+            this.principalId = principalId;
+        }
+
+        private Map<String, Object> view() {
+            Map<String, Object> value = new LinkedHashMap<>();
+            value.put("jobId", id); value.put("operation", operation);
+            value.put("seriesId", seriesId); value.put("sequence", sequence);
+            value.put("state", state); value.put("startedAt", startedAt);
+            value.put("principalId", principalId);
+            if (completedAt > 0) value.put("completedAt", completedAt);
+            if (result != null) value.put("result", result);
+            if (errorType != null) value.put("errorType", errorType);
+            return Map.copyOf(value);
+        }
+    }
+
+    private static boolean retryableSnapshotJob(SnapshotAdminJob job) {
+        return job != null && "FAILED".equals(job.state)
+                && !Set.of("DISPUTED", "INVALID_REQUEST", "INVALID_DESCRIPTOR",
+                "NOT_EVICTABLE", "INCOMPLETE", "NOT_LOCAL").contains(job.errorType);
+    }
+
+    private static String snapshotJobErrorType(Throwable failure) {
+        if (failure instanceof com.bloxbean.cardano.yano.api.appchain.snapshot
+                .AuthenticatedSnapshotDisputedException) return "DISPUTED";
+        String message = failure.getMessage() == null ? "" : failure.getMessage().toLowerCase(Locale.ROOT);
+        if (failure instanceof IllegalArgumentException) {
+            return message.contains("descriptor") ? "INVALID_DESCRIPTOR" : "INVALID_REQUEST";
+        }
+        if (failure instanceof IllegalStateException) {
+            if (message.contains("incomplete")) return "INCOMPLETE";
+            if (message.contains("retention margin") || message.contains("eviction requires")) {
+                return "NOT_EVICTABLE";
+            }
+            if (message.contains("not local") || message.contains("not online")) return "NOT_LOCAL";
+        }
+        return failure instanceof RejectedExecutionException ? "QUEUE_SATURATED"
+                : failure.getClass().getSimpleName();
+    }
+
+    private static String requireSnapshotAdminPrincipal(String value) {
+        if (value == null || !value.matches("[A-Za-z0-9._:-]{1,160}")) {
+            throw new IllegalArgumentException("a canonical snapshot-admin principal is required");
+        }
+        return value;
+    }
+
+    private void recoverSnapshotAdminJobs() {
+        AppLedgerStore currentLedger = ledger;
+        if (currentLedger == null) return;
+        snapshotJobs.clear();
+        snapshotJobIdsByIdempotency.clear();
+        String cursor = null;
+        while (true) {
+            Map<String, byte[]> page = currentLedger.metaEntriesAfter(
+                    SNAPSHOT_JOB_META_PREFIX, cursor, 512);
+            if (page.isEmpty()) break;
+            for (var entry : page.entrySet()) {
+                SnapshotAdminJob job = decodeSnapshotAdminJob(entry.getValue());
+                if ("QUEUED".equals(job.state) || "RUNNING".equals(job.state)) {
+                    job.state = "FAILED";
+                    job.errorType = "PROCESS_INTERRUPTED";
+                    job.completedAt = System.currentTimeMillis();
+                    persistSnapshotAdminJob(job);
+                }
+                snapshotJobs.put(job.id, job);
+                snapshotJobIdsByIdempotency.compute(job.operationIdentity, (ignored, existingId) -> {
+                    SnapshotAdminJob existing = existingId == null ? null : snapshotJobs.get(existingId);
+                    return existing == null || job.startedAt > existing.startedAt ? job.id : existingId;
+                });
+                cursor = entry.getKey();
+            }
+            pruneCompletedSnapshotAdminJobs();
+            if (page.size() < 512) break;
+        }
+        cursor = null;
+        while (true) {
+            Map<String, byte[]> pointers = currentLedger.metaEntriesAfter(
+                    SNAPSHOT_IDEMPOTENCY_META_PREFIX, cursor, 512);
+            if (pointers.isEmpty()) break;
+            for (var entry : pointers.entrySet()) {
+                String jobId = new String(entry.getValue(), StandardCharsets.US_ASCII);
+                SnapshotAdminJob owner = snapshotJobs.get(jobId);
+                if (owner != null) {
+                    snapshotJobIdsByIdempotency.put(owner.operationIdentity, owner.id);
+                }
+                cursor = entry.getKey();
+            }
+            if (pointers.size() < 512) break;
+        }
+        snapshotJobIdsByIdempotency.forEach((identity, jobId) ->
+                currentLedger.metaPutBytesSync(snapshotIdempotencyMetaKey(identity),
+                        jobId.getBytes(StandardCharsets.US_ASCII)));
+    }
+
+    private void pruneCompletedSnapshotAdminJobs() {
+        synchronized (snapshotAdminJobLock) {
+            List<SnapshotAdminJob> completed = snapshotJobs.values().stream()
+                    .filter(job -> "SUCCEEDED".equals(job.state) || "FAILED".equals(job.state))
+                    .sorted(java.util.Comparator.comparingLong((SnapshotAdminJob job) -> job.completedAt)
+                            .reversed())
+                    .toList();
+            if (completed.size() <= SNAPSHOT_COMPLETED_JOB_RETENTION) return;
+            AppLedgerStore currentLedger = ledger;
+            for (SnapshotAdminJob job : completed.subList(
+                    SNAPSHOT_COMPLETED_JOB_RETENTION, completed.size())) {
+                if (!snapshotJobs.remove(job.id, job)) continue;
+                boolean removedCurrentIdentity = snapshotJobIdsByIdempotency.remove(
+                        job.operationIdentity, job.id);
+                if (currentLedger != null) {
+                    currentLedger.metaDeleteSync(SNAPSHOT_JOB_META_PREFIX + job.id);
+                    if (removedCurrentIdentity) {
+                        currentLedger.metaDeleteSync(
+                                snapshotIdempotencyMetaKey(job.operationIdentity));
+                    }
+                }
+            }
+        }
+    }
+
+    private void persistNewSnapshotAdminJob(SnapshotAdminJob job) {
+        AppLedgerStore currentLedger = Objects.requireNonNull(ledger, "app-chain ledger");
+        currentLedger.metaPutBytesAllSync(Map.of(
+                SNAPSHOT_JOB_META_PREFIX + job.id, encodeSnapshotAdminJob(job),
+                snapshotIdempotencyMetaKey(job.operationIdentity),
+                job.id.getBytes(StandardCharsets.US_ASCII)));
+    }
+
+    private void persistSnapshotAdminJob(SnapshotAdminJob job) {
+        AppLedgerStore currentLedger = ledger;
+        if (currentLedger != null) {
+            currentLedger.metaPutBytesSync(SNAPSHOT_JOB_META_PREFIX + job.id,
+                    encodeSnapshotAdminJob(job));
+        }
+    }
+
+    private static byte[] encodeSnapshotAdminJob(SnapshotAdminJob job) {
+        try {
+            java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+            try (java.io.DataOutputStream out = new java.io.DataOutputStream(bytes)) {
+                out.writeInt(2); out.writeUTF(job.id); out.writeUTF(job.operation);
+                out.writeUTF(job.seriesId); out.writeLong(job.sequence); out.writeLong(job.startedAt);
+                out.writeLong(job.completedAt); out.writeUTF(job.state);
+                writeOptionalUtf(out, job.result); writeOptionalUtf(out, job.errorType);
+                out.writeUTF(job.operationIdentity);
+                out.writeUTF(job.principalId);
+            }
+            return bytes.toByteArray();
+        } catch (java.io.IOException impossible) {
+            throw new IllegalStateException(impossible);
+        }
+    }
+
+    private static SnapshotAdminJob decodeSnapshotAdminJob(byte[] bytes) {
+        try (java.io.DataInputStream in = new java.io.DataInputStream(
+                new java.io.ByteArrayInputStream(bytes))) {
+            int version = in.readInt();
+            if (version != 1 && version != 2) {
+                throw new IllegalArgumentException("unsupported snapshot job version");
+            }
+            String id = in.readUTF(); String operation = in.readUTF(); String series = in.readUTF();
+            long sequence = in.readLong(); long startedAt = in.readLong();
+            long completedAt = in.readLong(); String state = in.readUTF();
+            String result = readOptionalUtf(in); String errorType = readOptionalUtf(in);
+            String identity = in.readUTF();
+            String principal = version == 2 ? in.readUTF() : "legacy-unknown";
+            if (in.read() != -1 || identity.isBlank() || principal.isBlank()) {
+                throw new IllegalArgumentException("malformed persisted snapshot job");
+            }
+            SnapshotAdminJob job = new SnapshotAdminJob(
+                    id, operation, series, sequence, startedAt, identity, principal);
+            job.completedAt = completedAt; job.state = state;
+            job.result = result; job.errorType = errorType;
+            return job;
+        } catch (java.io.IOException malformed) {
+            throw new IllegalStateException("Malformed persisted authenticated snapshot job", malformed);
+        }
+    }
+
+    private static void writeOptionalUtf(java.io.DataOutputStream out, String value)
+            throws java.io.IOException {
+        out.writeBoolean(value != null);
+        if (value != null) out.writeUTF(value);
+    }
+
+    private static String readOptionalUtf(java.io.DataInputStream in) throws java.io.IOException {
+        return in.readBoolean() ? in.readUTF() : null;
+    }
+
+    private static String snapshotIdempotencyMetaKey(String identity) {
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(identity.getBytes(StandardCharsets.UTF_8));
+            return SNAPSHOT_IDEMPOTENCY_META_PREFIX + HexUtil.encodeHexString(digest);
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
+        }
+    }
+
+    @Override
     public Optional<com.bloxbean.cardano.yano.api.appchain.state.StateProofEnvelope>
     stateProofEnvelopeAtHeight(long height, byte[] key) {
         byte[] keySnapshot = Objects.requireNonNull(key, "key").clone();
@@ -1795,6 +2339,33 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     public Optional<com.bloxbean.cardano.yano.api.appchain.AppAnchorCommitment>
             latestAnchorCommitment() {
         return generationUseOr(Optional.empty(), this::latestAnchorCommitmentWithinGeneration);
+    }
+
+    @Override
+    public Optional<com.bloxbean.cardano.yano.api.appchain.AppAnchorCommitment>
+            anchorCommitment(long height) {
+        if (height <= 0) return Optional.empty();
+        return generationUseOr(Optional.empty(), () -> anchorCommitmentWithinGeneration(height));
+    }
+
+    private Optional<com.bloxbean.cardano.yano.api.appchain.AppAnchorCommitment>
+            anchorCommitmentWithinGeneration(long height) {
+        AppLedgerStore currentLedger = ledger;
+        if (currentLedger == null || height <= 0) return Optional.empty();
+        byte[] encoded = currentLedger.metaBytes(AnchorService.META_ANCHOR_HISTORY);
+        if (encoded == null) return Optional.empty();
+        AnchorService.Confirmation confirmation = AnchorService.ConfirmationHistory.decode(encoded).stream()
+                .filter(value -> value.toHeight() == height).findFirst().orElse(null);
+        if (confirmation == null) return Optional.empty();
+        AppBlock block = currentLedger.block(height).orElse(null);
+        if (block == null || !config.chainId().equals(block.chainId())) return Optional.empty();
+        byte[] calculated = com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec.blockHash(block);
+        if (!java.util.Arrays.equals(calculated, confirmation.blockHash())) return Optional.empty();
+        String mode = config.anchor() != null && config.anchor().scriptMode()
+                ? AppChainConfig.AnchorConfig.MODE_SCRIPT : AppChainConfig.AnchorConfig.MODE_METADATA;
+        return Optional.of(new com.bloxbean.cardano.yano.api.appchain.AppAnchorCommitment(
+                config.chainId(), mode, height, block.stateRoot(), calculated,
+                confirmation.txHash(), confirmation.l1Slot()));
     }
 
     private Optional<com.bloxbean.cardano.yano.api.appchain.AppAnchorCommitment>
@@ -1914,13 +2485,16 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private final class QueryLane {
         private final long generationToken;
         private final AppLedgerStore generationLedger;
+        private final AuthenticatedSnapshotRuntime authenticatedSnapshots;
         private final ThreadPoolExecutor executor;
         private final Set<QueryTask> accepted = ConcurrentHashMap.newKeySet();
         private final AtomicBoolean accepting = new AtomicBoolean(true);
 
-        private QueryLane(long generationToken, AppLedgerStore generationLedger) {
+        private QueryLane(long generationToken, AppLedgerStore generationLedger,
+                          AuthenticatedSnapshotRuntime authenticatedSnapshots) {
             this.generationToken = generationToken;
             this.generationLedger = Objects.requireNonNull(generationLedger, "generationLedger");
+            this.authenticatedSnapshots = authenticatedSnapshots;
             this.executor = new ThreadPoolExecutor(
                     1,
                     1,
@@ -1994,7 +2568,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 }
 
                 ExpiringQueryContext context = new ExpiringQueryContext(
-                        generationLedger, snapshot.height(), snapshot.stateRoot());
+                        generationLedger, snapshot.height(), snapshot.stateRoot(),
+                        authenticatedSnapshots);
                 byte[] result;
                 try {
                     // A queued request whose caller timed out must never begin
@@ -2012,6 +2587,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     if (declared.code() == AppQueryException.Code.INVALID_REQUEST) {
                         throw queryFailure(AppQueryException.Code.INVALID_REQUEST,
                                 "App-chain query parameters are invalid");
+                    }
+                    if (declared.code() == AppQueryException.Code.UNAVAILABLE) {
+                        throw queryFailure(AppQueryException.Code.UNAVAILABLE,
+                                "App-chain query data is unavailable");
                     }
                     logQueryPluginFailure("callback", declared);
                     throw queryFailure(AppQueryException.Code.FAILED,
@@ -2167,17 +2746,20 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
         private final AppLedgerStore ledger;
         private final long committedHeight;
         private final byte[] stateRoot;
+        private final AuthenticatedSnapshotRuntime authenticatedSnapshots;
         private boolean active = true;
         private int activeReads;
 
         private ExpiringQueryContext(
                 AppLedgerStore ledger,
                 long committedHeight,
-                byte[] stateRoot
+                byte[] stateRoot,
+                AuthenticatedSnapshotRuntime authenticatedSnapshots
         ) {
             this.ledger = Objects.requireNonNull(ledger, "ledger");
             this.committedHeight = committedHeight;
             this.stateRoot = Objects.requireNonNull(stateRoot, "stateRoot").clone();
+            this.authenticatedSnapshots = authenticatedSnapshots;
         }
 
         @Override
@@ -2207,6 +2789,38 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             beginRead();
             try {
                 return committedHeight;
+            } finally {
+                endRead();
+            }
+        }
+
+        @Override
+        public boolean authenticatedSnapshotOnline(String seriesId, long sequence) {
+            beginRead();
+            try {
+                return authenticatedSnapshots != null
+                        && authenticatedSnapshots.online(seriesId, sequence, committedHeight);
+            } finally {
+                endRead();
+            }
+        }
+
+        @Override
+        public Optional<byte[]> authenticatedSnapshotValue(
+                String seriesId, long sequence, byte[] canonicalKey) {
+            beginRead();
+            try {
+                if (authenticatedSnapshots == null) return Optional.empty();
+                try {
+                    return authenticatedSnapshots.value(seriesId, sequence,
+                            Objects.requireNonNull(canonicalKey, "canonicalKey").clone(), committedHeight)
+                            .map(byte[]::clone);
+                } catch (com.bloxbean.cardano.yano.api.appchain.snapshot
+                         .AuthenticatedSnapshotDisputedException disputed) {
+                    throw queryUnavailable();
+                } catch (IllegalStateException availabilityChanged) {
+                    throw queryUnavailable();
+                }
             } finally {
                 endRead();
             }
@@ -2948,6 +3562,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             }
             status.put("effects", effectsStatus);
         }
+        AuthenticatedSnapshotSettings snapshots = AuthenticatedSnapshotSettings.from(config);
+        if (snapshots.enabled()) {
+            status.put("authenticatedSnapshots", authenticatedSnapshotStatus());
+        }
         if (!sinkRunners.isEmpty()) {
             Map<String, Object> sinks = new LinkedHashMap<>();
             Map<String, Object> webhooks = new LinkedHashMap<>(); // back-compat (keyed by URL)
@@ -3177,6 +3795,24 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     HexUtil.encodeHexString(
                             AppChainConsensusProfileCommitment.digest(consensusProfile)),
                     Map.of("maxPerBlock", Integer.toString(effectsSettings.maxPerBlock())),
+                    AppCapabilityManifest.Origin.RUNTIME_CONFIGURED));
+        }
+        AuthenticatedSnapshotSettings snapshots = AuthenticatedSnapshotSettings.from(config);
+        if (snapshots.enabled()) {
+            boolean l1ProofRequired = Boolean.parseBoolean(config.pluginSettings().getOrDefault(
+                    StateCommitmentIdentity.L1_PROOF_REQUIRED_SETTING, "false"));
+            var selectedSnapshots = snapshots.select(stateMachine.authenticatedSnapshotSeries(),
+                    stateCommitmentIdentity.profile(), l1ProofRequired);
+            List<String> series = selectedSnapshots.stream()
+                    .map(com.bloxbean.cardano.yano.api.appchain.snapshot
+                            .AuthenticatedSnapshotSeriesDescriptorV1::seriesId)
+                    .sorted().toList();
+            manifest = appendCapability(manifest, new AppCapabilityManifest.CrossCutting(
+                    AppCapabilityIds.AUTHENTICATED_SNAPSHOTS, "1.0.0", true,
+                    HexUtil.encodeHexString(snapshots.capabilityIdentityDigest(selectedSnapshots)),
+                    Map.of("series", String.join(",", series),
+                            "storage", "shared-online-rocksdb",
+                            "archive", "node-local"),
                     AppCapabilityManifest.Origin.RUNTIME_CONFIGURED));
         }
         Set<String> observerTypes = new TreeSet<>();
@@ -3535,6 +4171,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                         config.maxMessageBytes(),
                         this::isScheduledProposer,
                         this::injectObservation,
+                        chainEngine::markAuthenticatedSnapshotsDisputed,
                         config.chainId(),
                         log);
                 chainEngine.setVotingHealth(epochObservationCoordinator::healthy);
@@ -3655,7 +4292,8 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             if (epochObservationCoordinator != null) {
                 epochObservationCoordinator.start();
             }
-            this.queryLane = new QueryLane(generationToken, ledgerStore);
+            this.queryLane = new QueryLane(generationToken, ledgerStore,
+                    this.engine != null ? this.engine.authenticatedSnapshotRuntime() : null);
         }
 
         ScheduledExecutorService exec = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -3664,6 +4302,22 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             return t;
         });
         this.scheduler = exec;
+
+        AuthenticatedSnapshotSettings snapshotSettings = AuthenticatedSnapshotSettings.from(config);
+        if (snapshotSettings.enabled()) {
+            this.snapshotAdminExecutor = new ThreadPoolExecutor(1, 1,
+                    0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(32), r -> {
+                Thread thread = new Thread(r, "app-chain-snapshot-admin-" + config.chainId());
+                thread.setDaemon(true);
+                return thread;
+            }, new ThreadPoolExecutor.AbortPolicy());
+            recoverSnapshotAdminJobs();
+            if (snapshotSettings.retentionEnabled()) {
+                exec.scheduleWithFixedDelay(this::snapshotRetentionTick,
+                        snapshotSettings.retentionIntervalSeconds(),
+                        snapshotSettings.retentionIntervalSeconds(), TimeUnit.SECONDS);
+            }
+        }
 
         exec.scheduleWithFixedDelay(this::connectTick, 0, CONNECT_INTERVAL_SECONDS, TimeUnit.SECONDS);
         exec.scheduleWithFixedDelay(this::keepAliveTick,
@@ -5137,6 +5791,12 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             closeResource("proof-pruning scheduler",
                     () -> shutdownScheduler(pruneExec, "proof-pruning"), cleanupFailures);
         }
+        java.util.concurrent.ExecutorService snapshotExec = snapshotAdminExecutor;
+        snapshotAdminExecutor = null;
+        if (snapshotExec != null) {
+            closeResource("snapshot-admin scheduler",
+                    () -> shutdownExecutor(snapshotExec, "snapshot-admin"), cleanupFailures);
+        }
         ScheduledExecutorService sinkExec = sinkScheduler;
         sinkScheduler = null;
         if (sinkExec != null) {
@@ -5470,6 +6130,10 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     }
 
     private void shutdownScheduler(ScheduledExecutorService executor, String schedulerName) {
+        shutdownExecutor(executor, schedulerName);
+    }
+
+    private void shutdownExecutor(java.util.concurrent.ExecutorService executor, String schedulerName) {
         executor.shutdownNow();
         try {
             if (!executor.awaitTermination(3, TimeUnit.SECONDS)) {

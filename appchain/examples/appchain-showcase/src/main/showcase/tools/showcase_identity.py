@@ -24,10 +24,10 @@ def load_catalog(path: pathlib.Path) -> list[str]:
     catalog = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
     chains = catalog.get("chains") if isinstance(catalog, dict) else None
     if (catalog.get("schemaVersion") != 1 or catalog.get("profileId") != "light-v1"
-            or not isinstance(chains, list) or len(chains) != 12):
+            or not isinstance(chains, list) or len(chains) != 13):
         raise ValueError("unsupported showcase catalog")
     ids = [chain.get("chainId") for chain in chains if isinstance(chain, dict)]
-    if (len(ids) != 12 or len(ids) != len(set(ids))
+    if (len(ids) != 13 or len(ids) != len(set(ids))
             or any(not isinstance(chain, str) or not CHAIN_ID.fullmatch(chain) for chain in ids)
             or "payment-chain-settlement" not in ids):
         raise ValueError("showcase catalog contains an invalid chain set")
@@ -121,6 +121,23 @@ def document(args: argparse.Namespace) -> dict:
         "maxMessagesPerBlock": 1000,
         "chainIds": finalized,
     })).hexdigest()
+    snapshots = ([] if not args.authenticated_snapshot_selection else
+                 args.authenticated_snapshot_selection.split(","))
+    snapshot_mpf_pruning = ([] if not args.authenticated_snapshot_mpf_pruning_selection else
+                            args.authenticated_snapshot_mpf_pruning_selection.split(","))
+    if (snapshots not in ([], ["cardano-history-chain"])
+            or args.authenticated_snapshot_profile not in
+            ("mpf-blake2b256-v1", "jmt-blake2b256-v1")
+            or snapshot_mpf_pruning not in ([], ["cardano-history-chain"])
+            or (snapshot_mpf_pruning and
+                (snapshots != ["cardano-history-chain"]
+                 or args.authenticated_snapshot_profile != "mpf-blake2b256-v1"))):
+        raise ValueError("authenticated snapshot selection/profile is not canonical")
+    snapshot_digest = hashlib.sha256(canonical({
+        "chainIds": snapshots,
+        "profile": args.authenticated_snapshot_profile,
+        "series": ["epoch-stake.distribution", "epoch-governance.drep-distribution"],
+    })).hexdigest()
     return {
         "schemaVersion": 2 if len(selected) > 1 else 1,
         "kind": "yano.showcase.deployment",
@@ -146,6 +163,13 @@ def document(args: argparse.Namespace) -> dict:
             "configurationDigest": finalized_digest,
             "policy": "APPLICATION_ONLY",
             "maxMessagesPerBlock": 1000,
+        },
+        "authenticatedSnapshots": {
+            "chainIds": snapshots,
+            "mpfPruningChainIds": snapshot_mpf_pruning,
+            "profile": args.authenticated_snapshot_profile,
+            "series": ["epoch-stake.distribution", "epoch-governance.drep-distribution"],
+            "configurationDigest": snapshot_digest,
         },
         "anchor": anchor_identity(
             args.anchor,
@@ -253,8 +277,10 @@ def validate_deployment_identity(document: dict) -> None:
         "serverBase", "runtime", "chainIds", "configSha256", "pluginSha256", "anchor",
         "authenticatedMapConfigSha256",
         "authenticatedMapJmtConfigSha256", "finalizedMessageIndex",
+        "authenticatedSnapshots",
     }
     finalized = document.get("finalizedMessageIndex")
+    snapshots = document.get("authenticatedSnapshots")
     if (not isinstance(document.get("authenticatedMapJmtConfigSha256"), str)
             or not HEX_32.fullmatch(document["authenticatedMapJmtConfigSha256"])
             or not isinstance(finalized, dict)
@@ -268,6 +294,21 @@ def validate_deployment_identity(document: dict) -> None:
             or not isinstance(finalized.get("configurationDigest"), str)
             or not HEX_32.fullmatch(finalized["configurationDigest"])):
         raise ValueError("showcase finalized-message index identity is malformed")
+    if (not isinstance(snapshots, dict)
+            or set(snapshots) != {"chainIds", "mpfPruningChainIds", "profile", "series",
+                                  "configurationDigest"}
+            or snapshots.get("chainIds") not in ([], ["cardano-history-chain"])
+            or snapshots.get("mpfPruningChainIds") not in ([], ["cardano-history-chain"])
+            or (snapshots.get("mpfPruningChainIds") and
+                (snapshots.get("chainIds") != ["cardano-history-chain"]
+                 or snapshots.get("profile") != "mpf-blake2b256-v1"))
+            or snapshots.get("profile") not in
+            ("mpf-blake2b256-v1", "jmt-blake2b256-v1")
+            or snapshots.get("series") !=
+            ["epoch-stake.distribution", "epoch-governance.drep-distribution"]
+            or not isinstance(snapshots.get("configurationDigest"), str)
+            or not HEX_32.fullmatch(snapshots["configurationDigest"])):
+        raise ValueError("showcase authenticated snapshot identity is malformed")
     anchor = document.get("anchor")
     if (set(document) != expected or document.get("profile") != "light"
             or document.get("network") not in ("devnet", "preprod")
@@ -473,6 +514,9 @@ def main() -> None:
     parser.add_argument("--authenticated-map-config")
     parser.add_argument("--authenticated-map-jmt-config")
     parser.add_argument("--finalized-message-index-selection", default="")
+    parser.add_argument("--authenticated-snapshot-selection", default="")
+    parser.add_argument("--authenticated-snapshot-profile", default="mpf-blake2b256-v1")
+    parser.add_argument("--authenticated-snapshot-mpf-pruning-selection", default="")
     parser.add_argument("--anchor", action="store_true")
     parser.add_argument("--anchor-mode", default="script")
     parser.add_argument("--anchor-chain", action="append", default=[])

@@ -222,6 +222,52 @@ public final class CompositeStateMachine implements AppStateMachine {
     }
 
     @Override
+    public List<com.bloxbean.cardano.yano.api.appchain.snapshot
+            .AuthenticatedSnapshotSeriesDescriptorV1> authenticatedSnapshotSeries() {
+        Map<String, com.bloxbean.cardano.yano.api.appchain.snapshot
+                .AuthenticatedSnapshotSeriesDescriptorV1> declared = new LinkedHashMap<>();
+        for (ComponentBinding component : allComponents) {
+            String componentId = component.descriptor().componentId();
+            for (var series : component.product().authenticatedSnapshotSeries()) {
+                String scopedId = componentId + "." + series.seriesId();
+                var previous = declared.putIfAbsent(scopedId, series.withSeriesId(scopedId));
+                if (previous != null && !previous.equals(series.withSeriesId(scopedId))) {
+                    throw new IllegalStateException(
+                            "incompatible authenticated snapshot declaration: " + scopedId);
+                }
+            }
+        }
+        return declared.values().stream().sorted(
+                java.util.Comparator.comparing(com.bloxbean.cardano.yano.api.appchain.snapshot
+                        .AuthenticatedSnapshotSeriesDescriptorV1::seriesId)).toList();
+    }
+
+    @Override
+    public List<com.bloxbean.cardano.yano.api.appchain.snapshot
+            .AuthenticatedSnapshotSourceCommitmentV1> authenticatedSnapshotSourceCommitments() {
+        Map<String, com.bloxbean.cardano.yano.api.appchain.snapshot
+                .AuthenticatedSnapshotSourceCommitmentV1> declared = new LinkedHashMap<>();
+        for (ComponentBinding component : allComponents) {
+            String componentId = component.descriptor().componentId();
+            for (var source : component.product().authenticatedSnapshotSourceCommitments()) {
+                String scopedId = componentId + "." + source.seriesId();
+                var scoped = source.withSeriesId(scopedId);
+                var previous = declared.putIfAbsent(scopedId, scoped);
+                if (previous != null
+                        && (!previous.algorithm().equals(scoped.algorithm())
+                        || !previous.wireVersion().equals(scoped.wireVersion())
+                        || !previous.compatibilityId().equals(scoped.compatibilityId()))) {
+                    throw new IllegalStateException(
+                            "incompatible authenticated snapshot source verifier: " + scopedId);
+                }
+            }
+        }
+        return declared.values().stream().sorted(java.util.Comparator.comparing(
+                com.bloxbean.cardano.yano.api.appchain.snapshot
+                        .AuthenticatedSnapshotSourceCommitmentV1::seriesId)).toList();
+    }
+
+    @Override
     public void init(AppStateReader state, AppChainInfo info) {
         if (governance != null) {
             governance.init(state);

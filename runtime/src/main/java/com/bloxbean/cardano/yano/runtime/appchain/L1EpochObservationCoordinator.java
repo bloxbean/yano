@@ -43,6 +43,7 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
     private final BooleanSupplier scheduledProposer;
     private final Function<L1Observation, Boolean> injector;
     private final Logger log;
+    private final java.util.function.Consumer<String> haltHandler;
     private final ThreadPoolExecutor executor;
     private final AtomicBoolean wakeQueued = new AtomicBoolean();
     private final AtomicLong wakeVersion = new AtomicLong();
@@ -66,6 +67,7 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
                                   long maxBytesPerOffer,
                                   BooleanSupplier scheduledProposer,
                                   Function<L1Observation, Boolean> injector,
+                                  java.util.function.Consumer<String> haltHandler,
                                   String chainId,
                                   Logger log) {
         this.observers = List.copyOf(observers);
@@ -74,6 +76,7 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
         this.scheduledProposer = Objects.requireNonNull(
                 scheduledProposer, "scheduledProposer");
         this.injector = Objects.requireNonNull(injector, "injector");
+        this.haltHandler = Objects.requireNonNull(haltHandler, "haltHandler");
         this.log = Objects.requireNonNull(log, "log");
         if (this.observers.isEmpty()) {
             throw new IllegalArgumentException("At least one L1 epoch observer is required");
@@ -141,6 +144,7 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
     }
 
     void start() {
+        spool.reconcileFinalizedBlocks();
         spool.releaseOffers();
         wake();
     }
@@ -178,7 +182,11 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
 
     void onFinalized(L1Observation observation) {
         if (observation.anchor() instanceof L1Observation.EpochAnchor) {
-            spool.acknowledge(observation);
+            try {
+                spool.acknowledge(observation);
+            } catch (RuntimeException failure) {
+                fail("finalized spool acknowledgement");
+            }
             wake();
         }
     }
@@ -250,6 +258,7 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
         if (haltReason != null) {
             throw new IllegalStateException(haltReason);
         }
+        spool.reconcileFinalizedBlocks();
         long rollback = pendingRollbackSlot.getAndSet(Long.MAX_VALUE);
         if (rollback != Long.MAX_VALUE) {
             try {
@@ -258,6 +267,7 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
                 if ("DEEP_ROLLBACK_BELOW_FINALIZED_EPOCH_ATTESTATION"
                         .equals(failure.getMessage())) {
                     haltReason = failure.getMessage();
+                    haltHandler.accept(haltReason);
                 }
                 throw failure;
             }

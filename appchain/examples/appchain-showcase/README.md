@@ -9,7 +9,7 @@ with [MASTER_DEMO.md](docs/MASTER_DEMO.md), use the
 ./showcase.sh quickstart --profile light --nodes 3 --instance demo
 ```
 
-The light profile runs twelve app chains on one local multi-node Yano cluster,
+The light profile runs thirteen app chains on one local multi-node Yano cluster,
 including `payment-chain-settlement`, with no Kafka, object store, IPFS, or
 separate effect service. Seven chains present standalone foundations; the
 remaining reference chains demonstrate how ADR-031 composes those foundations
@@ -21,10 +21,21 @@ with cross-cutting concerns instead of creating another application SPI:
 | `document-review-chain` | document trail + domain actors/roles + actor approval + one-use receipt |
 | `authenticated-map-chain` | authenticated map + direct actor/role authorization + multi-organization approval |
 | `payment-chain-settlement` | EUTxO + L1 observers + settlement effects + rebuildable lifecycle index |
+| `cardano-history-chain` | protocol parameters + epoch stake + governance, with optional per-epoch authenticated snapshots |
 
 `authenticated-map-jmt-chain` uses the same collections, policies, actors,
 commands, and receipts as the MPF chain; only its commitment backend and
 off-chain-only verification target differ.
+
+Enable reusable authenticated snapshots selectively with
+`--enable-authenticated-snapshots=cardano-history-chain`. The default MPF
+secondary roots support nested off-chain/on-chain proof verification; the
+optional `--authenticated-snapshot-profile jmt-blake2b256-v1` profile is an
+off-chain comparison. The console shows the capability only when enabled.
+MPF deployments can evaluate archive-time reachable-node pruning with
+`--enable-authenticated-snapshot-mpf-pruning=cardano-history-chain`. It is a
+node-local, retained instance setting and remains disabled by default while retained-root
+qualification expands.
 
 The built-in `authenticated-map` scenario demonstrates multiple collections,
 opaque and canonical-CBOR values, a declarative schema, the first-party GS1

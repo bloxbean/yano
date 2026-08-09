@@ -31,7 +31,7 @@ class AppChainApiKeyFilterUnitTest {
     @Test
     void operatorAuthConfigurationIsNotInjectedDuringNativeStaticInitialization()
             throws Exception {
-        for (String field : List.of("authEnabled", "apiKeysConfig")) {
+        for (String field : List.of("authEnabled", "apiKeysConfig", "snapshotAdminKeysConfig")) {
             assertNull(AppChainApiKeyFilter.class.getDeclaredField(field)
                     .getAnnotation(org.eclipse.microprofile.config.inject.ConfigProperty.class),
                     field);
@@ -131,6 +131,27 @@ class AppChainApiKeyFilterUnitTest {
         filter(false, "full", DomainApiAccess.READ,
                 AppChainResource.ChainScopedResource.class, pause).filter(keyOnlyFull.context());
         assertNull(keyOnlyFull.aborted);
+    }
+
+    @Test
+    void snapshotAdministrationRequiresItsIndependentScope() throws Exception {
+        Method admin = AppChainResource.ChainScopedResource.class.getMethod(
+                "snapshotAdmin", String.class, long.class, String.class, String.class,
+                AppChainResource.ChainScopedResource.SnapshotAdminRequest.class);
+        AppChainApiKeyFilter filter = filter(false, "full", DomainApiAccess.READ,
+                AppChainResource.ChainScopedResource.class, admin);
+        filter.snapshotAdminKeysConfig = Optional.of("snapshot-only");
+
+        RequestProbe genericFull = new RequestProbe("POST", "full", null);
+        filter.filter(genericFull.context());
+        assertEquals(401, genericFull.aborted.getStatus());
+
+        AppChainApiKeyFilter allowed = filter(false, "full", DomainApiAccess.READ,
+                AppChainResource.ChainScopedResource.class, admin);
+        allowed.snapshotAdminKeysConfig = Optional.of("snapshot-only");
+        RequestProbe snapshot = new RequestProbe("POST", "snapshot-only", null);
+        allowed.filter(snapshot.context());
+        assertNull(snapshot.aborted);
     }
 
     @Test
@@ -378,6 +399,7 @@ class AppChainApiKeyFilterUnitTest {
         AppChainApiKeyFilter filter = new AppChainApiKeyFilter();
         filter.authEnabled = authEnabled;
         filter.apiKeysConfig = Optional.ofNullable(keys);
+        filter.snapshotAdminKeysConfig = Optional.empty();
         filter.apiPathPrefix = "";
         filter.objectMapper = new ObjectMapper();
         filter.domainApis = new AccessGateway(domainAccess);
