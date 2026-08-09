@@ -2,8 +2,8 @@
 
 ## Protocol parameters, stake, and governance
 
-**Status:** Accepted with authenticated-snapshot amendment — M1–M7 direct-state baseline implemented;
-M8 reopened for the reusable snapshot capability, Cardano History adoption, and preprod evidence
+**Status:** Accepted and implemented for preview — M1–M8c complete; M8d public-network evidence and
+the ADR-027 deep-rollback production gate remain open
 **Date:** 2026-08-09
 **Depends on:** ADR app-layer/027 §2.4 (deep-rollback detection) — implementation and devnet work may
 proceed, but this is **blocking for every production/preprod epoch attestation**, including M3 and
@@ -319,6 +319,13 @@ Three independently selectable components, composable into any ADR-031 `AppState
 | Claim | `[epoch, paramsCanonicalCbor]` |
 | State | `params/<epoch>` → canonical CBOR; `params/latest` → epoch |
 | Size | a few hundred bytes; **one message per epoch** |
+
+`paramsCanonicalCbor` is a fixed 56-position array. Position 21 is reserved as `null`; position 22
+contains the ledger's canonical positional cost-model arrays keyed by language. The named operation
+map is a derived API projection and is not authenticated a second time. This preview clean break
+reduced a real Conway parameter value from 42,670 bytes to 3,038 bytes, within the released 8 KiB
+on-chain value envelope, without discarding ledger information. Decoders reject a non-null reserved
+position, non-canonical CBOR, or a value whose embedded effective epoch differs from the state key.
 
 **`epoch-stake`** — chunked.
 
@@ -1280,10 +1287,11 @@ pruned. Failure of a snapshot/on-chain gate blocks M8d rather than silently fall
 unauthenticated index.
 
 **Implementation learning.** The direct M4 measurements established correctness and exposed the
-live-data storage limit. Questions that require the logical snapshot implementation—nested on-chain
-proof cost, archive/restore equivalence, GC, concurrency, and three-member operation—are hard M8
-release gates and may not be inferred from the direct component benchmark. Accepted measurements and
-budgets are published in `028-implementation-report.md`.
+live-data storage limit. M8 subsequently implemented and measured the logical snapshot design,
+including nested proof binding, archive/restore equivalence, GC, bounded concurrency, restart, and
+three-member operation. The public-network cross-source and long-running release gates remain open
+and may not be inferred from local qualification. Accepted measurements and budgets are published in
+`028-implementation-report.md`.
 
 ## 12. Test plan (definition of done)
 

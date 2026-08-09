@@ -247,18 +247,21 @@ class YanoProducerTest {
     }
 
     @Test
-    void effectSettingsAreForwardedForFlatAndIndexedAppChains() {
+    void dynamicSettingsAreForwardedForFlatAndIndexedAppChains() {
         var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
-        producer.appConfig = new PresentConfig(Map.of(
-                "yano.app-chain.effects.enabled", "true",
-                "yano.app-chain.effects.metrics.types", "cardano.payment,webhook",
-                "yano.app-chain.state.commitment-profile", "mpf-blake2b256-v1",
-                "yano.app-chain.state.l1-proof-consumption-required", "true",
-                "yano.app-chain.chains[0].chain-id", "payments",
-                "yano.app-chain.chains[0].effects.enabled", "true",
-                "yano.app-chain.chains[0].effects.executor.enabled", "true",
-                "yano.app-chain.chains[0].state.genesis-id", "ab".repeat(32),
-                "yano.app-chain.chains[0].unrelated.value", "ignored"));
+        producer.appConfig = new PresentConfig(Map.ofEntries(
+                Map.entry("yano.app-chain.effects.enabled", "true"),
+                Map.entry("yano.app-chain.effects.metrics.types", "cardano.payment,webhook"),
+                Map.entry("yano.app-chain.state.commitment-profile", "mpf-blake2b256-v1"),
+                Map.entry("yano.app-chain.state.l1-proof-consumption-required", "true"),
+                Map.entry("yano.app-chain.capabilities.authenticated-snapshots.enabled", "true"),
+                Map.entry("yano.app-chain.chains[0].chain-id", "payments"),
+                Map.entry("yano.app-chain.chains[0].effects.enabled", "true"),
+                Map.entry("yano.app-chain.chains[0].effects.executor.enabled", "true"),
+                Map.entry("yano.app-chain.chains[0].state.genesis-id", "ab".repeat(32)),
+                Map.entry("yano.app-chain.chains[0].capabilities.authenticated-snapshots.enabled",
+                        "true"),
+                Map.entry("yano.app-chain.chains[0].unrelated.value", "ignored")));
 
         Map<String, Object> globals = new java.util.LinkedHashMap<>();
         producer.forwardAppChainDynamicKeys(globals);
@@ -269,12 +272,16 @@ class YanoProducerTest {
                 globals.get("yano.app-chain.state.commitment-profile"));
         assertEquals("true",
                 globals.get("yano.app-chain.state.l1-proof-consumption-required"));
+        assertEquals("true", globals.get(
+                "yano.app-chain.capabilities.authenticated-snapshots.enabled"));
 
         var chain = producer.parseAppChainChains().getFirst();
         assertEquals("payments", chain.get("chain-id"));
         assertEquals("true", chain.get("effects.enabled"));
         assertEquals("true", chain.get("effects.executor.enabled"));
         assertEquals("ab".repeat(32), chain.get("state.genesis-id"));
+        assertEquals("true", chain.get(
+                "capabilities.authenticated-snapshots.enabled"));
         assertFalse(chain.containsKey("unrelated.value"));
     }
 

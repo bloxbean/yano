@@ -37,6 +37,11 @@ public final class CardanoHistoryCli {
 
     static int run(String[] args) {
         try {
+            if (args != null && args.length == 1
+                    && ("--help".equals(args[0]) || "-h".equals(args[0]))) {
+                System.out.println(usage());
+                return OK;
+            }
             Arguments input = Arguments.parse(args);
             if (input.command("config", "render")) {
                 System.out.println(render(input.option("preset", "params-only-v1")));
@@ -74,7 +79,11 @@ public final class CardanoHistoryCli {
                 return proofParameters(client, input);
             } else throw new UsageException();
             return OK;
-        } catch (UsageException | IllegalArgumentException failure) {
+        } catch (UsageException failure) {
+            System.err.println(usage());
+            return USAGE;
+        } catch (IllegalArgumentException failure) {
+            System.err.println(failure.getMessage());
             System.err.println(usage());
             return USAGE;
         } catch (CardanoHistoryClient.CardanoHistoryClientException unavailable) {
@@ -185,10 +194,15 @@ public final class CardanoHistoryCli {
     }
 
     private static String usage() {
-        return "Usage: yano-cardano-history <command> --url <.../api/v1> --chain <id>\n"
-                + "  status | epochs [--limit N]\n"
-                + "  query params|stake|drep|proposal --epoch E ...\n"
-                + "  proof params|stake --epoch E --output FILE ...\n"
+        return "Usage: yano-cardano-history <command> --url <.../api/v1> --chain <id> [--api-key KEY]\n"
+                + "  status | epochs [--limit 1-15]\n"
+                + "  query params --epoch E\n"
+                + "  query stake --epoch E --credential HEX56 [--credential-type key|script]\n"
+                + "  query drep --epoch E --drep HEX56 [--drep-type N]\n"
+                + "  query proposal --epoch E --tx-id HEX64 --index N\n"
+                + "  proof params --epoch E --output FILE\n"
+                + "  proof stake --epoch E --credential HEX56 --coin LOVELACE --output FILE\n"
+                + "    [--credential-type key|script] [--pool HEX56] [--mode minimum|pool|combined|exact|absence]\n"
                 + "  verify --bundle FILE [--trusted-root INDEPENDENT_ROOT.json]\n"
                 + "  config render --preset params-only-v1|params-stake-v1|params-governance-v1|full-v1";
     }

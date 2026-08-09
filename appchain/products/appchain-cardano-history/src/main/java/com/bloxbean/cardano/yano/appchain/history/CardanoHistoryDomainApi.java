@@ -75,21 +75,30 @@ public final class CardanoHistoryDomainApi implements DomainApi {
         String chain = chain(request.queryParameters());
         if (list) {
             for (int attempt = 0; attempt < 3; attempt++) {
-                AppQueryResult candidate = query(
-                        chain, EpochParamsContract.LATEST_QUERY_PATH, new byte[0]);
-                if (candidate.payload().length == 0) {
+                AppQueryResult candidate = aggregate(chain, List.of(sub(
+                        CardanoHistoryProduct.PARAMS_COMPONENT,
+                        EpochParamsContract.LATEST_QUERY_PATH, new byte[0])));
+                byte[] latestBytes = aggregateValue(decodeAggregate(candidate, 1), 0,
+                        CardanoHistoryProduct.PARAMS_COMPONENT,
+                        EpochParamsContract.LATEST_QUERY_PATH);
+                if (latestBytes.length == 0) {
                     return json(200, root(candidate)
                             .append(",\"latestEpoch\":null,\"epochs\":[]}").toString());
                 }
-                long candidateLatest = EpochParamsContract.decodeEpoch(candidate.payload());
+                long candidateLatest = EpochParamsContract.decodeEpoch(latestBytes);
                 DomainApiResponse response = availableEpochs(request, chain, candidateLatest);
                 if (response != null) return response;
             }
             throw new DomainApiException(DomainApiException.Code.BUSY,
                     "Cardano History epoch catalog changed while reading");
         }
-        AppQueryResult result = query(chain, EpochParamsContract.LATEST_QUERY_PATH, new byte[0]);
-        Long latest = result.payload().length == 0 ? null : EpochParamsContract.decodeEpoch(result.payload());
+        AppQueryResult result = aggregate(chain, List.of(sub(
+                CardanoHistoryProduct.PARAMS_COMPONENT,
+                EpochParamsContract.LATEST_QUERY_PATH, new byte[0])));
+        byte[] latestBytes = aggregateValue(decodeAggregate(result, 1), 0,
+                CardanoHistoryProduct.PARAMS_COMPONENT,
+                EpochParamsContract.LATEST_QUERY_PATH);
+        Long latest = latestBytes.length == 0 ? null : EpochParamsContract.decodeEpoch(latestBytes);
         StringBuilder body = root(result).append(",\"latestEpoch\":");
         if (latest == null) body.append("null"); else body.append(latest);
         return json(200, body.append('}').toString());
@@ -130,14 +139,17 @@ public final class CardanoHistoryDomainApi implements DomainApi {
     private DomainApiResponse parameters(DomainApiRequest request) {
         requireKeys(request.queryParameters(), CHAIN_ONLY);
         long epoch = epoch(request.pathParameters().get("epoch"));
-        AppQueryResult result = query(chain(request.queryParameters()), EpochParamsContract.QUERY_PATH,
-                EpochParamsContract.query(epoch));
+        AppQueryResult result = aggregate(chain(request.queryParameters()), List.of(sub(
+                CardanoHistoryProduct.PARAMS_COMPONENT, EpochParamsContract.QUERY_PATH,
+                EpochParamsContract.query(epoch))));
+        byte[] value = aggregateValue(decodeAggregate(result, 1), 0,
+                CardanoHistoryProduct.PARAMS_COMPONENT, EpochParamsContract.QUERY_PATH);
         byte[] localKey = EpochParamsContract.stateKey(epoch);
         return json(200, root(result)
                 .append(",\"dataset\":\"protocol-parameters\",\"datasetVersion\":1")
                 .append(",\"epoch\":").append(epoch)
-                .append(",\"found\":").append(result.payload().length != 0)
-                .append(",\"canonicalValueHex\":").append(hexOrNull(result.payload()))
+                .append(",\"found\":").append(value.length != 0)
+                .append(",\"canonicalValueHex\":").append(hexOrNull(value))
                 .append(",\"proof\":").append(primaryProof(localKey)).append('}').toString());
     }
 

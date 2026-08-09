@@ -133,3 +133,46 @@ identity and root. That run exposed an invalid bundle-owned domain contribution 
 earlier source-text metadata test had missed. The manifest is now parsed with the production strict
 parser in unit tests, and the rebuilt product activated successfully. The thin bundle boundary also
 excludes the host-supplied SLF4J API and verifies that exclusion during `check`.
+
+## P7 — qualification
+
+Status: complete for preview; the ADR-028 M8d public-network observation period remains a release
+gate rather than an unimplemented product feature.
+
+Final review and iteration closed the following integration defects:
+
+- plugin state-machine facades now forward authenticated-snapshot series and source-commitment
+  adapters through the TCCL boundary, including defensive byte-array copies;
+- each epoch observer offers only its earliest unfinalized job, preventing overlapping builds in a
+  single-build snapshot series while allowing different observers to progress independently;
+- a late member accepts a genuinely missing local observation only while applying an already
+  threshold-certified historical block. A contradictory exact-epoch job still fails as
+  `MISMATCH`, and live proposals retain the original fail-closed rule;
+- Cardano History domain fact/completeness reads use one composite query at one root;
+- client proof generation first obtains the exact L1-confirmed commitment and pins all primary and
+  secondary proof calls to its height/root, removing the moving-tip/anchor race;
+- real Conway protocol parameters authenticate positional cost-model arrays once. Reserved field
+  21 is `null`, field 22 carries compact raw arrays, and the measured value fell from 42,670 to
+  3,038 bytes while preserving ledger data and the 8 KiB on-chain envelope;
+- generic `capabilities.*` settings, snapshot-admin credentials, generated schemas, and launcher
+  forwarding now share one public configuration registry; and
+- the standalone state verifier requires an explicit block hash when the caller labels a root as
+  Cardano-anchor authenticated.
+
+Qualification evidence:
+
+- a fresh three-node accelerated-epoch devnet produced ordered MPF stake and DRep snapshots on all
+  nodes with identical Cardano History roots;
+- a retained-state stop/restart and late-follower catch-up reproduced height 6 and root
+  `dd3dbfe369c671cf2fc5d8c2808682034d0ac8eaaabffd414eb5d4ea3faf91ee` on all three nodes, with no
+  proposal mismatch, snapshot-overlap, or generation error;
+- the Cardano History SCRIPT anchor was bootstrapped and confirmed; protocol-parameter and stake
+  bundles were generated at anchored height 6 and independently returned
+  `ROOT_VERIFIED_ANCHOR_UNCHECKED`, the deliberate exit-5 trust label before supplying an
+  independently verified Cardano transaction;
+- a 30-second, 10-message/s, three-node soak accepted and finalized 300/300 messages, returned zero
+  errors or throttles, and ended with identical roots/tips on every member;
+- browser MPF vectors, plugin/TCCL, domain API, client/CLI, configuration, devnet assembly,
+  showcase script, and copied-distribution contract suites pass; and
+- `./gradlew clean build` passes all 495 tasks. The build itself found and closed missing registry,
+  generated-schema, and trusted-block-hash coverage before this status was recorded.

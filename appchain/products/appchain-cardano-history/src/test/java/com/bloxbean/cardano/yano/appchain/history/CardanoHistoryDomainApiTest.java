@@ -111,7 +111,11 @@ class CardanoHistoryDomainApiTest {
 
     @Test
     void chainIsAlwaysExplicitAndParameterCoordinatesAreCompositePhysicalKeys() {
-        DomainQueryService queries = service((chain, path, params) -> result(new byte[]{1, 2, 3}));
+        DomainQueryService queries = service((chain, path, params) -> result(
+                AggregateQueryCodecV1.encodeResponse(List.of(
+                        new AggregateQueryCodecV1.Result(CardanoHistoryProduct.PARAMS_COMPONENT,
+                                EpochParamsContract.QUERY_PATH, new byte[]{1, 2, 3})),
+                        AggregateQueryLimitsV1.DEFAULT)));
         CardanoHistoryDomainApi api = new CardanoHistoryDomainApi(new DomainApiContext(Map.of(), queries));
         assertThatThrownBy(() -> api.handle(request(CardanoHistoryDomainApi.PARAMS,
                 "epochs/170/parameters", Map.of("epoch", "170"), Map.of())))
@@ -129,11 +133,15 @@ class CardanoHistoryDomainApiTest {
     @Test
     void epochCatalogReturnsOnlyAuthenticatedAvailableRecords() {
         DomainQueryService queries = service((chain, path, params) -> {
-            if (EpochParamsContract.LATEST_QUERY_PATH.equals(path)) {
-                return result(EpochParamsContract.encodeEpoch(EPOCH));
-            }
             List<AggregateQueryCodecV1.Subquery> request = AggregateQueryCodecV1.decodeRequest(
                     params, AggregateQueryLimitsV1.DEFAULT);
+            if (request.size() == 1) {
+                return result(AggregateQueryCodecV1.encodeResponse(List.of(
+                        new AggregateQueryCodecV1.Result(CardanoHistoryProduct.PARAMS_COMPONENT,
+                                EpochParamsContract.LATEST_QUERY_PATH,
+                                EpochParamsContract.encodeEpoch(EPOCH))),
+                        AggregateQueryLimitsV1.DEFAULT));
+            }
             return result(AggregateQueryCodecV1.encodeResponse(List.of(
                     new AggregateQueryCodecV1.Result(CardanoHistoryProduct.PARAMS_COMPONENT,
                             EpochParamsContract.LATEST_QUERY_PATH,
@@ -158,12 +166,16 @@ class CardanoHistoryDomainApiTest {
     void epochCatalogRetriesInsteadOfMixingLatestAcrossRoots() {
         AtomicInteger latestReads = new AtomicInteger();
         DomainQueryService queries = service((chain, path, params) -> {
-            if (EpochParamsContract.LATEST_QUERY_PATH.equals(path)) {
-                long latest = latestReads.getAndIncrement() == 0 ? EPOCH : EPOCH + 1;
-                return result(EpochParamsContract.encodeEpoch(latest));
-            }
             List<AggregateQueryCodecV1.Subquery> request = AggregateQueryCodecV1.decodeRequest(
                     params, AggregateQueryLimitsV1.DEFAULT);
+            if (request.size() == 1) {
+                long latest = latestReads.getAndIncrement() == 0 ? EPOCH : EPOCH + 1;
+                return result(AggregateQueryCodecV1.encodeResponse(List.of(
+                        new AggregateQueryCodecV1.Result(CardanoHistoryProduct.PARAMS_COMPONENT,
+                                EpochParamsContract.LATEST_QUERY_PATH,
+                                EpochParamsContract.encodeEpoch(latest))),
+                        AggregateQueryLimitsV1.DEFAULT));
+            }
             long aggregateLatest = EPOCH + 1;
             List<AggregateQueryCodecV1.Result> results = request.stream().map(query ->
                     new AggregateQueryCodecV1.Result(query.componentId(), query.localPath(),

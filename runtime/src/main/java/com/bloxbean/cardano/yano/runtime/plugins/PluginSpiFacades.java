@@ -40,6 +40,10 @@ import com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider;
 import com.bloxbean.cardano.yano.api.appchain.signer.SignerProviderFactory;
 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSink;
 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory;
+import com.bloxbean.cardano.yano.api.appchain.snapshot.AuthenticatedSnapshotSeriesDescriptorV1;
+import com.bloxbean.cardano.yano.api.appchain.snapshot.AuthenticatedSnapshotSourceCommitmentV1;
+import com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotDescriptorDraftV1;
+import com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotEntry;
 import com.bloxbean.cardano.yano.api.plugin.NodePlugin;
 import com.bloxbean.cardano.yano.api.plugin.PluginActivationException;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApi;
@@ -1334,6 +1338,36 @@ final class PluginSpiFacades {
         }
 
         @Override
+        public List<AuthenticatedSnapshotSeriesDescriptorV1> authenticatedSnapshotSeries() {
+            List<AuthenticatedSnapshotSeriesDescriptorV1> values = Objects.requireNonNull(
+                    pluginCall(callbacks, loader, delegate::authenticatedSnapshotSeries),
+                    "AppStateMachine.authenticatedSnapshotSeries() must not return null");
+            List<AuthenticatedSnapshotSeriesDescriptorV1> snapshot = snapshotList(
+                    values, loader, callbacks, MAX_FACTORY_PRODUCTS_PER_CALLBACK,
+                    "AppStateMachine must declare at most 256 authenticated snapshot series");
+            snapshot.forEach(value -> Objects.requireNonNull(
+                    value, "authenticated snapshot series must not contain null entries"));
+            return snapshot;
+        }
+
+        @Override
+        public List<AuthenticatedSnapshotSourceCommitmentV1>
+                authenticatedSnapshotSourceCommitments() {
+            List<AuthenticatedSnapshotSourceCommitmentV1> values = Objects.requireNonNull(
+                    pluginCall(callbacks, loader,
+                            delegate::authenticatedSnapshotSourceCommitments),
+                    "AppStateMachine.authenticatedSnapshotSourceCommitments() must not return null");
+            List<AuthenticatedSnapshotSourceCommitmentV1> snapshot = snapshotList(
+                    values, loader, callbacks, MAX_FACTORY_PRODUCTS_PER_CALLBACK,
+                    "AppStateMachine must declare at most 256 authenticated snapshot commitments");
+            return snapshot.stream().map(value -> (AuthenticatedSnapshotSourceCommitmentV1)
+                    new SnapshotSourceCommitmentFacade(
+                    Objects.requireNonNull(value,
+                            "authenticated snapshot commitments must not contain null entries"),
+                    loader, callbacks)).toList();
+        }
+
+        @Override
         public void apply(
                 AppBlockExecutionContext context,
                 AppStateWriter writer,
@@ -1360,6 +1394,57 @@ final class PluginSpiFacades {
             byte[] response = pluginCall(callbacks, loader,
                     () -> delegate.query(path, input, state));
             return response != null ? response.clone() : null;
+        }
+    }
+
+    private record SnapshotSourceCommitmentFacade(
+            AuthenticatedSnapshotSourceCommitmentV1 delegate,
+            ClassLoader loader,
+            CallbackTracker callbacks
+    ) implements AuthenticatedSnapshotSourceCommitmentV1 {
+        @Override public String seriesId() {
+            return pluginCall(callbacks, loader, delegate::seriesId);
+        }
+
+        @Override public String algorithm() {
+            return pluginCall(callbacks, loader, delegate::algorithm);
+        }
+
+        @Override public String wireVersion() {
+            return pluginCall(callbacks, loader, delegate::wireVersion);
+        }
+
+        @Override public String compatibilityId() {
+            return pluginCall(callbacks, loader, delegate::compatibilityId);
+        }
+
+        @Override public byte[] initial(SnapshotDescriptorDraftV1 draft) {
+            byte[] result = pluginCall(callbacks, loader, () -> delegate.initial(
+                    Objects.requireNonNull(draft, "draft")));
+            return Objects.requireNonNull(result,
+                    "AuthenticatedSnapshotSourceCommitmentV1.initial() must not return null")
+                    .clone();
+        }
+
+        @Override
+        public byte[] append(byte[] accumulator, long chunkIndex, List<SnapshotEntry> entries) {
+            byte[] input = Objects.requireNonNull(accumulator, "accumulator").clone();
+            List<SnapshotEntry> entrySnapshot = List.copyOf(
+                    Objects.requireNonNull(entries, "entries"));
+            byte[] result = pluginCall(callbacks, loader,
+                    () -> delegate.append(input, chunkIndex, entrySnapshot));
+            return Objects.requireNonNull(result,
+                    "AuthenticatedSnapshotSourceCommitmentV1.append() must not return null")
+                    .clone();
+        }
+
+        @Override public byte[] finish(byte[] accumulator, long chunks, long entries) {
+            byte[] input = Objects.requireNonNull(accumulator, "accumulator").clone();
+            byte[] result = pluginCall(callbacks, loader,
+                    () -> delegate.finish(input, chunks, entries));
+            return Objects.requireNonNull(result,
+                    "AuthenticatedSnapshotSourceCommitmentV1.finish() must not return null")
+                    .clone();
         }
     }
 

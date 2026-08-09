@@ -572,9 +572,9 @@ write_node_configs() {
           && chain_in_csv "$AUTHENTICATED_SNAPSHOT_SELECTION" "$CARDANO_HISTORY_CHAIN_ID"; then
         local snapshot_series=""
         case "$CARDANO_HISTORY_PROFILE" in
-          params-stake-v1) snapshot_series="epoch-stake.distribution";;
-          params-governance-v1) snapshot_series="epoch-governance.drep-distribution";;
-          full-v1) snapshot_series="epoch-stake.distribution,epoch-governance.drep-distribution";;
+          params-stake-v1) snapshot_series="l1-epoch-stake-v1.distribution";;
+          params-governance-v1) snapshot_series="l1-epoch-governance-v1.drep-distribution";;
+          full-v1) snapshot_series="l1-epoch-stake-v1.distribution,l1-epoch-governance-v1.drep-distribution";;
         esac
         printf 'yano.app-chain.chains[%d].capabilities.authenticated-snapshots.enabled=true\n' \
           "$cardano_history_index"

@@ -107,31 +107,45 @@ public final class CardanoHistoryClient {
                 optionalText(node, "reason"), proof(node));
     }
 
-    /** Root-fixed parameter proof; a concurrent root advance cannot be mixed into the result. */
+    /** Latest L1-confirmed app-chain root reported by this node. */
+    public ConfirmedAnchor confirmedAnchor() {
+        JsonNode node = getEndpoint(baseUrl + "/app-chain/chains/" + encode(chainId)
+                + "/anchor/commitment");
+        if (!chainId.equals(text(node, "chainId"))) throw malformed();
+        Root root = new Root(chainId, nonnegative(node, "anchoredHeight"),
+                canonicalHex(text(node, "stateRoot"), 32));
+        return new ConfirmedAnchor(root, text(node, "mode"),
+                canonicalHex(text(node, "blockHash"), 32),
+                text(node, "transactionHash"), nonnegative(node, "l1Slot"));
+    }
+
+    /** Root-fixed parameter proof against the latest L1-confirmed root. */
     public Optional<CardanoHistoryProofBundle.ProtocolParameters> parameterProof(long epoch) {
-        Parameters query = parameters(epoch);
-        if (!query.found()) return Optional.empty();
-        var proof = proofs.protocolParameters(epoch, query.root().committedHeight());
-        proof.ifPresent(value -> requireSameRoot(query.root(), value.fact().proof().stateRootHex()));
+        Root anchor = confirmedAnchor().root();
+        var proof = proofs.protocolParameters(epoch, anchor.committedHeight())
+                .filter(value -> value.fact().decodedValue() != null);
+        proof.ifPresent(value -> requireSameRoot(anchor, value.fact().proof().stateRootHex()));
         return proof;
     }
 
-    /** Root-fixed nested authenticated-snapshot stake proof. */
+    /** Root-fixed nested authenticated-snapshot stake proof against the latest L1-confirmed root. */
     public Optional<CardanoHistoryProofBundle.SnapshotStake> stakeProof(
             long epoch, int credentialType, byte[] credentialHash,
             CardanoHistoryProofBundle.StakeMode mode, BigInteger coin, byte[] poolHash) {
-        Stake query = stake(epoch, credentialType, credentialHash);
-        if (!query.complete()) return Optional.empty();
+        Root anchor = confirmedAnchor().root();
         var proof = proofs.stake(epoch, credentialType, credentialHash, mode, coin,
-                poolHash, query.root().committedHeight());
+                poolHash, anchor.committedHeight());
         proof.ifPresent(value -> requireSameRoot(
-                query.root(), value.proof().anchor().stateRootHex()));
+                anchor, value.proof().anchor().stateRootHex()));
         return proof;
     }
 
     private JsonNode get(String path, String suffix) {
-        String endpoint = baseUrl + "/plugins/" + BUNDLE_ID + "/" + path
-                + "?chain=" + encode(chainId) + suffix;
+        return getEndpoint(baseUrl + "/plugins/" + BUNDLE_ID + "/" + path
+                + "?chain=" + encode(chainId) + suffix);
+    }
+
+    private JsonNode getEndpoint(String endpoint) {
         HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(endpoint))
                 .timeout(Duration.ofSeconds(30)).header("Accept", "application/json").GET();
         if (apiKey != null && !apiKey.isBlank()) request.header("X-API-Key", apiKey);
@@ -289,6 +303,8 @@ public final class CardanoHistoryClient {
     }
 
     public record Root(String chainId, long committedHeight, String stateRootHex) { }
+    public record ConfirmedAnchor(Root root, String mode, String blockHashHex,
+                                  String transactionHash, long l1Slot) { }
     public record ProofCoordinates(String kind, String physicalKey, String factPhysicalKey,
                                    String completenessPhysicalKey, String seriesId,
                                    String secondaryKey) { }

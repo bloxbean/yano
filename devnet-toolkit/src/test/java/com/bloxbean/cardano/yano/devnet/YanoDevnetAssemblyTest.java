@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.devnet;
 
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiGateway;
+import com.bloxbean.cardano.yano.api.plugin.ui.UiExtensionGateway;
 import com.bloxbean.cardano.yano.runtime.assembly.YanoAssembly;
 import com.bloxbean.cardano.yano.runtime.assembly.Yano;
 import org.junit.jupiter.api.Test;
@@ -38,6 +39,7 @@ class YanoDevnetAssemblyTest {
             assertTrue(node.pluginCatalog().isPresent());
             assertTrue(node.pluginOperations().isPresent());
             assertNotSame(DomainApiGateway.empty(), node.domainApis());
+            assertNotSame(UiExtensionGateway.empty(), node.uiExtensions());
         } finally {
             node.close();
         }

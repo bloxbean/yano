@@ -35,7 +35,8 @@ The client requires an explicit node API URL and chain ID:
 
 ```java
 var history = CardanoHistoryClient.builder(
-        "http://localhost:17070/api/v1", "cardano-history-chain").build();
+        "http://localhost:17070/api/v1", "cardano-history-chain")
+        .apiKey(System.getenv("YANO_CLUSTER_API_KEY")).build();
 var stake = history.stake(170, 0, credentialHash);
 ```
 
@@ -44,7 +45,8 @@ The CLI never assumes port 7070 or derives a chain from an arbitrary showcase in
 ```bash
 yano-cardano-history status \
   --url http://localhost:17070/api/v1 \
-  --chain cardano-history-chain
+  --chain cardano-history-chain \
+  --api-key "$YANO_CLUSTER_API_KEY"
 
 yano-cardano-history query params --epoch 170 \
   --url http://localhost:17070/api/v1 \
@@ -52,7 +54,15 @@ yano-cardano-history query params --epoch 170 \
 
 yano-cardano-history proof params --epoch 170 --output params-proof.json \
   --url http://localhost:17070/api/v1 \
-  --chain cardano-history-chain
+  --chain cardano-history-chain \
+  --api-key "$YANO_CLUSTER_API_KEY"
+
+yano-cardano-history proof stake --epoch 169 \
+  --credential "$STAKE_CREDENTIAL_HEX" --coin 1000000 --mode minimum \
+  --output stake-proof.json \
+  --url http://localhost:17070/api/v1 \
+  --chain cardano-history-chain \
+  --api-key "$YANO_CLUSTER_API_KEY"
 
 yano-cardano-history verify --bundle params-proof.json \
   --trusted-root independently-obtained-cardano-root.json
@@ -60,9 +70,12 @@ yano-cardano-history verify --bundle params-proof.json \
 
 Exit code `0` means a fully L1-authenticated proof or successful non-proof command, `3` means data
 is unavailable/incomplete, `4` means invalid, and `5` means the trie proof is valid against the
-pinned root but the Cardano anchor was not independently checked. A bundle generated from the same
-node is deliberately `ROOT_VERIFIED_ANCHOR_UNCHECKED` until the caller supplies an independently
-verified Cardano anchor context.
+pinned root but the Cardano anchor was not independently checked. A proof command first reads the
+chain's confirmed anchor commitment, generates every primary and secondary proof at that exact
+height, and rejects any root mismatch; it never races a moving latest-state query against the
+anchor. A bundle generated from the same node is deliberately
+`ROOT_VERIFIED_ANCHOR_UNCHECKED` until the caller supplies an independently verified Cardano anchor
+context.
 
 The optional `--trusted-root` document is a separate caller input. The verifier ignores any trust
 source embedded in a proof bundle, so editing a bundle cannot promote a root-only result to an L1
@@ -120,3 +133,10 @@ for another genesis-time preset:
 
 The retained `showcase-identity.json` binds enablement, preset, and product-bundle SHA-256. A
 restart cannot silently change any of them.
+
+For a full snapshot profile, the stable series IDs are
+`l1-epoch-stake-v1.distribution` and
+`l1-epoch-governance-v1.drep-distribution`. Stake snapshots use end-of-epoch semantics and DRep
+snapshots use start-of-epoch semantics. Always use the descriptor's `datasetEpoch`, or the epoch in
+the domain response, rather than assuming the latest parameter epoch is also the latest complete
+stake epoch.
