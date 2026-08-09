@@ -38,4 +38,16 @@ describe('plugin UI bridge policy', () => {
     expect(() => validateBridgeRequest({ ...base, method: 'fetch' }, extension,
       'history-chain', 'nonce')).toThrow('unsupported');
   });
+
+  it('gates snapshot proofs and host-mediated downloads on explicit permissions', () => {
+    const base = { uiApiVersion: 1, sessionNonce: 'nonce', chainId: 'history-chain',
+      method: 'app-chain.snapshot-proof', requestId: 'r2', payload: {} };
+    expect(() => validateBridgeRequest(base, extension, 'history-chain', 'nonce'))
+      .toThrow('permission');
+    expect(validateBridgeRequest(base, { ...extension,
+      permissions: [...extension.permissions, 'app-chain.proof.read'] },
+    'history-chain', 'nonce')).toEqual(base);
+    expect(() => validateBridgeRequest({ ...base, method: 'file.export' }, extension,
+      'history-chain', 'nonce')).toThrow('permission');
+  });
 });

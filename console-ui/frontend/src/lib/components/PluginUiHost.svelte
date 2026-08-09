@@ -50,6 +50,53 @@
         }
         return api.chainProof(chainId, keyHex, height, signal);
       }
+      case 'app-chain.snapshots': {
+        const series = typeof body.series === 'string' ? body.series : '';
+        const cursor = typeof body.cursor === 'string' ? body.cursor : '';
+        const limit = typeof body.limit === 'number' ? body.limit : 100;
+        if (!/^[A-Za-z0-9._-]{1,128}$/.test(series)
+          || (cursor && !/^[A-Za-z0-9_-]{1,684}$/.test(cursor))
+          || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+          throw new Error('invalid snapshot catalog request');
+        }
+        return api.chainSnapshots(chainId, series, cursor || undefined, limit, signal);
+      }
+      case 'app-chain.snapshot': {
+        const series = typeof body.series === 'string' ? body.series : '';
+        const sequence = typeof body.sequence === 'number' ? body.sequence : -1;
+        if (!/^[A-Za-z0-9._-]{1,128}$/.test(series)
+          || !Number.isSafeInteger(sequence) || sequence < 0) {
+          throw new Error('invalid snapshot descriptor request');
+        }
+        return api.chainSnapshot(chainId, series, sequence, signal);
+      }
+      case 'app-chain.snapshot-proof': {
+        const series = typeof body.series === 'string' ? body.series : '';
+        const sequence = typeof body.sequence === 'number' ? body.sequence : -1;
+        const keyHex = typeof body.keyHex === 'string' ? body.keyHex : '';
+        if (!/^[A-Za-z0-9._-]{1,128}$/.test(series)
+          || !Number.isSafeInteger(sequence) || sequence < 0
+          || !/^(?:[0-9a-fA-F]{2}){1,256}$/.test(keyHex)) {
+          throw new Error('invalid snapshot proof request');
+        }
+        return api.chainSnapshotProof(chainId, series, sequence, keyHex, signal);
+      }
+      case 'file.export': {
+        const filename = typeof body.filename === 'string' ? body.filename : '';
+        const mediaType = typeof body.mediaType === 'string' ? body.mediaType : '';
+        const text = typeof body.text === 'string' ? body.text : '';
+        if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(filename)
+          || mediaType !== 'application/json' || new TextEncoder().encode(text).length > 2 * 1024 * 1024) {
+          throw new Error('invalid file export request');
+        }
+        const url = URL.createObjectURL(new Blob([text], { type: mediaType }));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 0);
+        return { exported: true, filename };
+      }
       case 'app-chain.domain': {
         const path = typeof body.path === 'string' ? body.path : '';
         const parameters = body.parameters && typeof body.parameters === 'object'
@@ -74,7 +121,8 @@
       requestId = request.requestId;
       active += 1;
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 5_000);
+      const timeout = request.method === 'app-chain.snapshot-proof' ? 30_000 : 5_000;
+      const timer = setTimeout(() => controller.abort(), timeout);
       try {
         const result = checkedBridgeResponse(await invoke(request.method, request.payload, controller.signal));
         frame.contentWindow?.postMessage({ type: 'yano-ui-response', sessionNonce,

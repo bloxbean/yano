@@ -10,7 +10,11 @@ const methodPermission: Record<string, string | null> = {
   'app-chain.domain': 'app-chain.domain.read',
   'app-chain.query': 'app-chain.query.read',
   'app-chain.proof': 'app-chain.proof.read',
-  'app-chain.anchor': 'app-chain.anchor.read'
+  'app-chain.snapshots': 'app-chain.proof.read',
+  'app-chain.snapshot': 'app-chain.proof.read',
+  'app-chain.snapshot-proof': 'app-chain.proof.read',
+  'app-chain.anchor': 'app-chain.anchor.read',
+  'file.export': 'file.export'
 };
 
 export interface UiBridgeRequest {
