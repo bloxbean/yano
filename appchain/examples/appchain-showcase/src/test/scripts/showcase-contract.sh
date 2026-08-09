@@ -13,6 +13,8 @@ cp "$MODULE/src/main/showcase/config/application-appchain.yml" "$ROOT/yano/confi
 cp "$MODULE/src/main/showcase/config/showcase-catalog-v1.json" "$ROOT/catalog/"
 printf 'fake jar\n' > "$ROOT/yano/yano.jar"
 printf 'fake plugin\n' > "$ROOT/yano/plugins/yano-appchain-showcase-test-bundle.jar"
+printf 'fake history plugin\n' > \
+  "$ROOT/yano/plugins/yano-appchain-cardano-history-test-bundle.jar"
 cat > "$ROOT/yano/appchain-cluster/cluster.sh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${SHOWCASE_STUB_LOG:?}"
@@ -115,6 +117,8 @@ jq -e '.authenticatedMapConfigSha256 | test("^[0-9a-f]{64}$")' \
   "$ROOT/data/showcase/three/showcase-identity.json" >/dev/null
 jq -e '.authenticatedMapJmtConfigSha256 | test("^[0-9a-f]{64}$")' \
   "$ROOT/data/showcase/three/showcase-identity.json" >/dev/null
+jq -e '.cardanoHistory.enabled == true and .cardanoHistory.profile == "params-only-v1" and (.cardanoHistory.bundleSha256 | test("^[0-9a-f]{64}$"))' \
+  "$ROOT/data/showcase/three/showcase-identity.json" >/dev/null
 [ "$(find "$ROOT/data/showcase/three/node-config" -type f -name 'node*.properties' | wc -l | tr -d ' ')" = 3 ]
 grep -q 'showcase-outbox.enabled=true' "$ROOT/data/showcase/three/node-config/node0.properties"
 grep -q 'showcase-outbox.enabled=false' "$ROOT/data/showcase/three/node-config/node1.properties"
@@ -133,6 +137,7 @@ grep -q 'chains\[9\].machines.authenticated-map.genesis-cbor-hex=' \
 # ADR-028 M8c: the fresh-instance-only flag selects only declared series,
 # records their profile in deployment identity, and uses node-local archives.
 "$ROOT/showcase.sh" prepare --instance snapshots --http-base 19470 --server-base 19070 \
+  --cardano-history-profile full \
   --enable-authenticated-snapshots=cardano-history-chain \
   --authenticated-snapshot-profile jmt-blake2b256-v1
 jq -e '.authenticatedSnapshots.chainIds == ["cardano-history-chain"] and .authenticatedSnapshots.mpfPruningChainIds == [] and .authenticatedSnapshots.profile == "jmt-blake2b256-v1"' \
@@ -146,7 +151,8 @@ grep -q '/node0/appchain-snapshot-archives' \
 grep -q '/node1/appchain-snapshot-archives' \
   "$ROOT/data/showcase/snapshots/node-config/node1.properties"
 "$ROOT/showcase.sh" prepare --instance snapshot-pruning --http-base 19570 \
-  --server-base 19170 --enable-authenticated-snapshots=cardano-history-chain \
+  --server-base 19170 --cardano-history-profile full \
+  --enable-authenticated-snapshots=cardano-history-chain \
   --enable-authenticated-snapshot-mpf-pruning=cardano-history-chain
 jq -e '.authenticatedSnapshots.mpfPruningChainIds == ["cardano-history-chain"] and .authenticatedSnapshots.profile == "mpf-blake2b256-v1"' \
   "$ROOT/data/showcase/snapshot-pruning/showcase-identity.json" >/dev/null
@@ -154,6 +160,7 @@ grep -q 'capabilities.authenticated-snapshots.storage.mpf-pruning-enabled=true' 
   "$ROOT/data/showcase/snapshot-pruning/node-config/node0.properties"
 if "$ROOT/showcase.sh" prepare --instance snapshot-pruning-jmt --http-base 19670 \
     --server-base 19270 --enable-authenticated-snapshots=cardano-history-chain \
+    --cardano-history-profile full \
     --authenticated-snapshot-profile jmt-blake2b256-v1 \
     --enable-authenticated-snapshot-mpf-pruning=cardano-history-chain \
     >"$WORK/snapshot-pruning-jmt.log" 2>&1; then
@@ -165,6 +172,24 @@ if "$ROOT/showcase.sh" prepare --instance invalid-snapshots \
   echo "unsupported authenticated snapshot chain was accepted" >&2; exit 1
 fi
 grep -q 'does not declare authenticated snapshot series' "$WORK/snapshot-invalid.log"
+
+# ADR-035 product presets are retained identity, configure only their selected
+# observer/components, and reject snapshot selection for params-only.
+"$ROOT/showcase.sh" prepare --instance history-stake --http-base 19670 \
+  --server-base 19270 --cardano-history-profile params-stake
+jq -e '.cardanoHistory.profile == "params-stake-v1"' \
+  "$ROOT/data/showcase/history-stake/showcase-identity.json" >/dev/null
+grep -q 'observers.epoch-stake.type=l1-epoch-stake-v1' \
+  "$ROOT/data/showcase/history-stake/node-config/node0.properties"
+! grep -q 'observers.epoch-governance.type=' \
+  "$ROOT/data/showcase/history-stake/node-config/node0.properties"
+if "$ROOT/showcase.sh" prepare --instance history-params-snapshot \
+    --enable-authenticated-snapshots=cardano-history-chain \
+    >"$WORK/history-params-snapshot.log" 2>&1; then
+  echo "params-only Cardano History accepted snapshots" >&2; exit 1
+fi
+grep -q 'require a Cardano History stake or governance profile' \
+  "$WORK/history-params-snapshot.log"
 
 # A retained instance must restart from its marker without repeating the
 # original non-default ports, membership, network, or chain list.
@@ -400,5 +425,15 @@ actual = re.findall(r'^ {6}chain-id:\s*["\']?([^"\'\s]+)', config, re.MULTILINE)
 expected = [row['chainId'] for row in json.loads(pathlib.Path(sys.argv[2]).read_text())['chains']]
 assert actual == expected, (actual, expected)
 PY
+
+# Product installation and chain activation are independent: disabling the
+# chain removes it from identity/config while retaining the distributable jar.
+"$ROOT/showcase.sh" prepare --instance history-disabled --disable-cardano-history \
+  --http-base 18070 --server-base 18337
+jq -e '.cardanoHistory.enabled == false
+  and (.chainIds | index("cardano-history-chain")) == null' \
+  "$ROOT/data/showcase/history-disabled/showcase-identity.json" >/dev/null
+! grep -q 'chain-id: "cardano-history-chain"' \
+  "$ROOT/yano/config/application-appchain.yml"
 
 echo "PASS: showcase facade preserves catalog, index identity, scaling, redaction, join, and governance contracts"

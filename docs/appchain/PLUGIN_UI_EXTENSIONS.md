@@ -22,9 +22,17 @@ The only host interface is UI API v1's `postMessage` bridge. Each request is che
 - the selected chain's actual capability manifest; and
 - request/response size, concurrency, and timeout limits.
 
-V1 exposes bounded read operations for status, domain queries, application queries, proofs, and
-anchors. It does not expose raw network fetch, administration, message submission, credentials,
-keys, seeds, browser storage, or cross-plugin calls.
+V1 exposes bounded read operations for status, domain queries, application queries, proofs,
+authenticated-snapshot catalogs/descriptors/proofs, and anchors. Snapshot reads reuse the explicit
+`app-chain.proof.read` permission and remain subject to the host proof-service limits. The
+`file.export` method lets a permitted extension ask the host to download a bounded JSON file; the
+sandbox never receives filesystem access. V1 does not expose raw network fetch, administration,
+message submission, credentials, keys, seeds, browser storage, or cross-plugin calls.
+
+The released bridge methods are `host.context`, `app-chain.status`, `app-chain.domain`,
+`app-chain.query`, `app-chain.proof`, `app-chain.snapshots`, `app-chain.snapshot`,
+`app-chain.snapshot-proof`, `app-chain.anchor`, and `file.export`. Ordinary calls time out after
+five seconds; a bounded authenticated-snapshot proof may use up to thirty seconds.
 
 ## Bundle contract
 

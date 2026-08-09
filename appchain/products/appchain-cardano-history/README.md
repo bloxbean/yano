@@ -30,7 +30,10 @@ composition code, stdlib implementations, and canonical contracts are supplied b
 
 The product also contributes a bounded read-only domain API and a capability-gated Cardano History
 console packaged as validated HTML, CSS, and JavaScript resources in the same bundle. The console
-runs in the host's opaque-origin sandbox and uses only the declared read-only bridge.
+runs in the host's opaque-origin sandbox and uses only the declared bridge. Its Proof Lab derives
+canonical history keys locally, verifies primary or nested authenticated-snapshot MPF proofs,
+checks same-root completeness and stake/DRep predicates, and exports a portable JSON bundle through
+the permission-gated host download path.
 
 The independently distributable
 `appchain-cardano-history-client` and `appchain-cardano-history-cli` modules consume that API and the

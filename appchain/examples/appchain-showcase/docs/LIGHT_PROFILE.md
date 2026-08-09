@@ -44,7 +44,9 @@ with either opt-in form:
 The selection is consensus state, not the rebuildable SQL indexer. It is
 retained in the instance identity and cannot be changed on restart.
 
-Authenticated snapshots are also a fresh-generation choice. Enable the two
+Cardano History defaults to parameters only. Select `--cardano-history-profile
+params-stake|params-governance|full` at genesis for the corresponding larger L1 datasets.
+Authenticated snapshots are also a fresh-generation choice. Enable the selected
 Cardano history series with `--enable-authenticated-snapshots=cardano-history-chain`.
 MPF is the default and supports the nested on-chain proof path; add
 `--authenticated-snapshot-profile jmt-blake2b256-v1` for the off-chain-only

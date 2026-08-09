@@ -54,7 +54,8 @@ yano.app-chain.chains[0].capabilities.authenticated-snapshots.storage.mpf-prunin
 yano.app-chain.api.snapshot-admin-keys=<dedicated-operator-key>
 ```
 
-The profile belongs to the state-machine series declaration. In the showcase pilot:
+The profile belongs to the state-machine series declaration. In the Cardano History showcase
+product (index is deployment-specific):
 
 ```properties
 yano.app-chain.chains[12].machines.epoch-stake.snapshot-profile=mpf-blake2b256-v1
@@ -145,23 +146,28 @@ a consensus message and does not force peers to remove theirs.
 ## Showcase
 
 ```bash
-# MPF, with on-chain-capable nested proofs.
+# MPF, with on-chain-capable nested proofs. Snapshot-capable datasets are
+# selected explicitly by the Cardano History preset.
 ./showcase.sh quickstart --profile light --instance history-mpf \
+  --cardano-history-profile full \
   --enable-authenticated-snapshots=cardano-history-chain
 
 # Optional MPF archive-time reachable-node pruning.
 ./showcase.sh quickstart --profile light --instance history-mpf-pruned \
+  --cardano-history-profile full \
   --enable-authenticated-snapshots=cardano-history-chain \
   --enable-authenticated-snapshot-mpf-pruning=cardano-history-chain
 
 # JMT, off-chain verification only.
 ./showcase.sh quickstart --profile light --instance history-jmt \
+  --cardano-history-profile full \
   --enable-authenticated-snapshots=cardano-history-chain \
   --authenticated-snapshot-profile jmt-blake2b256-v1
 ```
 
-Use `./showcase.sh snapshots status|list|descriptor|proof|verify|archive|restore|evict|jobs` for the
-packaged operator flow. The deployment marker retains the selected series/profile and node-local
+Use `./showcase.sh snapshots status|list|descriptor|archive|restore|evict|job` for the packaged
+operator flow. Use the Cardano History browser Proof Lab or standalone CLI for proof generation and
+independent verification. The deployment marker retains the selected series/profile and node-local
 pruning scope so restarts cannot silently target another prepared instance.
 
 ## Operational rules

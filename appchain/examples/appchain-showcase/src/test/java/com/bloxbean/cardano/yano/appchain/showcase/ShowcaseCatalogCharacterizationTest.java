@@ -44,7 +44,7 @@ class ShowcaseCatalogCharacterizationTest {
                 Map.entry("authenticated-map-jmt-chain", "authenticated-map"),
                 Map.entry("payment-chain-settlement", "eutxo-ledger"),
                 Map.entry("document-review-chain", "document-review"),
-                Map.entry("cardano-history-chain", "cardano-history-pilot"))).hasSize(13);
+                Map.entry("cardano-history-chain", "cardano-history"))).hasSize(13);
     }
 
     @Test
@@ -62,7 +62,8 @@ class ShowcaseCatalogCharacterizationTest {
                 .contains("type: \"eutxo-vault-deposit-v1\"")
                 .contains("type: \"eutxo-batch-withdrawal-confirmation-v1\"")
                 .contains("state-machine: \"document-review\"")
-                .contains("state-machine: \"cardano-history-pilot\"");
+                .contains("state-machine: \"cardano-history\"")
+                .contains("preset: \"params-only-v1\"");
     }
 
     private static Map<String, String> applications(String yaml) {

@@ -15,6 +15,8 @@ import sys
 
 LIGHT_CHAINS: list[str] = []
 LIGHT_CHAINS_WITHOUT_SETTLEMENT: list[str] = []
+LIGHT_CHAINS_WITHOUT_HISTORY: list[str] = []
+LIGHT_CHAINS_WITHOUT_SETTLEMENT_OR_HISTORY: list[str] = []
 CHAIN_ID = re.compile(r"[A-Za-z0-9._~-]{1,128}")
 HEX_32 = re.compile(r"[0-9a-f]{64}")
 CONFIG_CHAIN_ID = re.compile(r'^\s{6}chain-id:\s*"([A-Za-z0-9._~-]{1,128})"\s*$', re.MULTILINE)
@@ -62,7 +64,9 @@ def requested_anchor_chains(values: list[str], configured: list[str]) -> list[st
 def configured_chain_ids(path: pathlib.Path) -> list[str]:
     chains = CONFIG_CHAIN_ID.findall(path.read_text(encoding="utf-8"))
     if (not chains or len(chains) != len(set(chains))
-            or chains not in (LIGHT_CHAINS, LIGHT_CHAINS_WITHOUT_SETTLEMENT)):
+            or chains not in (LIGHT_CHAINS, LIGHT_CHAINS_WITHOUT_SETTLEMENT,
+                              LIGHT_CHAINS_WITHOUT_HISTORY,
+                              LIGHT_CHAINS_WITHOUT_SETTLEMENT_OR_HISTORY)):
         raise ValueError("showcase config contains an unsupported chain set")
     return chains
 
@@ -123,6 +127,21 @@ def document(args: argparse.Namespace) -> dict:
     })).hexdigest()
     snapshots = ([] if not args.authenticated_snapshot_selection else
                  args.authenticated_snapshot_selection.split(","))
+    history_enabled = "cardano-history-chain" in chains
+    if history_enabled != (not args.disable_cardano_history):
+        raise ValueError("Cardano History chain selection does not match the configured chain set")
+    history_profiles = ("params-only-v1", "params-stake-v1",
+                        "params-governance-v1", "full-v1")
+    if args.cardano_history_profile not in history_profiles:
+        raise ValueError("unsupported Cardano History profile")
+    if not history_enabled and snapshots:
+        raise ValueError("authenticated snapshots require Cardano History")
+    history_series = {
+        "params-only-v1": [],
+        "params-stake-v1": ["epoch-stake.distribution"],
+        "params-governance-v1": ["epoch-governance.drep-distribution"],
+        "full-v1": ["epoch-stake.distribution", "epoch-governance.drep-distribution"],
+    }[args.cardano_history_profile]
     snapshot_mpf_pruning = ([] if not args.authenticated_snapshot_mpf_pruning_selection else
                             args.authenticated_snapshot_mpf_pruning_selection.split(","))
     if (snapshots not in ([], ["cardano-history-chain"])
@@ -133,10 +152,12 @@ def document(args: argparse.Namespace) -> dict:
                 (snapshots != ["cardano-history-chain"]
                  or args.authenticated_snapshot_profile != "mpf-blake2b256-v1"))):
         raise ValueError("authenticated snapshot selection/profile is not canonical")
+    if snapshots and not history_series:
+        raise ValueError("authenticated snapshots require a snapshot-capable Cardano History profile")
     snapshot_digest = hashlib.sha256(canonical({
         "chainIds": snapshots,
         "profile": args.authenticated_snapshot_profile,
-        "series": ["epoch-stake.distribution", "epoch-governance.drep-distribution"],
+        "series": history_series,
     })).hexdigest()
     return {
         "schemaVersion": 2 if len(selected) > 1 else 1,
@@ -158,6 +179,11 @@ def document(args: argparse.Namespace) -> dict:
             pathlib.Path(args.authenticated_map_config).resolve()),
         "authenticatedMapJmtConfigSha256": sha256(
             pathlib.Path(args.authenticated_map_jmt_config).resolve()),
+        "cardanoHistory": {
+            "enabled": history_enabled,
+            "profile": args.cardano_history_profile,
+            "bundleSha256": sha256(pathlib.Path(args.cardano_history_plugin).resolve()),
+        },
         "finalizedMessageIndex": {
             "chainIds": finalized,
             "configurationDigest": finalized_digest,
@@ -168,7 +194,7 @@ def document(args: argparse.Namespace) -> dict:
             "chainIds": snapshots,
             "mpfPruningChainIds": snapshot_mpf_pruning,
             "profile": args.authenticated_snapshot_profile,
-            "series": ["epoch-stake.distribution", "epoch-governance.drep-distribution"],
+            "series": history_series,
             "configurationDigest": snapshot_digest,
         },
         "anchor": anchor_identity(
@@ -277,10 +303,11 @@ def validate_deployment_identity(document: dict) -> None:
         "serverBase", "runtime", "chainIds", "configSha256", "pluginSha256", "anchor",
         "authenticatedMapConfigSha256",
         "authenticatedMapJmtConfigSha256", "finalizedMessageIndex",
-        "authenticatedSnapshots",
+        "authenticatedSnapshots", "cardanoHistory",
     }
     finalized = document.get("finalizedMessageIndex")
     snapshots = document.get("authenticatedSnapshots")
+    history = document.get("cardanoHistory")
     if (not isinstance(document.get("authenticatedMapJmtConfigSha256"), str)
             or not HEX_32.fullmatch(document["authenticatedMapJmtConfigSha256"])
             or not isinstance(finalized, dict)
@@ -304,16 +331,34 @@ def validate_deployment_identity(document: dict) -> None:
                  or snapshots.get("profile") != "mpf-blake2b256-v1"))
             or snapshots.get("profile") not in
             ("mpf-blake2b256-v1", "jmt-blake2b256-v1")
-            or snapshots.get("series") !=
-            ["epoch-stake.distribution", "epoch-governance.drep-distribution"]
+            or not isinstance(snapshots.get("series"), list)
             or not isinstance(snapshots.get("configurationDigest"), str)
             or not HEX_32.fullmatch(snapshots["configurationDigest"])):
         raise ValueError("showcase authenticated snapshot identity is malformed")
+    history_profiles = {
+        "params-only-v1": [],
+        "params-stake-v1": ["epoch-stake.distribution"],
+        "params-governance-v1": ["epoch-governance.drep-distribution"],
+        "full-v1": ["epoch-stake.distribution", "epoch-governance.drep-distribution"],
+    }
+    if (not isinstance(history, dict)
+            or set(history) != {"enabled", "profile", "bundleSha256"}
+            or type(history.get("enabled")) is not bool
+            or history.get("profile") not in history_profiles
+            or not isinstance(history.get("bundleSha256"), str)
+            or not HEX_32.fullmatch(history["bundleSha256"])
+            or history["enabled"] != ("cardano-history-chain" in document.get("chainIds", []))
+            or snapshots.get("series") != history_profiles[history["profile"]]
+            or snapshots.get("chainIds") and not history["enabled"]):
+        raise ValueError("showcase Cardano History identity is malformed")
     anchor = document.get("anchor")
     if (set(document) != expected or document.get("profile") != "light"
             or document.get("network") not in ("devnet", "preprod")
             or document.get("protocolMagic") != (1 if document.get("network") == "preprod" else 42)
-            or document.get("chainIds") not in (LIGHT_CHAINS, LIGHT_CHAINS_WITHOUT_SETTLEMENT)
+            or document.get("chainIds") not in (
+                LIGHT_CHAINS, LIGHT_CHAINS_WITHOUT_SETTLEMENT,
+                LIGHT_CHAINS_WITHOUT_HISTORY,
+                LIGHT_CHAINS_WITHOUT_SETTLEMENT_OR_HISTORY)
             or not isinstance(document.get("authenticatedMapConfigSha256"), str)
             or not HEX_32.fullmatch(document["authenticatedMapConfigSha256"])
             or type(document.get("bootstrapNodeCount")) is not int
@@ -517,6 +562,9 @@ def main() -> None:
     parser.add_argument("--authenticated-snapshot-selection", default="")
     parser.add_argument("--authenticated-snapshot-profile", default="mpf-blake2b256-v1")
     parser.add_argument("--authenticated-snapshot-mpf-pruning-selection", default="")
+    parser.add_argument("--cardano-history-profile", default="params-only-v1")
+    parser.add_argument("--cardano-history-plugin")
+    parser.add_argument("--disable-cardano-history", action="store_true")
     parser.add_argument("--anchor", action="store_true")
     parser.add_argument("--anchor-mode", default="script")
     parser.add_argument("--anchor-chain", action="append", default=[])
@@ -526,13 +574,21 @@ def main() -> None:
     parser.add_argument("--output")
     parser.add_argument("--catalog")
     args = parser.parse_args()
-    global LIGHT_CHAINS, LIGHT_CHAINS_WITHOUT_SETTLEMENT
+    global LIGHT_CHAINS, LIGHT_CHAINS_WITHOUT_SETTLEMENT, LIGHT_CHAINS_WITHOUT_HISTORY
+    global LIGHT_CHAINS_WITHOUT_SETTLEMENT_OR_HISTORY
     if args.action not in ("show", "export"):
         if not args.catalog:
             raise ValueError("this action requires --catalog")
         LIGHT_CHAINS = load_catalog(pathlib.Path(args.catalog).resolve())
         LIGHT_CHAINS_WITHOUT_SETTLEMENT = [
             chain for chain in LIGHT_CHAINS if chain != "payment-chain-settlement"
+        ]
+        LIGHT_CHAINS_WITHOUT_HISTORY = [
+            chain for chain in LIGHT_CHAINS if chain != "cardano-history-chain"
+        ]
+        LIGHT_CHAINS_WITHOUT_SETTLEMENT_OR_HISTORY = [
+            chain for chain in LIGHT_CHAINS
+            if chain not in ("payment-chain-settlement", "cardano-history-chain")
         ]
     marker = pathlib.Path(args.marker)
     if args.action == "anchor-enable":

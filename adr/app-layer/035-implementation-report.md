@@ -100,7 +100,36 @@ The product bundle now contributes its own sandboxed Cardano History UI. The cap
 overview hides stake/governance controls when their preset components are absent. Queries and proof
 generation use only the versioned read-only host bridge; imported bundles are verified without the
 bridge. The assets contain no direct network primitive or external URL. The Proof Lab verifies the
-released MPF inclusion wire profile, chain/key/value/height/root/profile binding, same-root
-completeness, and available proposal/history semantics. Fixed browser vectors match the Java and
-on-chain single-leaf vector and reject wrong root/value. Cardano-anchor trust remains explicitly
-unchecked until supplied independently to the standalone verifier.
+released MPF inclusion and absence wire profile. It derives canonical physical or snapshot keys
+from the typed epoch/credential/proposal subject, preventing a valid leaf from being relabelled. It
+verifies primary/secondary root binding, the canonical snapshot descriptor, same-primary-root
+completeness, and stake amount/pool/combined, proposal, DRep, or absence semantics. Fixed browser
+vectors agree with raw Java MPF branch/single-leaf/absence vectors and reject malformed CBOR,
+wrong key/value/root, and subject relabelling. Proof export is a permission-gated host download,
+not clipboard-only or sandbox filesystem access. Cardano-anchor trust remains explicitly unchecked
+until supplied independently to the standalone verifier.
+
+## P6 — Showcase and distribution
+
+Status: complete
+
+The light showcase now uses the real product provider; the temporary pilot provider and duplicate
+composition logic are removed. Its default chain selects `params-only-v1`. Fresh instances may
+select `params-stake`, `params-governance`, or `full`, or omit the product chain entirely. The
+normalized choice and product-bundle SHA-256 are retained in deployment identity. Dynamic chain
+indexing keeps preprod correct after the devnet-only settlement chain is removed.
+
+The showcase ZIP contains the product jar in the runtime plugin directory and a standalone CLI
+distribution under `tools/cardano-history`. Snapshot and optional MPF-pruning flags are valid only
+for a snapshot-capable preset. Contract tests cover all preset shapes, JMT/MPF selection, pruning
+constraints, disablement, identity drift, and preprod indexing. The product guide, plugin-UI bridge
+reference, snapshot guide, capability catalog, light profile, master demo, and a dedicated packaged
+Cardano History runbook document installation, queries, nested proofs, trust labels, and operation.
+
+Distribution qualification also ran the installed ZIP as a fresh three-node devnet cluster with
+the `full-v1` preset and authenticated snapshots enabled. All thirteen chains started, the normal
+composite/authenticated-map quickstart completed, and every node reported the same Cardano History
+identity and root. That run exposed an invalid bundle-owned domain contribution selector which the
+earlier source-text metadata test had missed. The manifest is now parsed with the production strict
+parser in unit tests, and the rebuilt product activated successfully. The thin bundle boundary also
+excludes the host-supplied SLF4J API and verifies that exclusion during `check`.

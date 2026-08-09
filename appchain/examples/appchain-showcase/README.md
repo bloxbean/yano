@@ -27,8 +27,10 @@ with cross-cutting concerns instead of creating another application SPI:
 commands, and receipts as the MPF chain; only its commitment backend and
 off-chain-only verification target differ.
 
-Enable reusable authenticated snapshots selectively with
-`--enable-authenticated-snapshots=cardano-history-chain`. The default MPF
+Cardano History defaults to the low-cost `params-only-v1` preset. Select
+`--cardano-history-profile params-stake|params-governance|full` on a fresh
+instance to enable the corresponding L1 scans. Enable reusable authenticated snapshots selectively
+with `--enable-authenticated-snapshots=cardano-history-chain`. The default MPF
 secondary roots support nested off-chain/on-chain proof verification; the
 optional `--authenticated-snapshot-profile jmt-blake2b256-v1` profile is an
 off-chain comparison. The console shows the capability only when enabled.
@@ -135,6 +137,7 @@ other nodes still validate the effect intent and its incorporated result.
 
 - [LIGHT_PROFILE.md](docs/LIGHT_PROFILE.md)
 - [CAPABILITY_CATALOG.md](docs/CAPABILITY_CATALOG.md)
+- [CARDANO_HISTORY.md](docs/CARDANO_HISTORY.md)
 - [EVIDENCE_PROFILE.md](docs/EVIDENCE_PROFILE.md)
 - [EUTXO_PROFILE.md](docs/EUTXO_PROFILE.md)
 - [GOVERNANCE_DEMO.md](docs/GOVERNANCE_DEMO.md)

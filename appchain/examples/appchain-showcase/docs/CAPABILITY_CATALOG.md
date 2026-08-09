@@ -83,15 +83,18 @@ disabled, preserving the direct-state behavior and identity of other chains.
 ```bash
 # MPF secondary roots: off-chain and on-chain verification.
 ./showcase.sh quickstart --instance history-mpf \
+  --cardano-history-profile full \
   --enable-authenticated-snapshots=cardano-history-chain
 
 # Classic JMT secondary roots: off-chain verification only.
 ./showcase.sh quickstart --instance history-jmt \
+  --cardano-history-profile full \
   --enable-authenticated-snapshots cardano-history-chain \
   --authenticated-snapshot-profile jmt-blake2b256-v1
 
 # Optional MPF archive-time reachable-node pruning.
 ./showcase.sh quickstart --instance history-mpf-pruned \
+  --cardano-history-profile full \
   --enable-authenticated-snapshots=cardano-history-chain \
   --enable-authenticated-snapshot-mpf-pruning=cardano-history-chain
 
