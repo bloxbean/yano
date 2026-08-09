@@ -60,3 +60,12 @@ tasks.register('verifyBundleBoundary') {
 }
 
 tasks.named('check') { dependsOn tasks.named('verifyBundleBoundary') }
+
+tasks.register('browserProofVectors', Exec) {
+    group = 'verification'
+    description = 'Runs Cardano History browser MPF golden vectors without a server'
+    commandLine 'node', file('src/test/scripts/cardano-history-browser-verifier.mjs'),
+            file('src/main/resources/META-INF/yano/ui/assets/mpf-verifier.js')
+}
+
+tasks.named('check') { dependsOn tasks.named('browserProofVectors') }

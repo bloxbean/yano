@@ -97,7 +97,10 @@ an on-chain option.
 Status: complete
 
 The product bundle now contributes its own sandboxed Cardano History UI. The capability-aware
-overview, parameter/stake/governance queries, and Proof Lab use only the versioned read-only host
-bridge; the assets contain no direct network primitive or external URL. The Proof Lab independently
-checks proof-envelope chain/key/height/root/profile binding and clearly directs operators to the
-standalone verifier for full MPF-wire and independently sourced Cardano-anchor verification.
+overview hides stake/governance controls when their preset components are absent. Queries and proof
+generation use only the versioned read-only host bridge; imported bundles are verified without the
+bridge. The assets contain no direct network primitive or external URL. The Proof Lab verifies the
+released MPF inclusion wire profile, chain/key/value/height/root/profile binding, same-root
+completeness, and available proposal/history semantics. Fixed browser vectors match the Java and
+on-chain single-leaf vector and reject wrong root/value. Cardano-anchor trust remains explicitly
+unchecked until supplied independently to the standalone verifier.
