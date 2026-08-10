@@ -614,6 +614,15 @@ final class AppChainEngine implements AutoCloseable {
             }
             java.util.function.Supplier<L1Ref> refSupplier = l1RefSupplier;
             L1Ref l1Ref = refSupplier != null ? refSupplier.get() : null;
+            // A proposer must satisfy the same mandatory L1-reference rule as
+            // its followers before it applies or vote-locks a candidate. A
+            // freshly restored node may have app messages ready before its
+            // process-local stable-L1 window has refilled. Publishing such a
+            // candidate creates a permanently invalid partial-round lock that
+            // continues to re-gossip after the L1 window becomes available.
+            if (config.l1StabilityDepth() > 0 && l1Ref == null) {
+                return;
+            }
             byte[] prevHash = ledger.tipHash();
             long timestamp = System.currentTimeMillis();
 
