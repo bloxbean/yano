@@ -413,8 +413,24 @@ final class EpochObservationSpool {
         }
     }
 
-    synchronized List<L1EpochBoundary> boundaries() {
-        return jobs().stream().map(entry -> entry.job().boundary()).distinct().toList();
+    synchronized List<L1EpochBoundary> generatingBoundaries() {
+        return jobs().stream()
+                .filter(entry -> entry.job().state() == State.GENERATING)
+                .map(entry -> entry.job().boundary())
+                .distinct()
+                .toList();
+    }
+
+    synchronized long discardGenerating(L1EpochBoundary boundary) {
+        long discarded = 0;
+        for (JobEntry entry : jobs()) {
+            if (entry.job().state() == State.GENERATING
+                    && entry.job().boundary().equals(boundary)) {
+                removeJobIfPresent(entry.key(), digest(entry.key()));
+                discarded++;
+            }
+        }
+        return discarded;
     }
 
     synchronized boolean prepared(String observerId, long newEpoch) {

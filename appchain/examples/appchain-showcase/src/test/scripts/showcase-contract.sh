@@ -176,11 +176,19 @@ grep -q 'does not declare authenticated snapshot series' "$WORK/snapshot-invalid
 # ADR-035 product presets are retained identity, configure only their selected
 # observer/components, and reject snapshot selection for params-only.
 "$ROOT/showcase.sh" prepare --instance history-stake --http-base 19670 \
-  --server-base 19270 --cardano-history-profile params-stake
+  --server-base 19270 --cardano-history-profile params-stake \
+  --l1-source-snapshot-retention-epochs 2
 jq -e '.cardanoHistory.profile == "params-stake-v1"' \
   "$ROOT/data/showcase/history-stake/showcase-identity.json" >/dev/null
 grep -q 'observers.epoch-stake.type=l1-epoch-stake-v1' \
   "$ROOT/data/showcase/history-stake/node-config/node0.properties"
+grep -q 'chains\[12\].max-message-bytes=6291456' \
+  "$ROOT/data/showcase/history-stake/node-config/node0.properties"
+grep -q 'chains\[12\].block.max-bytes=8388608' \
+  "$ROOT/data/showcase/history-stake/node-config/node0.properties"
+grep -q 'yano.account-state.snapshot-retention-epochs=2' \
+  "$ROOT/data/showcase/history-stake/node-config/node0.properties"
+[ "$(cat "$ROOT/data/showcase/history-stake/l1-source-snapshot-retention-epochs")" = 2 ]
 ! grep -q 'observers.epoch-governance.type=' \
   "$ROOT/data/showcase/history-stake/node-config/node0.properties"
 if "$ROOT/showcase.sh" prepare --instance history-params-snapshot \

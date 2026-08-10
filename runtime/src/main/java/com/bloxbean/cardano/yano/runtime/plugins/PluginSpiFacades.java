@@ -93,6 +93,8 @@ final class PluginSpiFacades {
     static final int MAX_OBSERVATIONS_PER_CALLBACK = 4_096;
     static final int MAX_OBSERVATION_CLAIM_BYTES = 1_048_576;
     static final int MAX_OBSERVATION_AGGREGATE_CLAIM_BYTES = 4 * 1_048_576;
+    /** ADR-028 epoch chunks use a dedicated 6 MiB app-message profile. */
+    static final int MAX_EPOCH_OBSERVATION_CLAIM_BYTES = 5 * 1_048_576;
     static final int MAX_OBSERVER_ID_LENGTH = 160;
     /** A factory activation is intentionally limited to a small, operable product set. */
     static final int MAX_FACTORY_PRODUCTS_PER_CALLBACK = 256;
@@ -1600,9 +1602,11 @@ final class PluginSpiFacades {
                             manifest, state, (index, claim) -> {
                                 byte[] snapshot = Objects.requireNonNull(
                                         claim, "L1 epoch claim must not be null").clone();
-                                if (snapshot.length > MAX_OBSERVATION_CLAIM_BYTES) {
+                                if (snapshot.length > MAX_EPOCH_OBSERVATION_CLAIM_BYTES) {
                                     throw new IllegalArgumentException(
-                                            "L1 epoch claim exceeds the message claim bound");
+                                            "L1 epoch claim exceeds "
+                                                    + MAX_EPOCH_OBSERVATION_CLAIM_BYTES
+                                                    + " bytes");
                                 }
                                 sink.write(index, snapshot);
                             })));

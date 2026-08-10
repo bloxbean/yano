@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.concurrent.ConcurrentHashMap;
 
 /** Canonical two-pass governance-history observer with independently optional datasets. */
@@ -81,7 +82,8 @@ public final class EpochGovernanceObserver implements L1EpochObserver {
         Pass pass = new Pass();
         if (includeProposals) {
             if (!state.hasProposalStatusSnapshot(epoch))
-                throw new IllegalStateException("proposal lifecycle snapshot is unavailable for epoch " + epoch);
+                throw new NoSuchElementException(
+                        "L1_EPOCH_DATASET_UNAVAILABLE: proposal lifecycle snapshot for epoch " + epoch);
             state.forEachProposalStatus(epoch, (txId, index, action, status, reason, proposed, expires) -> {
                 EpochGovernanceContract.Proposal proposal = new EpochGovernanceContract.Proposal(epoch,
                         txId, index, EpochGovernanceContract.ActionType.valueOf(action.name()),
@@ -97,7 +99,8 @@ public final class EpochGovernanceObserver implements L1EpochObserver {
         }
         if (includeDReps) {
             if (!state.hasDRepDistributionSnapshot(epoch))
-                throw new IllegalStateException("DRep distribution snapshot is unavailable for epoch " + epoch);
+                throw new NoSuchElementException(
+                        "L1_EPOCH_DATASET_UNAVAILABLE: DRep distribution snapshot for epoch " + epoch);
             state.forEachDRepDistributionEntry(epoch, (type, hash, coin) -> {
                 EpochGovernanceContract.DRepEntry entry = new EpochGovernanceContract.DRepEntry(type, hash, coin);
                 if (pass.previousDRep != null && EpochGovernanceContract.compare(pass.previousDRep, entry) >= 0)

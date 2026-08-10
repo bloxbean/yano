@@ -59,10 +59,11 @@ owner-only permissions. No app-chain state or identity is migrated from the
 bootstrap instance. Each final node must expose sibling `chainstate`,
 `appchain-chainstate`, and `appchain-indexers` roots.
 
-The non-secret settlement deployment record is retained beside the source
-keys, including after a partial bootstrap. A later clean deployment reuses
-that record so the one-shot L1 mint resumes the same identity instead of
-selecting new seed UTxOs.
+The non-secret settlement deployment record, emitted configuration log, and
+parameterized validator scripts are retained beside the source keys. A later
+clean deployment reuses those exact public artifacts. This is important when
+the imported L1 snapshot predates the already-submitted one-shot mint: it must
+not select a replacement seed UTxO or attempt a second settlement identity.
 
 ## Safety and proof rules
 

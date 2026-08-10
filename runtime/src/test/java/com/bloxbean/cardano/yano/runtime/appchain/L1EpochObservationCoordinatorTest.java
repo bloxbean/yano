@@ -10,6 +10,7 @@ import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
+import com.bloxbean.cardano.yano.api.plugin.PluginActivationException;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -17,6 +18,7 @@ import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.NoSuchElementException;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -301,8 +303,142 @@ class L1EpochObservationCoordinatorTest {
         }
     }
 
+    @Test
+    void statusRetainsTheUnderlyingAsynchronousFailure(@TempDir Path dir) throws Exception {
+        L1EpochBoundary boundary = new L1EpochBoundary(80, 81, 8_000,
+                bytes(0x81), 1_900);
+        FakeProvider provider = new FakeProvider(boundary);
+        L1EpochObserver failing = new L1EpochObserver() {
+            @Override public String observerId() { return "failing"; }
+
+            @Override
+            public EpochObservationManifest prepare(L1EpochBoundary value, L1EpochState state) {
+                return new EpochObservationManifest(1, observerId(), 80, 81,
+                        80, 1, 1, 1, bytes(0x82));
+            }
+
+            @Override
+            public void writeObservations(EpochObservationManifest manifest,
+                                          L1EpochState state,
+                                          com.bloxbean.cardano.yano.api.appchain.l1view
+                                                  .L1EpochObservationSink sink) {
+                throw new IllegalStateException("diagnostic detail");
+            }
+        };
+
+        try (AppLedgerStore ledger = ledger(dir.resolve("failure-diagnostic"));
+             L1EpochObservationCoordinator coordinator = coordinator(
+                     failing, provider, ledger, new CopyOnWriteArrayList<>())) {
+            coordinator.start();
+            await(() -> !coordinator.healthy(), coordinator::status);
+            assertThat(coordinator.status())
+                    .containsEntry("unhealthyReason", "asynchronous reconciliation")
+                    .containsEntry("lastFailure",
+                            "IllegalStateException: diagnostic detail");
+        }
+    }
+
+    @Test
+    void restartResumesGeneratingJobOutsideTheCurrentBoundaryScan(@TempDir Path dir)
+            throws Exception {
+        L1EpochBoundary boundary = new L1EpochBoundary(90, 91, 9_000,
+                bytes(0x91), 2_100);
+        L1EpochObserver observer = observer(null, null);
+        L1EpochStateProvider retainedState = new L1EpochStateProvider() {
+            @Override public boolean persistent() { return true; }
+            @Override public int snapshotRetentionEpochs() { return 2; }
+            @Override public long epochAtSlot(long slot) { return 92; }
+            @Override public List<L1EpochBoundary> completedBoundaries(long after, int limit) {
+                return List.of();
+            }
+            @Override public Optional<L1EpochState> open(L1EpochBoundary requested) {
+                return requested.equals(boundary)
+                        ? Optional.of(new EmptyState(boundary)) : Optional.empty();
+            }
+        };
+        try (AppLedgerStore ledger = ledger(dir.resolve("resume-generating"))) {
+            EpochObservationSpool spool = new EpochObservationSpool(ledger, 1_000_000);
+            EpochObservationManifest manifest = observer.prepare(
+                    boundary, new EmptyState(boundary));
+            spool.begin(boundary, manifest);
+            spool.append(boundary, manifest, 0, new byte[]{0x01});
+
+            try (L1EpochObservationCoordinator coordinator = new L1EpochObservationCoordinator(
+                    List.of(observer), retainedState, spool, 2, 1, 65_536,
+                    () -> false, ignored -> false, ignored -> { }, "resume-generating",
+                    LoggerFactory.getLogger("epoch-test"))) {
+                coordinator.start();
+                await(() -> Long.valueOf(1L).equals(
+                                coordinator.status().get("completedJobs")),
+                        coordinator::status);
+                assertThat(coordinator.status()).containsEntry("completedJobs", 1L);
+                assertThat(coordinator.status().toString()).contains("ready=1");
+                assertThat(coordinator.healthy()).isTrue();
+            }
+        }
+    }
+
+    @Test
+    void restartDiscardsGeneratingJobWhenPinnedStateExpired(@TempDir Path dir)
+            throws Exception {
+        L1EpochBoundary boundary = new L1EpochBoundary(90, 91, 9_000,
+                bytes(0x91), 2_100);
+        L1EpochObserver observer = observer(null, null);
+        L1EpochObserver unavailableObserver = new L1EpochObserver() {
+            @Override public String observerId() { return observer.observerId(); }
+            @Override
+            public EpochObservationManifest prepare(L1EpochBoundary ignored,
+                                                    L1EpochState state) {
+                throw new PluginActivationException("wrapped unavailable dataset",
+                        new NoSuchElementException(
+                                "L1_EPOCH_DATASET_UNAVAILABLE: expired stake snapshot"));
+            }
+            @Override
+            public void writeObservations(EpochObservationManifest manifest,
+                                          L1EpochState state,
+                                          com.bloxbean.cardano.yano.api.appchain.l1view
+                                                  .L1EpochObservationSink sink) {
+                throw new AssertionError("unavailable dataset cannot be written");
+            }
+        };
+        L1EpochStateProvider expiredState = new L1EpochStateProvider() {
+            @Override public boolean persistent() { return true; }
+            @Override public int snapshotRetentionEpochs() { return 2; }
+            @Override public long epochAtSlot(long slot) { return 92; }
+            @Override public List<L1EpochBoundary> completedBoundaries(long after, int limit) {
+                return List.of();
+            }
+            @Override public Optional<L1EpochState> open(L1EpochBoundary requested) {
+                return requested.equals(boundary)
+                        ? Optional.of(new EmptyState(boundary)) : Optional.empty();
+            }
+        };
+        try (AppLedgerStore ledger = ledger(dir.resolve("discard-expired-generating"))) {
+            EpochObservationSpool spool = new EpochObservationSpool(ledger, 1_000_000);
+            EpochObservationManifest manifest = observer.prepare(
+                    boundary, new EmptyState(boundary));
+            spool.begin(boundary, manifest);
+            spool.append(boundary, manifest, 0, new byte[]{0x01});
+
+            try (L1EpochObservationCoordinator coordinator = new L1EpochObservationCoordinator(
+                    List.of(unavailableObserver), expiredState, spool, 2, 1, 65_536,
+                    () -> false, ignored -> false, ignored -> { }, "discard-expired-generating",
+                    LoggerFactory.getLogger("epoch-test"))) {
+                coordinator.start();
+                await(() -> Long.valueOf(1L).equals(
+                                coordinator.status().get("discardedExpiredJobs")),
+                        coordinator::status);
+                assertThat(coordinator.status())
+                        .containsEntry("discardedExpiredJobs", 1L)
+                        .containsEntry("completedJobs", 0L);
+                assertThat(coordinator.status().toString()).contains("generating=0");
+                assertThat(coordinator.healthy()).isTrue();
+            }
+        }
+    }
+
     private static L1EpochObservationCoordinator coordinator(
-            L1EpochObserver observer, FakeProvider provider, AppLedgerStore ledger,
+            L1EpochObserver observer, L1EpochStateProvider provider, AppLedgerStore ledger,
             List<L1Observation> offered) {
         return new L1EpochObservationCoordinator(List.of(observer), provider,
                 new EpochObservationSpool(ledger, 1_000_000), 2, 1, 65_536,
