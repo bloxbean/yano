@@ -97,8 +97,9 @@ unzip -p "$CARDANO_HISTORY_BUNDLE" \
         .kind == "app-state-machine" and .name == "cardano-history") and
       any(.contributions[];
         .kind == "domain-api" and .name == $id) and
-      any(.contributions[]; .kind == "ui-extension")
+      all(.contributions[]; .kind != "ui-extension")
     ' >/dev/null
+! unzip -Z1 "$CARDANO_HISTORY_BUNDLE" | grep -q '^META-INF/yano/ui/'
 ! unzip -Z1 "$CARDANO_HISTORY_BUNDLE" \
   | grep -Eq '^(com/bloxbean/cardano/yano/api/|com/bloxbean/cardano/yano/appchain/(composite|stdlib)/|org/slf4j/)'
 grep -q 'chain-id: "document-review-chain"' "$ROOT/yano/config/application-appchain.yml"

@@ -1,8 +1,9 @@
 # Cardano History demo
 
-Cardano History is a separately packaged product plugin, not showcase-owned state-machine logic.
-The light distribution installs its jar, standalone CLI, read-only domain API, and sandboxed UI.
-The runtime activates the UI only when the selected chain exposes the required capability.
+Cardano History is a separately packaged server-side product plugin, not showcase-owned
+state-machine logic. The light distribution installs its jar, standalone CLI, and read-only domain
+API. The main Yano console owns the Cardano History page and activates it only when a running chain
+exposes the required capability; the plugin bundle contains no frontend assets.
 
 ## Choose a fresh-chain preset
 
@@ -32,34 +33,32 @@ Enable larger L1 datasets explicitly at genesis:
 SHA-256. Changing these options requires another instance. Use `--disable-cardano-history` only
 when demonstrating the base catalog without the product chain.
 
-Cardano History does not invent an attestation for the epoch already in progress when a new chain
-is created. Its first history fact is committed after the next stable L1 epoch transition observed
-while the product is enabled. Before that transition, the generic chain status, capability, and
-anchor views are live, but Cardano History `status` and epoch queries return HTTP 404 (CLI exit code
-3). This is normal for a retained-chainstate preprod deployment created mid-epoch; wait for the next
-epoch instead of treating the empty product view as a plugin failure.
+Cardano History does not invent an attestation from mutable current-epoch state. On startup, all
+members reconstruct the same completed boundaries still retained in their L1 account-state stores;
+if none is retained, the first fact arrives after the next stable L1 epoch transition. Before any
+fact finalizes, generic chain status, capability, and anchor views are live, but Cardano History
+`status` and epoch queries return HTTP 404 (CLI exit code 3).
 
-## Enable per-epoch authenticated snapshots
+## Per-epoch authenticated snapshots
 
-Stake and DRep datasets can use the reusable logical-snapshot capability. It cannot be selected
-with the default parameters-only preset.
+Every stake or governance preset automatically enables the reusable logical-snapshot capability.
+Each completed stake epoch and DRep distribution epoch gets its own immutable descriptor and
+secondary authenticated root. The parameters-only preset needs no secondary snapshot: parameter
+facts remain directly provable from the primary MPF root.
 
 ```bash
 # MPF secondary roots: off-chain and Cardano-validator-capable verification.
 ./showcase.sh quickstart --instance history-mpf \
-  --cardano-history-profile full \
-  --enable-authenticated-snapshots=cardano-history-chain
+  --cardano-history-profile full
 
 # JMT secondary roots: off-chain verification only.
 ./showcase.sh quickstart --instance history-jmt \
   --cardano-history-profile full \
-  --enable-authenticated-snapshots=cardano-history-chain \
   --authenticated-snapshot-profile jmt-blake2b256-v1
 
 # Experimental node-local reachable-node pruning for sealed MPF stores.
 ./showcase.sh quickstart --instance history-mpf-pruned \
   --cardano-history-profile full \
-  --enable-authenticated-snapshots=cardano-history-chain \
   --enable-authenticated-snapshot-mpf-pruning=cardano-history-chain
 ```
 
@@ -77,19 +76,16 @@ consensus root and a proof request never triggers an implicit restore.
 
 ## Console proof demonstration
 
-Open the console printed by `quickstart`, choose **App-chain extensions**, select
-`cardano-history-chain`, and open **Cardano History**.
+Open the console printed by `quickstart` and choose **Cardano history**. The navigation entry is
+visible only while at least one chain advertises `l1-epoch-params-v1`.
 
 1. Query protocol parameters, a stake credential, DRep, or proposal.
-2. For stake/DRep, choose the minimum, pool, combined, exact, or absence predicate you want to
-   verify.
-3. Open **Proof lab**, generate the root-fixed proof, and inspect the local verdict.
-4. Download the JSON bundle and import it again to repeat verification without a node call.
+2. Generate a root-fixed primary or authenticated-snapshot proof from the query coordinates.
+3. Export the JSON material for independent verification.
 
-The browser derives the canonical state key from the typed subject and verifies the MPF wire. For
-logical snapshots it also verifies the secondary proof, primary descriptor proof, descriptor
-coordinates, and same-primary-root completeness proof. The UI intentionally reports
-`anchorVerified=false`: independently validating the Cardano anchor is a separate trust step.
+The native console may call the node's generic proof verifier for a primary proof; that result is
+not an independent Cardano-anchor verification. Use the standalone CLI with an independently
+obtained trusted-root document for the full portable verification workflow.
 
 ## Standalone CLI
 

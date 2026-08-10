@@ -134,6 +134,7 @@ curl -X POST http://127.0.0.1:7070/api/v1/app-chain/chains/orders-chain/messages
 |---|---|
 | `/ui/app-chain/?chain=<id>` | generic ops: tip, blocks, live SSE feed, capabilities, proofs |
 | `/ui/app-chain/authenticated-map/?chain=<id>` | authenticated-map console: collections, lookup+proofs, mutations, governed tabs |
+| `/ui/app-chain/cardano-history/?chain=cardano-history-chain` | capability-gated Cardano epoch history and proofs |
 | `/ui/app-chain/eutxo/?chain=payments-chain` | EUTxO lifecycle explorer |
 | `/ui/app-chain/eutxo/?chain=payment-chain-settlement` | Settlement chain lifecycle explorer |
 | `/ui/status/` , `/ui/observability/` | L1 node status, Prometheus charts |

@@ -213,18 +213,6 @@ export interface AppChainStatus {
   capabilityManifest?: AppCapabilityManifest;
 }
 
-export interface UiExtensionCatalogEntry {
-  bundleId: string;
-  extensionId: string;
-  title: string;
-  mountPoint: 'app-chain';
-  uiApiVersion: 1;
-  assetsDigest: string;
-  entrypointUrl: string;
-  requiredCapabilities: string[];
-  permissions: string[];
-}
-
 export interface AppCapabilityComponent {
   id: string;
   version: string;

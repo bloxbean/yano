@@ -17,6 +17,11 @@ The default is `params-only-v1`. Stake and governance traversal are never enable
 selected preset and commitment identity are genesis-time inputs; preview chains start fresh when
 either changes.
 
+Stake and governance presets require `authenticated-snapshots-v1`; they do not fall back to storing
+the full large dataset in the primary map. Each complete stake epoch and DRep distribution epoch
+has its own immutable descriptor and secondary authenticated root. Protocol parameters remain small
+primary-MPF facts and do not need a redundant secondary snapshot.
+
 ## Read API
 
 The plugin contributes bounded, read-only routes below
@@ -24,13 +29,17 @@ The plugin contributes bounded, read-only routes below
 `chain=<chain-id>`. Routes cover status, epochs, protocol parameters, stake, DRep distribution, and
 proposal history.
 
-A fresh Cardano History generation does not synthesize a fact for the epoch already in progress.
-It commits its first fact after observing the first stable L1 epoch transition while the product is
-enabled. Until then, generic app-chain status, capability-discovery, and anchor endpoints remain
-available, while the product `status` and epoch routes return HTTP 404 and the CLI reports data as
-unavailable (exit code 3). This is expected initialization behavior, not a plugin failure. In
-particular, a retained-chainstate public-network deployment created mid-epoch waits for the next
-epoch rather than fabricating a current-epoch attestation.
+A fresh Cardano History generation does not synthesize a fact from mutable current-epoch state. On
+startup, every member deterministically reconciles completed boundaries still retained by its local
+L1 account-state store; those retained facts can seed prior epochs without an external indexer. If
+no completed boundary is retained, the first fact arrives after the next stable L1 epoch transition.
+Until a fact finalizes, generic app-chain status, capability-discovery, and anchor endpoints remain
+available, while product routes return HTTP 404 and the CLI reports unavailable data (exit code 3).
+
+At boundary `E-1 -> E`, protocol parameters and DRep distribution are labelled for `E`, while the
+stake dataset is the end-of-epoch snapshot labelled `E-1`. It must not be presented as an active
+stake distribution for `E`. All members must retain the same reconstructed dataset, and the
+app-chain proposer waits for a stable L1 reference before sequencing those observations.
 
 Responses identify the exact `committedHeight` and `stateRoot` and return typed proof coordinates,
 not proof bytes. Stake, DRep, and proposal reads query the fact and completeness metadata in one
@@ -90,27 +99,20 @@ source embedded in a proof bundle, so editing a bundle cannot promote a root-onl
 authenticated result. A `CARDANO_ANCHOR` trusted root must come from the caller's independently
 verified Cardano source.
 
-See [Authenticated snapshots](AUTHENTICATED_SNAPSHOTS.md) for retention and
-[Plugin UI extensions](PLUGIN_UI_EXTENSIONS.md) for frontend isolation.
+See [Authenticated snapshots](AUTHENTICATED_SNAPSHOTS.md) for retention.
 
 ## Product console
 
-Installing the Cardano History bundle also installs a capability-gated **Cardano History** app-chain
-tab. It shows the selected chain's enabled history capabilities and anchor, provides bounded
-parameter, stake, DRep, and proposal queries, and exposes proof coordinates in a Proof Lab. The UI
-runs in the standard opaque-origin sandbox and can use only the declared read-only host bridge; it
-does not receive an API key and cannot open its own network connection.
+The standard Yano console owns a native, capability-gated **Cardano History** page. The plugin jar
+contains no JavaScript, CSS, HTML, UI service provider, or UI contribution declaration. This keeps
+the server-side product independently distributable and lets a product team build and release a
+separate UI without coupling frontend code to the plugin lifecycle.
 
-The Proof Lab generates, imports, downloads, and locally verifies
-`cardano-history-browser-proof-v1` bundles. It verifies the released MPF wire profile,
-locally derives the canonical key from the typed epoch/credential/proposal subject, and verifies
-key/value/height/root/profile binding, same-root completeness, snapshot descriptors, and selected
-stake/DRep predicates without asking the node to verify its own proof. It supports primary
-parameter/proposal proofs and nested authenticated-snapshot stake/DRep inclusion or absence
-proofs. Independent Cardano L1 anchor
-verification remains available through `yano-cardano-history verify`, and the UI labels that trust
-boundary explicitly. Stake and governance tabs appear only when the selected chain exposes those
-components.
+The native page appears only when a running chain declares `l1-epoch-params-v1`. It uses the same
+console connection, styling, domain API, generic state-proof API, authenticated-snapshot API, and
+anchor view as the rest of Yano. Stake and governance controls appear only when their corresponding
+capabilities are present. It can generate and export root-fixed proof material; independent Cardano
+anchor verification remains available through `yano-cardano-history verify`.
 
 ## On-chain consumption
 
@@ -134,8 +136,7 @@ for another genesis-time preset:
 ./showcase.sh quickstart --instance history-full \
   --cardano-history-profile full
 ./showcase.sh quickstart --instance history-snapshots \
-  --cardano-history-profile full \
-  --enable-authenticated-snapshots=cardano-history-chain
+  --cardano-history-profile full
 ./showcase.sh quickstart --instance without-history --disable-cardano-history
 ```
 

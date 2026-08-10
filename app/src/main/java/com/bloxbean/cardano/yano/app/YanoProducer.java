@@ -900,12 +900,6 @@ public class YanoProducer {
 
     @Produces
     @ApplicationScoped
-    public com.bloxbean.cardano.yano.api.plugin.ui.UiExtensionGateway createUiExtensionGateway() {
-        return ensureYano().uiExtensions();
-    }
-
-    @Produces
-    @ApplicationScoped
     public PluginCatalogView createPluginCatalogView() {
         return ensureYano().pluginCatalog()
                 .orElseThrow(() -> unavailableRole("PluginCatalogView"));

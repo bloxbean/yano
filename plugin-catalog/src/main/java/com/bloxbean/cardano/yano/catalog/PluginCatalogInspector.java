@@ -266,7 +266,7 @@ public final class PluginCatalogInspector {
                     PluginTrustTier.CONSENSUS;
             case SIGNER_PROVIDER, EFFECT_EXECUTOR, DOMAIN_API ->
                     PluginTrustTier.PRIVILEGED_LOCAL;
-            case FINALIZED_SINK, HEALTH, METRICS, UI_EXTENSION -> PluginTrustTier.AUXILIARY_LOCAL;
+            case FINALIZED_SINK, HEALTH, METRICS -> PluginTrustTier.AUXILIARY_LOCAL;
         };
     }
 

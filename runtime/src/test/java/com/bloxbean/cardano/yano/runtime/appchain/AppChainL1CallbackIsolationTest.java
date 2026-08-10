@@ -274,6 +274,15 @@ class AppChainL1CallbackIsolationTest {
                 () -> new FixedUtxoState(List.of(anchorUtxo())));
         try {
             subsystem.start();
+            // Warm the stable-L1 reference window before producing the setup
+            // app block. The callback assertions below begin after this setup;
+            // suppressing the fixture observer keeps their call counts exact.
+            controls.suppressObservations.set(true);
+            eventBus.publish(applied(1, emptyBlock()), EventMetadata.builder().build(),
+                    PublishOptions.builder().build());
+            eventBus.publish(applied(2, emptyBlock()), EventMetadata.builder().build(),
+                    PublishOptions.builder().build());
+            controls.suppressObservations.set(false);
             subsystem.submit("test", new byte[]{1});
             awaitTip(subsystem, 1);
             assertThat(subsystem.forceAnchor()).isTrue();
@@ -381,6 +390,7 @@ class AppChainL1CallbackIsolationTest {
         private final CountDownLatch releaseObservation = new CountDownLatch(1);
         private final AtomicInteger observerInstances = new AtomicInteger();
         private final AtomicInteger observerCalls = new AtomicInteger();
+        private final AtomicBoolean suppressObservations = new AtomicBoolean();
     }
 
     private static final class ControlledRegistry implements PluginProviderRegistry {
@@ -480,6 +490,9 @@ class AppChainL1CallbackIsolationTest {
 
         @Override
         public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
+            if (controls.suppressObservations.get()) {
+                return List.of();
+            }
             controls.observerCalls.incrementAndGet();
             if (controls.blockingSlot.get() == slot) {
                 controls.observationEntered.countDown();

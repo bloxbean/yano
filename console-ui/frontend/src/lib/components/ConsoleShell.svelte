@@ -17,7 +17,7 @@
   let hostBound = $state(false);
   let metricsBase = $state('');
   let metricsBearer = $state('');
-  let hasUiExtensions = $state(false);
+  let hasCardanoHistory = $state(false);
 
   onMount(async () => {
     hostBound = location.pathname.startsWith('/ui/plugins/');
@@ -30,12 +30,14 @@
       const api = new YanoApi(apiBase, key);
       [config, status] = await Promise.all([api.config(), api.status()]);
       if (!hostBound) {
-        const selected = localStorage.getItem('yano.console.app-chain.selected.v1');
-        const extensions = await api.uiExtensions().catch(() => []);
-        if (selected && extensions.length > 0) {
-          const chainStatus = await api.chainStatus(selected).catch(() => null);
-          const { isEligible } = await import('$lib/plugins/ui-extension');
-          hasUiExtensions = extensions.some((extension) => isEligible(extension, chainStatus));
+        const chains = await api.chains().catch(() => []);
+        for (const chain of chains) {
+          const chainStatus = await api.chainStatus(chain.chainId).catch(() => null);
+          if (chainStatus?.capabilityManifest?.components.some(
+            (component) => component.id === 'l1-epoch-params-v1')) {
+            hasCardanoHistory = true;
+            break;
+          }
         }
       }
     } catch (error) {
@@ -66,9 +68,9 @@
            href={`${base}/status/`}>Node</a>
         <a class="rounded-lg px-3 py-2 text-xs text-slate-400 hover:bg-slate-800 hover:text-white"
            href={`${base}/app-chain/`}>App chains</a>
-        {#if hasUiExtensions}
+        {#if hasCardanoHistory}
           <a class="rounded-lg px-3 py-2 text-xs text-slate-400 hover:bg-slate-800 hover:text-white"
-             href={`${base}/app-chain/extensions/`}>Extensions</a>
+             href={`${base}/app-chain/cardano-history/`}>Cardano history</a>
         {/if}
         <a class="rounded-lg px-3 py-2 text-xs text-slate-400 hover:bg-slate-800 hover:text-white"
            href={`${base}/plugins/`}>Plugins</a>

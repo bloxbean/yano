@@ -12,7 +12,6 @@ import com.bloxbean.cardano.yano.api.plugin.NodePlugin;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsProvider;
-import com.bloxbean.cardano.yano.api.plugin.ui.UiExtensionProvider;
 
 import java.util.Arrays;
 
@@ -42,9 +41,7 @@ public enum ContributionKind {
     /** Cached health source; schema v1 requires an owning bundle manifest. */
     HEALTH("health", PluginHealthProvider.class, true),
     /** Cached custom-metrics source; schema v1 requires an owning bundle manifest. */
-    METRICS("metrics", PluginMetricsProvider.class, true),
-    /** Sandboxed, content-verified console extension owned by a manifested bundle. */
-    UI_EXTENSION("ui-extension", UiExtensionProvider.class, true);
+    METRICS("metrics", PluginMetricsProvider.class, true);
 
     private final String manifestKey;
     private final Class<?> serviceType;

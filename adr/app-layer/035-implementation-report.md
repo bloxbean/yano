@@ -1,5 +1,9 @@
 # ADR-035 implementation report
 
+> **2026-08-10 amendment:** the preview `ui-extension` experiment described in P1/P5 below was
+> removed. The Cardano History bundle is server-side only, and its capability-gated experience now
+> lives natively in `console-ui`. The historical implementation notes remain for auditability.
+
 This report records phase evidence for
 [ADR-035](035-cardano-history-product-console-and-distribution.md). Each phase is implemented and
 reviewed on a feature branch before it is merged into the ADR-028 integration branch.
@@ -15,18 +19,13 @@ The v1 contract is frozen before runtime wiring:
 | Bundle ID | `com.bloxbean.cardano.yano.appchain.cardano-history` |
 | State machine/application | `cardano-history` |
 | Presets | `params-only-v1`, `params-stake-v1`, `params-governance-v1`, `full-v1` |
-| UI API/mount | `1` / `app-chain` |
-| UI asset budget | 256 files, 4 MiB each, 16 MiB total |
-| UI sandbox | scripts only, opaque origin, no direct network |
+| UI ownership | native Yano console; no plugin-provided frontend assets |
 | Proof bundle | canonical ADR-028 authenticated-snapshot bundle plus history predicates |
 | CLI success classes | unavailable/incomplete, invalid, root-only valid, L1-anchored valid |
 
-The core API now supplies immutable descriptor, permission, asset-manifest, and provider contracts.
-Contract tests accept the Cardano History descriptor and reject traversal, unknown media, duplicate
-paths, undeclared permissions, non-canonical digests, and budget violations. These are generic
-plugin contracts; no Cardano-specific type was added to `core-api`.
+No Cardano-specific type or frontend-extension contract is added to `core-api`.
 
-## P1 — plugin UI foundation
+## P1 — plugin UI experiment (superseded and removed)
 
 Status: complete
 
@@ -92,7 +91,7 @@ values, stake amount/pool/combined, proposal, DRep, and wrong-root/profile cases
 compile both validators and freeze the canonical keys and predicate mapping. JMT is not exposed as
 an on-chain option.
 
-## P5 — Cardano History plugin UI
+## P5 — Cardano History plugin UI experiment (superseded and removed)
 
 Status: complete
 
@@ -122,8 +121,8 @@ indexing keeps preprod correct after the devnet-only settlement chain is removed
 The showcase ZIP contains the product jar in the runtime plugin directory and a standalone CLI
 distribution under `tools/cardano-history`. Snapshot and optional MPF-pruning flags are valid only
 for a snapshot-capable preset. Contract tests cover all preset shapes, JMT/MPF selection, pruning
-constraints, disablement, identity drift, and preprod indexing. The product guide, plugin-UI bridge
-reference, snapshot guide, capability catalog, light profile, master demo, and a dedicated packaged
+constraints, disablement, identity drift, and preprod indexing. The product guide, native-console
+guide, snapshot guide, capability catalog, light profile, master demo, and a dedicated packaged
 Cardano History runbook document installation, queries, nested proofs, trust labels, and operation.
 
 Distribution qualification also ran the installed ZIP as a fresh three-node devnet cluster with

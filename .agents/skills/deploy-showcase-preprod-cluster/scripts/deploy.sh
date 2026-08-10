@@ -167,11 +167,17 @@ python3 "$SCRIPT_DIR/adopt_settlement_config.py" \
 # Cardano History product is already part of the stock catalog.
 ./showcase.sh prepare --profile light --network preprod --nodes 3 \
   --instance "$INSTANCE" --http-base 17070 --server-base 17337 \
+  --cardano-history-profile params-stake \
   --anchor-chain all --anchor-key-file "$PWD/private-anchor/anchor.seed" \
   --confirm-public-anchor preprod
 
 CLUSTER_ROOT="$TARGET/data/showcase/$INSTANCE/cluster"
 for NODE in 0 1 2; do
+  # Reconcile the two latest completed L1 boundaries. Once finalized, each
+  # epoch stake dataset lives in its own app-chain authenticated snapshot and
+  # no longer depends on retaining every L1 source snapshot online.
+  printf '\nyano.account-state.snapshot-retention-epochs=2\n' \
+    >> "$TARGET/data/showcase/$INSTANCE/node-config/node$NODE.properties"
   mkdir -p "$CLUSTER_ROOT/node$NODE"
   cp -cR "$SOURCE_STATE" "$CLUSTER_ROOT/node$NODE/chainstate-import"
   LEGACY_APPCHAINS="$CLUSTER_ROOT/node$NODE/chainstate-import/appchains"

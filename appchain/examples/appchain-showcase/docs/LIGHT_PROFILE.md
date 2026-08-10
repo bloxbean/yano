@@ -46,9 +46,9 @@ retained in the instance identity and cannot be changed on restart.
 
 Cardano History defaults to parameters only. Select `--cardano-history-profile
 params-stake|params-governance|full` at genesis for the corresponding larger L1 datasets.
-Authenticated snapshots are also a fresh-generation choice. Enable the selected
-Cardano history series with `--enable-authenticated-snapshots=cardano-history-chain`.
-MPF is the default and supports the nested on-chain proof path; add
+Stake and governance presets automatically create one logical authenticated snapshot per dataset
+epoch; they cannot fall back to an ever-growing primary map. MPF is the default and supports the
+nested on-chain proof path; add
 `--authenticated-snapshot-profile jmt-blake2b256-v1` for the off-chain-only
 comparison. The selected series/profile are retained in the instance identity.
 For MPF, `--enable-authenticated-snapshot-mpf-pruning=cardano-history-chain`

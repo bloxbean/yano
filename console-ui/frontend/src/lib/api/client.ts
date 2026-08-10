@@ -7,7 +7,6 @@ import type { AnchorCommitment, AppChainBlockDetail, AppChainBlocks, AppChainMes
   L1Transaction, L1TransactionUtxos, PluginOperationsSummary, ProofVerificationRequest,
   ProofVerificationResult, StateProofEnvelope,
   StorageStatus } from './types';
-import type { UiExtensionCatalogEntry } from './types';
 
 const API_STORAGE_KEY = 'yano.console.api-base.v1';
 const KEY_STORAGE_KEY = 'yano.console.api-key.v1';
@@ -385,9 +384,6 @@ export class YanoApi {
   }
   pluginBundle(id: string, signal?: AbortSignal) {
     return this.json<PluginBundleDetail>(`/plugin-operations/bundles/${encodeURIComponent(id)}`, signal);
-  }
-  uiExtensions(signal?: AbortSignal) {
-    return this.json<UiExtensionCatalogEntry[]>('/ui-plugins/catalog', signal);
   }
 }
 

@@ -89,7 +89,6 @@ public record BundleManifest(
         int domainApis = 0;
         int healthProviders = 0;
         int metricsProviders = 0;
-        int uiExtensions = 0;
         for (BundleContribution contribution : contributions) {
             Objects.requireNonNull(contribution, "contributions must not contain null entries");
             if (contribution.kind() == ContributionKind.NODE_PLUGIN && ++nodePlugins > 1) {
@@ -114,10 +113,6 @@ public record BundleManifest(
                             "contributions must declare at most one metrics provider");
                 }
                 requireBundleOwnedName(bundleId, contribution, "metrics");
-            }
-            if (contribution.kind() == ContributionKind.UI_EXTENSION && ++uiExtensions > 8) {
-                throw new IllegalArgumentException(
-                        "contributions must declare at most eight ui-extension providers");
             }
             if (!keys.add(new ContributionKey(contribution.kind(), contribution.name()))) {
                 throw new IllegalArgumentException("contributions must not contain duplicate kind/name pairs");
