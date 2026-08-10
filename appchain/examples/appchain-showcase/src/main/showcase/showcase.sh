@@ -70,6 +70,8 @@ CARDANO_HISTORY_PROFILE="params-only-v1"
 CARDANO_HISTORY_PROFILE_EXPLICIT=false
 CARDANO_HISTORY_ENABLED=true
 CARDANO_HISTORY_ENABLED_EXPLICIT=false
+L1_SOURCE_SNAPSHOT_RETENTION_EPOCHS=""
+L1_SOURCE_SNAPSHOT_RETENTION_EXPLICIT=false
 FOLLOW=false
 YES=false
 OUTPUT=""
@@ -132,6 +134,9 @@ parse() {
         CARDANO_HISTORY_PROFILE="${2:-}"; CARDANO_HISTORY_PROFILE_EXPLICIT=true; shift 2;;
       --disable-cardano-history)
         CARDANO_HISTORY_ENABLED=false; CARDANO_HISTORY_ENABLED_EXPLICIT=true; shift;;
+      --l1-source-snapshot-retention-epochs)
+        L1_SOURCE_SNAPSHOT_RETENTION_EPOCHS="${2:-}"
+        L1_SOURCE_SNAPSHOT_RETENTION_EXPLICIT=true; shift 2;;
       --chain) AUTHMAP_CHAIN="${2:-}"; shift 2;;
       --collection) AUTHMAP_COLLECTION="${2:-}"; shift 2;;
       --actor) AUTHMAP_ACTOR="${2:-}"; shift 2;;
@@ -219,6 +224,39 @@ cardano_history_chain_index() {
   return 1
 }
 
+l1_source_snapshot_retention_file() {
+  printf '%s/l1-source-snapshot-retention-epochs' "$(instance_root)"
+}
+
+validate_l1_source_snapshot_retention() {
+  [ -z "$L1_SOURCE_SNAPSHOT_RETENTION_EPOCHS" ] || {
+    [[ "$L1_SOURCE_SNAPSHOT_RETENTION_EPOCHS" =~ ^[0-9]+$ ]] \
+      && [ "$L1_SOURCE_SNAPSHOT_RETENTION_EPOCHS" -ge 2 ] \
+      && [ "$L1_SOURCE_SNAPSHOT_RETENTION_EPOCHS" -le 1000 ] \
+      || die "--l1-source-snapshot-retention-epochs must be between 2 and 1000"
+  }
+}
+
+adopt_l1_source_snapshot_retention() {
+  local file="$(l1_source_snapshot_retention_file)" retained=""
+  [ -f "$file" ] || { validate_l1_source_snapshot_retention; return; }
+  retained="$(tr -d '\r\n' < "$file")"
+  if [ "$L1_SOURCE_SNAPSHOT_RETENTION_EXPLICIT" = true ]; then
+    [ "$L1_SOURCE_SNAPSHOT_RETENTION_EPOCHS" = "$retained" ] \
+      || die "requested L1 source snapshot retention differs from the retained instance"
+  else
+    L1_SOURCE_SNAPSHOT_RETENTION_EPOCHS="$retained"
+  fi
+  validate_l1_source_snapshot_retention
+}
+
+persist_l1_source_snapshot_retention() {
+  [ -n "$L1_SOURCE_SNAPSHOT_RETENTION_EPOCHS" ] || return 0
+  local file="$(l1_source_snapshot_retention_file)"
+  printf '%s\n' "$L1_SOURCE_SNAPSHOT_RETENTION_EPOCHS" > "$file"
+  chmod 600 "$file"
+}
+
 validate_common() {
   [[ "$INSTANCE" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || die "invalid instance name"
   case "$PROFILE" in light|evidence|eutxo) ;; *) die "profile must be light, evidence, or eutxo";; esac
@@ -256,6 +294,7 @@ validate_common() {
     full|full-v1) CARDANO_HISTORY_PROFILE=full-v1;;
     *) die "Cardano History profile must be params-only, params-stake, params-governance, or full";;
   esac
+  validate_l1_source_snapshot_retention
   # Large Cardano History datasets always use one logical authenticated
   # snapshot per dataset epoch. The flag remains useful for generic/custom
   # chains, but a released stake/governance preset cannot silently fall back
@@ -472,6 +511,7 @@ marker_authenticated_snapshot_mpf_pruning_chains() {
 
 adopt_marker() {
   [ -f "$(marker)" ] || return 0
+  adopt_l1_source_snapshot_retention
   PROFILE="$(marker_value profile)"
   VARIANT="$(marker_value variant)"
   NETWORK="$(marker_value network)"
@@ -547,6 +587,10 @@ write_node_configs() {
     file="$directory/node$i.properties"
     {
       printf 'config_ordinal=275\n'
+      if [ -n "$L1_SOURCE_SNAPSHOT_RETENTION_EPOCHS" ]; then
+        printf 'yano.account-state.snapshot-retention-epochs=%s\n' \
+          "$L1_SOURCE_SNAPSHOT_RETENTION_EPOCHS"
+      fi
       if [ "$i" -eq 0 ]; then
         printf 'yano.app-chain.chains[5].effects.executor.enabled=true\n'
         printf 'yano.app-chain.chains[5].effects.executors.showcase-outbox.enabled=true\n'
@@ -597,6 +641,15 @@ write_node_configs() {
         fi
       fi
       if [ "$CARDANO_HISTORY_ENABLED" = true ]; then
+        # ADR-028's canonical 25k-entry stake/DRep chunks are intentionally
+        # larger than the general 64 KiB app-message default. Keep the larger
+        # consensus limits local to the Cardano History chain. Six MiB leaves
+        # growth headroom above the benchmarked 25k-entry chunks; the paired
+        # eight-MiB block bound retains envelope and finality-certificate room.
+        printf 'yano.app-chain.chains[%d].max-message-bytes=6291456\n' \
+          "$cardano_history_index"
+        printf 'yano.app-chain.chains[%d].block.max-bytes=8388608\n' \
+          "$cardano_history_index"
         printf 'yano.app-chain.chains[%d].machines.cardano-history.preset=%s\n' \
           "$cardano_history_index" "$CARDANO_HISTORY_PROFILE"
       fi
@@ -625,8 +678,10 @@ write_node_configs() {
 
 prepare_light() {
   need java; need python3; need jq; need curl
+  adopt_l1_source_snapshot_retention
   [ -x "$CLUSTER" ] || die "packaged cluster launcher is missing"
-  local root="$(instance_root)" plugin="$(plugin_file)" candidate args=()
+  local root="$(instance_root)" plugin="$(plugin_file)" candidate jmt_candidate
+  local generated_candidates=false args=()
   if [ -e "$root" ] && [ -L "$root" ]; then die "instance root must not be a symlink"; fi
   mkdir -p "$root"; chmod 700 "$root"
   # Resolve the actual public-network chain set before retaining the config
@@ -635,9 +690,17 @@ prepare_light() {
   # longer matched its marker.
   [ "$NETWORK" = devnet ] || strip_devnet_settlement_chain
   [ "$CARDANO_HISTORY_ENABLED" = true ] || strip_cardano_history_chain
-  candidate="$(generate_authenticated_map_candidate)"
-  local jmt_candidate
-  jmt_candidate="$(generate_authenticated_map_jmt_candidate)" || { rm -f -- "$candidate"; return 1; }
+  if [ -f "$(marker)" ]; then
+    candidate="$(authenticated_map_properties)"
+    jmt_candidate="$(authenticated_map_jmt_properties)"
+    [ -f "$candidate" ] && [ -f "$jmt_candidate" ] \
+      || die "retained showcase identity is missing its authenticated-map configuration"
+  else
+    candidate="$(generate_authenticated_map_candidate)"
+    jmt_candidate="$(generate_authenticated_map_jmt_candidate)" \
+      || { rm -f -- "$candidate"; return 1; }
+    generated_candidates=true
+  fi
   args=(ensure --marker "$(marker)" --catalog "$CATALOG" --version "$VERSION" --profile light
     --variant default --network "$NETWORK" --nodes "$NODES" --threshold "$THRESHOLD"
     --http-base "$HTTP_BASE" --server-base "$SERVER_BASE"
@@ -661,11 +724,14 @@ prepare_light() {
   fi
   if [ -n "$ANCHOR_KEY_FILE" ]; then args+=(--anchor-key-file "$ANCHOR_KEY_FILE"); fi
   if ! python3 "$IDENTITY" "${args[@]}"; then
-    rm -f -- "$candidate" "$jmt_candidate"
+    [ "$generated_candidates" != true ] || rm -f -- "$candidate" "$jmt_candidate"
     return 1
   fi
-  install_authenticated_map_candidate "$candidate"
-  install_authenticated_map_jmt_candidate "$jmt_candidate"
+  if [ "$generated_candidates" = true ]; then
+    install_authenticated_map_candidate "$candidate"
+    install_authenticated_map_jmt_candidate "$jmt_candidate"
+  fi
+  persist_l1_source_snapshot_retention
   load_marker_chains
   write_node_configs "$NODES"
   note "Prepared light instance '$INSTANCE'"
@@ -2182,6 +2248,7 @@ Common options: --instance, --network devnet|preprod, --nodes, --threshold,
 --authenticated-snapshot-profile mpf-blake2b256-v1|jmt-blake2b256-v1,
 --enable-authenticated-snapshot-mpf-pruning[=cardano-history-chain],
 --cardano-history-profile params-only|params-stake|params-governance|full,
+--l1-source-snapshot-retention-epochs 2..1000,
 --disable-cardano-history. Load options:
 --concurrency, --payload-bytes, --duration, --rate, --sample, --spread,
 --node, and --report-dir.

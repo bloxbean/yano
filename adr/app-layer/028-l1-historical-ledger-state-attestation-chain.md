@@ -216,6 +216,13 @@ retain the state or sink.
 Making ordering the host's contract rather than the plugin's is deliberate: today some ledger
 views are exposed as maps, and a plugin author who iterates one directly can produce
 nondeterministic chunking that stalls the chain. The SPI must make the wrong thing impossible.
+MPF and JMT roots are functions of the final canonical key/value map, so different insertion orders
+must converge to the same authenticated root for the same unique entries. That property does not
+make source ordering optional: enumeration order also fixes chunk membership, chunk indexes,
+manifest/source commitments, and the exact consensus-message stream. The host therefore emits
+epoch stake strictly by `(credentialType, credentialHash bytes)` and rejects duplicates or any
+non-increasing key even though the selected authenticated-map backend is insertion-order
+independent.
 
 `GovernanceProposalStatus` is a closed wire enum with at least `ACTIVE`, `RATIFIED`, `ENACTED`,
 `EXPIRED`, and `DROPPED`; a dropped record also carries a canonical reason in the concrete claim
@@ -351,6 +358,9 @@ roughly **90–120 MB/epoch before trie overhead**; M4 records the actual canoni
 than retaining the earlier 50-byte estimate. The initial benchmark profile uses **25,000 entries per
 chunk**, normally below 2 MiB of claim data, and at most one stake/DRep chunk per app block. The
 bounded outbox spreads chunks across blocks so an epoch never becomes one pool/memory burst.
+The plugin boundary reserves up to 5 MiB for one epoch claim; the Cardano History reference profile
+uses a 6 MiB message and 8 MiB block bound, leaving independent wire/envelope and finality headroom.
+Ordinary per-block L1 observers retain their smaller 1 MiB claim and 4 MiB aggregate limits.
 
 The normative limit applies to the whole app block, not merely one chunk:
 
@@ -1074,10 +1084,10 @@ yano:
       chain-id: cardano-history
       state-machine: composite          # any configured stdlib/custom components
       membership: { mode: governed }
-      max-message-bytes: 3145728        # 3 MiB; benchmark profile for 25k-entry chunks
+      max-message-bytes: 6291456        # 6 MiB; growth buffer above 25k-entry chunks
       block:
         interval-ms: 1000
-        max-bytes: 4194304              # 4 MiB; includes framework/certificate headroom
+        max-bytes: 8388608              # 8 MiB; includes framework/certificate headroom
       state:
         commitment-profile: mpf-blake2b256-v1
         format-fingerprint: <profile-fingerprint-32B-hex>

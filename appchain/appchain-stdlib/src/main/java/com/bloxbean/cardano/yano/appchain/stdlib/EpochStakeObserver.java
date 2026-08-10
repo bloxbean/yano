@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 
 /** Two-pass, bounded canonical end-of-epoch stake observer. */
 public final class EpochStakeObserver implements L1EpochObserver {
@@ -70,7 +71,8 @@ public final class EpochStakeObserver implements L1EpochObserver {
 
     private static void requireSnapshot(L1EpochState state, long epoch) {
         if (state.previousEpoch() != epoch || !state.hasStakeSnapshot(epoch)) {
-            throw new IllegalStateException("End-of-epoch stake snapshot is unavailable for epoch " + epoch);
+            throw new NoSuchElementException(
+                    "L1_EPOCH_DATASET_UNAVAILABLE: end-of-epoch stake snapshot for epoch " + epoch);
         }
     }
 

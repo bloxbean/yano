@@ -41,6 +41,19 @@ stake dataset is the end-of-epoch snapshot labelled `E-1`. It must not be presen
 stake distribution for `E`. All members must retain the same reconstructed dataset, and the
 app-chain proposer waits for a stable L1 reference before sequencing those observations.
 
+The showcase can retain a bounded source window explicitly:
+
+```bash
+./showcase.sh quickstart --instance history-stake \
+  --cardano-history-profile params-stake \
+  --l1-source-snapshot-retention-epochs 2
+```
+
+This node-local operational setting controls how many completed L1 account-state boundaries may be
+reconstructed after startup; it does not change the immutable app-chain snapshot retention policy.
+The reference preprod deployment uses `2`, so it loads the two latest available boundaries without
+attempting to rebuild every epoch contained in an older chainstate backup.
+
 Responses identify the exact `committedHeight` and `stateRoot` and return typed proof coordinates,
 not proof bytes. Stake, DRep, and proposal reads query the fact and completeness metadata in one
 composite aggregate operation. An incomplete dataset returns `complete=false` and
@@ -139,6 +152,16 @@ for another genesis-time preset:
   --cardano-history-profile full
 ./showcase.sh quickstart --instance without-history --disable-cardano-history
 ```
+
+Stake and governance showcase presets also set the Cardano History chain's consensus
+`max-message-bytes` to 6 MiB and `block.max-bytes` to 8 MiB. ADR-028's canonical 25,000-entry
+chunks cannot fit the general 64 KiB message default; the paired limits retain growth plus
+framework/finality-certificate headroom without changing other showcase chains.
+
+Epoch stake is enumerated in strict `(credentialType, credentialHash bytes)` order. MPF and JMT
+derive the same root from the same unique key/value map regardless of insertion order, but the
+canonical enumeration is still required to make chunks, manifests, and consensus messages
+identical on every member.
 
 The retained `showcase-identity.json` binds enablement, preset, and product-bundle SHA-256. A
 restart cannot silently change any of them.

@@ -17,9 +17,12 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -51,12 +54,15 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
     private final AtomicLong lastObservedEpoch = new AtomicLong(-1);
     private final AtomicLong latestAppliedBlockNumber = new AtomicLong(-1);
     private final AtomicLong pendingRollbackSlot = new AtomicLong(Long.MAX_VALUE);
+    private final Set<Long> resumedBoundaryEpochs = ConcurrentHashMap.newKeySet();
     private final ConcurrentSkipListMap<Long, L1EpochBoundary> pendingBoundaries =
             new ConcurrentSkipListMap<>();
     private volatile boolean wasProposer;
     private volatile String unhealthyReason;
+    private volatile String lastFailure;
     private volatile String haltReason;
     private volatile long completedJobs;
+    private volatile long discardedExpiredJobs;
     private volatile long failures;
 
     L1EpochObservationCoordinator(List<L1EpochObserver> observers,
@@ -146,6 +152,10 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
     void start() {
         spool.reconcileFinalizedBlocks();
         spool.releaseOffers();
+        for (L1EpochBoundary boundary : spool.generatingBoundaries()) {
+            resumedBoundaryEpochs.add(boundary.newEpoch());
+            pendingBoundaries.putIfAbsent(boundary.newEpoch(), boundary);
+        }
         wake();
     }
 
@@ -202,7 +212,11 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
         if (unhealthyReason != null) {
             result.put("unhealthyReason", unhealthyReason);
         }
+        if (lastFailure != null) {
+            result.put("lastFailure", lastFailure);
+        }
         result.put("completedJobs", completedJobs);
+        result.put("discardedExpiredJobs", discardedExpiredJobs);
         result.put("failures", failures);
         result.put("latestAppliedBlockNumber", latestAppliedBlockNumber.get());
         result.put("coordinatorQueueDepth", executor.getQueue().size());
@@ -245,7 +259,7 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
             if (failure instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
             }
-            fail(haltReason != null ? haltReason : "asynchronous reconciliation");
+            fail(haltReason != null ? haltReason : "asynchronous reconciliation", failure);
         } finally {
             wakeQueued.set(false);
             if (!closed.get() && processedVersion != wakeVersion.get()) {
@@ -284,6 +298,28 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
     }
 
     private void prepareBoundary(L1EpochBoundary boundary) {
+        boolean resumed = resumedBoundaryEpochs.remove(boundary.newEpoch());
+        if (resumed) {
+            Optional<L1EpochState> retained = stateProvider.open(boundary);
+            if (retained.isEmpty()) {
+                discardExpiredResume(boundary);
+                return;
+            }
+            retained.orElseThrow().close();
+        }
+        try {
+            prepareAvailableBoundary(boundary);
+        } catch (RuntimeException failure) {
+            if (resumed && causedByDatasetUnavailable(failure)) {
+                discardExpiredResume(boundary);
+                return;
+            }
+            throw failure;
+        }
+        pendingBoundaries.remove(boundary.newEpoch(), boundary);
+    }
+
+    private void prepareAvailableBoundary(L1EpochBoundary boundary) {
         for (L1EpochObserver observer : observers) {
             if (spool.prepared(observer.observerId(), boundary.newEpoch())) {
                 continue;
@@ -326,7 +362,22 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
             spool.complete(manifest);
             completedJobs++;
         }
+    }
+
+    private void discardExpiredResume(L1EpochBoundary boundary) {
+        discardedExpiredJobs += spool.discardGenerating(boundary);
         pendingBoundaries.remove(boundary.newEpoch(), boundary);
+    }
+
+    private static boolean causedByDatasetUnavailable(Throwable failure) {
+        for (Throwable current = failure; current != null; current = current.getCause()) {
+            if (current instanceof NoSuchElementException
+                    && current.getMessage() != null
+                    && current.getMessage().startsWith("L1_EPOCH_DATASET_UNAVAILABLE:")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private L1EpochState open(L1EpochBoundary boundary) {
@@ -372,9 +423,27 @@ final class L1EpochObservationCoordinator implements AutoCloseable {
     }
 
     private void fail(String reason) {
+        fail(reason, null);
+    }
+
+    private void fail(String reason, Throwable failure) {
         failures++;
         unhealthyReason = reason;
-        log.warn("L1 epoch observation coordinator unhealthy (reason={})", reason);
+        if (failure == null) {
+            log.warn("L1 epoch observation coordinator unhealthy (reason={})", reason);
+            return;
+        }
+        lastFailure = failureSummary(failure);
+        log.warn("L1 epoch observation coordinator unhealthy (reason={})", reason, failure);
+    }
+
+    private static String failureSummary(Throwable failure) {
+        Throwable root = failure;
+        while (root.getCause() != null && root.getCause() != root) {
+            root = root.getCause();
+        }
+        return root.getClass().getSimpleName()
+                + (root.getMessage() == null ? "" : ": " + root.getMessage());
     }
 
     @Override

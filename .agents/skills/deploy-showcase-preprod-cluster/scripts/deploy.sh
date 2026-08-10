@@ -107,6 +107,9 @@ cp "$SOURCE_KEYS/anchor.seed" private-anchor/anchor.seed
 cp "$SOURCE_KEYS/operator.seed" private-settlement/operator.seed
 chmod 600 private-anchor/anchor.seed private-settlement/operator.seed
 SETTLEMENT_RECORD="settlement-deployment-payment-chain-settlement.properties"
+SETTLEMENT_RETAINED_LOG="settlement-bootstrap-payment-chain-settlement.log"
+SETTLEMENT_VAULT_SCRIPT="settlement-vault.script"
+SETTLEMENT_SHARD_SCRIPT="settlement-shard.script"
 if [ -f "$SOURCE_KEYS/$SETTLEMENT_RECORD" ]; then
   cp "$SOURCE_KEYS/$SETTLEMENT_RECORD" "private-settlement/$SETTLEMENT_RECORD"
   chmod 600 "private-settlement/$SETTLEMENT_RECORD"
@@ -146,17 +149,39 @@ done
 ./showcase.sh up --instance "$BOOTSTRAP_INSTANCE"
 
 SETTLEMENT_LOG="$TARGET/settlement-bootstrap.log"
-set +e
-./showcase.sh settlement bootstrap --instance "$BOOTSTRAP_INSTANCE" \
-  --settlement-key-file "$PWD/private-settlement/operator.seed" \
-  --confirm-public-settlement preprod 2>&1 | tee "$SETTLEMENT_LOG"
-SETTLEMENT_STATUS="${PIPESTATUS[0]}"
-set -e
-if [ -f "private-settlement/$SETTLEMENT_RECORD" ]; then
-  cp "private-settlement/$SETTLEMENT_RECORD" "$SOURCE_KEYS/$SETTLEMENT_RECORD"
-  chmod 600 "$SOURCE_KEYS/$SETTLEMENT_RECORD"
+if [ -f "$SOURCE_KEYS/$SETTLEMENT_RETAINED_LOG" ] \
+    && [ -f "$SOURCE_KEYS/$SETTLEMENT_VAULT_SCRIPT" ] \
+    && [ -f "$SOURCE_KEYS/$SETTLEMENT_SHARD_SCRIPT" ]; then
+  # A retained L1 snapshot can predate the already-submitted settlement mint.
+  # Reuse the exact public deployment block and parameterized validators rather
+  # than selecting a seed UTxO that the live network has already spent.
+  cp "$SOURCE_KEYS/$SETTLEMENT_RETAINED_LOG" "$SETTLEMENT_LOG"
+  cp "$SOURCE_KEYS/$SETTLEMENT_VAULT_SCRIPT" \
+    "yano/config/settlement/$SETTLEMENT_VAULT_SCRIPT"
+  cp "$SOURCE_KEYS/$SETTLEMENT_SHARD_SCRIPT" \
+    "yano/config/settlement/$SETTLEMENT_SHARD_SCRIPT"
+  echo "reusing retained preprod settlement deployment artifacts"
+else
+  set +e
+  ./showcase.sh settlement bootstrap --instance "$BOOTSTRAP_INSTANCE" \
+    --settlement-key-file "$PWD/private-settlement/operator.seed" \
+    --confirm-public-settlement preprod 2>&1 | tee "$SETTLEMENT_LOG"
+  SETTLEMENT_STATUS="${PIPESTATUS[0]}"
+  set -e
+  if [ -f "private-settlement/$SETTLEMENT_RECORD" ]; then
+    cp "private-settlement/$SETTLEMENT_RECORD" "$SOURCE_KEYS/$SETTLEMENT_RECORD"
+    chmod 600 "$SOURCE_KEYS/$SETTLEMENT_RECORD"
+  fi
+  [ "$SETTLEMENT_STATUS" -eq 0 ] || exit "$SETTLEMENT_STATUS"
+  cp "$SETTLEMENT_LOG" "$SOURCE_KEYS/$SETTLEMENT_RETAINED_LOG"
+  cp "yano/config/settlement/$SETTLEMENT_VAULT_SCRIPT" \
+    "$SOURCE_KEYS/$SETTLEMENT_VAULT_SCRIPT"
+  cp "yano/config/settlement/$SETTLEMENT_SHARD_SCRIPT" \
+    "$SOURCE_KEYS/$SETTLEMENT_SHARD_SCRIPT"
+  chmod 600 "$SOURCE_KEYS/$SETTLEMENT_RETAINED_LOG" \
+    "$SOURCE_KEYS/$SETTLEMENT_VAULT_SCRIPT" \
+    "$SOURCE_KEYS/$SETTLEMENT_SHARD_SCRIPT"
 fi
-[ "$SETTLEMENT_STATUS" -eq 0 ] || exit "$SETTLEMENT_STATUS"
 python3 "$SCRIPT_DIR/adopt_settlement_config.py" \
   yano/config/application-appchain.yml "$SETTLEMENT_LOG" \
   catalog/showcase-catalog-v1.json
@@ -168,16 +193,12 @@ python3 "$SCRIPT_DIR/adopt_settlement_config.py" \
 ./showcase.sh prepare --profile light --network preprod --nodes 3 \
   --instance "$INSTANCE" --http-base 17070 --server-base 17337 \
   --cardano-history-profile params-stake \
+  --l1-source-snapshot-retention-epochs 2 \
   --anchor-chain all --anchor-key-file "$PWD/private-anchor/anchor.seed" \
   --confirm-public-anchor preprod
 
 CLUSTER_ROOT="$TARGET/data/showcase/$INSTANCE/cluster"
 for NODE in 0 1 2; do
-  # Reconcile the two latest completed L1 boundaries. Once finalized, each
-  # epoch stake dataset lives in its own app-chain authenticated snapshot and
-  # no longer depends on retaining every L1 source snapshot online.
-  printf '\nyano.account-state.snapshot-retention-epochs=2\n' \
-    >> "$TARGET/data/showcase/$INSTANCE/node-config/node$NODE.properties"
   mkdir -p "$CLUSTER_ROOT/node$NODE"
   cp -cR "$SOURCE_STATE" "$CLUSTER_ROOT/node$NODE/chainstate-import"
   LEGACY_APPCHAINS="$CLUSTER_ROOT/node$NODE/chainstate-import/appchains"
