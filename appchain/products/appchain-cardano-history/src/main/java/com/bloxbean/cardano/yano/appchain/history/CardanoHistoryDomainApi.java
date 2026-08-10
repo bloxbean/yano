@@ -12,6 +12,7 @@ import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiResponse;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiRoute;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainHttpMethod;
 import com.bloxbean.cardano.yano.api.util.CardanoBech32Ids;
+import com.bloxbean.cardano.yano.api.appchain.l1view.ProtocolParamsCanonicalCodec;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeStateKeys;
 import com.bloxbean.cardano.yano.appchain.composite.contracts.AggregateQueryCodecV1;
 import com.bloxbean.cardano.yano.appchain.composite.contracts.AggregateQueryLimitsV1;
@@ -32,6 +33,7 @@ public final class CardanoHistoryDomainApi implements DomainApi {
     static final String STATUS = "status";
     static final String EPOCHS = "epochs";
     static final String PARAMS = "parameters";
+    static final String PARAM_FIELD = "parameter-field";
     static final String STAKE = "stake";
     static final String STAKE_ADDRESS = "stake-address";
     static final String DREP = "drep";
@@ -43,6 +45,7 @@ public final class CardanoHistoryDomainApi implements DomainApi {
     private static final List<DomainApiRoute> ROUTES = List.of(
             read(STATUS, "status"), read(EPOCHS, "epochs"),
             read(PARAMS, "epochs/{epoch}/parameters"),
+            read(PARAM_FIELD, "epochs/{epoch}/parameters/fields/{field_id}"),
             read(STAKE, "epochs/{epoch}/stake/{credential_type}/{credential_hash}"),
             read(STAKE_ADDRESS, "epochs/{epoch}/stake-address/{stake_address}"),
             read(DREP, "epochs/{epoch}/dreps/{drep_type}/{drep_hash}"),
@@ -66,6 +69,7 @@ public final class CardanoHistoryDomainApi implements DomainApi {
             case STATUS -> latest(request, false);
             case EPOCHS -> latest(request, true);
             case PARAMS -> parameters(request);
+            case PARAM_FIELD -> parameterField(request);
             case STAKE -> stake(request);
             case STAKE_ADDRESS -> stakeAddress(request);
             case DREP -> drep(request);
@@ -148,13 +152,75 @@ public final class CardanoHistoryDomainApi implements DomainApi {
                 EpochParamsContract.query(epoch))));
         byte[] value = aggregateValue(decodeAggregate(result, 1), 0,
                 CardanoHistoryProduct.PARAMS_COMPONENT, EpochParamsContract.QUERY_PATH);
-        byte[] localKey = EpochParamsContract.stateKey(epoch);
-        return json(200, root(result)
+        byte[] localKey = EpochParamsContract.documentKey(epoch);
+        StringBuilder body = root(result)
                 .append(",\"dataset\":\"protocol-parameters\",\"datasetVersion\":1")
                 .append(",\"epoch\":").append(epoch)
                 .append(",\"found\":").append(value.length != 0)
-                .append(",\"canonicalValueHex\":").append(hexOrNull(value))
-                .append(",\"proof\":").append(primaryProof(localKey)).append('}').toString());
+                .append(",\"canonicalValueHex\":").append(hexOrNull(value));
+        if (value.length != 0) {
+            var document = ProtocolParamsCanonicalCodec.decode(epoch, value);
+            body.append(",\"formatVersion\":").append(ProtocolParamsCanonicalCodec.VERSION)
+                    .append(",\"fields\":[");
+            boolean first = true;
+            for (var field : document.fields()) {
+                if (!first) body.append(',');
+                first = false;
+                body.append("{\"id\":").append(quote(field.id()))
+                        .append(",\"type\":").append(quote(field.typeName()))
+                        .append(",\"value\":").append(jsonValue(field.value())).append('}');
+            }
+            body.append(']');
+        } else {
+            body.append(",\"formatVersion\":null,\"fields\":[]");
+        }
+        return json(200, body.append(",\"proof\":").append(primaryProof(localKey))
+                .append('}').toString());
+    }
+
+    private DomainApiResponse parameterField(DomainApiRequest request) {
+        requireKeys(request.queryParameters(), CHAIN_ONLY);
+        long epoch = epoch(request.pathParameters().get("epoch"));
+        String fieldId = request.pathParameters().get("field_id");
+        byte[] query;
+        try {
+            query = EpochParamsContract.encodeFieldQuery(
+                    new EpochParamsContract.FieldQuery(epoch, fieldId));
+        } catch (RuntimeException malformed) {
+            throw invalid();
+        }
+        AppQueryResult result = aggregate(chain(request.queryParameters()), List.of(
+                sub(CardanoHistoryProduct.PARAMS_COMPONENT,
+                        EpochParamsContract.FIELD_QUERY_PATH, query),
+                sub(CardanoHistoryProduct.PARAMS_COMPONENT,
+                        EpochParamsContract.META_QUERY_PATH, EpochParamsContract.encodeEpoch(epoch))));
+        List<AggregateQueryCodecV1.Result> values = decodeAggregate(result, 2);
+        byte[] value = aggregateValue(values, 0, CardanoHistoryProduct.PARAMS_COMPONENT,
+                EpochParamsContract.FIELD_QUERY_PATH);
+        byte[] metaValue = aggregateValue(values, 1, CardanoHistoryProduct.PARAMS_COMPONENT,
+                EpochParamsContract.META_QUERY_PATH);
+        EpochParamsContract.Meta meta = metaValue.length == 0 ? null
+                : EpochParamsContract.decodeMeta(metaValue);
+        requireEpoch(meta == null ? null : meta.epoch(), epoch);
+        ProtocolParamsCanonicalCodec.Field field = value.length == 0 ? null
+                : ProtocolParamsCanonicalCodec.decodeLeaf(value);
+        if (field != null && !field.id().equals(fieldId)) {
+            throw new DomainApiException(DomainApiException.Code.FAILED,
+                    "Protocol-parameter field identity mismatch");
+        }
+        StringBuilder body = root(result)
+                .append(",\"dataset\":\"protocol-parameter-field\",\"datasetVersion\":1")
+                .append(",\"epoch\":").append(epoch)
+                .append(",\"fieldId\":").append(quote(fieldId))
+                .append(",\"complete\":").append(meta != null)
+                .append(",\"found\":").append(field != null);
+        if (field == null) body.append(",\"type\":null,\"value\":null");
+        else body.append(",\"type\":").append(quote(field.typeName()))
+                .append(",\"value\":").append(jsonValue(field.value()));
+        return json(200, body.append(",\"canonicalValueHex\":").append(hexOrNull(value))
+                .append(",\"proof\":").append(directParamsPairProof(
+                        EpochParamsContract.fieldKey(epoch, fieldId),
+                        EpochParamsContract.metaKey(epoch))).append('}').toString());
     }
 
     private DomainApiResponse stake(DomainApiRequest request) {
@@ -363,6 +429,42 @@ public final class CardanoHistoryDomainApi implements DomainApi {
                 + "\",\"completenessPhysicalKey\":\""
                 + hex(CompositeStateKeys.componentKey(CardanoHistoryProduct.GOVERNANCE_COMPONENT, completeKey))
                 + "\"}";
+    }
+
+    private static String directParamsPairProof(byte[] factKey, byte[] completeKey) {
+        return "{\"kind\":\"primary-pair\",\"factPhysicalKey\":\""
+                + hex(CompositeStateKeys.componentKey(CardanoHistoryProduct.PARAMS_COMPONENT, factKey))
+                + "\",\"completenessPhysicalKey\":\""
+                + hex(CompositeStateKeys.componentKey(CardanoHistoryProduct.PARAMS_COMPONENT, completeKey))
+                + "\"}";
+    }
+
+    private static String jsonValue(Object value) {
+        if (value == null) return "null";
+        if (value instanceof String text) return quote(text);
+        if (value instanceof Number number) return quote(number.toString());
+        if (value instanceof byte[] bytes) return quote(hex(bytes));
+        if (value instanceof List<?> list) {
+            StringBuilder result = new StringBuilder("[");
+            for (int index = 0; index < list.size(); index++) {
+                if (index > 0) result.append(',');
+                result.append(jsonValue(list.get(index)));
+            }
+            return result.append(']').toString();
+        }
+        if (value instanceof Map<?, ?> map) {
+            StringBuilder result = new StringBuilder("{");
+            boolean first = true;
+            for (var entry : map.entrySet()) {
+                if (!first) result.append(',');
+                first = false;
+                result.append(quote(String.valueOf(entry.getKey()))).append(':')
+                        .append(jsonValue(entry.getValue()));
+            }
+            return result.append('}').toString();
+        }
+        throw new DomainApiException(DomainApiException.Code.FAILED,
+                "Unsupported protocol-parameter field value");
     }
 
     private static String snapshotProof(String series, byte[] key, byte[] completeKey) {

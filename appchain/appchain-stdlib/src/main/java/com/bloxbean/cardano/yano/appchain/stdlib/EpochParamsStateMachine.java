@@ -8,7 +8,9 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
+import com.bloxbean.cardano.yano.api.appchain.l1view.ProtocolParamsCanonicalCodec;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochParamsContract;
+import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 
 import java.util.Arrays;
 
@@ -33,6 +35,8 @@ public final class EpochParamsStateMachine implements AppStateMachine {
     public AppCapabilityManifest capabilityManifest() {
         return StdlibCapabilityManifests.component(id(), "~l1/" + observerId,
                         java.util.List.of(EpochParamsContract.QUERY_PATH,
+                                EpochParamsContract.FIELD_QUERY_PATH,
+                                EpochParamsContract.META_QUERY_PATH,
                                 EpochParamsContract.LATEST_QUERY_PATH))
                 .proofSubject(new AppCapabilityManifest.ProofSubject(
                         EpochParamsContract.PROOF_SUBJECT, "", "params/", "state-proof"))
@@ -52,12 +56,24 @@ public final class EpochParamsStateMachine implements AppStateMachine {
             if (claim.effectiveEpoch() != epochAnchor.newEpoch()) {
                 throw new IllegalArgumentException("epoch-params claim does not match its anchor");
             }
-            byte[] key = EpochParamsContract.stateKey(claim.effectiveEpoch());
+            var document = ProtocolParamsCanonicalCodec.decode(
+                    claim.effectiveEpoch(), claim.canonicalParamsCbor());
+            byte[] key = EpochParamsContract.documentKey(claim.effectiveEpoch());
             byte[] current = writer.get(key).orElse(null);
             if (current != null && !Arrays.equals(current, claim.canonicalParamsCbor())) {
                 throw new IllegalStateException("Historical protocol parameters are write-once");
             }
-            if (current == null) writer.put(key, claim.canonicalParamsCbor());
+            if (current == null) {
+                writer.put(key, claim.canonicalParamsCbor());
+                writer.put(EpochParamsContract.metaKey(claim.effectiveEpoch()),
+                        EpochParamsContract.encodeMeta(new EpochParamsContract.Meta(
+                                claim.effectiveEpoch(), document.fields().size(),
+                                Blake2bUtil.blake2bHash256(claim.canonicalParamsCbor()))));
+                for (var field : document.fields()) {
+                    writer.put(EpochParamsContract.fieldKey(claim.effectiveEpoch(), field.id()),
+                            field.canonicalCbor());
+                }
+            }
             long latest = writer.get(EpochParamsContract.latestKey())
                     .map(EpochParamsContract::decodeEpoch).orElse(-1L);
             if (claim.effectiveEpoch() > latest) {
@@ -77,7 +93,20 @@ public final class EpochParamsStateMachine implements AppStateMachine {
             long epoch;
             try { epoch = EpochParamsContract.decodeEpoch(params); }
             catch (RuntimeException malformed) { throw invalidQuery(); }
-            return state.get(EpochParamsContract.stateKey(epoch)).orElse(new byte[0]);
+            return state.get(EpochParamsContract.documentKey(epoch)).orElse(new byte[0]);
+        }
+        if (EpochParamsContract.META_QUERY_PATH.equals(path)) {
+            long epoch;
+            try { epoch = EpochParamsContract.decodeEpoch(params); }
+            catch (RuntimeException malformed) { throw invalidQuery(); }
+            return state.get(EpochParamsContract.metaKey(epoch)).orElse(new byte[0]);
+        }
+        if (EpochParamsContract.FIELD_QUERY_PATH.equals(path)) {
+            EpochParamsContract.FieldQuery query;
+            try { query = EpochParamsContract.decodeFieldQuery(params); }
+            catch (RuntimeException malformed) { throw invalidQuery(); }
+            return state.get(EpochParamsContract.fieldKey(query.epoch(), query.fieldId()))
+                    .orElse(new byte[0]);
         }
         throw new AppQueryException(AppQueryException.Code.UNSUPPORTED,
                 "unknown epoch-params query path");
@@ -85,6 +114,6 @@ public final class EpochParamsStateMachine implements AppStateMachine {
 
     private static AppQueryException invalidQuery() {
         return new AppQueryException(AppQueryException.Code.INVALID_REQUEST,
-                "epoch-params query requires one canonical epoch");
+                "epoch-params query requires a canonical epoch or epoch/field id");
     }
 }

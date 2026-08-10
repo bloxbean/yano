@@ -35,6 +35,10 @@ public final class CardanoHistoryOnChainPredicates {
         return component(PARAMS_COMPONENT, EpochParamsContract.stateKey(epoch));
     }
 
+    public static byte[] parameterFieldKey(long epoch, String fieldId) {
+        return component(PARAMS_COMPONENT, EpochParamsContract.fieldKey(epoch, fieldId));
+    }
+
     public static byte[] stakeCompletenessKey(long epoch) {
         return component(STAKE_COMPONENT, EpochStakeContract.metaKey(epoch));
     }

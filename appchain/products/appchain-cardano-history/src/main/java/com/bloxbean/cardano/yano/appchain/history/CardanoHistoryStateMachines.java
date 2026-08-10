@@ -54,7 +54,10 @@ public final class CardanoHistoryStateMachines {
                 CardanoHistoryProduct.APPLICATION_VERSION);
         builder.machine(descriptor(CardanoHistoryProduct.PARAMS_COMPONENT, preset.id(),
                         "~l1/" + EpochParamsContract.DEFAULT_OBSERVER_ID,
-                        List.of(EpochParamsContract.QUERY_PATH, EpochParamsContract.LATEST_QUERY_PATH)),
+                        List.of(EpochParamsContract.QUERY_PATH,
+                                EpochParamsContract.FIELD_QUERY_PATH,
+                                EpochParamsContract.META_QUERY_PATH,
+                                EpochParamsContract.LATEST_QUERY_PATH)),
                 new EpochParamsStateMachine(EpochParamsContract.DEFAULT_OBSERVER_ID));
         if (preset.stake()) {
             builder.machine(descriptor(CardanoHistoryProduct.STAKE_COMPONENT,

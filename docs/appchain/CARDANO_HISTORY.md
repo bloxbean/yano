@@ -29,6 +29,12 @@ The plugin contributes bounded, read-only routes below
 `chain=<chain-id>`. Routes cover status, epochs, protocol parameters, stake, DRep distribution, and
 proposal history.
 
+Protocol-parameter responses expose a sorted `fields` catalog. A single named field is available at
+`epochs/{epoch}/parameters/fields/{field-id}` and returns its typed canonical leaf plus root-fixed
+proof coordinates. The complete document lives at `params/{epoch}/document`; named leaves live at
+`params/{epoch}/fields/{field-id}`. This permits a compact proof such as
+`key-deposit == 2_000_000 lovelace` without parsing a hard-fork-specific positional array.
+
 A fresh Cardano History generation does not synthesize a fact from mutable current-epoch state. On
 startup, every member deterministically reconciles completed boundaries still retained by its local
 L1 account-state store; those retained facts can seed prior epochs without an external indexer. If
@@ -124,8 +130,16 @@ separate UI without coupling frontend code to the plugin lifecycle.
 The native page appears only when a running chain declares `l1-epoch-params-v1`. It uses the same
 console connection, styling, domain API, generic state-proof API, authenticated-snapshot API, and
 anchor view as the rest of Yano. Stake and governance controls appear only when their corresponding
-capabilities are present. It can generate and export root-fixed proof material; independent Cardano
-anchor verification remains available through `yano-cardano-history verify`.
+capabilities are present. Stake and Parameters views follow query → claim → verify: proof validity
+authenticates the recorded bytes, claim validity evaluates the requested business condition, and an
+accepted result requires both. The evaluator decodes the canonical value from the proof envelope so
+editing presentation JSON cannot turn a false claim into a true one. It can generate and export
+packages that explicitly show the authenticated actual value, requested predicate, proof validity,
+claim result, and final acceptance. These result fields are explanatory: imported packages are
+always reverified and their bundled verdict is never trusted. A newly generated package remains
+`pending-offchain-verification` until that check runs.
+root-fixed proof material; independent Cardano anchor verification remains available through
+`yano-cardano-history verify`.
 
 ## On-chain consumption
 

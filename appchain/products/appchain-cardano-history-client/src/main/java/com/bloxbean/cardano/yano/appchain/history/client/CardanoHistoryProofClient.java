@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
 import com.bloxbean.cardano.yano.appchain.client.ProofSubjects;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochGovernanceContract;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochStakeContract;
+import com.bloxbean.cardano.yano.api.appchain.l1view.ProtocolParamsCanonicalCodec;
 
 import java.math.BigInteger;
 import java.util.Objects;
@@ -28,6 +29,13 @@ public final class CardanoHistoryProofClient {
             long epoch, long anchoredHeight) {
         return client.proof(ProofSubjects.epochProtocolParameters(paramsComponent, epoch), anchoredHeight)
                 .map(proof -> new CardanoHistoryProofBundle.ProtocolParameters(epoch, paramsComponent, proof));
+    }
+
+    /** Fetches a proof for one named parameter leaf such as {@code key-deposit}. */
+    public Optional<AppChainClient.TypedProof<ProtocolParamsCanonicalCodec.Field>> protocolParameterField(
+            long epoch, String fieldId, long anchoredHeight) {
+        return client.proof(ProofSubjects.epochProtocolParameterField(
+                paramsComponent, epoch, fieldId), anchoredHeight);
     }
 
     public Optional<CardanoHistoryProofBundle.SnapshotStake> stake(

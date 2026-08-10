@@ -17,6 +17,7 @@ dependencies {
     testImplementation "com.bloxbean.cardano:julc-compiler:${libs.versions.julc.get()}"
     testRuntimeOnly "com.bloxbean.cardano:julc-vm-java:${libs.versions.julc.get()}"
     testImplementation libs.cardano.client.crypto
+    testImplementation project(':core-api')
     testImplementation libs.junit.jupiter.api
     testRuntimeOnly libs.junit.jupiter.engine
     testRuntimeOnly libs.junit.platform.launcher

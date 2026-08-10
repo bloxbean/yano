@@ -4,6 +4,10 @@
   import type {
     AnchorCommitment, AppChainStatus, AuthenticatedSnapshotSummary, StateProofEnvelope
   } from '$lib/api/types';
+  import { combineProofAndClaim, evaluateParameterClaim, evaluateStakeClaim,
+    packageVerification, type ClaimVerdict }
+    from './claim-verification';
+  import { authenticatedParameter, authenticatedStake } from './authenticated-facts';
 
   const BUNDLE = 'com.bloxbean.cardano.yano.appchain.cardano-history';
   const STAKE_SERIES = 'l1-epoch-stake-v1.distribution';
@@ -37,7 +41,7 @@
     parameters: null, stake: null, drep: null, proposal: null
   });
   let proofStatuses = $state<Record<Subject, string>>({
-    parameters: 'Query a parameter document to generate its proof.',
+    parameters: 'Load an epoch, then query one named parameter to generate its proof.',
     stake: 'Query a complete stake epoch to generate its proof.',
     drep: 'Query a complete DRep epoch to generate its proof.',
     proposal: 'Query a proposal to generate its proof.'
@@ -47,6 +51,11 @@
   });
 
   let parameterEpoch = $state(0);
+  let parameterDocument: Record<string, unknown> | null = $state(null);
+  let parameterFieldId = $state('');
+  let parameterClaimMode = $state('exact');
+  let parameterExpectedValue = $state('');
+  let parameterMaximumValue = $state('');
   let stakeEpoch = $state(0);
   let stakeInputMode: 'address' | 'credential' = $state('address');
   let stakeAddress = $state('');
@@ -61,6 +70,10 @@
   let proposalEpoch = $state(0);
   let proposalTx = $state('');
   let proposalIndex = $state(0);
+
+  let parameterFields = $derived(parameterFieldCatalog(parameterDocument));
+  let selectedParameterField = $derived(
+    parameterFields.find((field) => field.id === parameterFieldId) ?? null);
 
   let importedProof = $state('');
   let importedAnchor = $state('');
@@ -101,6 +114,8 @@
       ?? await api.chainStatus(chainId);
     history = null;
     parameterEpochs = [];
+    parameterDocument = null;
+    parameterFieldId = '';
     stakeEpochs = [];
     drepEpochs = [];
     initializationPending = false;
@@ -184,6 +199,22 @@
         if (typeof response.credentialHash === 'string') credentialHash = response.credentialHash;
         if (typeof response.credentialType === 'number') credentialType = response.credentialType;
       }
+      if (subject === 'parameters' && response.dataset === 'protocol-parameters') {
+        parameterDocument = response;
+        const fields = parameterFieldCatalog(response);
+        if (!fields.some((field) => field.id === parameterFieldId)) {
+          parameterFieldId = fields.find((field) => field.id === 'key-deposit')?.id
+            ?? fields[0]?.id ?? '';
+        }
+        selectedProofs.parameters = null;
+        proofStatuses.parameters = 'Choose and query one named parameter to generate its proof.';
+      }
+      if (subject === 'parameters' && response.dataset === 'protocol-parameter-field') {
+        const value = response.value;
+        if (value != null && !parameterExpectedValue) {
+          parameterExpectedValue = displayClaimValue(value, String(response.type ?? ''));
+        }
+      }
     } catch (cause) {
       queryResults[subject] = apiFailureMessage(cause, 'Query failed');
       proofStatuses[subject] = 'No proof is available for the failed query.';
@@ -196,6 +227,25 @@
     }
     return query('stake', stakeEpoch,
       `epochs/${stakeEpoch}/stake/${credentialType}/${credentialHash.toLowerCase()}`);
+  }
+
+  function queryParameterField() {
+    if (!parameterFieldId) return;
+    return query('parameters', parameterEpoch,
+      `epochs/${parameterEpoch}/parameters/fields/${parameterFieldId}`);
+  }
+
+  function selectParameterField(fieldId: string) {
+    parameterFieldId = fieldId;
+    parameterClaimMode = 'exact';
+    parameterMaximumValue = '';
+    const field = parameterFields.find((candidate) => candidate.id === fieldId);
+    parameterExpectedValue = field
+      ? displayClaimValue(field.value, field.type) : '';
+    selectedProofs.parameters = null;
+    proofBundles.parameters = null;
+    proofVerifications.parameters = null;
+    proofStatuses.parameters = 'Query this parameter before generating its proof.';
   }
 
   async function generateProof(subject: Subject) {
@@ -212,10 +262,18 @@
         const snapshot = await findSnapshot(series, `${prefix}${selected.epoch}`);
         const nested = await api.chainSnapshotProof(
           selectedChain, series, snapshot.sequence, String(coordinates.secondaryKey ?? ''));
+        const secondary = asRecord(nested.secondaryProof);
+        if (secondary.keyHex !== coordinates.secondaryKey
+          || selected.response.found === true
+          && secondary.valueHex !== selected.response.canonicalValueHex
+          || selected.response.found === false && secondary.presence !== 'ABSENT') {
+          throw new Error('The snapshot proof does not match the visible query result');
+        }
         proofBundles[subject] = {
           schema: 'cardano-history-console-proof-v1', kind: 'authenticated-snapshot',
           chainId: selectedChain, subject, epoch: selected.epoch,
-          claim: subject === 'stake' ? stakeClaim() : undefined,
+          claim: subject === 'stake' ? stakeClaim()
+            : subject === 'parameters' ? parameterClaim(selected.response) : undefined,
           history: selected.response, proof: nested
         };
       } else if (coordinates.kind === 'primary-pair') {
@@ -236,6 +294,7 @@
         proofBundles[subject] = {
           schema: 'cardano-history-console-proof-v1', kind: 'primary-pair',
           chainId: selectedChain, subject, epoch: selected.epoch,
+          claim: subject === 'parameters' ? parameterClaim(selected.response) : undefined,
           history: selected.response, anchor: confirmedAnchor, fact, completeness
         };
       } else {
@@ -266,29 +325,34 @@
       const kind = String(bundle.kind ?? '');
       if (kind === 'authenticated-snapshot') {
         const nested = asRecord(bundle.proof);
-        proofVerifications[subject] = await api.verifyChainSnapshotProof(selectedChain, {
+        const cryptographic = await api.verifyChainSnapshotProof(selectedChain, {
           bundleCborHex: requiredString(nested, 'bundleCborHex'), trustMode: 'local-anchor'
         });
+        storeVerification(subject, combineProofAndClaim(
+          cryptographic as Record<string, unknown>, semanticClaim(bundle)));
       } else if (kind === 'primary-pair') {
         const [fact, completeness] = await Promise.all([
           verifyPrimary(asRecord(bundle.fact)), verifyPrimary(asRecord(bundle.completeness))
         ]);
-        const anchored = primaryAnchorBinding(bundle, asRecord(bundle.fact));
-        proofVerifications[subject] = {
-          valid: fact.valid && completeness.valid && anchored.valid,
-          fact, completeness, anchorBinding: anchored,
+        const factAnchor = primaryAnchorBinding(bundle, asRecord(bundle.fact));
+        const completenessAnchor = primaryAnchorBinding(bundle, asRecord(bundle.completeness));
+        const cryptographic = {
+          valid: fact.valid && completeness.valid && factAnchor.valid && completenessAnchor.valid,
+          fact, completeness, factAnchorBinding: factAnchor,
+          completenessAnchorBinding: completenessAnchor,
           trust: 'local-anchor-reported-by-connected-node',
           trustWarning: 'Independently verify the Cardano anchor transaction before trusting this node.'
         };
+        storeVerification(subject, combineProofAndClaim(cryptographic, semanticClaim(bundle)));
       } else {
         const proof = asRecord(bundle.proof);
         const verification = await verifyPrimary(proof);
         const anchored = primaryAnchorBinding(bundle, proof);
-        proofVerifications[subject] = {
+        storeVerification(subject, {
           ...verification, valid: verification.valid && anchored.valid,
           anchorBinding: anchored, trust: 'local-anchor-reported-by-connected-node',
           trustWarning: 'Independently verify the Cardano anchor transaction before trusting this node.'
-        };
+        });
       }
       proofStatuses[subject] = 'Off-chain verification completed. Inspect the trust label below.';
     } catch (cause) {
@@ -328,8 +392,80 @@
       mode: stakeClaimMode,
       expectedCoinLovelace: stakeClaimCoin || null,
       expectedPoolHash: stakeClaimPool || null,
-      status: 'intent-only-onchain-redeemer-export-not-yet-implemented'
+      status: 'pending-offchain-verification',
+      onchainRedeemerStatus: 'not-exported'
     };
+  }
+
+  function parameterClaim(response: Record<string, unknown>) {
+    if (response.dataset !== 'protocol-parameter-field') return undefined;
+    return {
+      mode: parameterClaimMode,
+      fieldId: response.fieldId,
+      fieldType: response.type,
+      expectedValue: parameterExpectedValue || null,
+      maximumValue: parameterClaimMode === 'range' ? parameterMaximumValue || null : null,
+      status: 'pending-offchain-verification',
+      onchainRedeemerStatus: 'not-exported'
+    };
+  }
+
+  function semanticClaim(bundle: Record<string, unknown>): ClaimVerdict | null {
+    const claim = bundle.claim;
+    if (!claim || typeof claim !== 'object' || Array.isArray(claim)) return null;
+    const history = asRecord(bundle.history);
+    const valueHex = authenticatedValueHex(bundle);
+    return bundle.subject === 'stake'
+      ? evaluateStakeClaim(authenticatedStake(history, valueHex), claim as Record<string, unknown>)
+      : bundle.subject === 'parameters'
+        ? evaluateParameterClaim(authenticatedParameter(history, valueHex),
+          claim as Record<string, unknown>) : null;
+  }
+
+  function authenticatedValueHex(bundle: Record<string, unknown>): string | null {
+    const kind = String(bundle.kind ?? '');
+    const envelope = kind === 'authenticated-snapshot'
+      ? asRecord(asRecord(bundle.proof).secondaryProof)
+      : kind === 'primary-pair' ? asRecord(bundle.fact) : asRecord(bundle.proof);
+    return typeof envelope.valueHex === 'string' ? envelope.valueHex : null;
+  }
+
+  function storeVerification(subject: Subject, result: Record<string, unknown>) {
+    proofVerifications[subject] = result;
+    const bundle = proofBundles[subject];
+    if (!bundle) return;
+    const claim = bundle.claim && typeof bundle.claim === 'object' && !Array.isArray(bundle.claim)
+      ? bundle.claim as Record<string, unknown> : null;
+    const claimSatisfied = typeof result.claimValid === 'boolean' ? result.claimValid : null;
+    const requested = claim ? claimRequest(claim) : null;
+    proofBundles[subject] = {
+      ...bundle,
+      ...(claim ? { claim: { ...claim, status: 'evaluated-offchain', satisfied: claimSatisfied } } : {}),
+      verification: packageVerification(
+        result, authenticatedClaimFact(subject, bundle), requested)
+    };
+  }
+
+  function claimRequest(claim: Record<string, unknown>) {
+    return Object.fromEntries(Object.entries(claim).filter(([field]) =>
+      field !== 'status' && field !== 'onchainRedeemerStatus' && field !== 'satisfied'));
+  }
+
+  function authenticatedClaimFact(subject: Subject, bundle: Record<string, unknown>) {
+    const history = asRecord(bundle.history);
+    const valueHex = authenticatedValueHex(bundle);
+    if (subject === 'parameters') {
+      const fact = authenticatedParameter(history, valueHex);
+      return { found: fact.found, epoch: fact.epoch ?? fact.datasetEpoch,
+        fieldId: fact.fieldId, fieldType: fact.type, value: fact.value,
+        complete: fact.complete };
+    }
+    if (subject === 'stake') {
+      const fact = authenticatedStake(history, valueHex);
+      return { found: fact.found, epoch: fact.datasetEpoch ?? fact.epoch,
+        coinLovelace: fact.coin, poolHash: fact.poolHash, complete: fact.complete };
+    }
+    return { canonicalValueHex: valueHex };
   }
 
   function downloadProof(subject: Subject) {
@@ -356,7 +492,20 @@
           ? nested.bundleCborHex : requiredString(nested, 'canonicalBundleHex');
         const request: Record<string, unknown> = { bundleCborHex, trustMode: 'local-anchor' };
         if (importedAnchor.trim()) Object.assign(request, pinnedAnchor(JSON.parse(importedAnchor)));
-        importedVerdict = await api.verifyChainSnapshotProof(selectedChain, request);
+        const cryptographic = await api.verifyChainSnapshotProof(selectedChain, request);
+        importedVerdict = combineProofAndClaim(cryptographic, semanticClaim(exported));
+      } else if (kind === 'primary-pair') {
+        const [fact, completeness] = await Promise.all([
+          verifyPrimary(asRecord(exported.fact)), verifyPrimary(asRecord(exported.completeness))
+        ]);
+        const factAnchor = primaryAnchorBinding(exported, asRecord(exported.fact));
+        const completenessAnchor = primaryAnchorBinding(exported, asRecord(exported.completeness));
+        importedVerdict = combineProofAndClaim({
+          valid: fact.valid && completeness.valid && factAnchor.valid && completenessAnchor.valid,
+          fact, completeness, factAnchorBinding: factAnchor,
+          completenessAnchorBinding: completenessAnchor,
+          trust: 'local-anchor-reported-by-connected-node'
+        }, semanticClaim(exported));
       } else {
         const proof = normalizePrimaryProof(asRecord(exported.proof ?? exported));
         let trust = 'proof-valid-against-bundled-root';
@@ -384,13 +533,13 @@
           trust = 'proof-valid-against-caller-pinned-anchor';
         }
         const verification = await verifyPrimary(proof);
-        importedVerdict = {
+        importedVerdict = combineProofAndClaim({
           ...verification, trust,
           callerPinnedAnchor: pinned,
           trustWarning: pinned
             ? 'The caller remains responsible for independently authenticating the supplied Cardano anchor.'
             : 'The proof root came from the same bundle and has not been authenticated independently.'
-        };
+        }, semanticClaim(exported));
       }
       importedStatus = 'Imported proof verification completed.';
     } catch (cause) {
@@ -460,6 +609,40 @@
     return value?.capabilityManifest?.components.some((component) => component.id === componentId) ?? false;
   }
   function canGenerate(subject: Subject) { return Boolean(selectedProofs[subject]?.response.proof); }
+  function verificationAccepted(subject: Subject) {
+    const result = proofVerifications[subject];
+    return Boolean(result && typeof result === 'object'
+      && !Array.isArray(result) && (result as Record<string, unknown>).accepted === true);
+  }
+  function verificationExplanation(subject: Subject) {
+    const result = proofVerifications[subject];
+    return result && typeof result === 'object' && !Array.isArray(result)
+      ? String((result as Record<string, unknown>).explanation ?? '') : '';
+  }
+  function parameterFieldCatalog(value: Record<string, unknown> | null) {
+    if (!value || !Array.isArray(value.fields)) return [] as Array<{ id: string; type: string; value: unknown }>;
+    return value.fields.flatMap((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+      const field = item as Record<string, unknown>;
+      return typeof field.id === 'string' && typeof field.type === 'string'
+        ? [{ id: field.id, type: field.type, value: field.value }] : [];
+    });
+  }
+  function displayClaimValue(value: unknown, type: string) {
+    if (type === 'rational' && Array.isArray(value) && value.length === 2) {
+      return `${value[0]}/${value[1]}`;
+    }
+    return typeof value === 'string' ? value : JSON.stringify(value);
+  }
+  function numericParameterType(type: string | undefined) {
+    return type === 'unsigned-integer' || type === 'signed-integer' || type === 'lovelace';
+  }
+  function stakeNeedsCoin() {
+    return ['minimum', 'exact', 'minimum-and-pool', 'exact-and-pool'].includes(stakeClaimMode);
+  }
+  function stakeNeedsPool() {
+    return ['pool', 'minimum-and-pool', 'exact-and-pool'].includes(stakeClaimMode);
+  }
   function validHash(value: string, bytes: number) {
     return new RegExp(`^[0-9a-fA-F]{${bytes * 2}}$`).test(value);
   }
@@ -508,6 +691,16 @@
     {/each}
   </nav>
 
+  <div class="mb-5 rounded-xl border border-cyan-500/25 bg-cyan-500/5 p-4 text-sm text-slate-300">
+    <div class="font-semibold text-cyan-200">How verification works</div>
+    <ol class="mt-2 grid gap-2 md:grid-cols-3">
+      <li><span class="font-semibold text-white">1. Query a fact.</span> See the value recorded for an epoch.</li>
+      <li><span class="font-semibold text-white">2. Describe a claim.</span> For example, stake is at least 5 ADA.</li>
+      <li><span class="font-semibold text-white">3. Verify both.</span> The proof must be authentic and the claim must be true.</li>
+    </ol>
+    <p class="mt-2 text-xs text-slate-400">MPF is the authenticated map behind the scenes. You do not need to understand its internal nodes to verify a fact.</p>
+  </div>
+
   {#if initializationPending}
     <div class="mb-5 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200">
       The capability and anchor are active, but this fresh chain has not finalized its first retained or live epoch fact yet.
@@ -540,19 +733,36 @@
   {:else if view === 'parameters'}
     <div class="space-y-4">
       <section class="card p-5"><div class="section-title">Protocol parameters</div>
+        <p class="mt-2 text-sm text-slate-400">Load the parameter document for an epoch, then choose one named field to prove.</p>
         <div class="mt-4 flex flex-wrap items-end gap-3"><label class="text-xs text-slate-400">Epoch
           <input class="mt-1 block rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" type="number" min="0" bind:value={parameterEpoch}></label>
-          <button class="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold" onclick={() => void query('parameters', parameterEpoch, `epochs/${parameterEpoch}/parameters`)}>Query document</button></div>
-        <pre class="mt-4 max-h-[520px] overflow-auto text-xs">{queryResults.parameters}</pre></section>
-      <section class="card p-5"><div class="section-title">Parameter document proof</div>
+          <button class="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold" onclick={() => void query('parameters', parameterEpoch, `epochs/${parameterEpoch}/parameters`)}>Load parameters</button></div>
+        {#if parameterFields.length > 0}
+          <div class="mt-4 max-h-96 overflow-auto rounded-lg border border-slate-800">
+            <table class="w-full text-left text-sm"><thead class="sticky top-0 bg-slate-900 text-slate-400"><tr><th class="px-3 py-2">Parameter</th><th class="px-3 py-2">Type</th><th class="px-3 py-2">Recorded value</th></tr></thead>
+              <tbody>{#each parameterFields as field}<tr class="border-t border-slate-800"><td class="px-3 py-2 font-mono text-cyan-200">{field.id}</td><td class="px-3 py-2 text-slate-400">{field.type}</td><td class="max-w-xl truncate px-3 py-2 font-mono text-xs">{displayClaimValue(field.value, field.type)}</td></tr>{/each}</tbody></table>
+          </div>
+        {:else}<p class="mt-4 text-sm text-slate-500">Load an epoch to see its authenticated named parameters.</p>{/if}
+      </section>
+      <section class="card p-5"><div class="section-title">Prove a parameter claim</div>
+        <p class="mt-2 text-sm text-slate-400">A field proof authenticates one named value, such as <code>key-deposit</code>, without carrying the complete parameter document.</p>
+        <div class="mt-4 grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+          <label class="text-xs text-slate-400">Parameter<select class="mt-1 block w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" value={parameterFieldId} onchange={(event) => selectParameterField(event.currentTarget.value)}>{#each parameterFields as field}<option value={field.id}>{field.id}</option>{/each}</select></label>
+          <label class="text-xs text-slate-400">Claim<select class="mt-1 block w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" bind:value={parameterClaimMode}><option value="exact">Equals</option>{#if numericParameterType(selectedParameterField?.type)}<option value="minimum">At least</option><option value="maximum">At most</option><option value="range">Inside range</option>{/if}</select></label>
+          <label class="text-xs text-slate-400">{parameterClaimMode === 'range' ? 'Minimum' : 'Expected value'}<input class="mt-1 block w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono" bind:value={parameterExpectedValue} placeholder={selectedParameterField?.type === 'lovelace' ? '2000000' : 'Value'}>{#if selectedParameterField?.type === 'lovelace'}<span class="mt-1 block text-[11px] text-slate-500">Enter lovelace (1 ADA = 1,000,000 lovelace).</span>{/if}</label>
+          {#if parameterClaimMode === 'range'}<label class="text-xs text-slate-400">Maximum<input class="mt-1 block w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono" bind:value={parameterMaximumValue}></label>{/if}
+        </div>
+        <button class="mt-3 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold disabled:opacity-40" disabled={!parameterFieldId} onclick={() => void queryParameterField()}>Query selected parameter</button>
+        {#if selectedProofs.parameters?.response.dataset === 'protocol-parameter-field'}<div class="mt-4 rounded-lg border border-slate-800 bg-slate-950/40 p-4 text-sm"><div class="text-slate-400">Recorded value</div><div class="mt-1 font-mono text-lg text-white">{displayClaimValue(selectedProofs.parameters.response.value, String(selectedProofs.parameters.response.type ?? ''))}</div><div class="mt-1 text-xs text-slate-500">{selectedProofs.parameters.response.fieldId} · epoch {selectedProofs.parameters.epoch} · {selectedProofs.parameters.response.type}</div></div>{/if}
+        <details class="mt-3"><summary class="cursor-pointer text-sm text-slate-400">Raw query response</summary><pre class="mt-2 max-h-64 overflow-auto text-xs">{queryResults.parameters}</pre></details>
         <p class="mt-3 text-sm text-slate-400">{proofStatuses.parameters}</p>
         <div class="mt-3 flex flex-wrap gap-2">
           <button class="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold disabled:opacity-40" disabled={!canGenerate('parameters')} onclick={() => void generateProof('parameters')}>Generate proof</button>
-          <button class="rounded-lg border border-slate-700 px-4 py-2 text-sm disabled:opacity-40" disabled={!proofBundles.parameters} onclick={() => void verifyGeneratedProof('parameters')}>Verify off-chain</button>
-          <button class="rounded-lg border border-slate-700 px-4 py-2 text-sm disabled:opacity-40" disabled={!proofBundles.parameters} onclick={() => downloadProof('parameters')}>Export JSON</button>
+          <button class="rounded-lg border border-slate-700 px-4 py-2 text-sm disabled:opacity-40" disabled={!proofBundles.parameters} onclick={() => void verifyGeneratedProof('parameters')}>Verify proof and claim</button>
+          <button class="rounded-lg border border-slate-700 px-4 py-2 text-sm disabled:opacity-40" disabled={!verificationAccepted('parameters')} onclick={() => downloadProof('parameters')}>Export accepted package</button>
         </div>
-        {#if proofVerifications.parameters}<pre class="mt-4 max-h-64 overflow-auto text-xs">{pretty(proofVerifications.parameters)}</pre>{/if}
-        {#if proofBundles.parameters}<pre class="mt-4 max-h-[620px] overflow-auto text-xs">{pretty(proofBundles.parameters)}</pre>{/if}
+        {#if proofVerifications.parameters}<div class="mt-4 rounded-lg border p-4 {verificationAccepted('parameters') ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200' : 'border-rose-500/40 bg-rose-500/10 text-rose-200'}"><div class="font-semibold">{verificationAccepted('parameters') ? 'Claim accepted' : 'Claim not accepted'}</div><p class="mt-1 text-sm">{verificationExplanation('parameters')}</p></div><details class="mt-3"><summary class="cursor-pointer text-sm text-slate-400">Technical verification details</summary><pre class="mt-2 max-h-64 overflow-auto text-xs">{pretty(proofVerifications.parameters)}</pre></details>{/if}
+        {#if proofBundles.parameters}<details class="mt-3"><summary class="cursor-pointer text-sm text-slate-400">Generated proof package</summary><pre class="mt-2 max-h-[620px] overflow-auto text-xs">{pretty(proofBundles.parameters)}</pre></details>{/if}
       </section>
     </div>
   {:else if view === 'stake'}
@@ -570,23 +780,24 @@
             <label class="text-xs text-slate-400">Credential hash<input class="mt-1 block w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono" bind:value={credentialHash}></label>
           {/if}</div>
         <button class="mt-3 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold disabled:opacity-40" disabled={stakeInputMode === 'address' ? !validStakeAddress(stakeAddress) : !validHash(credentialHash, 28)} onclick={() => void queryStake()}>Query stake</button>
-        <p class="mt-3 text-xs text-slate-500"><code>secondaryKey</code> is the canonical credential key inside the epoch snapshot. <code>completenessPhysicalKey</code> identifies the primary metadata record from which that sealed, complete snapshot was created; the generated nested bundle authenticates its complete descriptor and secondary proof together.</p>
-        <pre class="mt-4 max-h-[520px] overflow-auto text-xs">{queryResults.stake}</pre></section>
-      <section class="card p-5"><div class="section-title">Stake proof and claim intent</div>
+        {#if selectedProofs.stake}<div class="mt-4 grid gap-3 rounded-lg border border-slate-800 bg-slate-950/40 p-4 text-sm sm:grid-cols-3"><div><div class="text-slate-500">Recorded stake</div><div class="mt-1 font-mono text-white">{selectedProofs.stake.response.coin ?? 'Not found'} lovelace</div></div><div><div class="text-slate-500">Delegated pool</div><div class="mt-1 break-all font-mono text-xs text-white">{selectedProofs.stake.response.poolHash ?? 'None'}</div></div><div><div class="text-slate-500">Snapshot</div><div class="mt-1 text-white">{selectedProofs.stake.response.complete === true ? 'Complete' : 'Incomplete'}</div></div></div>{/if}
+        <details class="mt-3"><summary class="cursor-pointer text-sm text-slate-400">Technical query details</summary><p class="mt-2 text-xs text-slate-500"><code>secondaryKey</code> locates this credential in the epoch snapshot. <code>completenessPhysicalKey</code> locates the record proving that the snapshot finished loading.</p><pre class="mt-3 max-h-[520px] overflow-auto text-xs">{queryResults.stake}</pre></details></section>
+      <section class="card p-5"><div class="section-title">Stake proof and claim</div>
+        <p class="mt-2 text-sm text-slate-400">A valid proof authenticates the recorded stake. The claim check separately decides whether your requested amount or pool condition is true.</p>
         <div class="mt-4 grid gap-3 md:grid-cols-3">
           <label class="text-xs text-slate-400">Claim<select class="mt-1 block w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" bind:value={stakeClaimMode}><option value="minimum">At least amount</option><option value="exact">Exact amount</option><option value="pool">Delegated to pool</option><option value="minimum-and-pool">At least amount and pool</option><option value="exact-and-pool">Exact amount and pool</option><option value="absence">Credential absent</option></select></label>
-          <label class="text-xs text-slate-400">Expected lovelace<input class="mt-1 block w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono" inputmode="numeric" bind:value={stakeClaimCoin}></label>
-          <label class="text-xs text-slate-400">Expected pool hash<input class="mt-1 block w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono" bind:value={stakeClaimPool}></label>
+          {#if stakeNeedsCoin()}<label class="text-xs text-slate-400">Expected lovelace<input class="mt-1 block w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono" inputmode="numeric" bind:value={stakeClaimCoin}><span class="mt-1 block text-[11px] text-slate-500">1 ADA = 1,000,000 lovelace</span></label>{/if}
+          {#if stakeNeedsPool()}<label class="text-xs text-slate-400">Expected pool hash<input class="mt-1 block w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono" bind:value={stakeClaimPool}></label>{/if}
         </div>
-        <p class="mt-3 text-xs text-amber-300">Claim intent is exported as metadata. ADR-036 plans the bounded on-chain redeemer exporter; this screen currently verifies the nested MPF proof and anchor binding.</p>
+        <p class="mt-3 text-xs text-amber-300">This screen evaluates the claim off-chain after authenticating the MPF proof. The bounded on-chain redeemer exporter remains a separate ADR-036 milestone.</p>
         <p class="mt-3 text-sm text-slate-400">{proofStatuses.stake}</p>
         <div class="mt-3 flex flex-wrap gap-2">
           <button class="rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold disabled:opacity-40" disabled={!canGenerate('stake')} onclick={() => void generateProof('stake')}>Generate proof</button>
-          <button class="rounded-lg border border-slate-700 px-4 py-2 text-sm disabled:opacity-40" disabled={!proofBundles.stake} onclick={() => void verifyGeneratedProof('stake')}>Verify off-chain</button>
-          <button class="rounded-lg border border-slate-700 px-4 py-2 text-sm disabled:opacity-40" disabled={!proofBundles.stake} onclick={() => downloadProof('stake')}>Export JSON</button>
+          <button class="rounded-lg border border-slate-700 px-4 py-2 text-sm disabled:opacity-40" disabled={!proofBundles.stake} onclick={() => void verifyGeneratedProof('stake')}>Verify proof and claim</button>
+          <button class="rounded-lg border border-slate-700 px-4 py-2 text-sm disabled:opacity-40" disabled={!verificationAccepted('stake')} onclick={() => downloadProof('stake')}>Export accepted package</button>
         </div>
-        {#if proofVerifications.stake}<pre class="mt-4 max-h-64 overflow-auto text-xs">{pretty(proofVerifications.stake)}</pre>{/if}
-        {#if proofBundles.stake}<pre class="mt-4 max-h-[620px] overflow-auto text-xs">{pretty(proofBundles.stake)}</pre>{/if}
+        {#if proofVerifications.stake}<div class="mt-4 rounded-lg border p-4 {verificationAccepted('stake') ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200' : 'border-rose-500/40 bg-rose-500/10 text-rose-200'}"><div class="font-semibold">{verificationAccepted('stake') ? 'Claim accepted' : 'Claim not accepted'}</div><p class="mt-1 text-sm">{verificationExplanation('stake')}</p></div><details class="mt-3"><summary class="cursor-pointer text-sm text-slate-400">Technical verification details</summary><pre class="mt-2 max-h-64 overflow-auto text-xs">{pretty(proofVerifications.stake)}</pre></details>{/if}
+        {#if proofBundles.stake}<details class="mt-3"><summary class="cursor-pointer text-sm text-slate-400">Generated proof package</summary><pre class="mt-2 max-h-[620px] overflow-auto text-xs">{pretty(proofBundles.stake)}</pre></details>{/if}
       </section>
     </div>
   {:else if view === 'governance'}
@@ -623,7 +834,7 @@
       <label class="mt-4 block text-xs text-slate-400">Independent anchor context JSON (optional)<textarea class="mt-1 h-40 w-full rounded-lg border border-slate-700 bg-slate-950 p-3 font-mono text-xs" bind:value={importedAnchor}></textarea></label>
       <button class="mt-3 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-semibold disabled:opacity-40" disabled={!importedProof.trim()} onclick={() => void verifyImportedProof()}>Verify proof</button>
       <p class="mt-3 text-sm text-slate-400">{importedStatus}</p>
-      {#if importedVerdict}<pre class="mt-4 max-h-[520px] overflow-auto text-xs">{pretty(importedVerdict)}</pre>{/if}
+      {#if importedVerdict}<div class="mt-4 rounded-lg border p-4 {asRecord(importedVerdict).accepted === true ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200' : 'border-rose-500/40 bg-rose-500/10 text-rose-200'}"><div class="font-semibold">{asRecord(importedVerdict).accepted === true ? 'Proof and claim accepted' : 'Not accepted'}</div><p class="mt-1 text-sm">{String(asRecord(importedVerdict).explanation ?? 'Review the technical result and trust warning.')}</p></div><details class="mt-3"><summary class="cursor-pointer text-sm text-slate-400">Technical verification details</summary><pre class="mt-2 max-h-[520px] overflow-auto text-xs">{pretty(importedVerdict)}</pre></details>{/if}
     </section>
   {/if}
 {/if}

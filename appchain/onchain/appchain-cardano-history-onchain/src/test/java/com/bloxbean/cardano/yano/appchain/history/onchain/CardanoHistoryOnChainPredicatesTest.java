@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yano.appchain.composite.contracts.CompositeCommitmen
 import com.bloxbean.cardano.yano.appchain.proofs.onchain.AuthenticatedSnapshotOnChainVerifier;
 import com.bloxbean.cardano.yano.appchain.proofs.onchain.MpfOnChainVerifier;
 import com.bloxbean.cardano.yano.appchain.proofs.onchain.MpfPairOnChainVerifier;
+import com.bloxbean.cardano.yano.api.appchain.l1view.ProtocolParamsCanonicalCodec;
 import com.bloxbean.cardano.julc.core.types.JulcList;
 import com.bloxbean.cardano.julc.testkit.ContractTest;
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
@@ -62,8 +63,8 @@ class CardanoHistoryOnChainPredicatesTest extends ContractTest {
 
     @Test
     void parameterPredicateBindsKeyRootEpochAndUnsignedRange() {
-        byte[] key = CardanoHistoryOnChainPredicates.parametersKey(170);
-        byte[] value = leadingParams(170, 44, 155381, 65536);
+        byte[] key = CardanoHistoryOnChainPredicates.parameterFieldKey(170, "max-block-size");
+        byte[] value = unsignedParameterField(170, "max-block-size", 65536);
         byte[] suffix = leafSuffix(Blake2bUtil.blake2bHash256(key));
         byte[] root = Blake2bUtil.blake2bHash256(concat(
                 suffix, Blake2bUtil.blake2bHash256(value)));
@@ -72,17 +73,50 @@ class CardanoHistoryOnChainPredicatesTest extends ContractTest {
         assertThat(CardanoHistoryParametersValidator.verifyAtRoot(proof, root, key,
                 BigInteger.valueOf(170), BigInteger.valueOf(
                         CardanoHistoryParametersValidator.UINT_EXACT),
-                BigInteger.valueOf(4), BigInteger.valueOf(65536), new byte[0])).isTrue();
+                BigInteger.ZERO, BigInteger.valueOf(65536), BigInteger.valueOf(65536),
+                new byte[0])).isTrue();
         assertThat(CardanoHistoryParametersValidator.verifyAtRoot(proof, root, key,
                 BigInteger.valueOf(170), BigInteger.valueOf(
                         CardanoHistoryParametersValidator.UINT_MINIMUM),
-                BigInteger.valueOf(4), BigInteger.valueOf(65537), new byte[0])).isFalse();
+                BigInteger.ZERO, BigInteger.valueOf(65537), BigInteger.valueOf(65537),
+                new byte[0])).isFalse();
+        assertThat(CardanoHistoryParametersValidator.verifyAtRoot(proof, root, key,
+                BigInteger.valueOf(170), BigInteger.valueOf(
+                        CardanoHistoryParametersValidator.UINT_RANGE),
+                BigInteger.ZERO, BigInteger.valueOf(65535), BigInteger.valueOf(65536),
+                new byte[0])).isTrue();
         assertThat(CardanoHistoryParametersValidator.verifyAtRoot(proof, filled(9, 32), key,
-                BigInteger.valueOf(170), BigInteger.ONE, BigInteger.valueOf(4),
-                BigInteger.valueOf(65536), new byte[0])).isFalse();
+                BigInteger.valueOf(170), BigInteger.ONE, BigInteger.ZERO,
+                BigInteger.valueOf(65536), BigInteger.valueOf(65536), new byte[0])).isFalse();
         assertThat(CardanoHistoryParametersValidator.verifyAtRoot(proof, root, filled(8, key.length),
-                BigInteger.valueOf(170), BigInteger.ONE, BigInteger.valueOf(4),
-                BigInteger.valueOf(65536), new byte[0])).isFalse();
+                BigInteger.valueOf(170), BigInteger.ONE, BigInteger.ZERO,
+                BigInteger.valueOf(65536), BigInteger.valueOf(65536), new byte[0])).isFalse();
+    }
+
+    @Test
+    void parameterPredicateDecodesProductionPositiveBignumLeaves() {
+        byte[] key = CardanoHistoryOnChainPredicates.parameterFieldKey(305, "key-deposit");
+        byte[] value = ProtocolParamsCanonicalCodec.encodeLeaf(305, "key-deposit",
+                ProtocolParamsCanonicalCodec.TYPE_LOVELACE, BigInteger.valueOf(2_000_000));
+        byte[] suffix = leafSuffix(Blake2bUtil.blake2bHash256(key));
+        byte[] root = Blake2bUtil.blake2bHash256(concat(
+                suffix, Blake2bUtil.blake2bHash256(value)));
+        var proof = new MpfOnChainVerifier.Proof(key, value, suffix, JulcList.empty());
+
+        assertThat(java.util.HexFormat.of().formatHex(value))
+                .isEqualTo("85011901316b6b65792d6465706f73697402c2431e8480");
+        assertThat(CardanoHistoryParametersValidator.verifyAtRoot(proof, root, key,
+                BigInteger.valueOf(305), BigInteger.valueOf(
+                        CardanoHistoryParametersValidator.UINT_EXACT),
+                BigInteger.valueOf(ProtocolParamsCanonicalCodec.TYPE_LOVELACE),
+                BigInteger.valueOf(2_000_000), BigInteger.valueOf(2_000_000),
+                new byte[0])).isTrue();
+        assertThat(CardanoHistoryParametersValidator.verifyAtRoot(proof, root, key,
+                BigInteger.valueOf(305), BigInteger.valueOf(
+                        CardanoHistoryParametersValidator.UINT_EXACT),
+                BigInteger.valueOf(ProtocolParamsCanonicalCodec.TYPE_LOVELACE),
+                BigInteger.valueOf(2_000_001), BigInteger.valueOf(2_000_001),
+                new byte[0])).isFalse();
     }
 
     @Test
@@ -106,12 +140,16 @@ class CardanoHistoryOnChainPredicatesTest extends ContractTest {
                 fact, completeness, BigInteger.valueOf(169))).isFalse();
     }
 
-    private static byte[] leadingParams(long epoch, long minFeeA, long minFeeB, long maxBlockSize) {
+    private static byte[] unsignedParameterField(long epoch, String fieldId, long value) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        out.write(0x98); out.write(0x38);
-        writeUInt(out, 1); writeUInt(out, epoch); writeUInt(out, minFeeA);
-        writeUInt(out, minFeeB); writeUInt(out, maxBlockSize);
-        for (int index = 5; index <= 10; index++) writeUInt(out, index);
+        out.write(0x85);
+        writeUInt(out, 1);
+        writeUInt(out, epoch);
+        byte[] id = fieldId.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        out.write(0x60 + id.length);
+        out.writeBytes(id);
+        writeUInt(out, 0);
+        writeUInt(out, value);
         return out.toByteArray();
     }
 

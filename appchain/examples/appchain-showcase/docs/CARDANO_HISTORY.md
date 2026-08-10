@@ -84,8 +84,11 @@ visible only while at least one chain advertises `l1-epoch-params-v1`.
    credential hash instead. The modes are mutually exclusive.
 2. Generate a root-fixed primary or authenticated-snapshot proof directly in the subject tab. Stake
    and DRep use their own completed snapshot epoch catalogs and may lag the parameter epoch.
-3. Verify the generated proof against the node's local accepted anchor, or export the JSON material
-   for independent verification.
+3. Verify the generated proof and claim against the node's local accepted anchor. The result shows
+   proof validity and claim truth separately; **accepted** requires both. For example, an authentic
+   stake record of 3 ADA does not satisfy a claim of at least 10 ADA.
+   The generated package records the authenticated actual value and requested predicate explicitly;
+   imported packages are reverified rather than trusting this explanatory verdict.
 4. Use **Verify proof** only for an externally supplied bundle. Caller-pinned verification requires
    the complete anchor identity; a partial identity is rejected.
 
@@ -93,11 +96,13 @@ The console labels bundled-root, local-anchor, and caller-pinned verification se
 from the queried node is not an independent Cardano-anchor verification. Use the standalone CLI with
 an independently obtained trusted-root document for the full portable verification workflow.
 
-Stake claim controls describe minimum/exact coin, pool, combined, and complete-snapshot absence
-intents. Until ADR-036's production proof-to-redeemer adapter and validator vectors are complete, the
-console does not claim that this metadata is an on-chain redeemer. ADR-036 also plans named, typed
-parameter leaves such as `params/{epoch}/fields/key-deposit`, enabling compact future proofs such as
-"key deposit is 2 ADA at epoch 305" without parsing a hard-fork-specific positional array.
+Stake claim controls evaluate minimum/exact coin, pool, combined, and complete-snapshot absence
+conditions off-chain. The Parameters tab discovers named, typed leaves such as
+`params/{epoch}/fields/key-deposit`, then generates and verifies equality, minimum, maximum, range,
+or exact structured claims as appropriate for the field type. The claim evaluator decodes the value
+carried by the verified proof rather than trusting editable JSON. Until ADR-036's production
+proof-to-redeemer adapter and validator vectors are complete, the console does not describe an
+exported claim package as an on-chain redeemer.
 
 ## Standalone CLI
 

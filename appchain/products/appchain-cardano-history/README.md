@@ -33,6 +33,12 @@ server-side artifacts and contain no HTML, CSS, JavaScript, or UI provider. The 
 console exposes a native Cardano History page only when a running chain advertises the corresponding
 capability; independently developed product UIs can use the same public APIs.
 
+Protocol parameters use a self-describing version-2 document and independently provable named
+leaves under `params/{epoch}/fields/{field-id}`. The domain API publishes the field catalog and a
+typed field route; the console can evaluate exact and numeric range claims after verifying the leaf
+proof and L1 anchor binding. A cryptographically valid proof is not presented as a successful claim
+unless the requested condition is also true.
+
 The independently distributable
 `appchain-cardano-history-client` and `appchain-cardano-history-cli` modules consume that API and the
 generic root-fixed proof surface. See `docs/appchain/CARDANO_HISTORY.md` for usage and trust labels.

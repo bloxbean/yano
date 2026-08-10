@@ -75,6 +75,22 @@ public final class ProofSubjects {
                 value -> ProtocolParamsCanonicalCodec.validate(epoch, value));
     }
 
+    public static StateProofSubject<ProtocolParamsCanonicalCodec.Field> epochProtocolParameterField(
+            String componentId,
+            long epoch,
+            String fieldId
+    ) {
+        Objects.requireNonNull(fieldId, "fieldId");
+        return componentSubject(EpochParamsContract.FIELD_PROOF_SUBJECT, componentId,
+                EpochParamsContract.fieldKey(epoch, fieldId), value -> {
+                    var field = ProtocolParamsCanonicalCodec.decodeLeaf(value);
+                    if (!field.id().equals(fieldId)) {
+                        throw new IllegalArgumentException("protocol-parameter field id mismatch");
+                    }
+                    return field;
+                });
+    }
+
     public static StateProofSubject<EpochStakeContract.Value> epochStake(
             String componentId,
             long epoch,

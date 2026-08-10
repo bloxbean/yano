@@ -11,6 +11,10 @@ const config = {
         'default-src': ['self'],
         'script-src': ['self'],
         'style-src': ['self'],
+        // SvelteKit renders the app wrapper and its accessibility announcer with
+        // bounded style attributes. Keep style elements external/hash-only while
+        // allowing those framework-owned attributes to render correctly.
+        'style-src-attr': ['unsafe-inline'],
         'connect-src': ['self', 'http:', 'https:'],
         'img-src': ['self', 'data:'],
         'object-src': ['none'],

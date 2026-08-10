@@ -191,9 +191,8 @@ class CardanoHistoryProofBundleTest {
     }
 
     private static byte[] canonicalParams() throws Exception {
-        List<Object> fields = new ArrayList<>(java.util.Collections.nCopies(56, null));
-        fields.set(0, 1); fields.set(1, EPOCH);
-        return new ObjectMapper(new CBORFactory()).writeValueAsBytes(fields);
+        return new ObjectMapper(new CBORFactory()).writeValueAsBytes(
+                List.of(2, EPOCH, List.of()));
     }
     private static void put(MpfTrie trie, StateProofSubject<?> subject, byte[] value) {
         trie.put(subject.canonicalKey(), value);

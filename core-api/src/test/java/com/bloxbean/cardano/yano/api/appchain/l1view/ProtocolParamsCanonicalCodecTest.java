@@ -1,8 +1,6 @@
 package com.bloxbean.cardano.yano.api.appchain.l1view;
 
 import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
-import com.fasterxml.jackson.dataformat.cbor.CBORFactory;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -13,10 +11,8 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class ProtocolParamsCanonicalCodecTest {
-    private static final ObjectMapper CBOR = new ObjectMapper(new CBORFactory());
-
     @Test
-    void encodesCostModelsOnceInCompactLedgerOrderWithinProofEnvelope() throws Exception {
+    void encodesNamedCostModelsAndTypedLeavesDeterministically() {
         Map<String, LinkedHashMap<String, Long>> named = new LinkedHashMap<>();
         Map<String, List<Long>> raw = new LinkedHashMap<>();
         for (int language = 1; language <= 3; language++) {
@@ -32,28 +28,66 @@ class ProtocolParamsCanonicalCodecTest {
         }
 
         byte[] encoded = ProtocolParamsCanonicalCodec.encode(snapshot(42, named, raw));
-        List<?> fields = CBOR.readValue(encoded, List.class);
+        var document = ProtocolParamsCanonicalCodec.decode(42, encoded);
 
-        assertThat(encoded.length).isLessThanOrEqualTo(8 * 1024);
-        assertThat(fields).hasSize(56);
-        assertThat(fields.get(21)).isNull();
-        assertThat(fields.get(22)).isInstanceOf(Map.class);
+        assertThat(encoded.length).isLessThanOrEqualTo(ProtocolParamsCanonicalCodec.MAX_DOCUMENT_BYTES);
+        assertThat(document.fields()).extracting(ProtocolParamsCanonicalCodec.Field::id)
+                .contains("cost-models", "cost-model-hash-plutus-v1",
+                        "cost-model-hash-plutus-v2", "cost-model-hash-plutus-v3")
+                .isSorted();
+        var keyDeposit = document.fields().stream()
+                .filter(field -> field.id().equals("key-deposit")).findFirst();
+        assertThat(keyDeposit).isEmpty();
         assertThat(ProtocolParamsCanonicalCodec.validate(42, encoded)).isEqualTo(encoded);
     }
 
     @Test
-    void derivesCompactLedgerOrderWhenOnlyNamedProjectionIsAvailable() throws Exception {
+    void derivesCompactLedgerOrderWhenOnlyNamedProjectionIsAvailable() {
         LinkedHashMap<String, Long> model = new LinkedHashMap<>();
         model.put("000", 11L);
         model.put("001", 22L);
 
         byte[] encoded = ProtocolParamsCanonicalCodec.encode(
                 snapshot(7, Map.of("UnknownPlutus", model), null));
-        List<?> fields = CBOR.readValue(encoded, List.class);
+        var document = ProtocolParamsCanonicalCodec.decode(7, encoded);
 
-        assertThat(fields.get(21)).isNull();
-        assertThat(((Map<?, ?>) fields.get(22)).get("UnknownPlutus")).isEqualTo(List.of(11, 22));
+        assertThat(document.fields().stream().filter(field -> field.id().equals("cost-models"))
+                .findFirst().orElseThrow().value()).isEqualTo(Map.of("UnknownPlutus",
+                        List.of(java.math.BigInteger.valueOf(11), java.math.BigInteger.valueOf(22))));
         assertThat(ProtocolParamsCanonicalCodec.validate(7, encoded)).isEqualTo(encoded);
+    }
+
+    @Test
+    void createsStableNamedLovelaceLeaf() {
+        var value = snapshot(42, Map.of(), Map.of());
+        value = new ProtocolParamsSnapshot(value.epoch(), value.minFeeA(), value.minFeeB(),
+                value.maxBlockSize(), value.maxTxSize(), value.maxBlockHeaderSize(),
+                java.math.BigInteger.valueOf(2_000_000), value.poolDeposit(), value.eMax(),
+                value.nOpt(), value.a0(), value.rho(), value.tau(), value.decentralisationParam(),
+                value.extraEntropy(), value.protocolMajorVer(), value.protocolMinorVer(),
+                value.minUtxo(), value.minPoolCost(), value.nonce(), value.costModels(),
+                value.costModelsRaw(), value.priceMem(), value.priceStep(), value.maxTxExMem(),
+                value.maxTxExSteps(), value.maxBlockExMem(), value.maxBlockExSteps(),
+                value.maxValSize(), value.collateralPercent(), value.maxCollateralInputs(),
+                value.coinsPerUtxoSize(), value.coinsPerUtxoWord(), value.pvtMotionNoConfidence(),
+                value.pvtCommitteeNormal(), value.pvtCommitteeNoConfidence(),
+                value.pvtHardForkInitiation(), value.pvtPPSecurityGroup(),
+                value.dvtMotionNoConfidence(), value.dvtCommitteeNormal(),
+                value.dvtCommitteeNoConfidence(), value.dvtUpdateToConstitution(),
+                value.dvtHardForkInitiation(), value.dvtPPNetworkGroup(),
+                value.dvtPPEconomicGroup(), value.dvtPPTechnicalGroup(), value.dvtPPGovGroup(),
+                value.dvtTreasuryWithdrawal(), value.committeeMinSize(),
+                value.committeeMaxTermLength(), value.govActionLifetime(), value.govActionDeposit(),
+                value.drepDeposit(), value.drepActivity(), value.minFeeRefScriptCostPerByte());
+        var field = ProtocolParamsCanonicalCodec.field(42,
+                ProtocolParamsCanonicalCodec.encode(value), "key-deposit").orElseThrow();
+        assertThat(field.typeName()).isEqualTo("lovelace");
+        assertThat(field.value()).isEqualTo(java.math.BigInteger.valueOf(2_000_000));
+        var decoded = ProtocolParamsCanonicalCodec.decodeLeaf(field.canonicalCbor());
+        assertThat(decoded.id()).isEqualTo(field.id());
+        assertThat(decoded.type()).isEqualTo(field.type());
+        assertThat(decoded.value()).isEqualTo(field.value());
+        assertThat(decoded.canonicalCbor()).isEqualTo(field.canonicalCbor());
     }
 
     private static ProtocolParamsSnapshot snapshot(int epoch,

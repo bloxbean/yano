@@ -8,6 +8,20 @@ named protocol-parameter projections, and reference off-chain/on-chain claim pac
 **Supersedes before release:** the positional protocol-parameter value and positional-field validator
 described by ADR-028/035
 
+**Implementation update (2026-08-10):** The runtime now writes the version-2 named parameter
+document plus per-field leaves and metadata, the domain API exposes field discovery/query
+coordinates, the Java client exposes typed field proof subjects, and the console supports typed
+parameter and stake claims. Console verification reports `proofValid`, `claimValid`, and `accepted`
+separately; `accepted` is true only when the authenticated proof/anchor binding and every requested
+semantic condition pass. Semantic evaluation decodes the canonical value carried by the verified
+proof rather than trusting editable presentation JSON. Generated packages mark claims pending until
+verification and then embed the authenticated actual value, requested predicate, proof result,
+claim result, and acceptance decision. This embedded decision is explanatory; importers recompute
+it from the proof and never trust the package's self-reported verdict. The MPF reference validator
+also parses the positive-bignum encoding emitted by the production parameter codec, with a regression
+vector taken from the epoch-305 `key-deposit` leaf. Production redeemer export, complete CLI
+field commands, cross-language golden vectors, and full qualification remain in P4-P6.
+
 ## 1. Context and current behavior
 
 Cardano History already authenticates protocol-parameter documents in primary app-chain MPF state and
@@ -152,8 +166,8 @@ max-block-ex-units        max-value-size
 collateral-percent        max-collateral-inputs
 coins-per-utxo-byte       governance-action-deposit
 drep-deposit              drep-activity
-cost-models               cost-model-hash/plutus-v1
-cost-model-hash/plutus-v2 cost-model-hash/plutus-v3
+cost-models               cost-model-hash-plutus-v1
+cost-model-hash-plutus-v2 cost-model-hash-plutus-v3
 ```
 
 The registry may add fields. Existing IDs never change meaning or type. Aliases are API-only and are
@@ -171,7 +185,9 @@ Rules:
 
 * field entries are unique and sorted by unsigned UTF-8 field-ID bytes;
 * IDs are lowercase ASCII kebab-case with bounded length;
-* integers use canonical CBOR integers; ledger coin values are non-negative integers;
+* leaf version, epoch, and type discriminators use canonical CBOR unsigned integers; normalized
+  non-negative parameter values use CBOR tag 2 plus a bounded unsigned magnitude, matching the
+  frozen cross-language field-leaf profile; ledger coin values are non-negative integers;
 * rationals are reduced `[numerator, denominator]` pairs with positive denominator;
 * byte strings remain byte strings and hashes have field-specific fixed lengths;
 * arrays/maps have deterministic ordering and bounded depth/count/size;
@@ -281,6 +297,11 @@ The portable package carries:
 * committed height and application/commitment profile identity; and
 * optional caller-pinned L1 anchor identity.
 
+Before verification, its claim status is `pending-offchain-verification`. After verification it
+also carries an explanatory result containing the authenticated actual value, requested predicate,
+`proofAuthentic`, `claimSatisfied`, and `accepted`. Consumers must recompute those fields from the
+proof; the imported-proof flow does so and ignores a bundled self-reported result.
+
 One production converter validates that package and emits the generic MPF reference-validator
 redeemer shape. It never accepts an arbitrary UI claim that is not exactly reflected in authenticated
 bytes. JMT packages remain off-chain-only and the UI disables on-chain export for them.
@@ -293,8 +314,9 @@ bytes. JMT packages remain off-chain-only and the UI disables on-chain export fo
    anchored height, and root. A valid proof for another chain or snapshot is rejected.
 3. Snapshot completeness and fact proofs must use one descriptor/root; independently valid proofs
    from different snapshots cannot be combined.
-4. UI claim controls are descriptive until the production converter and validator vector pass. The
-   page must say that no on-chain redeemer is available rather than export an incomplete object.
+4. UI claim controls are evaluated off-chain and are not an on-chain redeemer. The page must
+   distinguish authenticated proof validity from claim truth and say that no on-chain redeemer is
+   available rather than export an incomplete object.
 5. Sensitive API keys and imported proof material are not persisted in browser local storage or
    written to logs.
 6. Canonicalization has cross-language Java and validator golden vectors, including malformed and
@@ -404,4 +426,3 @@ semantics.
 Removing the positional format changes Cardano History roots and application profile identity. This
 is accepted before release and requires fresh showcase chains, but avoids permanent dual-format
 technical debt.
-

@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConsensusProfile;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
+import com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochParamsContract;
 import com.bloxbean.cardano.yano.appchain.testkit.AppChainTestProfiles;
 import org.junit.jupiter.api.Test;
 
@@ -23,6 +24,12 @@ class CardanoHistoryStateMachinesTest {
         assertThat(machine.capabilityManifest().components())
                 .extracting(component -> component.id())
                 .containsExactly(CardanoHistoryProduct.PARAMS_COMPONENT);
+        assertThat(machine.capabilityManifest().components().getFirst().querySubjects())
+                .containsExactlyInAnyOrder(
+                        EpochParamsContract.QUERY_PATH,
+                        EpochParamsContract.FIELD_QUERY_PATH,
+                        EpochParamsContract.META_QUERY_PATH,
+                        EpochParamsContract.LATEST_QUERY_PATH);
         assertThat(machine.authenticatedSnapshotSeries()).isEmpty();
     }
 

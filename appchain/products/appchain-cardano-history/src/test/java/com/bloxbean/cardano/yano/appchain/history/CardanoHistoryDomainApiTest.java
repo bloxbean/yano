@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.history;
 
 import com.bloxbean.cardano.yano.api.appchain.AppQueryResult;
+import com.bloxbean.cardano.yano.api.appchain.l1view.ProtocolParamsCanonicalCodec;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiContext;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiException;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiRequest;
@@ -154,7 +155,7 @@ class CardanoHistoryDomainApiTest {
         DomainQueryService queries = service((chain, path, params) -> result(
                 AggregateQueryCodecV1.encodeResponse(List.of(
                         new AggregateQueryCodecV1.Result(CardanoHistoryProduct.PARAMS_COMPONENT,
-                                EpochParamsContract.QUERY_PATH, new byte[]{1, 2, 3})),
+                                EpochParamsContract.QUERY_PATH, parameterDocument())),
                         AggregateQueryLimitsV1.DEFAULT)));
         CardanoHistoryDomainApi api = new CardanoHistoryDomainApi(new DomainApiContext(Map.of(), queries));
         assertThatThrownBy(() -> api.handle(request(CardanoHistoryDomainApi.PARAMS,
@@ -168,6 +169,33 @@ class CardanoHistoryDomainApiTest {
                 Map.of("chain", List.of(CHAIN)))).body(), StandardCharsets.UTF_8);
         assertThat(response).contains("\"dataset\":\"protocol-parameters\"",
                 "\"kind\":\"primary\"", "\"physicalKey\":");
+    }
+
+    @Test
+    void namedParameterFieldReturnsTypedValueAndRootFixedProofPair() {
+        byte[] leaf = ProtocolParamsCanonicalCodec.encodeLeaf(EPOCH, "key-deposit",
+                ProtocolParamsCanonicalCodec.TYPE_LOVELACE, BigInteger.valueOf(2_000_000));
+        byte[] meta = EpochParamsContract.encodeMeta(new EpochParamsContract.Meta(
+                EPOCH, 1, filled(7, 32)));
+        DomainQueryService queries = service((chain, path, params) -> result(
+                AggregateQueryCodecV1.encodeResponse(List.of(
+                        new AggregateQueryCodecV1.Result(CardanoHistoryProduct.PARAMS_COMPONENT,
+                                EpochParamsContract.FIELD_QUERY_PATH, leaf),
+                        new AggregateQueryCodecV1.Result(CardanoHistoryProduct.PARAMS_COMPONENT,
+                                EpochParamsContract.META_QUERY_PATH, meta)),
+                        AggregateQueryLimitsV1.DEFAULT)));
+        CardanoHistoryDomainApi api = new CardanoHistoryDomainApi(
+                new DomainApiContext(Map.of(), queries));
+
+        String response = new String(api.handle(request(CardanoHistoryDomainApi.PARAM_FIELD,
+                "epochs/170/parameters/fields/key-deposit",
+                Map.of("epoch", "170", "field_id", "key-deposit"),
+                Map.of("chain", List.of(CHAIN)))).body(), StandardCharsets.UTF_8);
+
+        assertThat(response).contains("\"dataset\":\"protocol-parameter-field\"",
+                "\"fieldId\":\"key-deposit\"", "\"type\":\"lovelace\"",
+                "\"value\":\"2000000\"", "\"complete\":true",
+                "\"kind\":\"primary-pair\"");
     }
 
     @Test
@@ -259,6 +287,10 @@ class CardanoHistoryDomainApiTest {
 
     private static byte[] filled(int value, int size) {
         byte[] bytes = new byte[size]; Arrays.fill(bytes, (byte) value); return bytes;
+    }
+
+    private static byte[] parameterDocument() {
+        return new byte[]{(byte) 0x83, 0x02, 0x18, (byte) 0xaa, (byte) 0x80};
     }
 
     @FunctionalInterface private interface Query {

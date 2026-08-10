@@ -1,8 +1,12 @@
 package com.bloxbean.cardano.yano.appchain.stdlib;
 
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
+import com.bloxbean.cardano.yano.api.appchain.l1view.ProtocolParamsCanonicalCodec;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochParamsContract;
 import com.bloxbean.cardano.yano.runtime.appchain.StateMachineConformance;
+import co.nstant.in.cbor.CborEncoder;
+import co.nstant.in.cbor.model.Array;
+import co.nstant.in.cbor.model.UnsignedInteger;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
@@ -22,7 +26,7 @@ class EpochParamsStateMachineTest {
                 .restartAtHeight(5)
                 .snapshotAtHeight(8)
                 .messageGenerator((height, index, random) -> {
-                    byte[] params = new byte[]{(byte) 0x82, 0x01, (byte) height};
+                    byte[] params = document(height);
                     byte[] claim = EpochParamsContract.encodeClaim(
                             new EpochParamsContract.Claim(height, params));
                     L1Observation observation = L1Observation.epoch(
@@ -44,10 +48,27 @@ class EpochParamsStateMachineTest {
     @Test
     void claimCodecAndKeysAreCanonical() {
         EpochParamsContract.Claim claim = new EpochParamsContract.Claim(
-                42, new byte[]{(byte) 0x81, 0x01});
+                42, document(42));
         assertThat(EpochParamsContract.decodeClaim(
                 EpochParamsContract.encodeClaim(claim))).isEqualTo(claim);
         assertThat(new String(EpochParamsContract.stateKey(42),
-                java.nio.charset.StandardCharsets.US_ASCII)).isEqualTo("params/42");
+                java.nio.charset.StandardCharsets.US_ASCII)).isEqualTo("params/42/document");
+        assertThat(new String(EpochParamsContract.fieldKey(42, "key-deposit"),
+                java.nio.charset.StandardCharsets.US_ASCII))
+                .isEqualTo("params/42/fields/key-deposit");
+    }
+
+    private static byte[] document(long epoch) {
+        try {
+            Array document = new Array();
+            document.add(new UnsignedInteger(ProtocolParamsCanonicalCodec.VERSION));
+            document.add(new UnsignedInteger(epoch));
+            document.add(new Array());
+            var output = new java.io.ByteArrayOutputStream();
+            new CborEncoder(output).encode(document);
+            return output.toByteArray();
+        } catch (Exception failure) {
+            throw new IllegalStateException(failure);
+        }
     }
 }
