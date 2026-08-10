@@ -47,6 +47,7 @@ public final class CardanoHistoryStateMachines {
                 "machines.epoch-stake.snapshot-profile", identity.profile().id());
         String drepProfile = settings.getOrDefault(
                 "machines.epoch-governance.drep-snapshot-profile", stakeProfile);
+        requireAuthenticatedSnapshots(settings, preset);
 
         var builder = ComposableAppStateMachine.builder(
                 CardanoHistoryProduct.STATE_MACHINE_ID, context, preset.id(),
@@ -103,6 +104,39 @@ public final class CardanoHistoryStateMachines {
             return value;
         } catch (RuntimeException malformed) {
             throw new IllegalArgumentException(key + " must be between 1 and 25000", malformed);
+        }
+    }
+
+    private static void requireAuthenticatedSnapshots(
+            Map<String, String> settings, CardanoHistoryPreset preset) {
+        if (!preset.stake() && !preset.governance()) {
+            return;
+        }
+        String enabled = settings.getOrDefault(
+                "capabilities.authenticated-snapshots.enabled", "false");
+        if (!"true".equals(enabled)) {
+            throw new IllegalArgumentException("Cardano History stake/governance presets require "
+                    + "capabilities.authenticated-snapshots.enabled=true");
+        }
+        String selected = settings.getOrDefault(
+                "capabilities.authenticated-snapshots.series", "all");
+        List<String> series = "all".equals(selected)
+                ? List.of("*") : List.of(selected.split(",", -1));
+        if (series.stream().anyMatch(String::isBlank)) {
+            throw new IllegalArgumentException(
+                    "Cardano History authenticated snapshot series must not be empty");
+        }
+        if (!series.contains("*")) {
+            if (preset.stake() && !series.contains(CardanoHistoryProduct.STAKE_COMPONENT
+                    + "." + EpochStakeStateMachine.SNAPSHOT_SERIES_ID)) {
+                throw new IllegalArgumentException(
+                        "Cardano History stake preset requires its per-epoch snapshot series");
+            }
+            if (preset.governance() && !series.contains(CardanoHistoryProduct.GOVERNANCE_COMPONENT
+                    + "." + EpochGovernanceStateMachine.DREP_SNAPSHOT_SERIES_ID)) {
+                throw new IllegalArgumentException(
+                        "Cardano History governance preset requires its per-epoch DRep snapshot series");
+            }
         }
     }
 

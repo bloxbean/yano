@@ -256,6 +256,14 @@ validate_common() {
     full|full-v1) CARDANO_HISTORY_PROFILE=full-v1;;
     *) die "Cardano History profile must be params-only, params-stake, params-governance, or full";;
   esac
+  # Large Cardano History datasets always use one logical authenticated
+  # snapshot per dataset epoch. The flag remains useful for generic/custom
+  # chains, but a released stake/governance preset cannot silently fall back
+  # to the ever-growing primary-map layout.
+  if [ "$CARDANO_HISTORY_ENABLED" = true ] \
+      && [ "$CARDANO_HISTORY_PROFILE" != params-only-v1 ]; then
+    AUTHENTICATED_SNAPSHOT_SELECTION="$CARDANO_HISTORY_CHAIN_ID"
+  fi
   if [ "$CARDANO_HISTORY_ENABLED" != true ]; then
     [ "$CARDANO_HISTORY_PROFILE_EXPLICIT" != true ] \
       || die "--disable-cardano-history cannot be combined with --cardano-history-profile"

@@ -58,6 +58,22 @@ class CardanoHistoryStateMachinesTest {
     }
 
     @Test
+    void largeDatasetPresetsRequireTheirPerEpochAuthenticatedSnapshots() {
+        Map<String, String> disabled = new LinkedHashMap<>(settings("params-stake-v1"));
+        disabled.remove("capabilities.authenticated-snapshots.enabled");
+        assertThatThrownBy(() -> CardanoHistoryStateMachines.create(context(disabled)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("authenticated-snapshots.enabled=true");
+
+        Map<String, String> missingStake = new LinkedHashMap<>(settings("params-stake-v1"));
+        missingStake.put("capabilities.authenticated-snapshots.series",
+                "l1-epoch-governance-v1.drep-distribution");
+        assertThatThrownBy(() -> CardanoHistoryStateMachines.create(context(missingStake)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("per-epoch snapshot series");
+    }
+
+    @Test
     void profileIdentityIsIndependentOfConfigurationMapOrder() {
         Map<String, String> first = settings("full-v1");
         Map<String, String> reversed = new LinkedHashMap<>();
@@ -77,6 +93,10 @@ class CardanoHistoryStateMachinesTest {
         }
         if (preset.equals("params-governance-v1") || preset.equals("full-v1")) {
             values.put("observers.epoch-governance.type", "l1-epoch-governance-v1");
+        }
+        if (!preset.equals("params-only-v1")) {
+            values.put("capabilities.authenticated-snapshots.enabled", "true");
+            values.put("capabilities.authenticated-snapshots.series", "all");
         }
         return values;
     }
