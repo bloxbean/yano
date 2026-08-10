@@ -79,13 +79,25 @@ consensus root and a proof request never triggers an implicit restore.
 Open the console printed by `quickstart` and choose **Cardano history**. The navigation entry is
 visible only while at least one chain advertises `l1-epoch-params-v1`.
 
-1. Query protocol parameters, a stake credential, DRep, or proposal.
-2. Generate a root-fixed primary or authenticated-snapshot proof from the query coordinates.
-3. Export the JSON material for independent verification.
+1. Query protocol parameters, a stake credential, DRep, or proposal. Stake defaults to a Bech32
+   `stake`/`stake_test` address; **Advanced credential** accepts the raw key/script discriminator and
+   credential hash instead. The modes are mutually exclusive.
+2. Generate a root-fixed primary or authenticated-snapshot proof directly in the subject tab. Stake
+   and DRep use their own completed snapshot epoch catalogs and may lag the parameter epoch.
+3. Verify the generated proof against the node's local accepted anchor, or export the JSON material
+   for independent verification.
+4. Use **Verify proof** only for an externally supplied bundle. Caller-pinned verification requires
+   the complete anchor identity; a partial identity is rejected.
 
-The native console may call the node's generic proof verifier for a primary proof; that result is
-not an independent Cardano-anchor verification. Use the standalone CLI with an independently
-obtained trusted-root document for the full portable verification workflow.
+The console labels bundled-root, local-anchor, and caller-pinned verification separately. A result
+from the queried node is not an independent Cardano-anchor verification. Use the standalone CLI with
+an independently obtained trusted-root document for the full portable verification workflow.
+
+Stake claim controls describe minimum/exact coin, pool, combined, and complete-snapshot absence
+intents. Until ADR-036's production proof-to-redeemer adapter and validator vectors are complete, the
+console does not claim that this metadata is an on-chain redeemer. ADR-036 also plans named, typed
+parameter leaves such as `params/{epoch}/fields/key-deposit`, enabling compact future proofs such as
+"key deposit is 2 ADA at epoch 305" without parsing a hard-fork-specific positional array.
 
 ## Standalone CLI
 

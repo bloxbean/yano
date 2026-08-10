@@ -11,6 +11,7 @@ import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiRequest;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiResponse;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiRoute;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainHttpMethod;
+import com.bloxbean.cardano.yano.api.util.CardanoBech32Ids;
 import com.bloxbean.cardano.yano.appchain.composite.CompositeStateKeys;
 import com.bloxbean.cardano.yano.appchain.composite.contracts.AggregateQueryCodecV1;
 import com.bloxbean.cardano.yano.appchain.composite.contracts.AggregateQueryLimitsV1;
@@ -32,6 +33,7 @@ public final class CardanoHistoryDomainApi implements DomainApi {
     static final String EPOCHS = "epochs";
     static final String PARAMS = "parameters";
     static final String STAKE = "stake";
+    static final String STAKE_ADDRESS = "stake-address";
     static final String DREP = "drep";
     static final String PROPOSAL = "proposal";
     private static final int API_VERSION = 1;
@@ -42,6 +44,7 @@ public final class CardanoHistoryDomainApi implements DomainApi {
             read(STATUS, "status"), read(EPOCHS, "epochs"),
             read(PARAMS, "epochs/{epoch}/parameters"),
             read(STAKE, "epochs/{epoch}/stake/{credential_type}/{credential_hash}"),
+            read(STAKE_ADDRESS, "epochs/{epoch}/stake-address/{stake_address}"),
             read(DREP, "epochs/{epoch}/dreps/{drep_type}/{drep_hash}"),
             read(PROPOSAL, "proposals/{transaction_id}/{index}"));
 
@@ -64,6 +67,7 @@ public final class CardanoHistoryDomainApi implements DomainApi {
             case EPOCHS -> latest(request, true);
             case PARAMS -> parameters(request);
             case STAKE -> stake(request);
+            case STAKE_ADDRESS -> stakeAddress(request);
             case DREP -> drep(request);
             case PROPOSAL -> proposal(request);
             default -> throw notFound();
@@ -158,6 +162,21 @@ public final class CardanoHistoryDomainApi implements DomainApi {
         long epoch = epoch(request.pathParameters().get("epoch"));
         int type = discriminator(request.pathParameters().get("credential_type"), 1);
         byte[] hash = fixedHex(request.pathParameters().get("credential_hash"), 28);
+        return stake(request, epoch, type, hash, null);
+    }
+
+    private DomainApiResponse stakeAddress(DomainApiRequest request) {
+        requireKeys(request.queryParameters(), CHAIN_ONLY);
+        long epoch = epoch(request.pathParameters().get("epoch"));
+        CardanoBech32Ids.StakeCredential credential = CardanoBech32Ids.stakeCredential(
+                request.pathParameters().get("stake_address"));
+        if (credential == null) throw invalid();
+        return stake(request, epoch, credential.credentialType(),
+                HexFormat.of().parseHex(credential.credentialHash()), credential.stakeAddress());
+    }
+
+    private DomainApiResponse stake(DomainApiRequest request, long epoch, int type,
+                                    byte[] hash, String stakeAddress) {
         EpochStakeContract.Query fact = new EpochStakeContract.Query(epoch, type, hash);
         AppQueryResult result = aggregate(chain(request.queryParameters()), List.of(
                 sub(CardanoHistoryProduct.STAKE_COMPONENT, EpochStakeContract.QUERY_PATH,
@@ -174,6 +193,9 @@ public final class CardanoHistoryDomainApi implements DomainApi {
         EpochStakeContract.Value decoded = value.length == 0 ? null : EpochStakeContract.decodeValue(value);
         StringBuilder body = root(result).append(",\"dataset\":\"epoch-stake\",\"datasetVersion\":1")
                 .append(",\"snapshotSemantics\":\"END_OF_EPOCH\",\"datasetEpoch\":").append(epoch)
+                .append(",\"credentialType\":").append(type)
+                .append(",\"credentialHash\":").append(quote(hex(hash)))
+                .append(",\"stakeAddress\":").append(stakeAddress == null ? "null" : quote(stakeAddress))
                 .append(",\"complete\":").append(meta != null && meta.complete())
                 .append(",\"absenceProvable\":").append(meta != null && meta.complete())
                 .append(",\"found\":").append(decoded != null);

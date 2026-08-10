@@ -6,6 +6,7 @@ import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiException;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiRequest;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainHttpMethod;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainQueryService;
+import com.bloxbean.cardano.yano.api.util.CardanoBech32Ids;
 import com.bloxbean.cardano.yano.appchain.composite.contracts.AggregateQueryCodecV1;
 import com.bloxbean.cardano.yano.appchain.composite.contracts.AggregateQueryLimitsV1;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochParamsContract;
@@ -58,6 +59,45 @@ class CardanoHistoryDomainApiTest {
         assertThat(response).contains("\"committedHeight\":41", "\"complete\":true",
                 "\"absenceProvable\":true", "\"coin\":\"12000000\"",
                 "\"kind\":\"authenticated-snapshot\"");
+    }
+
+    @Test
+    void stakeAddressIsParsedWithTheSharedCardanoAddressContract() {
+        String address = CardanoBech32Ids.stakeAddress(0, hex(CREDENTIAL), 0);
+        var entry = new EpochStakeContract.Entry(0, CREDENTIAL,
+                BigInteger.valueOf(12_000_000), POOL);
+        var meta = new EpochStakeContract.Meta(new EpochStakeContract.Manifest(
+                EPOCH, 1, 1, 1, filled(5, 32)), 1, true);
+        DomainQueryService queries = service((chain, path, params) -> result(
+                AggregateQueryCodecV1.encodeResponse(List.of(
+                        new AggregateQueryCodecV1.Result(CardanoHistoryProduct.STAKE_COMPONENT,
+                                EpochStakeContract.QUERY_PATH, EpochStakeContract.encodeValue(entry)),
+                        new AggregateQueryCodecV1.Result(CardanoHistoryProduct.STAKE_COMPONENT,
+                                EpochStakeContract.META_QUERY_PATH, EpochStakeContract.encodeMeta(meta))),
+                        AggregateQueryLimitsV1.DEFAULT)));
+        CardanoHistoryDomainApi api = new CardanoHistoryDomainApi(new DomainApiContext(Map.of(), queries));
+
+        String response = new String(api.handle(request(CardanoHistoryDomainApi.STAKE_ADDRESS,
+                "epochs/170/stake-address/" + address,
+                Map.of("epoch", "170", "stake_address", address),
+                Map.of("chain", List.of(CHAIN)))).body(), StandardCharsets.UTF_8);
+
+        assertThat(response).contains("\"stakeAddress\":\"" + address + "\"",
+                "\"credentialType\":0", "\"credentialHash\":\"" + hex(CREDENTIAL) + "\"");
+    }
+
+    @Test
+    void malformedOrNonRewardStakeAddressIsRejected() {
+        CardanoHistoryDomainApi api = new CardanoHistoryDomainApi(new DomainApiContext(Map.of(),
+                service((chain, path, params) -> result(new byte[0]))));
+
+        assertThatThrownBy(() -> api.handle(request(CardanoHistoryDomainApi.STAKE_ADDRESS,
+                "epochs/170/stake-address/not-an-address",
+                Map.of("epoch", "170", "stake_address", "not-an-address"),
+                Map.of("chain", List.of(CHAIN)))))
+                .isInstanceOfSatisfying(DomainApiException.class,
+                        failure -> assertThat(failure.code())
+                                .isEqualTo(DomainApiException.Code.INVALID_REQUEST));
     }
 
     @Test
