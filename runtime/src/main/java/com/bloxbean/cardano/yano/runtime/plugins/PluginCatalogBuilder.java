@@ -974,7 +974,7 @@ final class PluginCatalogBuilder {
                     PluginTrustTier.CONSENSUS;
             case SIGNER_PROVIDER, EFFECT_EXECUTOR, DOMAIN_API ->
                     PluginTrustTier.PRIVILEGED_LOCAL;
-            case FINALIZED_SINK, HEALTH, METRICS, UI_EXTENSION -> PluginTrustTier.AUXILIARY_LOCAL;
+            case FINALIZED_SINK, HEALTH, METRICS -> PluginTrustTier.AUXILIARY_LOCAL;
         };
     }
 
@@ -1237,8 +1237,6 @@ final class PluginCatalogBuilder {
                     case DOMAIN_API -> ((DomainApiProvider) provider).id();
                     case HEALTH -> ((PluginHealthProvider) provider).id();
                     case METRICS -> ((PluginMetricsProvider) provider).id();
-                    case UI_EXTENSION ->
-                            ((com.bloxbean.cardano.yano.api.plugin.ui.UiExtensionProvider) provider).id();
                 });
         int maximumLength = key.kind() == ContributionKind.NODE_PLUGIN
                 ? MAX_LEGACY_ID_LENGTH : MAX_LEGACY_SELECTOR_LENGTH;

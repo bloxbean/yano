@@ -2,7 +2,6 @@ package com.bloxbean.cardano.yano.appchain.history;
 
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider;
-import com.bloxbean.cardano.yano.api.plugin.ui.UiExtensionProvider;
 import com.bloxbean.cardano.yano.catalog.BundleManifestParser;
 import com.bloxbean.cardano.yano.catalog.ContributionKind;
 import org.junit.jupiter.api.Test;
@@ -24,11 +23,6 @@ class CardanoHistoryPluginMetadataTest {
                 .map(ServiceLoader.Provider::get)
                 .filter(value -> CardanoHistoryProduct.BUNDLE_ID.equals(value.id())))
                 .hasSize(1);
-        assertThat(ServiceLoader.load(UiExtensionProvider.class).stream()
-                .map(ServiceLoader.Provider::get)
-                .filter(value -> CardanoHistoryProduct.BUNDLE_ID.equals(value.id())))
-                .singleElement().isInstanceOf(CardanoHistoryUiExtensionProvider.class);
-
         String path = "META-INF/yano/plugins/" + CardanoHistoryProduct.BUNDLE_ID + ".json";
         try (InputStream input = getClass().getClassLoader().getResourceAsStream(path)) {
             assertThat(input).isNotNull();
@@ -37,12 +31,10 @@ class CardanoHistoryPluginMetadataTest {
             assertThat(manifest.contributions()).extracting(contribution -> contribution.kind())
                     .containsExactlyInAnyOrder(
                             ContributionKind.APP_STATE_MACHINE,
-                            ContributionKind.DOMAIN_API,
-                            ContributionKind.UI_EXTENSION);
+                            ContributionKind.DOMAIN_API);
             assertThat(manifest.contributions()).extracting(contribution -> contribution.name())
                     .containsExactlyInAnyOrder(
                             CardanoHistoryProduct.STATE_MACHINE_ID,
-                            CardanoHistoryProduct.BUNDLE_ID,
                             CardanoHistoryProduct.BUNDLE_ID);
         }
     }

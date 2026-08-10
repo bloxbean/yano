@@ -3,13 +3,25 @@
 **Status:** Accepted and implemented for preview — P0–P7 complete; production remains subject to
 ADR-028 M8d and ADR-027 public-network release gates
 **Date:** 2026-08-09
-**Scope:** Reusable plugin UI contributions plus the optional Cardano History plugin/profile, read
-API, typed client and CLI, plugin-packaged console experience, showcase presets, reference on-chain
-consumers, and release packaging
+**Scope:** Optional Cardano History plugin/profile, read API, typed client and CLI, a native
+capability-gated Yano console experience, showcase presets, reference on-chain consumers, and
+release packaging
 **Depends on:** ADR app-layer/028 M1–M7 and ADR app-layer/031
 **Related:** ADR app-layer/025.x (authenticated state), 032 (verifiable indexers), and 033
 (showcase catalog and capability discovery)
 **Changes no consensus or proof wire format.**
+
+### 2026-08-10 UI ownership amendment
+
+This amendment supersedes every later reference in this ADR to `ui-extension`, plugin-packaged
+HTML/CSS/JavaScript, the iframe host, or a plugin UI bridge. Product plugin bundles are server-side
+artifacts only. The `ui-extension` contribution kind, core/runtime SPI, asset gateway, and console
+host were removed while app chains are still preview-only. Cardano History now has a native page in
+the main Yano console, activated solely when a running chain's `AppCapabilityManifest` declares
+`l1-epoch-params-v1`. Independent product teams may ship a separate frontend using the public APIs,
+but Yano does not load frontend assets from plugin jars.
+
+The original UI-extension sections below remain as design history only and are non-normative.
 
 ---
 
@@ -32,8 +44,7 @@ The repository already has the required product seams:
 * `AppCapabilityManifest` exposes components, workflows, cross-cutting capabilities, and typed
   proof subjects without interpreting a state-machine or chain name;
 * generic state query, proof, verification, commitment, and L1-anchor APIs already exist;
-* the console already discovers application capabilities, but it has no runtime plugin UI
-  contribution or asset-hosting contract;
+* the console already discovers application capabilities and can gate native product pages on them;
 * product families can publish a runtime-independent client and a deterministic bundle jar.
 
 This ADR turns those seams into the **Cardano History** product. It does not relocate or duplicate
@@ -52,16 +63,14 @@ The product family will also provide:
 1. a lightweight typed Java client and independent proof-bundle verifier;
 2. a distributable CLI built on that client;
 3. application-specific reference on-chain validators built on the generic ADR-031 MPF verifier;
-4. a reusable, sandboxed `ui-extension` plugin contribution and a Cardano History UI packaged with
-   the product bundle; and
+4. a native Cardano History page in the standard Yano console, gated only by discovered chain
+   capabilities; and
 5. ready showcase and operator profiles, including a low-cost parameters-only default and explicit
    stake/governance/full profiles.
 
-The main console remains the trusted application shell, but it no longer contains
-Cardano-History-specific pages. At runtime it discovers eligible `ui-extension` contributions,
-adds their navigation, and mounts their content in a sandboxed frame through a versioned,
-permission-limited host bridge. The plugin bundle contains production-built HTML, JavaScript, CSS,
-and immutable assets; it does not receive access to the parent DOM or console credentials.
+The main console remains the trusted application shell and owns the Cardano-History-specific page.
+It adds navigation only when a running chain advertises `l1-epoch-params-v1`. The plugin bundle
+contains no HTML, JavaScript, CSS, UI provider, or UI contribution declaration.
 
 ## 3. Goals and non-goals
 
@@ -76,8 +85,8 @@ and immutable assets; it does not receive access to the parent DOM or console cr
 | G5 | Make enabled datasets, progress, completeness, roots, and anchoring clear in the console |
 | G6 | Provide a short, reproducible three-node showcase path and production-oriented packaging |
 | G7 | Add no epoch-specific core REST API and no second authenticated source of truth |
-| G8 | Make one plugin bundle sufficient to install a product's backend capabilities and UI |
-| G9 | Establish a reusable, versioned, capability-gated UI extension contract for future products |
+| G8 | Keep the plugin bundle a complete server-side installation unit |
+| G9 | Keep frontend products independently releasable and activate native console pages by capability |
 
 ### 3.2 Non-goals
 
@@ -107,9 +116,9 @@ ADR-028 stdlib params / stake / governance components
         v
 Cardano History AppStateMachine provider (thin preset assembly)
         |
-        +---- generic ADR-031 state/proof/anchor APIs ---- client / CLI / plugin UI
+        +---- generic ADR-031 state/proof/anchor APIs ---- client / CLI / native console
         |
-        +---- AppCapabilityManifest + ui-extension ------- console shell discovery
+        +---- AppCapabilityManifest ---------------------- console page discovery
         |
         `---- MPF root anchored by SCRIPT anchor -------- reference validators
 ```
@@ -118,10 +127,8 @@ Cardano History AppStateMachine provider (thin preset assembly)
 
 | Module | Responsibility |
 |---|---|
-| `core-api/.../plugin/ui` | Framework-neutral, immutable UI contribution/catalog descriptors and validation limits; no web framework or asset loading |
-| `app` | Host-owned UI contribution lifecycle, catalog endpoint, immutable asset gateway, path/media/digest enforcement, and plugin unload cleanup |
-| `console-ui` | Generic plugin navigation, sandboxed frame host, versioned message bridge, permission checks, loading/error states, and no product-specific pages |
-| `appchain/products/appchain-cardano-history` | Plugin provider, presets, configuration validation, capability manifest, read-only domain API, product frontend source/build, UI descriptor/assets, and deterministic bundle jar |
+| `console-ui` | Native capability-gated Cardano History page using public domain, proof, snapshot, and anchor APIs |
+| `appchain/products/appchain-cardano-history` | Plugin provider, presets, configuration validation, capability manifest, read-only domain API, and deterministic server-side bundle jar; no frontend assets |
 | `appchain/products/appchain-cardano-history-client` | Typed queries, root-fixed proof-bundle assembly, canonical history semantic checks, and reuse of `appchain-client` verification; no plugin activation |
 | `appchain/products/appchain-cardano-history-cli` | Operator/user commands built only on the public client and HTTP APIs; distributable application archive |
 | `appchain/onchain/appchain-cardano-history-onchain` | Reference parameter, stake, proposal, and DRep predicates layered on `MpfOnChainVerifier` |
@@ -144,11 +151,10 @@ one owner.
 3. The CLI depends on the client, not on server implementation modules.
 4. The on-chain module depends on the generic MPF on-chain verifier and canonical codecs/fixtures,
    not on server/runtime modules.
-5. The console shell imports no product source or generated product assets at build time. It
-   recognizes only the generic UI descriptor and bridge protocol; the runtime catalog supplies the
-   plugin identity, eligible views, and content-addressed asset URLs.
-6. Plugin UI uses only its declared host-bridge operations. It cannot import console internals,
-   reach another plugin's assets, or call server/runtime implementation classes.
+5. The console may contain a native product page, but it detects eligibility only from
+   `AppCapabilityManifest`, never a chain ID or installed bundle name.
+6. Plugin bundles contain server-side Java/service metadata only and expose product functionality
+   through public APIs usable by independently released frontends.
 
 Artifact-boundary tests enforce these rules by inspecting runtime dependency graphs, bundle
 contents, `ServiceLoader` descriptors, and duplicate classes.
@@ -161,8 +167,7 @@ The bundle manifest declares exactly:
 
 * plugin ID `com.bloxbean.cardano.yano.appchain.cardano-history`;
 * one `state-machine` contribution for `cardano-history`;
-* one `domain-api` contribution for read-only convenience queries;
-* one `ui-extension` contribution for the Cardano History experience; and
+* one `domain-api` contribution for read-only convenience queries; and
 * required foundation compatibility versions.
 
 The product does not contribute separate `L1EpochObserverProvider` implementations. The first-party
@@ -174,7 +179,7 @@ single-file operator install. It excludes Yano host APIs and first-party stdlib 
 the product's service descriptors, relocates product-private third-party dependencies where needed,
 and fails its build if it packages a second copy of a host/provider class.
 
-### 5.2 Reusable `ui-extension` contribution
+### 5.2 Reusable `ui-extension` contribution — superseded
 
 ADR-035 introduces `ui-extension` as a first-class plugin contribution kind. It is discovered only
 from a plugin that passed the existing allow-list, manifest, compatibility, and lifecycle checks.
@@ -609,11 +614,11 @@ attestation is released before ADR-027 §2.4 deep-rollback detection is wired.
 | Phase | Work | Exit gate |
 |---|---|---|
 | **P0 — characterization** | Freeze product IDs, preset/profile schema, API DTOs, capability IDs, UI descriptor/bridge/permission schemas, asset limits, bundle schema, CLI exit codes, dependency rules, and current generic API behavior | Contract tests and architecture checks fail against missing implementation for the intended reasons |
-| **P1 — plugin UI foundation** | Add `core-api` UI contracts, plugin contribution validation/lifecycle, catalog and content-addressed asset gateway, sandboxed console host, read-only bridge, and malicious fixture plugins | Conformance proves capability gating, digest/path/media enforcement, sandbox/permission isolation, lifecycle cleanup, and no product-specific console code |
+| **P1 — UI ownership boundary** | Keep plugin bundles server-side; add no frontend contribution SPI or asset gateway | Bundle inspection finds no UI assets/provider and the console remains independently built |
 | **P2 — product assembly** | Add product module, thin provider over ADR-028 components, preset resolver/validation, capability manifest, plugin metadata, and deterministic bundle | Params-only plugin installs into stock distribution; three members resolve byte-identical profiles; no duplicate host classes |
 | **P3 — query/client/CLI** | Add bounded domain queries, root-fixed client, proof bundle, standalone verifier, CLI, malformed/negative vectors | Params proof verifies independently from an L1 SCRIPT anchor; race, wrong-root, wrong-profile, and incomplete claims fail closed |
 | **P4 — on-chain consumers** | Add parameter validator first, then stake/governance predicates after their ADR-028 milestones and M4 budget gate | Emulator/golden tests prove canonical predicates and reject wrong key/value/root/profile/completeness |
-| **P5 — Cardano History plugin UI** | Build/package UI descriptor and assets, dataset views, Proof Lab and browser verifier; integrate only through the generic bridge | Installing one jar adds eligible navigation/UI without rebuilding the console; params/full views and browser/Java/on-chain vectors agree |
+| **P5 — native Cardano History console** | Build dataset/proof views in `console-ui`, gated only by discovered capability IDs | The page appears only for eligible chains, matches the console look and feel, and the product jar contains no frontend assets |
 | **P6 — showcase/distribution** | Package bundle/CLI/templates/runbook, add params default and explicit full option, automate SCRIPT anchor/bootstrap/demo | Fresh three-node ZIP installation completes the demonstration path with no source-tree dependency |
 | **P7 — qualification** | Restart/replay, UI threat/fault tests, resource/security audit, full build, devnet soak, then preprod pilot when ADR-027 and ADR-028 gates allow | ADR-028 M8, artifact audit, UI tests, `clean build`, and published operator budgets are green |
 
@@ -699,16 +704,15 @@ CLI, browser, and on-chain consumer verify the released proof/profile themselves
    bootstrapped SCRIPT anchor. JMT deployments are labelled off-chain-only.
 4. The product exposes typed convenience queries but reuses generic state, proof, verification,
    commitment, and anchor APIs.
-5. The standard console owns only the generic UI-extension host. The Cardano History bundle carries
-   its compiled HTML/JavaScript/CSS and descriptor, and eligible navigation is discovered from both
-   the loaded contribution and the selected chain's capabilities.
+5. The standard console owns the native Cardano History page and gates it on discovered chain
+   capabilities. The Cardano History bundle contains no frontend assets.
 6. A lightweight client and separate CLI are independently distributable. Neither activates or
    embeds the server plugin.
 7. The product adds application-semantic on-chain predicates on top of the generic MPF verifier; it
    does not implement a second authenticated-map verifier.
 8. Preview deployments start fresh when a canonical preset/profile changes. No migration or
    backward-compatibility layer is required before release.
-9. Plugin UI runs only in an opaque-origin sandbox with a versioned, closed, read-only bridge in v1;
-   direct execution in the console DOM and arbitrary network access are not supported.
+9. Frontends are independently built products using the public API; Yano loads no UI code from
+   plugin jars.
 10. One bundle jar is the server/operator installation unit. Client, CLI, and on-chain artifacts
     remain separately consumable because they execute outside the server plugin runtime.

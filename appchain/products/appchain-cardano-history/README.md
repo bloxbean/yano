@@ -28,12 +28,10 @@ Build the drop-in artifact with:
 The `-bundle.jar` contains product-owned classes and service metadata only. Yano host APIs,
 composition code, stdlib implementations, and canonical contracts are supplied by the runtime.
 
-The product also contributes a bounded read-only domain API and a capability-gated Cardano History
-console packaged as validated HTML, CSS, and JavaScript resources in the same bundle. The console
-runs in the host's opaque-origin sandbox and uses only the declared bridge. Its Proof Lab derives
-canonical history keys locally, verifies primary or nested authenticated-snapshot MPF proofs,
-checks same-root completeness and stake/DRep predicates, and exports a portable JSON bundle through
-the permission-gated host download path.
+The product also contributes a bounded read-only domain API. Its plugin and bundle jars are
+server-side artifacts and contain no HTML, CSS, JavaScript, or UI provider. The standard Yano
+console exposes a native Cardano History page only when a running chain advertises the corresponding
+capability; independently developed product UIs can use the same public APIs.
 
 The independently distributable
 `appchain-cardano-history-client` and `appchain-cardano-history-cli` modules consume that API and the

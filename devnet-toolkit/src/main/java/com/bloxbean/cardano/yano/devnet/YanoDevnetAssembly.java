@@ -236,11 +236,6 @@ public final class YanoDevnetAssembly {
         }
 
         @Override
-        public com.bloxbean.cardano.yano.api.plugin.ui.UiExtensionGateway uiExtensions() {
-            return delegate.uiExtensions();
-        }
-
-        @Override
         public Optional<com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelHost>
                 localReadModels() {
             return delegate.localReadModels();

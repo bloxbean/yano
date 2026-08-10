@@ -149,26 +149,24 @@ a consensus message and does not force peers to remove theirs.
 # MPF, with on-chain-capable nested proofs. Snapshot-capable datasets are
 # selected explicitly by the Cardano History preset.
 ./showcase.sh quickstart --profile light --instance history-mpf \
-  --cardano-history-profile full \
-  --enable-authenticated-snapshots=cardano-history-chain
+  --cardano-history-profile full
 
 # Optional MPF archive-time reachable-node pruning.
 ./showcase.sh quickstart --profile light --instance history-mpf-pruned \
   --cardano-history-profile full \
-  --enable-authenticated-snapshots=cardano-history-chain \
   --enable-authenticated-snapshot-mpf-pruning=cardano-history-chain
 
 # JMT, off-chain verification only.
 ./showcase.sh quickstart --profile light --instance history-jmt \
   --cardano-history-profile full \
-  --enable-authenticated-snapshots=cardano-history-chain \
   --authenticated-snapshot-profile jmt-blake2b256-v1
 ```
 
 Use `./showcase.sh snapshots status|list|descriptor|archive|restore|evict|job` for the packaged
-operator flow. Use the Cardano History browser Proof Lab or standalone CLI for proof generation and
-independent verification. The deployment marker retains the selected series/profile and node-local
-pruning scope so restarts cannot silently target another prepared instance.
+operator flow. Use the native Cardano History console for proof generation/export, or the standalone
+CLI for portable proof and independent-anchor verification. The deployment marker retains the
+selected series/profile and node-local pruning scope so restarts cannot silently target another
+prepared instance.
 
 ## Operational rules
 

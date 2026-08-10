@@ -782,9 +782,9 @@ That product boundary does not move reusable logic out of stdlib or make the run
 product. A custom `AppStateMachine` can still compose any subset directly. Conversely, the product
 must call the same stdlib transitions and generic ADR-031 query/proof/anchor services; it must not
 fork epoch codecs, maintain a second authenticated state, add epoch-specific routes to the core REST
-API, or infer capabilities from a chain name. The first product console is implemented in Yano's
-reusable, sandboxed plugin-UI host and discovered from `AppCapabilityManifest`; its compiled product
-UI is packaged by ADR-035, not by the epoch foundation. ADR-028 introduces no UI contracts or assets.
+API, or infer capabilities from a chain name. The first product console is a native Yano console
+page discovered from `AppCapabilityManifest`. The Cardano History plugin is server-side only and
+carries no frontend assets. ADR-028 introduces no UI contracts or assets.
 ADR-035 must present the generic nested proof result and distinguish consensus completeness from
 node-local `ONLINE`/`ARCHIVED`/`RESTORING` availability; it must not implement its own snapshot store
 or report an unavailable archive as a proven absence.

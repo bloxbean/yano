@@ -26,10 +26,11 @@ validation separate from fresh deployment or smoke traffic.
      --confirm-public-preprod --smoke
    ```
 
-   Cardano History is part of the stock thirteen-chain catalog and is created
-   with the inexpensive `params-only-v1` profile. Operators can select the
-   stake, governance, or full profile through `showcase.sh` when creating a
-   custom instance. Experimental MPF pruning remains disabled by default.
+   This reference preprod deployment selects `params-stake-v1` so evaluators
+   receive protocol parameters and the latest retained end-of-epoch stake
+   snapshots out of the box. It limits L1 source snapshot reconciliation to
+   the latest two completed boundaries; finalized app-chain epoch snapshots
+   remain separately addressable. Experimental MPF pruning remains disabled.
 
 5. The script never replaces an existing target. If a clean redeploy is
    requested, move the old deployment to a reviewed backup path or select a new
@@ -50,7 +51,8 @@ validation separate from fresh deployment or smoke traffic.
 The script uses a disposable bootstrap instance to deploy the operator-specific
 production settlement identity, adopts its generated config block at the
 catalog position, then creates the final app-chain generation from scratch.
-The default has thirteen chains, including the ADR-035 Cardano History product.
+The default has thirteen chains, including the ADR-035 Cardano History product
+with its `params-stake-v1` preprod reference profile.
 It makes three independent APFS clone-on-write L1 stores while
 excluding any legacy `chainstate/appchains` content and copies keys with
 owner-only permissions. No app-chain state or identity is migrated from the

@@ -220,24 +220,23 @@ role variant. For signed ledger/bridge/ZK flows use the EUTxO profile:
 Docker is needed only for evidence. Run these optional profiles in a longer
 session, not in the minimal light rehearsal.
 
-### Cardano History product and plugin UI
+### Cardano History product and native console
 
 The default `master-demo` instance uses the low-cost `params-only-v1` product
-preset. In the console, choose **App-chain extensions**, select
-`cardano-history-chain`, and open **Cardano History**. Show that the navigation
-entry, enabled datasets, query page, anchor and Proof Lab came from the product
-bundle rather than product-specific code in the host console.
+preset. The stake and governance datasets are therefore intentionally absent.
+In the console, choose **Cardano history**. Show that the native page appears
+because `cardano-history-chain` advertises `l1-epoch-params-v1`, and that its
+dataset controls are gated by the selected chain's capabilities. The product
+plugin contributes server-side state machines and APIs only; it carries no UI.
 
 For a separate full-dataset rehearsal use a fresh instance:
 
 ```bash
 ./showcase.sh quickstart --instance history-full \
-  --cardano-history-profile full \
-  --enable-authenticated-snapshots=cardano-history-chain
+  --cardano-history-profile full
 ```
 
-Query a stake credential, select a minimum/pool predicate, generate the nested
-MPF proof, download it, and import it again. Explain the two roots: the entry
+Query a stake credential and generate/export the nested MPF proof. Explain the two roots: the entry
 is in the epoch snapshot and its immutable descriptor is in the L1-anchored
 primary app-chain state. The standalone CLI also pins generation to the exact
 L1-confirmed commitment, so a moving app-chain tip cannot mix roots. See

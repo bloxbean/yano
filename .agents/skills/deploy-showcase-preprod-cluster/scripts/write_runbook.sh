@@ -50,17 +50,22 @@ Do not use a settlement deposit or withdrawal as a health check; those are real
 preprod custody flows.
 
 Use `./showcase.sh describe light` for the authoritative thirteen-chain catalog,
-including the Cardano History product in its low-cost `params-only-v1` profile.
+including the Cardano History product. This preprod reference deployment uses
+`params-stake-v1` and retains the latest two completed L1 source snapshots.
 The console capability matrix at `http://127.0.0.1:17070/ui/app-chain/` is
 derived from each chain's immutable capability manifest.
 
-Cardano History intentionally creates no synthetic fact for an epoch already in
-progress. In a fresh retained-chainstate deployment its capability manifest and
-SCRIPT anchor are available immediately, but its product `status` and epoch
-routes can return HTTP 404 until the next stable L1 epoch transition. Confirm
-the chain itself through
-`/api/v1/app-chain/chains/cardano-history-chain/status`; do not treat the empty
-history view as a plugin startup failure.
+At boundary `E-1 -> E`, protocol parameters are labelled `E` and the complete
+stake distribution is labelled `E-1`. On startup the three members
+deterministically reconcile the latest two completed boundaries retained in
+their L1 account-state stores. This provides the latest available end-of-epoch
+stake data without inventing mutable current-epoch state. Each completed stake
+dataset becomes a separate immutable authenticated snapshot/root in the app
+chain. If the source has no retained complete boundary, product routes can
+return HTTP 404 until the next stable transition.
+
+Open `http://127.0.0.1:17070/ui/app-chain/cardano-history/` for the native,
+capability-gated console. The product plugin bundle contains no frontend code.
 
 ## Validate from the repository
 

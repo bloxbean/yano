@@ -20,11 +20,6 @@
       "kind": "domain-api",
       "name": "com.bloxbean.cardano.yano.appchain.cardano-history",
       "provider": "com.bloxbean.cardano.yano.appchain.history.CardanoHistoryDomainApiProvider"
-    },
-    {
-      "kind": "ui-extension",
-      "name": "com.bloxbean.cardano.yano.appchain.cardano-history",
-      "provider": "com.bloxbean.cardano.yano.appchain.history.CardanoHistoryUiExtensionProvider"
     }
   ]
 }
