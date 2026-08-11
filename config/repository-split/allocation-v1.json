@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "decision": "ADR-030",
+  "decision": "repository-split-v1",
   "sourceRepository": "yano",
   "downstreamRepository": "yano-x",
   "sourceCommit": "6d36400063fed2ac32f28f58728a7c550fabb329",
@@ -186,6 +186,17 @@
       "targetDirectory": "epoch-export",
       "artifactId": "yano-epoch-export",
       "publicationType": "library",
+      "pluginBundleId": null
+    },
+    {
+      "sourcePath": ":yano-bom",
+      "sourceDirectory": "bom",
+      "disposition": "retain",
+      "owner": "build-release",
+      "targetPath": ":yano-bom",
+      "targetDirectory": "bom",
+      "artifactId": "yano-bom",
+      "publicationType": "platform",
       "pluginBundleId": null
     },
     {
@@ -838,6 +849,12 @@
     { "prefix": "appchain/extensions/eutxo/", "disposition": "move", "owner": "yano-x", "reason": "eUTxO documentation, acceptance assets, and benchmarks move with the ledger family" },
     { "prefix": "appchain/extensions/eutxo-zk/", "disposition": "move", "owner": "yano-x", "reason": "eUTxO-ZK documentation and acceptance assets move with the ledger family" },
     { "prefix": "appchain/onchain/aiken/appchain-anchor/", "disposition": "retain", "owner": "yano-core", "reason": "Anchor validator sources and artifacts support the retained appchain-anchor-onchain module" },
+    {
+      "prefix": "bom/",
+      "disposition": "retain",
+      "owner": "build-release",
+      "reason": "Yano host and API version-alignment platform"
+    },
     { "prefix": "docker/", "disposition": "retain", "owner": "build-release", "reason": "Yano native core image" },
     { "prefix": "docs/", "disposition": "split", "owner": "architecture", "reason": "Core/operator documents remain; product and extension guides move" },
     { "prefix": "e2e-tests/", "disposition": "retain", "owner": "yano-core", "reason": "Cardano node regression tests" },
