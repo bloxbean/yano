@@ -1,7 +1,8 @@
 # ADR-030: Split Yano core from `yano-x`
 
-**Status:** Accepted. Phase A is merged; Phase B implementation and acceptance are complete on its
-feature branch and await maintainer commit/merge approval. Repository extraction has not started.
+**Status:** Accepted. Phases A and B are merged. Phase C local published-contract implementation
+and acceptance are complete on feature branches and await maintainer commit/merge approval.
+Repository extraction has not started.
 **Date:** 2026-08-11
 **Decision owners:** Yano maintainers
 **Reviewed baseline:** `feat/037-generic-appchain-proof` at `6d364000`
@@ -302,8 +303,9 @@ must also be explicit rather than relying on reflection that is only present in 
 Phase A's measured baseline, executed gate results, removed prerelease debts, and comparison rules
 are recorded in [`baselines/030-phase-a-baseline.md`](baselines/030-phase-a-baseline.md). The
 allocation manifest is enforced by the root `check` lifecycle and CI; the Phase-A baseline classified
-71 included projects and the Phase-B manifest now classifies all 74 included projects and P1-P23.
-Phase B started from the reviewed Phase-A merge on the integration branch.
+71 included projects, Phase B classified 74, and Phase C adds the retained `yano-bom` for a current
+total of 75 full-build projects and 23 lean-build projects. The manifest continues to classify all
+projects and P1-P23. Phase B started from the reviewed Phase-A merge on the integration branch.
 
 ### Phase B — make extensions real plugins inside the monorepo
 
@@ -349,6 +351,10 @@ phase boundaries are recorded in
 7. Test the local-Maven development mode and, once available, a clean repository-only build against
    staged artifacts. CI release gates use the latter so local Maven state cannot hide missing POM
    metadata or accidental project dependencies.
+
+Phase C's Yano BOM, explicit full/lean settings groups, initial independent Yano X build, Maven/ZIP
+identity gates, regression results, and staging boundary are recorded in
+[`baselines/030-phase-c-published-contracts.md`](baselines/030-phase-c-published-contracts.md).
 
 ### Phase D — separate the native core and JVM extension distributions
 

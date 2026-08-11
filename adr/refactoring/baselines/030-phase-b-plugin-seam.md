@@ -1,6 +1,6 @@
 # ADR-030 Phase B plugin seam evidence
 
-**Status:** Implemented on `feat/030-phase-b-plugin-seam`; commit and merge require maintainer approval.
+**Status:** Merged into the integration branch as `03100b34`.
 **Captured:** 2026-08-11
 **Integration branch:** `feat/030_yano-x_reafactoring`
 

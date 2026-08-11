@@ -38,6 +38,9 @@ sourceSets.main.java.srcDir(generatedVersionSources)
 tasks.named('compileJava') {
     dependsOn tasks.named('generatePluginVersionSource')
 }
+tasks.named('sourceJar') {
+    dependsOn tasks.named('generatePluginVersionSource')
+}
 
 // This artifact is an application build fixture, not a supported plugin
 // distribution. It enters the app only through the explicit

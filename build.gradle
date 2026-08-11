@@ -199,7 +199,7 @@ def leanRepositoryBuild = providers.gradleProperty('leanYanoBuild')
 
 tasks.register('verifyRepositorySplitAllocation') {
     group = 'verification'
-    description = 'Validates the ADR-030 module, path, debt, and regression ownership manifest.'
+    description = 'Validates the repository module, path, debt, and regression ownership manifest.'
     inputs.file(repositorySplitAllocationFile)
 
     doLast {
@@ -332,7 +332,7 @@ tasks.register('verifyRepositorySplitAllocation') {
                 trackedPath == prefix || trackedPath.startsWith(prefix)
             }
             if (!ownedByModule && !ownedByPathRule) {
-                failures.add("tracked path has no ADR-030 owner: ${trackedPath}")
+                failures.add("tracked path has no repository allocation owner: ${trackedPath}")
             }
         }
 
@@ -393,11 +393,11 @@ tasks.register('verifyRepositorySplitAllocation') {
         }
 
         if (!failures.isEmpty()) {
-            throw new GradleException('ADR-030 allocation verification failed:\n - '
+            throw new GradleException('Repository allocation verification failed:\n - '
                     + failures.join('\n - '))
         }
         logger.lifecycle(
-                'ADR-030 allocation verified: {} configured projects, {} tracked paths, {} debt items, {} suites',
+                'Repository allocation verified: {} configured projects, {} tracked paths, {} debt items, {} suites',
                 expectedModules.size(), trackedFiles.size(), debt.size(), suites.size())
     }
 }
@@ -442,7 +442,7 @@ tasks.register('verifyLeanHostDependencyBoundary') {
                     + failures.join('\n - '))
         }
         logger.lifecycle(
-                'ADR-030 lean host dependency boundary passed: {} retained runtime projects',
+                'Lean host dependency boundary passed: {} retained runtime projects',
                 resolvedProjects.size())
     }
 }
@@ -521,7 +521,7 @@ if (commit_id && project.version.endsWith("-SNAPSHOT")) {
     version = "${project.version}".replace("-SNAPSHOT", "-${commit_id}-SNAPSHOT")
 }
 
-def nonLibraryModules = ['app', 'console-ui', 'appchain-eutxo-e2e'] as Set
+def nonLibraryModules = ['app', 'console-ui', 'appchain-eutxo-e2e', 'yano-bom'] as Set
 
 subprojects {
     // Skip most configuration for application modules (Quarkus/Scala handle their own builds)
@@ -737,7 +737,7 @@ tasks.register('fullBuild') {
             tasks.named('distributionCheck')
 }
 
-// ADR-030 Phase B: every downstream runtime artifact must have one isolated
+// Every downstream runtime artifact must have one isolated
 // bundle and one real JVM provider-activation test. This inventory is also the
 // source for the checked conformance matrix consumed by Yano X.
 if (findProject(':appchain-stdlib') != null) {

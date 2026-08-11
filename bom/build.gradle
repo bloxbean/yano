@@ -1,0 +1,69 @@
+plugins {
+    id 'java-platform'
+    id 'maven-publish'
+    id 'signing'
+}
+
+description = 'Version alignment platform for supported Yano host artifacts'
+
+dependencies {
+    constraints {
+        api project(':core-api')
+        api project(':plugin-catalog')
+        api project(':consensus')
+        api project(':p2p')
+        api project(':runtime')
+        api project(':devnet-toolkit')
+        api project(':testkit')
+        api project(':testkit-ccl')
+        api project(':tx-services')
+        api project(':bootstrap-providers')
+        api project(':ledger-rules')
+        api project(':ledger-state')
+        api project(':ccl-ledger-rules')
+        api project(':scalus-bridge')
+        api project(':epoch-export')
+        api project(':appchain-config')
+        api project(':appchain-testkit')
+        api project(':appchain-proof-verifier')
+        api project(':appchain-anchor-onchain')
+    }
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            artifactId = 'yano-bom'
+            from components.javaPlatform
+            pom {
+                name = 'Yano BOM'
+                description = 'Version alignment for Yano host APIs, runtime, testkits, and on-chain artifacts'
+                url = 'https://github.com/bloxbean/yano'
+                licenses {
+                    license {
+                        name = 'The MIT License'
+                        url = 'https://opensource.org/licenses/mit-license.php'
+                    }
+                }
+                developers {
+                    developer {
+                        id = 'satran004'
+                        name = 'Satya'
+                    }
+                }
+                scm {
+                    connection = 'scm:git:git://github.com/bloxbean/yano.git'
+                    developerConnection = 'scm:git:ssh://git@github.com/bloxbean/yano.git'
+                    url = 'https://github.com/bloxbean/yano'
+                }
+            }
+        }
+    }
+}
+
+def releaseVersion = !version.endsWith('SNAPSHOT')
+if (releaseVersion && !project.hasProperty('skipSigning')) {
+    signing {
+        sign publishing.publications
+    }
+}
