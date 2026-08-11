@@ -8,7 +8,6 @@ import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Map;
-import java.util.ServiceLoader;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -16,11 +15,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class EutxoZ0FeasibilityTest {
 
     @Test
-    void providerIsDiscoverableAndCommitmentIsDeterministic() {
-        var provider = ServiceLoader.load(
-                        com.bloxbean.cardano.yano.appchain.eutxo.contracts
-                                .EutxoValidityCommitmentProvider.class)
-                .findFirst().orElseThrow();
+    void packagedProviderCreatesDeterministicCommitments() {
+        var provider = new ZerojPoseidonValidityProvider();
         var first = provider.create("zk-chain", EutxoProfile.V1, Map.of());
         var second = provider.create("zk-chain", EutxoProfile.V1, Map.of());
 

@@ -73,11 +73,10 @@ current checkout, without publishing it first:
    configured, and select the machine:
 
 ```yaml
-yaci:
+yano:
   plugins:
     directory: ./plugins
     # allow-list: com.example.appchain.counter
-yano:
   app-chain:
     enabled: true
     chain-id: my-chain

@@ -32,7 +32,7 @@ yano:
 The default database is:
 
 ```text
-<yano.app-chain.indexer.storage.path>/<chain-id>/eutxo-lifecycle.db
+<bundle storage-path>/<chain-id>/eutxo-lifecycle.db
 ```
 
 This rebuildable root must remain separate from both `yano.storage.path` and
@@ -42,7 +42,9 @@ chain, state-machine profile, and authenticated-state genesis identity. An expli
 supported only for a node with one EUTxO chain. SQLite files must be on a local
 filesystem, not NFS or another network filesystem.
 
-Set `yano.app-chain.eutxo-indexer.enabled=false` to disable the derived view.
+Set
+`yano.plugins.bundle."com.bloxbean.cardano.yano.appchain.eutxo.indexer".enabled=false`
+to disable the derived view.
 The chain continues to validate and finalize normally.
 
 ## Read API

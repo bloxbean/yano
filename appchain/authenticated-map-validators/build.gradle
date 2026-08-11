@@ -1,3 +1,8 @@
+ext.runtimePluginBundleId =
+        'com.bloxbean.cardano.yano.appchain.authenticated-map-validators'
+ext.runtimePluginExcludedBundleIds = []
+apply from: rootProject.file('gradle/runtime-plugin-bundle.gradle')
+
 dependencies {
     compileOnly(project(':core-api')) {
         transitive = false

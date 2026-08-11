@@ -2,7 +2,7 @@ package com.bloxbean.cardano.yano.appchain.eutxo.indexer;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
-import com.bloxbean.cardano.yano.api.appchain.AppChainGateway;
+import com.bloxbean.cardano.yano.api.plugin.domain.FinalizedChainView;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryResult;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoQueryCodec;
@@ -47,9 +47,9 @@ class EutxoIndexCoordinatorTest {
         AppBlock second = block(2, fixture.getLast().stream()
                 .map(EutxoIndexEvent.Transaction.class::cast)
                 .map(EutxoIndexCoordinatorTest::message).toList());
-        AtomicReference<AppChainGateway.FinalizedBlockListener>
+        AtomicReference<FinalizedChainView.FinalizedBlockListener>
                 listener = new AtomicReference<>();
-        AppChainGateway gateway = gateway(
+        FinalizedChainView gateway = gateway(
                 Map.of(1L, first, 2L, second), byMessage, listener);
         InMemoryEutxoIndexStore store =
                 new InMemoryEutxoIndexStore(EutxoIndexFixtures.identity());
@@ -87,9 +87,9 @@ class EutxoIndexCoordinatorTest {
                         .map(EutxoIndexEvent.Transaction.class::cast)
                         .map(EutxoIndexCoordinatorTest::message)
                         .toList());
-        AtomicReference<AppChainGateway.FinalizedBlockListener>
+        AtomicReference<FinalizedChainView.FinalizedBlockListener>
                 listener = new AtomicReference<>();
-        AppChainGateway gateway = gateway(
+        FinalizedChainView gateway = gateway(
                 Map.of(1L, block), byMessage, listener,
                 "DEEP_ROLLBACK_BELOW_CREDITED_DEPOSIT");
         InMemoryEutxoIndexStore store =
@@ -116,9 +116,9 @@ class EutxoIndexCoordinatorTest {
     void slowStoreCoalescesNotificationBurstsWithoutBlockingFinality()
             throws Exception {
         AppBlock first = block(1, List.of());
-        AtomicReference<AppChainGateway.FinalizedBlockListener>
+        AtomicReference<FinalizedChainView.FinalizedBlockListener>
                 listener = new AtomicReference<>();
-        AppChainGateway gateway = gateway(
+        FinalizedChainView gateway = gateway(
                 Map.of(1L, first), Map.of(), listener);
         InMemoryEutxoIndexStore delegate =
                 new InMemoryEutxoIndexStore(
@@ -158,9 +158,9 @@ class EutxoIndexCoordinatorTest {
     @Test
     void missingRetainedHistoryFailsTheIndexWithoutConsensusImpact()
             throws Exception {
-        AtomicReference<AppChainGateway.FinalizedBlockListener>
+        AtomicReference<FinalizedChainView.FinalizedBlockListener>
                 listener = new AtomicReference<>();
-        AppChainGateway gateway = gateway(
+        FinalizedChainView gateway = gateway(
                 Map.of(2L, block(2, List.of())),
                 Map.of(),
                 listener);
@@ -186,9 +186,9 @@ class EutxoIndexCoordinatorTest {
 
     @Test
     void checkpointAheadOfAuthoritativeTipFailsClosed() {
-        AtomicReference<AppChainGateway.FinalizedBlockListener> listener =
+        AtomicReference<FinalizedChainView.FinalizedBlockListener> listener =
                 new AtomicReference<>();
-        AppChainGateway gateway = gateway(Map.of(), Map.of(), listener);
+        FinalizedChainView gateway = gateway(Map.of(), Map.of(), listener);
         InMemoryEutxoIndexStore store = new InMemoryEutxoIndexStore(
                 EutxoIndexFixtures.identity());
         new EutxoProjector(store).apply(
@@ -203,25 +203,25 @@ class EutxoIndexCoordinatorTest {
         }
     }
 
-    private static AppChainGateway gateway(
+    private static FinalizedChainView gateway(
         Map<Long, AppBlock> blocks,
             Map<String, EutxoTransactionSummary> summaries,
-            AtomicReference<AppChainGateway.FinalizedBlockListener>
+            AtomicReference<FinalizedChainView.FinalizedBlockListener>
                     listener
     ) {
         return gateway(blocks, summaries, listener, "");
     }
 
-    private static AppChainGateway gateway(
+    private static FinalizedChainView gateway(
             Map<Long, AppBlock> blocks,
             Map<String, EutxoTransactionSummary> summaries,
-            AtomicReference<AppChainGateway.FinalizedBlockListener>
+            AtomicReference<FinalizedChainView.FinalizedBlockListener>
                     listener,
             String bridgeHalt
     ) {
-        return (AppChainGateway) Proxy.newProxyInstance(
+        return (FinalizedChainView) Proxy.newProxyInstance(
                 EutxoIndexCoordinatorTest.class.getClassLoader(),
-                new Class<?>[]{AppChainGateway.class},
+                new Class<?>[]{FinalizedChainView.class},
                 (proxy, method, arguments) -> switch (method.getName()) {
                     case "chainId" -> "payments";
                     case "tipHeight" -> blocks.keySet().stream()
@@ -230,8 +230,8 @@ class EutxoIndexCoordinatorTest {
                             .orElse(0L);
                     case "block" -> Optional.ofNullable(
                             blocks.get((Long) arguments[0]));
-                    case "subscribeFinalized" -> {
-                        listener.set((AppChainGateway.FinalizedBlockListener)
+                    case "subscribe" -> {
+                        listener.set((FinalizedChainView.FinalizedBlockListener)
                                 arguments[0]);
                         yield (AutoCloseable) () -> listener.set(null);
                     }

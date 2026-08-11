@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=./schema/appchain-runtime.schema.json
 # Curated light showcase. Membership, signing keys, peers, proposer, threshold,
 # and the optional workflow-chain anchor are injected by appchain-cluster.
-yaci:
+yano:
   plugins:
     # Validator plugins are trusted consensus code. Listing the reference
     # bundle explicitly is required before authenticated-map can resolve it.
@@ -18,8 +18,6 @@ yaci:
       - com.bloxbean.cardano.yano.appchain.eutxo.indexer
       - com.bloxbean.cardano.yano.appchain.cardano-history
       - com.bloxbean.cardano.yano.appchain.showcase
-
-yano:
   app-chain:
     chains[0]:
       chain-id: "orders-chain"

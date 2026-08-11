@@ -369,6 +369,67 @@ class DomainApiRegistryTest {
     }
 
     @Test
+    void privilegedSystemMessagesAreBoundToPrivilegedHostDispatch() {
+        AtomicInteger submissions = new AtomicInteger();
+        AppChainGateway chain = (AppChainGateway) Proxy.newProxyInstance(
+                AppChainGateway.class.getClassLoader(),
+                new Class<?>[]{AppChainGateway.class},
+                (proxy, method, arguments) -> switch (method.getName()) {
+                    case "chainId" -> "chain-a";
+                    case "validatePrivilegedSystemMessage" -> null;
+                    case "submitPrivilegedSystemMessage" -> {
+                        submissions.incrementAndGet();
+                        yield "00".repeat(32);
+                    }
+                    case "toString" -> "privileged-test-gateway";
+                    case "hashCode" -> System.identityHashCode(proxy);
+                    case "equals" -> proxy == arguments[0];
+                    default -> throw new UnsupportedOperationException(method.getName());
+                });
+        AtomicReference<DomainApiContext> captured = new AtomicReference<>();
+        DomainApiProvider provider = new DomainApiProvider() {
+            @Override public String id() { return "com.example.privileged"; }
+            @Override public DomainApi create(DomainApiContext context) {
+                captured.set(context);
+                return api(List.of(
+                        route("read", "read", DomainApiAccess.READ),
+                        route("write", "write", DomainApiAccess.PRIVILEGED)), request -> {
+                    String id = context.privilegedSystemMessages().submit(
+                            "chain-a", "~governance/test", new byte[]{1});
+                    return text(id);
+                }, new AtomicInteger());
+            }
+        };
+        RecordingProviders providers = new RecordingProviders(provider);
+
+        try (DomainApiRegistry registry = new DomainApiRegistry(
+                providers, ignored -> Map.of(), gateways(chain),
+                LoggerFactory.getLogger(DomainApiRegistryTest.class),
+                Duration.ofSeconds(1), 16)) {
+            registry.resume();
+
+            assertThatThrownBy(() -> registry.dispatch(
+                    provider.id(), DomainHttpMethod.GET, "read", Map.of(), new byte[0]))
+                    .isInstanceOfSatisfying(DomainApiException.class, failure ->
+                            assertThat(failure.code()).isEqualTo(DomainApiException.Code.FAILED))
+                    .hasRootCauseMessage(
+                            "Privileged system messages require a host-dispatched privileged route");
+            assertThat(submissions).hasValue(0);
+
+            assertThat(registry.dispatch(provider.id(), DomainHttpMethod.GET,
+                    "write", Map.of(), new byte[0]).body())
+                    .isEqualTo("00".repeat(32).getBytes(StandardCharsets.UTF_8));
+            assertThat(submissions).hasValue(1);
+
+            assertThatThrownBy(() -> captured.get().privilegedSystemMessages().submit(
+                    "chain-a", "~governance/test", new byte[]{1}))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("Privileged system messages require a host-dispatched privileged route");
+            assertThat(submissions).hasValue(1);
+        }
+    }
+
+    @Test
     void fatalAdmissionAndStartObservationsReleaseOwnershipBeforeEscape()
             throws Exception {
         for (ObservationSeam seam : List.of(

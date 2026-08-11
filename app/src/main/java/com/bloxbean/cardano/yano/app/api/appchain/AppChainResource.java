@@ -14,9 +14,7 @@ import com.bloxbean.cardano.yano.api.appchain.state.StateProof;
 import com.bloxbean.cardano.yano.api.appchain.state.StateProofEnvelope;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.plugin.PluginCatalogView;
-import com.bloxbean.cardano.yano.appchain.client.AppChainClient;
-import com.bloxbean.cardano.yano.appchain.client.ProofVerifier;
-import com.bloxbean.cardano.yano.appchain.composite.contracts.CompositeProfileGovernanceV1;
+import com.bloxbean.cardano.yano.appchain.proof.AppChainProofVerifier;
 import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.core.JsonParser;
@@ -66,21 +64,6 @@ public class AppChainResource {
     @Inject
     PluginCatalogView pluginCatalog;
 
-    @Inject
-    com.bloxbean.cardano.yano.api.LedgerQuery ledgerQuery;
-
-    @Inject
-    com.bloxbean.cardano.yano.api.ChainQuery chainQuery;
-
-    @Inject
-    com.bloxbean.cardano.yano.api.NodeLifecycle nodeLifecycle;
-
-    @Inject
-    org.eclipse.microprofile.config.Config runtimeConfig;
-
-    @org.eclipse.microprofile.config.inject.ConfigProperty(name = "quarkus.http.port")
-    int httpPort;
-
     @ConfigProperty(name = YanoPropertyKeys.AppChain.DX_RESOLVED_CONFIG_DIGEST)
     Optional<String> resolvedConfigDigest = Optional.empty();
 
@@ -118,49 +101,6 @@ public class AppChainResource {
                 pluginCatalog.fingerprint(),
                 resolvedConfigDigest.orElse(null),
                 releaseCatalogDigest.orElse(null)));
-    }
-
-    /**
-     * Machine-specific bridge surface (ADR-UTXO-008): more specific locator
-     * than {@code chains/{chainId}}, so bridge routes never widen the
-     * machine-agnostic {@link ChainScopedResource}.
-     */
-    @Path("chains/{chainId}/eutxo/bridge")
-    public EutxoBridgeResource eutxoBridge(@PathParam("chainId") String chainId) {
-        appChainGateways.byId(chainId)
-                .orElseThrow(() -> jsonError(Response.Status.NOT_FOUND,
-                        "Unknown app chain: " + chainId));
-        EutxoBridgeResource.BridgeSettings settings =
-                EutxoBridgeSettingsLoader.load(runtimeConfig, chainId)
-                        .orElseThrow(() -> jsonError(Response.Status.NOT_FOUND,
-                                "Chain has no bridge configuration: " + chainId));
-        return new EutxoBridgeResource(
-                chainId,
-                settings,
-                new com.bloxbean.cardano.yano.runtime.appchain.NodeUtxoSupplier(
-                        ledgerQuery::getUtxoState),
-                () -> {
-                    var tip = chainQuery.getLocalTip();
-                    if (tip == null) {
-                        return null;
-                    }
-                    int epoch = com.bloxbean.cardano.yano.app.api.EpochUtil
-                            .slotToEpoch(tip.getSlot(), nodeLifecycle.getConfig());
-                    return ledgerQuery.getProtocolParameters(epoch)
-                            .map(com.bloxbean.cardano.yano.runtime.tx
-                                    .ProtocolParamsMapper::fromSnapshot)
-                            .orElse(null);
-                },
-                () -> {
-                    var tip = chainQuery.getLocalTip();
-                    return tip == null ? 0L : tip.getSlot();
-                },
-                address -> new com.bloxbean.cardano.yano.appchain.eutxo.client
-                        .EutxoClient(com.bloxbean.cardano.yano.appchain.client
-                        .AppChainClient.builder(
-                                "http://127.0.0.1:" + httpPort + "/api/v1")
-                        .chainId(chainId).build())
-                        .utxos(address));
     }
 
     // ------------------------------------------------------------------
@@ -1194,56 +1134,6 @@ public class AppChainResource {
         public record ThresholdRequest(int threshold) {
         }
 
-        public record CompositeProfileCommandRequest(String bodyHex, Boolean dryRun) {
-        }
-
-        /** Cached node-local catalog/readiness diagnostics; no plugin callback is executed. */
-        @GET
-        @Path("profile-governance")
-        public Response profileGovernanceStatus() {
-            return Response.ok(Map.of("chainId", gateway.chainId(),
-                    "profileGovernance", gateway.stateMachineStatus())).build();
-        }
-
-        /**
-         * Dry-run or submit one canonical ADR-015 command on the reserved
-         * member-signed topic. Ordinary /messages submission remains unable
-         * to access reserved topics.
-         */
-        @POST
-        @Path("admin/profile-governance/commands")
-        @AppChainAccess(AppChainAccess.Level.PRIVILEGED)
-        public Response submitProfileGovernanceCommand(CompositeProfileCommandRequest request) {
-            if (request == null || isBlank(request.bodyHex())) {
-                return badRequest("'bodyHex' is required");
-            }
-            if (request.bodyHex().length() > CompositeProfileGovernanceV1.MAX_COMMAND_BYTES * 2
-                    || (request.bodyHex().length() & 1) != 0) {
-                return badRequest("bodyHex exceeds the bounded governance command envelope");
-            }
-            byte[] body;
-            try {
-                body = HexUtil.decodeHexString(request.bodyHex());
-            } catch (RuntimeException invalidHex) {
-                return badRequest("Invalid bodyHex");
-            }
-            try {
-                String topic = "~governance/composite-profile";
-                if (Boolean.TRUE.equals(request.dryRun())) {
-                    gateway.validatePrivilegedSystemMessage(topic, body);
-                    return Response.ok(Map.of("chainId", gateway.chainId(),
-                            "valid", true, "submitted", false)).build();
-                }
-                String messageId = gateway.submitPrivilegedSystemMessage(topic, body);
-                return Response.accepted(Map.of("chainId", gateway.chainId(),
-                        "valid", true, "submitted", true, "messageId", messageId)).build();
-            } catch (IllegalArgumentException invalid) {
-                return badRequest(invalid.getMessage());
-            } catch (IllegalStateException unavailable) {
-                throw jsonError(Response.Status.CONFLICT, unavailable.getMessage());
-            }
-        }
-
         @GET
         @Path("admin/members")
         @AppChainAccess(AppChainAccess.Level.PRIVILEGED)
@@ -1548,46 +1438,6 @@ public class AppChainResource {
             }
         }
 
-        /** Verify and normalize a qualified MPF package for a Cardano redeemer. */
-        @POST
-        @Path("proof-subjects/{subjectId}/onchain-export")
-        @AppChainAccess(AppChainAccess.Level.READ)
-        public Response typedProofOnChainExport(@PathParam("subjectId") String subjectId,
-                                                TypedProofRequest request) {
-            if (!validTypedRequest(subjectId, request)) {
-                return badRequest("A valid subject and bounded coordinates are required");
-            }
-            try {
-                var bundle = gateway.stateClaimProofPackage(subjectId, request.coordinates(),
-                        typedView(request), typedClaim(request));
-                boolean qualified = bundle.descriptor().verificationTargets().contains(
-                        com.bloxbean.cardano.yano.api.appchain.proof.ProofLabVocabulary
-                                .VerificationTarget.ONCHAIN_MPF);
-                if (!qualified || bundle.primaryProof().proof().snapshot().identity().profile()
-                        .backendFamily() != com.bloxbean.cardano.yano.api.appchain.state
-                        .StateCommitmentProfile.BackendFamily.MPF) {
-                    return Response.status(Response.Status.CONFLICT).entity(Map.of(
-                            "error", "This subject/profile is off-chain only")).build();
-                }
-                var normalized = com.bloxbean.cardano.yano.appchain.client.MpfProofConverter
-                        .convert(bundle.primaryProof().proof());
-                return Response.ok(Map.of(
-                        "schema", "appchain-onchain-state-claim-v1",
-                        "subjectId", subjectId,
-                        "descriptorDigest", bundle.descriptor().descriptorDigest(),
-                        "normalizedMpfProof", normalized,
-                        "claim", bundle.claim() == null ? Map.of() : bundle.claim(),
-                        "anchorReference", bundle.anchorReference() == null
-                                ? Map.of() : bundle.anchorReference(),
-                        "executionStatus", "NOT_YET_EXECUTED_ON_CHAIN")).build();
-            } catch (IllegalArgumentException invalid) {
-                return badRequest(invalid.getMessage());
-            } catch (UnsupportedOperationException unavailable) {
-                return Response.status(Response.Status.NOT_IMPLEMENTED)
-                        .entity(Map.of("error", unavailable.getMessage())).build();
-            }
-        }
-
         private static boolean validTypedRequest(String subjectId, TypedProofRequest request) {
             return subjectId != null && subjectId.matches("[a-z0-9][a-z0-9:._-]{0,127}")
                     && request != null && request.coordinates() != null
@@ -1833,13 +1683,14 @@ public class AppChainResource {
                 } else {
                     return badRequest("trustMode must be local-anchor or caller-pinned-root");
                 }
-                boolean primaryValid = ProofVerifier.verifyNative(
-                        primary.snapshot().identity().profile().id(), AppChainClient.ProofPresence.PRESENT,
+                boolean primaryValid = AppChainProofVerifier.verify(
+                        primary.snapshot().identity().profile().id(),
+                        AppChainProofVerifier.Presence.PRESENT,
                         primary.snapshot().stateRoot(), primary.canonicalKey(), primary.value(),
                         primary.nativeProof());
-                boolean secondaryValid = ProofVerifier.verifyNative(
+                boolean secondaryValid = AppChainProofVerifier.verify(
                         secondary.snapshot().identity().profile().id(),
-                        AppChainClient.ProofPresence.valueOf(secondary.presence().name()),
+                        AppChainProofVerifier.Presence.valueOf(secondary.presence().name()),
                         secondary.snapshot().stateRoot(), secondary.canonicalKey(), secondary.value(),
                         secondary.nativeProof());
                 Map<String, Object> result = new LinkedHashMap<>();
@@ -2114,21 +1965,21 @@ public class AppChainResource {
                 return badRequest("'profile' is required");
             }
             String profile = request.profile();
-            if (!profile.equals(ProofVerifier.MPF_BLAKE2B256_V1)
-                    && !profile.equals(ProofVerifier.JMT_BLAKE2B256_V1)
-                    && !profile.equals(ProofVerifier.JMT_POSEIDON_BLS12381_V1)) {
+            if (!profile.equals(AppChainProofVerifier.MPF_BLAKE2B256_V1)
+                    && !profile.equals(AppChainProofVerifier.JMT_BLAKE2B256_V1)
+                    && !profile.equals(AppChainProofVerifier.JMT_POSEIDON_BLS12381_V1)) {
                 return badRequest("Unsupported state commitment profile");
             }
             if (request.presence() == null) {
                 return badRequest("'presence' is required");
             }
-            AppChainClient.ProofPresence presence;
+            AppChainProofVerifier.Presence presence;
             try {
-                presence = AppChainClient.ProofPresence.valueOf(request.presence());
+                presence = AppChainProofVerifier.Presence.valueOf(request.presence());
             } catch (IllegalArgumentException invalidPresence) {
                 return badRequest("'presence' must be PRESENT, ABSENT, or TOMBSTONED");
             }
-            if (inclusion == (presence == AppChainClient.ProofPresence.ABSENT)) {
+            if (inclusion == (presence == AppChainProofVerifier.Presence.ABSENT)) {
                 return badRequest("'mode' and 'presence' differ");
             }
 
@@ -2136,7 +1987,7 @@ public class AppChainResource {
             byte[] key = HexUtil.decodeHexString(request.keyHex());
             byte[] wire = HexUtil.decodeHexString(request.proofWireHex());
             byte[] value = inclusion ? HexUtil.decodeHexString(request.valueHex()) : null;
-            boolean valid = ProofVerifier.verifyNative(
+            boolean valid = AppChainProofVerifier.verify(
                     profile, presence, root, key, value, wire);
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("valid", valid);

@@ -16,6 +16,7 @@ import com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotCanonicalCodec;
 import com.bloxbean.cardano.yano.api.appchain.snapshot.AuthenticatedSnapshotProofBundleCodec;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
+import com.bloxbean.cardano.yano.appchain.proof.MpfProofWirePreflight;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;

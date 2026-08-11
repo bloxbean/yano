@@ -19,6 +19,7 @@ import com.bloxbean.cardano.yano.api.plugin.PluginSourceCategory;
 import com.bloxbean.cardano.yano.api.plugin.PluginSelectionStatus;
 import com.bloxbean.cardano.yano.api.plugin.PluginTrustTier;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider;
+import com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelProvider;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsProvider;
 import com.bloxbean.cardano.yano.catalog.BundleContribution;
@@ -972,7 +973,7 @@ final class PluginCatalogBuilder {
             case APP_STATE_MACHINE, AUTHENTICATED_MAP_VALIDATOR,
                     SEQUENCER_MODE, L1_OBSERVER, L1_EPOCH_OBSERVER ->
                     PluginTrustTier.CONSENSUS;
-            case SIGNER_PROVIDER, EFFECT_EXECUTOR, DOMAIN_API ->
+            case SIGNER_PROVIDER, EFFECT_EXECUTOR, DOMAIN_API, LOCAL_READ_MODEL ->
                     PluginTrustTier.PRIVILEGED_LOCAL;
             case FINALIZED_SINK, HEALTH, METRICS -> PluginTrustTier.AUXILIARY_LOCAL;
         };
@@ -1235,6 +1236,7 @@ final class PluginCatalogBuilder {
                     case EFFECT_EXECUTOR -> ((AppEffectExecutorFactory) provider).scheme();
                     case FINALIZED_SINK -> ((FinalizedStreamSinkFactory) provider).scheme();
                     case DOMAIN_API -> ((DomainApiProvider) provider).id();
+                    case LOCAL_READ_MODEL -> ((LocalReadModelProvider) provider).id();
                     case HEALTH -> ((PluginHealthProvider) provider).id();
                     case METRICS -> ((PluginMetricsProvider) provider).id();
                 });

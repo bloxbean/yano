@@ -34,7 +34,7 @@ remains thin for build-time inclusion):
 ```
 
 Copy only that `*-bundle.jar` into the JVM node's plugin directory
-configured by `yaci.plugins.directory` (default `plugins/`), on the node that
+configured by `yano.plugins.directory` (default `plugins/`), on the node that
 runs the effect executor (`yano.app-chain.effects.executor.enabled=true`). It
 contains the Cardano client/backend dependencies and merged ServiceLoader
 descriptors. Native images cannot load a directory JAR; build with

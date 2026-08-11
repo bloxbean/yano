@@ -853,6 +853,10 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
                 case DOMAIN_API -> pluginCallback(
                         callbackTracker, pluginClassLoader,
                         ((DomainApiProvider) provider)::id);
+                case LOCAL_READ_MODEL -> pluginCallback(
+                        callbackTracker, pluginClassLoader,
+                        ((com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelProvider)
+                                provider)::id);
                 case HEALTH -> pluginCallback(
                         callbackTracker, pluginClassLoader,
                         ((PluginHealthProvider) provider)::id);

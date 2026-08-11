@@ -6,9 +6,21 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateMachineContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoValidityCommitmentEngine;
+import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoValidityCommitmentProvider;
 
 /** Service-loaded provider for {@code state:eutxo-ledger}. */
 public final class EutxoStateMachineProvider implements AppStateMachineProvider {
+    private final EutxoValidityCommitmentProvider packagedValidityProvider;
+
+    public EutxoStateMachineProvider() {
+        this(null);
+    }
+
+    public EutxoStateMachineProvider(
+            EutxoValidityCommitmentProvider packagedValidityProvider
+    ) {
+        this.packagedValidityProvider = packagedValidityProvider;
+    }
 
     @Override
     public String id() {
@@ -56,7 +68,8 @@ public final class EutxoStateMachineProvider implements AppStateMachineProvider 
         }
         EutxoValidityCommitmentEngine validity =
                 EutxoValidityEngines.discover(
-                        context.chainId(), profile, context.settings());
+                        context.chainId(), profile, context.settings(),
+                        packagedValidityProvider);
         KeyPaymentTransitionEngine.DomainPolicy domainPolicy =
                 validity == null ? null : new KeyPaymentTransitionEngine.DomainPolicy(
                         context.chainId(), network, validity);

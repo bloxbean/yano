@@ -15,7 +15,6 @@ import com.bloxbean.cardano.yano.api.appchain.state.StateIntegrityReport;
 import com.bloxbean.cardano.yano.api.appchain.state.StateProof;
 import com.bloxbean.cardano.yano.api.appchain.state.StateProofEnvelope;
 import com.bloxbean.cardano.yano.api.appchain.state.StateSnapshot;
-import com.bloxbean.cardano.yano.appchain.client.ProofVerifier;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
 import org.junit.jupiter.api.Test;
@@ -60,27 +59,6 @@ class AppChainProofResourceTest {
         assertEquals("demo", manifestMap.get("applicationId"));
         assertEquals("capability", ((Map<?, ?>) ((List<?>) manifestMap.get("crossCutting"))
                 .getFirst()).get("capabilityId"));
-    }
-
-    @Test
-    void releaseMatchedClientCatalogEqualsRuntimeCommitmentCatalog() {
-        for (var runtimeProfile : StateCommitmentProfiles.all()) {
-            ProofVerifier.ProfileMetadata clientProfile = ProofVerifier.profileMetadata(
-                    runtimeProfile.id()).orElseThrow();
-            assertEquals(runtimeProfile.backendFamily().name()
-                            .toLowerCase(java.util.Locale.ROOT),
-                    clientProfile.backend());
-            assertEquals(runtimeProfile.commitmentFormatId(),
-                    clientProfile.commitmentFormatId());
-            assertEquals(runtimeProfile.proofEncodingId(),
-                    clientProfile.proofEncodingId());
-            assertEquals(runtimeProfile.nativeVersioning(),
-                    clientProfile.nativeVersioning());
-            assertEquals(runtimeProfile.physicalDelete(),
-                    clientProfile.physicalDelete());
-            assertEquals(HexUtil.encodeHexString(runtimeProfile.formatFingerprint()),
-                    clientProfile.formatFingerprintHex());
-        }
     }
 
     @Test

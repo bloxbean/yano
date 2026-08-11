@@ -6,7 +6,6 @@ import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observer;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider;
 import com.bloxbean.cardano.yano.api.plugin.PluginActivationException;
-import com.bloxbean.cardano.yano.runtime.plugins.LegacyServiceLoaderProviderRegistry;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginProviderRegistry;
 import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 import org.slf4j.Logger;
@@ -64,15 +63,16 @@ final class L1ObservationService {
 
     /**
      * Build the configured observers from {@code observers.<id>.*} plugin
-     * settings; returns null when none are configured. Built-in types plus
-     * ServiceLoader {@link L1ObserverProvider}s from the plugin classloader.
+     * settings; returns null when none are configured. This library-mode
+     * overload has no extension providers; runtime assembly supplies the
+     * catalog-selected registry through {@link #fromRegistry}.
      */
     static L1ObservationService fromConfig(Map<String, String> pluginSettings,
                                            int windowBlocks,
                                            ClassLoader pluginClassLoader,
                                            Logger log) {
         return fromRegistry(pluginSettings, windowBlocks,
-                new LegacyServiceLoaderProviderRegistry(pluginClassLoader), log);
+                PluginProviderRegistry.empty(), log);
     }
 
     static L1ObservationService fromRegistry(Map<String, String> pluginSettings,

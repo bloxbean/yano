@@ -154,7 +154,8 @@ class StdlibConfigWiringTest {
                 .pluginSettings(settings)
                 .build();
         AppChainSubsystem node = new AppChainSubsystem(config, 42, null, null,
-                tempDir.resolve("ledger-" + name).toString(), null, log);
+                tempDir.resolve("ledger-" + name).toString(), null,
+                StdlibTestPluginProviders.registry(), log);
         nodes.add(node);
         node.start();
         return node;

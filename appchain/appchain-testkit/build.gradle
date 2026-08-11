@@ -1,6 +1,5 @@
 dependencies {
     api project(':runtime')
-    api project(':appchain-integration-contracts')
     api libs.junit.jupiter.api
 
     implementation libs.cardano.client.crypto
@@ -21,9 +20,10 @@ tasks.named('compileJava') {
 publishing {
     publications {
         mavenJava(MavenPublication) {
+            artifactId = 'yano-appchain-core-testkit'
             pom {
-                name = 'Yano App-Chain Testkit'
-                description = 'JUnit 5 extension for embedded multi-node app-chain clusters in application tests'
+                name = 'Yano App-Chain Core Testkit'
+                description = 'OrderedLog, host SPI, and plugin conformance support for Yano'
             }
         }
     }

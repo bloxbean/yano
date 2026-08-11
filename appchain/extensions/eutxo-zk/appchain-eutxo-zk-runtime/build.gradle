@@ -50,9 +50,9 @@ tasks.named('shadowJar') {
     archiveClassifier.set('bundle')
     reproducibleFileOrder = true
     preserveFileTimestamps = false
-    mergeServiceFiles()
     exclude 'com/bloxbean/cardano/yano/api/**'
     exclude 'META-INF/yano/plugins/com.bloxbean.cardano.yano.appchain.eutxo.json'
+    exclude 'META-INF/services/com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoValidityCommitmentProvider'
     exclude 'META-INF/*.SF', 'META-INF/*.RSA', 'META-INF/*.DSA', 'module-info.class'
 }
 
@@ -67,15 +67,24 @@ tasks.register('verifyEutxoZkRuntimeBundle') {
         new java.util.zip.ZipFile(archive).withCloseable { zip ->
             def entries = zip.entries().collect { it.name }.toSet()
             [
-                    'com/bloxbean/cardano/yano/appchain/eutxo/ledger/EutxoStateMachineProvider.class',
+                    'com/bloxbean/cardano/yano/appchain/eutxo/zk/runtime/EutxoZkStateMachineProvider.class',
                     'com/bloxbean/cardano/yano/appchain/eutxo/zk/zeroj/ZerojPoseidonValidityProvider.class',
-                    'META-INF/services/com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider',
-                    'META-INF/services/com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoValidityCommitmentProvider'
+                    'META-INF/services/com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider'
             ].each { required ->
                 if (!entries.contains(required)) {
                     throw new GradleException(
                             "EUTxO-ZK runtime bundle is missing ${required}")
                 }
+            }
+            def providerEntry = zip.getEntry(
+                    'META-INF/services/com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider')
+            def providers = zip.getInputStream(providerEntry).getText('UTF-8')
+                    .readLines().findAll { !it.isBlank() }
+            if (providers != [
+                    'com.bloxbean.cardano.yano.appchain.eutxo.zk.runtime.EutxoZkStateMachineProvider'
+            ]) {
+                throw new GradleException(
+                        "EUTxO-ZK runtime bundle has unexpected state-machine providers: ${providers}")
             }
         }
     }

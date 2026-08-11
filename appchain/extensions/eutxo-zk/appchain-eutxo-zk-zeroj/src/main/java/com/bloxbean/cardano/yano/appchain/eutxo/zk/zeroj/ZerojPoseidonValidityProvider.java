@@ -10,7 +10,7 @@ import com.bloxbean.cardano.yano.appchain.eutxo.zk.contracts.EutxoZkProfile;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-/** Service-loaded provider for the optional ZeroJ Poseidon commitment. */
+/** Provider packaged directly by the optional ZeroJ runtime plugin bundle. */
 public final class ZerojPoseidonValidityProvider
         implements EutxoValidityCommitmentProvider {
     public static final String ID = "zeroj-poseidon-v1";

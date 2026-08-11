@@ -32,7 +32,7 @@ import java.util.Set;
  * 
  * Configuration:
  * - Context key: plugins.logging.enabled=true|false
- * - The packaged Quarkus node maps yaci.plugins.logging.enabled to that key.
+ * - The packaged Quarkus node maps yano.plugins.logging.enabled to that key.
  * - Library embedders set the context key in PluginsOptions.config().
  * 
  * Log format:
@@ -55,7 +55,7 @@ public final class LoggingPlugin implements NodePlugin {
     private boolean enabled;
     private List<SubscriptionHandle> handles = List.of();
 
-    @Override public String id() { return "com.bloxbean.cardano.yaci.plugins.logging"; }
+    @Override public String id() { return "com.bloxbean.cardano.yano.plugins.logging"; }
     @Override public String version() { return "1.0.0"; }
     @Override public Set<PluginCapability> capabilities() { return Set.of(PluginCapability.EVENT_CONSUMER); }
 
@@ -67,7 +67,7 @@ public final class LoggingPlugin implements NodePlugin {
         enabled = val instanceof Boolean b ? b
                 : val instanceof String s && Boolean.parseBoolean(s);
         if (!enabled) {
-            log.info("LoggingPlugin disabled via yaci.plugins.logging.enabled=false");
+            log.info("LoggingPlugin disabled via yano.plugins.logging.enabled=false");
         }
     }
 

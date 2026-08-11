@@ -1,3 +1,12 @@
+ext.runtimePluginBundleId = 'com.bloxbean.cardano.yano.appchain.evidence-profile'
+ext.runtimePluginExcludedBundleIds = [
+        'com.bloxbean.cardano.yano.appchain.composite',
+        'com.bloxbean.cardano.yano.appchain.role-workflow',
+        'com.bloxbean.cardano.yano.appchain.stdlib',
+        'com.bloxbean.cardano.yano.appchain.evidence-registry'
+]
+apply from: rootProject.file('gradle/runtime-plugin-bundle.gradle')
+
 dependencies {
     api project(':core-api')
     api project(':appchain-composite')

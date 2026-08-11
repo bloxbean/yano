@@ -16,7 +16,7 @@ dependencies {
     implementation libs.slf4j.api
 
     testImplementation project(':core-api')
-    testImplementation project(':appchain-testkit')
+    testImplementation project(':appchain-effects-testkit')
     testImplementation libs.kafka.clients
     testImplementation libs.junit.jupiter.api
     testRuntimeOnly libs.junit.jupiter.engine
@@ -74,7 +74,7 @@ tasks.named('integrationTest') {
 }
 
 // Keep the normal artifact thin for build-time/native inclusion. The bundle
-// classifier is the self-contained drop-in artifact for yaci.plugins.directory.
+// classifier is the self-contained drop-in artifact for yano.plugins.directory.
 tasks.named('shadowJar') {
     archiveBaseName.set("yano-${project.name}")
     archiveClassifier.set('bundle')

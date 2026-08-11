@@ -110,10 +110,10 @@ node.lifecycle().start();
 ### Quarkus app
 
 - `app` maps `application.yml` → options in `YanoProducer`, then builds a `Yano`:
-  - `yaci.events.enabled`, `yaci.plugins.enabled`,
-    `yaci.plugins.allow-list`, `yaci.plugins.deny-list`,
-    `yaci.plugins.auto-register-annotated`, and
-    `yaci.plugins.logging.enabled`.
+  - `yaci.events.enabled`, `yano.plugins.enabled`,
+    `yano.plugins.allow-list`, `yano.plugins.deny-list`,
+    `yano.plugins.auto-register-annotated`, and
+    `yano.plugins.logging.enabled`.
   - Manifested bundle configuration is read from
     `yano.plugins.bundle."<bundle-id>".*` and passed as the bundle-private view.
     For example,

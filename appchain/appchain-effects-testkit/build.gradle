@@ -1,0 +1,30 @@
+dependencies {
+    api project(':appchain-testkit')
+    api project(':appchain-integration-contracts')
+
+    implementation libs.cardano.client.crypto
+    implementation libs.slf4j.api
+
+    testImplementation libs.assertj.core
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+tasks.named('compileJava') {
+    options.compilerArgs.removeAll { it.startsWith('-Aproject=') }
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            artifactId = 'yano-x-effects-testkit'
+            pom {
+                name = 'Yano X App-Chain Effects Testkit'
+                description = 'Effect and connector conformance harnesses for Yano X plugins'
+            }
+        }
+    }
+}

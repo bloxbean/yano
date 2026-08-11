@@ -32,6 +32,8 @@ import com.bloxbean.cardano.yano.api.plugin.PluginSourceCategory;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApi;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiContext;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider;
+import com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelContext;
+import com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelProvider;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthContext;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthSource;
@@ -3214,6 +3216,7 @@ class PluginCatalogRuntimeTest {
             case EFFECT_EXECUTOR -> ParityEffectProvider.class;
             case FINALIZED_SINK -> ParitySinkProvider.class;
             case DOMAIN_API -> ParityDomainApiProvider.class;
+            case LOCAL_READ_MODEL -> ParityLocalReadModelProvider.class;
             case HEALTH -> ParityHealthProvider.class;
             case METRICS -> ParityMetricsProvider.class;
         };
@@ -3984,6 +3987,14 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
         @Override public String id() { throw unexpectedParityActivation(); }
         @Override
         public DomainApi create(DomainApiContext context) {
+            throw unexpectedParityActivation();
+        }
+    }
+
+    public static final class ParityLocalReadModelProvider
+            implements LocalReadModelProvider {
+        @Override public String id() { throw unexpectedParityActivation(); }
+        @Override public AutoCloseable start(LocalReadModelContext context) {
             throw unexpectedParityActivation();
         }
     }

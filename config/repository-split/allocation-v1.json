@@ -125,17 +125,13 @@
     {
       "sourcePath": ":app",
       "sourceDirectory": "app",
-      "disposition": "split",
-      "owner": "split-seam",
+      "disposition": "retain",
+      "owner": "yano-core",
       "targetPath": ":app",
       "targetDirectory": "app",
       "artifactId": null,
       "publicationType": "application-distribution",
-      "pluginBundleId": null,
-      "splitTargets": [
-        "Retain the lean Quarkus host and existing JVM/native ZIP mechanisms in yano",
-        "Move product REST/indexer implementations, appchain-effects-demo, and downstream cluster assets to yano-x"
-      ]
+      "pluginBundleId": null
     },
     {
       "sourcePath": ":ledger-rules",
@@ -327,32 +323,46 @@
     {
       "sourcePath": ":appchain-testkit",
       "sourceDirectory": "appchain/appchain-testkit",
-      "disposition": "split",
-      "owner": "split-seam",
-      "targetPath": ":sdk:testkit",
-      "targetDirectory": "sdk/testkit",
-      "artifactId": "yano-x-testkit",
+      "disposition": "retain",
+      "owner": "yano-core",
+      "targetPath": ":appchain-testkit",
+      "targetDirectory": "appchain/appchain-testkit",
+      "artifactId": "yano-appchain-core-testkit",
       "publicationType": "test-library",
-      "pluginBundleId": null,
-      "splitTargets": [
-        "Carve core OrderedLog, host SPI, and plugin conformance support into yano-appchain-core-testkit",
-        "Move product, connector, effect, and batteries-included harnesses to yano-x-testkit"
-      ]
+      "pluginBundleId": null
+    },
+    {
+      "sourcePath": ":appchain-effects-testkit",
+      "sourceDirectory": "appchain/appchain-effects-testkit",
+      "disposition": "move",
+      "owner": "yano-x",
+      "targetPath": ":sdk:effects-testkit",
+      "targetDirectory": "sdk/effects-testkit",
+      "artifactId": "yano-x-effects-testkit",
+      "publicationType": "test-library",
+      "pluginBundleId": null
     },
     {
       "sourcePath": ":appchain-client",
       "sourceDirectory": "appchain/appchain-client",
-      "disposition": "split",
-      "owner": "split-seam",
+      "disposition": "move",
+      "owner": "yano-x",
       "targetPath": ":sdk:client",
       "targetDirectory": "sdk/client",
       "artifactId": "yano-x-client",
       "publicationType": "library",
-      "pluginBundleId": null,
-      "splitTargets": [
-        "Carve generic host proof math into com.bloxbean.cardano:yano-appchain-proof-verifier",
-        "Move external clients, portable proof utilities, and authoring helpers to yano-x-client"
-      ]
+      "pluginBundleId": null
+    },
+    {
+      "sourcePath": ":appchain-proof-verifier",
+      "sourceDirectory": "appchain/appchain-proof-verifier",
+      "disposition": "retain",
+      "owner": "yano-core",
+      "targetPath": ":appchain-proof-verifier",
+      "targetDirectory": "appchain/appchain-proof-verifier",
+      "artifactId": "yano-appchain-proof-verifier",
+      "publicationType": "library",
+      "pluginBundleId": null
     },
     {
       "sourcePath": ":appchain-proof-contracts",
@@ -792,6 +802,17 @@
       "targetDirectory": "appchain/onchain/appchain-anchor-onchain",
       "artifactId": "yano-appchain-anchor-onchain",
       "publicationType": "onchain-artifact",
+      "pluginBundleId": null
+    },
+    {
+      "sourcePath": ":appchain-eutxo-e2e",
+      "sourceDirectory": "appchain/fixtures/appchain-eutxo-e2e",
+      "disposition": "move",
+      "owner": "yano-x",
+      "targetPath": ":fixtures:eutxo-e2e",
+      "targetDirectory": "fixtures/eutxo-e2e",
+      "artifactId": "yano-x-eutxo-e2e",
+      "publicationType": "test-fixture",
       "pluginBundleId": null
     },
     {

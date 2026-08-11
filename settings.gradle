@@ -1,3 +1,5 @@
+import groovy.json.JsonSlurper
+
 pluginManagement {
     repositories {
         gradlePluginPortal()
@@ -6,167 +8,31 @@ pluginManagement {
 }
 
 rootProject.name = 'yano'
-include 'core-api'
-include 'plugin-catalog'
-include 'consensus'
-include 'p2p'
-include 'runtime'
-include 'devnet-toolkit'
-include 'testkit'
-include 'testkit-ccl'
-include 'tx-services'
-include 'bootstrap-providers'
-include 'app'
-include 'ledger-rules'
-include 'ledger-state'
-include 'ccl-ledger-rules'
-include 'scalus-bridge'
-include 'epoch-export'
-// App-chain modules live under appchain/ (plugins under appchain/extensions/);
-// project names are kept flat so artifact ids stay yano-appchain-*.
-include 'appchain-stdlib'
-include 'appchain-stdlib-contracts'
-include 'appchain-authenticated-map-validators'
-include 'appchain-config'
-include 'appchain-devtools'
-include 'appchain-studio'
-include 'console-ui'
-include 'appchain-composite-contracts'
-include 'appchain-composite-client'
-include 'appchain-composite'
-include 'appchain-role-workflow-contracts'
-include 'appchain-role-workflow'
-include 'appchain-testkit'
-include 'appchain-client'
-include 'appchain-proof-contracts'
-include 'appchain-proof-onchain'
-include 'appchain-integration-contracts'
-include 'appchain-evidence-contracts'
-include 'appchain-evidence-registry'
-include 'appchain-evidence-client'
-include 'appchain-evidence-profile'
-include 'appchain-cardano-history'
-include 'appchain-cardano-history-client'
-include 'appchain-cardano-history-cli'
-include 'appchain-cardano-history-onchain'
-include 'appchain-evidence-demo-runner'
-include 'appchain-showcase'
-include 'appchain-showcase-client'
-include 'appchain-kafka'
-include 'appchain-objectstore-s3'
-include 'appchain-ipfs'
-include 'appchain-effects-cardano'
-include 'appchain-zk'
-include 'appchain-eutxo-contracts'
-include 'appchain-eutxo-ledger'
-include 'appchain-eutxo-client'
-include 'appchain-eutxo-testkit'
-include 'appchain-eutxo-demo'
-include 'appchain-eutxo-bridge-cardano'
-include 'appchain-eutxo-bridge-onchain'
-include 'appchain-eutxo-indexer-core'
-include 'appchain-eutxo-indexer-jdbc'
-include 'appchain-eutxo-zk-contracts'
-include 'appchain-eutxo-zk-zeroj'
-include 'appchain-eutxo-zk-prover'
-include 'appchain-eutxo-zk-client'
-include 'appchain-eutxo-zk-onchain'
-include 'appchain-eutxo-zk-testkit'
-include 'appchain-eutxo-zk-runtime'
-include 'appchain-eutxo-zk-lifecycle'
-include 'appchain-eutxo-zk-indexer'
-include 'appchain-eutxo-zk-demo'
-include 'appchain-spring-boot-starter'
-include 'appchain-anchor-onchain'
-include 'appchain-plugin-conformance'
-project(':appchain-anchor-onchain').projectDir = file('appchain/onchain/appchain-anchor-onchain')
-project(':appchain-proof-contracts').projectDir = file('appchain/appchain-proof-contracts')
-project(':appchain-proof-onchain').projectDir = file('appchain/onchain/appchain-proof-onchain')
-project(':appchain-config').projectDir = file('appchain/appchain-config')
-project(':appchain-devtools').projectDir = file('appchain/appchain-devtools')
-project(':appchain-studio').projectDir = file('appchain/appchain-studio')
-project(':appchain-stdlib').projectDir = file('appchain/appchain-stdlib')
-project(':appchain-stdlib-contracts').projectDir = file('appchain/appchain-stdlib-contracts')
-project(':appchain-authenticated-map-validators').projectDir =
-        file('appchain/authenticated-map-validators')
-project(':appchain-composite-contracts').projectDir =
-        file('appchain/appchain-composite-contracts')
-project(':appchain-composite-client').projectDir =
-        file('appchain/appchain-composite-client')
-project(':appchain-composite').projectDir = file('appchain/appchain-composite')
-project(':appchain-role-workflow-contracts').projectDir =
-        file('appchain/appchain-role-workflow-contracts')
-project(':appchain-role-workflow').projectDir = file('appchain/appchain-role-workflow')
-project(':appchain-testkit').projectDir = file('appchain/appchain-testkit')
-project(':appchain-client').projectDir = file('appchain/appchain-client')
-project(':appchain-integration-contracts').projectDir =
-        file('appchain/appchain-integration-contracts')
-project(':appchain-evidence-contracts').projectDir =
-        file('appchain/products/appchain-evidence-contracts')
-project(':appchain-evidence-registry').projectDir =
-        file('appchain/products/appchain-evidence-registry')
-project(':appchain-evidence-client').projectDir =
-        file('appchain/products/appchain-evidence-client')
-project(':appchain-evidence-profile').projectDir =
-        file('appchain/products/appchain-evidence-profile')
-project(':appchain-cardano-history').projectDir =
-        file('appchain/products/appchain-cardano-history')
-project(':appchain-cardano-history-client').projectDir =
-        file('appchain/products/appchain-cardano-history-client')
-project(':appchain-cardano-history-cli').projectDir =
-        file('appchain/products/appchain-cardano-history-cli')
-project(':appchain-cardano-history-onchain').projectDir =
-        file('appchain/onchain/appchain-cardano-history-onchain')
-project(':appchain-evidence-demo-runner').projectDir =
-        file('appchain/examples/appchain-evidence-demo-runner')
-project(':appchain-showcase').projectDir =
-        file('appchain/examples/appchain-showcase')
-project(':appchain-showcase-client').projectDir =
-        file('appchain/examples/appchain-showcase-client')
-project(':appchain-kafka').projectDir = file('appchain/extensions/appchain-kafka')
-project(':appchain-objectstore-s3').projectDir =
-        file('appchain/extensions/appchain-objectstore-s3')
-project(':appchain-ipfs').projectDir = file('appchain/extensions/appchain-ipfs')
-project(':appchain-effects-cardano').projectDir = file('appchain/extensions/appchain-effects-cardano')
-project(':appchain-zk').projectDir = file('appchain/extensions/appchain-zk')
-project(':appchain-eutxo-contracts').projectDir =
-        file('appchain/extensions/eutxo/appchain-eutxo-contracts')
-project(':appchain-eutxo-ledger').projectDir =
-        file('appchain/extensions/eutxo/appchain-eutxo-ledger')
-project(':appchain-eutxo-client').projectDir =
-        file('appchain/extensions/eutxo/appchain-eutxo-client')
-project(':appchain-eutxo-testkit').projectDir =
-        file('appchain/extensions/eutxo/appchain-eutxo-testkit')
-project(':appchain-eutxo-demo').projectDir =
-        file('appchain/extensions/eutxo/appchain-eutxo-demo')
-project(':appchain-eutxo-bridge-cardano').projectDir =
-        file('appchain/extensions/eutxo/appchain-eutxo-bridge-cardano')
-project(':appchain-eutxo-bridge-onchain').projectDir =
-        file('appchain/extensions/eutxo/appchain-eutxo-bridge-onchain')
-project(':appchain-eutxo-indexer-core').projectDir =
-        file('appchain/extensions/eutxo/appchain-eutxo-indexer-core')
-project(':appchain-eutxo-indexer-jdbc').projectDir =
-        file('appchain/extensions/eutxo/appchain-eutxo-indexer-jdbc')
-project(':appchain-eutxo-zk-contracts').projectDir =
-        file('appchain/extensions/eutxo-zk/appchain-eutxo-zk-contracts')
-project(':appchain-eutxo-zk-zeroj').projectDir =
-        file('appchain/extensions/eutxo-zk/appchain-eutxo-zk-zeroj')
-project(':appchain-eutxo-zk-prover').projectDir =
-        file('appchain/extensions/eutxo-zk/appchain-eutxo-zk-prover')
-project(':appchain-eutxo-zk-client').projectDir =
-        file('appchain/extensions/eutxo-zk/appchain-eutxo-zk-client')
-project(':appchain-eutxo-zk-onchain').projectDir =
-        file('appchain/extensions/eutxo-zk/appchain-eutxo-zk-onchain')
-project(':appchain-eutxo-zk-testkit').projectDir =
-        file('appchain/extensions/eutxo-zk/appchain-eutxo-zk-testkit')
-project(':appchain-eutxo-zk-runtime').projectDir =
-        file('appchain/extensions/eutxo-zk/appchain-eutxo-zk-runtime')
-project(':appchain-eutxo-zk-lifecycle').projectDir =
-        file('appchain/extensions/eutxo-zk/appchain-eutxo-zk-lifecycle')
-project(':appchain-eutxo-zk-indexer').projectDir =
-        file('appchain/extensions/eutxo-zk/appchain-eutxo-zk-indexer')
-project(':appchain-eutxo-zk-demo').projectDir =
-        file('appchain/extensions/eutxo-zk/appchain-eutxo-zk-demo')
-project(':appchain-plugin-conformance').projectDir =
-        file('appchain/fixtures/appchain-plugin-conformance')
-project(':appchain-spring-boot-starter').projectDir = file('spring-starters/appchain-spring-boot-starter')
+
+def leanValue = gradle.startParameter.projectProperties
+        .getOrDefault('leanYanoBuild', 'false')
+if (!(leanValue in ['true', 'false'])) {
+    throw new GradleException('leanYanoBuild must be true or false')
+}
+def leanYanoBuild = Boolean.parseBoolean(leanValue)
+def allocationFile = file('config/repository-split/allocation-v1.json')
+def allocation = new JsonSlurper().parse(allocationFile)
+def retainedDispositions = ['retain', 'temporary-retain'] as Set
+def selectedModules = allocation.modules.findAll { module ->
+    !leanYanoBuild || retainedDispositions.contains(module.disposition)
+}
+
+selectedModules.each { module ->
+    String projectPath = module.sourcePath.toString()
+    if (!projectPath.startsWith(':') || projectPath.count(':') != 1) {
+        throw new GradleException(
+                "ADR-030 source project paths must remain flat during extraction: ${projectPath}")
+    }
+    include projectPath.substring(1)
+    project(projectPath).projectDir = file(module.sourceDirectory.toString())
+}
+
+gradle.settingsEvaluated {
+    logger.lifecycle('ADR-030 {} build configured with {} projects',
+            leanYanoBuild ? 'lean Yano' : 'monorepo', selectedModules.size())
+}

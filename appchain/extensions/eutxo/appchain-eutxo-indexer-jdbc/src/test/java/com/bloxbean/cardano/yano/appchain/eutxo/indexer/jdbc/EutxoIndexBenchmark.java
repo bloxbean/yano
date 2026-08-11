@@ -1,7 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.eutxo.indexer.jdbc;
 
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
-import com.bloxbean.cardano.yano.api.appchain.AppChainGateway;
+import com.bloxbean.cardano.yano.api.plugin.domain.FinalizedChainView;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryResult;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
@@ -295,11 +295,11 @@ public final class EutxoIndexBenchmark {
     private static CallbackResult callbackBenchmark() throws Exception {
         ConcurrentHashMap<Long, AppBlock> blocks =
                 new ConcurrentHashMap<>();
-        AtomicReference<AppChainGateway.FinalizedBlockListener> listener =
+        AtomicReference<FinalizedChainView.FinalizedBlockListener> listener =
                 new AtomicReference<>();
-        AppChainGateway gateway = (AppChainGateway) Proxy.newProxyInstance(
+        FinalizedChainView gateway = (FinalizedChainView) Proxy.newProxyInstance(
                 EutxoIndexBenchmark.class.getClassLoader(),
-                new Class<?>[]{AppChainGateway.class},
+                new Class<?>[]{FinalizedChainView.class},
                 (proxy, method, arguments) -> switch (method.getName()) {
                     case "chainId" -> "payments";
                     case "tipHeight" -> blocks.keySet().stream()
@@ -308,9 +308,9 @@ public final class EutxoIndexBenchmark {
                             .orElse(0L);
                     case "block" -> Optional.ofNullable(
                             blocks.get((Long) arguments[0]));
-                    case "subscribeFinalized" -> {
+                    case "subscribe" -> {
                         listener.set(
-                                (AppChainGateway.FinalizedBlockListener)
+                                (FinalizedChainView.FinalizedBlockListener)
                                         arguments[0]);
                         yield (AutoCloseable) () -> listener.set(null);
                     }

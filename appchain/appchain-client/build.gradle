@@ -3,6 +3,7 @@
 // release-matched MPF/JMT verifiers for client-side proof checks.
 dependencies {
     api project(':core-api')
+    api project(':appchain-proof-verifier')
     api project(':appchain-stdlib-contracts')
     api project(':appchain-composite-contracts')
     api project(':appchain-role-workflow-contracts')

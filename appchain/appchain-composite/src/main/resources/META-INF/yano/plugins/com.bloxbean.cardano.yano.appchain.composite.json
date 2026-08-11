@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "com.bloxbean.cardano.yano.appchain.composite",
+  "version": "${pluginVersion}",
+  "yanoApi": { "min": 3, "max": 3, "minLevel": 4 },
+  "dependencies": [],
+  "contributions": [
+    {
+      "kind": "domain-api",
+      "name": "com.bloxbean.cardano.yano.appchain.composite",
+      "provider": "com.bloxbean.cardano.yano.appchain.composite.CompositeGovernanceDomainApiProvider"
+    }
+  ]
+}

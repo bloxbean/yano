@@ -193,6 +193,9 @@ tasks.named('check') {
 
 def repositorySplitAllocationFile = layout.projectDirectory.file(
         'config/repository-split/allocation-v1.json')
+def leanRepositoryBuild = providers.gradleProperty('leanYanoBuild')
+        .map { Boolean.parseBoolean(it) }
+        .orElse(false)
 
 tasks.register('verifyRepositorySplitAllocation') {
     group = 'verification'
@@ -241,7 +244,10 @@ tasks.register('verifyRepositorySplitAllocation') {
             failures.add("duplicate artifactId ${it}")
         }
 
-        def declaredProjects = modules.collectEntries { module ->
+        def expectedModules = leanRepositoryBuild.get()
+                ? modules.findAll { it.disposition in ['retain', 'temporary-retain'] }
+                : modules
+        def declaredProjects = expectedModules.collectEntries { module ->
             [(module.sourcePath): module]
         }
         def actualProjects = rootProject.subprojects.collectEntries { candidate ->
@@ -391,13 +397,58 @@ tasks.register('verifyRepositorySplitAllocation') {
                     + failures.join('\n - '))
         }
         logger.lifecycle(
-                'ADR-030 allocation verified: {} projects, {} tracked paths, {} debt items, {} suites',
-                modules.size(), trackedFiles.size(), debt.size(), suites.size())
+                'ADR-030 allocation verified: {} configured projects, {} tracked paths, {} debt items, {} suites',
+                expectedModules.size(), trackedFiles.size(), debt.size(), suites.size())
     }
 }
 
 tasks.named('check') {
     dependsOn tasks.named('verifyRepositorySplitAllocation')
+}
+
+tasks.register('verifyLeanHostDependencyBoundary') {
+    group = 'verification'
+    description = 'Rejects Yano X allocated projects from the lean host runtime graph.'
+    inputs.file(repositorySplitAllocationFile)
+    dependsOn tasks.named('verifyRepositorySplitAllocation')
+
+    doLast {
+        def manifest = new groovy.json.JsonSlurper().parse(
+                repositorySplitAllocationFile.asFile)
+        def allocations = manifest.modules.collectEntries { module ->
+            [(module.sourcePath): module]
+        }
+        def allowed = ['retain', 'temporary-retain'] as Set
+        def resolvedProjects = project(':app').configurations
+                .getByName('runtimeClasspath')
+                .incoming.resolutionResult.allComponents
+                .findAll { component ->
+                    component.id instanceof
+                            org.gradle.api.artifacts.component.ProjectComponentIdentifier
+                }.collect { component ->
+                    (component.id as
+                            org.gradle.api.artifacts.component.ProjectComponentIdentifier)
+                            .projectPath
+                }.toSet()
+        def failures = resolvedProjects.findAll { projectPath ->
+            def allocation = allocations[projectPath]
+            allocation == null || !(allocation.disposition in allowed)
+        }.sort().collect { projectPath ->
+            def disposition = allocations[projectPath]?.disposition ?: 'unclassified'
+            "${projectPath} (${disposition})"
+        }
+        if (!failures.isEmpty()) {
+            throw new GradleException('Lean app runtime graph reaches Yano X projects:\n - '
+                    + failures.join('\n - '))
+        }
+        logger.lifecycle(
+                'ADR-030 lean host dependency boundary passed: {} retained runtime projects',
+                resolvedProjects.size())
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyLeanHostDependencyBoundary')
 }
 
 ext.ossrhUsername = System.getenv('MAVEN_USERNAME')
@@ -470,7 +521,7 @@ if (commit_id && project.version.endsWith("-SNAPSHOT")) {
     version = "${project.version}".replace("-SNAPSHOT", "-${commit_id}-SNAPSHOT")
 }
 
-def nonLibraryModules = ['app', 'console-ui'] as Set
+def nonLibraryModules = ['app', 'console-ui', 'appchain-eutxo-e2e'] as Set
 
 subprojects {
     // Skip most configuration for application modules (Quarkus/Scala handle their own builds)
@@ -684,6 +735,177 @@ tasks.register('fullBuild') {
     dependsOn tasks.named('extendedTest'),
             tasks.named('appChainCryptoTest'),
             tasks.named('distributionCheck')
+}
+
+// ADR-030 Phase B: every downstream runtime artifact must have one isolated
+// bundle and one real JVM provider-activation test. This inventory is also the
+// source for the checked conformance matrix consumed by Yano X.
+if (findProject(':appchain-stdlib') != null) {
+def runtimePluginBundles = [
+        [projectPath: ':appchain-composite',
+         bundleId: 'com.bloxbean.cardano.yano.appchain.composite'],
+        [projectPath: ':appchain-role-workflow',
+         bundleId: 'com.bloxbean.cardano.yano.appchain.role-workflow'],
+        [projectPath: ':appchain-stdlib',
+         bundleId: 'com.bloxbean.cardano.yano.appchain.stdlib'],
+        [projectPath: ':appchain-authenticated-map-validators',
+         bundleId: 'com.bloxbean.cardano.yano.appchain.authenticated-map-validators'],
+        [projectPath: ':appchain-showcase',
+         bundleId: 'com.bloxbean.cardano.yano.appchain.showcase'],
+        [projectPath: ':appchain-effects-cardano',
+         bundleId: 'com.bloxbean.cardano.yano.appchain.effects.cardano'],
+        [projectPath: ':appchain-ipfs',
+         bundleId: 'com.bloxbean.cardano.yano.appchain.ipfs'],
+        [projectPath: ':appchain-kafka',
+         bundleId: 'com.bloxbean.cardano.yano.appchain.kafka'],
+        [projectPath: ':appchain-objectstore-s3',
+         bundleId: 'com.bloxbean.cardano.yano.appchain.objectstore.s3'],
+        [projectPath: ':appchain-zk',
+         bundleId: 'com.bloxbean.cardano.yano.appchain.zk'],
+        [projectPath: ':appchain-eutxo-zk-indexer',
+         bundleId: 'com.bloxbean.cardano.yano.appchain.eutxo.zk.indexer'],
+        [projectPath: ':appchain-eutxo-zk-runtime',
+         bundleId: 'com.bloxbean.cardano.yano.appchain.eutxo.zk.runtime'],
+        [projectPath: ':appchain-eutxo-bridge-cardano',
+         bundleId: 'com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano'],
+        [projectPath: ':appchain-eutxo-indexer-jdbc',
+         bundleId: 'com.bloxbean.cardano.yano.appchain.eutxo.indexer'],
+        [projectPath: ':appchain-eutxo-ledger',
+         bundleId: 'com.bloxbean.cardano.yano.appchain.eutxo'],
+        [projectPath: ':appchain-cardano-history',
+         bundleId: 'com.bloxbean.cardano.yano.appchain.cardano-history'],
+        [projectPath: ':appchain-evidence-profile',
+         bundleId: 'com.bloxbean.cardano.yano.appchain.evidence-profile'],
+        [projectPath: ':appchain-evidence-registry',
+         bundleId: 'com.bloxbean.cardano.yano.appchain.evidence-registry']
+]
+
+def runtimePluginBundlesById = runtimePluginBundles.collectEntries { specification ->
+    [(specification.bundleId): specification]
+}
+def sourceManifestFor = { specification ->
+    def manifests = project(specification.projectPath).fileTree(
+            'src/main/resources/META-INF/yano/plugins') { include '*.json' }.files
+    if (manifests.size() != 1) {
+        throw new GradleException(
+                "${specification.projectPath} must own exactly one source manifest")
+    }
+    [file: manifests.first(), value: new groovy.json.JsonSlurper().parse(manifests.first())]
+}
+def runtimeBundleClosure = { rootSpecification ->
+    def result = new LinkedHashMap<String, Object>()
+    Closure visit
+    visit = { specification ->
+        if (result.containsKey(specification.bundleId)) return
+        def parsed = sourceManifestFor(specification).value
+        (parsed.dependencies ?: []).each { dependency ->
+            def dependencySpecification = runtimePluginBundlesById[dependency.id]
+            if (dependencySpecification == null) {
+                throw new GradleException(
+                        "${specification.bundleId} depends on unregistered runtime bundle ${dependency.id}")
+            }
+            visit(dependencySpecification)
+        }
+        result[specification.bundleId] = specification
+    }
+    visit(rootSpecification)
+    result.values().toList()
+}
+
+def activationTasks = runtimePluginBundles.collect { specification ->
+    def pluginProject = project(specification.projectPath)
+    def closureSpecifications = runtimeBundleClosure(specification)
+    def suffix = pluginProject.name.split('-').collect { token -> token.capitalize() }.join('')
+    tasks.register("activate${suffix}RuntimePluginBundle", Test) {
+        group = 'verification'
+        description = "Activates every provider in ${specification.bundleId} from its isolated JVM bundle closure"
+        dependsOn closureSpecifications.collect { "${it.projectPath}:shadowJar" }
+        dependsOn ':runtime:testClasses'
+        testClassesDirs = project(':runtime').sourceSets.test.output.classesDirs
+        classpath = project(':runtime').sourceSets.test.runtimeClasspath
+        filter {
+            includeTestsMatching(
+                    'com.bloxbean.cardano.yano.runtime.plugins.RuntimePluginBundleActivationTest')
+        }
+        doFirst {
+            def bundleFiles = closureSpecifications.collect { member ->
+                project(member.projectPath).tasks.named('shadowJar').get()
+                        .archiveFile.get().asFile.absolutePath
+            }
+            systemProperty 'yano.bundle.paths', bundleFiles.join(File.pathSeparator)
+            systemProperty 'yano.bundle.id', specification.bundleId
+            systemProperty 'yano.bundle.expected-ids',
+                    closureSpecifications.collect { it.bundleId }.join(',')
+        }
+    }
+}
+
+def generatedRuntimePluginMatrix = layout.buildDirectory.file(
+        'reports/repository-split/runtime-plugin-conformance-v1.json')
+tasks.register('generateRuntimePluginConformanceMatrix') {
+    group = 'verification'
+    inputs.files(runtimePluginBundles.collect { specification ->
+        project(specification.projectPath).fileTree('src/main/resources/META-INF/yano/plugins') {
+            include '*.json'
+        }
+    })
+    outputs.file(generatedRuntimePluginMatrix)
+    doLast {
+        def rows = runtimePluginBundles.collect { specification ->
+            def pluginProject = project(specification.projectPath)
+            def sourceManifest = sourceManifestFor(specification)
+            def manifests = [sourceManifest.file]
+            def manifest = sourceManifest.value
+            if (manifest.id != specification.bundleId) {
+                throw new GradleException(
+                        "${specification.projectPath} manifest id does not match the matrix")
+            }
+            def suffix = pluginProject.name.split('-')
+                    .collect { token -> token.capitalize() }.join('')
+            [
+                    projectPath: specification.projectPath,
+                    bundleId: specification.bundleId,
+                    manifest: rootProject.relativePath(manifests.first()),
+                    contributions: manifest.contributions.collect { contribution ->
+                        [kind: contribution.kind, name: contribution.name,
+                         provider: contribution.provider]
+                    },
+                    dependencyBundles: runtimeBundleClosure(specification)
+                            .findAll { it.bundleId != specification.bundleId }
+                            .collect { it.bundleId },
+                    bundleTasks: runtimeBundleClosure(specification)
+                            .collect { "${it.projectPath}:shadowJar" },
+                    jvmActivationTest: ":activate${suffix}RuntimePluginBundle"
+            ]
+        }
+        def output = generatedRuntimePluginMatrix.get().asFile
+        output.parentFile.mkdirs()
+        output.setText(groovy.json.JsonOutput.prettyPrint(
+                groovy.json.JsonOutput.toJson(
+                        [schemaVersion: 1, runtimeArtifacts: rows])) + '\n', 'UTF-8')
+    }
+}
+
+tasks.register('verifyRuntimePluginConformanceMatrix') {
+    group = 'verification'
+    dependsOn tasks.named('generateRuntimePluginConformanceMatrix'), activationTasks
+    inputs.file('config/repository-split/runtime-plugin-conformance-v1.json')
+    inputs.file(generatedRuntimePluginMatrix)
+    doLast {
+        def parser = new groovy.json.JsonSlurper()
+        def checked = parser.parse(file(
+                'config/repository-split/runtime-plugin-conformance-v1.json'))
+        def generated = parser.parse(generatedRuntimePluginMatrix.get().asFile)
+        if (checked != generated) {
+            throw new GradleException(
+                    'Runtime plugin conformance matrix is stale; regenerate and review it')
+        }
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyRuntimePluginConformanceMatrix')
+}
 }
 
 def getCheckedOutGitCommitHash() {

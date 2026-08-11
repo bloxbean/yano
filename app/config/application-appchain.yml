@@ -25,10 +25,6 @@ yano:
     # Relative paths use the process working directory.
     storage:
       path: ${YANO_APP_CHAIN_STORAGE_PATH:appchain-chainstate}
-    indexer:
-      storage:
-        path: ${YANO_APP_CHAIN_INDEXER_STORAGE_PATH:appchain-indexers}
-
     # --- Chain 0: an append-only ordered log, fixed proposer (node 0) --------
     chains[0]:
       chain-id: "orders-chain"

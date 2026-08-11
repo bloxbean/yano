@@ -353,10 +353,6 @@ final class AppChainProjectRenderer {
                 ? "/var/lib/yano/appchain-chainstate"
                 : compose ? "/app/appchain-chainstate"
                 : "${YANO_APPCHAIN_DATA_ROOT}/node" + node + "/appchain-chainstate");
-        values.put("yano.app-chain.indexer.storage.path", kubernetes
-                ? "/var/lib/yano/appchain-indexers"
-                : compose ? "/app/appchain-indexers"
-                : "${YANO_APPCHAIN_DATA_ROOT}/node" + node + "/appchain-indexers");
         if ("devnet".equals(resolution.blueprint().spec().network())) {
             values.put("yano.genesis.shelley-genesis-file", "${YANO_APPCHAIN_GENESIS_FILE}");
             if (node == 0) {
@@ -371,11 +367,17 @@ final class AppChainProjectRenderer {
         values.put("yano.app-chain.dx.resolved-config-digest", resolvedConfigDigest);
         values.put("yano.app-chain.dx.release-catalog-digest", releaseCatalogDigest);
         if (resolution.selectedCapabilities().contains("state:eutxo-ledger")) {
-            values.put("yano.app-chain.eutxo-indexer.enabled", "true");
-            values.put("yano.app-chain.eutxo-indexer.store.type", "jdbc");
+            String indexer = "yano.plugins.bundle.\"com.bloxbean.cardano.yano.appchain.eutxo.indexer\".";
+            values.put(indexer + "enabled", "true");
+            values.put(indexer + "store-type", "jdbc");
+            values.put(indexer + "storage-path", kubernetes
+                    ? "/var/lib/yano/appchain-indexers"
+                    : compose ? "/app/appchain-indexers"
+                    : "${YANO_APPCHAIN_DATA_ROOT}/node" + node
+                    + "/appchain-indexers");
             if (resolution.selectedCapabilities().contains(
                     "settlement:zeroj-validity")) {
-                values.put("yano.app-chain.eutxo-indexer.validity.path",
+                values.put("yano.plugins.bundle.\"com.bloxbean.cardano.yano.appchain.eutxo.zk.indexer\".storage-path",
                         "${YANO_APPCHAIN_PROJECT_ROOT}/runtime/validity");
             }
         }

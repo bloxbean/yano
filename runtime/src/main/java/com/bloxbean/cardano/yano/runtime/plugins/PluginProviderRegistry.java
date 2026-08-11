@@ -8,9 +8,9 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * Immutable selector registry for the ten typed contribution SPIs. The
- * catalog's eleventh contribution kind, {@code NodePlugin}, remains under the
- * lifecycle manager's exclusive ownership rather than public selector lookup.
+ * Immutable selector registry for catalog-managed typed contribution SPIs.
+ * {@code NodePlugin} remains under the lifecycle manager's exclusive ownership
+ * rather than public selector lookup.
  *
  * <p>The manifested catalog implements this contract with lazy, cached
  * provider handles. The legacy adapter exists only for source-compatible

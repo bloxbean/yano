@@ -35,7 +35,7 @@ For a JVM node, build the self-contained drop-in bundle:
 ```
 
 Copy only that `*-bundle.jar` into the JVM node's plugin directory
-configured by `yaci.plugins.directory`. The bundle contains its ZeroJ verifier
+configured by `yano.plugins.directory`. The bundle contains its ZeroJ verifier
 backends and merged ServiceLoader descriptors; adjacent dependency JARs are not
 a catalog-v1 deployment unit. Native images cannot load a directory JAR;
 build with `-PincludeFirstPartyPluginBundles=true` to include it before native

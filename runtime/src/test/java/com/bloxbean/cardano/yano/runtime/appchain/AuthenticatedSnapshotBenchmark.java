@@ -5,11 +5,13 @@ import com.bloxbean.cardano.vds.jmt.JellyfishMerkleTree;
 import com.bloxbean.cardano.vds.jmt.JmtProfile;
 import com.bloxbean.cardano.vds.jmt.store.InMemoryJmtStore;
 import com.bloxbean.cardano.vds.mpf.MpfTrie;
+import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.api.appchain.snapshot.AuthenticatedSnapshotSeriesDescriptorV1;
 import com.bloxbean.cardano.yano.api.appchain.snapshot.AuthenticatedSnapshotSourceCommitmentV1;
+import com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotDescriptorDraftV1;
 import com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotCanonicalCodec;
 import com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotDescriptorV1;
 import com.bloxbean.cardano.yano.api.appchain.snapshot.SnapshotEntry;
@@ -18,14 +20,11 @@ import com.bloxbean.cardano.yano.api.appchain.state.CandidateState;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import com.bloxbean.cardano.yano.api.appchain.state.StateProof;
-import com.bloxbean.cardano.yano.appchain.stdlib.EpochStakeStateMachine;
-import com.bloxbean.cardano.yano.appchain.stdlib.contracts.EpochStakeContract;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.rocksdb.WriteBatch;
 import org.slf4j.helpers.NOPLogger;
 
 import java.lang.management.ManagementFactory;
-import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.file.FileStore;
 import java.nio.file.Files;
@@ -253,8 +252,7 @@ public final class AuthenticatedSnapshotBenchmark {
 
     private static AuthenticatedSnapshotSourceCommitmentV1 source(
             AuthenticatedSnapshotSeriesDescriptorV1 series) {
-        return new EpochStakeStateMachine("benchmark", CHUNK_ENTRIES, series.snapshotProfile())
-                .authenticatedSnapshotSourceCommitments().getFirst().withSeriesId(series.seriesId());
+        return new BenchmarkSourceCommitment(series.seriesId());
     }
 
     private static AuthenticatedSnapshotSeriesDescriptorV1 series(String profileId, int entries) {
@@ -283,16 +281,14 @@ public final class AuthenticatedSnapshotBenchmark {
     }
 
     private static byte[] key(int index) {
-        return EpochStakeContract.credentialOrderKey(0, credentialHash(index));
+        return ByteBuffer.allocate(29).put((byte) 0).put(credentialHash(index)).array();
     }
 
     private static byte[] value(int index) {
-        return EpochStakeContract.encodeValue(entry(index));
-    }
-
-    private static EpochStakeContract.Entry entry(int index) {
-        return new EpochStakeContract.Entry(0, credentialHash(index),
-                BigInteger.valueOf(1_000_000L + index), filled(index, 28));
+        return ByteBuffer.allocate(36)
+                .putLong(1_000_000L + index)
+                .put(filled(index, 28))
+                .array();
     }
 
     private static byte[] credentialHash(int index) {
@@ -300,15 +296,56 @@ public final class AuthenticatedSnapshotBenchmark {
     }
 
     private static byte[] sourceDatasetRoot(int entries, int chunks) {
-        List<byte[]> chunkHashes = new ArrayList<>(chunks);
+        byte[] accumulator = BenchmarkSourceCommitment.initial();
         for (int chunk = 0; chunk < chunks; chunk++) {
             int from = chunk * CHUNK_ENTRIES;
             int through = Math.min(entries, from + CHUNK_ENTRIES);
-            List<EpochStakeContract.Entry> values = new ArrayList<>(through - from);
-            for (int index = from; index < through; index++) values.add(entry(index));
-            chunkHashes.add(EpochStakeContract.chunkHash(values));
+            List<SnapshotEntry> values = new ArrayList<>(through - from);
+            for (int index = from; index < through; index++) {
+                values.add(new SnapshotEntry(key(index), value(index)));
+            }
+            accumulator = BenchmarkSourceCommitment.advance(accumulator, chunk, values);
         }
-        return EpochStakeContract.snapshotRoot(chunkHashes);
+        return accumulator;
+    }
+
+    /** Core-only deterministic source used to keep the runtime benchmark product-neutral. */
+    private record BenchmarkSourceCommitment(String seriesId)
+            implements AuthenticatedSnapshotSourceCommitmentV1 {
+        private static final byte[] DOMAIN =
+                "yano-core-snapshot-benchmark-v1".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+
+        @Override public String algorithm() { return "blake2b256"; }
+        @Override public String wireVersion() { return "core-benchmark-source-v1"; }
+        @Override public byte[] initial(SnapshotDescriptorDraftV1 draft) { return initial(); }
+        @Override public byte[] append(byte[] accumulator, long chunkIndex,
+                                       List<SnapshotEntry> entries) {
+            return advance(accumulator, chunkIndex, entries);
+        }
+        @Override public byte[] finish(byte[] accumulator, long chunks, long entries) {
+            return accumulator.clone();
+        }
+
+        private static byte[] initial() {
+            return Blake2bUtil.blake2bHash256(DOMAIN);
+        }
+
+        private static byte[] advance(
+                byte[] accumulator,
+                long chunkIndex,
+                List<SnapshotEntry> entries
+        ) {
+            int bytes = entries.stream()
+                    .mapToInt(entry -> 8 + entry.key().length + entry.value().length)
+                    .sum();
+            ByteBuffer canonical = ByteBuffer.allocate(32 + 8 + 4 + bytes)
+                    .put(accumulator).putLong(chunkIndex).putInt(entries.size());
+            for (SnapshotEntry entry : entries) {
+                canonical.putInt(entry.key().length).put(entry.key());
+                canonical.putInt(entry.value().length).put(entry.value());
+            }
+            return Blake2bUtil.blake2bHash256(canonical.array());
+        }
     }
 
     private static Map<String, Double> percentiles(List<Long> nanos) {

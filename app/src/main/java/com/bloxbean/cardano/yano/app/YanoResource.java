@@ -36,9 +36,6 @@ public class YanoResource {
     @Inject
     TxGateway txGateway;
 
-    @Inject
-    YanoProducer yanoProducer;
-
     @GET
     @Path("/status")
     public Response getStatus() {
@@ -62,12 +59,6 @@ public class YanoResource {
 
         try {
             nodeLifecycle.start();
-            try {
-                yanoProducer.startEutxoIndexers();
-            } catch (RuntimeException failure) {
-                nodeLifecycle.stop();
-                throw failure;
-            }
             return Response.ok(Map.of("message", "Node started successfully")).build();
         } catch (Exception e) {
             return Response.serverError()
@@ -86,7 +77,6 @@ public class YanoResource {
         }
 
         try {
-            yanoProducer.stopEutxoIndexers();
             nodeLifecycle.stop();
             return Response.ok(Map.of("message", "Node stopped successfully")).build();
         } catch (Exception e) {

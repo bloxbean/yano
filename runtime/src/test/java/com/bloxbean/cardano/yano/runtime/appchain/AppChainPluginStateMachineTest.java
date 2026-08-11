@@ -3,7 +3,9 @@ package com.bloxbean.cardano.yano.runtime.appchain;
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
 import com.bloxbean.cardano.yano.api.plugin.PluginActivationException;
+import com.bloxbean.cardano.yano.runtime.plugins.PluginProviderRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -15,6 +17,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -22,8 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * M5: a custom state machine is resolved by id through the
  * {@link com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider}
- * ServiceLoader SPI — the mechanism plugin jars use on a stock yano
- * distribution — and drives the sequenced ledger.
+ * catalog provider registry and drives the sequenced ledger.
  */
 @Timeout(60)
 class AppChainPluginStateMachineTest {
@@ -44,7 +46,7 @@ class AppChainPluginStateMachineTest {
     }
 
     @Test
-    void customStateMachine_loadedViaServiceLoader_andApplied() throws Exception {
+    void customStateMachine_loadedViaCatalogRegistry_andApplied() throws Exception {
         String pubA = pubHex(KEY_A);
         AppChainConfig config = AppChainConfig.builder("plugin-chain")
                 .signingKeyHex(HexUtil.encodeHexString(KEY_A))
@@ -58,7 +60,8 @@ class AppChainPluginStateMachineTest {
                 .build();
 
         node = new AppChainSubsystem(config, 42, null, null,
-                tempDir.resolve("ledger").toString(), null, log);
+                tempDir.resolve("ledger").toString(), null,
+                stateMachineRegistry(), log);
         node.start();
 
         node.submit("kv", "color=blue".getBytes(StandardCharsets.UTF_8));
@@ -87,10 +90,29 @@ class AppChainPluginStateMachineTest {
                 .build();
         org.assertj.core.api.Assertions.assertThatThrownBy(() ->
                         new AppChainSubsystem(badConfig, 42, null, null,
-                                tempDir.resolve("ledger2").toString(), null, log))
+                                tempDir.resolve("ledger2").toString(), null,
+                                stateMachineRegistry(), log))
                 .isInstanceOf(PluginActivationException.class)
                 .hasMessageContaining("no-such-machine")
                 .hasMessageContaining(TestKvStateMachineProvider.ID);
+    }
+
+    private static PluginProviderRegistry stateMachineRegistry() {
+        AppStateMachineProvider provider = new TestKvStateMachineProvider();
+        return new PluginProviderRegistry() {
+            @Override
+            public <P> Optional<P> find(Class<P> providerType, String selector) {
+                return providerType == AppStateMachineProvider.class
+                        && provider.id().equals(selector)
+                        ? Optional.of(providerType.cast(provider)) : Optional.empty();
+            }
+
+            @Override
+            public <P> List<String> names(Class<P> providerType) {
+                return providerType == AppStateMachineProvider.class
+                        ? List.of(provider.id()) : List.of();
+            }
+        };
     }
 
     private static byte[] seed(int fill) {

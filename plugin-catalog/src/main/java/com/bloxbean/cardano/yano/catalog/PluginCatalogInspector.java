@@ -264,7 +264,7 @@ public final class PluginCatalogInspector {
             case APP_STATE_MACHINE, AUTHENTICATED_MAP_VALIDATOR,
                     SEQUENCER_MODE, L1_OBSERVER, L1_EPOCH_OBSERVER ->
                     PluginTrustTier.CONSENSUS;
-            case SIGNER_PROVIDER, EFFECT_EXECUTOR, DOMAIN_API ->
+            case SIGNER_PROVIDER, EFFECT_EXECUTOR, DOMAIN_API, LOCAL_READ_MODEL ->
                     PluginTrustTier.PRIVILEGED_LOCAL;
             case FINALIZED_SINK, HEALTH, METRICS -> PluginTrustTier.AUXILIARY_LOCAL;
         };

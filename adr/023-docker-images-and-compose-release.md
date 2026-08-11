@@ -430,7 +430,7 @@ Container env file `docker/config/env`:
 ```text
 YANO_AUTO_SYNC_START=true
 YANO_STORAGE_PATH=/app/chainstate
-YACI_PLUGINS_DIRECTORY=/app/plugins
+YANO_PLUGINS_DIRECTORY=/app/plugins
 QUARKUS_HTTP_HOST=0.0.0.0
 ```
 
