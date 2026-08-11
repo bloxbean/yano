@@ -1,7 +1,7 @@
 # ADR-030: Split Yano core from `yano-x`
 
-**Status:** Accepted. Phases A and B are merged. Phase C local published-contract implementation
-and acceptance are complete on feature branches and await maintainer commit/merge approval.
+**Status:** Accepted. Phases A-C are merged. Phase D distribution implementation and acceptance
+are complete on feature branches and await maintainer commit/merge approval.
 Repository extraction has not started.
 **Date:** 2026-08-11
 **Decision owners:** Yano maintainers
@@ -370,6 +370,11 @@ identity gates, regression results, and staging boundary are recorded in
    gate in this phase.
 6. Docker image names and tags are distinct: `bloxbean/yano` is the native core image and
    `bloxbean/yano-x` is the JVM extension image.
+
+Phase D's core JVM/native distribution contracts, independently versioned plugin bundles, Yano X
+plugin pack/JVM assembly, reproducibility evidence, regression results, and removed packaging debt
+are recorded in
+[`baselines/030-phase-d-distributions.md`](baselines/030-phase-d-distributions.md).
 
 ### Phase E — history-preserving extraction
 

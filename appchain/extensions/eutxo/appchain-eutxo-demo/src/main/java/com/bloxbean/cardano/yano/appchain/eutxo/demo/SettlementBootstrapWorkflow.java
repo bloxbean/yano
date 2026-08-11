@@ -35,7 +35,10 @@ import java.util.Set;
  * DETERMINISTIC seed transaction ({@link ShowcaseSettlementPlan}) so the
  * packaged static chain config matches. Preprod: callers fund two seed
  * UTxOs themselves, compute the plan from them, and call
- * {@link #bootstrap(String, SettlementBootstrapPlan, byte[], String)} —
+ * {@link #bootstrap(String, SettlementBootstrapPlan,
+ * com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoOutpoint,
+ * com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoOutpoint,
+ * byte[], String)} —
  * then apply the config block from
  * {@link ShowcaseSettlementPlan#configProperties}.
  */

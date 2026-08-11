@@ -193,6 +193,11 @@ tasks.named('check') {
 
 def repositorySplitAllocationFile = layout.projectDirectory.file(
         'config/repository-split/allocation-v1.json')
+def repositorySplitAllocation = new groovy.json.JsonSlurper().parse(
+        repositorySplitAllocationFile.asFile)
+def repositoryModuleByPath = repositorySplitAllocation.modules.collectEntries { module ->
+    [(module.sourcePath.toString()): module]
+}
 def leanRepositoryBuild = providers.gradleProperty('leanYanoBuild')
         .map { Boolean.parseBoolean(it) }
         .orElse(false)
@@ -547,9 +552,10 @@ subprojects {
 
     // Only configure library-specific settings for non-application modules
     if (!(project.name in nonLibraryModules)) {
-        //Jars are with yano prefix
+        def allocatedArtifactId = repositoryModuleByPath[project.path]
+                ?.artifactId?.toString() ?: 'yano-' + project.name
         tasks.named('jar') {
-            archiveBaseName = 'yano-' + project.name
+            archiveBaseName = allocatedArtifactId
         }
         dependencies {
             api libs.slf4j.api
@@ -616,7 +622,7 @@ subprojects {
                         classifier = 'javadoc'
                     }
 
-                    artifactId 'yano-' + project.name
+                    artifactId allocatedArtifactId
                     pom {
                         url = 'https://github.com/bloxbean/yano'
                         licenses {
@@ -712,7 +718,8 @@ tasks.register('appChainCryptoTest') {
 tasks.register('distributionCheck') {
     group = 'verification'
     description = 'Validates copied/extracted Yano, app-chain CLI, and showcase distributions.'
-    dependsOn ':appchain-devtools:distributionTest',
+    dependsOn ':app:verifyCoreJvmDistribution',
+            ':appchain-devtools:distributionTest',
             ':app:packagedJvmPluginCatalogSmoke',
             ':appchain-showcase:showcaseDistributionContract',
             ':appchain-devtools:finalDistributionRuntimeAcceptance',
@@ -783,6 +790,67 @@ def runtimePluginBundles = [
 def runtimePluginBundlesById = runtimePluginBundles.collectEntries { specification ->
     [(specification.bundleId): specification]
 }
+
+gradle.projectsEvaluated {
+    runtimePluginBundles.each { specification ->
+        def pluginProject = project(specification.projectPath)
+        def allocation = repositoryModuleByPath[specification.projectPath]
+        if (allocation == null || allocation.disposition != 'move'
+                || allocation.publicationType != 'runtime-plugin') {
+            throw new GradleException(
+                    "Runtime bundle allocation is invalid for ${specification.projectPath}")
+        }
+        def shadowJar = pluginProject.tasks.named('shadowJar')
+        pluginProject.components.java.withVariantsFromConfiguration(
+                pluginProject.configurations.shadowRuntimeElements) {
+            skip()
+        }
+        def mainPublication = pluginProject.publishing.publications
+                .findByName('mavenJava') as MavenPublication
+        if (mainPublication == null) {
+            throw new GradleException(
+                    "Runtime plugin ${specification.projectPath} has no thin publication")
+        }
+        mainPublication.artifacts.findAll { artifact ->
+            artifact.classifier == 'bundle'
+        }.each { artifact -> mainPublication.artifacts.remove(artifact) }
+
+        def bundlePublication = pluginProject.publishing.publications
+                .create('pluginBundle', MavenPublication) {
+            artifactId = allocation.artifactId.toString() + '-bundle'
+            artifact(shadowJar) {
+                classifier = null
+            }
+            pom {
+                name = "${allocation.artifactId} deployable plugin bundle"
+                description = "Dependency-complete Yano X bundle for ${specification.bundleId}"
+                url = 'https://github.com/bloxbean/yano-x'
+                licenses {
+                    license {
+                        name = 'The MIT License'
+                        url = 'https://opensource.org/licenses/mit-license.php'
+                    }
+                }
+                developers {
+                    developer {
+                        id = 'satran004'
+                        name = 'Satya'
+                    }
+                }
+                scm {
+                    connection = 'scm:git:git://github.com/bloxbean/yano-x.git'
+                    developerConnection = 'scm:git:ssh://git@github.com/bloxbean/yano-x.git'
+                    url = 'https://github.com/bloxbean/yano-x'
+                }
+            }
+        }
+        if (!pluginProject.version.toString().endsWith('SNAPSHOT')
+                && !pluginProject.hasProperty('skipSigning')) {
+            pluginProject.signing.sign(bundlePublication)
+        }
+    }
+}
+
 def sourceManifestFor = { specification ->
     def manifests = project(specification.projectPath).fileTree(
             'src/main/resources/META-INF/yano/plugins') { include '*.json' }.files

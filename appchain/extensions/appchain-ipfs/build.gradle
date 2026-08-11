@@ -191,9 +191,6 @@ tasks.named('check') {
 publishing {
     publications {
         mavenJava(MavenPublication) {
-            artifact(tasks.named('shadowJar')) {
-                classifier = 'bundle'
-            }
             pom {
                 name = 'Yano App-Chain IPFS Integration'
                 description = 'Reconciled pin-only Kubo executor for ipfs.pin app-chain effects'

@@ -98,11 +98,3 @@ tasks.register('verifyRuntimePluginBundle') {
 tasks.named('check') {
     dependsOn tasks.named('verifyRuntimePluginBundle')
 }
-
-afterEvaluate {
-    publishing.publications.named('mavenJava', MavenPublication) {
-        artifact(tasks.named('shadowJar')) {
-            classifier = 'bundle'
-        }
-    }
-}
