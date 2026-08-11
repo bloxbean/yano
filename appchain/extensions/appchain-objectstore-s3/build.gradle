@@ -224,9 +224,6 @@ tasks.named('check') {
 publishing {
     publications {
         mavenJava(MavenPublication) {
-            artifact(tasks.named('shadowJar')) {
-                classifier = 'bundle'
-            }
             pom {
                 name = 'Yano App-Chain S3-Compatible Object Store Integration'
                 description = 'Immutable S3-compatible object.put effect executor plugin'

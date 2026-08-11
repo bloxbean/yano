@@ -176,9 +176,6 @@ tasks.named('check') {
 publishing {
     publications {
         mavenJava(MavenPublication) {
-            artifact(tasks.named('shadowJar')) {
-                classifier = 'all'
-            }
             pom {
                 name = 'Yano App-Chain Evidence Demo Runner'
                 description = 'Credential-safe no-code runner and report UI for the ADR-013 evidence scenario'

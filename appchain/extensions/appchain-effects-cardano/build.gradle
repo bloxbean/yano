@@ -46,9 +46,6 @@ tasks.named('shadowJar') {
 publishing {
     publications {
         mavenJava(MavenPublication) {
-            artifact(tasks.named('shadowJar')) {
-                classifier = 'bundle'
-            }
             pom {
                 name = 'Yano App-Chain Cardano Effects'
                 description = 'Cardano payment executor plugin for the app-chain effect system'

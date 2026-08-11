@@ -261,9 +261,6 @@ tasks.named('check') {
 publishing {
     publications {
         mavenJava(MavenPublication) {
-            artifact(tasks.named('shadowJar')) {
-                classifier = 'bundle'
-            }
             pom {
                 name = 'Yano App-Chain Kafka Integration'
                 description = 'Kafka plugin for finalized app-block export and acknowledged app-chain effects'

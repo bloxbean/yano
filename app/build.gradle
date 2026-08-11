@@ -457,6 +457,42 @@ def detectPlatform() {
 }
 
 def distVersion = rootProject.version.toString().replaceAll('-SNAPSHOT', '')
+def generatedDistributionMetadata = layout.buildDirectory.dir(
+        'generated/distribution-metadata')
+def jvmDistributionManifest = generatedDistributionMetadata.map {
+    it.file('jvm/yano-distribution-v1.json')
+}
+def nativeDistributionManifest = generatedDistributionMetadata.map {
+    it.file('native/yano-distribution-v1.json')
+}
+
+def coreDistributionManifest = { String kind, boolean pluginDirectorySupported ->
+    [
+            schemaVersion: 1,
+            product: 'yano',
+            distribution: kind,
+            version: project.version.toString(),
+            builtInStateMachines: ['ordered-log'],
+            pluginDirectorySupported: pluginDirectorySupported
+    ]
+}
+
+tasks.register('generateCoreDistributionManifests') {
+    inputs.property('version', project.version.toString())
+    outputs.files(jvmDistributionManifest, nativeDistributionManifest)
+    doLast {
+        [
+                (jvmDistributionManifest.get().asFile):
+                        coreDistributionManifest('core-jvm', true),
+                (nativeDistributionManifest.get().asFile):
+                        coreDistributionManifest('core-native', false)
+        ].each { output, value ->
+            output.parentFile.mkdirs()
+            output.setText(groovy.json.JsonOutput.prettyPrint(
+                    groovy.json.JsonOutput.toJson(value)) + '\n', 'UTF-8')
+        }
+    }
+}
 def nativeBuildArgsProperty = 'quarkus.native.additional-build-args'
 def nativeContainerRuntimeOptionsProperty = 'quarkus.native.container-runtime-options'
 
@@ -1451,7 +1487,8 @@ def configureNativeGc = {
 }
 
 tasks.register('yanoDistZip', Zip) {
-    dependsOn 'quarkusBuild', project(':plugin-catalog').tasks.named('installDist')
+    dependsOn 'quarkusBuild', 'generateCoreDistributionManifests',
+            project(':plugin-catalog').tasks.named('installDist')
     group = 'distribution'
     description = 'Creates a distributable zip with the uber-jar, config, and start script'
 
@@ -1460,6 +1497,7 @@ tasks.register('yanoDistZip', Zip) {
 
     into("yano-${distVersion}") {
         from(layout.buildDirectory.file('yano.jar'))
+        from(jvmDistributionManifest)
         from('bin/yano.sh') {
             filePermissions { unix('755') }
         }
@@ -1491,6 +1529,42 @@ tasks.register('yanoDistZip', Zip) {
                     'install/yano-plugins/bin/yano-plugins')) {
                 into 'bin'
                 filePermissions { unix('755') }
+            }
+        }
+    }
+}
+
+tasks.register('verifyCoreJvmDistribution') {
+    dependsOn tasks.named('yanoDistZip')
+    group = 'verification'
+    description = 'Verifies the JVM ZIP is a lean Yano core distribution.'
+    inputs.file(tasks.named('yanoDistZip', Zip).flatMap { it.archiveFile })
+
+    doLast {
+        def distribution = tasks.named('yanoDistZip', Zip).get().archiveFile.get().asFile
+        def root = "yano-${distVersion}"
+        new java.util.zip.ZipFile(distribution).withCloseable { archive ->
+            def manifestEntry = archive.getEntry("${root}/yano-distribution-v1.json")
+            if (manifestEntry == null) {
+                throw new GradleException('Yano JVM distribution manifest is missing')
+            }
+            def manifest = archive.getInputStream(manifestEntry).withCloseable { stream ->
+                new groovy.json.JsonSlurper().parse(stream)
+            }
+            def expected = coreDistributionManifest('core-jvm', true)
+            if (manifest != expected) {
+                throw new GradleException(
+                        "Yano JVM distribution manifest mismatch: ${manifest}")
+            }
+            def pluginJars = archive.entries().findAll {
+                it.name.startsWith("${root}/plugins/") && it.name.endsWith('.jar')
+            }
+            if (!pluginJars.isEmpty()) {
+                throw new GradleException(
+                        "Yano JVM distribution contains extension bundles: ${pluginJars*.name}")
+            }
+            if (archive.getEntry("${root}/yano.jar") == null) {
+                throw new GradleException('Yano JVM distribution does not contain yano.jar')
             }
         }
     }
@@ -1984,7 +2058,7 @@ gradle.taskGraph.whenReady { graph ->
 }
 
 tasks.register('yanoNativeDistZip', Zip) {
-    dependsOn 'quarkusBuild'
+    dependsOn 'quarkusBuild', 'generateCoreDistributionManifests'
     group = 'distribution'
     description = 'Builds the native binary and creates a distributable zip'
 
@@ -2007,6 +2081,7 @@ tasks.register('yanoNativeDistZip', Zip) {
                 filePermissions { unix('755') }
             }
         }
+        from(nativeDistributionManifest)
         if (!isWindowsHost()) {
             from('bin/yano.sh') {
                 filePermissions { unix('755') }
@@ -2027,6 +2102,41 @@ tasks.register('yanoNativeDistZip', Zip) {
             into 'config'
             include 'application.yml', 'application.yaml', 'application-*.yml', 'application-*.yaml', 'network/**'
             exclude '**/*.bak', '**/*.working'
+        }
+    }
+}
+
+tasks.register('verifyCoreNativeDistribution') {
+    dependsOn tasks.named('yanoNativeDistZip')
+    group = 'verification'
+    description = 'Verifies the native ZIP is a closed Yano core distribution.'
+    inputs.file(tasks.named('yanoNativeDistZip', Zip).flatMap { it.archiveFile })
+
+    doLast {
+        def distribution = tasks.named('yanoNativeDistZip', Zip).get()
+                .archiveFile.get().asFile
+        def root = distribution.name.replaceFirst(/\.zip$/, '')
+        new java.util.zip.ZipFile(distribution).withCloseable { archive ->
+            def manifestEntry = archive.getEntry("${root}/yano-distribution-v1.json")
+            if (manifestEntry == null) {
+                throw new GradleException('Yano native distribution manifest is missing')
+            }
+            def manifest = archive.getInputStream(manifestEntry).withCloseable { stream ->
+                new groovy.json.JsonSlurper().parse(stream)
+            }
+            def expected = coreDistributionManifest('core-native', false)
+            if (manifest != expected) {
+                throw new GradleException(
+                        "Yano native distribution manifest mismatch: ${manifest}")
+            }
+            def extensionArtifacts = archive.entries().findAll {
+                it.name.startsWith("${root}/plugins/") || it.name.endsWith('.jar')
+            }
+            if (!extensionArtifacts.isEmpty()) {
+                throw new GradleException(
+                        'Yano native distribution contains JVM extension artifacts: '
+                                + extensionArtifacts*.name)
+            }
         }
     }
 }

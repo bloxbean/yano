@@ -221,9 +221,6 @@ tasks.withType(Javadoc).configureEach {
 publishing {
     publications {
         mavenJava(MavenPublication) {
-            artifact(tasks.named('shadowJar')) {
-                classifier = 'bundle'
-            }
             pom {
                 name = 'Yano App-Chain Evidence Registry'
                 description = 'Deterministic first-party evidence workflow state machine and plugin'

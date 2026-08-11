@@ -121,9 +121,6 @@ tasks.named('check') {
 publishing {
     publications {
         mavenJava(MavenPublication) {
-            artifact(tasks.named('shadowJar')) {
-                classifier = 'bundle'
-            }
             pom {
                 name = 'Yano EUTxO Cardano Bridge'
                 description = 'Optional exact Cardano deposit observer and federated bridge services'

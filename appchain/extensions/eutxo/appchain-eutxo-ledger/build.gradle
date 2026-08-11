@@ -134,9 +134,6 @@ tasks.named('check') {
 publishing {
     publications {
         mavenJava(MavenPublication) {
-            artifact(tasks.named('shadowJar')) {
-                classifier = 'bundle'
-            }
             pom {
                 name = 'Yano App-Chain EUTxO Ledger'
                 description = 'Optional deterministic Cardano-shaped EUTxO state-machine plugin for Yano'

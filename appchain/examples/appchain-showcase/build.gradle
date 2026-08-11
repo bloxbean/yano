@@ -346,11 +346,3 @@ tasks.named('check') {
 tasks.named('assemble') {
     setDependsOn([tasks.named('jar'), tasks.named('shadowJar')])
 }
-
-// The showcase is a demo artifact, not a published production library.
-def showcasePublication = publishing.publications.findByName('mavenJava')
-if (showcasePublication != null) {
-    publishing.publications.remove(showcasePublication)
-}
-tasks.withType(PublishToMavenRepository).configureEach { enabled = false }
-tasks.withType(PublishToMavenLocal).configureEach { enabled = false }

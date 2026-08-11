@@ -97,9 +97,6 @@ tasks.named('check') {
 publishing {
     publications {
         mavenJava(MavenPublication) {
-            artifact(tasks.named('shadowJar')) {
-                classifier = 'bundle'
-            }
             pom {
                 name = 'Yano App-Chain EUTxO ZeroJ Runtime'
                 description = 'Integrated JVM plugin bundle for the EUTxO ledger and ZeroJ validity provider'
