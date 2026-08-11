@@ -12,10 +12,8 @@ The testkit starts in-process nodes with:
 - node 0 as the sequencer
 - configurable chain id, state machine, threshold, and block interval
 
-See also:
-
-- [App-chain tutorial](../../docs/APP_CHAIN_TUTORIAL.md)
-- [ADR-006 E1.2](../../adr/app-layer/006-appchain-enterprise-extensions-and-zk.md)
+See also the [core app-chain documentation](../../docs/appchain/README.md) and
+the [Yano X extension tutorials](https://github.com/bloxbean/yano-x/tree/main/docs/appchain/tutorials).
 
 ## Usage
 

@@ -18,17 +18,13 @@ set -e
 CALLER_DIR="$PWD"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 YANO_ROOT="$SCRIPT_DIR"
-REPOSITORY_ROOT=""
 
-# In a release, this script lives beside yano.jar, config/, and
-# appchain-cluster/. In the source tree, app/yano.sh delegates here while this
-# file remains under app/bin/. Resolve both layouts once so every command uses
-# the same dispatch and argument handling.
+# In a release, this script lives beside yano.jar and config/. In the source
+# tree, app/yano.sh delegates here while this file remains under app/bin/.
+# Resolve both layouts without depending on optional Yano X tooling.
 if [ "$(basename "$SCRIPT_DIR")" = "bin" ] \
-    && [ -d "$SCRIPT_DIR/../config" ] \
-    && [ -x "$SCRIPT_DIR/../appchain-cluster/cluster.sh" ]; then
+    && [ -d "$SCRIPT_DIR/../config" ]; then
     YANO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-    REPOSITORY_ROOT="$(cd "$YANO_ROOT/.." && pwd)"
 fi
 export YANO_HOME="$YANO_ROOT"
 cd "$YANO_ROOT"
@@ -142,14 +138,6 @@ appchain_cli() {
         return
     fi
 
-    if [ -n "$REPOSITORY_ROOT" ]; then
-        candidate="$REPOSITORY_ROOT/appchain/appchain-devtools/build/install/yano-devtools/bin/yano-appchain"
-        if [ -x "$candidate" ]; then
-            printf '%s\n' "$candidate"
-            return
-        fi
-    fi
-
     for candidate in "$YANO_ROOT"/yano-devtools-*/bin/yano-appchain; do
         if [ -x "$candidate" ]; then
             if [ -n "$found" ] && [ "$found" != "$candidate" ]; then
@@ -162,13 +150,8 @@ appchain_cli() {
     done
     if [ -z "$found" ]; then
         echo "Error: This app-chain command requires version-matched app-chain tooling." >&2
-        if [ -n "$REPOSITORY_ROOT" ]; then
-            echo "Build them with: ./gradlew :appchain-devtools:installDist" >&2
-        else
-            echo "The JVM distribution includes them under tools/yano-appchain." >&2
-        fi
-        echo "For a native distribution, extract the version-matched tooling archive" >&2
-        echo "beside yano.sh. Advanced users may set YANO_APPCHAIN_CLI." >&2
+        echo "Install the release-matched Yano X JVM distribution/tooling archive." >&2
+        echo "Advanced users may set YANO_APPCHAIN_CLI." >&2
         exit 1
     fi
     printf '%s\n' "$found"
@@ -190,6 +173,7 @@ dispatch_appchain() {
         shift
         if [ ! -x "$YANO_ROOT/appchain-cluster/cluster.sh" ]; then
             echo "Error: appchain-cluster/cluster.sh is missing or not executable." >&2
+            echo "Install the release-matched Yano X JVM distribution." >&2
             exit 1
         fi
         if [ "$#" -eq 0 ]; then

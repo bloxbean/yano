@@ -49,19 +49,11 @@ tasks.withType(Test) {
     useJUnitPlatform()
 }
 
-// ADR-013 ships the Quarkus host, a standalone evidence runner, and six
-// independently loadable plugin bundles. Keep the Jackson security override
-// observable at build time: a direct catalog upgrade is not enough because
-// Quarkus imports its platform as an enforced BOM.
+// Keep the Quarkus host's Jackson security override observable at build time:
+// a direct catalog upgrade is not enough because Quarkus imports its platform
+// as an enforced BOM. Yano X verifies its own extension runtime closures.
 def adr013ReleaseScopes = [
-        app: ':app',
-        runner: ':appchain-evidence-demo-runner',
-        'bundle-kafka': ':appchain-kafka',
-        'bundle-objectstore-s3': ':appchain-objectstore-s3',
-        'bundle-ipfs': ':appchain-ipfs',
-        'bundle-evidence-registry': ':appchain-evidence-registry',
-        'bundle-effects-cardano': ':appchain-effects-cardano',
-        'bundle-zk': ':appchain-zk'
+        app: ':app'
 ]
 
 tasks.register('verifyAdr013JacksonAlignment') {
@@ -198,10 +190,6 @@ def repositorySplitAllocation = new groovy.json.JsonSlurper().parse(
 def repositoryModuleByPath = repositorySplitAllocation.modules.collectEntries { module ->
     [(module.sourcePath.toString()): module]
 }
-def leanRepositoryBuild = providers.gradleProperty('leanYanoBuild')
-        .map { Boolean.parseBoolean(it) }
-        .orElse(false)
-
 tasks.register('verifyRepositorySplitAllocation') {
     group = 'verification'
     description = 'Validates the repository module, path, debt, and regression ownership manifest.'
@@ -249,9 +237,9 @@ tasks.register('verifyRepositorySplitAllocation') {
             failures.add("duplicate artifactId ${it}")
         }
 
-        def expectedModules = leanRepositoryBuild.get()
-                ? modules.findAll { it.disposition in ['retain', 'temporary-retain'] }
-                : modules
+        def expectedModules = modules.findAll {
+            it.disposition in ['retain', 'temporary-retain']
+        }
         def declaredProjects = expectedModules.collectEntries { module ->
             [(module.sourcePath): module]
         }
@@ -276,8 +264,11 @@ tasks.register('verifyRepositorySplitAllocation') {
             if (!(module.owner in owners)) {
                 failures.add("${label} has unknown owner ${module.owner}")
             }
-            if (!module.sourceDirectory
-                    || !layout.projectDirectory.dir(module.sourceDirectory).asFile.isDirectory()) {
+            def sourceDirectory = module.sourceDirectory == null ? null
+                    : layout.projectDirectory.dir(module.sourceDirectory).asFile
+            if (!module.sourceDirectory) {
+                failures.add("${label} has no sourceDirectory")
+            } else if (module.disposition != 'move' && !sourceDirectory.isDirectory()) {
                 failures.add("${label} sourceDirectory does not exist: ${module.sourceDirectory}")
             }
             if (actualProjects[label]
@@ -328,7 +319,19 @@ tasks.register('verifyRepositorySplitAllocation') {
         def trackedFiles = providers.exec {
             workingDir rootProject.projectDir
             commandLine 'git', 'ls-files'
-        }.standardOutput.asText.get().readLines().findAll { !it.isBlank() }
+        }.standardOutput.asText.get().readLines().findAll { trackedPath ->
+            !trackedPath.isBlank() && rootProject.file(trackedPath).isFile()
+        }
+        modules.findAll { it.disposition == 'move' }.each { module ->
+            def movedPaths = trackedFiles.findAll { trackedPath ->
+                trackedPath == module.sourceDirectory
+                        || trackedPath.startsWith(module.sourceDirectory + '/')
+            }
+            if (!movedPaths.isEmpty()) {
+                failures.add("${module.sourcePath} still owns moved tracked paths: "
+                        + movedPaths.take(5))
+            }
+        }
         trackedFiles.each { trackedPath ->
             def ownedByModule = moduleRoots.any { moduleRoot ->
                 trackedPath == moduleRoot || trackedPath.startsWith(moduleRoot + '/')
@@ -360,13 +363,6 @@ tasks.register('verifyRepositorySplitAllocation') {
                         + " has ${templateKeys.sort()}")
             }
         }
-        def releaseIndexTemplate = file('appchain/appchain-devtools/src/main/resources/'
-                + 'appchain-dx/v1alpha1/appchain-release-capability-index.json')
-        def releaseIndex = new groovy.json.JsonSlurper().parse(releaseIndexTemplate)
-        if (releaseIndex.yanoVersion != '${yanoVersion}') {
-            failures.add('DX release capability version must be generated from the build')
-        }
-
         def debt = manifest.technicalDebt ?: []
         def expectedDebtIds = (1..23).collect { "P${it}" } as Set
         if ((debt*.id as Set) != expectedDebtIds) {
@@ -374,25 +370,29 @@ tasks.register('verifyRepositorySplitAllocation') {
         }
         debt.each { item ->
             if (!(item.owner in owners) || !(item.targetPhase ==~ /[A-F]/)
-                    || !item.action || !item.regressionGuard) {
-                failures.add("technical debt ${item.id} lacks owner, phase, action, or guard")
+                    || !item.action || !item.regressionGuard
+                    || item.status != 'resolved') {
+                failures.add("technical debt ${item.id} is not fully classified and resolved")
             }
         }
 
-        def heavySuiteIds = [
-                'appchain-extended',
-                'appchain-crypto',
-                'distribution-check',
-                'native-plugin-conformance',
-                'connector-fault-matrix',
-                'effect-failover-e2e'
+        def cutoverSuiteIds = [
+                'yano-unit',
+                'yano-build',
+                'yano-jvm-package',
+                'yano-native',
+                'yano-x-unit',
+                'yano-x-distribution',
+                'yano-x-devtools',
+                'yano-x-studio'
         ] as Set
         def suites = manifest.regressionSuites ?: []
-        if (!suites*.id.containsAll(heavySuiteIds)) {
-            failures.add('regressionSuites does not contain all six heavy app-chain jobs')
+        if ((suites*.id as Set) != cutoverSuiteIds) {
+            failures.add('regressionSuites must contain the final Yano/Yano X cutover gates')
         }
         suites.each { suite ->
-            if (!suite.id || !suite.command || !suite.protects) {
+            if (!suite.id || !(suite.repository in ['yano', 'yano-x'])
+                    || !suite.command || !suite.protects) {
                 failures.add("invalid regression suite ${suite}")
             }
         }
@@ -402,7 +402,7 @@ tasks.register('verifyRepositorySplitAllocation') {
                     + failures.join('\n - '))
         }
         logger.lifecycle(
-                'Repository allocation verified: {} configured projects, {} tracked paths, {} debt items, {} suites',
+                'Repository allocation verified after cutover: {} configured projects, {} tracked paths, {} resolved debt items, {} suites',
                 expectedModules.size(), trackedFiles.size(), debt.size(), suites.size())
     }
 }
@@ -413,7 +413,7 @@ tasks.named('check') {
 
 tasks.register('verifyLeanHostDependencyBoundary') {
     group = 'verification'
-    description = 'Rejects Yano X allocated projects from the lean host runtime graph.'
+    description = 'Rejects Yano X allocated projects from the Yano host runtime graph.'
     inputs.file(repositorySplitAllocationFile)
     dependsOn tasks.named('verifyRepositorySplitAllocation')
 
@@ -447,7 +447,7 @@ tasks.register('verifyLeanHostDependencyBoundary') {
                     + failures.join('\n - '))
         }
         logger.lifecycle(
-                'Lean host dependency boundary passed: {} retained runtime projects',
+                'Host dependency boundary passed: {} retained runtime projects',
                 resolvedProjects.size())
     }
 }
@@ -526,7 +526,7 @@ if (commit_id && project.version.endsWith("-SNAPSHOT")) {
     version = "${project.version}".replace("-SNAPSHOT", "-${commit_id}-SNAPSHOT")
 }
 
-def nonLibraryModules = ['app', 'console-ui', 'appchain-eutxo-e2e', 'yano-bom'] as Set
+def nonLibraryModules = ['app', 'console-ui', 'yano-bom'] as Set
 
 subprojects {
     // Skip most configuration for application modules (Quarkus/Scala handle their own builds)
@@ -687,48 +687,16 @@ subprojects {
     }
 }
 
-def appChainExtendedProjects = [
-        ':runtime',
-        ':appchain-composite',
-        ':appchain-kafka',
-        ':appchain-objectstore-s3',
-        ':appchain-ipfs',
-        ':appchain-evidence-demo-runner'
-]
-
-def appChainCryptoProjects = [
-        ':appchain-eutxo-zk-zeroj',
-        ':appchain-eutxo-zk-onchain',
-        ':appchain-eutxo-zk-prover',
-        ':appchain-eutxo-zk-testkit'
-]
-
-tasks.register('appChainExtendedTest') {
-    group = 'verification'
-    description = 'Runs extended multi-node and real-connector app-chain tests.'
-    dependsOn appChainExtendedProjects.collect { "${it}:integrationTest" }
-}
-
-tasks.register('appChainCryptoTest') {
-    group = 'verification'
-    description = 'Runs the serialized full EUTxO Groth16 and on-chain proof matrix.'
-    dependsOn appChainCryptoProjects.collect { "${it}:cryptoTest" }
-}
-
 tasks.register('distributionCheck') {
     group = 'verification'
-    description = 'Validates copied/extracted Yano, app-chain CLI, and showcase distributions.'
+    description = 'Validates the core JVM distribution and directory-plugin contract.'
     dependsOn ':app:verifyCoreJvmDistribution',
-            ':appchain-devtools:distributionTest',
-            ':app:packagedJvmPluginCatalogSmoke',
-            ':appchain-showcase:showcaseDistributionContract',
-            ':appchain-devtools:finalDistributionRuntimeAcceptance',
-            ':appchain-devtools:finalDistributionStockOutcomeAcceptance'
+            ':app:packagedJvmPluginCatalogSmoke'
 }
 
 tasks.register('extendedTest') {
     group = 'verification'
-    description = 'Runs every repository integrationTest suite, including app-chain extensions.'
+    description = 'Runs every retained repository integrationTest suite.'
     dependsOn subprojects.findAll { candidate ->
         !(candidate.name in nonLibraryModules) || candidate.name == 'app'
     }.collect { candidate -> "${candidate.path}:integrationTest" }
@@ -736,244 +704,10 @@ tasks.register('extendedTest') {
 
 tasks.register('fullBuild') {
     group = 'build'
-    description = 'Runs the default build plus extended, crypto, and distribution verification.'
+    description = 'Runs the retained Yano build, integration tests, and JVM distribution checks.'
     dependsOn ':build'
     dependsOn subprojects.collect { candidate -> "${candidate.path}:build" }
-    dependsOn tasks.named('extendedTest'),
-            tasks.named('appChainCryptoTest'),
-            tasks.named('distributionCheck')
-}
-
-// Every downstream runtime artifact must have one isolated
-// bundle and one real JVM provider-activation test. This inventory is also the
-// source for the checked conformance matrix consumed by Yano X.
-if (findProject(':appchain-stdlib') != null) {
-def runtimePluginBundles = [
-        [projectPath: ':appchain-composite',
-         bundleId: 'com.bloxbean.cardano.yano.appchain.composite'],
-        [projectPath: ':appchain-role-workflow',
-         bundleId: 'com.bloxbean.cardano.yano.appchain.role-workflow'],
-        [projectPath: ':appchain-stdlib',
-         bundleId: 'com.bloxbean.cardano.yano.appchain.stdlib'],
-        [projectPath: ':appchain-authenticated-map-validators',
-         bundleId: 'com.bloxbean.cardano.yano.appchain.authenticated-map-validators'],
-        [projectPath: ':appchain-showcase',
-         bundleId: 'com.bloxbean.cardano.yano.appchain.showcase'],
-        [projectPath: ':appchain-effects-cardano',
-         bundleId: 'com.bloxbean.cardano.yano.appchain.effects.cardano'],
-        [projectPath: ':appchain-ipfs',
-         bundleId: 'com.bloxbean.cardano.yano.appchain.ipfs'],
-        [projectPath: ':appchain-kafka',
-         bundleId: 'com.bloxbean.cardano.yano.appchain.kafka'],
-        [projectPath: ':appchain-objectstore-s3',
-         bundleId: 'com.bloxbean.cardano.yano.appchain.objectstore.s3'],
-        [projectPath: ':appchain-zk',
-         bundleId: 'com.bloxbean.cardano.yano.appchain.zk'],
-        [projectPath: ':appchain-eutxo-zk-indexer',
-         bundleId: 'com.bloxbean.cardano.yano.appchain.eutxo.zk.indexer'],
-        [projectPath: ':appchain-eutxo-zk-runtime',
-         bundleId: 'com.bloxbean.cardano.yano.appchain.eutxo.zk.runtime'],
-        [projectPath: ':appchain-eutxo-bridge-cardano',
-         bundleId: 'com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano'],
-        [projectPath: ':appchain-eutxo-indexer-jdbc',
-         bundleId: 'com.bloxbean.cardano.yano.appchain.eutxo.indexer'],
-        [projectPath: ':appchain-eutxo-ledger',
-         bundleId: 'com.bloxbean.cardano.yano.appchain.eutxo'],
-        [projectPath: ':appchain-cardano-history',
-         bundleId: 'com.bloxbean.cardano.yano.appchain.cardano-history'],
-        [projectPath: ':appchain-evidence-profile',
-         bundleId: 'com.bloxbean.cardano.yano.appchain.evidence-profile'],
-        [projectPath: ':appchain-evidence-registry',
-         bundleId: 'com.bloxbean.cardano.yano.appchain.evidence-registry']
-]
-
-def runtimePluginBundlesById = runtimePluginBundles.collectEntries { specification ->
-    [(specification.bundleId): specification]
-}
-
-gradle.projectsEvaluated {
-    runtimePluginBundles.each { specification ->
-        def pluginProject = project(specification.projectPath)
-        def allocation = repositoryModuleByPath[specification.projectPath]
-        if (allocation == null || allocation.disposition != 'move'
-                || allocation.publicationType != 'runtime-plugin') {
-            throw new GradleException(
-                    "Runtime bundle allocation is invalid for ${specification.projectPath}")
-        }
-        def shadowJar = pluginProject.tasks.named('shadowJar')
-        pluginProject.components.java.withVariantsFromConfiguration(
-                pluginProject.configurations.shadowRuntimeElements) {
-            skip()
-        }
-        def mainPublication = pluginProject.publishing.publications
-                .findByName('mavenJava') as MavenPublication
-        if (mainPublication == null) {
-            throw new GradleException(
-                    "Runtime plugin ${specification.projectPath} has no thin publication")
-        }
-        mainPublication.artifacts.findAll { artifact ->
-            artifact.classifier == 'bundle'
-        }.each { artifact -> mainPublication.artifacts.remove(artifact) }
-
-        def bundlePublication = pluginProject.publishing.publications
-                .create('pluginBundle', MavenPublication) {
-            artifactId = allocation.artifactId.toString() + '-bundle'
-            artifact(shadowJar) {
-                classifier = null
-            }
-            pom {
-                name = "${allocation.artifactId} deployable plugin bundle"
-                description = "Dependency-complete Yano X bundle for ${specification.bundleId}"
-                url = 'https://github.com/bloxbean/yano-x'
-                licenses {
-                    license {
-                        name = 'The MIT License'
-                        url = 'https://opensource.org/licenses/mit-license.php'
-                    }
-                }
-                developers {
-                    developer {
-                        id = 'satran004'
-                        name = 'Satya'
-                    }
-                }
-                scm {
-                    connection = 'scm:git:git://github.com/bloxbean/yano-x.git'
-                    developerConnection = 'scm:git:ssh://git@github.com/bloxbean/yano-x.git'
-                    url = 'https://github.com/bloxbean/yano-x'
-                }
-            }
-        }
-        if (!pluginProject.version.toString().endsWith('SNAPSHOT')
-                && !pluginProject.hasProperty('skipSigning')) {
-            pluginProject.signing.sign(bundlePublication)
-        }
-    }
-}
-
-def sourceManifestFor = { specification ->
-    def manifests = project(specification.projectPath).fileTree(
-            'src/main/resources/META-INF/yano/plugins') { include '*.json' }.files
-    if (manifests.size() != 1) {
-        throw new GradleException(
-                "${specification.projectPath} must own exactly one source manifest")
-    }
-    [file: manifests.first(), value: new groovy.json.JsonSlurper().parse(manifests.first())]
-}
-def runtimeBundleClosure = { rootSpecification ->
-    def result = new LinkedHashMap<String, Object>()
-    Closure visit
-    visit = { specification ->
-        if (result.containsKey(specification.bundleId)) return
-        def parsed = sourceManifestFor(specification).value
-        (parsed.dependencies ?: []).each { dependency ->
-            def dependencySpecification = runtimePluginBundlesById[dependency.id]
-            if (dependencySpecification == null) {
-                throw new GradleException(
-                        "${specification.bundleId} depends on unregistered runtime bundle ${dependency.id}")
-            }
-            visit(dependencySpecification)
-        }
-        result[specification.bundleId] = specification
-    }
-    visit(rootSpecification)
-    result.values().toList()
-}
-
-def activationTasks = runtimePluginBundles.collect { specification ->
-    def pluginProject = project(specification.projectPath)
-    def closureSpecifications = runtimeBundleClosure(specification)
-    def suffix = pluginProject.name.split('-').collect { token -> token.capitalize() }.join('')
-    tasks.register("activate${suffix}RuntimePluginBundle", Test) {
-        group = 'verification'
-        description = "Activates every provider in ${specification.bundleId} from its isolated JVM bundle closure"
-        dependsOn closureSpecifications.collect { "${it.projectPath}:shadowJar" }
-        dependsOn ':runtime:testClasses'
-        testClassesDirs = project(':runtime').sourceSets.test.output.classesDirs
-        classpath = project(':runtime').sourceSets.test.runtimeClasspath
-        filter {
-            includeTestsMatching(
-                    'com.bloxbean.cardano.yano.runtime.plugins.RuntimePluginBundleActivationTest')
-        }
-        doFirst {
-            def bundleFiles = closureSpecifications.collect { member ->
-                project(member.projectPath).tasks.named('shadowJar').get()
-                        .archiveFile.get().asFile.absolutePath
-            }
-            systemProperty 'yano.bundle.paths', bundleFiles.join(File.pathSeparator)
-            systemProperty 'yano.bundle.id', specification.bundleId
-            systemProperty 'yano.bundle.expected-ids',
-                    closureSpecifications.collect { it.bundleId }.join(',')
-        }
-    }
-}
-
-def generatedRuntimePluginMatrix = layout.buildDirectory.file(
-        'reports/repository-split/runtime-plugin-conformance-v1.json')
-tasks.register('generateRuntimePluginConformanceMatrix') {
-    group = 'verification'
-    inputs.files(runtimePluginBundles.collect { specification ->
-        project(specification.projectPath).fileTree('src/main/resources/META-INF/yano/plugins') {
-            include '*.json'
-        }
-    })
-    outputs.file(generatedRuntimePluginMatrix)
-    doLast {
-        def rows = runtimePluginBundles.collect { specification ->
-            def pluginProject = project(specification.projectPath)
-            def sourceManifest = sourceManifestFor(specification)
-            def manifests = [sourceManifest.file]
-            def manifest = sourceManifest.value
-            if (manifest.id != specification.bundleId) {
-                throw new GradleException(
-                        "${specification.projectPath} manifest id does not match the matrix")
-            }
-            def suffix = pluginProject.name.split('-')
-                    .collect { token -> token.capitalize() }.join('')
-            [
-                    projectPath: specification.projectPath,
-                    bundleId: specification.bundleId,
-                    manifest: rootProject.relativePath(manifests.first()),
-                    contributions: manifest.contributions.collect { contribution ->
-                        [kind: contribution.kind, name: contribution.name,
-                         provider: contribution.provider]
-                    },
-                    dependencyBundles: runtimeBundleClosure(specification)
-                            .findAll { it.bundleId != specification.bundleId }
-                            .collect { it.bundleId },
-                    bundleTasks: runtimeBundleClosure(specification)
-                            .collect { "${it.projectPath}:shadowJar" },
-                    jvmActivationTest: ":activate${suffix}RuntimePluginBundle"
-            ]
-        }
-        def output = generatedRuntimePluginMatrix.get().asFile
-        output.parentFile.mkdirs()
-        output.setText(groovy.json.JsonOutput.prettyPrint(
-                groovy.json.JsonOutput.toJson(
-                        [schemaVersion: 1, runtimeArtifacts: rows])) + '\n', 'UTF-8')
-    }
-}
-
-tasks.register('verifyRuntimePluginConformanceMatrix') {
-    group = 'verification'
-    dependsOn tasks.named('generateRuntimePluginConformanceMatrix'), activationTasks
-    inputs.file('config/repository-split/runtime-plugin-conformance-v1.json')
-    inputs.file(generatedRuntimePluginMatrix)
-    doLast {
-        def parser = new groovy.json.JsonSlurper()
-        def checked = parser.parse(file(
-                'config/repository-split/runtime-plugin-conformance-v1.json'))
-        def generated = parser.parse(generatedRuntimePluginMatrix.get().asFile)
-        if (checked != generated) {
-            throw new GradleException(
-                    'Runtime plugin conformance matrix is stale; regenerate and review it')
-        }
-    }
-}
-
-tasks.named('check') {
-    dependsOn tasks.named('verifyRuntimePluginConformanceMatrix')
-}
+    dependsOn tasks.named('extendedTest'), tasks.named('distributionCheck')
 }
 
 def getCheckedOutGitCommitHash() {

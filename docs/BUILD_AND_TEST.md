@@ -1,8 +1,10 @@
 # Building and testing Yano
 
 Yano uses layered verification so the normal development build keeps complete
-L1 and app-chain core coverage without also paying for every multi-node,
-Groth16, and packaged-runtime acceptance test.
+L1 and retained app-chain host/OrderedLog coverage without also running every
+multi-node, packaged-runtime, or native-image acceptance test. Optional state
+machines, connectors, products, and their cryptographic suites are built in
+[Yano X](https://github.com/bloxbean/yano-x).
 
 ## Requirements
 
@@ -14,15 +16,13 @@ Groth16, and packaged-runtime acceptance test.
 
 | Tier | Source location | Purpose | Included in `build` |
 |---|---|---|---|
-| Core | `src/test` | L1 tests, app-chain unit/core tests, a two-node smoke test, and a small real ZK proof | Yes |
-| Extended | `src/integrationTest` | Multi-node sequencing, catch-up, governed membership, profile governance, and opt-in real connectors | No |
-| Crypto | `src/cryptoTest` | Full Groth16 proving, B16, ceremony interoperability, recovery proofs, and on-chain proof validation | No |
-| Distribution | `src/distributionTest` and packaged shell contracts | Tests copied/extracted release archives and packaged runtime behavior | No |
+| Core | `src/test` | L1 tests plus retained app-chain host, OrderedLog, proof, and plugin-boundary tests | Yes |
+| Extended | `src/integrationTest` | Retained multi-node sequencing, catch-up, membership, anchoring, and host integration | No |
+| Distribution | packaged process contracts | Tests the lean JVM/native archives and plugin-directory boundary | No |
 
-Tests are classified by behavior, not by class name. An in-memory composition
-test may remain in `src/test` even if its class name contains `IntegrationTest`.
-Conversely, a test that starts several app-chain nodes belongs in
-`src/integrationTest`.
+Tests are classified by behavior, not by class name. A test that starts several
+app-chain nodes belongs in `src/integrationTest` even when it validates retained
+host behavior.
 
 ## Normal development build
 
@@ -32,16 +32,15 @@ Run the default build for normal changes:
 ./gradlew build -PskipSigning=true
 ```
 
-This compiles every module, runs all ordinary L1 tests, and runs all app-chain
-core tests. It intentionally does not create or extract the final showcase ZIP,
-run the complete proof matrix, or run the extended multi-node suites.
+This compiles every retained module and runs ordinary L1 and app-chain core
+tests. It intentionally does not run extended multi-node or distribution suites.
 
 For a faster module-level iteration:
 
 ```bash
 ./gradlew :runtime:test
-./gradlew :appchain-stdlib:test
-./gradlew :appchain-eutxo-zk-zeroj:test
+./gradlew :appchain-testkit:test
+./gradlew :appchain-proof-verifier:test
 ```
 
 Run one ordinary test or method with Gradle's standard filter:
@@ -54,73 +53,32 @@ Run one ordinary test or method with Gradle's standard filter:
   --tests 'com.bloxbean.cardano.yano.runtime.appchain.AppChainTwoNodeSmokeTest.twoNodes_exchangeAuthenticatedMessages_bothDirections'
 ```
 
-## Extended app-chain tests
+## Extended tests
 
-Run every extended app-chain suite:
-
-```bash
-./gradlew appChainExtendedTest
-```
-
-Run a module or individual extended test:
+Run every retained integration suite, or select a module/test:
 
 ```bash
+./gradlew extendedTest
 ./gradlew :runtime:integrationTest
 
 ./gradlew :runtime:integrationTest \
   --tests 'com.bloxbean.cardano.yano.runtime.appchain.GovernedMembershipIntegrationTest'
 ```
 
-Real Kafka, S3/RustFS, Kubo, and evidence-runner tests live in this tier but
-remain skipped unless their existing opt-in system properties and services are
-provided. The aggregate still runs the self-contained runtime and composite
-cluster tests without external infrastructure.
-
-To run every repository integration suite, including non-app-chain suites and
-the Quarkus tag-based integration tests:
-
-```bash
-./gradlew extendedTest
-```
-
-## Full cryptographic verification
-
-Run the complete EUTxO ZeroJ/Groth16 matrix:
-
-```bash
-./gradlew appChainCryptoTest
-```
-
-Run one crypto module or test:
-
-```bash
-./gradlew :appchain-eutxo-zk-onchain:cryptoTest
-
-./gradlew :appchain-eutxo-zk-zeroj:cryptoTest \
-  --tests 'com.bloxbean.cardano.yano.appchain.eutxo.zk.zeroj.EutxoJubjubBatchProofTest'
-```
-
-Crypto test tasks use a shared Gradle lock and one fork so they remain
-serialized even when the rest of the build uses `--parallel`. This avoids
-several 4 GiB proving JVMs competing at once.
-
 ## Distribution verification
 
-Run the complete JVM distribution gate:
+Run the lean JVM distribution and directory-plugin boundary gate:
 
 ```bash
 ./gradlew distributionCheck -PskipSigning=true
 ```
 
-It builds the Yano, app-chain CLI, and showcase ZIPs and then verifies:
+It builds the ordinary Yano JVM ZIP and verifies:
 
-- packaged files, schemas, metadata, documentation, launchers, and executable bits;
-- app-chain CLI init, validation, rendering, migration, capabilities, and GitOps export;
-- every advertised recipe/runtime/deployment combination;
-- packaged and directory-plugin discovery;
-- showcase archive portability and absence of checkout-specific paths;
-- a two-node packaged devnet flow with finality, proofs, evidence, and restart catch-up;
-- packaged audit-log, registry, approval, and effect outcomes.
+- the core distribution manifest and OrderedLog-only built-in boundary;
+- packaged catalog integrity and directory-loaded conformance plugins;
+- absence of Yano X bundles and downstream source/task dependencies; and
+- packaged launchers, config, plugin tools, and executable bits.
 
 The gate uses temporary devnet data. It does not connect to Preview, Preprod,
 or Mainnet and does not publish an artifact.
@@ -128,21 +86,20 @@ or Mainnet and does not publish an artifact.
 Individual distribution checks remain available:
 
 ```bash
-./gradlew :appchain-devtools:distributionTest -PskipSigning=true
+./gradlew :app:verifyCoreJvmDistribution -PskipSigning=true
 ./gradlew :app:packagedJvmPluginCatalogSmoke -PskipSigning=true
-./gradlew :appchain-showcase:showcaseDistributionContract -PskipSigning=true
 ```
 
 Create archives without running the acceptance gate:
 
 ```bash
 ./gradlew :app:yanoDistZip -PskipSigning=true
-./gradlew :appchain-showcase:distZip -PskipSigning=true
+./gradlew :app:yanoNativeDistZip -PskipSigning=true
 ```
 
 ## Full optional build
 
-Run all repository core, integration, crypto, and distribution tiers with one
+Run all retained repository core, integration, and JVM distribution tiers with one
 command:
 
 ```bash
@@ -156,17 +113,16 @@ For a from-scratch release-style check:
 ```
 
 `fullBuild` is intentionally not the normal inner-loop command. Network-specific
-Haskell synchronization, native-image, externally provisioned connector, and
-public-network acceptance workflows retain their dedicated commands and opt-in
-requirements.
+Haskell synchronization, native-image, and public-network acceptance workflows
+retain their dedicated commands and opt-in requirements. Yano X owns connector,
+product, showcase, and eUTxO/ZK gates.
 
 ## Continuous integration
 
-Pull-request verification runs the core build, extended app-chain tests, crypto
-tests, and distribution checks as separate jobs. They remain independent release
-gates but execute concurrently, so CI wall time is determined primarily by the
-slowest tier instead of the sum of all tiers. Nightly, manual snapshot, and Maven
-release workflows use `clean fullBuild` before publishing.
+Pull-request verification runs the retained core build, integration tests,
+distribution checks, and GraalVM gates independently. Yano X has its own JVM-only
+extension and release-acceptance workflow. Release workflows use the corresponding
+repository-owned gates before publishing.
 
 ## Performance and diagnostics
 

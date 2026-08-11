@@ -1,3 +1,0 @@
-com.bloxbean.cardano.yano.appchain.stdlib.EpochParamsObserverProvider
-com.bloxbean.cardano.yano.appchain.stdlib.EpochStakeObserverProvider
-com.bloxbean.cardano.yano.appchain.stdlib.EpochGovernanceObserverProvider

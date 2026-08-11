@@ -3,8 +3,8 @@
 # App-chain cluster demo config  (external — lives in app/config, NOT bundled
 # in the jar). Activated with the `appchain` Quarkus profile, e.g.
 #   -Dquarkus.profile=devnet,appchain
-# The cluster launcher (app/appchain-cluster/cluster.sh) adds this profile for
-# you and injects the per-node/topology values.
+# The Yano X cluster launcher adds this profile and injects the
+# per-node/topology values.
 #
 # WHAT THIS FILE DEFINES (shared, identical on every node): the per-chain
 # "flavor" — chain-id, state machine, block cadence, and sequencer intent.
