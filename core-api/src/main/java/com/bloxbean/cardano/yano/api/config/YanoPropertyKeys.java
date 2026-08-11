@@ -152,13 +152,30 @@ public final class YanoPropertyKeys {
      * Plugin discovery and plugin runtime settings.
      */
     public static final class Plugins {
-        public static final String ENABLED = "yaci.plugins.enabled";
-        public static final String DIRECTORY = "yaci.plugins.directory";
-        public static final String ALLOW_LIST = "yaci.plugins.allow-list";
-        public static final String DENY_LIST = "yaci.plugins.deny-list";
+        public static final String ENABLED = "yano.plugins.enabled";
+        public static final String DIRECTORY = "yano.plugins.directory";
+        public static final String ALLOW_LIST = "yano.plugins.allow-list";
+        public static final String DENY_LIST = "yano.plugins.deny-list";
         public static final String AUTO_REGISTER_ANNOTATED =
-                "yaci.plugins.auto-register-annotated";
-        public static final String LOGGING_ENABLED = "yaci.plugins.logging.enabled";
+                "yano.plugins.auto-register-annotated";
+        public static final String LOGGING_ENABLED = "yano.plugins.logging.enabled";
+
+        /**
+         * Deprecated aliases accepted for one compatibility release.
+         */
+        public static final class Legacy {
+            public static final String ENABLED = "yaci.plugins.enabled";
+            public static final String DIRECTORY = "yaci.plugins.directory";
+            public static final String ALLOW_LIST = "yaci.plugins.allow-list";
+            public static final String DENY_LIST = "yaci.plugins.deny-list";
+            public static final String AUTO_REGISTER_ANNOTATED =
+                    "yaci.plugins.auto-register-annotated";
+            public static final String LOGGING_ENABLED =
+                    "yaci.plugins.logging.enabled";
+
+            private Legacy() {
+            }
+        }
 
         private Plugins() {
         }
@@ -502,9 +519,6 @@ public final class YanoPropertyKeys {
         public static final String ENABLED = "yano.app-chain.enabled";
         /** Node-local root directory containing one RocksDB ledger per hosted app chain. */
         public static final String STORAGE_PATH = "yano.app-chain.storage.path";
-        /** Node-local root for rebuildable, non-consensus app-chain indexes. */
-        public static final String INDEXER_STORAGE_PATH =
-                "yano.app-chain.indexer.storage.path";
         /**
          * Multi-chain config (ADR 006 E5.2): runtime-globals key holding a
          * List of Maps of suffix-keyed chain settings, populated by adapters
@@ -599,19 +613,6 @@ public final class YanoPropertyKeys {
         /** Release catalog identity exposed only through the privileged diagnostics endpoint. */
         public static final String DX_RELEASE_CATALOG_DIGEST =
                 "yano.app-chain.dx.release-catalog-digest";
-        /** Enable the node-local, rebuildable EUTxO lifecycle index. */
-        public static final String EUTXO_INDEXER_ENABLED =
-                "yano.app-chain.eutxo-indexer.enabled";
-        /** Node-local EUTxO index provider. Version 1 supports jdbc only. */
-        public static final String EUTXO_INDEXER_STORE_TYPE =
-                "yano.app-chain.eutxo-indexer.store.type";
-        /** Optional explicit single-chain JDBC URL; empty derives a safe path. */
-        public static final String EUTXO_INDEXER_JDBC_URL =
-                "yano.app-chain.eutxo-indexer.store.jdbc.url";
-        /** Optional canonical validity-lifecycle root for provider adapters. */
-        public static final String EUTXO_INDEXER_VALIDITY_PATH =
-                "yano.app-chain.eutxo-indexer.validity.path";
-
         private AppChain() {
         }
     }

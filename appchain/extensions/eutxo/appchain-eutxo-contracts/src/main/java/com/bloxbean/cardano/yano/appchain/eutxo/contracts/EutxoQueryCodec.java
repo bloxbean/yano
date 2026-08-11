@@ -23,6 +23,7 @@ public final class EutxoQueryCodec {
     public static final String DEPOSIT_COUNT_PATH = "bridge/deposits/count";
     public static final String RESERVE_PATH = "bridge/reserve";
     public static final String BRIDGE_HALT_PATH = "bridge/halt";
+    public static final String BRIDGE_INFO_PATH = "bridge/info";
     public static final String WITHDRAWAL_PATH = "bridge/withdrawals/record";
     public static final String WITHDRAWALS_PATH = "bridge/withdrawals/records";
     public static final String WITHDRAWAL_COUNT_PATH =

@@ -190,6 +190,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     private final DomainApiRegistry domainApiRegistry;
     private final com.bloxbean.cardano.yano.runtime.plugins.LocalReadModelRegistry
             localReadModels;
+    private final com.bloxbean.cardano.yano.runtime.plugins.LocalReadModelContributionRegistry
+            localReadModelContributions;
     private final PluginOperationsRegistry pluginOperationsRegistry;
     private final RelayConnectionManager relayConnectionManager;
     private final int serverPort;
@@ -454,11 +456,23 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             this.localReadModels =
                     new com.bloxbean.cardano.yano.runtime.plugins.LocalReadModelRegistry();
             constructionCleanup.addLast(localReadModels::close);
+            this.localReadModelContributions =
+                    new com.bloxbean.cardano.yano.runtime.plugins
+                            .LocalReadModelContributionRegistry(
+                            this.pluginEnvironment, runtimeNetwork(),
+                            appChainGateways(), localReadModels);
+            constructionCleanup.addLast(localReadModelContributions::close);
             this.domainApiRegistry = new DomainApiRegistry(
                     this.pluginEnvironment,
                     appChainGateways(),
                     log,
                     localReadModels,
+                    new com.bloxbean.cardano.yano.runtime.appchain.hostbridge
+                            .DefaultL1TransactionBuilderService(
+                            this::getUtxoState,
+                            this::anchorCclProtocolParams,
+                            () -> chainState.getTip() == null
+                                    ? 0 : chainState.getTip().getSlot()),
                     pluginOperationsRegistry);
             constructionCleanup.addLast(domainApiRegistry::close);
 
@@ -499,7 +513,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                     EpochParamProvider params = getEpochParamProvider();
                     if (params != null) {
                         appChainManager.wireL1EpochState(
-                                new com.bloxbean.cardano.yano.runtime.appchain
+                                new com.bloxbean.cardano.yano.runtime.appchain.hostbridge
                                         .DefaultL1EpochStateProvider(store, chainState, params));
                     }
                 });
@@ -692,6 +706,19 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             subsystems.add(subsystem);
         }
         return new com.bloxbean.cardano.yano.runtime.appchain.AppChainManager(subsystems, log);
+    }
+
+    private String runtimeNetwork() {
+        String configured = config.getNetwork();
+        if (configured != null && !configured.isBlank()) {
+            return configured.trim().toLowerCase(java.util.Locale.ROOT);
+        }
+        String known = com.bloxbean.cardano.yano.runtime.config.GenesisFileResolver
+                .networkDirForMagic(protocolMagic);
+        if (known != null) {
+            return known;
+        }
+        return config.isDevMode() ? "devnet" : "custom-" + protocolMagic;
     }
 
     /** Collect config entries whose full key starts with base+prefix, keyed by (key minus base). */
@@ -1370,6 +1397,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 pluginManager.startAll();
                 pluginsStarted = true;
             }
+            localReadModelContributions.resume();
             domainApiRegistry.resume();
             utxoSubsystem.initializeFilterChain(
                     pluginManager != null ? pluginManager.getStorageFilters() : List.of());
@@ -1397,6 +1425,11 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             domainApiRegistry.sealAndAwait();
         } catch (Throwable domainFailure) {
             failure = recordPluginCleanupFailure(failure, domainFailure);
+        }
+        try {
+            localReadModelContributions.sealAndAwait();
+        } catch (Throwable readModelFailure) {
+            failure = recordPluginCleanupFailure(failure, readModelFailure);
         }
         if (stopNodePlugins) {
             try {
@@ -3623,7 +3656,20 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
             @Override
             public void closeDomainApis() {
-                domainApiRegistry.close();
+                Throwable failure = null;
+                try {
+                    domainApiRegistry.close();
+                } catch (Throwable domainFailure) {
+                    failure = domainFailure;
+                }
+                try {
+                    localReadModelContributions.close();
+                } catch (Throwable readModelFailure) {
+                    failure = recordPluginCleanupFailure(failure, readModelFailure);
+                }
+                if (failure != null) {
+                    throw propagatePluginCleanupFailure(failure);
+                }
             }
 
             @Override

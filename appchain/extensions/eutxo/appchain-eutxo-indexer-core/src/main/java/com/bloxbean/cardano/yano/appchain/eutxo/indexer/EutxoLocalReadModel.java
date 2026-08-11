@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.appchain.eutxo.indexer;
 
 import com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelHost;
+import com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelQueryService;
 import com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelResult;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoDepositRecord;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoTransactionSummary;
@@ -38,13 +39,14 @@ public final class EutxoLocalReadModel
     private final Supplier<IndexHealth> health;
     private final EutxoIndexMetrics metrics;
     private final EutxoValidityIndexSource validity;
+    private final LocalReadModelQueryService auxiliaryModels;
 
     public EutxoLocalReadModel(
             String chainId,
             EutxoIndexStore store,
             Supplier<IndexHealth> health
     ) {
-        this(chainId, store, health, new EutxoIndexMetrics(), null);
+        this(chainId, store, health, new EutxoIndexMetrics(), null, null);
     }
 
     public EutxoLocalReadModel(
@@ -53,7 +55,7 @@ public final class EutxoLocalReadModel
             Supplier<IndexHealth> health,
             EutxoIndexMetrics metrics
     ) {
-        this(chainId, store, health, metrics, null);
+        this(chainId, store, health, metrics, null, null);
     }
 
     public EutxoLocalReadModel(
@@ -63,11 +65,33 @@ public final class EutxoLocalReadModel
             EutxoIndexMetrics metrics,
             EutxoValidityIndexSource validity
     ) {
+        this(chainId, store, health, metrics, validity, null);
+    }
+
+    public EutxoLocalReadModel(
+            String chainId,
+            EutxoIndexStore store,
+            Supplier<IndexHealth> health,
+            EutxoIndexMetrics metrics,
+            LocalReadModelQueryService auxiliaryModels
+    ) {
+        this(chainId, store, health, metrics, null, auxiliaryModels);
+    }
+
+    private EutxoLocalReadModel(
+            String chainId,
+            EutxoIndexStore store,
+            Supplier<IndexHealth> health,
+            EutxoIndexMetrics metrics,
+            EutxoValidityIndexSource validity,
+            LocalReadModelQueryService auxiliaryModels
+    ) {
         this.chainId = Objects.requireNonNull(chainId, "chainId");
         this.store = Objects.requireNonNull(store, "store");
         this.health = Objects.requireNonNull(health, "health");
         this.metrics = Objects.requireNonNull(metrics, "metrics");
         this.validity = validity;
+        this.auxiliaryModels = auxiliaryModels;
     }
 
     @Override
@@ -96,8 +120,12 @@ public final class EutxoLocalReadModel
                 case WITHDRAWALS -> withdrawals(request);
                 case WITHDRAWAL -> withdrawal(request.id());
                 case LINEAGE -> lineage(request);
-                case VALIDITY_BATCHES -> validityBatches(request);
-                case VALIDITY_BATCH -> validityBatch(request.id());
+                case VALIDITY_BATCHES, VALIDITY_BATCH ->
+                        auxiliaryModels != null
+                                ? auxiliaryValidity(operation, boundedRequest)
+                                : operation.equals(VALIDITY_BATCHES)
+                                ? validityBatches(request)
+                                : validityBatch(request.id());
                 default -> throw new IllegalArgumentException(
                         "unsupported EUTxO index operation");
             };
@@ -283,7 +311,23 @@ public final class EutxoLocalReadModel
                 + string(store.reader().normalizedDigest())
                 + ",\"diagnosticCode\":"
                 + string(health.diagnostic())
-                + ",\"validityAvailable\":" + (validity != null) + "}";
+                + ",\"validityAvailable\":"
+                + (validity != null || auxiliaryModels != null) + "}";
+    }
+
+    private String auxiliaryValidity(String operation, byte[] request) {
+        LocalReadModelResult result = auxiliaryModels.query(
+                EutxoValidityLocalReadModel.MODEL_ID,
+                chainId,
+                operation,
+                request);
+        if (result.status() == LocalReadModelResult.Status.UNAVAILABLE) {
+            return "{\"error\":\"CAPABILITY_UNAVAILABLE\"}";
+        }
+        if (result.status() == LocalReadModelResult.Status.FAILED) {
+            return "{\"error\":\"VALIDITY_INDEX_FAILED\"}";
+        }
+        return new String(result.payload(), StandardCharsets.UTF_8);
     }
 
     private String validityBatches(EutxoIndexRequest request) {

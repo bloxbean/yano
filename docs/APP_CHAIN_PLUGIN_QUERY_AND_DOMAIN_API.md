@@ -230,7 +230,7 @@ Package one self-contained reproducible plugin JAR. Compile against
 `com/bloxbean/cardano/yano/api/**`. Shade third-party runtime dependencies into
 the same JAR; adjacent thin dependency JARs are not one catalog bundle.
 
-Copy the JAR into `yaci.plugins.directory`. If an allow-list is configured,
+Copy the JAR into `yano.plugins.directory`. If an allow-list is configured,
 allow the bundle id. Select the state-machine contribution by its short
 selector on the app chain. The domain contribution is activated as part of the
 selected bundle and is addressed by bundle id.

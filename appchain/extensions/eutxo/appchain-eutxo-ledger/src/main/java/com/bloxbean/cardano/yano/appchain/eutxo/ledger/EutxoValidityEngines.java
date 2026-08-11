@@ -4,12 +4,10 @@ import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoProfile;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoValidityCommitmentEngine;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoValidityCommitmentProvider;
 
-import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.ServiceLoader;
 
-/** Fail-closed discovery for the family-private optional validity SPI. */
+/** Fail-closed selection for the family-private optional validity capability. */
 final class EutxoValidityEngines {
     static final String ENABLED = "machines.eutxo.validity.enabled";
     static final String PROVIDER = "machines.eutxo.validity.provider";
@@ -20,7 +18,8 @@ final class EutxoValidityEngines {
     static EutxoValidityCommitmentEngine discover(
             String chainId,
             EutxoProfile profile,
-            Map<String, String> settings
+            Map<String, String> settings,
+            EutxoValidityCommitmentProvider packagedProvider
     ) {
         Objects.requireNonNull(settings, "settings");
         String enabledValue = settings.getOrDefault(ENABLED, "false").trim();
@@ -37,26 +36,12 @@ final class EutxoValidityEngines {
             throw new IllegalArgumentException(
                     "validity commitments are enabled but no provider is selected");
         }
-        ClassLoader loader = Thread.currentThread().getContextClassLoader();
-        if (loader == null) {
-            loader = EutxoValidityEngines.class.getClassLoader();
-        }
-        List<EutxoValidityCommitmentProvider> matches =
-                ServiceLoader.load(EutxoValidityCommitmentProvider.class, loader)
-                        .stream()
-                        .map(ServiceLoader.Provider::get)
-                        .filter(provider -> selected.equals(provider.id()))
-                        .toList();
-        if (matches.isEmpty()) {
+        if (packagedProvider == null || !selected.equals(packagedProvider.id())) {
             throw new IllegalArgumentException(
                     "selected EUTxO validity provider is unavailable: " + selected);
         }
-        if (matches.size() != 1) {
-            throw new IllegalArgumentException(
-                    "selected EUTxO validity provider is ambiguous: " + selected);
-        }
         EutxoValidityCommitmentEngine engine =
-                matches.getFirst().create(chainId, profile, Map.copyOf(settings));
+                packagedProvider.create(chainId, profile, Map.copyOf(settings));
         if (engine == null || !selected.equals(engine.id())) {
             throw new IllegalArgumentException(
                     "selected EUTxO validity provider returned the wrong engine identity");

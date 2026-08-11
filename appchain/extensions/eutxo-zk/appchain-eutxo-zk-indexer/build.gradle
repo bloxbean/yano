@@ -2,6 +2,11 @@ plugins {
     id 'java-library'
 }
 
+ext.runtimePluginBundleId =
+        'com.bloxbean.cardano.yano.appchain.eutxo.zk.indexer'
+ext.runtimePluginExcludedBundleIds = []
+apply from: rootProject.file('gradle/runtime-plugin-bundle.gradle')
+
 dependencies {
     api project(':appchain-eutxo-indexer-core')
     implementation project(':appchain-eutxo-zk-contracts')

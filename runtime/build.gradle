@@ -40,8 +40,6 @@ dependencies {
     implementation libs.cardano.client.quicktx
 
     testImplementation libs.project.reactor.test
-    // Effect-system tests exercise the stdlib generic on-approved flow (ADR-021)
-    testImplementation project(':appchain-stdlib')
 
     // Generate @DomainEventListener bindings at build time
     annotationProcessor libs.yaci.events.processor
@@ -67,6 +65,8 @@ tasks.register('generateTestPluginCatalogIndex', JavaExec) {
     dependsOn project(':plugin-catalog').tasks.named('classes'),
             tasks.named('testCatalogProvidersJar'), tasks.named('jar')
     inputs.files(configurations.testRuntimeClasspath)
+    inputs.file(tasks.named('testCatalogProvidersJar').flatMap { it.archiveFile })
+    inputs.file(tasks.named('jar').flatMap { it.archiveFile })
     outputs.file(generatedTestPluginCatalogDir.map {
         it.file('META-INF/yano-plugin-index-v1.json')
     })

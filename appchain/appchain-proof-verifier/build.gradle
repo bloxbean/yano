@@ -1,0 +1,26 @@
+dependencies {
+    api project(':core-api')
+    api libs.cardano.client.mpf
+    api libs.cardano.client.jmt
+
+    testImplementation libs.junit.jupiter.api
+    testRuntimeOnly libs.junit.jupiter.engine
+    testRuntimeOnly libs.junit.platform.launcher
+    testImplementation libs.assertj.core
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano App-Chain Proof Verifier'
+                description = 'Implementation-neutral native state-proof verification for the Yano host'
+            }
+        }
+    }
+}

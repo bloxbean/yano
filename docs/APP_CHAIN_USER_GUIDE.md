@@ -754,7 +754,7 @@ The plugin template ships this test pre-wired (`CounterConformanceTest`).
    validation coverage. The envelope schema and canonical payload contract are
    packaged as `appchain-metadata-trust.schema.json` and documented by the
    app-chain developer tool.
-5. Drop the jar into the JVM node's plugins directory (`yaci.plugins.directory`,
+5. Drop the jar into the JVM node's plugins directory (`yano.plugins.directory`,
    default `plugins/`), and select it:
    ```yaml
    yano:
@@ -1042,7 +1042,7 @@ the last error appear in `/status` under `sinks`.
 **Kafka** — the stock application omits this T3 integration. For a JVM node,
 run `./gradlew :appchain-kafka:shadowJar` and copy the resulting
 `yano-appchain-kafka-<version>-bundle.jar` into
-`yaci.plugins.directory`. For a native application, build it in with
+`yano.plugins.directory`. For a native application, build it in with
 `-PincludeFirstPartyPluginBundles=true`; native binaries cannot load the
 directory bundle.
 

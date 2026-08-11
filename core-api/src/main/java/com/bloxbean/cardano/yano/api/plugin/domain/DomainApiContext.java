@@ -28,9 +28,13 @@ public final class DomainApiContext {
     private final Map<String, Object> bundleConfig;
     private final DomainQueryService queryService;
     private final LocalReadModelQueryService localReadModels;
+    private final PrivilegedSystemMessageService privilegedSystemMessages;
+    private final L1TransactionBuilderService l1Transactions;
 
     public DomainApiContext(Map<String, ?> bundleConfig, DomainQueryService queryService) {
-        this(bundleConfig, queryService, LocalReadModelQueryService.unavailable());
+        this(bundleConfig, queryService, LocalReadModelQueryService.unavailable(),
+                PrivilegedSystemMessageService.unavailable(),
+                L1TransactionBuilderService.unavailable());
     }
 
     public DomainApiContext(
@@ -38,10 +42,36 @@ public final class DomainApiContext {
             DomainQueryService queryService,
             LocalReadModelQueryService localReadModels
     ) {
+        this(bundleConfig, queryService, localReadModels,
+                PrivilegedSystemMessageService.unavailable(),
+                L1TransactionBuilderService.unavailable());
+    }
+
+    public DomainApiContext(
+            Map<String, ?> bundleConfig,
+            DomainQueryService queryService,
+            LocalReadModelQueryService localReadModels,
+            PrivilegedSystemMessageService privilegedSystemMessages
+    ) {
+        this(bundleConfig, queryService, localReadModels,
+                privilegedSystemMessages, L1TransactionBuilderService.unavailable());
+    }
+
+    public DomainApiContext(
+            Map<String, ?> bundleConfig,
+            DomainQueryService queryService,
+            LocalReadModelQueryService localReadModels,
+            PrivilegedSystemMessageService privilegedSystemMessages,
+            L1TransactionBuilderService l1Transactions
+    ) {
         this.bundleConfig = DomainApiValidation.bundleConfig(bundleConfig);
         this.queryService = bounded(Objects.requireNonNull(queryService, "queryService"));
         this.localReadModels = bounded(Objects.requireNonNull(
                 localReadModels, "localReadModels"));
+        this.privilegedSystemMessages = bounded(Objects.requireNonNull(
+                privilegedSystemMessages, "privilegedSystemMessages"));
+        this.l1Transactions = bounded(Objects.requireNonNull(
+                l1Transactions, "l1Transactions"));
     }
 
     /**
@@ -61,6 +91,16 @@ public final class DomainApiContext {
     /** Bounded node-local derived-model facade; never exposes storage handles. */
     public LocalReadModelQueryService localReadModels() {
         return localReadModels;
+    }
+
+    /** Bounded privileged state-machine command seam; host authentication is mandatory. */
+    public PrivilegedSystemMessageService privilegedSystemMessages() {
+        return privilegedSystemMessages;
+    }
+
+    /** Reviewed non-custodial L1 transaction builder. */
+    public L1TransactionBuilderService l1Transactions() {
+        return l1Transactions;
     }
 
     /** Never renders configuration keys or values, which may be credentials. */
@@ -90,6 +130,95 @@ public final class DomainApiContext {
                             request.clone()),
                     "localReadModels.query() must not return null");
         };
+    }
+
+    private static PrivilegedSystemMessageService bounded(
+            PrivilegedSystemMessageService delegate
+    ) {
+        return new PrivilegedSystemMessageService() {
+            @Override
+            public void validate(String chainId, String topic, byte[] body) {
+                delegate.validate(
+                        DomainApiValidation.chainId(chainId),
+                        systemTopic(topic),
+                        commandBody(body));
+            }
+
+            @Override
+            public String submit(String chainId, String topic, byte[] body) {
+                String messageId = Objects.requireNonNull(delegate.submit(
+                                DomainApiValidation.chainId(chainId),
+                                systemTopic(topic),
+                                commandBody(body)),
+                        "privilegedSystemMessages.submit() must not return null");
+                if (!messageId.matches("[0-9a-f]{64}")) {
+                    throw new IllegalStateException(
+                            "privileged system-message id must be lowercase 32-byte hex");
+                }
+                return messageId;
+            }
+        };
+    }
+
+    private static L1TransactionBuilderService bounded(
+            L1TransactionBuilderService delegate
+    ) {
+        return new L1TransactionBuilderService() {
+            @Override
+            public long tipSlot() {
+                long slot = delegate.tipSlot();
+                if (slot < 0) {
+                    throw new IllegalStateException(
+                            "l1Transactions.tipSlot() must not return a negative slot");
+                }
+                return slot;
+            }
+
+            @Override
+            public SpendableInput selectSpendableInput(String sourceAddress) {
+                return Objects.requireNonNull(
+                        delegate.selectSpendableInput(l1Address(sourceAddress)),
+                        "l1Transactions.selectSpendableInput() must not return null");
+            }
+
+            @Override
+            public UnsignedTransaction buildPayment(PaymentPlan plan) {
+                return Objects.requireNonNull(
+                        delegate.buildPayment(Objects.requireNonNull(plan, "plan")),
+                        "l1Transactions.buildPayment() must not return null");
+            }
+        };
+    }
+
+    private static String l1Address(String value) {
+        String normalized = Objects.requireNonNull(value, "sourceAddress").trim();
+        if (normalized.isEmpty()
+                || normalized.length() > L1TransactionBuilderService.MAX_ADDRESS_LENGTH
+                || normalized.codePoints().anyMatch(Character::isISOControl)) {
+            throw new IllegalArgumentException("invalid sourceAddress");
+        }
+        return normalized;
+    }
+
+    private static String systemTopic(String value) {
+        String topic = Objects.requireNonNull(value, "topic").trim();
+        if (topic.length() < 2
+                || topic.length() > PrivilegedSystemMessageService.MAX_TOPIC_LENGTH
+                || topic.charAt(0) != '~'
+                || !topic.matches("~[A-Za-z0-9][A-Za-z0-9._/-]*")) {
+            throw new IllegalArgumentException("invalid privileged system topic");
+        }
+        return topic;
+    }
+
+    private static byte[] commandBody(byte[] value) {
+        Objects.requireNonNull(value, "body");
+        if (value.length == 0
+                || value.length > PrivilegedSystemMessageService.MAX_BODY_BYTES) {
+            throw new IllegalArgumentException(
+                    "privileged system-message body must contain 1-65536 bytes");
+        }
+        return value.clone();
     }
 
     private static String identifier(

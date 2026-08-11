@@ -1840,7 +1840,7 @@ validate_managed_process() {
   python3 - "$pid" "$(id -u)" "$start" \
     "-Dyano.storage.path=$(node_dir "$i")/chainstate" \
     "-Dyano.app-chain.storage.path=$(node_dir "$i")/appchain-chainstate" \
-    "-Dyano.app-chain.indexer.storage.path=$(node_dir "$i")/appchain-indexers" \
+    "-Dyano.plugins.bundle.\"com.bloxbean.cardano.yano.appchain.eutxo.indexer\".storage-path=$(node_dir "$i")/appchain-indexers" \
     "-Dquarkus.http.port=$expected_http" \
     "-Dyano.server.port=$expected_server" "$signal" <<'PY' >/dev/null 2>&1
 import hashlib
@@ -2561,7 +2561,7 @@ launch_node() {
     "-Dyano.server.port=$(server_port "$i")"
     "-Dyano.storage.path=$dir/chainstate"
     "-Dyano.app-chain.storage.path=$dir/appchain-chainstate"
-    "-Dyano.app-chain.indexer.storage.path=$dir/appchain-indexers"
+    "-Dyano.plugins.bundle.\"com.bloxbean.cardano.yano.appchain.eutxo.indexer\".storage-path=$dir/appchain-indexers"
     # Relay source-port reuse binds every upstream dial to the node's own server
     # port — a NAT-traversal aid for real relays, but on a localhost cluster all
     # followers dialing node 0 (plus app-peers) collide on the 4-tuple and wedge

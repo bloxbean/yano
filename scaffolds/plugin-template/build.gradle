@@ -1,6 +1,6 @@
 // Standalone Gradle project template for a custom Yano app-chain state-machine
 // plugin (ADR app-layer/006 E1.5). Build a jar, drop it on the node's
-// yaci.plugins.directory, and select it via yano.app-chain.state-machine.
+// yano.plugins.directory, and select it via yano.app-chain.state-machine.
 plugins {
     id 'java'
 }

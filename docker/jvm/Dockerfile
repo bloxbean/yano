@@ -27,7 +27,7 @@ ENV YANO_PROFILE=preprod \
     QUARKUS_LOG_FILE_ENABLED=true \
     QUARKUS_LOG_FILE_PATH=/app/logs/yano.log \
     YANO_STORAGE_PATH=/app/chainstate \
-    YACI_PLUGINS_DIRECTORY=/app/plugins
+    YANO_PLUGINS_DIRECTORY=/app/plugins
 
 EXPOSE 7070 13337
 VOLUME ["/app/chainstate", "/app/logs", "/app/plugins"]

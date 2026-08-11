@@ -34,7 +34,6 @@ import com.bloxbean.cardano.yano.appchain.config.AppChainConfigSemantics;
 import com.bloxbean.cardano.yano.runtime.kernel.Subsystem;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
 import com.bloxbean.cardano.yano.runtime.plugins.CatalogAuthenticatedMapValidatorResolver;
-import com.bloxbean.cardano.yano.runtime.plugins.LegacyServiceLoaderProviderRegistry;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginProviderRegistry;
 import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 import org.slf4j.Logger;
@@ -456,17 +455,15 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
 
     /**
      * @param stateMachine       custom state machine (library mode); null = resolve
-     *                           from config.stateMachineId() (built-ins, then
-     *                           {@link AppStateMachineProvider} ServiceLoader lookup)
-     * @param pluginClassLoader  additional classloader for provider discovery
-     *                           (the node's plugin jar classloader); may be null
+     *                           from config.stateMachineId() (built-ins only)
+     * @param pluginClassLoader  retained only for source compatibility in library
+     *                           mode; runtime extensions require a catalog registry
      */
     public AppChainSubsystem(AppChainConfig config, long protocolMagic, EventBus eventBus,
                              AppStateMachine stateMachine, String ledgerPath,
                              ClassLoader pluginClassLoader, Logger log) {
         this(config, protocolMagic, eventBus, stateMachine, ledgerPath,
-                pluginClassLoader, new LegacyServiceLoaderProviderRegistry(pluginClassLoader),
-                true, log);
+                pluginClassLoader, PluginProviderRegistry.empty(), false, log);
     }
 
     /**

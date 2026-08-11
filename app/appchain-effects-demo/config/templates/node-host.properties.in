@@ -2,9 +2,9 @@
 config_ordinal=275
 @GENESIS_TIMESTAMP_SETTING@
 yano.app-chain.chains[0].anchor.max-interval-minutes=@ANCHOR_MAX_INTERVAL_MINUTES@
-yaci.plugins.enabled=true
-yaci.plugins.directory=@PLUGIN_DIR@
-yaci.plugins.allow-list=com.bloxbean.cardano.yano.appchain.kafka,com.bloxbean.cardano.yano.appchain.ipfs,com.bloxbean.cardano.yano.appchain.objectstore.s3,com.bloxbean.cardano.yano.appchain.evidence-registry,com.bloxbean.cardano.yano.appchain.role-workflow,com.bloxbean.cardano.yano.appchain.stdlib,com.bloxbean.cardano.yano.appchain.evidence-profile
+yano.plugins.enabled=true
+yano.plugins.directory=@PLUGIN_DIR@
+yano.plugins.allow-list=com.bloxbean.cardano.yano.appchain.kafka,com.bloxbean.cardano.yano.appchain.ipfs,com.bloxbean.cardano.yano.appchain.objectstore.s3,com.bloxbean.cardano.yano.appchain.evidence-registry,com.bloxbean.cardano.yano.appchain.role-workflow,com.bloxbean.cardano.yano.appchain.stdlib,com.bloxbean.cardano.yano.appchain.evidence-profile
 yano.app-chain.chains[0].state-machine=@STATE_MACHINE@
 yano.app-chain.chains[0].state.commitment-profile=mpf-blake2b256-v1
 yano.app-chain.chains[0].state.format-fingerprint=91ee14091200f1e24659112d640e877e9177779dcc81dd06117f013e9190082b

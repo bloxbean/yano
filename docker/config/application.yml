@@ -8,6 +8,8 @@ quarkus:
       path: /app/logs/yano.log
 
 yano:
+  plugins:
+    directory: /app/plugins
   storage:
     path: /app/chainstate
   app-chain:
@@ -16,7 +18,3 @@ yano:
     indexer:
       storage:
         path: /app/appchain-indexers
-
-yaci:
-  plugins:
-    directory: /app/plugins

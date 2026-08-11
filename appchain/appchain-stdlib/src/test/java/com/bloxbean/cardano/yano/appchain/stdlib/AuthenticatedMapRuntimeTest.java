@@ -136,7 +136,8 @@ class AuthenticatedMapRuntimeTest {
 
     private AppChainSubsystem start(AppChainConfig config, Path ledgerBase) {
         AppChainSubsystem node = new AppChainSubsystem(
-                config, 42, null, null, ledgerBase.toString(), null, log);
+                config, 42, null, null, ledgerBase.toString(), null,
+                StdlibTestPluginProviders.registry(), log);
         nodes.add(node);
         node.start();
         return node;

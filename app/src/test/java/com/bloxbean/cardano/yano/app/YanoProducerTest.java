@@ -35,9 +35,9 @@ class YanoProducerTest {
     @Test
     void pluginPolicyIsMappedWithoutDroppingAllowDenyOrReservedFlag() {
         var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
-        producer.pluginsEnabled = true;
-        producer.pluginsLoggingEnabled = true;
         producer.appConfig = new PresentConfig(Map.of(
+                YanoPropertyKeys.Plugins.ENABLED, "true",
+                YanoPropertyKeys.Plugins.LOGGING_ENABLED, "true",
                 YanoPropertyKeys.Plugins.ALLOW_LIST, "com.example.a, com.example.b",
                 YanoPropertyKeys.Plugins.DENY_LIST, "com.example.b",
                 YanoPropertyKeys.Plugins.AUTO_REGISTER_ANNOTATED, "true"));
@@ -53,8 +53,6 @@ class YanoProducerTest {
     @Test
     void pluginBundleNamespaceIsForwardedWithoutLeakingValuesInDiagnostics() {
         var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
-        producer.pluginsEnabled = true;
-        producer.pluginsLoggingEnabled = false;
         producer.appConfig = new PresentConfig(Map.of(
                 "yano.plugins.bundle.\"com.example.product-passport\".endpoint",
                 "https://example.test",
@@ -87,8 +85,6 @@ class YanoProducerTest {
                         Map.of(environmentName, "https://environment.example"), 300))
                 .build();
         var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
-        producer.pluginsEnabled = true;
-        producer.pluginsLoggingEnabled = false;
         producer.appConfig = environmentConfig;
 
         var options = producer.pluginOptions();
@@ -96,6 +92,54 @@ class YanoProducerTest {
         assertEquals("https://environment.example", options.config().get(environmentName));
         assertTrue(options.config().keySet().stream()
                 .anyMatch(key -> key.equals(environmentName)));
+    }
+
+    @Test
+    void deprecatedPluginNamespaceRemainsAnAliasForOneRelease() {
+        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
+        producer.appConfig = new PresentConfig(Map.of(
+                YanoPropertyKeys.Plugins.Legacy.ENABLED, "false",
+                YanoPropertyKeys.Plugins.Legacy.ALLOW_LIST, "com.example.legacy",
+                YanoPropertyKeys.Plugins.Legacy.LOGGING_ENABLED, "true"));
+
+        var options = producer.pluginOptions();
+
+        assertFalse(options.enabled());
+        assertEquals(Set.of("com.example.legacy"), options.allowList());
+        assertEquals(true, options.config().get("plugins.logging.enabled"));
+    }
+
+    @Test
+    void equalCanonicalAndDeprecatedPluginValuesAreAccepted() {
+        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
+        producer.appConfig = new PresentConfig(Map.of(
+                YanoPropertyKeys.Plugins.ENABLED, "true",
+                YanoPropertyKeys.Plugins.Legacy.ENABLED, "TRUE",
+                YanoPropertyKeys.Plugins.ALLOW_LIST, "com.example.a,com.example.b",
+                YanoPropertyKeys.Plugins.Legacy.ALLOW_LIST,
+                "com.example.a, com.example.b"));
+
+        var options = producer.pluginOptions();
+
+        assertTrue(options.enabled());
+        assertEquals(Set.of("com.example.a", "com.example.b"), options.allowList());
+    }
+
+    @Test
+    void conflictingCanonicalAndDeprecatedPluginValuesFailStartup() {
+        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
+        producer.appConfig = new PresentConfig(Map.of(
+                YanoPropertyKeys.Plugins.ENABLED, "true",
+                YanoPropertyKeys.Plugins.Legacy.ENABLED, "false"));
+
+        PluginConfigurationException failure = assertThrows(
+                PluginConfigurationException.class, producer::pluginOptions);
+
+        assertTrue(failure.getMessage().contains(YanoPropertyKeys.Plugins.ENABLED));
+        assertTrue(failure.getMessage().contains(
+                YanoPropertyKeys.Plugins.Legacy.ENABLED));
+        assertFalse(failure.getMessage().contains("true"));
+        assertFalse(failure.getMessage().contains("false"));
     }
 
     @Test

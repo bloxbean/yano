@@ -5,17 +5,10 @@ import org.gradle.api.artifacts.result.ResolvedDependencyResult
 
 plugins {
     id 'application'
+    id 'java-test-fixtures'
     id 'io.quarkus' version "${quarkusPluginVersion}"
 }
 
-def includeFirstPartyPluginBundlesProperty =
-        providers.gradleProperty('includeFirstPartyPluginBundles').orNull
-if (includeFirstPartyPluginBundlesProperty != null
-        && !['true', 'false'].contains(includeFirstPartyPluginBundlesProperty.toLowerCase())) {
-    throw new GradleException('includeFirstPartyPluginBundles must be true or false')
-}
-def includeFirstPartyPluginBundles =
-        Boolean.parseBoolean(includeFirstPartyPluginBundlesProperty ?: 'false')
 def jacksonPatchVersion = libs.versions.jackson.get()
 def jacksonAnnotationsVersion = jacksonPatchVersion.replaceFirst(/\.\d+$/, '')
 def isJacksonModule = { String group ->
@@ -45,81 +38,18 @@ configurations.configureEach {
     }
 }
 
-// Quarkus's enforced platform may select older Kafka/BC/AWS SDK versions than
-// the first-party connectors. Opt-in thin/native connector builds must use the
-// same security-reviewed versions as their self-contained JVM bundles.
-if (includeFirstPartyPluginBundles) {
-    configurations.configureEach {
-        resolutionStrategy.force(
-                libs.kafka.clients.get(),
-                libs.bouncycastle.bcprov.get(),
-                libs.lz4.java.get(),
-                libs.snappy.java.get())
-        resolutionStrategy.eachDependency { details ->
-            if (details.requested.group == 'software.amazon.awssdk') {
-                details.useVersion(
-                        libs.aws.sdk.s3.get().versionConstraint.requiredVersion)
-                details.because('use one security-reviewed AWS SDK line for first-party connectors')
-            }
-        }
-    }
-}
-def includeNativePluginConformanceFixtureProperty =
-        providers.gradleProperty('includeNativePluginConformanceFixture').orNull
-if (includeNativePluginConformanceFixtureProperty != null
-        && !['true', 'false'].contains(
-                includeNativePluginConformanceFixtureProperty.toLowerCase())) {
-    throw new GradleException(
-            'includeNativePluginConformanceFixture must be true or false')
-}
-def includeNativePluginConformanceFixture = Boolean.parseBoolean(
-        includeNativePluginConformanceFixtureProperty ?: 'false')
 def declaredPluginManifestVersion = project.version.toString()
+// Native Yano embeds only its core catalog; JVM directory bundles are supplied
+// by Yano X and are never augmented into the native image.
 
 // Every build-time bundle must have an explicit Gradle project root. Mappings
 // with includeProvided also add non-annotation compileOnly dependencies because
 // those are supplied by the host at execution time rather than by the bundle JAR.
 def buildTimePluginBundles = [
-        'com.bloxbean.cardano.yaci.plugins.logging':
+        'com.bloxbean.cardano.yano.plugins.logging':
                 [projectPath: ':runtime', includeProvided: false,
-                 expectedManifestVersion: '1.0.0'],
-        'com.bloxbean.cardano.yano.appchain.stdlib':
-                [projectPath: ':appchain-stdlib', includeProvided: false],
-        'com.bloxbean.cardano.yano.appchain.authenticated-map-validators':
-                [projectPath: ':appchain-authenticated-map-validators', includeProvided: true],
-        'com.bloxbean.cardano.yano.appchain.evidence-registry':
-                [projectPath: ':appchain-evidence-registry', includeProvided: true],
-        'com.bloxbean.cardano.yano.appchain.role-workflow':
-                [projectPath: ':appchain-role-workflow', includeProvided: false],
-        'com.bloxbean.cardano.yano.appchain.evidence-profile':
-                [projectPath: ':appchain-evidence-profile', includeProvided: false],
-        'com.bloxbean.cardano.yano.appchain.eutxo':
-                [projectPath: ':appchain-eutxo-ledger', includeProvided: false],
-        'com.bloxbean.cardano.yano.appchain.eutxo.indexer':
-                [projectPath: ':appchain-eutxo-indexer-core',
-                 includeProvided: false],
-        'com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano':
-                [projectPath: ':appchain-eutxo-bridge-cardano', includeProvided: false]
+                 expectedManifestVersion: '1.0.0']
 ]
-if (includeFirstPartyPluginBundles) {
-    buildTimePluginBundles.putAll([
-            'com.bloxbean.cardano.yano.appchain.kafka':
-                    [projectPath: ':appchain-kafka', includeProvided: true],
-            'com.bloxbean.cardano.yano.appchain.objectstore.s3':
-                    [projectPath: ':appchain-objectstore-s3', includeProvided: true],
-            'com.bloxbean.cardano.yano.appchain.ipfs':
-                    [projectPath: ':appchain-ipfs', includeProvided: true],
-            'com.bloxbean.cardano.yano.appchain.effects.cardano':
-                    [projectPath: ':appchain-effects-cardano', includeProvided: true],
-            'com.bloxbean.cardano.yano.appchain.zk':
-                    [projectPath: ':appchain-zk', includeProvided: true]
-    ])
-}
-if (includeNativePluginConformanceFixture) {
-    buildTimePluginBundles.put(
-            'com.bloxbean.cardano.yano.fixture.plugin-conformance',
-            [projectPath: ':appchain-plugin-conformance', includeProvided: true])
-}
 
 def requireIndexedManifestVersions = { index, Map<String, String> expectedVersions ->
     expectedVersions.toSorted().each { bundleId, expectedVersion ->
@@ -168,63 +98,12 @@ dependencies {
     implementation(project(':epoch-export')) {
         exclude group: 'io.netty', module: 'netty-all'
     }
-    // App-chain standard library (kv-registry, approvals, ...) — T2 optional,
-    // activated only by selecting a machine id via yano.app-chain.state-machine
-    implementation(project(':appchain-stdlib')) {
-        exclude group: 'io.netty', module: 'netty-all'
-    }
-    runtimeOnly project(':appchain-authenticated-map-validators')
-    // Generic deterministic composition framework (ADR-013.2/ADR-022).
-    implementation(project(':appchain-composite')) {
-        exclude group: 'io.netty', module: 'netty-all'
-    }
-    // Generic ADR-019 domain actors and role-aware approvals.
-    implementation(project(':appchain-role-workflow')) {
-        exclude group: 'io.netty', module: 'netty-all'
-    }
-    // First-party evidence presets and evidence-specific role workflow assembly.
-    implementation(project(':appchain-evidence-profile')) {
-        exclude group: 'io.netty', module: 'netty-all'
-    }
     // Uses the release-matched, bounded MPF verifier for the console's
     // node-assisted existing-proof verification endpoint.
-    implementation project(':appchain-client')
-    implementation project(':appchain-eutxo-indexer-core')
-    // ADR-UTXO-008 BR-M7: host-built unsigned vault deposits (EutxoBridgeResource)
-    implementation project(':appchain-eutxo-contracts')
-    // L2 transfer/claim building reuses the maintained client over loopback.
-    implementation project(':appchain-eutxo-client')
-    implementation libs.cardano.client.quicktx
-    implementation project(':appchain-eutxo-indexer-jdbc')
-    implementation project(':appchain-eutxo-zk-indexer')
-    // Optional T3 integrations stay out of the stock artifact. Native/custom
-    // builds can opt in before catalog-index and reflection generation.
-    if (includeFirstPartyPluginBundles) {
-        runtimeOnly project(':appchain-kafka')
-        runtimeOnly project(':appchain-objectstore-s3')
-        runtimeOnly project(':appchain-ipfs')
-        runtimeOnly project(':appchain-effects-cardano')
-        runtimeOnly project(':appchain-zk')
-        // AWS SDK 2.48.0 compiles its checksum fallback against these optional
-        // CRT types. A JVM can defer the absent branch, but native-image links
-        // every reachable checksum implementation and therefore requires the
-        // SDK-aligned artifact. Keep it host-only: the directory-loaded S3
-        // bundle continues to use the pure-Java URLConnection path.
-        runtimeOnly libs.aws.crt
-    }
-    if (includeNativePluginConformanceFixture) {
-        runtimeOnly project(':appchain-plugin-conformance')
-    }
+    implementation project(':appchain-proof-verifier')
 
     // App-chain metrics (ADR 006 E5.1); Prometheus endpoint at /q/metrics
     implementation 'io.quarkus:quarkus-micrometer-registry-prometheus'
-
-    // ADR-UTXO-001 D4: the JVM distribution always carries the restricted
-    // EUTxO engine and ZeroJ validity provider. Selection remains entirely
-    // configuration-driven; native distributions do not claim this posture.
-    runtimeOnly project(':appchain-eutxo-ledger')
-    runtimeOnly project(':appchain-eutxo-bridge-cardano')
-    runtimeOnly project(':appchain-eutxo-zk-zeroj')
 
     implementation("com.google.auto.service:auto-service:1.1.1")
 
@@ -241,24 +120,17 @@ dependencies {
 
     testImplementation project(':testkit')
     testImplementation project(':scalus-bridge')
-    testImplementation project(':appchain-eutxo-client')
-    testImplementation project(':appchain-eutxo-bridge-onchain')
-    testImplementation project(':appchain-eutxo-demo')
-    testImplementation project(':appchain-eutxo-testkit')
-    testImplementation project(':appchain-eutxo-zk-onchain')
-    testImplementation project(':appchain-eutxo-zk-zeroj')
     testImplementation libs.cardano.client.lib
     testImplementation libs.cardano.client.backend.blockfrost
     testImplementation libs.cardano.client.quicktx
     testImplementation libs.cardano.client.cip20
-    testImplementation libs.zeroj.circuit.lib
-    testImplementation libs.zeroj.onchain.julc
-    testImplementation "com.bloxbean.cardano:julc-stdlib:${libs.versions.julc.get()}"
-    testImplementation "com.bloxbean.cardano:julc-ledger-api:${libs.versions.julc.get()}"
-    testImplementation "com.bloxbean.cardano:julc-testkit:${libs.versions.julc.get()}"
-    testImplementation "com.bloxbean.cardano:julc-compiler:${libs.versions.julc.get()}"
-    testImplementation libs.julc.cardano.client.lib
-    testRuntimeOnly "com.bloxbean.cardano:julc-vm-java:${libs.versions.julc.get()}"
+
+    testFixturesImplementation enforcedPlatform(
+            "${quarkusPlatformGroupId}:${quarkusPlatformArtifactId}:${quarkusPlatformVersion}")
+    testFixturesImplementation 'io.quarkus:quarkus-junit'
+    testFixturesImplementation libs.cardano.client.lib
+    testFixturesImplementation libs.cardano.client.backend.blockfrost
+    testFixturesImplementation libs.cardano.client.quicktx
 }
 
 application {
@@ -276,10 +148,6 @@ distTar.enabled = false
 startScripts.enabled = false
 
 test {
-    systemProperty 'yano.test.include-first-party-plugin-bundles',
-            Boolean.toString(includeFirstPartyPluginBundles)
-    systemProperty 'yano.test.include-native-plugin-conformance-fixture',
-            Boolean.toString(includeNativePluginConformanceFixture)
     useJUnitPlatform {
         excludeTags 'integration', 'e2e', 'haskell-sync'
     }
@@ -519,261 +387,6 @@ tasks.named('processResources') {
             tasks.named('generateBakedApiPrefixContract')
 }
 
-tasks.register('verifyAppChainReleaseCapabilityIndex') {
-    dependsOn tasks.named('generatePluginCatalogIndex'),
-            project(':appchain-devtools').tasks.named('generateAppChainMetadata')
-    group = 'verification'
-    description = 'Checks the app-chain release index against the actual packaged plugin catalog'
-    def releaseIndexFile = project(':appchain-devtools').layout.buildDirectory.file(
-            'generated/appchain-metadata/appchain-dx/v1alpha1/'
-                    + 'appchain-release-capability-index.json')
-    def capabilityCatalogFile = project(':appchain-devtools').layout.buildDirectory.file(
-            'generated/appchain-metadata/appchain-dx/v1alpha1/'
-                    + 'appchain-capability-catalog.json')
-    def pluginIndexFile = generatedPluginCatalogDir.map {
-        it.file('META-INF/yano-plugin-index-v1.json')
-    }
-    inputs.files(releaseIndexFile, capabilityCatalogFile, pluginIndexFile)
-    doLast {
-        def releaseIndex = new groovy.json.JsonSlurper().parse(releaseIndexFile.get().asFile)
-        def capabilityCatalog = new groovy.json.JsonSlurper().parse(
-                capabilityCatalogFile.get().asFile)
-        def pluginIndex = new groovy.json.JsonSlurper().parse(pluginIndexFile.get().asFile)
-        def packagedBundleIds = pluginIndex.bundles.collect { it.manifest?.id }.toSet()
-        def bundledArtifacts = capabilityCatalog.artifacts.findAll {
-            it.availability == 'BUNDLED'
-        }
-        def expectedArtifacts = bundledArtifacts.collect { it.id }.toSet()
-        def packagedCatalogBundles = bundledArtifacts.findAll {
-            !it.bundleId.startsWith('builtin:') && !it.bundleId.startsWith('library:')
-        }.collect { it.bundleId }.toSet()
-        def missingBundles = packagedCatalogBundles - packagedBundleIds
-        if (releaseIndex.artifacts.toSet() != expectedArtifacts
-                || !missingBundles.isEmpty()) {
-            throw new GradleException(
-                    'Release capability index does not match the catalog or packaged bundles: '
-                            + "missing=${missingBundles}")
-        }
-    }
-}
-
-tasks.register('verifyFirstPartyPluginBundles', JavaExec) {
-    dependsOn rootProject.tasks.named('verifyAdr013JacksonAlignment'),
-            rootProject.tasks.named('verifyAdr013Slf4jAlignment')
-    dependsOn ':appchain-kafka:verifyKafkaArtifactBoundaries',
-            ':appchain-objectstore-s3:verifyObjectStoreS3ArtifactBoundaries',
-            ':appchain-ipfs:verifyIpfsArtifactBoundaries',
-            ':appchain-evidence-registry:verifyEvidenceRegistryArtifactBoundaries',
-            ':appchain-effects-cardano:shadowJar', ':appchain-zk:shadowJar',
-            ':appchain-eutxo-ledger:verifyEutxoLedgerArtifactBoundaries',
-            ':appchain-eutxo-bridge-cardano:verifyEutxoBridgeArtifactBoundaries'
-    def verificationIndex = layout.buildDirectory.file(
-            'reports/plugin-catalog/first-party-bundles.json')
-    inputs.files({
-        [project(':appchain-kafka'), project(':appchain-objectstore-s3'),
-         project(':appchain-ipfs'),
-         project(':appchain-evidence-registry'),
-         project(':appchain-effects-cardano'),
-         project(':appchain-zk'),
-         project(':appchain-eutxo-ledger'),
-         project(':appchain-eutxo-bridge-cardano')].collect { pluginProject ->
-            pluginProject.tasks.named('shadowJar').get().archiveFile.get().asFile
-        }
-    })
-    // The verification below also asserts the versions selected on the host
-    // runtime classpath. Track that classpath as an input so a BOM, force, or
-    // dependency change cannot leave an UP-TO-DATE report with stale results.
-    inputs.files(configurations.runtimeClasspath)
-    outputs.file(verificationIndex)
-    classpath = project(':plugin-catalog').sourceSets.main.runtimeClasspath
-    mainClass = 'com.bloxbean.cardano.yano.catalog.PluginIndexGenerator'
-    doFirst {
-        def bundleFiles = [
-                project(':appchain-kafka'),
-                project(':appchain-objectstore-s3'),
-                project(':appchain-ipfs'),
-                project(':appchain-evidence-registry'),
-                project(':appchain-effects-cardano'),
-                project(':appchain-zk'),
-                project(':appchain-eutxo-ledger'),
-                project(':appchain-eutxo-bridge-cardano')
-        ].collect { pluginProject ->
-            pluginProject.tasks.named('shadowJar').get().archiveFile.get().asFile
-        }.sort { left, right -> left.absolutePath <=> right.absolutePath }
-        def output = verificationIndex.get().asFile
-        output.parentFile.mkdirs()
-        args = ['--output', output.absolutePath] + bundleFiles.collect { it.absolutePath }
-    }
-    doLast {
-        def index = new groovy.json.JsonSlurper().parse(verificationIndex.get().asFile)
-        requireIndexedManifestVersions(index, [
-                'com.bloxbean.cardano.yano.appchain.kafka': declaredPluginManifestVersion,
-                'com.bloxbean.cardano.yano.appchain.objectstore.s3':
-                        declaredPluginManifestVersion,
-                'com.bloxbean.cardano.yano.appchain.ipfs':
-                        declaredPluginManifestVersion,
-                'com.bloxbean.cardano.yano.appchain.evidence-registry':
-                        declaredPluginManifestVersion,
-                'com.bloxbean.cardano.yano.appchain.effects.cardano':
-                        declaredPluginManifestVersion,
-                'com.bloxbean.cardano.yano.appchain.zk': declaredPluginManifestVersion,
-                'com.bloxbean.cardano.yano.appchain.eutxo': declaredPluginManifestVersion,
-                'com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano':
-                        declaredPluginManifestVersion
-        ])
-        def kafkaBundle = index.bundles.find {
-            it.manifest?.id == 'com.bloxbean.cardano.yano.appchain.kafka'
-        }
-        def kafkaContributions = kafkaBundle?.manifest?.contributions?.collect {
-            "${it.kind}:${it.name}"
-        }?.toSet()
-        if (kafkaContributions != Set.of(
-                'finalized-sink:kafka', 'effect-executor:kafka')) {
-            throw new GradleException(
-                    "Kafka bundle contribution inventory is incomplete: ${kafkaContributions}")
-        }
-        def objectStoreBundle = index.bundles.find {
-            it.manifest?.id == 'com.bloxbean.cardano.yano.appchain.objectstore.s3'
-        }
-        def objectStoreContributions = objectStoreBundle?.manifest?.contributions?.collect {
-            "${it.kind}:${it.name}"
-        }?.toSet()
-        if (objectStoreContributions != Set.of('effect-executor:objectstore-s3')) {
-            throw new GradleException(
-                    "Object-store bundle contribution inventory is incomplete: "
-                            + objectStoreContributions)
-        }
-        def ipfsBundle = index.bundles.find {
-            it.manifest?.id == 'com.bloxbean.cardano.yano.appchain.ipfs'
-        }
-        def ipfsContributions = ipfsBundle?.manifest?.contributions?.collect {
-            "${it.kind}:${it.name}"
-        }?.toSet()
-        if (ipfsContributions != Set.of('effect-executor:ipfs')) {
-            throw new GradleException(
-                    "IPFS bundle contribution inventory is incomplete: ${ipfsContributions}")
-        }
-        def evidenceBundle = index.bundles.find {
-            it.manifest?.id == 'com.bloxbean.cardano.yano.appchain.evidence-registry'
-        }
-        def evidenceContributions = evidenceBundle?.manifest?.contributions?.collect {
-            "${it.kind}:${it.name}"
-        }?.toSet()
-        if (evidenceContributions != Set.of(
-                'app-state-machine:evidence-registry',
-                'domain-api:com.bloxbean.cardano.yano.appchain.evidence-registry')) {
-            throw new GradleException(
-                    "Evidence-registry bundle contribution inventory is incomplete: "
-                            + evidenceContributions)
-        }
-        def eutxoBundle = index.bundles.find {
-            it.manifest?.id == 'com.bloxbean.cardano.yano.appchain.eutxo'
-        }
-        def eutxoContributions = eutxoBundle?.manifest?.contributions?.collect {
-            "${it.kind}:${it.name}"
-        }?.toSet()
-        if (eutxoContributions != Set.of(
-                'app-state-machine:eutxo-ledger',
-                'domain-api:com.bloxbean.cardano.yano.appchain.eutxo')) {
-            throw new GradleException(
-                    "EUTxO bundle contribution inventory is incomplete: ${eutxoContributions}")
-        }
-        def bridgeBundle = index.bundles.find {
-            it.manifest?.id == 'com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano'
-        }
-        def bridgeContributions = bridgeBundle?.manifest?.contributions?.collect {
-            "${it.kind}:${it.name}"
-        } as Set
-        if (bridgeContributions != Set.of(
-                'l1-observer:eutxo-vault-deposit-v1',
-                'l1-observer:eutxo-withdrawal-confirmation-v1',
-                // ADR-UTXO-009: the A2 federated batch settlement stack.
-                'l1-observer:eutxo-batch-withdrawal-confirmation-v1',
-                'effect-executor:eutxo-settlement')) {
-            throw new GradleException(
-                    "EUTxO bridge contribution inventory is incomplete: ${bridgeContributions}")
-        }
-        if (includeFirstPartyPluginBundles) {
-            def expectedRuntimeVersions = [
-                    'org.apache.kafka:kafka-clients':
-                            libs.kafka.clients.get().versionConstraint.requiredVersion,
-                    'org.bouncycastle:bcprov-jdk18on':
-                            libs.bouncycastle.bcprov.get().versionConstraint.requiredVersion,
-                    'at.yawk.lz4:lz4-java':
-                            libs.lz4.java.get().versionConstraint.requiredVersion,
-                    'org.xerial.snappy:snappy-java':
-                            libs.snappy.java.get().versionConstraint.requiredVersion,
-                    'org.slf4j:slf4j-api':
-                            libs.slf4j.api.get().versionConstraint.requiredVersion,
-                    'software.amazon.awssdk:s3':
-                            libs.aws.sdk.s3.get().versionConstraint.requiredVersion,
-                    'software.amazon.awssdk:url-connection-client':
-                            libs.aws.sdk.url.connection.client.get()
-                                    .versionConstraint.requiredVersion,
-                    'software.amazon.awssdk.crt:aws-crt':
-                            libs.aws.crt.get().versionConstraint.requiredVersion
-            ]
-            def appRuntimeClasspath = project.configurations.getByName('runtimeClasspath')
-            def resolvedRuntimeVersions = appRuntimeClasspath.incoming
-                    .resolutionResult.allComponents.findAll { component ->
-                component.id instanceof ModuleComponentIdentifier
-            }.collectEntries { component ->
-                def id = component.id as ModuleComponentIdentifier
-                [("${id.group}:${id.module}".toString()): id.version]
-            }
-            expectedRuntimeVersions.each { module, expectedVersion ->
-                def actualVersion = resolvedRuntimeVersions[module]
-                if (actualVersion != expectedVersion) {
-                    throw new GradleException(
-                            "First-party plugin runtime resolved ${module}:${actualVersion}; "
-                                    + "expected security-reviewed version ${expectedVersion}")
-                }
-            }
-            def expectedAwsVersion = libs.aws.sdk.s3.get()
-                    .versionConstraint.requiredVersion
-            def mixedAwsModules = resolvedRuntimeVersions.findAll { module, version ->
-                module.startsWith('software.amazon.awssdk:')
-                        && version != expectedAwsVersion
-            }
-            if (!mixedAwsModules.isEmpty()) {
-                throw new GradleException(
-                        "First-party plugin runtime mixes AWS SDK versions: ${mixedAwsModules}")
-            }
-        }
-    }
-}
-
-tasks.register('launchFirstPartyPluginBundles', JavaExec) {
-    dependsOn tasks.named('testClasses'), ':appchain-kafka:shadowJar',
-            ':appchain-objectstore-s3:shadowJar',
-            ':appchain-ipfs:shadowJar',
-            ':appchain-evidence-contracts:jar',
-            ':appchain-evidence-registry:shadowJar',
-            ':appchain-effects-cardano:shadowJar', ':appchain-zk:shadowJar'
-    // Deliberately omit app.runtimeClasspath: the probe must prove the bundle
-    // classifiers work when the corresponding thin provider JARs are absent.
-    classpath = files(sourceSets.test.output.classesDirs,
-            project(':appchain-evidence-contracts').tasks.named('jar')
-                    .flatMap { it.archiveFile },
-            project(':runtime').sourceSets.main.runtimeClasspath)
-    mainClass = 'com.bloxbean.cardano.yano.app.PluginBundleLaunchProbe'
-    doFirst {
-        args = [project(':appchain-kafka'), project(':appchain-objectstore-s3'),
-                project(':appchain-ipfs'),
-                project(':appchain-evidence-registry'),
-                project(':appchain-effects-cardano'),
-                project(':appchain-zk')].collect { pluginProject ->
-            pluginProject.tasks.named('shadowJar').get().archiveFile.get().asFile.absolutePath
-        }
-    }
-}
-
-tasks.named('check') {
-    dependsOn tasks.named('verifyFirstPartyPluginBundles')
-    dependsOn tasks.named('launchFirstPartyPluginBundles')
-    dependsOn tasks.named('verifyAppChainReleaseCapabilityIndex')
-}
-
 tasks.register('e2eTest', Test) {
     useJUnitPlatform {
         includeTags 'e2e'
@@ -781,7 +394,6 @@ tasks.register('e2eTest', Test) {
     testClassesDirs = sourceSets.test.output.classesDirs
     classpath = sourceSets.test.runtimeClasspath
     maxHeapSize = '4g'
-    systemProperty 'zeroj.allowInsecureTrustedSetup', 'true'
     if (System.getProperty('yano.e2e.baseUrl') != null) {
         systemProperty 'yano.e2e.baseUrl', System.getProperty('yano.e2e.baseUrl')
     }
@@ -1000,8 +612,8 @@ def pluginConformanceRuntimeArguments = { int httpPort, int nodePort,
             "-Dyano.genesis.alonzo-genesis-file=${genesisDirectory.resolve('alonzo-genesis.json')}",
             "-Dyano.genesis.conway-genesis-file=${genesisDirectory.resolve('conway-genesis.json')}",
             "-Dyano.genesis.protocol-parameters-file=${genesisDirectory.resolve('protocol-param.json')}",
-            "-Dyaci.plugins.directory=${pluginDirectory.toAbsolutePath()}",
-            '-Dyaci.plugins.enabled=true',
+            "-Dyano.plugins.directory=${pluginDirectory.toAbsolutePath()}",
+            '-Dyano.plugins.enabled=true',
             '-Dyano.app-chain.enabled=true',
             '-Dyano.app-chain.chain-id=conformance-chain',
             '-Dyano.app-chain.signing-key=conformance-signer:key',
@@ -1487,14 +1099,12 @@ tasks.register('generateNativePluginCatalogExpectation', JavaExec) {
 
 tasks.register('nativePluginCatalogSmoke') {
     group = 'verification'
-    description = 'Checks native catalog startup, real SPI activation, and directory-JAR diagnostics'
+    description = 'Checks lean native catalog startup and directory-JAR diagnostics'
     dependsOn tasks.named('generateNativePluginCatalogExpectation')
     mustRunAfter tasks.named('quarkusBuild')
     outputs.upToDateWhen { false }
 
     doLast {
-        boolean exerciseFirstPartyClients = includeFirstPartyPluginBundles
-                && includeNativePluginConformanceFixture
         def expectedProvenance = [:]
         nativePluginCatalogExpectationFile.get().asFile.readLines('UTF-8').each { line ->
             if (line.isBlank()) {
@@ -1517,13 +1127,11 @@ tasks.register('nativePluginCatalogSmoke') {
                         "Duplicate native catalog expectation key: ${key}")
             }
         }
-        if (!expectedProvenance.keySet().containsAll(
-                ['catalogFingerprint', 'indexSha256', 'compositeProfileDigest'])) {
+        if (expectedProvenance.keySet() !=
+                ['catalogFingerprint', 'indexSha256'] as Set) {
             throw new GradleException(
                     "Incomplete native catalog expectation: ${expectedProvenance.keySet()}")
         }
-        def expectedCompositeProfileDigest = expectedProvenance.remove(
-                'compositeProfileDigest')
 
         def binaryOverride = providers.gradleProperty('yanoNativeBinary')
                 .orElse(providers.environmentVariable('YANO_NATIVE_BINARY'))
@@ -1589,47 +1197,16 @@ tasks.register('nativePluginCatalogSmoke') {
                 jar.closeEntry()
             }
 
-            def ports = allocateLoopbackPorts.call(exerciseFirstPartyClients ? 5 : 2)
+            def ports = allocateLoopbackPorts.call(1)
             int httpPort = ports[0]
-            int nodePort = ports[1]
-            Integer kafkaBootstrapPort = exerciseFirstPartyClients ? ports[2] : null
-            Integer s3EndpointPort = exerciseFirstPartyClients ? ports[3] : null
-            Integer ipfsEndpointPort = exerciseFirstPartyClients ? ports[4] : null
-            java.nio.file.Path connectorSecretConfig = null
-            if (exerciseFirstPartyClients) {
-                connectorSecretConfig = smokeRoot.resolve('connector-secrets.properties')
-                byte[] secretBytes = new byte[32]
-                new java.security.SecureRandom().nextBytes(secretBytes)
-                def connectorSecretText = [
-                        'yano.app-chain.effects.executors.objectstore-s3.targets.native.'
-                                + 'credentials.access-key-id=native-smoke-access',
-                        'yano.app-chain.effects.executors.objectstore-s3.targets.native.credentials.secret-access-key='
-                                + java.util.HexFormat.of().formatHex(secretBytes)
-                ].join(System.lineSeparator()) + System.lineSeparator()
-                java.util.Arrays.fill(secretBytes, (byte) 0)
-                java.nio.file.Files.writeString(
-                        connectorSecretConfig, connectorSecretText,
-                        java.nio.charset.StandardCharsets.UTF_8,
-                        java.nio.file.StandardOpenOption.CREATE_NEW,
-                        java.nio.file.StandardOpenOption.WRITE)
-                java.nio.file.Files.setPosixFilePermissions(
-                        connectorSecretConfig,
-                        java.nio.file.attribute.PosixFilePermissions.fromString('rw-------'))
-            }
             def command = [binary.absolutePath]
             command.addAll(pluginOperationsAuthArguments())
-            if (includeNativePluginConformanceFixture) {
-                command.addAll(pluginConformanceRuntimeArguments(
-                        httpPort, nodePort, chainState, pluginDirectory,
-                        kafkaBootstrapPort, s3EndpointPort, ipfsEndpointPort,
-                        connectorSecretConfig))
-            }
             def processBuilder = new ProcessBuilder(command)
                     .directory(smokeRoot.toFile())
                     .redirectErrorStream(true)
                     .redirectOutput(logFile.toFile())
-            processBuilder.environment().remove('YACI_PLUGINS_ALLOW_LIST')
-            processBuilder.environment().remove('YACI_PLUGINS_DENY_LIST')
+            processBuilder.environment().remove('YANO_PLUGINS_ALLOW_LIST')
+            processBuilder.environment().remove('YANO_PLUGINS_DENY_LIST')
             processBuilder.environment().remove('YANO_API_PREFIX')
             processBuilder.environment().remove('QUARKUS_RESTEASY_PATH')
             def runtimeEnvironment = [
@@ -1637,12 +1214,10 @@ tasks.register('nativePluginCatalogSmoke') {
                     'QUARKUS_HTTP_PORT'       : Integer.toString(httpPort),
                     'QUARKUS_CONSOLE_COLOR'   : 'false',
                     'YANO_STORAGE_PATH'       : chainState.toAbsolutePath().toString(),
-                    'YACI_PLUGINS_DIRECTORY'  : pluginDirectory.toAbsolutePath().toString(),
-                    'YACI_PLUGINS_ENABLED'    : 'true'
+                    'YANO_PLUGINS_DIRECTORY'  : pluginDirectory.toAbsolutePath().toString(),
+                    'YANO_PLUGINS_ENABLED'    : 'true'
             ]
-            if (!includeNativePluginConformanceFixture) {
-                runtimeEnvironment['YANO_AUTO_SYNC_START'] = 'false'
-            }
+            runtimeEnvironment['YANO_AUTO_SYNC_START'] = 'false'
             processBuilder.environment().putAll(runtimeEnvironment)
             process = processBuilder.start()
 
@@ -1680,14 +1255,7 @@ tasks.register('nativePluginCatalogSmoke') {
                         "Native plugin catalog smoke ${state}.${System.lineSeparator()}${logTail()}")
             }
 
-            if (includeNativePluginConformanceFixture) {
-                awaitPluginConformanceStatus(
-                        httpPort, timeoutSeconds, process, logTail,
-                        exerciseFirstPartyClients)
-                assertPluginConformanceQueryApis(httpPort)
-            }
-            assertPluginOperationsAdapters(
-                    httpPort, timeoutSeconds, includeNativePluginConformanceFixture)
+            assertPluginOperationsAdapters(httpPort, timeoutSeconds, false)
 
             def requiredDiagnostics = [
                     'Native image ignores plugin-directory JARs;',
@@ -1721,8 +1289,7 @@ tasks.register('nativePluginCatalogSmoke') {
             int conformanceMarkerCount = output.readLines().count {
                 it.contains(conformanceMarker)
             }
-            int expectedConformanceMarkerCount =
-                    includeNativePluginConformanceFixture ? 1 : 0
+            int expectedConformanceMarkerCount = 0
             if (conformanceMarkerCount != expectedConformanceMarkerCount) {
                 throw new GradleException(
                         "Native plugin catalog smoke expected "
@@ -1735,28 +1302,6 @@ tasks.register('nativePluginCatalogSmoke') {
                 throw new GradleException(
                         'Native smoke observed the obsolete raw-ServiceLoader conformance marker.'
                                 + "${System.lineSeparator()}${logTail()}")
-            }
-            if (includeNativePluginConformanceFixture
-                    && output.contains('Script-anchor service unavailable')) {
-                throw new GradleException(
-                        'Native app-chain startup could not load its bundled anchor artifacts.'
-                                + "${System.lineSeparator()}${logTail()}")
-            }
-            if (exerciseFirstPartyClients) {
-                def expectedClientMarkers = [
-                        "Kafka app-chain sink producer initialized for chain 'conformance-chain'",
-                        'TEST-ONLY native connector client construction passed: objectstore-s3',
-                        'TEST-ONLY native connector client construction passed: ipfs'
-                ]
-                def invalidClientMarkers = expectedClientMarkers.findAll { marker ->
-                    output.readLines().count { it.contains(marker) } != 1
-                }
-                if (!invalidClientMarkers.isEmpty()) {
-                    throw new GradleException(
-                            'Native smoke did not construct exactly one client for '
-                                    + "every first-party connector; invalid=${invalidClientMarkers}."
-                                    + "${System.lineSeparator()}${logTail()}")
-                }
             }
 
             def provenancePrefix = 'YANO_PLUGIN_CATALOG_PROVENANCE '
@@ -1793,89 +1338,6 @@ tasks.register('nativePluginCatalogSmoke') {
                                 + "Rebuild the native binary before running this smoke test.")
             }
 
-            // The catalog/provenance fixture above exercises every SPI kind,
-            // but its state machine is intentionally synthetic. Start the
-            // same packaged native binary a second time with the real stock
-            // composite provider so native reflection/catalog closure proves
-            // provider creation, profile construction, init, and running
-            // app-chain status rather than only catalog presence.
-            if (includeNativePluginConformanceFixture) {
-                process.destroy()
-                if (!process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
-                    process.destroyForcibly()
-                    if (!process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
-                        throw new GradleException(
-                                "Native conformance process did not terminate before "
-                                        + "composite activation: ${process.pid()}")
-                    }
-                    throw new GradleException(
-                            'Native conformance process required forcible termination before '
-                                    + 'composite activation')
-                }
-
-                def compositePorts = allocateLoopbackPorts.call(2)
-                int compositeHttpPort = compositePorts[0]
-                int compositeNodePort = compositePorts[1]
-                def compositeState = smokeRoot.resolve('composite-chainstate')
-                def compositeLog = smokeRoot.resolve('native-composite.log')
-                def compositeLogTail = {
-                    if (!java.nio.file.Files.isRegularFile(compositeLog)) {
-                        return '<native composite process produced no log>'
-                    }
-                    java.nio.file.Files.readAllLines(
-                            compositeLog, java.nio.charset.StandardCharsets.UTF_8)
-                            .takeRight(200).join(System.lineSeparator())
-                }
-                def compositeCommand = [binary.absolutePath]
-                compositeCommand.addAll(pluginOperationsAuthArguments())
-                compositeCommand.addAll(pluginConformanceRuntimeArguments(
-                        compositeHttpPort, compositeNodePort, compositeState,
-                        pluginDirectory, null, null, null, null))
-                compositeCommand.addAll([
-                        '-Dyano.app-chain.state-machine=composite',
-                        '-Dyano.app-chain.sequencer.mode=fixed',
-                        '-Dyano.app-chain.sequencer.proposer=' + pluginConformanceMemberKey,
-                        '-Dyano.app-chain.membership.mode=governed',
-                        '-Dyano.app-chain.block.max-messages=64',
-                        '-Dyano.app-chain.effects.max-per-block=128',
-                        '-Dyano.app-chain.machines.composite.preset=evidence-v1-gated',
-                        '-Dyano.app-chain.machines.composite.profile-mode=governed'
-                ])
-                def compositeBuilder = new ProcessBuilder(compositeCommand)
-                        .directory(smokeRoot.toFile())
-                        .redirectErrorStream(true)
-                        .redirectOutput(compositeLog.toFile())
-                compositeBuilder.environment().remove('YACI_PLUGINS_ALLOW_LIST')
-                compositeBuilder.environment().remove('YACI_PLUGINS_DENY_LIST')
-                compositeBuilder.environment().remove('YANO_API_PREFIX')
-                compositeBuilder.environment().remove('QUARKUS_RESTEASY_PATH')
-                compositeBuilder.environment().putAll([
-                        'QUARKUS_HTTP_HOST'      : '127.0.0.1',
-                        'QUARKUS_HTTP_PORT'      : Integer.toString(compositeHttpPort),
-                        'QUARKUS_CONSOLE_COLOR'  : 'false',
-                        'YANO_STORAGE_PATH'      : compositeState.toAbsolutePath().toString(),
-                        'YACI_PLUGINS_DIRECTORY' : pluginDirectory.toAbsolutePath().toString(),
-                        'YACI_PLUGINS_ENABLED'   : 'true'
-                ])
-                process = compositeBuilder.start()
-                def nativeCompositeStatus = awaitPluginConformanceStatus(
-                        compositeHttpPort, timeoutSeconds, process,
-                        compositeLogTail, false, 'composite', 'fixed', 'governed')
-                def nativeCompositeDigest = 'sha256:' +
-                        nativeCompositeStatus.stateMachineStatus.activeProfileDigest
-                if (nativeCompositeDigest != expectedCompositeProfileDigest) {
-                    throw new GradleException(
-                            'Native governed stock composite profile differs from the '
-                                    + 'packaged JVM profile. expected='
-                                    + "${expectedCompositeProfileDigest}, actual="
-                                    + nativeCompositeDigest)
-                }
-                logger.lifecycle(
-                        "Native governed stock composite activation passed for ${binary.absolutePath} "
-                                + "on http://127.0.0.1:${compositeHttpPort}; profile="
-                                + nativeCompositeDigest)
-            }
-
             logger.lifecycle(
                     "Native plugin catalog smoke passed for ${binary.absolutePath} "
                             + "on ${liveUrl}; provenance=${actualProvenance}")
@@ -1894,18 +1356,6 @@ tasks.register('nativePluginCatalogSmoke') {
                         }
                         throw new GradleException(
                                 "Native smoke process required forcible termination: ${process.pid()}")
-                    }
-                }
-                if (exerciseFirstPartyClients && primaryFailure == null) {
-                    def closedMarker = "Kafka app-chain sink producer closed for sink " +
-                            "'kafka:yano-native-smoke-blocks:conformance-chain'"
-                    def output = java.nio.file.Files.readString(
-                            logFile, java.nio.charset.StandardCharsets.UTF_8)
-                    int closeCount = output.readLines().count { it.contains(closedMarker) }
-                    if (closeCount != 1) {
-                        throw new GradleException(
-                                "Native smoke expected one graceful Kafka sink close marker, "
-                                        + "found ${closeCount}.${System.lineSeparator()}${logTail()}")
                     }
                 }
             } catch (Throwable cleanupFailure) {
@@ -2001,11 +1451,7 @@ def configureNativeGc = {
 }
 
 tasks.register('yanoDistZip', Zip) {
-    dependsOn 'quarkusBuild', project(':plugin-catalog').tasks.named('installDist'),
-            project(':appchain-devtools').tasks.named('installDist'),
-            project(':appchain-devtools').tasks.named('generateAppChainMetadata'),
-            project(':appchain-studio').tasks.named('prepareStudio'),
-            tasks.named('verifyAppChainReleaseCapabilityIndex')
+    dependsOn 'quarkusBuild', project(':plugin-catalog').tasks.named('installDist')
     group = 'distribution'
     description = 'Creates a distributable zip with the uber-jar, config, and start script'
 
@@ -2033,47 +1479,6 @@ tasks.register('yanoDistZip', Zip) {
             include 'application.yml', 'application.yaml', 'application-*.yml', 'application-*.yaml', 'network/**'
             exclude '**/*.bak', '**/*.working'
         }
-        from(project(':appchain-devtools').layout.buildDirectory.dir(
-                'generated/appchain-metadata/appchain-dx/v1')) {
-            into 'config/schema'
-            include 'appchain-runtime.schema.json', 'appchain-property-catalog.json'
-        }
-        from(project(':appchain-devtools').layout.buildDirectory.dir(
-                'generated/appchain-metadata/appchain-dx/v1alpha1')) {
-            into 'config/schema'
-            include '*.json'
-            // Doctor treats this release identity as a singleton. Studio is
-            // the distribution's canonical loose-file copy.
-            exclude 'appchain-release-capability-index.json'
-        }
-        from(project(':appchain-eutxo-zk-lifecycle').file(
-                '../acceptance')) {
-            into 'config/schema'
-            include '*.schema.json'
-        }
-        from(project(':appchain-eutxo-zk-lifecycle').file(
-                '../acceptance')) {
-            into 'evidence/eutxo-zk'
-            include '*.json'
-            exclude '*.schema.json'
-        }
-        // App-chain cluster demo/eval scripts: cluster.sh auto-detects this
-        // release layout (yano.jar + config/ beside appchain-cluster/), so an
-        // unzipped dist runs `./appchain-cluster/cluster.sh start 3` directly.
-        from('appchain-cluster') {
-            into 'appchain-cluster'
-            include '*.sh'
-            filePermissions { unix('755') }
-        }
-        from('appchain-cluster') {
-            into 'appchain-cluster'
-            include 'profile-governance.py'
-            filePermissions { unix('755') }
-        }
-        from('appchain-cluster') {
-            into 'appchain-cluster'
-            include '*.md'
-        }
         into('plugins') {
             from('plugins/README.md')
         }
@@ -2087,24 +1492,6 @@ tasks.register('yanoDistZip', Zip) {
                 into 'bin'
                 filePermissions { unix('755') }
             }
-        }
-        into('tools/yano-appchain') {
-            from(project(':appchain-devtools').layout.buildDirectory.dir(
-                    'install/yano-devtools')) {
-                exclude 'bin/yano-appchain', 'skills/**'
-            }
-            from(project(':appchain-devtools').layout.buildDirectory.file(
-                    'install/yano-devtools/bin/yano-appchain')) {
-                into 'bin'
-                filePermissions { unix('755') }
-            }
-        }
-        from(project(':appchain-devtools').file(
-                'src/main/resources/appchain-dx/v1alpha1/skills/configure-yano-appchain')) {
-            into 'skills/configure-yano-appchain'
-        }
-        from(project(':appchain-studio').layout.buildDirectory.dir('studio')) {
-            into 'studio'
         }
     }
 }
@@ -2125,15 +1512,6 @@ tasks.register('packagedJvmPluginCatalogSmoke') {
     dependsOn tasks.named('yanoDistZip'), project(':appchain-plugin-conformance').tasks.named('jar')
     outputs.upToDateWhen { false }
 
-    doFirst {
-        if (includeNativePluginConformanceFixture) {
-            throw new GradleException(
-                    'packagedJvmPluginCatalogSmoke requires '
-                            + '-PincludeNativePluginConformanceFixture=false because it loads '
-                            + 'that fixture from the JVM plugin directory')
-        }
-    }
-
     doLast {
         def uberJar = layout.buildDirectory.file('yano.jar').get().asFile
         if (!uberJar.isFile()) {
@@ -2152,16 +1530,18 @@ tasks.register('packagedJvmPluginCatalogSmoke') {
             def index = archive.getInputStream(indexEntries.getFirst()).withCloseable { stream ->
                 new groovy.json.JsonSlurper().parse(stream)
             }
-            if (!(index.bundles instanceof Collection) || index.bundles.size() < 2) {
+            if (!(index.bundles instanceof Collection) || index.bundles.size() != 1
+                    || index.bundles[0].manifest?.id
+                    != 'com.bloxbean.cardano.yano.plugins.logging') {
                 throw new GradleException(
-                        'Final uber-JAR aggregate index must retain at least two bundles')
+                        'Final uber-JAR aggregate index must contain only the core logging bundle')
             }
             def manifestEntries = archive.entries().findAll {
                 it.name.startsWith(manifestPrefix) && it.name.endsWith('.json')
             }
-            if (manifestEntries.size() < 2) {
+            if (manifestEntries.size() != 1) {
                 throw new GradleException(
-                        'Final uber-JAR must retain at least two bundle manifests')
+                        'Final uber-JAR must retain exactly one core bundle manifest')
             }
             if (index.bundles.any {
                 it.manifest?.id == 'com.bloxbean.cardano.yano.fixture.plugin-conformance'
@@ -2194,13 +1574,6 @@ tasks.register('packagedJvmPluginCatalogSmoke') {
                 throw new GradleException(
                         'Final JVM distribution must contain one yano-plugin-catalog CLI library')
             }
-            def profileGovernanceCli = archive.entries().findAll {
-                it.name.endsWith('/appchain-cluster/profile-governance.py')
-            }
-            if (profileGovernanceCli.size() != 1) {
-                throw new GradleException(
-                        'Final JVM distribution must contain one profile governance CLI')
-            }
         }
         org.apache.commons.compress.archivers.zip.ZipFile.builder()
                 .setFile(distribution).get().withCloseable { archive ->
@@ -2209,13 +1582,6 @@ tasks.register('packagedJvmPluginCatalogSmoke') {
             if (cliLauncher == null || (cliLauncher.unixMode & 0111) == 0) {
                 throw new GradleException(
                         'Final JVM distribution yano-plugins launcher must be executable')
-            }
-            def profileGovernanceCli = archive.getEntry(
-                    "yano-${distVersion}/appchain-cluster/profile-governance.py")
-            if (profileGovernanceCli == null
-                    || (profileGovernanceCli.unixMode & 0111) == 0) {
-                throw new GradleException(
-                        'Final JVM distribution profile governance CLI must be executable')
             }
         }
 
@@ -2246,7 +1612,7 @@ tasks.register('packagedJvmPluginCatalogSmoke') {
                 .directory(smokeRoot.toFile())
                 .redirectErrorStream(true)
                 .redirectOutput(logFile.toFile())
-        processBuilder.environment().remove('YACI_PLUGINS_DENY_LIST')
+        processBuilder.environment().remove('YANO_PLUGINS_DENY_LIST')
         processBuilder.environment().remove('YANO_API_PREFIX')
         processBuilder.environment().remove('QUARKUS_RESTEASY_PATH')
         processBuilder.environment().putAll([
@@ -2254,9 +1620,9 @@ tasks.register('packagedJvmPluginCatalogSmoke') {
                 'QUARKUS_HTTP_PORT'       : Integer.toString(httpPort),
                 'QUARKUS_CONSOLE_COLOR'   : 'false',
                 'YANO_STORAGE_PATH'       : stateDirectory.toAbsolutePath().toString(),
-                'YACI_PLUGINS_DIRECTORY'  : pluginDirectory.toAbsolutePath().toString(),
-                'YACI_PLUGINS_ENABLED'    : 'true',
-                'YACI_PLUGINS_ALLOW_LIST' :
+                'YANO_PLUGINS_DIRECTORY'  : pluginDirectory.toAbsolutePath().toString(),
+                'YANO_PLUGINS_ENABLED'    : 'true',
+                'YANO_PLUGINS_ALLOW_LIST' :
                         'com.bloxbean.cardano.yano.fixture.plugin-conformance'
         ])
 
@@ -2436,7 +1802,7 @@ tasks.register('packagedApiPrefixContractSmoke') {
                     "-Dyano.server.port=${ports[1]}",
                     '-Dyano.storage.rocksdb=false',
                     "-Dyano.storage.path=${stateDirectory.toAbsolutePath()}",
-                    '-Dyaci.plugins.enabled=false'
+                    '-Dyano.plugins.enabled=false'
             ].collect { it.toString() })
             command.addAll(overrides)
             command.addAll(['-jar', uberJar.absolutePath])
@@ -2618,10 +1984,7 @@ gradle.taskGraph.whenReady { graph ->
 }
 
 tasks.register('yanoNativeDistZip', Zip) {
-    dependsOn 'quarkusBuild',
-            project(':appchain-devtools').tasks.named('generateAppChainMetadata'),
-            project(':appchain-studio').tasks.named('prepareStudio'),
-            tasks.named('verifyAppChainReleaseCapabilityIndex')
+    dependsOn 'quarkusBuild'
     group = 'distribution'
     description = 'Builds the native binary and creates a distributable zip'
 
@@ -2664,47 +2027,6 @@ tasks.register('yanoNativeDistZip', Zip) {
             into 'config'
             include 'application.yml', 'application.yaml', 'application-*.yml', 'application-*.yaml', 'network/**'
             exclude '**/*.bak', '**/*.working'
-        }
-        from(project(':appchain-devtools').layout.buildDirectory.dir(
-                'generated/appchain-metadata/appchain-dx/v1')) {
-            into 'config/schema'
-            include 'appchain-runtime.schema.json', 'appchain-property-catalog.json'
-        }
-        from(project(':appchain-devtools').layout.buildDirectory.file(
-                'generated/appchain-metadata/appchain-dx/v1alpha1/'
-                        + 'appchain-release-capability-index.json')) {
-            into 'config/schema'
-        }
-        from(project(':appchain-devtools').layout.buildDirectory.dir(
-                'generated/appchain-metadata/appchain-dx/v1alpha1')) {
-            into 'config/schema'
-            include 'appchain-metadata-trust.schema.json',
-                    'appchain-gitops-lock.schema.json'
-        }
-        from(project(':appchain-devtools').file(
-                'src/main/resources/appchain-dx/v1alpha1/skills/configure-yano-appchain')) {
-            into 'skills/configure-yano-appchain'
-        }
-        from(project(':appchain-studio').layout.buildDirectory.dir('studio')) {
-            into 'studio'
-        }
-        // App-chain cluster demo/eval scripts (bash) — cluster.sh auto-detects
-        // the release layout (native `yano` + config/ beside appchain-cluster/).
-        if (!isWindowsHost()) {
-            from('appchain-cluster') {
-                into 'appchain-cluster'
-                include '*.sh'
-                filePermissions { unix('755') }
-            }
-            from('appchain-cluster') {
-                into 'appchain-cluster'
-                include 'profile-governance.py'
-                filePermissions { unix('755') }
-            }
-        }
-        from('appchain-cluster') {
-            into 'appchain-cluster'
-            include '*.md'
         }
     }
 }
@@ -2827,7 +2149,8 @@ tasks.register('yanoDockerDistZip', Zip) {
             include '.env', '*.md', 'yano*.yml'
             filesMatching(['.env', '*.md']) {
                 filter { line ->
-                    line.replace('YANO_IMAGE_TAG=latest', "YANO_IMAGE_TAG=${dockerImageTag}")
+                    line.replace('YANO_IMAGE_TAG=latest',
+                            "YANO_IMAGE_TAG=${dockerImageTag}")
                             .replace('@YANO_VERSION@', dockerReleaseVersion)
                             .replace('@YANO_IMAGE_TAG@', dockerImageTag)
                 }
@@ -2839,7 +2162,8 @@ tasks.register('yanoDockerDistZip', Zip) {
         }
         from('config') {
             into 'config'
-            include 'application.yml', 'application.yaml', 'application-*.yml', 'application-*.yaml'
+            include 'application.yml', 'application.yaml',
+                    'application-*.yml', 'application-*.yaml'
             exclude '**/*.bak', '**/*.working'
         }
         from('config/network') {

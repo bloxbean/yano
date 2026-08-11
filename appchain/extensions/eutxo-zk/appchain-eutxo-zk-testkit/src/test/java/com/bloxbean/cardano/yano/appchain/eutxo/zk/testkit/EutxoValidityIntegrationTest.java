@@ -92,9 +92,11 @@ class EutxoValidityIntegrationTest {
         settings.put("machines.eutxo.bridge.withdrawals-paused",
                 "false");
 
-        AppStateMachine first = new EutxoStateMachineProvider()
+        AppStateMachine first = new EutxoStateMachineProvider(
+                new ZerojPoseidonValidityProvider())
                 .create(context(settings));
-        AppStateMachine replay = new EutxoStateMachineProvider()
+        AppStateMachine replay = new EutxoStateMachineProvider(
+                new ZerojPoseidonValidityProvider())
                 .create(context(settings));
         MemoryAppState firstState = new MemoryAppState();
         MemoryAppState replayState = new MemoryAppState();
@@ -252,7 +254,8 @@ class EutxoValidityIntegrationTest {
         settings.put("machines.eutxo.genesis.l2-public-key",
                 HexFormat.of().formatHex(aliceL2Key.pk().toBytes()));
         settings.put("machines.eutxo.genesis.l2-key-epoch", "1");
-        AppStateMachine machine = new EutxoStateMachineProvider()
+        AppStateMachine machine = new EutxoStateMachineProvider(
+                new ZerojPoseidonValidityProvider())
                 .create(context(settings));
         MemoryAppState state = new MemoryAppState();
 

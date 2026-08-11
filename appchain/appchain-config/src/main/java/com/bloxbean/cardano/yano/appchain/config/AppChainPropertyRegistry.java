@@ -206,10 +206,6 @@ public final class AppChainPropertyRegistry {
                 PropertyType.STRING, YanoConfig.DEFAULT_APP_CHAIN_STORAGE_PATH,
                 PropertyScope.NODE_LOCAL,
                 "Node-local root directory containing hosted app-chain ledgers"));
-        definitions.add(runtimeDefined(YanoPropertyKeys.AppChain.INDEXER_STORAGE_PATH,
-                PropertyType.STRING, YanoConfig.DEFAULT_APP_CHAIN_INDEXER_STORAGE_PATH,
-                PropertyScope.NODE_LOCAL,
-                "Node-local root directory containing rebuildable app-chain indexes"));
         definitions.add(plain(YanoPropertyKeys.AppChain.CHAINS, PropertyType.OBJECT, null,
                 PropertyScope.CLUSTER_SHARED, ChangePolicy.NEW_CHAIN_REQUIRED, false,
                 "Container for indexed multi-chain configuration"));
@@ -371,18 +367,6 @@ public final class AppChainPropertyRegistry {
         definitions.add(runtimeDefined(YanoPropertyKeys.AppChain.DX_RELEASE_CATALOG_DIGEST,
                 PropertyType.STRING, null, PropertyScope.NODE_LOCAL,
                 "Generated project release-catalog identity"));
-        definitions.add(runtimeDefined(YanoPropertyKeys.AppChain.EUTXO_INDEXER_ENABLED,
-                PropertyType.BOOLEAN, "true", PropertyScope.NODE_LOCAL,
-                "Enable the rebuildable node-local EUTxO lifecycle index"));
-        definitions.add(runtimeDefined(YanoPropertyKeys.AppChain.EUTXO_INDEXER_STORE_TYPE,
-                PropertyType.STRING, "jdbc", PropertyScope.NODE_LOCAL,
-                "Node-local EUTxO lifecycle index storage provider"));
-        definitions.add(runtimeDefined(YanoPropertyKeys.AppChain.EUTXO_INDEXER_JDBC_URL,
-                PropertyType.STRING, null, PropertyScope.NODE_LOCAL,
-                "Optional explicit single-chain EUTxO index JDBC URL"));
-        definitions.add(runtimeDefined(YanoPropertyKeys.AppChain.EUTXO_INDEXER_VALIDITY_PATH,
-                PropertyType.STRING, null, PropertyScope.NODE_LOCAL,
-                "Optional canonical validity-lifecycle artifact directory"));
         definitions.add(runtimeParsed("effects.enabled", PropertyType.BOOLEAN, "false",
                 null, null, Set.of(), PropertyScope.CONSENSUS_SHARED,
                 "Enable deterministic effect intents and results"));

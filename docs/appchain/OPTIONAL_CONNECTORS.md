@@ -23,7 +23,7 @@ Build one JVM plugin from the repository root, for example:
 
 Copy only the resulting `*-bundle.jar` into the plugin directory of every node
 that owns that sink or executor. The default directory is `plugins/`; an
-operator may override it with `yaci.plugins.directory`. Keep the plugin version
+operator may override it with `yano.plugins.directory`. Keep the plugin version
 aligned with the Yano release, and run `doctor` before starting:
 
 ```bash

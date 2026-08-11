@@ -50,14 +50,6 @@ class AppChainPropertyRegistryTest {
         assertThat(storagePath.indexed()).isFalse();
         assertThat(storagePath.scope()).isEqualTo(PropertyScope.NODE_LOCAL);
 
-        AppChainPropertyDefinition indexerStoragePath = registry
-                .find(YanoPropertyKeys.AppChain.INDEXER_STORAGE_PATH)
-                .orElseThrow().definition();
-        assertThat(indexerStoragePath.defaultValue())
-                .isEqualTo(YanoConfig.DEFAULT_APP_CHAIN_INDEXER_STORAGE_PATH);
-        assertThat(indexerStoragePath.indexed()).isFalse();
-        assertThat(indexerStoragePath.scope()).isEqualTo(PropertyScope.NODE_LOCAL);
-
         assertThat(registry.dynamicNamespaces()).extracting(DynamicNamespaceDefinition::prefix)
                 .containsExactly("capabilities.", "effects.", "effects.result.", "machines.",
                         "membership.", "observers.", "sequencer.", "sinks.", "state.",

@@ -90,7 +90,7 @@ assert_launcher_props_present() {
     || die_test "capture omitted the launcher storage property"
   grep -Fqx -- "-Dyano.app-chain.storage.path=$CLUSTER_DIR/node0/appchain-chainstate" "$capture" \
     || die_test "capture omitted the launcher app-chain storage property"
-  grep -Fqx -- "-Dyano.app-chain.indexer.storage.path=$CLUSTER_DIR/node0/appchain-indexers" "$capture" \
+  grep -Fqx -- "-Dyano.plugins.bundle.\"com.bloxbean.cardano.yano.appchain.eutxo.indexer\".storage-path=$CLUSTER_DIR/node0/appchain-indexers" "$capture" \
     || die_test "capture omitted the launcher app-chain indexer storage property"
 }
 
@@ -135,7 +135,7 @@ printf '%s\n' \
   '-Dyano.server.port=19338' \
   "-Dyano.storage.path=$CLUSTER_DIR/node1/chainstate" \
   "-Dyano.app-chain.storage.path=$CLUSTER_DIR/node1/appchain-chainstate" \
-  "-Dyano.app-chain.indexer.storage.path=$CLUSTER_DIR/node1/appchain-indexers" \
+  "-Dyano.plugins.bundle.\"com.bloxbean.cardano.yano.appchain.eutxo.indexer\".storage-path=$CLUSTER_DIR/node1/appchain-indexers" \
   '-Dyano.relay.connection.source-port-reuse=false' \
   '-Dyano.relay.connection.max-connections-per-ip=500' \
   '-Doverlay-test=true' > "$EXPECTED_UNSET"

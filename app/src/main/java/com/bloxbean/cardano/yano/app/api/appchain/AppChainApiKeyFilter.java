@@ -6,7 +6,6 @@ import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiGateway;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainHttpMethod;
 import com.bloxbean.cardano.yano.app.ApiPrefixContract;
 import com.bloxbean.cardano.yano.app.api.plugin.PluginOperationsResource;
-import com.bloxbean.cardano.yano.appchain.composite.contracts.CompositeProfileGovernanceV1;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.inject.Inject;
@@ -56,8 +55,6 @@ public class AppChainApiKeyFilter implements ContainerRequestFilter {
     public static final String API_KEY_HEADER = "X-API-Key";
     private static final int QUERY_JSON_MAX_BYTES = 132 * 1024;
     private static final int DOMAIN_BODY_MAX_BYTES = 64 * 1024;
-    private static final int PROFILE_GOVERNANCE_JSON_MAX_BYTES =
-            CompositeProfileGovernanceV1.MAX_COMMAND_BYTES * 2 + 1_024;
     private static final int SNAPSHOT_VERIFY_JSON_MAX_BYTES = 8 * 1024 * 1024 + 4_096;
 
     // Package-private overrides keep isolated unit tests independent of the
@@ -211,7 +208,6 @@ public class AppChainApiKeyFilter implements ContainerRequestFilter {
         Class<?> resourceClass = resourceInfo != null ? resourceInfo.getResourceClass() : null;
         return resourceClass == AppChainResource.class
                 || resourceClass == AppChainResource.ChainScopedResource.class
-                || resourceClass == EutxoBridgeResource.class
                 || resourceClass == PluginDomainResource.class
                 || resourceClass == PluginOperationsResource.class;
     }
@@ -232,15 +228,6 @@ public class AppChainApiKeyFilter implements ContainerRequestFilter {
                         == AppChainResource.ChainScopedResource.class
                 && resourceInfo.getResourceMethod() != null
                 && resourceInfo.getResourceMethod().getName().equals("query");
-    }
-
-    private boolean isCompositeProfileGovernanceResource() {
-        return resourceInfo != null
-                && resourceInfo.getResourceClass()
-                == AppChainResource.ChainScopedResource.class
-                && resourceInfo.getResourceMethod() != null
-                && resourceInfo.getResourceMethod().getName().equals(
-                "submitProfileGovernanceCommand");
     }
 
     /**
@@ -425,8 +412,6 @@ public class AppChainApiKeyFilter implements ContainerRequestFilter {
             }
         } else if (isCommittedQueryResource()) {
             limit = QUERY_JSON_MAX_BYTES;
-        } else if (isCompositeProfileGovernanceResource()) {
-            limit = PROFILE_GOVERNANCE_JSON_MAX_BYTES;
         } else if (isSnapshotProofVerificationResource()) {
             limit = SNAPSHOT_VERIFY_JSON_MAX_BYTES;
         }

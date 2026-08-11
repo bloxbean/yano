@@ -24,7 +24,7 @@ self-contained JVM plugin bundle with:
 #   yano-appchain-ipfs-<version>-bundle.jar
 ```
 
-Copy only the `*-bundle.jar` into `yaci.plugins.directory`. It contains the
+Copy only the `*-bundle.jar` into `yano.plugins.directory`. It contains the
 Kubo client and merged ServiceLoader metadata. Connector contracts, CBOR, and
 BLAKE2b are relocated into bundle-private namespaces so independently
 installed bundles cannot accidentally share their implementation classes.

@@ -313,7 +313,7 @@
       "acceptanceScenario": "recipe-eutxo-ledger",
       "evidence": [
         "appchain/extensions/eutxo/appchain-eutxo-ledger/src/test/java/com/bloxbean/cardano/yano/appchain/eutxo/ledger/EutxoStateMachineTest.java#threeMemberReplayRestartAndSnapshotProduceIdenticalRoots",
-        "app/build.gradle#verifyFirstPartyPluginBundles"
+        "gradle/runtime-plugin-bundle.gradle#verifyRuntimePluginBundle"
       ]
     },
     {
@@ -339,7 +339,7 @@
         "appchain/extensions/eutxo/appchain-eutxo-bridge-cardano/src/test/java/com/bloxbean/cardano/yano/appchain/eutxo/bridge/cardano/ProofWithdrawalTransactionBuilderTest.java#permissionlessRelayReturnsExactReusableSignedBytes",
         "appchain/extensions/eutxo/appchain-eutxo-bridge-onchain/src/test/java/com/bloxbean/cardano/yano/appchain/eutxo/bridge/onchain/ProofVaultValidatorConformanceTest.java#realMpfClaimSettlesPermissionlesslyWithinBudget",
         "appchain/extensions/eutxo/appchain-eutxo-bridge-onchain/src/test/java/com/bloxbean/cardano/yano/appchain/eutxo/bridge/onchain/BridgeValidatorSourceCompileTest.java#releasePinnedJulcCompilesAllBridgeValidators",
-        "app/src/test/java/com/bloxbean/cardano/yano/app/e2e/EutxoZkRollupDevnetE2ETest.java#depositFinalizeProveSettleAndWithdrawOnDevnet"
+        "appchain/fixtures/appchain-eutxo-e2e/src/test/java/com/bloxbean/cardano/yano/app/e2e/EutxoZkRollupDevnetE2ETest.java#depositFinalizeProveSettleAndWithdrawOnDevnet"
       ]
     },
     {
@@ -384,7 +384,7 @@
       "acceptanceScenario": "recipe-eutxo-zeroj-preview",
       "evidence": [
         "appchain/extensions/eutxo-zk/appchain-eutxo-zk-lifecycle/src/test/java/com/bloxbean/cardano/yano/appchain/eutxo/zk/lifecycle/EutxoValidityLifecycleTest.java#bootstrapIsIdempotentAndFailClosedByNetwork",
-        "app/src/test/java/com/bloxbean/cardano/yano/app/e2e/EutxoZkRollupDevnetE2ETest.java#depositFinalizeProveSettleAndWithdrawOnDevnet",
+        "appchain/fixtures/appchain-eutxo-e2e/src/test/java/com/bloxbean/cardano/yano/app/e2e/EutxoZkRollupDevnetE2ETest.java#depositFinalizeProveSettleAndWithdrawOnDevnet",
         "appchain/extensions/eutxo-zk/D5_ACCEPTANCE.md#network-evidence",
         "appchain/extensions/eutxo-zk/D6_RELEASE_DECISION.md#release-decision"
       ]

@@ -52,6 +52,8 @@ import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiRequest;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiResponse;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiRoute;
+import com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelContext;
+import com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelProvider;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthCheckDescriptor;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthContext;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider;
@@ -398,6 +400,9 @@ final class PluginSpiFacades {
                     products, callbacks);
             case DOMAIN_API -> new DomainApiProviderFacade(
                     (DomainApiProvider) delegate, effectiveLoader, activation,
+                    products, callbacks);
+            case LOCAL_READ_MODEL -> new LocalReadModelProviderFacade(
+                    (LocalReadModelProvider) delegate, effectiveLoader, activation,
                     products, callbacks);
             case HEALTH -> new HealthProviderFacade(
                     (PluginHealthProvider) delegate, effectiveLoader, activation,
@@ -949,6 +954,36 @@ final class PluginSpiFacades {
                 return products.facadeForNewInvocation(
                         value, api -> new DomainApiFacade(
                                 api, loader, activation, callbacks));
+            }));
+        }
+    }
+
+    private record LocalReadModelProviderFacade(
+            LocalReadModelProvider delegate,
+            ClassLoader loader,
+            ActivationContext activation,
+            ProductReservations products,
+            CallbackTracker callbacks
+    ) implements LocalReadModelProvider {
+        private LocalReadModelProviderFacade {
+            Objects.requireNonNull(delegate, "delegate");
+        }
+
+        @Override
+        public String id() {
+            return activation.call("read local read-model provider identity",
+                    () -> pluginCall(callbacks, loader, delegate::id));
+        }
+
+        @Override
+        public AutoCloseable start(LocalReadModelContext context) {
+            Objects.requireNonNull(context, "context");
+            return activation.call("start local read-model product", () -> callbacks.call(() -> {
+                AutoCloseable value = PluginThreadContext.call(
+                        loader, () -> delegate.start(context));
+                return products.facadeForNewInvocation(
+                        value, lifecycle -> () -> pluginRun(
+                                callbacks, loader, lifecycle::close));
             }));
         }
     }

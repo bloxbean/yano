@@ -32,7 +32,7 @@ for build-time inclusion):
 ```
 
 Copy only that `*-bundle.jar` into the JVM node's plugin directory
-configured by `yaci.plugins.directory`. It contains Kafka dependencies and
+configured by `yano.plugins.directory`. It contains Kafka dependencies and
 merged ServiceLoader descriptors. Its connector-contract implementation is
 relocated into a bundle-private namespace so independently installed connector
 bundles do not share implementation classes.

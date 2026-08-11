@@ -51,11 +51,10 @@ from the unzipped directory (network genesis files resolve relative to it).
 
 Native binaries (`yano-native-<version>-<os>-<arch>.zip`) have the same layout
 with a `yano` binary instead of the jar — same flags, same `config/`. A native
-image cannot load a new JAR from `plugins/` after it is built. Manifested
-Kafka, ZK, effect-executor, and custom-state-machine bundles can still be used
-when they are included before native catalog-index/reflection generation and
-the native executable is rebuilt. Use the JVM distribution for drop-in JAR
-deployment.
+image cannot load a new JAR from `plugins/` after it is built. The supported
+Yano native distribution is the core data node/app-chain host with
+`ordered-log`; use the Yano X JVM distribution for stock or custom extension
+bundles.
 
 ### Option B — Docker
 
@@ -73,7 +72,7 @@ flavor), exposes REST on `7070` and N2N on `13337`, and mounts:
 | Host path | In container | Use for |
 |---|---|---|
 | `config/application.yml` | `/app/config/application.yml` | `yano.app-chain.*` settings |
-| `plugins/` | `/app/plugins` | JVM-image plugin bundles (`yaci.plugins.directory` is preset; native images ignore directory JARs) |
+| `plugins/` | `/app/plugins` | JVM-image plugin bundles (`yano.plugins.directory` is preset; native images ignore directory JARs) |
 | `chainstate-*/` | `/app/chainstate` | persistent L1 ledger |
 | `appchain-chainstate-*/` | `/app/appchain-chainstate` | persistent app-chain ledgers |
 | `appchain-indexers-*/` | `/app/appchain-indexers` | rebuildable app-chain read indexes |
@@ -132,6 +131,8 @@ EOF
 ```bash
 export PUB_A=8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c
 export PUB_B=8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394
+export STATE_FORMAT=91ee14091200f1e24659112d640e877e9177779dcc81dd06117f013e9190082b
+export STATE_GENESIS=2a5bc14e4bf7eb6d624fce199f820d6f073e297b2de751d0f81607a0905a92c4
 
 mkdir -p /tmp/appchain-tutorial
 cp app/config/network/devnet/shelley-genesis.json /tmp/appchain-tutorial/genesis-a.json
@@ -141,9 +142,11 @@ java -Dquarkus.profile=devnet -Dquarkus.http.port=7070 \
   -Dyano.genesis.shelley-genesis-file=/tmp/appchain-tutorial/genesis-a.json \
   -Dyano.storage.path=/tmp/appchain-tutorial/chainstate-a \
   -Dyano.app-chain.storage.path=/tmp/appchain-tutorial/appchain-chainstate-a \
-  -Dyano.app-chain.indexer.storage.path=/tmp/appchain-tutorial/appchain-indexers-a \
   -Dyano.app-chain.enabled=true \
   -Dyano.app-chain.chain-id=tutorial-chain \
+  -Dyano.app-chain.state.commitment-profile=mpf-blake2b256-v1 \
+  -Dyano.app-chain.state.format-fingerprint=$STATE_FORMAT \
+  -Dyano.app-chain.state.genesis-id=$STATE_GENESIS \
   -Dyano.app-chain.signing-key=0101010101010101010101010101010101010101010101010101010101010101 \
   -Dyano.app-chain.members="$PUB_A,$PUB_B" \
   -Dyano.app-chain.peers=localhost:13338 \
@@ -165,6 +168,11 @@ sequence blocks (`sequencer.proposer`), requires **both** members to co-sign
 every block (`threshold: 2`), and anchors the state root to devnet L1 every 2
 app blocks.
 
+The three `state.*` values are the chain's public state-commitment identity.
+Every member must use exactly the same values. Changing one creates a
+different chain identity; omitting one fails startup rather than silently
+selecting a local default.
+
 ### 1.3 Start node B (L1 follower + app-chain member)
 
 Node B needs **A's effective genesis** (the devnet producer writes the actual
@@ -177,7 +185,6 @@ java -Dquarkus.profile=devnet -Dquarkus.http.port=7071 \
   -Dyano.genesis.shelley-genesis-file=/tmp/appchain-tutorial/genesis-b.json \
   -Dyano.storage.path=/tmp/appchain-tutorial/chainstate-b \
   -Dyano.app-chain.storage.path=/tmp/appchain-tutorial/appchain-chainstate-b \
-  -Dyano.app-chain.indexer.storage.path=/tmp/appchain-tutorial/appchain-indexers-b \
   -Dyano.server.port=13338 \
   -Dyano.block-producer.enabled=false \
   -Dyano.dev-mode=false \
@@ -185,6 +192,9 @@ java -Dquarkus.profile=devnet -Dquarkus.http.port=7071 \
   -Dyano.remote.host=localhost -Dyano.remote.port=13337 \
   -Dyano.app-chain.enabled=true \
   -Dyano.app-chain.chain-id=tutorial-chain \
+  -Dyano.app-chain.state.commitment-profile=mpf-blake2b256-v1 \
+  -Dyano.app-chain.state.format-fingerprint=$STATE_FORMAT \
+  -Dyano.app-chain.state.genesis-id=$STATE_GENESIS \
   -Dyano.app-chain.signing-key=0202020202020202020202020202020202020202020202020202020202020202 \
   -Dyano.app-chain.members="$PUB_A,$PUB_B" \
   -Dyano.app-chain.peers=localhost:13337 \
@@ -252,10 +262,10 @@ curl -s http://localhost:7071/api/v1/app-chain/blocks/1
 ```bash
 MSG_ID=<messageId from step 1.6>
 
-# MPF inclusion proof: this message was finalized at this position,
-# verifiable against the state root — the same root that gets anchored to L1
-curl -s http://localhost:7071/api/v1/app-chain/state/proof/$MSG_ID
-# → {"key":"...","stateRoot":"95edf7...","proofWireHex":"82d879...","finalizedAtHeight":1}
+# Finalized-message Merkle proof: this message was finalized at this position,
+# verifiable against the block's messages root.
+curl -s http://localhost:7071/api/v1/app-chain/messages/$MSG_ID/proof
+# → {"messageId":"...","blockHeight":1,"messagesRoot":"...","siblings":[...]}
 
 # The anchor: node A submitted a Cardano tx with the state root as metadata
 grep "Anchor CONFIRMED on L1" /tmp/appchain-tutorial/node-a.log
@@ -432,7 +442,7 @@ Add the bundle manifest at
 
 The manifest filename must equal its `id`. Its contribution must match the
 ServiceLoader entry exactly; Yano validates both before constructing the
-provider. If an operator uses `yaci.plugins.allow-list`, it contains the bundle
+provider. If an operator uses `yano.plugins.allow-list`, it contains the bundle
 id (`com.example.kvchain`), while `state-machine` continues to select the
 contribution name (`kv-store`).
 
@@ -463,7 +473,7 @@ provider.
 Config (only two things change relative to Part 1):
 
 ```
--Dyaci.plugins.directory=plugins            # default is already "plugins"
+-Dyano.plugins.directory=plugins            # default is already "plugins"
 -Dyano.app-chain.state-machine=kv-store     # instead of ordered-log
 -Dyano.app-chain.chain-id=kv-chain          # a new chain id = fresh ledger
 ```

@@ -4,7 +4,6 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider;
 import com.bloxbean.cardano.yano.api.appchain.signer.SignerProviderFactory;
 import com.bloxbean.cardano.yano.api.plugin.PluginActivationException;
-import com.bloxbean.cardano.yano.runtime.plugins.LegacyServiceLoaderProviderRegistry;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginProviderRegistry;
 import org.slf4j.Logger;
 
@@ -13,8 +12,8 @@ import org.slf4j.Logger;
  * <ul>
  *   <li>a bare 32-byte hex seed → the default {@link AppMessageSigner} (key in
  *       config, current behavior)</li>
- *   <li>{@code scheme:reference} → a {@link SignerProviderFactory} discovered
- *       via ServiceLoader (KMS/HSM/Vault plugin jars) — the node never holds
+ *   <li>{@code scheme:reference} → a catalog-selected {@link SignerProviderFactory}
+ *       (KMS/HSM/Vault plugin bundles) — the node never holds
  *       the raw key</li>
  * </ul>
  * Utility helpers ({@code signHex}, {@code publicKeyHex}) wrap any provider.
@@ -22,11 +21,6 @@ import org.slf4j.Logger;
 final class SignerProviders {
 
     private SignerProviders() {
-    }
-
-    static SignerProvider resolve(String keySpec, ClassLoader pluginClassLoader, Logger log) {
-        return resolveFromRegistry(keySpec,
-                new LegacyServiceLoaderProviderRegistry(pluginClassLoader), log);
     }
 
     static SignerProvider resolveFromRegistry(String keySpec,

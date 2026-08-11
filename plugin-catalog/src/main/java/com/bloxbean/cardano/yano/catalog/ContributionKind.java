@@ -10,6 +10,7 @@ import com.bloxbean.cardano.yano.api.appchain.signer.SignerProviderFactory;
 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory;
 import com.bloxbean.cardano.yano.api.plugin.NodePlugin;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider;
+import com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelProvider;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsProvider;
 
@@ -38,6 +39,8 @@ public enum ContributionKind {
     FINALIZED_SINK("finalized-sink", FinalizedStreamSinkFactory.class, false),
     /** Host-dispatched domain API; schema v1 requires an owning bundle manifest. */
     DOMAIN_API("domain-api", DomainApiProvider.class, true),
+    /** Lifecycle-owned node-local derived model; an owning manifest is mandatory. */
+    LOCAL_READ_MODEL("local-read-model", LocalReadModelProvider.class, true),
     /** Cached health source; schema v1 requires an owning bundle manifest. */
     HEALTH("health", PluginHealthProvider.class, true),
     /** Cached custom-metrics source; schema v1 requires an owning bundle manifest. */

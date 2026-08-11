@@ -30,15 +30,11 @@ public class PluginClassLoaderProducer {
         try {
             // Read config programmatically to avoid circular dependency
             // (CDI proxy for ClassLoader + SmallRye Config ServiceLoader = infinite recursion)
-            String pluginDirectory = ConfigProvider.getConfig()
-                    .getOptionalValue(YanoPropertyKeys.Plugins.DIRECTORY, String.class)
-                    .orElse("plugins");
-            boolean enabled = ConfigProvider.getConfig()
-                    .getOptionalValue(YanoPropertyKeys.Plugins.ENABLED, Boolean.class)
-                    .orElse(true);
+            PluginHostConfiguration hostConfiguration =
+                    PluginHostConfiguration.from(ConfigProvider.getConfig());
             return createPluginClassLoader(
-                    pluginDirectory,
-                    enabled,
+                    hostConfiguration.directory(),
+                    hostConfiguration.enabled(),
                     Thread.currentThread().getContextClassLoader(),
                     "Substrate VM".equalsIgnoreCase(System.getProperty("java.vm.name", "")));
         } catch (Throwable failure) {
@@ -140,6 +136,9 @@ public class PluginClassLoaderProducer {
         LifecycleFailures.rethrowIfProcessFatalReachable(failure);
         if (failure instanceof PluginStartupException alreadySanitized) {
             throw alreadySanitized;
+        }
+        if (failure instanceof PluginConfigurationException configurationFailure) {
+            throw configurationFailure;
         }
         PluginStartupException sanitized = PluginStartupException.directoryCaptureFailure();
         log.error(sanitized.getMessage());

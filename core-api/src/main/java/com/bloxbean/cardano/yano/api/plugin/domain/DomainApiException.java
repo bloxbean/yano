@@ -7,6 +7,7 @@ public final class DomainApiException extends RuntimeException {
     public enum Code {
         INVALID_REQUEST,
         NOT_FOUND,
+        CONFLICT,
         BUSY,
         TIMEOUT,
         RESULT_TOO_LARGE,

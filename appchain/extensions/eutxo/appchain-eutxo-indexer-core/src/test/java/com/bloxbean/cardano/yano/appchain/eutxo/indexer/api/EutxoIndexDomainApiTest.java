@@ -151,18 +151,9 @@ class EutxoIndexDomainApiTest {
     }
 
     @Test
-    void providerIsDiscoverableWithTheDedicatedIdentity() {
+    void providerUsesTheDedicatedIdentity() {
         EutxoIndexDomainApiProvider provider =
-                java.util.ServiceLoader.load(
-                                com.bloxbean.cardano.yano.api.plugin.domain
-                                        .DomainApiProvider.class)
-                        .stream()
-                        .map(java.util.ServiceLoader.Provider::get)
-                        .filter(candidate -> EutxoLocalReadModel.MODEL_ID.equals(
-                                candidate.id()))
-                        .map(EutxoIndexDomainApiProvider.class::cast)
-                        .findFirst()
-                        .orElseThrow();
+                new EutxoIndexDomainApiProvider();
         assertThat(provider.id()).isEqualTo(EutxoLocalReadModel.MODEL_ID);
     }
 

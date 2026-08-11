@@ -1,6 +1,7 @@
 # ADR-030: Split Yano core from `yano-x`
 
-**Status:** Accepted. Phase A is implemented on its feature branch; repository extraction has not started.
+**Status:** Accepted. Phase A is merged; Phase B implementation and acceptance are complete on its
+feature branch and await maintainer commit/merge approval. Repository extraction has not started.
 **Date:** 2026-08-11
 **Decision owners:** Yano maintainers
 **Reviewed baseline:** `feat/037-generic-appchain-proof` at `6d364000`
@@ -149,7 +150,7 @@ Every downstream runtime extension must satisfy all of the following:
 
 Existing contribution kinds cover node lifecycle plugins, state machines, authenticated-map
 validators, sequencer modes, L1 observers, epoch observers, signer providers, effect executors,
-finalized sinks, domain APIs, health, and metrics.
+finalized sinks, local read models, domain APIs, health, and metrics.
 
 ### 2.2 Capabilities and libraries
 
@@ -300,9 +301,9 @@ must also be explicit rather than relying on reflection that is only present in 
 
 Phase A's measured baseline, executed gate results, removed prerelease debts, and comparison rules
 are recorded in [`baselines/030-phase-a-baseline.md`](baselines/030-phase-a-baseline.md). The
-allocation manifest is enforced by the root `check` lifecycle and CI; it currently classifies all
-71 included projects and P1-P23. Phase B must start from this recorded branch state after the Phase A
-feature branch has been reviewed, committed, and merged into the integration branch.
+allocation manifest is enforced by the root `check` lifecycle and CI; the Phase-A baseline classified
+71 included projects and the Phase-B manifest now classifies all 74 included projects and P1-P23.
+Phase B started from the reviewed Phase-A merge on the integration branch.
 
 ### Phase B — make extensions real plugins inside the monorepo
 
@@ -317,9 +318,15 @@ feature branch has been reviewed, committed, and merged into the integration bra
    contributions, bundle task, and JVM activation test.
 6. Rename the host plugin configuration to `yano.plugins.*`, add bounded legacy-alias tests, and
    update every first-party config, scaffold, test, script, and guide.
+7. Move reusable host E2E support behind a published Gradle test-fixtures variant; downstream E2E
+   modules must not splice another project's test output onto a Quarkus classpath.
 
 This phase is complete only when deleting application projects from `settings.gradle` still leaves
 a buildable and testable lean host.
+
+Phase B implementation evidence, regression commands, removed prerelease seams, and remaining
+phase boundaries are recorded in
+[`baselines/030-phase-b-plugin-seam.md`](baselines/030-phase-b-plugin-seam.md).
 
 ### Phase C — establish published contracts
 

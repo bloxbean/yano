@@ -64,6 +64,8 @@ quarkus:
 yaci:
   events:
     enabled: true
+
+yano:
   plugins:
     enabled: true
     directory: plugins
@@ -72,8 +74,6 @@ yaci:
     auto-register-annotated: false
     logging:
       enabled: false
-
-yano:
   network: preprod
   auto-sync-start: true
   client:
@@ -141,10 +141,6 @@ yano:
     # directory, so the default is separate from ./chainstate.
     storage:
       path: ${YANO_APP_CHAIN_STORAGE_PATH:appchain-chainstate}
-    # Rebuildable indexes are intentionally outside both authoritative stores.
-    indexer:
-      storage:
-        path: ${YANO_APP_CHAIN_INDEXER_STORAGE_PATH:appchain-indexers}
     # enabled: false        # absent = disabled; an EXPLICIT false also suppresses
     #                       # chains[i] auto-enable (operator override)
     # chain-id: "my-app-chain"
@@ -442,11 +438,11 @@ yano:
   yaci:
     events:
       enabled: true
+  yano:
     plugins:
       enabled: false
       logging:
         enabled: false
-  yano:
     auto-sync-start: false
     client:
       enabled: false

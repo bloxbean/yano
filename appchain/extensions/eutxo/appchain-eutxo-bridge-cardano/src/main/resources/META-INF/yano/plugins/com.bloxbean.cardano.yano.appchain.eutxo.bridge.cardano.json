@@ -30,6 +30,11 @@
       "kind": "effect-executor",
       "name": "eutxo-settlement",
       "provider": "com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano.EutxoSettlementExecutorFactory"
+    },
+    {
+      "kind": "domain-api",
+      "name": "com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano",
+      "provider": "com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano.EutxoBridgeDomainApiProvider"
     }
   ]
 }

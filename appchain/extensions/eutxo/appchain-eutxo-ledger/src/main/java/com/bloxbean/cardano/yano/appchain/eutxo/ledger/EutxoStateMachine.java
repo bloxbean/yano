@@ -516,6 +516,15 @@ public final class EutxoStateMachine implements AppStateMachine {
                                             StandardCharsets.US_ASCII))
                                     .orElse(""));
                 }
+                case EutxoQueryCodec.BRIDGE_INFO_PATH -> {
+                    requireEmptyQuery(params);
+                    yield new com.bloxbean.cardano.yano.appchain.eutxo.contracts
+                            .EutxoBridgeInfo(
+                            bridge.enabled(), bridge.vaultAddress(),
+                            bridge.vaultScriptHash(), bridge.withdrawalAddress(),
+                            bridge.bridgeEpoch(), bridge.maximumWithdrawalLovelace(),
+                            bridge.withdrawalsPaused()).encode();
+                }
                 case EutxoQueryCodec.WITHDRAWAL_PATH -> {
                     String claimId = EutxoQueryCodec.decodeWithdrawalRequest(params);
                     yield EutxoQueryCodec.optionalWithdrawalRecord(

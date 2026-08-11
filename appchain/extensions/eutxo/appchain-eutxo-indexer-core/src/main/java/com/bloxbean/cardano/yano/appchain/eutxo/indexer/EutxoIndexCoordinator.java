@@ -1,8 +1,8 @@
 package com.bloxbean.cardano.yano.appchain.eutxo.indexer;
 
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
-import com.bloxbean.cardano.yano.api.appchain.AppChainGateway;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
+import com.bloxbean.cardano.yano.api.plugin.domain.FinalizedChainView;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoDepositRecord;
 import com.bloxbean.cardano.yano.appchain.eutxo.contracts.EutxoQueryCodec;
@@ -31,7 +31,7 @@ public final class EutxoIndexCoordinator implements AutoCloseable {
     private static final Logger log =
             LoggerFactory.getLogger(EutxoIndexCoordinator.class);
 
-    private final AppChainGateway gateway;
+    private final FinalizedChainView gateway;
     private final EutxoIndexStore store;
     private final EutxoProjector projector;
     private final EutxoIndexMetrics metrics;
@@ -44,14 +44,14 @@ public final class EutxoIndexCoordinator implements AutoCloseable {
     private volatile boolean closed;
 
     public EutxoIndexCoordinator(
-            AppChainGateway gateway,
+            FinalizedChainView gateway,
             EutxoIndexStore store
     ) {
         this(gateway, store, new EutxoIndexMetrics());
     }
 
     public EutxoIndexCoordinator(
-            AppChainGateway gateway,
+            FinalizedChainView gateway,
             EutxoIndexStore store,
             EutxoIndexMetrics metrics
     ) {
@@ -77,7 +77,7 @@ public final class EutxoIndexCoordinator implements AutoCloseable {
             throw new IllegalStateException(
                     "EUTxO index coordinator cannot be started");
         }
-        subscription = gateway.subscribeFinalized((block, hash) -> {
+        subscription = gateway.subscribe((block, hash) -> {
             requestedHeight.accumulateAndGet(block.height(), Math::max);
             schedule();
         });

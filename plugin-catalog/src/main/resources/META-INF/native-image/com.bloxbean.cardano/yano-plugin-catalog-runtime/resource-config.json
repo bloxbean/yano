@@ -12,6 +12,7 @@
       {"pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory\\E"},
       {"pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory\\E"},
       {"pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider\\E"},
+      {"pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelProvider\\E"},
       {"pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider\\E"},
       {"pattern": "\\QMETA-INF/services/com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsProvider\\E"}
     ]

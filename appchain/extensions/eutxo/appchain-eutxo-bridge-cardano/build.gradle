@@ -15,6 +15,7 @@ dependencies {
     compileOnly libs.cardano.client.common
     compileOnly libs.cardano.client.quicktx
     compileOnly libs.cbor
+    implementation libs.jackson.databind
 
     testImplementation project(':core-api')
     testImplementation project(':appchain-eutxo-testkit')

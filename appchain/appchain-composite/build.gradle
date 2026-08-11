@@ -1,3 +1,7 @@
+ext.runtimePluginBundleId = 'com.bloxbean.cardano.yano.appchain.composite'
+ext.runtimePluginExcludedBundleIds = []
+apply from: rootProject.file('gradle/runtime-plugin-bundle.gradle')
+
 dependencies {
     api project(':core-api')
     api project(':appchain-composite-contracts')
@@ -16,7 +20,7 @@ tasks.withType(Test).configureEach {
 
 tasks.register('verifyGenericCompositeBoundary') {
     group = 'verification'
-    description = 'Verifies the generic composite artifact has no evidence product or plugin contribution'
+    description = 'Verifies the generic composite artifact has no evidence product contribution'
     dependsOn tasks.named('jar')
     inputs.file(tasks.named('jar').flatMap { it.archiveFile })
 
@@ -26,9 +30,7 @@ tasks.register('verifyGenericCompositeBoundary') {
             def entries = jar.entries().collect { entry -> entry.name }
             if (entries.any { entry ->
                 !entry.endsWith('/')
-                        && (entry.startsWith('com/bloxbean/cardano/yano/appchain/evidence/')
-                        || entry.startsWith('META-INF/services/')
-                        || entry.startsWith('META-INF/yano/plugins/'))
+                        && entry.startsWith('com/bloxbean/cardano/yano/appchain/evidence/')
             }) {
                 throw new GradleException(
                         'Generic composite artifact contains evidence or plugin-owned entries')

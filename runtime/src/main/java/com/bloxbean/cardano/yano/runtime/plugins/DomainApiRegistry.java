@@ -18,6 +18,8 @@ import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiRouteSet;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainHttpMethod;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainQueryService;
 import com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelQueryService;
+import com.bloxbean.cardano.yano.api.plugin.domain.L1TransactionBuilderService;
+import com.bloxbean.cardano.yano.api.plugin.domain.PrivilegedSystemMessageService;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginOperationOutcome;
 import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 import org.slf4j.Logger;
@@ -69,6 +71,7 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
     private final Function<String, Map<String, Object>> bundleConfig;
     private final AppChainGateways appChains;
     private final LocalReadModelQueryService localReadModels;
+    private final L1TransactionBuilderService l1Transactions;
     private final Logger log;
     private final OperationsObserver operations;
     private final List<String> bundleIds;
@@ -80,6 +83,7 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
     private final Object lifecycleMonitor = new Object();
     private final Object admissionMonitor = new Object();
     private final ThreadLocal<Integer> callbackDepth = ThreadLocal.withInitial(() -> 0);
+    private final ThreadLocal<DomainApiAccess> callbackAccess = new ThreadLocal<>();
     private final Map<String, BundleLane> lanes = new HashMap<>();
     private final Set<Invocation> admittedInvocations = new HashSet<>();
 
@@ -116,10 +120,22 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
             LocalReadModelQueryService localReadModels,
             PluginOperationsRegistry operations
     ) {
+        this(environment, appChains, log, localReadModels,
+                L1TransactionBuilderService.unavailable(), operations);
+    }
+
+    public DomainApiRegistry(
+            PluginRuntimeEnvironment environment,
+            AppChainGateways appChains,
+            Logger log,
+            LocalReadModelQueryService localReadModels,
+            L1TransactionBuilderService l1Transactions,
+            PluginOperationsRegistry operations
+    ) {
         this(Objects.requireNonNull(environment, "environment").providers(),
                 environment::domainApiConfig, appChains, log,
                 DEFAULT_CALLER_TIMEOUT, DEFAULT_QUEUE_CAPACITY,
-                localReadModels, observer(operations));
+                localReadModels, l1Transactions, observer(operations));
     }
 
     /** Package-private timing seam for deterministic lifecycle tests. */
@@ -134,6 +150,7 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
         this(pluginProviders, bundleConfig, appChains, log,
                 callerTimeout, queueCapacity,
                 LocalReadModelQueryService.unavailable(),
+                L1TransactionBuilderService.unavailable(),
                 OperationsObserver.NOOP);
     }
 
@@ -149,6 +166,7 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
         this(pluginProviders, bundleConfig, appChains, log,
                 callerTimeout, queueCapacity,
                 LocalReadModelQueryService.unavailable(),
+                L1TransactionBuilderService.unavailable(),
                 observer(operations));
     }
 
@@ -164,6 +182,7 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
         this(pluginProviders, bundleConfig, appChains, log,
                 callerTimeout, queueCapacity,
                 LocalReadModelQueryService.unavailable(),
+                L1TransactionBuilderService.unavailable(),
                 operations);
     }
 
@@ -177,11 +196,29 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
             LocalReadModelQueryService localReadModels,
             OperationsObserver operations
     ) {
+        this(pluginProviders, bundleConfig, appChains, log,
+                callerTimeout, queueCapacity, localReadModels,
+                L1TransactionBuilderService.unavailable(), operations);
+    }
+
+    DomainApiRegistry(
+            PluginProviderRegistry pluginProviders,
+            Function<String, Map<String, Object>> bundleConfig,
+            AppChainGateways appChains,
+            Logger log,
+            Duration callerTimeout,
+            int queueCapacity,
+            LocalReadModelQueryService localReadModels,
+            L1TransactionBuilderService l1Transactions,
+            OperationsObserver operations
+    ) {
         this.pluginProviders = Objects.requireNonNull(pluginProviders, "pluginProviders");
         this.bundleConfig = Objects.requireNonNull(bundleConfig, "bundleConfig");
         this.appChains = Objects.requireNonNull(appChains, "appChains");
         this.localReadModels = Objects.requireNonNull(
                 localReadModels, "localReadModels");
+        this.l1Transactions = Objects.requireNonNull(
+                l1Transactions, "l1Transactions");
         this.log = Objects.requireNonNull(log, "log");
         this.operations = Objects.requireNonNull(operations, "operations");
         Objects.requireNonNull(callerTimeout, "callerTimeout");
@@ -615,7 +652,8 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
                         bundleConfig.apply(bundleId), "bundleConfig must not return null");
                 DomainApi api = Objects.requireNonNull(
                         provider.create(new DomainApiContext(
-                                config, queryService(), localReadModels)),
+                                config, queryService(), localReadModels,
+                                privilegedSystemMessages(), l1Transactions)),
                         "DomainApiProvider.create() must not return null");
                 BundleLane lane = lanes.computeIfAbsent(bundleId,
                         ignored -> new BundleLane(bundleId));
@@ -646,6 +684,29 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
                 new Publication(routeTables, List.copyOf(allRoutes)),
                 Map.copyOf(products),
                 terminal);
+    }
+
+    private PrivilegedSystemMessageService privilegedSystemMessages() {
+        return new PrivilegedSystemMessageService() {
+            @Override
+            public void validate(String chainId, String topic, byte[] body) {
+                requirePrivilegedCallback();
+                requireAppChain(chainId)
+                        .validatePrivilegedSystemMessage(topic, body);
+            }
+
+            @Override
+            public String submit(String chainId, String topic, byte[] body) {
+                requirePrivilegedCallback();
+                return requireAppChain(chainId)
+                        .submitPrivilegedSystemMessage(topic, body);
+            }
+        };
+    }
+
+    private AppChainGateway requireAppChain(String chainId) {
+        return appChains.byId(chainId).orElseThrow(() ->
+                new IllegalArgumentException("unknown app chain"));
     }
 
     private List<CompiledRoute> compileRoutes(
@@ -695,7 +756,7 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
             }
             activeAdmissions++;
             Invocation invocation = new Invocation(
-                    new GenerationLease(), bundle, request);
+                    new GenerationLease(), bundle, request, match.route().access());
             if (!admittedInvocations.add(invocation)) {
                 activeAdmissions--;
                 throw new IllegalStateException("Duplicate domain API invocation admission");
@@ -793,16 +854,29 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
         }
     }
 
-    private void enterCallback() {
-        callbackDepth.set(callbackDepth.get() + 1);
+    private void enterCallback(DomainApiAccess access) {
+        if (callbackDepth.get() != 0) {
+            throw new IllegalStateException("Nested domain API callbacks are not supported");
+        }
+        callbackDepth.set(1);
+        callbackAccess.set(Objects.requireNonNull(access, "access"));
     }
 
     private void exitCallback() {
         int depth = callbackDepth.get() - 1;
         if (depth == 0) {
             callbackDepth.remove();
+            callbackAccess.remove();
         } else {
             callbackDepth.set(depth);
+        }
+    }
+
+    private void requirePrivilegedCallback() {
+        if (callbackDepth.get() != 1
+                || callbackAccess.get() != DomainApiAccess.PRIVILEGED) {
+            throw new IllegalStateException(
+                    "Privileged system messages require a host-dispatched privileged route");
         }
     }
 
@@ -859,6 +933,7 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
         String message = switch (failure.code()) {
             case INVALID_REQUEST -> "Domain API request is invalid";
             case NOT_FOUND -> "Domain API resource was not found";
+            case CONFLICT -> "Domain API request conflicts with current state";
             case BUSY -> "Domain API service is busy";
             case TIMEOUT -> "Domain API handler exceeded its caller deadline";
             case RESULT_TOO_LARGE -> "Domain API response exceeds the host size limit";
@@ -964,6 +1039,7 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
         private final GenerationLease lease;
         private final ActiveBundle bundle;
         private final DomainApiRequest request;
+        private final DomainApiAccess access;
         private final CompletableFuture<DomainApiResponse> result = new CompletableFuture<>();
         private InvocationState state = InvocationState.QUEUED;
         private Thread runner;
@@ -973,11 +1049,13 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
         private Invocation(
                 GenerationLease lease,
                 ActiveBundle bundle,
-                DomainApiRequest request
+                DomainApiRequest request,
+                DomainApiAccess access
         ) {
             this.lease = lease;
             this.bundle = bundle;
             this.request = request;
+            this.access = Objects.requireNonNull(access, "access");
         }
 
         @Override
@@ -996,7 +1074,7 @@ public final class DomainApiRegistry implements DomainApiGateway, AutoCloseable 
             boolean callbackEntered = false;
             if (lifecycleFailure == null) {
                 try {
-                    enterCallback();
+                    enterCallback(access);
                     callbackEntered = true;
                     response = Objects.requireNonNull(
                             bundle.api().handle(request),

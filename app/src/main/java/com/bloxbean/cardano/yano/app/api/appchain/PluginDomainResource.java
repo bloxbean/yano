@@ -105,6 +105,7 @@ public class PluginDomainResource {
             int status = switch (failure.code()) {
                 case INVALID_REQUEST -> 400;
                 case NOT_FOUND -> 404;
+                case CONFLICT -> 409;
                 case BUSY -> 429;
                 case TIMEOUT -> 504;
                 case RESULT_TOO_LARGE -> 502;
