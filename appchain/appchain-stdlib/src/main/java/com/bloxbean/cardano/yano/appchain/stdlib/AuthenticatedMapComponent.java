@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.appchain.stdlib;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
+import com.bloxbean.cardano.yano.api.appchain.AppCapabilityManifest;
 import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
@@ -10,6 +11,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
+import com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider;
 import com.bloxbean.cardano.yano.appchain.composite.ComponentDescriptor;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowIdentifiers;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.AuthenticatedMapAuthorizationContract;
@@ -29,6 +31,8 @@ public final class AuthenticatedMapComponent implements AppStateMachine {
 
     private final ComponentDescriptor descriptor;
     private final AuthenticatedMapStateMachine transitions;
+    private static final ProofSubjectProvider PROOF_SUBJECT =
+            StdlibProofSubjectProviders.authenticatedMap();
 
     public AuthenticatedMapComponent(
             ComponentDescriptor descriptor,
@@ -58,6 +62,19 @@ public final class AuthenticatedMapComponent implements AppStateMachine {
     @Override
     public String id() {
         return descriptor.componentId();
+    }
+
+    @Override
+    public AppCapabilityManifest capabilityManifest() {
+        return StdlibCapabilityManifests.component(COMPONENT_ID, List.of(), BASIC_QUERY_PATHS)
+                .proofSubject(StdlibProofSubjectProviders.manifest(
+                        PROOF_SUBJECT, "authenticated-map-key-v1"))
+                .build();
+    }
+
+    @Override
+    public List<ProofSubjectProvider> proofSubjectProviders() {
+        return List.of(PROOF_SUBJECT);
     }
 
     @Override

@@ -41,9 +41,19 @@ public final class OrderedLogStateMachine implements AppStateMachine {
                                 "keyDerivation", "sha256(namespace || logical-key)"),
                         AppCapabilityManifest.Origin.INTRINSIC))
                 .proofSubject(new AppCapabilityManifest.ProofSubject(
-                        "finalized-message-v1", "", FinalizedMessageIndex.LOGICAL_NAMESPACE,
-                        "state-proof"))
+                        com.bloxbean.cardano.yano.api.appchain.transition
+                                .FinalizedMessageProofSubjectProvider.SUBJECT_ID, 1, "",
+                        FinalizedMessageIndex.LOGICAL_NAMESPACE, "state-proof",
+                        com.bloxbean.cardano.yano.api.appchain.transition
+                                .FinalizedMessageProofSubjectProvider.DESCRIPTOR.descriptorDigest()))
                 .build();
+    }
+
+    @Override
+    public java.util.List<com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider>
+    proofSubjectProviders() {
+        return java.util.List.of(new com.bloxbean.cardano.yano.api.appchain.transition
+                .FinalizedMessageProofSubjectProvider());
     }
 
     @Override

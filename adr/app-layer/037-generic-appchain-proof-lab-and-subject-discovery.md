@@ -1,9 +1,10 @@
 # ADR app-layer/037: Generic app-chain proof lab and typed proof-subject discovery
 
-**Status:** Proposed
+**Status:** Accepted and implemented — Phases 0 through 7 complete
 **Date:** 2026-08-10
-**Scope:** Generic app-chain console proof workflows, portable message and state proof packages,
-runtime discovery of typed proof subjects, off-chain verification, and bounded MPF on-chain export
+**Scope:** Generic app-chain console proof workflows, an authenticated block-message-root bridge,
+portable message and state proof packages, runtime discovery of typed proof subjects, off-chain
+verification, and bounded MPF on-chain export
 **Depends on:** ADR app-layer/006, 025.x, 028, 031, 033, 035, and 036
 **Supersedes:** the narrow ADR-033 section 5.2 conclusion that the current proof endpoints and
 minimal manifest entries are sufficient for the generic console
@@ -31,6 +32,13 @@ This ADR turns the existing primitives into a generic proof lab. It does not put
 in the runtime or console. Application contract modules continue to own canonical keys, value
 codecs, completeness rules, and semantic predicates. The runtime discovers data-only descriptions
 of those contracts and exposes a uniform bounded proof API.
+
+The common MPF/JMT state foundation authenticates every key/value mutation made by an application,
+but it does not automatically insert every input message into application state. `messagesRoot` and
+`stateRoot` are separate fields in the app-block header; the block hash binds both. This separation
+is sound—messages are ordered inputs while state is the deterministic output—but it means a compact
+message proof is not directly rooted in the L1-anchored `stateRoot`. This ADR adds a low-cost common
+bridge without making the much larger per-message state index mandatory.
 
 ## 2. Current behavior
 
@@ -123,12 +131,39 @@ This index enables a state-root proof that a message ID was recorded by the appl
 that proof can be checked by a Cardano validator against the state root in the app-chain anchor
 datum. Without the index, the compact block `messagesRoot` proof remains available off-chain, but a
 generic Cardano validator would additionally need a bounded and qualified block/finality/anchor
-bridge. This ADR therefore uses the state index for the first generic on-chain message claim.
+bridge. Until the block-message-root capability in this ADR is implemented, the per-message index
+is the only simple generic state-root path for on-chain message claims.
 
 The index is optional because it adds an authenticated write per indexed message plus the tip
 write. It must not silently become a cost paid by every application.
 
-### 2.5 Capability manifest and typed client subjects
+### 2.5 Missing authenticated bridge for block message roots
+
+The app-block header is canonically hashed as:
+
+```text
+[version, chain-id, height, prev-hash, l1-slot, l1-block-hash,
+ timestamp, messages-root, state-root] -> blockHash
+```
+
+An L1 script anchor commits both the anchored `blockHash` and `stateRoot`. For a message in that exact
+anchored block, a verifier can prove `messageId -> messagesRoot`, reconstruct the canonical header,
+and compare its block hash with the anchor. For a message in an earlier block, the verifier must also
+verify finality and the consecutive previous-hash chain up to the anchored block. `EvidenceBundle`
+implements that bounded path off-chain.
+
+There is currently no common authenticated state record of:
+
+```text
+block height H -> [messagesRoot, messageCount]
+```
+
+Consequently, a chain without `FinalizedMessageIndex` cannot use a later anchored state root to prove
+an old message with a compact message path plus a generic state proof. This is the remaining gap
+between “all application state is proof-capable” and “every finalized message has a simple anchored
+proof.”
+
+### 2.6 Capability manifest and typed client subjects
 
 `AppCapabilityManifest.proofSubjects` currently publishes only:
 
@@ -142,7 +177,7 @@ However, the manifest does not describe user inputs, claim modes, value presenta
 requirements, snapshot coordinates, or on-chain support. The console cannot safely generate a form
 or semantic verifier from the current four fields.
 
-### 2.6 What the existing proofs do and do not establish
+### 2.7 What the existing proofs do and do not establish
 
 The current capabilities answer different questions:
 
@@ -160,6 +195,21 @@ The current capabilities answer different questions:
 None of these alone proves that a body will remain retrievable in the future. A valid retained body
 proves content binding, not continuing data availability.
 
+### 2.8 What the common authenticated-state foundation achieved
+
+The missing message bridge does not reduce the value of the MPF/JMT foundation. It established one
+global authenticated application state for standalone and composite machines, common canonical
+namespacing, current/historical proof APIs, implementation-neutral commitment identity, typed proof
+subjects, reusable off-chain verification, reusable MPF on-chain verification, and authenticated
+snapshot retention for large datasets. A state machine now writes ordinary canonical mutations and
+inherits proof generation instead of implementing its own tree and proof service.
+
+Its scope is application output state. For example, it can prove a document head, approval outcome,
+balance, authenticated-map entry, effect receipt, or order status whenever the owning component
+writes that fact. It cannot prove an input message ID through `stateRoot` unless a deterministic
+transition writes either that message or a commitment covering it. The block-message-root capability
+defined here supplies that missing common input-to-state bridge.
+
 ## 3. Problems to solve
 
 1. The Operations page is crowded by a proof form intended for occasional use.
@@ -175,6 +225,8 @@ proves content binding, not continuing data availability.
    that result.
 9. MPF and JMT have different verification targets that must be visible before proof generation.
 10. Node-reported anchors and membership must not be presented as independently trusted context.
+11. Common authenticated state proves application outputs, but there is no default low-cost state
+    bridge from a historical block's `messagesRoot` to a later L1-anchored `stateRoot`.
 
 ## 4. Decision summary
 
@@ -191,6 +243,25 @@ App Chains page. The tab provides three workflows:
 
 The existing raw-key proof form remains available under **Advanced state proof**. It is a diagnostic
 surface, not the primary product experience.
+
+Yano will add a reusable `FinalizedBlockMessageRootIndex` capability (final public name may differ).
+It writes one immutable authenticated record per finalized block:
+
+```text
+height H -> [schema-version, H, messagesRoot, messageCount]
+```
+
+The capability is **optional at the framework/profile level and enabled by default for every newly
+created stock, composed, custom, showcase, and generated app chain**. An application may disable it
+only in its immutable genesis/application profile. Enablement, namespace, schema, maximum messages
+per block, and configuration digest are committed into application identity; it cannot be toggled
+on a running chain.
+
+This default bridge costs one authenticated record per block, regardless of the number of messages.
+It permits `messageId -> messagesRoot` verification followed by one MPF/JMT state proof against a
+later anchored root. The existing `FinalizedMessageIndex` remains an optional higher-cost fast path
+that costs one record per message but gives a single state proof and authenticates height, index,
+topic, and sender directly.
 
 Applications expose typed proof subjects through a data-only `ProofSubjectProvider` SPI. The
 committed capability manifest continues to declare which subjects are part of the application
@@ -210,12 +281,14 @@ The generic console and wire packages use the following independent results.
 
 ```text
 messageLocated       node currently found the message record/body
-messageIncluded      compact Merkle path reaches the certified block messagesRoot
+messageIncluded      compact Merkle path reaches the selected block messagesRoot
 contentVerified      supplied full message derives the message ID and has a valid sender signature
-blockFinalized       finality certificate passes under caller-pinned membership/threshold
-anchorLinked         finalized block segment reaches the block named by the anchor datum/reference
+blockFinalized       finalized by a certificate and/or reserved block record under a trusted root
+finalityEvidence     CERTIFICATE | AUTHENTICATED_BLOCK_RECORD | BOTH | UNVERIFIED
+anchorLinked         block evidence or authenticated block record reaches the trusted anchor/root
 l1AnchorVerified     caller or independent adapter verified the actual Cardano transaction/output/datum
-stateRecorded        optional finalized-message state proof is valid under the selected state root
+messageRootStateBound authenticated block record binds [height,messagesRoot,count] to the selected state root
+stateRecorded        optional per-message record binds [height,index,topic,sender] to the selected state root
 availability         NOT_PROVEN | LOCALLY_RETAINED
 ```
 
@@ -280,20 +353,38 @@ The user selects a verification policy:
 
 ### 6.2 Verification sequence
 
-The verifier performs bounded checks in this order:
+The generic UI selects the shortest proof path supported by the chain's committed capabilities. The
+three valid paths are:
+
+| Path | Consensus state cost | Verification material |
+|---|---:|---|
+| Block evidence | no extra authenticated write | message path + header/finality + optional chain to anchor |
+| Authenticated block message root | one write per block | message path + block-root state proof + trusted state root |
+| Finalized-message record | one write per message plus tip | direct message-record state proof + trusted state root |
+
+The default path for new chains is the authenticated block message root. Block evidence remains the
+zero-additional-state fallback. A finalized-message record is preferred when the caller needs its
+authenticated topic/sender/position or the smallest single-tree proof.
+
+The verifier performs the applicable bounded checks in this order:
 
 1. Validate chain ID and canonical message ID.
 2. Verify supplied message structure, derived ID, sender, and signature when full content exists.
 3. Verify `MessageInclusionProof` against the block's exact `messagesRoot`.
-4. Recompute block hashes and verify threshold finality with pinned membership.
-5. Verify consecutive height and previous-hash linkage to the anchor block when a segment exists.
-6. Match commitment identity and the anchor block/root.
-7. Under independent mode, resolve the Cardano transaction and verify the expected script output,
+4. If `state-index:finalized-block-messages-v1` is enabled, derive the immutable block-record key,
+   verify its MPF/JMT proof against the selected root, strictly decode
+   `[version,height,messagesRoot,messageCount]`, and compare the root/count with the compact path.
+5. If the block-root bridge is unavailable or the user requests certificate evidence, recompute
+   block hashes and verify threshold finality with pinned membership.
+6. When evidence must reach a later anchor block, verify consecutive heights and previous hashes.
+7. Match commitment identity, selected height, state root, and anchor block as required by the
+   chosen path.
+8. Under independent mode, resolve the Cardano transaction and verify the expected script output,
    state-thread asset, inline datum, chain/genesis/application/profile identity, height, block hash,
    state root, member keys, and threshold.
-8. If `state-index:finalized-message-v1` is enabled, generate and verify its typed state proof and
+9. If `state-index:finalized-message-v1` is enabled, generate and verify its typed state proof and
    compare height/index/topic/sender with the message evidence.
-9. Emit independent statuses and an explanatory acceptance decision.
+10. Emit independent statuses and an explanatory acceptance decision.
 
 The implementation reuses `EvidenceVerifier`, `MessageInclusionProof`, `PortableProofBundle`, anchor
 datum codecs, and released state-proof verifiers. Browser and Java implementations share canonical
@@ -311,25 +402,101 @@ reason: retained/epoch/size boundary
 ```
 
 It must not describe the message as unfinalized. The user may import an externally obtained segment,
-use the optional state-index proof against a later retained state root, or query an archival node.
+use the default block-message-root or optional per-message state proof against a later retained
+state root, or query an archival node.
 
-### 6.4 Generic on-chain message claim
+### 6.4 Default authenticated block-message-root capability
 
-The first supported generic on-chain message statement is based on
-`FinalizedMessageIndex` plus MPF:
+`FinalizedBlockMessageRootIndex` is a reusable cross-cutting transition capability applied in the
+same atomic state commit as the owning `AppStateMachine`. It owns a reserved versioned namespace and
+writes:
+
+```text
+capability id:  state-index:finalized-block-messages-v1
+proof subject: finalized-block-messages-v1
+namespace:     ~yano/finalized-block-messages/v1/
+```
+
+The final Java/configuration names may differ, but these public identity strings and their versioned
+semantics are frozen before Phase 2 implementation. The canonical records are:
+
+```text
+config -> [schema-version, max-messages-per-block, retention-profile]
+block/H -> [schema-version, H, messagesRoot, messageCount]
+```
+
+The record deliberately excludes `stateRoot` and `blockHash`: both depend on the post-state and
+including either would create a circular commitment. Height, `messagesRoot`, and count are available
+before state commit and are already consensus-visible in the candidate block. The immutable record
+is committed only when that block receives finality and the complete state transition commits.
+
+Rules:
+
+1. The framework wrapper applies the capability to stock, composed, and custom machines; business
+   machines do not copy its writes.
+2. Every newly created stock, composed, custom, showcase, and generated profile enables it unless
+   that immutable profile explicitly disables it.
+3. Disablement is accepted only at genesis. Disabled means the zero-state-cost evidence path remains
+   available, and the different capability set produces a different application identity.
+4. Enablement, schema, namespace, message bound, and retention profile are included in the committed
+   capability manifest and application/genesis identity.
+5. The reserved namespace cannot be written through application commands or component-local state.
+6. A duplicate/conflicting height fails the candidate; replay of the same canonical record is
+   idempotent only through the normal rollback/replay transition contract.
+7. The write count is one per block, plus the configuration record at genesis. No mutable side index
+   is authoritative.
+8. Empty blocks record the canonical empty `messagesRoot`, count zero, and cannot produce a message
+   inclusion proof.
+
+At any later retained anchored state root `R_A`, the immutable record for height `H <= A` can be
+proved directly while it remains in primary state:
+
+```text
+message M
+  -> MessageInclusionProof under messagesRoot(H)
+  -> state proof of block/H = [H, messagesRoot(H), count]
+  -> stateRoot(A)
+  -> independently verified L1 anchor
+```
+
+This is a nested proof: the compact binary message path proves membership under `messagesRoot`; the
+MPF/JMT proof authenticates that root as finalized block state under the anchored application root.
+
+Primary block records grow with block count. A separate committed retention profile may segment old
+records into ADR-028 authenticated snapshots. A segment can be deleted from primary state only after
+its complete secondary root and descriptor are committed there. The resulting archived proof is
+`message path -> block-record snapshot proof -> primary descriptor proof -> L1 anchor`. Silent local
+deletion without a committed descriptor is forbidden. The initial release may support direct
+primary retention only, but must publish storage projections and a safe threshold before claiming
+high-rate indefinite retention.
+
+### 6.5 Generic on-chain message claims
+
+The default generic on-chain message statement uses the block-message-root record plus MPF:
+
+```text
+the state root in this trusted anchor contains
+block H -> [messagesRoot R, messageCount N]
+and the bounded binary Merkle path proves message M is one of those N leaves under R
+```
+
+The shared validator verifies the MPF record proof against the anchor reference input, strictly
+decodes the record, then verifies the bounded Blake2b-256 binary Merkle path including index, count,
+odd-leaf duplication, and maximum tree depth.
+
+When `FinalizedMessageIndex` is also enabled, a smaller alternative statement is available:
 
 ```text
 the state root in this trusted anchor contains
 message M -> [height H, index I, topic T, sender S]
 ```
 
-The validator verifies the MPF proof against the anchor reference input and then applies only a
-bounded predicate over the decoded record. Enabling the index changes consensus state cost and
-application identity and remains explicit.
+That validator verifies one MPF proof and a bounded predicate over the decoded record. Enabling the
+per-message index changes consensus state cost and application identity and remains explicit.
 
-Direct on-chain verification of arbitrary historical block `messagesRoot` evidence is deferred. It
-would require a separately qualified block-header/finality/anchor bridge and should not be confused
-with the simpler state-root proof.
+JMT versions of both statements remain off-chain only. Direct on-chain verification of the
+zero-additional-state block-header/finality chain remains deferred because it requires a separately
+qualified header/finality/anchor verifier.
 
 ## 7. Typed state proof subjects
 
@@ -443,6 +610,7 @@ The first catalog covers capabilities already implemented by stock or reference 
 
 | Subject | Example coordinates | Example claims |
 |---|---|---|
+| Finalized block messages | block height | messages root/count equality; message inclusion with nested path |
 | Finalized message record | message ID | recorded; height/index/topic/sender equality |
 | Ordered-log record | message ID or sequence | record equality; finalized position |
 | Document head | entity/document ID | current revision; digest; status |
@@ -482,6 +650,7 @@ messageId
 suppliedMessage?                     optional full canonical message
 messageInclusionProof
 evidence                             blocks, finality certificates, membership claim
+blockMessageRootProof?               default authenticated [height,messagesRoot,count] state proof
 stateRecordProof?                    optional finalized-message typed proof
 anchorReference?
 verificationPolicy
@@ -578,7 +747,9 @@ under technical details. Export remains available without forcing a beginner to 
 
 The console reads the chain's committed manifest and effective descriptors:
 
-* no finalized-message index: show universal block proof, hide state-record proof;
+* block-message-root index enabled: use the default nested message-path + state-proof workflow;
+* block-message-root index disabled: show the zero-state-cost block/finality evidence workflow;
+* finalized-message index enabled: additionally offer the direct record proof and decoded metadata;
 * MPF: offer off-chain verification and qualified on-chain export per subject;
 * JMT: show off-chain only and explain why on-chain export is unavailable;
 * snapshots disabled: hide snapshot view selectors;
@@ -618,14 +789,24 @@ descriptors but not main-console UI assets.
 12. **No executable descriptors.** Subject discovery cannot inject code or markup into the console.
 13. **Profile-qualified on-chain export.** Only MPF subjects with bounded, tested validators can
     advertise `ONCHAIN_MPF`.
-14. **Rollback and replay safety.** This ADR adds no authoritative mutable side index. Optional
-    finalized-message indexing remains part of atomic consensus transition state.
+14. **No circular commitment.** The block-message-root record contains height, message root, and
+    count, never the current block hash or post-state root.
+15. **Reserved system namespace.** Application and component commands cannot forge or overwrite the
+    block-message-root or finalized-message records.
+16. **Rollback and replay safety.** This ADR adds no authoritative mutable side index. The default
+    block-message-root and optional per-message indexes are part of the atomic consensus transition.
 
 ## 11. Performance and retention
 
 Message proof generation reads one finalized block and builds a logarithmic sibling path. Evidence
 segments remain bounded by the existing block count and byte limits. The UI does not fetch a full
 block segment until the user requests finality/anchor verification.
+
+The default block-message-root capability adds one authenticated state write per finalized block,
+independent of message count. The direct `FinalizedMessageIndex` adds one authenticated write per
+indexed message plus its tip update and therefore remains opt-in. Qualification publishes bytes per
+block, proof sizes/latency, root-update cost, RocksDB amplification, restart time, and projections at
+1-second, 5-second, and 20-second block intervals.
 
 Typed resolution adds no second authoritative database. It derives canonical keys and uses existing
 root-fixed state/snapshot proof APIs. Providers may cache immutable descriptor documents by manifest
@@ -641,6 +822,12 @@ The response exposes:
 
 High-cardinality datasets use ADR-028 authenticated snapshots. Restoring an archived snapshot is an
 explicit node-local operation and does not alter consensus state or its root.
+
+For chains whose block history would make direct primary retention unbounded, a committed segmented
+snapshot profile moves sealed height ranges into authenticated snapshots. This is a consensus-visible
+proof-layout choice fixed at genesis, not node-local pruning. Until that profile is implemented and
+qualified, disabling the default block-root index is the supported zero-extra-state choice for very
+high block-rate chains.
 
 ## 12. Alternatives considered
 
@@ -660,18 +847,26 @@ Rejected. It creates a remote-code/UI supply-chain boundary, inconsistent UX, an
 Data-only descriptors plus generic components cover common proof workflows; specialized products
 can ship a separate UI.
 
-### 12.4 Make finalized-message indexing mandatory
+### 12.4 Make finalized-message indexing the default
 
 Rejected. Universal compact message proofs already exist, while mandatory indexing increases every
-application's authenticated write volume and changes state identity. It remains opt-in except where
-intrinsic to the application contract.
+application's authenticated write volume in proportion to message count. It remains opt-in except
+where intrinsic to the application contract. The block-message-root index provides the default
+bridge with one write per block.
 
-### 12.5 Describe any valid proof as proving message availability
+### 12.5 Keep only block-header/finality evidence
+
+Rejected as the default. It has zero additional state cost, but a message below the latest anchor may
+require a long retained header segment, membership transitions complicate verification, and the
+generic MPF on-chain foundation cannot consume it directly. It remains the fallback when the default
+block-root capability is disabled.
+
+### 12.6 Describe any valid proof as proving message availability
 
 Rejected. Inclusion/finality prove commitment. A supplied or locally retained body proves content
 binding at verification time, not durable retrieval.
 
-### 12.6 Trust server-side verification alone
+### 12.7 Trust server-side verification alone
 
 Rejected at trust boundaries. The server verifier is useful for diagnostics and non-browser clients,
 but a proof-serving node cannot independently authenticate its own root or claimed L1 reference.
@@ -682,6 +877,8 @@ but a proof-serving node cannot independently authenticate its own root or claim
 
 * Capture current message lookup, compact proof, evidence, native state proof, anchor commitment,
   manifest, historical-watermark, and snapshot responses.
+* Characterize explicitly that `messagesRoot` and `stateRoot` are sibling block-header commitments
+  and that only state written by an application is automatically MPF/JMT-provable.
 * Add golden and adversarial vectors shared by Java and browser verification.
 * Freeze the verdict/trust vocabulary in section 5.
 * Add regression tests proving that retained content does not imply availability and internal
@@ -699,27 +896,38 @@ but a proof-serving node cannot independently authenticate its own root or claim
 **Gate:** The Operations page regains its current density, no proof capability is lost, and browser
 tests cover direct links, refresh, back/forward navigation, accessibility, and narrow layouts.
 
-### Phase 2 — end-to-end message verification
+### Phase 2 — default authenticated block-message-root bridge
 
-* Implement strict browser decoding and compact message-path verification.
-* Integrate the existing evidence verifier semantics, including caller-pinned membership.
+* Freeze the reserved namespace, configuration record, immutable block record, canonical CBOR, and
+  capability/subject IDs for `FinalizedBlockMessageRootIndex`.
+* Add one reusable atomic state-machine wrapper/capability used by stock, composed, and custom
+  applications without copying writes into business machines.
+* Enable it by default in new stock profiles, showcase chains, and generated templates; support an
+  explicit genesis-only disablement committed into application identity.
+* Add typed block-record proof generation and strict MPF/JMT verification.
+* Implement strict browser decoding and compact message-path verification against the authenticated
+  block record.
+* Measure one-record-per-block storage/root-update cost and publish high-rate projections.
+
+**Gate:** Default-enabled stock/composed/custom chains produce identical records and roots on every
+member; disabled chains preserve the zero-write baseline; mutations of height, count, message root,
+path, profile, key, value, and state root fail at the expected layer.
+
+### Phase 3 — complete message evidence and optional direct index
+
+* Integrate the existing evidence verifier fallback, including caller-pinned membership and bounded
+  header linkage when the block-root capability is disabled or certificate evidence is requested.
 * Add independent Cardano script-anchor resolution through the configured L1 adapter.
-* Define/export/import `appchain-message-proof-v1` with recomputed verdicts.
-* Report bounded-evidence and retention limitations without changing finality status.
-
-**Gate:** Valid live devnet/preprod bundles pass; mutations of message ID, index, sibling order,
-root, block, certificate, member set, threshold, chain linkage, anchor transaction, asset, script,
-datum, height, block hash, and root fail at the expected layer.
-
-### Phase 3 — optional finalized-message state proof
-
 * Detect the committed `state-index:finalized-message-v1` capability.
 * Resolve and decode its typed subject without asking for a physical key.
 * Cross-check its height/index/topic/sender against block evidence.
-* Export the first generic MPF on-chain message-record package.
+* Define/export/import `appchain-message-proof-v1` carrying whichever proof paths are present and
+  recomputing every verdict.
+* Report bounded-evidence, proof-retention, and body-retention limitations independently.
 
-**Gate:** Indexed and non-indexed chains have clear, correct workflows; JMT/on-chain and
-non-indexed/on-chain combinations fail closed before export.
+**Gate:** Default block-root, optional direct-message, and zero-state-cost evidence paths produce the
+same message-inclusion result under equivalent trust; all anchor/certificate/membership/path
+substitutions fail; availability remains `NOT_PROVEN`.
 
 ### Phase 4 — typed proof-subject SPI and discovery
 
@@ -747,7 +955,9 @@ proof workflow, and the same proof verifies across all three nodes.
 
 * Define/export/import `appchain-state-claim-proof-v1`.
 * Implement the bounded server verifier and independent browser verifier.
-* Add MPF normalized redeemer export for subjects with released validators.
+* Add the default nested MPF block-message-root plus bounded binary-Merkle on-chain verifier.
+* Add the smaller direct-message MPF export when `FinalizedMessageIndex` is enabled.
+* Add MPF normalized redeemer export for other subjects with released validators.
 * Publish transaction size/CPU/memory bounds and cross-language vectors.
 
 **Gate:** Authentic-proof/false-claim cases are rejected semantically; every mutated identity,
@@ -758,6 +968,8 @@ published Cardano budgets.
 
 * Add short guided scenarios for orders, documents, balances, approvals, authenticated map, and
   finalized messages.
+* Demonstrate default block-root, explicitly disabled, and optional per-message index profiles so
+  presenters can explain the proof/storage trade-off.
 * Cover MPF on-chain and JMT off-chain behavior explicitly.
 * Test three-node root/descriptor agreement, restart, rollback/replay, catch-up, pruning watermark,
   snapshot archive/restore/evict, and old-message evidence limits.
@@ -773,6 +985,11 @@ CBOR or physical keys.
 The implementation must include at least:
 
 * one, odd, even, maximum, duplicate, and substituted message Merkle paths;
+* default-enabled and explicitly disabled block-message-root profiles with committed identity drift;
+* empty, one-message, maximum-message, duplicate-height, altered-count/root, rollback/replay, and
+  late-follower block records;
+* verification of an old block record against a later anchored root, plus segmented snapshot
+  archive/restore when that retention profile is implemented;
 * full message, canonical retention tombstone, wrong body, wrong sender, wrong signature;
 * insufficient, duplicate, unknown, and rotated finality signers;
 * anchored/unanchored, bounded-gap, membership-boundary, missing-block, and altered-link evidence;
@@ -797,6 +1014,8 @@ The implementation must include at least:
 * Application semantics remain in contract modules rather than the runtime or console.
 * Message proof language becomes precise about finality, content, state recording, anchoring, and
   availability.
+* Every new stock chain has a low-cost, state-root-anchored message proof path by default.
+* Proof cost is proportional to blocks rather than messages unless the direct index is selected.
 * Typed claims can evolve independently while retaining the exact native proof underneath.
 * MPF on-chain export and JMT off-chain verification are visible and fail closed.
 * Product pages and the generic console converge on the same package and trust contracts.
@@ -807,7 +1026,11 @@ The implementation must include at least:
 * Each typed subject needs a stable coordinate/key/value/claim contract and negative tests.
 * Independent Cardano anchor resolution requires network access and a trusted network/script
   configuration.
-* Optional message state indexing increases consensus writes when enabled.
+* The default block-message-root bridge adds one consensus state write per block and changes new
+  application identities relative to the previous preview profile.
+* The optional direct message index adds substantially more writes for high-message-volume chains.
+* Direct primary block-record retention still grows with block count until the segmented snapshot
+  retention profile is implemented and qualified.
 * Rich evidence packages may be unavailable for old messages even when finality itself remains
   provable from retained or external material.
 
@@ -818,15 +1041,21 @@ This ADR is complete when:
 1. the generic UI has a dedicated Proofs tab and Operations no longer carries the full proof lab;
 2. a message ID can produce a verified, portable statement with separate inclusion, content,
    finality, anchor, state-record, and availability results;
-3. imported message/state packages are recomputed and altered embedded verdicts have no effect;
-4. typed subjects are discovered from the effective application profile without executable UI
+3. every new stock/showcase/generated profile enables the one-record-per-block authenticated
+   message-root bridge by default, while an explicit genesis-only disablement preserves the
+   zero-extra-state evidence path;
+4. an old message can be verified by a compact message path plus a block-record MPF/JMT proof
+   against a later retained anchored state root;
+5. imported message/state packages are recomputed and altered embedded verdicts have no effect;
+6. typed subjects are discovered from the effective application profile without executable UI
    injection;
-5. every showcase stock/reference application exposes at least one useful typed proof subject;
-6. absence is described semantically only with authenticated completeness;
-7. MPF-qualified subjects can export and validate bounded on-chain packages against script-anchor
+7. every showcase stock/reference application exposes at least one useful typed proof subject;
+8. absence is described semantically only with authenticated completeness;
+9. the default nested block-message MPF proof and qualified typed subjects can export and validate
+   bounded on-chain packages against script-anchor
    reference inputs;
-8. JMT is clearly and correctly off-chain only;
-9. old/pruned/archived material is distinguished from a missing fact;
-10. three-node, rollback/replay, adversarial, browser, and full-build qualification passes; and
-11. documentation enables an independent verifier to reproduce the result without trusting the
+10. JMT is clearly and correctly off-chain only;
+11. old/pruned/archived material is distinguished from a missing fact;
+12. three-node, rollback/replay, adversarial, browser, and full-build qualification passes; and
+13. documentation enables an independent verifier to reproduce the result without trusting the
     proof-serving node.

@@ -9,6 +9,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
+import com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider;
 import com.bloxbean.cardano.yano.api.appchain.transition.TransitionContext;
 import com.bloxbean.cardano.yano.api.appchain.transition.TransitionDecision;
 import com.bloxbean.cardano.yano.api.appchain.transition.TransitionPlans;
@@ -44,6 +45,8 @@ public final class DocTrailStateMachine implements AppStateMachine {
     public static final String ID = "doc-trail";
     public static final String QUERY_HEAD = "head";
     private final DocTrailTransitions transitions = new DocTrailTransitions();
+    private static final ProofSubjectProvider PROOF_SUBJECT =
+            StdlibProofSubjectProviders.documentTrail();
 
     @Override
     public String id() {
@@ -54,9 +57,13 @@ public final class DocTrailStateMachine implements AppStateMachine {
     public AppCapabilityManifest capabilityManifest() {
         return StdlibCapabilityManifests.component(
                         ID, DocTrailContract.DEFAULT_TOPIC, List.of(QUERY_HEAD))
-                .proofSubject(new AppCapabilityManifest.ProofSubject(
-                        "document-head-v1", "", "e/", "state-proof"))
+                .proofSubject(StdlibProofSubjectProviders.manifest(PROOF_SUBJECT, "e/"))
                 .build();
+    }
+
+    @Override
+    public List<ProofSubjectProvider> proofSubjectProviders() {
+        return List.of(PROOF_SUBJECT);
     }
 
     @Override

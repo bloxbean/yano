@@ -3,12 +3,14 @@ package com.bloxbean.cardano.yano.appchain.roles;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
+import com.bloxbean.cardano.yano.api.appchain.AppCapabilityManifest;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
+import com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider;
 import com.bloxbean.cardano.yano.appchain.composite.ComponentDescriptor;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ApprovalPolicyV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.DirectRolePolicyV1;
@@ -23,6 +25,7 @@ import com.bloxbean.cardano.yano.appchain.roles.internal.RoleState;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.List;
 
 /** State owner and exact-query surface for policy revisions and role decisions. */
 public final class RoleAwareApprovalsComponent implements AppStateMachine {
@@ -40,6 +43,8 @@ public final class RoleAwareApprovalsComponent implements AppStateMachine {
 
     private final ComponentDescriptor descriptor;
     private final GovernedGenesisV1 genesis;
+    private static final ProofSubjectProvider APPROVAL_SUBJECT =
+            RoleProofSubjectProviders.approval();
 
     public RoleAwareApprovalsComponent(ComponentDescriptor descriptor) {
         this(descriptor, null);
@@ -59,6 +64,22 @@ public final class RoleAwareApprovalsComponent implements AppStateMachine {
     public ComponentDescriptor descriptor() { return descriptor; }
 
     @Override public String id() { return descriptor.componentId(); }
+
+    @Override
+    public AppCapabilityManifest capabilityManifest() {
+        return AppCapabilityManifest.builder(COMPONENT_ID, descriptor.semanticVersion())
+                .component(new AppCapabilityManifest.Component(COMPONENT_ID,
+                        descriptor.semanticVersion(), descriptor.configurationId(),
+                        "component/role-approvals/v1", descriptor.topics(), descriptor.queryPaths(),
+                        AppCapabilityManifest.Origin.INTRINSIC))
+                .proofSubject(RoleProofSubjectProviders.manifest(APPROVAL_SUBJECT, "q/"))
+                .build();
+    }
+
+    @Override
+    public List<ProofSubjectProvider> proofSubjectProviders() {
+        return List.of(APPROVAL_SUBJECT);
+    }
 
     @Override
     public void init(AppStateReader ownState, AppChainInfo chain) {

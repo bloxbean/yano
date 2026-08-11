@@ -94,8 +94,10 @@ approvals.
   root-fixed committed-query surface and adds the decoded domain projection
   when available. The committed result remains visible if that convenience
   projection is unavailable.
-- Every running app chain exposes the portable evidence-bundle and MPF-proof
-  tools. The browser can SHA-256 the exact finalized message payload or
+- Every running app chain exposes **Operations**, **Capabilities**, and
+  **Proofs**. Proofs is divided into **Message**, **State**, **Import and
+  verify**, and **Advanced** workflows. The browser can SHA-256 the exact
+  finalized message payload or
   included proof value and compare each with its own optional expected digest.
   A proof can be loaded at the current tip, loaded at the exact height of the
   latest anchor confirmed by this node, or pasted as JSON. **Verify proof**
@@ -105,6 +107,11 @@ approvals.
   - whether the MPF path is mathematically valid for the expected root;
   - whether the proof envelope's root and optional height match that source;
   - where the expected root came from.
+
+The State workflow discovers typed proof subjects from the chain's immutable
+capability manifest and keeps physical state keys in Advanced. For the trust
+labels, provider contract, verifier sequence, and on-chain export bounds, see
+the [Proof Lab guide](appchain/PROOF_LAB.md).
 
 `L1-confirmed by this node` means Yano observed the anchor transaction and
 bound its persisted confirmation back to the exact finalized app block. It is
@@ -133,6 +140,11 @@ L1 transaction details are loaded lazily from the connected Yano node and
 remain optional when retained L1 history is unavailable. The browser does not
 decode arbitrary Cardano or proof CBOR and never reads the disposable demo
 journal.
+
+The Bridge tab's server-built CIP-30 deposit may select a wallet input that
+contains ADA plus native assets. The vault output remains ADA-only and every
+native asset is returned to the depositor as change; signing and submission
+remain wallet-owned.
 
 Operational configuration, endpoints, metrics, rebuild safety, and the
 measured SQLite support envelope are documented in the

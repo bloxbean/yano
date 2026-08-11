@@ -204,7 +204,8 @@ class AppChainAdminTest {
                     assertThat(manifest.applicationId()).isEqualTo("document-only");
                     assertThat(manifest.crossCutting())
                             .extracting(capability -> capability.capabilityId())
-                            .containsExactly("state-commitment:mpf-blake2b256-v1");
+                            .containsExactly("state-commitment:mpf-blake2b256-v1",
+                                    "state-index:finalized-block-messages-v1");
                 });
     }
 

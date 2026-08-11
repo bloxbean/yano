@@ -32,6 +32,16 @@ export async function finalizedMessageStateKey(messageId: string): Promise<strin
   return Array.from(digest, (item) => item.toString(16).padStart(2, '0')).join('');
 }
 
+export async function finalizedBlockMessageStateKey(height: number): Promise<string> {
+  if (!Number.isSafeInteger(height) || height < 1) throw new Error('Block height must be positive');
+  const namespace = new TextEncoder().encode('~yano/finalized-block-messages/v1/block/');
+  const material = new Uint8Array(namespace.length + 8);
+  material.set(namespace);
+  new DataView(material.buffer).setBigUint64(namespace.length, BigInt(height), false);
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', material));
+  return Array.from(digest, (item) => item.toString(16).padStart(2, '0')).join('');
+}
+
 export function boundedPretty(value: unknown, max = 32 * 1024): string {
   const rendered = JSON.stringify(value, null, 2) ?? String(value);
   return rendered.length <= max ? rendered : `${rendered.slice(0, max)}\n… output truncated in console …`;

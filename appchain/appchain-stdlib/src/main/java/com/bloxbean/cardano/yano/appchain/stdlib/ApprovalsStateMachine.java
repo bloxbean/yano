@@ -17,6 +17,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.effects.ActivationSchedule;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
+import com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectId;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectIntent;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectOutcome;
@@ -79,6 +80,8 @@ public final class ApprovalsStateMachine implements AppStateMachine {
 
     private final AppChainApprovalsConfig onApprovedEffect;
     private final ActivationSchedule activations;
+    private static final ProofSubjectProvider PROOF_SUBJECT =
+            StdlibProofSubjectProviders.approvals();
 
     public ApprovalsStateMachine() {
         this(AppChainApprovalsConfig.DISABLED, ActivationSchedule.empty());
@@ -108,9 +111,13 @@ public final class ApprovalsStateMachine implements AppStateMachine {
                         AppCapabilityIds.BASIC_APPROVAL, "1.0.0", true,
                         "approvals-state-v1", java.util.Map.of(),
                         AppCapabilityManifest.Origin.INTRINSIC))
-                .proofSubject(new AppCapabilityManifest.ProofSubject(
-                        "basic-approval-outcome-v1", "", "i/", "state-proof"))
+                .proofSubject(StdlibProofSubjectProviders.manifest(PROOF_SUBJECT, "i/"))
                 .build();
+    }
+
+    @Override
+    public List<ProofSubjectProvider> proofSubjectProviders() {
+        return List.of(PROOF_SUBJECT);
     }
 
     @Override

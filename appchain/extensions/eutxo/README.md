@@ -146,6 +146,11 @@ yano:
 
 The deposit flow is deliberately conservative:
 
+The host-built CIP-30 transaction may spend either a pure-ADA wallet UTxO or
+a wallet UTxO containing ADA plus native assets. Native assets are preserved
+in change back to the depositor; only the accepted vault output is ADA-only.
+The node never receives the wallet signing key.
+
 1. The depositor locks lovelace at the refundable staging contract with the
    target chain, L2 address, nonce, depositor credential, and refund deadline.
 2. Before the deadline, the federation moves that exact intent into the

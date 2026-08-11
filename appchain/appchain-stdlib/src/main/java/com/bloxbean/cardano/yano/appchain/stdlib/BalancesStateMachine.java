@@ -8,9 +8,11 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
+import com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.BalancesContract;
 
 import java.math.BigInteger;
+import java.util.List;
 
 /**
  * Standard-library state machine {@code balances} (ADR app-layer/006 E2.3):
@@ -46,6 +48,8 @@ public final class BalancesStateMachine implements AppStateMachine {
 
     /** Optional minter public key hex; empty = any member may mint. */
     private final String minterHex;
+    private static final ProofSubjectProvider PROOF_SUBJECT =
+            StdlibProofSubjectProviders.balances();
 
     public BalancesStateMachine() {
         this("");
@@ -70,9 +74,13 @@ public final class BalancesStateMachine implements AppStateMachine {
         return StdlibCapabilityManifests.component(
                         ID, com.bloxbean.cardano.yano.appchain.stdlib.contracts
                                 .BalancesContract.DEFAULT_TOPIC)
-                .proofSubject(new AppCapabilityManifest.ProofSubject(
-                        "account-balance-v1", "", "b/", "state-proof"))
+                .proofSubject(StdlibProofSubjectProviders.manifest(PROOF_SUBJECT, "b/"))
                 .build();
+    }
+
+    @Override
+    public List<ProofSubjectProvider> proofSubjectProviders() {
+        return List.of(PROOF_SUBJECT);
     }
 
     @Override

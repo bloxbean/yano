@@ -72,6 +72,20 @@ class EutxoBridgeResourceTest {
                 .build();
     }
 
+    private static Utxo multiAssetUtxo(int index, long lovelace) {
+        return Utxo.builder()
+                .txHash("33".repeat(32))
+                .outputIndex(index)
+                .address(DEPOSITOR.address())
+                .amount(List.of(
+                        Amount.lovelace(BigInteger.valueOf(lovelace)),
+                        Amount.builder()
+                                .unit("44".repeat(28) + "746f6b656e")
+                                .quantity(BigInteger.ONE)
+                                .build()))
+                .build();
+    }
+
     @Test
     void buildsUnsignedDepositWithInlineDatumAndAssemblesCip30Witnesses()
             throws Exception {
@@ -152,6 +166,29 @@ class EutxoBridgeResourceTest {
                         DEPOSITOR.address(), 8_000_000L, null)))
                 .isInstanceOf(WebApplicationException.class)
                 .hasMessageContaining("409");
+    }
+
+    @Test
+    void buildsDepositFromMultiAssetWalletUtxoAndReturnsAssetsAsChange()
+            throws Exception {
+        EutxoBridgeResource resource = resource(List.of(
+                multiAssetUtxo(0, 50_000_000L)));
+
+        Map<?, ?> fields = (Map<?, ?>) resource.depositBuild(
+                new EutxoBridgeResource.DepositBuildRequest(
+                        DEPOSITOR.address(), 8_000_000L, null)).getEntity();
+        Transaction unsigned = Transaction.deserialize(HexFormat.of().parseHex(
+                (String) fields.get("unsignedTxCborHex")));
+
+        var change = unsigned.getBody().getOutputs().stream()
+                .filter(output -> DEPOSITOR.address().equals(output.getAddress()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(change.getValue().getMultiAssets()).hasSize(1);
+        assertThat(change.getValue().getMultiAssets().getFirst().getAssets())
+                .singleElement()
+                .satisfies(asset -> assertThat(asset.getValue())
+                        .isEqualTo(BigInteger.ONE));
     }
 
     private static java.util.List<

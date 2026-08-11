@@ -24,6 +24,8 @@ import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 import com.bloxbean.cardano.yano.api.appchain.state.StateSnapshot;
 import com.bloxbean.cardano.yano.api.appchain.transition.FinalizedMessageIndex;
 import com.bloxbean.cardano.yano.api.appchain.transition.FinalizedMessageIndexedStateMachine;
+import com.bloxbean.cardano.yano.api.appchain.transition.FinalizedBlockMessageRootIndexedStateMachine;
+import com.bloxbean.cardano.yano.api.appchain.transition.FinalizedBlockMessageRootIndex;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.events.AppBlockFinalizedEvent;
 import com.bloxbean.cardano.yano.api.events.AppMessageReceivedEvent;
@@ -84,6 +86,7 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
     private final AppChainConsensusProfile consensusProfile;
     private final StateCommitmentIdentity stateCommitmentIdentity;
     private final StateProofPruningSettings proofPruningSettings;
+    private final com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectRegistry proofSubjectRegistry;
     private final long protocolMagic;
     private final EventBus eventBus;
     private final Logger log;
@@ -505,12 +508,18 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     : Objects.requireNonNull(stateMachine.id(), "AppStateMachine.id returned null");
             StateCommitmentIdentity baseStateIdentity = StateCommitmentIdentity.fromSettings(
                     config.pluginSettings());
-            StateCommitmentIdentity applicationStateIdentity = OrderedLogStateMachine.ID.equals(
-                    effectiveStateMachineId) ? baseStateIdentity
-                    : FinalizedMessageIndexedStateMachine.configuration(
-                                    config.pluginSettings(), consensusProfile.maxBlockMessages())
-                            .map(index -> baseStateIdentity.withApplicationProfile(index.digest()))
-                            .orElse(baseStateIdentity);
+            var blockMessageRootConfig =
+                    FinalizedBlockMessageRootIndexedStateMachine.configuration(
+                            config.pluginSettings(), consensusProfile.maxBlockMessages());
+            StateCommitmentIdentity blockIndexedStateIdentity =
+                    baseStateIdentity.withApplicationProfile(blockMessageRootConfig.digest());
+            StateCommitmentIdentity applicationStateIdentity = blockIndexedStateIdentity;
+            if (!OrderedLogStateMachine.ID.equals(effectiveStateMachineId)) {
+                applicationStateIdentity = FinalizedMessageIndexedStateMachine.configuration(
+                                config.pluginSettings(), consensusProfile.maxBlockMessages())
+                        .map(index -> blockIndexedStateIdentity.withApplicationProfile(index.digest()))
+                        .orElse(blockIndexedStateIdentity);
+            }
             AuthenticatedSnapshotSettings snapshotSettings =
                     AuthenticatedSnapshotSettings.from(config);
             StateCommitmentIdentity provisionalStateIdentity = snapshotSettings.enabled()
@@ -563,9 +572,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                     ? stateMachine
                     : resolveStateMachine(config.stateMachineId(), pluginProviders,
                             stateMachineContext, log);
-            AppStateMachine effectiveStateMachine = OrderedLogStateMachine.ID.equals(effectiveStateMachineId)
+            AppStateMachine applicationMachine = OrderedLogStateMachine.ID.equals(effectiveStateMachineId)
                     ? resolvedStateMachine
                     : maybeFinalizedMessageIndexed(resolvedStateMachine, stateMachineContext);
+            AppStateMachine effectiveStateMachine = maybeFinalizedBlockMessageRootIndexed(
+                    applicationMachine, stateMachineContext);
             if (snapshotSettings.enabled()) {
                 boolean l1ProofRequired = Boolean.parseBoolean(config.pluginSettings().getOrDefault(
                         StateCommitmentIdentity.L1_PROOF_REQUIRED_SETTING, "false"));
@@ -579,9 +590,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                         provisionalStateIdentity.digest(), finalIdentity.digest())) {
                     resolvedStateMachine = resolveStateMachine(config.stateMachineId(), pluginProviders,
                             stateMachineContext, log);
-                    effectiveStateMachine = OrderedLogStateMachine.ID.equals(effectiveStateMachineId)
+                    applicationMachine = OrderedLogStateMachine.ID.equals(effectiveStateMachineId)
                             ? resolvedStateMachine
                             : maybeFinalizedMessageIndexed(resolvedStateMachine, stateMachineContext);
+                    effectiveStateMachine = maybeFinalizedBlockMessageRootIndexed(
+                            applicationMachine, stateMachineContext);
                     var recreatedSelected = snapshotSettings.select(
                             effectiveStateMachine.authenticatedSnapshotSeries(),
                             applicationStateIdentity.profile(), l1ProofRequired);
@@ -596,6 +609,11 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 this.stateCommitmentIdentity = applicationStateIdentity;
             }
             this.stateMachine = effectiveStateMachine;
+            var proofSubjectProviders = effectiveStateMachine.proofSubjectProviders();
+            this.proofSubjectRegistry = proofSubjectProviders.isEmpty()
+                    ? com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectRegistry.empty()
+                    : com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectRegistry.bind(
+                            effectiveStateMachine.capabilityManifest(), proofSubjectProviders);
             this.ledgerPath = (ledgerPath != null
                     ? ledgerPath : YanoConfig.DEFAULT_APP_CHAIN_STORAGE_PATH)
                     + "/" + config.chainId();
@@ -866,6 +884,12 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             }
 
             @Override
+            public List<com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider>
+            proofSubjectProviders() {
+                return delegate.proofSubjectProviders();
+            }
+
+            @Override
             public List<com.bloxbean.cardano.yano.api.appchain.snapshot
                     .AuthenticatedSnapshotSeriesDescriptorV1> authenticatedSnapshotSeries() {
                 return delegate.authenticatedSnapshotSeries();
@@ -917,6 +941,19 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
                 .<AppStateMachine>map(index ->
                         new FinalizedMessageIndexedStateMachine(machine, index))
                 .orElse(machine);
+    }
+
+    private static AppStateMachine maybeFinalizedBlockMessageRootIndexed(
+            AppStateMachine machine,
+            AppStateMachineContext context
+    ) {
+        int frameworkLimit = context.consensusProfile().orElseThrow(() ->
+                new IllegalArgumentException(
+                        "finalized block-message index requires normalized consensus profile"))
+                .maxBlockMessages();
+        return new FinalizedBlockMessageRootIndexedStateMachine(machine,
+                FinalizedBlockMessageRootIndexedStateMachine.configuration(
+                        context.settings(), frameworkLimit));
     }
 
     private static com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerMode
@@ -2301,6 +2338,164 @@ public final class AppChainSubsystem implements Subsystem, AppChainGateway {
             AppLedgerStore currentLedger = ledger;
             return currentLedger != null
                     ? currentLedger.messageInclusionProof(id) : Optional.empty();
+        });
+    }
+
+    @Override
+    public Optional<com.bloxbean.cardano.yano.api.appchain.proof.MessageProofPackageV1>
+    messageProofPackage(byte[] messageId) {
+        byte[] id = Objects.requireNonNull(messageId, "messageId").clone();
+        if (id.length != 32) return Optional.empty();
+        return generationUseOr(Optional.empty(), () -> {
+            AppLedgerStore currentLedger = ledger;
+            if (currentLedger == null) return Optional.empty();
+            var inclusion = currentLedger.messageInclusionProof(id).orElse(null);
+            if (inclusion == null) return Optional.empty();
+            AppBlock target = currentLedger.block(inclusion.blockHeight()).orElse(null);
+            if (target == null) return Optional.empty();
+            AppMessage supplied = target.messages().stream()
+                    .filter(message -> Arrays.equals(message.getMessageId(), id))
+                    .findFirst().orElse(null);
+
+            var anchor = latestAnchorCommitmentWithinGeneration().orElse(null);
+            long proofHeight = anchor != null && anchor.anchoredHeight() >= inclusion.blockHeight()
+                    ? anchor.anchoredHeight() : currentLedger.tipHeight();
+            byte[] blockRecordKey = FinalizedBlockMessageRootIndex.blockKey(
+                    inclusion.blockHeight());
+            var blockRootProof = currentLedger.stateProofEnvelopeAtHeight(
+                    config.chainId(), proofHeight, blockRecordKey).orElse(null);
+            if (blockRootProof == null && proofHeight != currentLedger.tipHeight()) {
+                proofHeight = currentLedger.tipHeight();
+                blockRootProof = currentLedger.stateProofEnvelopeAtHeight(
+                        config.chainId(), proofHeight, blockRecordKey).orElse(null);
+            }
+            if (blockRootProof != null && blockRootProof.proof().presence()
+                    == com.bloxbean.cardano.yano.api.appchain.state.StateProof.Presence.ABSENT) {
+                blockRootProof = null;
+            }
+
+            var directProof = currentLedger.stateProofEnvelopeAtHeight(config.chainId(), proofHeight,
+                    FinalizedMessageIndex.messageKey(id)).orElse(null);
+            if (directProof != null && directProof.proof().presence()
+                    == com.bloxbean.cardano.yano.api.appchain.state.StateProof.Presence.ABSENT) {
+                directProof = null;
+            }
+            var evidence = evidenceWithinGeneration(id).orElse(null);
+            var availability = supplied != null && supplied.getAuthProof() != null
+                    && supplied.getAuthProof().length == AppChainConfig.ED25519_SIGNATURE_BYTES
+                    ? com.bloxbean.cardano.yano.api.appchain.proof.ProofLabVocabulary.Availability
+                    .LOCALLY_RETAINED
+                    : com.bloxbean.cardano.yano.api.appchain.proof.ProofLabVocabulary.Availability
+                    .NOT_PROVEN;
+            Map<String, Object> explanatory = Map.of(
+                    "messageLocated", supplied != null,
+                    "messageIncluded", inclusion.verifiesRoot(),
+                    "availability", availability.name(),
+                    "authoritative", false);
+            return Optional.of(new com.bloxbean.cardano.yano.api.appchain.proof.MessageProofPackageV1(
+                    com.bloxbean.cardano.yano.api.appchain.proof.MessageProofPackageV1.SCHEMA,
+                    config.chainId(), stateCommitmentIdentity, id, supplied, inclusion,
+                    evidence, blockRootProof, directProof, anchor,
+                    com.bloxbean.cardano.yano.api.appchain.proof.MessageProofPackageV1
+                            .VerificationPolicy.NODE_CONFIRMED_ANCHOR_LINKAGE,
+                    availability, explanatory));
+        });
+    }
+
+    @Override
+    public List<com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectDescriptorV1>
+    proofSubjects() {
+        return proofSubjectRegistry.descriptors();
+    }
+
+    @Override
+    public com.bloxbean.cardano.yano.api.appchain.proof.TypedProofResultV1 proofSubjectProof(
+            String subjectId,
+            Map<String, String> coordinates,
+            com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider.ProofView view,
+            com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider.ClaimRequest claim
+    ) {
+        return requireGenerationUse(() -> {
+            var descriptor = proofSubjectRegistry.descriptor(subjectId);
+            var provider = proofSubjectRegistry.provider(subjectId);
+            var selectedView = view == null
+                    ? com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider
+                    .ProofView.latest() : view;
+            if (descriptor.storageScope()
+                    != com.bloxbean.cardano.yano.api.appchain.proof.ProofLabVocabulary
+                    .StorageScope.PRIMARY_STATE) {
+                throw new UnsupportedOperationException(
+                        "Typed authenticated-snapshot proof resolution is not available here");
+            }
+            var resolved = provider.resolve(subjectId,
+                    coordinates == null ? Map.of() : Map.copyOf(coordinates), selectedView);
+            if (!subjectId.equals(resolved.subjectId())) {
+                throw new IllegalArgumentException("proof subject provider returned another subject");
+            }
+            int coordinateBytes = resolved.normalizedCoordinates().entrySet().stream()
+                    .mapToInt(entry -> entry.getKey().getBytes(StandardCharsets.UTF_8).length
+                            + entry.getValue().getBytes(StandardCharsets.UTF_8).length).sum();
+            if (coordinateBytes > descriptor.limits().maxCoordinateBytes()) {
+                throw new IllegalArgumentException("proof subject coordinates exceed descriptor limit");
+            }
+            com.bloxbean.cardano.yano.api.appchain.state.StateProofEnvelope envelope;
+            var trust = com.bloxbean.cardano.yano.api.appchain.proof.ProofLabVocabulary
+                    .TrustLevel.INTERNAL_CONSISTENCY_ONLY;
+            switch (selectedView.kind()) {
+                case LATEST -> envelope = stateProofEnvelope(resolved.physicalKey())
+                        .orElseThrow(() -> new IllegalArgumentException("typed proof is unavailable"));
+                case HEIGHT -> {
+                    if (selectedView.height() == null || selectedView.height() < 1) {
+                        throw new IllegalArgumentException("typed proof height must be positive");
+                    }
+                    envelope = stateProofEnvelopeAtHeight(
+                            selectedView.height(), resolved.physicalKey()).orElseThrow(() ->
+                            new IllegalArgumentException("typed historical proof is unavailable"));
+                }
+                case LATEST_CONFIRMED_ANCHOR -> {
+                    var anchor = latestAnchorCommitmentWithinGeneration().orElseThrow(() ->
+                            new IllegalArgumentException("confirmed anchor is unavailable"));
+                    envelope = stateProofEnvelopeAtHeight(
+                            anchor.anchoredHeight(), resolved.physicalKey()).orElseThrow(() ->
+                            new IllegalArgumentException("typed anchored proof is unavailable"));
+                    trust = com.bloxbean.cardano.yano.api.appchain.proof.ProofLabVocabulary
+                            .TrustLevel.NODE_CONFIRMED_L1_REFERENCE;
+                }
+                case SNAPSHOT -> throw new UnsupportedOperationException(
+                        "Use an authenticated-snapshot subject for snapshot views");
+                default -> throw new IllegalArgumentException("unsupported typed proof view");
+            }
+            if (!Arrays.equals(envelope.proof().canonicalKey(), resolved.physicalKey())) {
+                throw new IllegalStateException("typed proof key differs from resolved key");
+            }
+            var fact = envelope.proof().presence()
+                    == com.bloxbean.cardano.yano.api.appchain.state.StateProof.Presence.PRESENT
+                    ? provider.decode(subjectId, envelope.proof().value()) : null;
+            if (envelope.proof().value() != null
+                    && envelope.proof().value().length > descriptor.limits().maxValueBytes()) {
+                throw new IllegalArgumentException("typed proof value exceeds descriptor limit");
+            }
+            com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider.ClaimResult result = null;
+            if (claim != null) {
+                boolean declared = descriptor.claims().stream()
+                        .anyMatch(value -> value.claimId().equals(claim.claimId()));
+                int operandBytes = claim.operands().entrySet().stream().mapToInt(entry ->
+                        entry.getKey().getBytes(StandardCharsets.UTF_8).length
+                                + entry.getValue().getBytes(StandardCharsets.UTF_8).length).sum();
+                if (!declared || operandBytes > descriptor.limits().maxClaimOperandBytes()) {
+                    throw new IllegalArgumentException("typed proof claim is undeclared or too large");
+                }
+                if (fact == null) {
+                    result = com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider
+                            .ClaimResult.unsupported("No authenticated value is present");
+                } else {
+                    result = provider.evaluate(subjectId, fact, claim);
+                }
+            }
+            return new com.bloxbean.cardano.yano.api.appchain.proof.TypedProofResultV1(
+                    1, descriptor, resolved.normalizedCoordinates(),
+                    resolved.canonicalLogicalKey(), resolved.physicalKey(), envelope,
+                    fact, claim, result, trust);
         });
     }
 

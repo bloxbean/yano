@@ -6,6 +6,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSink;
 import com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginProviderRegistry;
@@ -427,7 +428,8 @@ class SinkRunnerLifecycleTest {
             // successful callback returned after shutdown, so its cursor must
             // not have been committed.
             try (AppLedgerStore reopened = reopen(
-                    ledgerPath.resolve(config.chainId()), 5_000)) {
+                    ledgerPath.resolve(config.chainId()),
+                    subsystem.stateCommitmentIdentity().orElseThrow(), 5_000)) {
                 assertThat(reopened.metaLong(SinkRunner.cursorKeyFor(sinkId), -1L))
                         .isEqualTo(0L);
             }
@@ -456,12 +458,13 @@ class SinkRunnerLifecycleTest {
         };
     }
 
-    private static AppLedgerStore reopen(Path path, long timeoutMillis) throws Exception {
+    private static AppLedgerStore reopen(Path path, StateCommitmentIdentity identity,
+                                         long timeoutMillis) throws Exception {
         long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
         RuntimeException lastFailure = null;
         while (System.nanoTime() < deadline) {
             try {
-                return new AppLedgerStore(path.toString(), LOG);
+                return new AppLedgerStore(path.toString(), LOG, identity);
             } catch (RuntimeException failure) {
                 lastFailure = failure;
                 Thread.sleep(25);

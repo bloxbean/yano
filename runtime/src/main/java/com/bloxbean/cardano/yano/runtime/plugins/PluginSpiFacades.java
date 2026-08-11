@@ -1298,6 +1298,51 @@ final class PluginSpiFacades {
         }
 
         @Override
+        public List<com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider>
+        proofSubjectProviders() {
+            var values = Objects.requireNonNull(pluginCall(callbacks, loader,
+                            delegate::proofSubjectProviders),
+                    "AppStateMachine.proofSubjectProviders() must not return null");
+            var snapshot = snapshotList(values, loader, callbacks,
+                    com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectDescriptorV1
+                            .MAX_DESCRIPTORS,
+                    "AppStateMachine must declare at most 64 proof subject providers");
+            return snapshot.stream().map(provider -> {
+                var source = Objects.requireNonNull(provider, "proof subject provider");
+                return (com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider)
+                        new com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider() {
+                    @Override
+                    public List<com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectDescriptorV1>
+                    descriptors(com.bloxbean.cardano.yano.api.appchain.AppCapabilityManifest profile) {
+                        return List.copyOf(pluginCall(callbacks, loader,
+                                () -> source.descriptors(profile)));
+                    }
+
+                    @Override
+                    public ResolvedProofSubject resolve(String subjectId,
+                                                        Map<String, String> coordinates,
+                                                        ProofView view) {
+                        return pluginCall(callbacks, loader,
+                                () -> source.resolve(subjectId, Map.copyOf(coordinates), view));
+                    }
+
+                    @Override
+                    public TypedFact decode(String subjectId, byte[] canonicalValue) {
+                        byte[] value = canonicalValue.clone();
+                        return pluginCall(callbacks, loader, () -> source.decode(subjectId, value));
+                    }
+
+                    @Override
+                    public ClaimResult evaluate(String subjectId, TypedFact fact,
+                                                ClaimRequest claim) {
+                        return pluginCall(callbacks, loader,
+                                () -> source.evaluate(subjectId, fact, claim));
+                    }
+                };
+            }).toList();
+        }
+
+        @Override
         public List<AuthenticatedSnapshotSeriesDescriptorV1> authenticatedSnapshotSeries() {
             List<AuthenticatedSnapshotSeriesDescriptorV1> values = Objects.requireNonNull(
                     pluginCall(callbacks, loader, delegate::authenticatedSnapshotSeries),

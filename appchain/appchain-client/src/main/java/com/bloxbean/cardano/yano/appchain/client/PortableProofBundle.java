@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.appchain.client;
 import com.bloxbean.cardano.client.crypto.config.CryptoConfiguration;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.evidence.MessageInclusionProof;
+import com.bloxbean.cardano.yano.api.appchain.proof.ProofLabVocabulary;
 import com.bloxbean.cardano.yano.api.appchain.state.StateProofSubject;
 
 import java.util.Arrays;
@@ -64,9 +65,17 @@ public record PortableProofBundle<T>(
             stateFact = ProofVerifier.verify(stateProof.proof(), trustedStateRoot)
                     ? StateFactStatus.VERIFIED : StateFactStatus.INVALID;
         }
+        ProofLabVocabulary.TrustLevel trust = trustedBlock == null
+                ? ProofLabVocabulary.TrustLevel.INTERNAL_CONSISTENCY_ONLY
+                : switch (trustedBlock.source()) {
+                    case FINALITY_CERTIFICATE, CALLER_PINNED ->
+                            ProofLabVocabulary.TrustLevel.CALLER_PINNED_ROOT;
+                    case CARDANO_ANCHOR ->
+                            ProofLabVocabulary.TrustLevel.INDEPENDENTLY_VERIFIED_L1_ANCHOR;
+                };
         return new VerificationResult(
                 finalized ? FinalizationStatus.VERIFIED : FinalizationStatus.INVALID,
-                content, stateFact, AvailabilityStatus.NOT_PROVEN);
+                content, stateFact, ProofLabVocabulary.Availability.NOT_PROVEN, trust);
     }
 
     private static boolean validSuppliedMessage(
@@ -118,7 +127,8 @@ public record PortableProofBundle<T>(
             FinalizationStatus finalization,
             ContentStatus content,
             StateFactStatus stateFact,
-            AvailabilityStatus availability
+            ProofLabVocabulary.Availability availability,
+            ProofLabVocabulary.TrustLevel trust
     ) {
         public boolean valid() {
             return finalization == FinalizationStatus.VERIFIED
@@ -131,5 +141,4 @@ public record PortableProofBundle<T>(
     public enum FinalizationStatus { VERIFIED, INVALID }
     public enum ContentStatus { ID_ONLY, SUPPLIED_CONTENT_VERIFIED, SUPPLIED_CONTENT_INVALID }
     public enum StateFactStatus { NOT_INCLUDED, TRUSTED_ROOT_REQUIRED, VERIFIED, INVALID }
-    public enum AvailabilityStatus { NOT_PROVEN }
 }

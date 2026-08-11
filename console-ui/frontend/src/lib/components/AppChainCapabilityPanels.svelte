@@ -2,24 +2,30 @@
   import { onMount } from 'svelte';
   import type { AnchorCommitment, AppCapabilityManifest, AppChainStatus,
     AuthenticatedSnapshotStatus, AuthenticatedSnapshotSummary, ProofVerificationResult,
-    StateProofEnvelope } from '$lib/api/types';
+    ProofSubjectDescriptor, StateProofEnvelope } from '$lib/api/types';
   import { YanoApi, apiFailureMessage } from '$lib/api/client';
   import { discoverChainCapabilities } from '$lib/appchain/capabilities';
   import { effectStatsView } from '$lib/appchain/effect-stats';
   import { assessProofBinding, parseProofEnvelope } from '$lib/appchain/proof-verification';
   import { asciiHex, boundedPretty, finalizedMessageStateKey, hexSha256, PRODUCT_ID, SHA256, STATE_KEY } from '$lib/appchain/verification';
+  import { verifyMessageInclusionProof, type BrowserMessageInclusionProof } from '$lib/appchain/message-proof';
+  import { verifyNormalizedMpf, type NormalizedMpfProof } from '$lib/appchain/normalized-mpf';
   import { numberValue, objectList, objectValue, shortHash, stringValue } from '$lib/appchain/value';
   import CopyValue from './CopyValue.svelte';
   import MetricRow from './MetricRow.svelte';
 
   type PanelSection = 'all' | 'overview' | 'verification' | 'effects';
+  type ProofSection = 'message' | 'state' | 'import' | 'advanced';
 
-  let { api, chainId, status, pluginBundleIds = [], section = 'all' } = $props<{
+  let { api, chainId, status, pluginBundleIds = [], section = 'all',
+    proofSection = 'message', initialMessageId = '' } = $props<{
     api: YanoApi;
     chainId: string;
     status: AppChainStatus;
     pluginBundleIds?: string[];
     section?: PanelSection;
+    proofSection?: ProofSection;
+    initialMessageId?: string;
   }>();
   let effects = $state<Array<Record<string, unknown>>>([]);
   let effectStats = $state<Record<string, unknown>>({});
@@ -36,6 +42,8 @@
   let expectedProofValueHash = $state('');
   let evidence = $state('');
   let messageProof = $state('');
+  let messagePackage = $state('');
+  let messageInclusionValid = $state<boolean>();
   let proof = $state('');
   let proofEnvelope = $state<StateProofEnvelope>();
   let expectedProofRoot = $state('');
@@ -52,6 +60,7 @@
   let effectView = $derived(effectStatsView(effectStats));
   let showOverview = $derived(section === 'all' || section === 'overview');
   let showVerification = $derived(section === 'all' || section === 'verification');
+  let showMessageProof = $derived(proofSection === 'message');
   let showEffects = $derived(section === 'all' || section === 'effects');
   let proofBinding = $derived(proofEnvelope
     ? assessProofBinding(proofEnvelope, expectedProofRoot, expectedProofHeight) : undefined);
@@ -61,11 +70,87 @@
   let snapshots = $state<AuthenticatedSnapshotSummary[]>([]);
   let snapshotDetail = $state('');
   let snapshotError = $state('');
+  let proofSubjects = $state<ProofSubjectDescriptor[]>([]);
+  let selectedSubjectId = $state('');
+  let typedCoordinates = $state<Record<string, string>>({});
+  let selectedClaimId = $state('');
+  let typedClaimOperand = $state('');
+  let typedProofResult = $state('');
+  let typedPackage = $state('');
+  let typedError = $state('');
+  let typedBrowserVerification = $state<boolean>();
+  let selectedSubject = $derived(proofSubjects.find((item) => item.subjectId === selectedSubjectId));
+  let showTypedState = $derived(proofSection === 'state');
+  let showRawState = $derived(proofSection === 'import' || proofSection === 'advanced');
 
   onMount(() => {
+    messageId = initialMessageId;
     if (showEffects && capabilities.effects) void refreshEffects();
     if (showOverview && capabilities.authenticatedSnapshots) void refreshSnapshots();
+    if (showVerification) void refreshProofSubjects();
   });
+
+  async function refreshProofSubjects(): Promise<void> {
+    typedError = '';
+    try {
+      proofSubjects = (await api.chainProofSubjects(chainId)).subjects;
+      if (!proofSubjects.some((item) => item.subjectId === selectedSubjectId)) {
+        selectedSubjectId = proofSubjects[0]?.subjectId ?? '';
+        typedCoordinates = {};
+        selectedClaimId = '';
+      }
+    } catch (cause) {
+      typedError = apiFailureMessage(cause, 'Typed proof subjects unavailable');
+    }
+  }
+
+  function selectSubject(subjectId: string): void {
+    selectedSubjectId = subjectId;
+    typedCoordinates = {};
+    selectedClaimId = '';
+    typedClaimOperand = '';
+    typedProofResult = '';
+    typedPackage = '';
+    typedBrowserVerification = undefined;
+  }
+
+  function typedRequest(): Record<string, unknown> {
+    if (!selectedSubject) throw new Error('Select a proof subject.');
+    for (const coordinate of selectedSubject.coordinates) {
+      if (!(typedCoordinates[coordinate.id] ?? '').trim()) {
+        throw new Error(`Enter ${coordinate.label}.`);
+      }
+    }
+    const selectedClaim = selectedSubject.claims.find((item) => item.claimId === selectedClaimId);
+    const operands = selectedClaim?.operands.length
+      ? Object.fromEntries(selectedClaim.operands.map((operand) => [operand, typedClaimOperand])) : {};
+    return { coordinates: typedCoordinates, view: 'latest', includeEvidence: false,
+      ...(selectedClaim ? { claim: { claimId: selectedClaim.claimId, operands } } : {}) };
+  }
+
+  async function generateTypedProof(): Promise<void> {
+    typedError = ''; typedProofResult = ''; typedPackage = ''; typedBrowserVerification = undefined;
+    try {
+      const request = typedRequest();
+      const [result, portable] = await Promise.all([
+        api.chainTypedProof(chainId, selectedSubjectId, request),
+        api.chainTypedProofPackage(chainId, selectedSubjectId, request)
+      ]);
+      typedProofResult = boundedPretty(result, 128 * 1024);
+      typedPackage = boundedPretty(portable, 128 * 1024);
+    } catch (cause) { typedError = apiFailureMessage(cause, 'Typed proof unavailable'); }
+  }
+
+  async function exportTypedOnChain(): Promise<void> {
+    typedError = '';
+    try {
+      const exported = await api.chainOnChainProofExport(
+        chainId, selectedSubjectId, typedRequest());
+      typedBrowserVerification = verifyNormalizedMpf(
+        exported.normalizedMpfProof as NormalizedMpfProof);
+      typedPackage = boundedPretty(exported, 128 * 1024);
+    } catch (cause) { typedError = apiFailureMessage(cause, 'On-chain export unavailable'); }
+  }
 
   async function refreshSnapshots(): Promise<void> {
     snapshotError = '';
@@ -165,15 +250,19 @@
   }
 
   async function loadEvidence(): Promise<void> {
-    evidence = ''; messageProof = ''; payloadDigest = ''; verificationError = '';
+    evidence = ''; messageProof = ''; messagePackage = ''; payloadDigest = '';
+    messageInclusionValid = undefined; verificationError = '';
     if (!SHA256.test(messageId)) { verificationError = 'Message id must be 64 lowercase hex characters.'; return; }
     try {
-      const [bundle, message, inclusion] = await Promise.all([
+      const [bundle, message, inclusion, portable] = await Promise.all([
         api.chainEvidence(chainId, messageId), api.chainMessage(chainId, messageId),
-        api.chainMessageProof(chainId, messageId)
+        api.chainMessageProof(chainId, messageId), api.chainMessageProofPackage(chainId, messageId)
       ]);
       evidence = boundedPretty(bundle);
       messageProof = boundedPretty(inclusion);
+      messagePackage = boundedPretty(portable, 128 * 1024);
+      messageInclusionValid = verifyMessageInclusionProof(
+        inclusion as BrowserMessageInclusionProof);
       if (typeof message.bodyHex === 'string') payloadDigest = await hexSha256(message.bodyHex);
     } catch (cause) { verificationError = apiFailureMessage(cause, 'Evidence unavailable'); }
   }
@@ -583,8 +672,12 @@
 {/if}
 
 {#if showVerification}
-  <div class="section-title">Portable verification</div>
-  <div class="grid gap-4 xl:grid-cols-2">
+  <div class="section-title">{proofSection === 'message' ? 'Message proof'
+    : proofSection === 'state' ? 'Typed state proof'
+    : proofSection === 'import' ? 'Import and verify'
+    : 'Advanced state proof'}</div>
+  <div class="grid gap-4 {showMessageProof ? '' : 'xl:grid-cols-1'}">
+  {#if showMessageProof}
   <section class="card p-5">
     <h2 class="mt-0 text-sm font-semibold">Evidence bundle</h2>
     <p class="text-xs text-slate-500">Fetch the finalized bundle and message, then SHA-256 the exact payload bytes in this browser.</p>
@@ -608,15 +701,107 @@
     {/if}
     {#if messageProof}
       <h3 class="mb-1 mt-4 text-xs uppercase tracking-wide text-slate-500">Message → messagesRoot path</h3>
+      <p class="rounded-lg border p-2 text-xs {messageInclusionValid
+        ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
+        : 'border-rose-500/30 bg-rose-500/10 text-rose-200'}">
+        Browser path verification: {messageInclusionValid ? 'VALID' : 'INVALID'}
+      </p>
       <pre class="max-h-64 overflow-auto rounded-lg bg-slate-950 p-3 text-xs">{messageProof}</pre>
     {/if}
     {#if evidence}
       <h3 class="mb-1 mt-4 text-xs uppercase tracking-wide text-slate-500">Signed block / finality evidence</h3>
       <pre class="max-h-96 overflow-auto rounded-lg bg-slate-950 p-3 text-xs">{evidence}</pre>
     {/if}
+    {#if messagePackage}
+      <h3 class="mb-1 mt-4 text-xs uppercase tracking-wide text-slate-500">Portable message package</h3>
+      <p class="text-xs text-slate-500">Imported verdict fields are explanatory; verifiers recompute them.</p>
+      <pre class="max-h-96 overflow-auto rounded-lg bg-slate-950 p-3 text-xs">{messagePackage}</pre>
+    {/if}
   </section>
+  {/if}
+  {#if showTypedState}
   <section class="card p-5">
-    <h2 class="mt-0 text-sm font-semibold">Profile-aware state proof</h2>
+    <div class="flex flex-wrap items-start justify-between gap-3">
+      <div><h2 class="m-0 text-sm font-semibold">Typed application fact</h2>
+        <p class="mb-0 mt-1 text-xs text-slate-500">The application contract derives the key,
+          decodes proof-carried bytes, and evaluates only a declared bounded claim.</p></div>
+      <button type="button" class="rounded-lg border border-slate-700 px-3 py-2 text-xs"
+              onclick={refreshProofSubjects}>Refresh subjects</button>
+    </div>
+    <label class="mt-4 block text-xs text-slate-400">Proof subject
+      <select class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+              value={selectedSubjectId} onchange={(event) => selectSubject(event.currentTarget.value)}>
+        {#each proofSubjects as subject}
+          <option value={subject.subjectId}>{subject.label}</option>
+        {/each}
+      </select>
+    </label>
+    {#if selectedSubject}
+      <p class="mb-2 mt-3 text-sm">{selectedSubject.description}</p>
+      <div class="flex flex-wrap gap-2 text-xs">
+        {#each selectedSubject.verificationTargets as target}<span class="badge">{target}</span>{/each}
+        <span class="badge">{selectedSubject.completeness === 'NONE'
+          ? 'NO SEMANTIC ABSENCE' : `COMPLETENESS: ${selectedSubject.completeness}`}</span>
+      </div>
+      <div class="mt-4 grid gap-3 md:grid-cols-2">
+        {#each selectedSubject.coordinates as coordinate}
+          <label class="block text-xs text-slate-400">{coordinate.label}
+            <input class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono"
+                   value={typedCoordinates[coordinate.id] ?? ''}
+                   oninput={(event) => typedCoordinates = {
+                     ...typedCoordinates, [coordinate.id]: event.currentTarget.value }}
+                   placeholder={coordinate.encoding} />
+          </label>
+        {/each}
+      </div>
+      <label class="mt-4 block text-xs text-slate-400">Semantic claim (optional)
+        <select class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                bind:value={selectedClaimId}>
+          <option value="">Decode fact only</option>
+          {#each selectedSubject.claims as claim}<option value={claim.claimId}>{claim.claimId}</option>{/each}
+        </select>
+      </label>
+      {#if selectedSubject.claims.find((item) => item.claimId === selectedClaimId)?.operands.length}
+        <label class="mt-3 block text-xs text-slate-400">Expected value
+          <input class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono"
+                 bind:value={typedClaimOperand} />
+        </label>
+      {/if}
+      <div class="mt-4 flex flex-wrap gap-2">
+        <button type="button" class="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950"
+                onclick={generateTypedProof}>Generate and evaluate</button>
+        {#if selectedSubject.verificationTargets.includes('ONCHAIN_MPF')}
+          <button type="button" class="rounded-lg border border-violet-500/50 px-4 py-2 text-sm text-violet-200"
+                  onclick={exportTypedOnChain}>Export MPF redeemer</button>
+        {/if}
+      </div>
+      {#if typedProofResult}
+        <h3 class="mb-1 mt-4 text-xs uppercase tracking-wide text-slate-500">Authenticated fact and claim</h3>
+        <pre class="max-h-96 overflow-auto rounded-lg bg-slate-950 p-3 text-xs">{typedProofResult}</pre>
+      {/if}
+      {#if typedPackage}
+        <h3 class="mb-1 mt-4 text-xs uppercase tracking-wide text-slate-500">Portable or on-chain package</h3>
+        {#if typedBrowserVerification !== undefined}
+          <p class="rounded-lg border p-2 text-xs {typedBrowserVerification
+            ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
+            : 'border-rose-500/30 bg-rose-500/10 text-rose-200'}">
+            Independent browser MPF verification: {typedBrowserVerification ? 'VALID' : 'INVALID'}
+          </p>
+        {/if}
+        <pre class="max-h-96 overflow-auto rounded-lg bg-slate-950 p-3 text-xs">{typedPackage}</pre>
+      {/if}
+    {:else}
+      <p class="mt-4 text-xs text-slate-500">This application exposes no typed proof subjects.
+        Advanced raw-key verification remains available.</p>
+    {/if}
+    {#if typedError}<p class="mt-3 text-sm text-rose-300">{typedError}</p>{/if}
+  </section>
+  {/if}
+  {#if showRawState}
+  <section class="card p-5">
+    <h2 class="mt-0 text-sm font-semibold">{proofSection === 'state'
+      ? 'Profile-aware state proof' : proofSection === 'import'
+      ? 'Import a proof envelope' : 'Raw physical-key proof'}</h2>
     <p class="text-xs text-slate-500">Dispatches to this release's bounded MPF or classic-JMT verifier. Mathematical validity is reported separately from chain/profile/root/height trust.</p>
     <input class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs"
            bind:value={stateKey} placeholder="state key hex" />
@@ -715,6 +900,7 @@
       </div>
     {/if}
   </section>
+  {/if}
   </div>
   {#if verificationError}<p class="text-sm text-rose-300">{verificationError}</p>{/if}
 {/if}

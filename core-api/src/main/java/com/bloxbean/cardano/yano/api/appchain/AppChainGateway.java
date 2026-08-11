@@ -94,6 +94,48 @@ public interface AppChainGateway {
         return java.util.Optional.empty();
     }
 
+    /** Portable ADR-037 package assembled from retained proof paths. */
+    default java.util.Optional<com.bloxbean.cardano.yano.api.appchain.proof.MessageProofPackageV1>
+    messageProofPackage(byte[] messageId) {
+        return java.util.Optional.empty();
+    }
+
+    /** Effective manifest-bound, data-only typed subject descriptors. */
+    default java.util.List<com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectDescriptorV1>
+    proofSubjects() {
+        return java.util.List.of();
+    }
+
+    /** Resolve, prove, decode, and evaluate one subject at an immutable view. */
+    default com.bloxbean.cardano.yano.api.appchain.proof.TypedProofResultV1 proofSubjectProof(
+            String subjectId,
+            Map<String, String> coordinates,
+            com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider.ProofView view,
+            com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider.ClaimRequest claim) {
+        throw new UnsupportedOperationException("Typed proof subjects are unavailable");
+    }
+
+    /** Export a portable state-claim package; importers must recompute its verdict. */
+    default com.bloxbean.cardano.yano.api.appchain.proof.StateClaimProofPackageV1
+    stateClaimProofPackage(
+            String subjectId,
+            Map<String, String> coordinates,
+            com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider.ProofView view,
+            com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider.ClaimRequest claim) {
+        var typed = proofSubjectProof(subjectId, coordinates, view, claim);
+        byte[] value = typed.proof().proof().value();
+        var anchor = view != null && view.kind()
+                == com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider.ProofView.Kind
+                .LATEST_CONFIRMED_ANCHOR ? latestAnchorCommitment().orElse(null) : null;
+        return new com.bloxbean.cardano.yano.api.appchain.proof.StateClaimProofPackageV1(
+                com.bloxbean.cardano.yano.api.appchain.proof.StateClaimProofPackageV1.SCHEMA,
+                typed.descriptor(), typed.normalizedCoordinates(), typed.claim(), value,
+                typed.proof(), null, anchor, Map.of(
+                "serverClaimResult", typed.claimResult() == null
+                        ? "NOT_REQUESTED" : typed.claimResult().satisfied(),
+                "authoritative", false));
+    }
+
     /** Bounded integrity result for the selected authenticated-state backend. */
     default java.util.Optional<StateIntegrityReport> stateIntegrity() {
         return java.util.Optional.empty();

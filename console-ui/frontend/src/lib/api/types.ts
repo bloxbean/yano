@@ -243,9 +243,40 @@ export interface AppCrossCuttingCapability {
 
 export interface AppProofSubject {
   subjectId: string;
+  subjectVersion: number;
   componentId: string;
   keyNamespace: string;
   verificationTarget: string;
+  descriptorDigest: string;
+}
+
+export type ProofValueType = 'STRING' | 'BYTES_HEX' | 'UINT64' | 'INTEGER'
+  | 'BOOLEAN' | 'DIGEST_HEX' | 'ENUM';
+
+export interface ProofSubjectDescriptor {
+  schemaVersion: number;
+  subjectId: string;
+  subjectVersion: number;
+  componentId: string;
+  label: string;
+  description: string;
+  descriptorDigest: string;
+  storageScope: 'PRIMARY_STATE' | 'AUTHENTICATED_SNAPSHOT';
+  coordinates: Array<{ id: string; type: ProofValueType; label: string;
+    constraints: Record<string, string>; encoding: string }>;
+  claims: Array<{ claimId: string; operands: string[]; supportedTypes: ProofValueType[] }>;
+  factView: Array<{ id: string; type: ProofValueType; label: string; displayUnit: string }>;
+  completeness: 'NONE' | 'MARKER' | 'SNAPSHOT_DESCRIPTOR' | 'PAIRED_SUBJECT';
+  verificationTargets: Array<'OFFCHAIN_MPF' | 'OFFCHAIN_JMT' | 'ONCHAIN_MPF'>;
+  retentionHints: { historical: boolean; snapshot: boolean; unavailableHint: string };
+  limits: { maxCoordinateBytes: number; maxValueBytes: number;
+    maxProofBytes: number; maxClaimOperandBytes: number };
+}
+
+export interface ProofSubjectDiscovery {
+  schemaVersion: number;
+  chainId: string;
+  subjects: ProofSubjectDescriptor[];
 }
 
 export interface AppCapabilityManifest {

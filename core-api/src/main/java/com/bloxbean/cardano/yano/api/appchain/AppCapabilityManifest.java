@@ -144,16 +144,29 @@ public record AppCapabilityManifest(
 
     public record ProofSubject(
             String subjectId,
+            int subjectVersion,
             String componentId,
             String keyNamespace,
-            String verificationTarget
+            String verificationTarget,
+        String descriptorDigest
     ) {
         public ProofSubject {
-            subjectId = AppCapabilityManifest.id(subjectId, "proof subject id");
+            subjectId = AppCapabilityManifest.subjectId(subjectId);
+            if (subjectVersion < 1) throw new IllegalArgumentException("invalid proof subject version");
             componentId = componentId == null || componentId.isEmpty()
                     ? "" : AppCapabilityManifest.id(componentId, "proof component id");
             keyNamespace = text(keyNamespace, "keyNamespace");
             verificationTarget = text(verificationTarget, "verificationTarget");
+            descriptorDigest = descriptorDigest == null ? "" : descriptorDigest;
+            if (!descriptorDigest.isEmpty()
+                    && !descriptorDigest.matches("[0-9a-f]{64}")) {
+                throw new IllegalArgumentException("invalid proof descriptor digest");
+            }
+        }
+
+        public ProofSubject(String subjectId, String componentId,
+                            String keyNamespace, String verificationTarget) {
+            this(subjectId, 1, componentId, keyNamespace, verificationTarget, "");
         }
     }
 
@@ -217,8 +230,10 @@ public record AppCapabilityManifest(
             }
             out.writeInt(proofSubjects.size());
             for (ProofSubject value : proofSubjects) {
-                write(out, value.subjectId()); write(out, value.componentId());
+                write(out, value.subjectId()); out.writeInt(value.subjectVersion());
+                write(out, value.componentId());
                 write(out, value.keyNamespace()); write(out, value.verificationTarget());
+                write(out, value.descriptorDigest());
             }
             out.flush();
             return HexFormat.of().formatHex(Blake2bUtil.blake2bHash256(bytes.toByteArray()));
@@ -265,8 +280,21 @@ public record AppCapabilityManifest(
 
     private static String id(String value, String field) {
         value = text(value, field);
-        if (!value.matches("[a-z0-9][a-z0-9:._-]{0,127}")) {
+        // Capability manifests also describe legacy plugin IDs, whose released
+        // selector grammar permits ASCII upper case. Proof descriptors retain
+        // their stricter lower-case contract independently.
+        if (!value.matches("[A-Za-z0-9][A-Za-z0-9:._-]{0,127}")) {
             throw new IllegalArgumentException("invalid " + field);
+        }
+        return value;
+    }
+
+    private static String subjectId(String value) {
+        value = text(value, "proof subject id");
+        // Released Cardano History subjects use hierarchical '/' segments. Keep that
+        // wire identity while retaining the same closed, bounded identifier alphabet.
+        if (!value.matches("[a-z0-9][a-z0-9:._/-]{0,127}")) {
+            throw new IllegalArgumentException("invalid proof subject id");
         }
         return value;
     }

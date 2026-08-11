@@ -7,12 +7,15 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
+import com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider;
 import com.bloxbean.cardano.yano.api.appchain.transition.TransitionContext;
 import com.bloxbean.cardano.yano.api.appchain.transition.TransitionDecision;
 import com.bloxbean.cardano.yano.api.appchain.transition.TransitionPlans;
 import com.bloxbean.cardano.yano.appchain.stdlib.contracts.KvRegistryContract;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.List;
 
 
 /**
@@ -43,6 +46,8 @@ public final class KvRegistryStateMachine implements AppStateMachine {
     private static final Logger log = LoggerFactory.getLogger(KvRegistryStateMachine.class);
 
     private final KvRegistryTransitions transitions;
+    private static final ProofSubjectProvider PROOF_SUBJECT =
+            StdlibProofSubjectProviders.registry();
 
     public KvRegistryStateMachine() {
         this(KvRegistryTransitions.ValueFormat.RAW);
@@ -62,9 +67,13 @@ public final class KvRegistryStateMachine implements AppStateMachine {
         return StdlibCapabilityManifests.component(
                         ID, com.bloxbean.cardano.yano.appchain.stdlib.contracts
                                 .KvRegistryContract.DEFAULT_TOPIC)
-                .proofSubject(new AppCapabilityManifest.ProofSubject(
-                        "registry-entry-v1", "", "kv/", "state-proof"))
+                .proofSubject(StdlibProofSubjectProviders.manifest(PROOF_SUBJECT, "application-key"))
                 .build();
+    }
+
+    @Override
+    public List<ProofSubjectProvider> proofSubjectProviders() {
+        return List.of(PROOF_SUBJECT);
     }
 
     @Override

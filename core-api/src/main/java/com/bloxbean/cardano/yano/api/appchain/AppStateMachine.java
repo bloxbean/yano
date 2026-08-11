@@ -81,6 +81,12 @@ public interface AppStateMachine {
         return AppCapabilityManifest.application(id());
     }
 
+    /** Data-only typed proof contracts contributed by this application profile. */
+    default java.util.List<com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider>
+    proofSubjectProviders() {
+        return java.util.List.of();
+    }
+
     /** Authenticated snapshot series this machine can populate when enabled by the chain. */
     default java.util.List<com.bloxbean.cardano.yano.api.appchain.snapshot
             .AuthenticatedSnapshotSeriesDescriptorV1> authenticatedSnapshotSeries() {

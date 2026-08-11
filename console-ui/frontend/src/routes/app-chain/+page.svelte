@@ -27,7 +27,8 @@
   const CHAIN_KEY = 'yano.console.app-chain.selected.v1';
   const PAGE_SIZE = 25;
   const MESSAGE_WINDOW = 50;
-  type AppChainView = 'operations' | 'capabilities';
+  type AppChainView = 'operations' | 'capabilities' | 'proofs';
+  type ProofView = 'message' | 'state' | 'import' | 'advanced';
   let api: YanoApi | null = null;
   let apiBase = '/api/v1';
   let config: NodeConfig | null = null;
@@ -68,6 +69,8 @@
   let capabilityMatrixLoading = false;
   let capabilityMatrixError = '';
   let activeView: AppChainView = 'operations';
+  let activeProofView: ProofView = 'message';
+  let proofMessageId = '';
   const cursor = new StreamCursor();
 
   const fmt = (value: unknown) => Number.isFinite(Number(value)) ? Number(value).toLocaleString() : '-';
@@ -116,7 +119,13 @@
         }).catch(() => { pluginBundleIds = []; });
         if (disposed) return;
         const parameters = new URLSearchParams(location.search);
-        activeView = parameters.get('view') === 'capabilities' ? 'capabilities' : 'operations';
+        const requestedView = parameters.get('view');
+        activeView = requestedView === 'capabilities' || requestedView === 'proofs'
+          ? requestedView : 'operations';
+        const requestedProof = parameters.get('proof');
+        activeProofView = requestedProof === 'state' || requestedProof === 'import'
+          || requestedProof === 'advanced' ? requestedProof : 'message';
+        proofMessageId = parameters.get('message') ?? '';
         if (activeView === 'capabilities') void loadCapabilityMatrix();
         const queryChain = parameters.get('chain');
         const remembered = localStorage.getItem(CHAIN_KEY);
@@ -212,11 +221,36 @@
   function selectView(view: AppChainView): void {
     activeView = view;
     const parameters = new URLSearchParams(location.search);
-    if (view === 'capabilities') parameters.set('view', view);
+    if (view !== 'operations') parameters.set('view', view);
     else parameters.delete('view');
+    if (view !== 'proofs') {
+      parameters.delete('proof');
+      parameters.delete('message');
+    }
     const query = parameters.toString();
     window.history.replaceState({}, '', `${base}/app-chain/${query ? `?${query}` : ''}`);
     if (view === 'capabilities') void loadCapabilityMatrix();
+  }
+
+  function selectProofView(view: ProofView): void {
+    activeProofView = view;
+    const parameters = new URLSearchParams(location.search);
+    parameters.set('view', 'proofs');
+    if (view === 'message') parameters.delete('proof');
+    else parameters.set('proof', view);
+    window.history.replaceState({}, '', `${base}/app-chain/?${parameters}`);
+  }
+
+  function proveMessage(messageId: string): void {
+    proofMessageId = messageId;
+    activeProofView = 'message';
+    activeView = 'proofs';
+    dialog.close();
+    const parameters = new URLSearchParams(location.search);
+    parameters.set('view', 'proofs');
+    parameters.delete('proof');
+    parameters.set('message', messageId);
+    window.history.pushState({}, '', `${base}/app-chain/?${parameters}`);
   }
 
   async function loadDurableHistory(chainId: string): Promise<void> {
@@ -377,9 +411,10 @@
 <div data-console-route="app-chain" class="mb-4 flex flex-wrap items-end justify-between gap-3">
   <div>
     <p class="m-0 text-xs font-semibold uppercase tracking-[.18em] text-violet-400">Application ledger</p>
-    <h1 class="mt-1 text-2xl font-bold">{activeView === 'operations' ? 'App-chain operations' : 'App-chain capabilities'}</h1>
+    <h1 class="mt-1 text-2xl font-bold">{activeView === 'operations' ? 'App-chain operations'
+      : activeView === 'capabilities' ? 'App-chain capabilities' : 'App-chain proof lab'}</h1>
   </div>
-  {#if activeView === 'operations'}<div class="flex flex-wrap items-end gap-2">
+  {#if activeView !== 'capabilities'}<div class="flex flex-wrap items-end gap-2">
     <label class="text-xs text-slate-400">Chain
       <select class="ml-2 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
               value={selectedChain} onchange={(event) => activateChain(event.currentTarget.value)}>
@@ -409,13 +444,20 @@
 
 <nav aria-label="App-chain views" class="mb-5 flex w-fit rounded-xl border border-slate-800 bg-slate-900/70 p-1">
   <button type="button"
+          data-app-chain-view="operations"
           class="rounded-lg px-4 py-2 text-sm font-semibold transition {activeView === 'operations' ? 'bg-violet-500/20 text-violet-200' : 'text-slate-400 hover:text-slate-200'}"
           aria-current={activeView === 'operations' ? 'page' : undefined}
           onclick={() => selectView('operations')}>Operations</button>
   <button type="button"
+          data-app-chain-view="capabilities"
           class="rounded-lg px-4 py-2 text-sm font-semibold transition {activeView === 'capabilities' ? 'bg-violet-500/20 text-violet-200' : 'text-slate-400 hover:text-slate-200'}"
           aria-current={activeView === 'capabilities' ? 'page' : undefined}
           onclick={() => selectView('capabilities')}>Capabilities</button>
+  <button type="button"
+          data-app-chain-view="proofs"
+          class="rounded-lg px-4 py-2 text-sm font-semibold transition {activeView === 'proofs' ? 'bg-violet-500/20 text-violet-200' : 'text-slate-400 hover:text-slate-200'}"
+          aria-current={activeView === 'proofs' ? 'page' : undefined}
+          onclick={() => selectView('proofs')}>Proofs</button>
 </nav>
 
 {#if activeView === 'capabilities'}
@@ -428,6 +470,28 @@
   </div>
   {#if capabilityMatrixError}<div class="mb-4 text-xs text-amber-300">{capabilityMatrixError}</div>{/if}
   <AppChainCapabilityMatrix statuses={capabilityStatuses} />
+{:else if activeView === 'proofs'}
+  <p class="mb-4 max-w-3xl text-sm text-slate-400">Build and verify portable statements without treating the proof-serving node, bundled roots, or descriptive verdicts as trust.</p>
+  <nav aria-label="Proof workflows" data-proof-lab-navigation="workflows"
+       class="mb-5 flex max-w-full flex-wrap rounded-xl border border-slate-800 bg-slate-900/70 p-1">
+    {#each [['message', 'Message'], ['state', 'State'], ['import', 'Import and verify'],
+      ['advanced', 'Advanced']] as item}
+      <button type="button"
+              class="rounded-lg px-4 py-2 text-sm font-semibold {activeProofView === item[0]
+                ? 'bg-cyan-500/15 text-cyan-200' : 'text-slate-400 hover:text-slate-200'}"
+              aria-current={activeProofView === item[0] ? 'page' : undefined}
+              onclick={() => selectProofView(item[0] as ProofView)}>{item[1]}</button>
+    {/each}
+  </nav>
+  {#if api && status}
+    {#key `proofs:${selectedChain}:${activeProofView}:${proofMessageId}`}
+      <AppChainCapabilityPanels {api} chainId={selectedChain} {status} {pluginBundleIds}
+                                section="verification" proofSection={activeProofView}
+                                initialMessageId={proofMessageId} />
+    {/key}
+  {:else}
+    <p class="text-sm text-slate-500">Waiting for the selected chain status…</p>
+  {/if}
 {:else}
 {#if streamError}<div class="mb-4 text-xs text-amber-300">Live feed reconnecting: {streamError}</div>{/if}
 
@@ -628,15 +692,6 @@
 </div>
 
 {#if api && status}
-  {#key `verification:${selectedChain}`}
-    <div data-app-chain-section="verification">
-      <AppChainCapabilityPanels {api} chainId={selectedChain} {status} {pluginBundleIds}
-                                section="verification" />
-    </div>
-  {/key}
-{/if}
-
-{#if api && status}
   {#key `effects:${selectedChain}`}
     <div data-app-chain-section="effects">
       <AppChainCapabilityPanels {api} chainId={selectedChain} {status} {pluginBundleIds}
@@ -669,6 +724,13 @@
            href={`${base}/app-chain/eutxo/?chain=${encodeURIComponent(selectedChain)}&message=${encodeURIComponent(inspected.messageId)}`}>
           Open decoded EUTxO transaction
         </a>
+      </div>
+    {/if}
+    {#if inspected.messageId}
+      <div class="border-t border-slate-700 px-4 py-3">
+        <button type="button"
+                class="rounded-lg bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950"
+                onclick={() => proveMessage(inspected!.messageId!)}>Prove this message</button>
       </div>
     {/if}
     <div class="border-t border-slate-700 p-4"><div class="mb-1 text-xs text-slate-500">Raw hex preview</div><pre class="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-slate-950 p-3 text-xs">{inspectedPreview.rawHex}</pre></div>

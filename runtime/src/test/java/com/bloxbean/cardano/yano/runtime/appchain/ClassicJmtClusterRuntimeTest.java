@@ -12,6 +12,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
+import com.bloxbean.cardano.yano.api.appchain.transition.FinalizedBlockMessageRootIndexedStateMachine;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -42,6 +43,9 @@ class ClassicJmtClusterRuntimeTest {
     private static final byte[] KEY_C = repeated(0x43, 32);
     private static final StateCommitmentIdentity IDENTITY = StateCommitmentIdentity.explicit(
             StateCommitmentProfiles.CLASSIC_JMT, repeated(0x25, 32));
+    private static final StateCommitmentIdentity RUNTIME_IDENTITY = IDENTITY.withApplicationProfile(
+            FinalizedBlockMessageRootIndexedStateMachine.configuration(
+                    IDENTITY.settings(), 1).digest());
 
     @TempDir
     Path directory;
@@ -105,7 +109,7 @@ class ClassicJmtClusterRuntimeTest {
         assertFinalizedRoot(nodeA, nodeB, 4);
         assertFinalizedRoot(nodeA, lateNode, 4);
         for (AppChainSubsystem node : List.of(nodeA, nodeB, lateNode)) {
-            assertThat(node.stateCommitmentIdentity()).contains(IDENTITY);
+            assertThat(node.stateCommitmentIdentity()).contains(RUNTIME_IDENTITY);
             assertThat(node.stateIntegrity()).get().extracting(report -> report.valid())
                     .isEqualTo(true);
         }

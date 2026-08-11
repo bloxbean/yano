@@ -7,6 +7,7 @@ import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
 import com.bloxbean.cardano.yano.api.appchain.evidence.MessageInclusionProof;
+import com.bloxbean.cardano.yano.api.appchain.proof.ProofLabVocabulary;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -33,7 +34,7 @@ class PortableProofBundleTest {
                 .isEqualTo(PortableProofBundle.FinalizationStatus.VERIFIED);
         assertThat(idOnly.content()).isEqualTo(PortableProofBundle.ContentStatus.ID_ONLY);
         assertThat(idOnly.availability())
-                .isEqualTo(PortableProofBundle.AvailabilityStatus.NOT_PROVEN);
+                .isEqualTo(ProofLabVocabulary.Availability.NOT_PROVEN);
 
         var withBody = new PortableProofBundle<>(1, proof, message, null, null)
                 .verify(trusted, null);
@@ -41,7 +42,9 @@ class PortableProofBundleTest {
         assertThat(withBody.content())
                 .isEqualTo(PortableProofBundle.ContentStatus.SUPPLIED_CONTENT_VERIFIED);
         assertThat(withBody.availability())
-                .isEqualTo(PortableProofBundle.AvailabilityStatus.NOT_PROVEN);
+                .isEqualTo(ProofLabVocabulary.Availability.NOT_PROVEN);
+        assertThat(withBody.trust())
+                .isEqualTo(ProofLabVocabulary.TrustLevel.INDEPENDENTLY_VERIFIED_L1_ANCHOR);
     }
 
     @Test

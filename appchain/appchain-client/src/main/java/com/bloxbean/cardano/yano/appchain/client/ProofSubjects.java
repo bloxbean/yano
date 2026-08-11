@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.appchain.client;
 
 import com.bloxbean.cardano.yano.api.appchain.state.StateProofSubject;
 import com.bloxbean.cardano.yano.api.appchain.transition.FinalizedMessageIndex;
+import com.bloxbean.cardano.yano.api.appchain.transition.FinalizedBlockMessageRootIndex;
 import com.bloxbean.cardano.yano.appchain.composite.contracts.CompositeCommitmentV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ApprovalProposalV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RoleWorkflowKeys;
@@ -31,6 +32,13 @@ public final class ProofSubjects {
         return subject("finalized-message-v1",
                 FinalizedMessageIndex.messageKey(exact32(messageId, "messageId")),
                 FinalizedMessageIndex::decode);
+    }
+
+    public static StateProofSubject<FinalizedBlockMessageRootIndex.BlockRecord>
+    finalizedBlockMessages(long height) {
+        return subject(FinalizedBlockMessageRootIndex.SUBJECT_ID,
+                FinalizedBlockMessageRootIndex.blockKey(height),
+                FinalizedBlockMessageRootIndex::decode);
     }
 
     public static StateProofSubject<FinalizedMessageIndex.MessageRecord>

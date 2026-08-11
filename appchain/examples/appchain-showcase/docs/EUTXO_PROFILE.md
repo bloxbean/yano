@@ -249,6 +249,10 @@ $CLI deposit-build  $ARGS --address <your addr_test...> --amount 20000000 \
 $CLI deposit-submit $ARGS --signed-transaction my-deposit-signed.cbor
 ```
 
+The node-side builder accepts either a pure-ADA input or a wallet input that
+also contains native assets. It returns all native assets as change while the
+vault deposit itself remains ADA-only. Signing stays in the external wallet.
+
 For the ledger variant the write operation is `transfer` (alias of the
 round-trip: one signed virtual payment) and `verify`/`reconcile` re-checks
 the retained proof — there is no faucet or vault involved.

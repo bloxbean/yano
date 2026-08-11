@@ -29,6 +29,25 @@ public final class MpfProofConverter {
     private MpfProofConverter() {
     }
 
+    /** Convert the canonical in-process proof envelope used by typed proof packages. */
+    public static MpfNormalizedProof convert(
+            com.bloxbean.cardano.yano.api.appchain.state.StateProof proof) {
+        Objects.requireNonNull(proof, "proof");
+        var profile = proof.snapshot().identity().profile();
+        return convert(new AppChainClient.Proof(
+                HexFormat.of().formatHex(proof.canonicalKey()), "",
+                HexFormat.of().formatHex(proof.snapshot().stateRoot()),
+                HexFormat.of().formatHex(proof.nativeProof()),
+                proof.value() == null ? null : HexFormat.of().formatHex(proof.value()),
+                null, proof.snapshot().height(), 1, profile.id(),
+                profile.backendFamily().name().toLowerCase(java.util.Locale.ROOT),
+                profile.commitmentFormatId(),
+                HexFormat.of().formatHex(profile.formatFingerprint()),
+                HexFormat.of().formatHex(proof.snapshot().identity().genesisId()),
+                profile.proofEncodingId(), profile.nativeVersioning(), profile.physicalDelete(),
+                0L, AppChainClient.ProofPresence.valueOf(proof.presence().name()), null, null));
+    }
+
     public static MpfNormalizedProof convert(AppChainClient.Proof proof) {
         Objects.requireNonNull(proof, "proof");
         if (proof.valueHex() == null) {

@@ -10,6 +10,8 @@ public final class AppCapabilityIds {
     public static final String L1_WITHDRAWAL_CONFIRMATION =
             "l1-observer:eutxo-withdrawal-confirmation-v1";
     public static final String FINALIZED_MESSAGE = "state-index:finalized-message-v1";
+    public static final String FINALIZED_BLOCK_MESSAGES =
+            "state-index:finalized-block-messages-v1";
     public static final String MPF = "state-commitment:mpf-blake2b256-v1";
     public static final String JMT = "state-commitment:jmt-blake2b256-v1";
     public static final String AUTHENTICATED_SNAPSHOTS = "authenticated-snapshots-v1";

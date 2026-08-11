@@ -4,12 +4,14 @@ import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
 import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainInfo;
+import com.bloxbean.cardano.yano.api.appchain.AppCapabilityManifest;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryContext;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryException;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateReader;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
 import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
+import com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider;
 import com.bloxbean.cardano.yano.appchain.composite.ComponentDescriptor;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorKeyEpochV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ActorKeyProofV1;
@@ -56,6 +58,7 @@ public final class DomainActorRegistryComponent implements AppStateMachine {
     private final GovernedMutationProcessor governance;
     private final GovernedGenesisV1 genesis;
     private final ActorGovernanceProcessor actorGovernance;
+    private static final ProofSubjectProvider ACTOR_SUBJECT = RoleProofSubjectProviders.actor();
 
     public DomainActorRegistryComponent(ComponentDescriptor descriptor, String chainId,
                                         RoleWorkflowGovernanceConfig governanceConfig) {
@@ -101,6 +104,22 @@ public final class DomainActorRegistryComponent implements AppStateMachine {
     public ComponentDescriptor descriptor() { return descriptor; }
 
     @Override public String id() { return descriptor.componentId(); }
+
+    @Override
+    public AppCapabilityManifest capabilityManifest() {
+        return AppCapabilityManifest.builder(COMPONENT_ID, descriptor.semanticVersion())
+                .component(new AppCapabilityManifest.Component(COMPONENT_ID,
+                        descriptor.semanticVersion(), descriptor.configurationId(),
+                        "component/domain-actors/v1", descriptor.topics(), descriptor.queryPaths(),
+                        AppCapabilityManifest.Origin.INTRINSIC))
+                .proofSubject(RoleProofSubjectProviders.manifest(ACTOR_SUBJECT, "a/"))
+                .build();
+    }
+
+    @Override
+    public List<ProofSubjectProvider> proofSubjectProviders() {
+        return List.of(ACTOR_SUBJECT);
+    }
 
     @Override
     public void init(AppStateReader ownState, AppChainInfo chain) {

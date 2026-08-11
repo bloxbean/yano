@@ -29,6 +29,7 @@ credentials unless a guide explicitly says otherwise.
 | Require manufacturers, auditors, and regulators to sign evidence by role | [Domain-role approvals](tutorials/05-domain-role-approvals.md) | No for the stock scenario |
 | Call an ERP/API after a finalized decision | [Webhook effects](tutorials/06-webhook-effects.md) | Configuration; emission is stock or plugin logic |
 | Understand and verify Cardano settlement | [Anchors and independent verification](tutorials/07-anchors-and-verification.md) | No |
+| Build or independently verify portable message and typed state proofs | [Proof Lab guide](PROOF_LAB.md) | No for stock subjects; Java for custom subjects |
 | Implement new business rules without forking Yano | [Plugins and composites](tutorials/08-plugins-and-composites.md) | Small Java plugin |
 | Reuse stock transitions and verify portable proofs | [Composable state and proofs](COMPOSABLE_STATE_AND_PROOFS.md) | Java/configuration |
 | Archive and prove large immutable period datasets | [Authenticated snapshots](AUTHENTICATED_SNAPSHOTS.md) | Configuration/API |
@@ -145,6 +146,7 @@ need full detail:
 - [`kv-registry` state-machine reference](state-machines/kv-registry.md)
 - [Authenticated-map guide](state-machines/authenticated-map.md)
 - [Authenticated-map value-validation guide](state-machines/authenticated-map-validation.md)
+- [Proof Lab: message, typed-state, imported, and on-chain proofs](PROOF_LAB.md)
 - [`approvals` state-machine reference](state-machines/approvals.md)
 - [`doc-trail` state-machine reference](state-machines/doc-trail.md)
 - [`role-approvals` state-machine reference](state-machines/role-approvals.md)

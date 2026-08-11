@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.appchain.client;
 
 import com.bloxbean.cardano.yano.appchain.composite.contracts.CompositeCommitmentV1;
 import com.bloxbean.cardano.yano.api.appchain.transition.FinalizedMessageIndex;
+import com.bloxbean.cardano.yano.api.appchain.transition.FinalizedBlockMessageRootIndex;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ApprovalPolicyV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.ApprovalProposalV1;
 import com.bloxbean.cardano.yano.appchain.roles.contracts.RecordStatus;
@@ -22,6 +23,8 @@ class ProofSubjectsTest {
     @Test
     void derivesEveryFirstPartySubjectThroughTheSharedCompositeMapping() {
         byte[] messageId = filled(1, 32);
+        assertThat(ProofSubjects.finalizedBlockMessages(7).canonicalKey())
+                .containsExactly(FinalizedBlockMessageRootIndex.blockKey(7));
         assertThat(ProofSubjects.compositeFinalizedMessage("ordered-log", messageId)
                 .canonicalKey()).containsExactly(CompositeCommitmentV1.componentKey(
                 "ordered-log", FinalizedMessageIndex.messageKey(messageId)));

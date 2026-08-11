@@ -438,6 +438,9 @@ plugin.
   and follow a runnable beginner-to-advanced path.
 - [App-chain user guide](APP_CHAIN_USER_GUIDE.md) — configuration, APIs,
   anchoring, effects, composite profiles, operations, and troubleshooting.
+- [Proof Lab guide](appchain/PROOF_LAB.md) — portable message proofs, typed
+  state claims, subject discovery, independent verification, and qualified
+  Cardano validator exports.
 - [App-chain tutorial](APP_CHAIN_TUTORIAL.md) — run a cluster and build a
   custom state-machine plugin.
 - [Consensus and internals guide](APP_CHAIN_CONSENSUS_GUIDE.md) — exact

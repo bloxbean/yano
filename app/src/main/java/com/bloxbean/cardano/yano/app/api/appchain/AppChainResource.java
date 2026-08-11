@@ -191,6 +191,13 @@ public class AppChainResource {
 
     @GET
     @Operation(hidden = true)
+    @Path("messages/{messageIdHex}/proof-package")
+    public Response messageProofPackage(@PathParam("messageIdHex") String messageIdHex) {
+        return singleChain().messageProofPackage(messageIdHex);
+    }
+
+    @GET
+    @Operation(hidden = true)
     @Path("status")
     public Response status() {
         return singleChain().status();
@@ -510,6 +517,27 @@ public class AppChainResource {
                         "Unknown app-chain proof verification field: " + name);
             }
 
+        }
+
+        @JsonIgnoreProperties(ignoreUnknown = false)
+        public record TypedProofRequest(
+                Map<String, String> coordinates,
+                @JsonDeserialize(using = StrictStringDeserializer.class) String view,
+                Long height,
+                TypedClaimRequest claim,
+                boolean includeEvidence) {
+            @JsonAnySetter public void rejectUnknownField(String name, Object ignored) {
+                throw new IllegalArgumentException("Unknown typed proof request field: " + name);
+            }
+        }
+
+        @JsonIgnoreProperties(ignoreUnknown = false)
+        public record TypedClaimRequest(
+                @JsonDeserialize(using = StrictStringDeserializer.class) String claimId,
+                Map<String, String> operands) {
+            @JsonAnySetter public void rejectUnknownField(String name, Object ignored) {
+                throw new IllegalArgumentException("Unknown typed proof claim field: " + name);
+            }
         }
 
         /** ADR-011.3 query parameters; omitted or empty hex means empty bytes. */
@@ -1423,6 +1451,164 @@ public class AppChainResource {
             }).orElse(Response.status(Response.Status.NOT_FOUND)
                     .entity(Map.of("error", "No finalized message with id "
                             + messageIdHex)).build());
+        }
+
+        /** Assemble every locally available ADR-037 message proof path. */
+        @GET
+        @Path("messages/{messageIdHex}/proof-package")
+        public Response messageProofPackage(@PathParam("messageIdHex") String messageIdHex) {
+            if (messageIdHex == null || !messageIdHex.matches("[0-9a-f]{64}")) {
+                return badRequest("Message id must be 32 bytes of canonical lowercase hex");
+            }
+            return gateway.messageProofPackage(HexUtil.decodeHexString(messageIdHex))
+                    .map(value -> Response.ok(value).build())
+                    .orElse(Response.status(Response.Status.NOT_FOUND).entity(Map.of(
+                            "error", "No finalized message with id " + messageIdHex)).build());
+        }
+
+        /** Profile-tagged native proof for a canonical state key. */
+        @GET
+        @Path("proof-subjects")
+        public Response proofSubjects() {
+            return Response.ok(Map.of("schemaVersion", 1,
+                    "chainId", gateway.chainId(), "subjects", gateway.proofSubjects())).build();
+        }
+
+        @POST
+        @Path("proof-subjects/{subjectId}/proof")
+        @AppChainAccess(AppChainAccess.Level.READ)
+        public Response typedProof(@PathParam("subjectId") String subjectId,
+                                   TypedProofRequest request) {
+            if (subjectId == null || !subjectId.matches("[a-z0-9][a-z0-9:._-]{0,127}")
+                    || request == null || request.coordinates() == null
+                    || request.coordinates().size() > 16) {
+                return badRequest("A valid subject and bounded coordinates are required");
+            }
+            try {
+                var kind = switch (request.view() == null ? "latest" : request.view()) {
+                    case "latest" -> com.bloxbean.cardano.yano.api.appchain.proof
+                            .ProofSubjectProvider.ProofView.Kind.LATEST;
+                    case "height" -> com.bloxbean.cardano.yano.api.appchain.proof
+                            .ProofSubjectProvider.ProofView.Kind.HEIGHT;
+                    case "latest-confirmed-anchor" -> com.bloxbean.cardano.yano.api.appchain.proof
+                            .ProofSubjectProvider.ProofView.Kind.LATEST_CONFIRMED_ANCHOR;
+                    default -> throw new IllegalArgumentException("unsupported typed proof view");
+                };
+                var view = new com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider
+                        .ProofView(kind, request.height(), null, null);
+                var claim = request.claim() == null ? null
+                        : new com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider
+                        .ClaimRequest(request.claim().claimId(), request.claim().operands());
+                var result = gateway.proofSubjectProof(
+                        subjectId, request.coordinates(), view, claim);
+                Map<String, Object> response = new LinkedHashMap<>();
+                response.put("schemaVersion", result.schemaVersion());
+                response.put("descriptor", result.descriptor());
+                response.put("normalizedCoordinates", result.normalizedCoordinates());
+                response.put("canonicalLogicalKeyHex",
+                        HexUtil.encodeHexString(result.canonicalLogicalKey()));
+                response.put("physicalKeyHex", HexUtil.encodeHexString(result.physicalKey()));
+                response.put("proof", stateProofView(result.proof()));
+                response.put("fact", result.fact());
+                response.put("claim", result.claim());
+                response.put("claimResult", result.claimResult());
+                response.put("trust", result.trust().name());
+                response.put("includeEvidence", request.includeEvidence());
+                return Response.ok(response).build();
+            } catch (IllegalArgumentException invalid) {
+                return badRequest(invalid.getMessage());
+            } catch (UnsupportedOperationException unavailable) {
+                return Response.status(Response.Status.NOT_IMPLEMENTED)
+                        .entity(Map.of("error", unavailable.getMessage())).build();
+            }
+        }
+
+        /** Export the same root-fixed result as appchain-state-claim-proof-v1. */
+        @POST
+        @Path("proof-subjects/{subjectId}/package")
+        @AppChainAccess(AppChainAccess.Level.READ)
+        public Response typedProofPackage(@PathParam("subjectId") String subjectId,
+                                          TypedProofRequest request) {
+            if (!validTypedRequest(subjectId, request)) {
+                return badRequest("A valid subject and bounded coordinates are required");
+            }
+            try {
+                return Response.ok(gateway.stateClaimProofPackage(subjectId,
+                        request.coordinates(), typedView(request), typedClaim(request))).build();
+            } catch (IllegalArgumentException invalid) {
+                return badRequest(invalid.getMessage());
+            } catch (UnsupportedOperationException unavailable) {
+                return Response.status(Response.Status.NOT_IMPLEMENTED)
+                        .entity(Map.of("error", unavailable.getMessage())).build();
+            }
+        }
+
+        /** Verify and normalize a qualified MPF package for a Cardano redeemer. */
+        @POST
+        @Path("proof-subjects/{subjectId}/onchain-export")
+        @AppChainAccess(AppChainAccess.Level.READ)
+        public Response typedProofOnChainExport(@PathParam("subjectId") String subjectId,
+                                                TypedProofRequest request) {
+            if (!validTypedRequest(subjectId, request)) {
+                return badRequest("A valid subject and bounded coordinates are required");
+            }
+            try {
+                var bundle = gateway.stateClaimProofPackage(subjectId, request.coordinates(),
+                        typedView(request), typedClaim(request));
+                boolean qualified = bundle.descriptor().verificationTargets().contains(
+                        com.bloxbean.cardano.yano.api.appchain.proof.ProofLabVocabulary
+                                .VerificationTarget.ONCHAIN_MPF);
+                if (!qualified || bundle.primaryProof().proof().snapshot().identity().profile()
+                        .backendFamily() != com.bloxbean.cardano.yano.api.appchain.state
+                        .StateCommitmentProfile.BackendFamily.MPF) {
+                    return Response.status(Response.Status.CONFLICT).entity(Map.of(
+                            "error", "This subject/profile is off-chain only")).build();
+                }
+                var normalized = com.bloxbean.cardano.yano.appchain.client.MpfProofConverter
+                        .convert(bundle.primaryProof().proof());
+                return Response.ok(Map.of(
+                        "schema", "appchain-onchain-state-claim-v1",
+                        "subjectId", subjectId,
+                        "descriptorDigest", bundle.descriptor().descriptorDigest(),
+                        "normalizedMpfProof", normalized,
+                        "claim", bundle.claim() == null ? Map.of() : bundle.claim(),
+                        "anchorReference", bundle.anchorReference() == null
+                                ? Map.of() : bundle.anchorReference(),
+                        "executionStatus", "NOT_YET_EXECUTED_ON_CHAIN")).build();
+            } catch (IllegalArgumentException invalid) {
+                return badRequest(invalid.getMessage());
+            } catch (UnsupportedOperationException unavailable) {
+                return Response.status(Response.Status.NOT_IMPLEMENTED)
+                        .entity(Map.of("error", unavailable.getMessage())).build();
+            }
+        }
+
+        private static boolean validTypedRequest(String subjectId, TypedProofRequest request) {
+            return subjectId != null && subjectId.matches("[a-z0-9][a-z0-9:._-]{0,127}")
+                    && request != null && request.coordinates() != null
+                    && request.coordinates().size() <= 16;
+        }
+
+        private static com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider.ProofView
+        typedView(TypedProofRequest request) {
+            var kind = switch (request.view() == null ? "latest" : request.view()) {
+                case "latest" -> com.bloxbean.cardano.yano.api.appchain.proof
+                        .ProofSubjectProvider.ProofView.Kind.LATEST;
+                case "height" -> com.bloxbean.cardano.yano.api.appchain.proof
+                        .ProofSubjectProvider.ProofView.Kind.HEIGHT;
+                case "latest-confirmed-anchor" -> com.bloxbean.cardano.yano.api.appchain.proof
+                        .ProofSubjectProvider.ProofView.Kind.LATEST_CONFIRMED_ANCHOR;
+                default -> throw new IllegalArgumentException("unsupported typed proof view");
+            };
+            return new com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider
+                    .ProofView(kind, request.height(), null, null);
+        }
+
+        private static com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider.ClaimRequest
+        typedClaim(TypedProofRequest request) {
+            return request.claim() == null ? null
+                    : new com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider
+                    .ClaimRequest(request.claim().claimId(), request.claim().operands());
         }
 
         /** Profile-tagged native proof for a canonical state key. */

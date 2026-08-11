@@ -625,6 +625,15 @@ explicitly **L1-confirmed by this node**; independently resolve and validate
 the shown Cardano transaction before treating its root as an external trust
 anchor.
 
+The generic console groups this work under **Proofs**, with separate
+**Message**, **State**, **Import and verify**, and **Advanced** workflows.
+Typed state subjects are discovered from the immutable capability manifest;
+plugins contribute closed data descriptors rather than executable UI code.
+See the [Proof Lab guide](appchain/PROOF_LAB.md) for operator,
+application-author, plugin-author, independent-verifier, and Cardano-validator
+procedures, including the default finalized block-message-root index and the
+MPF/JMT trust boundary.
+
 ### 5.5 L1 observations (reacting to L1 events)
 
 The reverse direction — the app chain consuming L1 facts — is handled by

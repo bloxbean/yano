@@ -304,10 +304,13 @@ public class EutxoBridgeResource {
         }
         Utxo source = utxoSupplier.getPage(depositor, 40, 0, null).stream()
                 .filter(value -> value.getAmount() != null
-                        && value.getAmount().size() == 1)
+                        && value.getAmount().stream().anyMatch(amount ->
+                        "lovelace".equals(amount.getUnit())
+                                && amount.getQuantity() != null
+                                && amount.getQuantity().signum() > 0))
                 .findFirst()
                 .orElseThrow(() -> error(Response.Status.CONFLICT,
-                        "depositor has no pure-ADA UTxO on this node"));
+                        "depositor has no spendable UTxO on this node"));
         EutxoVaultDatum datum = new EutxoVaultDatum(
                 EutxoVaultDatum.ABI_VERSION,
                 chainId,

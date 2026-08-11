@@ -6,6 +6,7 @@ import type { AnchorCommitment, AppChainBlockDetail, AppChainBlocks, AppChainMes
   PluginBundleDetail, PluginBundlePage,
   L1Transaction, L1TransactionUtxos, PluginOperationsSummary, ProofVerificationRequest,
   ProofVerificationResult, StateProofEnvelope,
+  ProofSubjectDiscovery,
   StorageStatus } from './types';
 
 const API_STORAGE_KEY = 'yano.console.api-base.v1';
@@ -238,6 +239,10 @@ export class YanoApi {
     return this.json<import('./types').MessageInclusionProof>(
       `${chainPath(chainId)}/messages/${encodeURIComponent(messageId)}/proof`, signal);
   }
+  chainMessageProofPackage(chainId: string, messageId: string, signal?: AbortSignal) {
+    return this.json<Record<string, unknown>>(
+      `${chainPath(chainId)}/messages/${encodeURIComponent(messageId)}/proof-package`, signal);
+  }
   chainEffects(chainId: string, signal?: AbortSignal) {
     return this.json<EffectPage>(`${chainPath(chainId)}/effects?fromHeight=0&limit=100`, signal);
   }
@@ -271,6 +276,25 @@ export class YanoApi {
   verifyChainProof(chainId: string, request: ProofVerificationRequest, signal?: AbortSignal) {
     return this.post<ProofVerificationResult>(
       `${chainPath(chainId)}/proof/verify`, request, signal);
+  }
+  chainProofSubjects(chainId: string, signal?: AbortSignal) {
+    return this.json<ProofSubjectDiscovery>(`${chainPath(chainId)}/proof-subjects`, signal);
+  }
+  chainTypedProof(chainId: string, subjectId: string, request: Record<string, unknown>,
+    signal?: AbortSignal) {
+    return this.post<Record<string, unknown>>(
+      `${chainPath(chainId)}/proof-subjects/${encodeURIComponent(subjectId)}/proof`, request, signal);
+  }
+  chainTypedProofPackage(chainId: string, subjectId: string, request: Record<string, unknown>,
+    signal?: AbortSignal) {
+    return this.post<Record<string, unknown>>(
+      `${chainPath(chainId)}/proof-subjects/${encodeURIComponent(subjectId)}/package`, request, signal);
+  }
+  chainOnChainProofExport(chainId: string, subjectId: string, request: Record<string, unknown>,
+    signal?: AbortSignal) {
+    return this.post<Record<string, unknown>>(
+      `${chainPath(chainId)}/proof-subjects/${encodeURIComponent(subjectId)}/onchain-export`,
+      request, signal);
   }
   chainAnchorCommitment(chainId: string, signal?: AbortSignal) {
     return this.json<AnchorCommitment>(`${chainPath(chainId)}/anchor/commitment`, signal);

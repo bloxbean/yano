@@ -18,6 +18,7 @@ import com.bloxbean.cardano.yano.api.appchain.effects.EffectIntent;
 import com.bloxbean.cardano.yano.api.appchain.effects.EffectResult;
 import com.bloxbean.cardano.yano.api.appchain.effects.FxResultBody;
 import com.bloxbean.cardano.yano.api.appchain.effects.ResultPolicy;
+import com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider;
 
 import java.nio.ByteBuffer;
 import java.security.MessageDigest;
@@ -504,7 +505,32 @@ public final class CompositeStateMachine implements AppStateMachine {
                         "state-proof"));
             }
         }
+        for (ProofSubjectProvider provider : proofSubjectProviders()) {
+            for (var descriptor : provider.descriptors(null)) {
+                manifest.proofSubject(new AppCapabilityManifest.ProofSubject(
+                        descriptor.subjectId(), descriptor.subjectVersion(),
+                        descriptor.componentId(), "typed-component-state-v1",
+                        "typed-state-proof", descriptor.descriptorDigest()));
+            }
+        }
         return manifest.build();
+    }
+
+    @Override
+    public List<ProofSubjectProvider> proofSubjectProviders() {
+        List<ProofSubjectProvider> providers = new ArrayList<>();
+        providers.add(CompositeProofSubjectProviders.profile());
+        for (ComponentDescriptor descriptor : profile.components()) {
+            ComponentBinding binding = componentsByGeneration.get(descriptor.generation());
+            AppCapabilityManifest childManifest = binding.product().capabilityManifest();
+            for (ProofSubjectProvider child : binding.product().proofSubjectProviders()) {
+                for (var childDescriptor : child.descriptors(childManifest)) {
+                    providers.add(CompositeProofSubjectProviders.component(
+                            descriptor.componentId(), child, childDescriptor));
+                }
+            }
+        }
+        return List.copyOf(providers);
     }
 
     private static AppCapabilityManifest.CrossCutting capability(

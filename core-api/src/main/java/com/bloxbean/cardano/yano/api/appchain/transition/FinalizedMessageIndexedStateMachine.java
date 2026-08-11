@@ -98,8 +98,18 @@ public final class FinalizedMessageIndexedStateMachine implements AppStateMachin
                         "keyDerivation", "sha256(namespace || logical-key)"),
                 AppCapabilityManifest.Origin.LAUNCHER_ENABLED))
                 .withProofSubject(new AppCapabilityManifest.ProofSubject(
-                        "finalized-message-v1", "", FinalizedMessageIndex.LOGICAL_NAMESPACE,
-                        "state-proof"));
+                        FinalizedMessageProofSubjectProvider.SUBJECT_ID, 1, "",
+                        FinalizedMessageIndex.LOGICAL_NAMESPACE, "state-proof",
+                        FinalizedMessageProofSubjectProvider.DESCRIPTOR.descriptorDigest()));
+    }
+
+    @Override
+    public java.util.List<com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider>
+    proofSubjectProviders() {
+        java.util.List<com.bloxbean.cardano.yano.api.appchain.proof.ProofSubjectProvider> result =
+                new java.util.ArrayList<>(delegate.proofSubjectProviders());
+        result.add(new FinalizedMessageProofSubjectProvider());
+        return java.util.List.copyOf(result);
     }
 
     @Override

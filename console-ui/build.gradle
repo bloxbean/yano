@@ -131,13 +131,30 @@ tasks.register('verifyStaticConsoleContract') {
         }
 
         def appChainSource = file('frontend/src/routes/app-chain/+page.svelte').getText('UTF-8')
-        def sectionMarkers = [
+        def primaryViewMarkers = [
+                'data-app-chain-view="operations"',
+                'data-app-chain-view="capabilities"',
+                'data-app-chain-view="proofs"'
+        ]
+        def previousView = -1
+        primaryViewMarkers.each { marker ->
+            def viewIndex = appChainSource.indexOf(marker)
+            if (viewIndex <= previousView) {
+                throw new GradleException(
+                        "App-chain console primary view order is invalid at marker: ${marker}")
+            }
+            previousView = viewIndex
+        }
+        if (!appChainSource.contains('data-proof-lab-navigation="workflows"')
+                || !appChainSource.contains("[['message', 'Message'], ['state', 'State'], ['import', 'Import and verify'],")) {
+            throw new GradleException('App-chain console lacks the released Proof Lab workflow order')
+        }
+        def operationSectionMarkers = [
                 'data-app-chain-section="finalized"',
-                'data-app-chain-section="verification"',
                 'data-app-chain-section="effects"'
         ]
         def previousSection = -1
-        sectionMarkers.each { marker ->
+        operationSectionMarkers.each { marker ->
             def sectionIndex = appChainSource.indexOf(marker)
             if (sectionIndex <= previousSection) {
                 throw new GradleException(
