@@ -7,7 +7,8 @@ pluginManagement {
 
 rootProject.name = 'yano'
 
-// Modules that remain available in the lean Yano build.
+// Yano owns the Cardano data node, the app-chain host framework, OrderedLog,
+// and the retained plugin/test contracts. JVM extensions are built in yano-x.
 def yanoModules = [
         'core-api'                    : 'core-api',
         'plugin-catalog'              : 'plugin-catalog',
@@ -20,6 +21,7 @@ def yanoModules = [
         'tx-services'                 : 'tx-services',
         'bootstrap-providers'         : 'bootstrap-providers',
         'app'                         : 'app',
+        'app-e2e-testkit'             : 'app-e2e-testkit',
         'ledger-rules'                : 'ledger-rules',
         'ledger-state'                : 'ledger-state',
         'ccl-ledger-rules'            : 'ccl-ledger-rules',
@@ -34,81 +36,11 @@ def yanoModules = [
         'appchain-plugin-conformance' : 'appchain/fixtures/appchain-plugin-conformance'
 ]
 
-// Modules that are still present during the repository split and are omitted
-// from -PleanYanoBuild=true. They move to Yano X during extraction.
-def yanoXModules = [
-        'appchain-stdlib'                   : 'appchain/appchain-stdlib',
-        'appchain-stdlib-contracts'         : 'appchain/appchain-stdlib-contracts',
-        'appchain-authenticated-map-validators': 'appchain/authenticated-map-validators',
-        'appchain-devtools'                 : 'appchain/appchain-devtools',
-        'appchain-studio'                   : 'appchain/appchain-studio',
-        'appchain-composite-contracts'      : 'appchain/appchain-composite-contracts',
-        'appchain-composite-client'         : 'appchain/appchain-composite-client',
-        'appchain-composite'                : 'appchain/appchain-composite',
-        'appchain-role-workflow-contracts'  : 'appchain/appchain-role-workflow-contracts',
-        'appchain-role-workflow'            : 'appchain/appchain-role-workflow',
-        'appchain-effects-testkit'           : 'appchain/appchain-effects-testkit',
-        'appchain-client'                    : 'appchain/appchain-client',
-        'appchain-proof-contracts'           : 'appchain/appchain-proof-contracts',
-        'appchain-proof-onchain'             : 'appchain/onchain/appchain-proof-onchain',
-        'appchain-integration-contracts'     : 'appchain/appchain-integration-contracts',
-        'appchain-evidence-contracts'        : 'appchain/products/appchain-evidence-contracts',
-        'appchain-evidence-registry'         : 'appchain/products/appchain-evidence-registry',
-        'appchain-evidence-client'           : 'appchain/products/appchain-evidence-client',
-        'appchain-evidence-profile'          : 'appchain/products/appchain-evidence-profile',
-        'appchain-cardano-history'           : 'appchain/products/appchain-cardano-history',
-        'appchain-cardano-history-client'    : 'appchain/products/appchain-cardano-history-client',
-        'appchain-cardano-history-cli'       : 'appchain/products/appchain-cardano-history-cli',
-        'appchain-cardano-history-onchain'   : 'appchain/onchain/appchain-cardano-history-onchain',
-        'appchain-evidence-demo-runner'      : 'appchain/examples/appchain-evidence-demo-runner',
-        'appchain-showcase'                  : 'appchain/examples/appchain-showcase',
-        'appchain-showcase-client'           : 'appchain/examples/appchain-showcase-client',
-        'appchain-kafka'                     : 'appchain/extensions/appchain-kafka',
-        'appchain-objectstore-s3'            : 'appchain/extensions/appchain-objectstore-s3',
-        'appchain-ipfs'                      : 'appchain/extensions/appchain-ipfs',
-        'appchain-effects-cardano'           : 'appchain/extensions/appchain-effects-cardano',
-        'appchain-zk'                        : 'appchain/extensions/appchain-zk',
-        'appchain-eutxo-contracts'           : 'appchain/extensions/eutxo/appchain-eutxo-contracts',
-        'appchain-eutxo-ledger'              : 'appchain/extensions/eutxo/appchain-eutxo-ledger',
-        'appchain-eutxo-client'              : 'appchain/extensions/eutxo/appchain-eutxo-client',
-        'appchain-eutxo-testkit'             : 'appchain/extensions/eutxo/appchain-eutxo-testkit',
-        'appchain-eutxo-demo'                : 'appchain/extensions/eutxo/appchain-eutxo-demo',
-        'appchain-eutxo-bridge-cardano'      : 'appchain/extensions/eutxo/appchain-eutxo-bridge-cardano',
-        'appchain-eutxo-bridge-onchain'      : 'appchain/extensions/eutxo/appchain-eutxo-bridge-onchain',
-        'appchain-eutxo-indexer-core'        : 'appchain/extensions/eutxo/appchain-eutxo-indexer-core',
-        'appchain-eutxo-indexer-jdbc'        : 'appchain/extensions/eutxo/appchain-eutxo-indexer-jdbc',
-        'appchain-eutxo-zk-contracts'        : 'appchain/extensions/eutxo-zk/appchain-eutxo-zk-contracts',
-        'appchain-eutxo-zk-zeroj'            : 'appchain/extensions/eutxo-zk/appchain-eutxo-zk-zeroj',
-        'appchain-eutxo-zk-prover'           : 'appchain/extensions/eutxo-zk/appchain-eutxo-zk-prover',
-        'appchain-eutxo-zk-client'           : 'appchain/extensions/eutxo-zk/appchain-eutxo-zk-client',
-        'appchain-eutxo-zk-onchain'          : 'appchain/extensions/eutxo-zk/appchain-eutxo-zk-onchain',
-        'appchain-eutxo-zk-testkit'          : 'appchain/extensions/eutxo-zk/appchain-eutxo-zk-testkit',
-        'appchain-eutxo-zk-runtime'          : 'appchain/extensions/eutxo-zk/appchain-eutxo-zk-runtime',
-        'appchain-eutxo-zk-lifecycle'        : 'appchain/extensions/eutxo-zk/appchain-eutxo-zk-lifecycle',
-        'appchain-eutxo-zk-indexer'          : 'appchain/extensions/eutxo-zk/appchain-eutxo-zk-indexer',
-        'appchain-eutxo-zk-demo'             : 'appchain/extensions/eutxo-zk/appchain-eutxo-zk-demo',
-        'appchain-spring-boot-starter'       : 'spring-starters/appchain-spring-boot-starter',
-        'appchain-eutxo-e2e'                 : 'appchain/fixtures/appchain-eutxo-e2e'
-]
-
-def leanValue = gradle.startParameter.projectProperties
-        .getOrDefault('leanYanoBuild', 'false')
-if (!(leanValue in ['true', 'false'])) {
-    throw new GradleException('leanYanoBuild must be true or false')
-}
-def leanYanoBuild = Boolean.parseBoolean(leanValue)
-
-def selectedModules = new LinkedHashMap(yanoModules)
-if (!leanYanoBuild) {
-    selectedModules.putAll(yanoXModules)
-}
-
-selectedModules.each { projectName, projectDirectory ->
+yanoModules.each { projectName, projectDirectory ->
     include projectName
     project(":${projectName}").projectDir = file(projectDirectory)
 }
 
 gradle.settingsEvaluated {
-    logger.lifecycle('Yano {} build configured with {} projects',
-            leanYanoBuild ? 'lean' : 'full', selectedModules.size())
+    logger.lifecycle('Yano build configured with {} projects', yanoModules.size())
 }

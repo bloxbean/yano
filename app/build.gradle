@@ -5,7 +5,6 @@ import org.gradle.api.artifacts.result.ResolvedDependencyResult
 
 plugins {
     id 'application'
-    id 'java-test-fixtures'
     id 'io.quarkus' version "${quarkusPluginVersion}"
 }
 
@@ -119,18 +118,14 @@ dependencies {
     testImplementation libs.mockito.inline
 
     testImplementation project(':testkit')
+    testImplementation project(':app-e2e-testkit')
+    testImplementation project(':appchain-config')
     testImplementation project(':scalus-bridge')
     testImplementation libs.cardano.client.lib
     testImplementation libs.cardano.client.backend.blockfrost
     testImplementation libs.cardano.client.quicktx
     testImplementation libs.cardano.client.cip20
 
-    testFixturesImplementation enforcedPlatform(
-            "${quarkusPlatformGroupId}:${quarkusPlatformArtifactId}:${quarkusPlatformVersion}")
-    testFixturesImplementation 'io.quarkus:quarkus-junit'
-    testFixturesImplementation libs.cardano.client.lib
-    testFixturesImplementation libs.cardano.client.backend.blockfrost
-    testFixturesImplementation libs.cardano.client.quicktx
 }
 
 application {
@@ -148,6 +143,7 @@ distTar.enabled = false
 startScripts.enabled = false
 
 test {
+    systemProperty 'yano.test.repo-root', rootProject.projectDir.absolutePath
     useJUnitPlatform {
         excludeTags 'integration', 'e2e', 'haskell-sync'
     }
@@ -623,11 +619,7 @@ def allocateLoopbackPorts = { int count ->
 
 def pluginConformanceRuntimeArguments = { int httpPort, int nodePort,
                                           java.nio.file.Path stateDirectory,
-                                          java.nio.file.Path pluginDirectory,
-                                          Integer kafkaBootstrapPort,
-                                          Integer s3EndpointPort,
-                                          Integer ipfsEndpointPort,
-                                          java.nio.file.Path connectorSecretConfig ->
+                                          java.nio.file.Path pluginDirectory ->
     def genesisDirectory = project.file('config/network/preprod').toPath()
             .toAbsolutePath().normalize()
     def appChainStateDirectory = stateDirectory.resolveSibling(
@@ -671,84 +663,11 @@ def pluginConformanceRuntimeArguments = { int httpPort, int nodePort,
             '-Dyano.app-chain.effects.executor.identity=conformance-smoke',
             '-Dyano.app-chain.effects.executors.conformance-effect.enabled=true'
     ]
-    if (kafkaBootstrapPort != null) {
-        // The endpoint is operator configuration, never an authenticated
-        // effect payload field. Activating both Kafka contribution kinds
-        // proves native catalog mediation and constructs the real producer
-        // client through the finalized-stream factory without a live broker.
-        arguments.addAll([
-                "-Dyano.app-chain.sinks.kafka.bootstrap-servers=127.0.0.1:${kafkaBootstrapPort}",
-                '-Dyano.app-chain.sinks.kafka.topic=yano-native-smoke-blocks',
-                '-Dyano.app-chain.sinks.kafka.security-profile=local-demo',
-                '-Dyano.app-chain.sinks.kafka.max-block-ms=1000',
-                '-Dyano.app-chain.sinks.kafka.delivery-timeout-ms=30000',
-                '-Dyano.app-chain.sinks.kafka.close-timeout-ms=100',
-                '-Dyano.app-chain.effects.executors.kafka.enabled=true',
-                '-Dyano.app-chain.effects.executors.kafka.targets.native.target-id=native',
-                "-Dyano.app-chain.effects.executors.kafka.targets.native.bootstrap-servers=127.0.0.1:${kafkaBootstrapPort}",
-                '-Dyano.app-chain.effects.executors.kafka.targets.native.security-profile=local-demo',
-                '-Dyano.app-chain.effects.executors.kafka.targets.native.max-block-ms=100',
-                '-Dyano.app-chain.effects.executors.kafka.targets.native.request-timeout-ms=1000',
-                '-Dyano.app-chain.effects.executors.kafka.targets.native.delivery-timeout-ms=1000',
-                '-Dyano.app-chain.effects.executors.kafka.targets.native.close-timeout-ms=100',
-                '-Dyano.app-chain.effects.executors.kafka.topics.smoke.target=native',
-                '-Dyano.app-chain.effects.executors.kafka.topics.smoke.name=yano-native-effect-smoke'
-        ])
-    }
-    if (s3EndpointPort != null || ipfsEndpointPort != null
-            || connectorSecretConfig != null) {
-        if (s3EndpointPort == null || ipfsEndpointPort == null
-                || connectorSecretConfig == null) {
-            throw new GradleException(
-                    'native connector construction smoke requires its complete configuration')
-        }
-        // These two flags are deliberately awkward and test-only. They make
-        // each configured connector open and immediately close one real client
-        // without performing network I/O. S3 credential values live only in
-        // the private temporary config file, never in argv or the process log.
-        arguments.addAll([
-                '-Dyano.test.enabled=true',
-                '-Dyano.test.connector-client-construction-smoke=v1',
-                "-Dquarkus.config.locations=${connectorSecretConfig.toUri()}",
-                '-Dyano.app-chain.effects.executors.objectstore-s3.enabled=true',
-                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.target-id=native',
-                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.endpoint='
-                        + "http://127.0.0.1:${s3EndpointPort}",
-                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.region=us-east-1',
-                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.security-profile=local-demo',
-                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.path-style=true',
-                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.credentials-provider=static',
-                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.source-bucket=native-source',
-                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.'
-                        + 'destination-bucket=native-destination',
-                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.encryption-policy-id=native-none',
-                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.encryption-mode=none',
-                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.retention-policy-id=native-none',
-                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.require-versioning=true',
-                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.max-object-bytes=1024',
-                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.api-call-timeout-ms=1000',
-                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.api-call-attempt-timeout-ms=750',
-                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.connect-timeout-ms=250',
-                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.socket-timeout-ms=500',
-                '-Dyano.app-chain.effects.executors.objectstore-s3.targets.native.close-timeout-ms=500',
-                '-Dyano.app-chain.effects.executors.ipfs.enabled=true',
-                '-Dyano.app-chain.effects.executors.ipfs.targets.native.target-id=native',
-                "-Dyano.app-chain.effects.executors.ipfs.targets.native.api-url=http://127.0.0.1:${ipfsEndpointPort}",
-                '-Dyano.app-chain.effects.executors.ipfs.targets.native.security-profile=local-demo',
-                '-Dyano.app-chain.effects.executors.ipfs.targets.native.allowed-codecs=raw',
-                '-Dyano.app-chain.effects.executors.ipfs.targets.native.recursive=false',
-                '-Dyano.app-chain.effects.executors.ipfs.targets.native.replication-policy=local',
-                '-Dyano.app-chain.effects.executors.ipfs.targets.native.connect-timeout-ms=250',
-                '-Dyano.app-chain.effects.executors.ipfs.targets.native.request-timeout-ms=1000',
-                '-Dyano.app-chain.effects.executors.ipfs.targets.native.close-timeout-ms=500'
-        ])
-    }
     return arguments.collect { it.toString() }
 }
 
 def awaitPluginConformanceStatus = { int httpPort, int timeoutSeconds,
                                      Process process, Closure<String> logTail,
-                                     boolean expectFirstPartyClients,
                                      String expectedStateMachine = 'conformance-machine',
                                      String expectedSequencerMode = 'conformance-mode',
                                      String expectedProfileMode = null ->
@@ -824,22 +743,11 @@ def awaitPluginConformanceStatus = { int httpPort, int timeoutSeconds,
             || status.sinks['conformance-finalized-sink'].state != 'ACTIVE') {
         failures.add('sink')
     }
-    if (expectFirstPartyClients
-            && (!(status.sinks instanceof Map)
-            || !(status.sinks['kafka:yano-native-smoke-blocks:conformance-chain']
-                    instanceof Map)
-            || status.sinks['kafka:yano-native-smoke-blocks:conformance-chain'].state
-                    != 'ACTIVE')) {
-        failures.add('kafkaSink')
-    }
     if (status.containsKey('sinkActivationFailures')) failures.add('sinkActivationFailures')
     def executors = status.effects instanceof Map
             && status.effects.executor instanceof Map
             ? status.effects.executor.executors : null
-    def expectedExecutors = expectFirstPartyClients
-            ? Set.of('conformance-effect-executor', 'kafka-publish',
-                    'objectstore-s3-object-put', 'ipfs-pin')
-            : Set.of('conformance-effect-executor')
+    def expectedExecutors = Set.of('conformance-effect-executor')
     if (!(executors instanceof Collection)
             || Set.copyOf(executors) != expectedExecutors) {
         failures.add('effectExecutor')
@@ -1679,8 +1587,7 @@ tasks.register('packagedJvmPluginCatalogSmoke') {
         def command = [javaExecutable.absolutePath]
         command.addAll(pluginOperationsAuthArguments())
         command.addAll(pluginConformanceRuntimeArguments(
-                httpPort, nodePort, stateDirectory, pluginDirectory,
-                null, null, null, null))
+                httpPort, nodePort, stateDirectory, pluginDirectory))
         command.addAll(['-jar', uberJar.absolutePath])
         def processBuilder = new ProcessBuilder(command)
                 .directory(smokeRoot.toFile())
@@ -1743,7 +1650,7 @@ tasks.register('packagedJvmPluginCatalogSmoke') {
                                 + logTail())
             }
 
-            awaitPluginConformanceStatus(httpPort, 90, process, logTail, false)
+            awaitPluginConformanceStatus(httpPort, 90, process, logTail)
             assertPluginConformanceQueryApis(httpPort)
             assertPluginOperationsAdapters(httpPort, 90, true)
 

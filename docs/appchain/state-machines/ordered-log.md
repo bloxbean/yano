@@ -378,7 +378,7 @@ Use a custom `AppStateMachine` when consensus must enforce rules such as:
 Package the implementation behind `AppStateMachineProvider`, a ServiceLoader
 entry, and a Yano plugin manifest. Deploy the identical bundle to every voting
 member of a JVM cluster and select its id with `state-machine`. Start with the
-[plugin template](../../../scaffolds/plugin-template/README.md).
+[Yano X plugin template](https://github.com/bloxbean/yano-x/tree/main/scaffolds/plugin-template).
 
 Admission hooks improve feedback and keep malformed commands out of blocks
 built by honest proposers, but deterministic `apply()` logic remains the
@@ -403,9 +403,7 @@ state machine's deterministic `apply()` method.
 
 ## Related documentation
 
-- [Your first app chain](../tutorials/01-first-app-chain.md)
-- [Stock state-machine cookbook](../tutorials/03-stock-state-machines.md)
-- [Plugins and composites](../tutorials/08-plugins-and-composites.md)
-- [Complete app-chain user guide](../../APP_CHAIN_USER_GUIDE.md)
+- [Yano X tutorials](https://github.com/bloxbean/yano-x/tree/main/docs/appchain/tutorials)
+- [Yano X stock state machines](https://github.com/bloxbean/yano-x/tree/main/state-machines)
 - [Consensus and state-machine internals](../../APP_CHAIN_CONSENSUS_GUIDE.md)
-- [Java app-chain client](../../../appchain/appchain-client/README.md)
+- [Yano X Java app-chain client](https://github.com/bloxbean/yano-x/tree/main/sdk/client)

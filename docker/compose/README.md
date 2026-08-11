@@ -60,8 +60,8 @@ Then restart the service:
 
 The shared Compose file still mounts `plugins/` for the JVM flavor. A native
 image cannot load JARs from that mount; any JARs there are reported as ignored.
-Native providers must be selected when the image is built (for the first-party
-T3 set, use `-PincludeFirstPartyPluginBundles=true`).
+Native Yano embeds only retained core providers. Run the Yano X JVM distribution
+when optional state machines, connectors, or product plugins are required.
 
 To inspect the resolved compose file for a network:
 

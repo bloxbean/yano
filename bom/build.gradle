@@ -18,6 +18,7 @@ dependencies {
         api project(':testkit-ccl')
         api project(':tx-services')
         api project(':bootstrap-providers')
+        api project(':app-e2e-testkit')
         api project(':ledger-rules')
         api project(':ledger-state')
         api project(':ccl-ledger-rules')

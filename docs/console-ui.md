@@ -109,9 +109,9 @@ approvals.
   - where the expected root came from.
 
 The State workflow discovers typed proof subjects from the chain's immutable
-capability manifest and keeps physical state keys in Advanced. For the trust
-labels, provider contract, verifier sequence, and on-chain export bounds, see
-the [Proof Lab guide](appchain/PROOF_LAB.md).
+capability manifest and keeps physical state keys in Advanced. For
+extension-specific trust labels and proof workflows, see the
+[Yano X Proof Lab guide](https://github.com/bloxbean/yano-x/blob/main/docs/appchain/PROOF_LAB.md).
 
 `L1-confirmed by this node` means Yano observed the anchor transaction and
 bound its persisted confirmation back to the exact finalized app block. It is
@@ -148,7 +148,7 @@ remain wallet-owned.
 
 Operational configuration, endpoints, metrics, rebuild safety, and the
 measured SQLite support envelope are documented in the
-[EUTxO indexer runbook](../appchain/extensions/eutxo/INDEXER_OPERATIONS.md).
+[Yano X EUTxO indexer runbook](https://github.com/bloxbean/yano-x/blob/main/ledgers/eutxo/INDEXER_OPERATIONS.md).
 
 For local frontend development, run `npm run dev` in
 `console-ui/frontend`; Vite proxies `/api` and `/q` to

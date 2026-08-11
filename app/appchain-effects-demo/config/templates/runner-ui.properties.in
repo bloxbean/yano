@@ -1,3 +1,0 @@
-ui.report-directory=@REPORT_DIRECTORY@
-ui.bind-address=@BIND_ADDRESS@
-ui.port=@UI_INTERNAL_PORT@

@@ -1,8 +1,8 @@
 # ADR-030: Split Yano core from `yano-x`
 
-**Status:** Accepted. Phases A-C are merged. Phase D distribution implementation and acceptance
-are complete on feature branches and await maintainer commit/merge approval.
-Repository extraction has not started.
+**Status:** Accepted. Phases A-D are merged. Phase E history-preserving extraction is implemented
+on feature branches and awaits maintainer commit/merge approval. Phase F release rehearsal has not
+started.
 **Date:** 2026-08-11
 **Decision owners:** Yano maintainers
 **Reviewed baseline:** `feat/037-generic-appchain-proof` at `6d364000`
@@ -387,6 +387,10 @@ are recorded in
    split in Phases B-D; extraction must not decide architecture.
 5. Preserve tags or an explicit source-commit mapping so a downstream line can be traced to its
    pre-split commit.
+
+Phase E's source tag/recovery refs, filtered-history mapping, 52-module cutover, repository-owned
+documentation and CI, JVM-only downstream cleanup, and regression evidence are recorded in
+[`baselines/030-phase-e-extraction.md`](baselines/030-phase-e-extraction.md).
 
 ### Phase F — independent release rehearsal
 

@@ -137,15 +137,9 @@ The zip contains the native `yano` executable, `yano.sh`, config files, and
 network genesis files. It deliberately has no plugin directory or
 `yano-plugins` JVM runtime: native images cannot load JARs dynamically. Run the
 standalone JVM CLI on a JDK 25 operator/build host when offline validation is
-needed. Include first-party T3 providers before native
-catalog/reflection generation with `-PincludeFirstPartyPluginBundles=true`, or
-add another plugin project to the app build-time runtime classpath **and** its
-bundle-id/project entry to `buildTimePluginBundles` in `app/build.gradle`.
-Index generation is intentionally strict: it derives that bundle's actual
-declared root-plus-dependencies closure from the app resolution graph and fails
-an unmapped thin bundle instead of fingerprinting only its provider JAR. A
-plugin must declare every executable dependency; the shared JVM loader cannot
-discover undeclared reflective use of an unrelated app dependency.
+needed. Native Yano embeds only retained core providers. Optional Yano X state
+machines, connectors, and products are supported by the JVM distribution, not
+by augmenting the native build.
 
 After the native zip task finishes, verify the final executable that it copied
 into the distribution:
@@ -158,10 +152,8 @@ The smoke task regenerates the current packaged-JVM index and compares both its
 byte SHA-256 and selected-catalog fingerprint with the native executable's
 startup provenance record. This makes an executable built with different
 plugin catalog inputs fail even if it starts and reports healthy; it is not a
-digest of unrelated application code. Pass the same catalog properties to both
-commands; for example, a binary built with
-`-PincludeFirstPartyPluginBundles=true` must be smoked with that property too.
-The same rule applies to `-PyanoApiPrefix`: pass the identical value to the
+digest of unrelated application code. The same rule applies to
+`-PyanoApiPrefix`: pass the identical value to the
 native build, distribution, and smoke commands. A native prefix cannot be
 changed after image generation.
 Use `-PyanoNativeBinary=<path>` only to verify another executable built from
@@ -175,14 +167,12 @@ app-chain plugin SPI with the non-published conformance fixture:
 
 ```bash
 ./gradlew :app:quarkusBuild \
-  -PincludeFirstPartyPluginBundles=true \
   -PincludeNativePluginConformanceFixture=true \
   -Dquarkus.native.enabled=true \
   -Dquarkus.package.jar.enabled=false \
   -PskipSigning=true
 
 ./gradlew :app:nativePluginCatalogSmoke \
-  -PincludeFirstPartyPluginBundles=true \
   -PincludeNativePluginConformanceFixture=true \
   -PskipSigning=true
 ```

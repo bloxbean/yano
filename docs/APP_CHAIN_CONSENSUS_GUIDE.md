@@ -1,16 +1,16 @@
 # Yano App Chain — Consensus & Internals Guide
 
 How the app chain works end to end, at the level a developer needs to extend
-it, debug it, or audit it. Companion docs: the
-[user guide](APP_CHAIN_USER_GUIDE.md) (configuration, REST, operations), the
-[tutorial](APP_CHAIN_TUTORIAL.md) (hands-on walkthrough), and the ADRs under
-`adr/app-layer/` (design history: 005 framework, 006 extensions,
-008.x consensus/anchoring iterations).
+it, debug it, or audit it. Companion docs are the
+[core app-chain guide](appchain/README.md), the
+[plugin query/domain API contract](APP_CHAIN_PLUGIN_QUERY_AND_DOMAIN_API.md),
+and the core ADRs under `adr/app-layer/`. Extension tutorials and product ADRs
+live in [Yano X](https://github.com/bloxbean/yano-x).
 
 Code pointers use class names — start at
 `runtime/.../appchain/AppChainEngine.java` (consensus core),
-`core-api/.../appchain/` (SPI + codecs), and
-`appchain/appchain-stdlib/` (standard-library state machines).
+`core-api/.../appchain/` (SPI + codecs), and `runtime/.../OrderedLog.java`
+(the one built-in state machine).
 
 ---
 
@@ -379,38 +379,18 @@ byte-identical roots at every height.
 **The two-tier rule** (worth internalizing): `validate` rejects; `apply`
 never does. Anything that reaches `apply` is already consensus-final, so a
 business-rule violation there must be a silent, deterministic no-op —
-re-check every rule you checked at admission. Every stdlib machine follows
-this pattern.
+re-check every rule you checked at admission. Every conforming state machine
+must follow this pattern.
 
 Convenience: `TypedAppStateMachine<T>` + `MessageCodec<T>` decode bodies at
 the edge (undecodable → reject at admission / skip at apply);
 `JacksonCborCodec.of(Class)` is the batteries-included codec.
 
-## 10. Out-of-the-box state machines
+## 10. Built-in state machine
 
 | id | Module | One-liner |
 |---|---|---|
 | `ordered-log` | runtime (built-in) | append-only log of opaque messages; per-message inclusion proofs |
-| `kv-registry` | stdlib | owner-guarded key/value registry |
-| `approvals` | stdlib | k-of-n approval workflow with deadlines |
-| `balances` | stdlib | minimal token/points ledger (mint + transfer) |
-| `doc-trail` | stdlib | per-entity chained document/audit trail |
-| `role-approvals` | role-workflow plugin | governed actors + generic role-gated payload hashes |
-| `role-evidence` | evidence-profile plugin | actor registry + role policy + evidence composite |
-
-Stdlib machines register via `ServiceLoader`
-(`StdlibStateMachineProviders`); select with `state-machine: <id>` —
-per-machine settings live under `machines.<id>.*`. (The ZK extension module
-ships additional machines — `zk-gate`, credential registry, ZK membership —
-behind the same SPI; see user guide §17.)
-
-`role-approvals` is the application-neutral provider: it commits the actor
-registry and role-approval workflow, exposes proof-oriented queries, and emits
-no effects. `role-evidence` is a complete manifested composite provider rather than an
-independently reorderable stdlib component. Its `evidence-role-v1` profile
-commits the actor registry, role-approval workflow, evidence/doc-trail
-components, routes, quotas, and governance identity. Wire, signing, proof, and
-recovery details are in `docs/APP_CHAIN_DOMAIN_ROLES.md` and ADR-019.
 
 ### 10.1 `ordered-log`
 
@@ -422,60 +402,10 @@ finalization at `(height, index)` against an anchored root. The record
 format is shared (`OrderedLog` in core-api) with the ZK gate so proofs never
 diverge.
 
-### 10.2 `kv-registry`
-
-Command (CBOR): `[op(uint), key(bstr), value(bstr)]` — op `0` PUT
-(value required), `1` DELETE. State entry:
-`key → cbor([owner(bstr32), value(bstr)])`.
-
-- **Ownership**: first writer of a key becomes its owner; only the owner
-  may update or delete. Non-owner writes are deterministic no-ops.
-- **Admission rejects**: non-CBOR bodies, PUT without value, PUT whose value
-  violates `machines.kv-registry.value-format` (`raw` default | `cbor` —
-  one well-formed CBOR item | `utf8`). All re-checked as no-ops at apply.
-
-### 10.3 `approvals`
-
-Commands (CBOR): PROPOSE `[0, itemId(tstr), payload(bstr), required(uint>0),
-deadlineMillis(uint; 0 = none)]`, APPROVE `[1, itemId]`, REJECT
-`[2, itemId]`. State entry `"i/"+itemId → cbor([status, proposer,
-payloadHash(blake2b-256), required, deadline, approvers[], rejecter])`,
-status ∈ {0 PENDING, 1 APPROVED, 2 REJECTED, 3 EXPIRED}.
-
-- PROPOSE is idempotent per item id. APPROVE dedups approvers; `required`
-  distinct approvals → APPROVED. Any member's REJECT → REJECTED. A command
-  touching a PENDING item past its deadline (vs `block.timestamp()`) →
-  EXPIRED. Terminal states are immutable.
-
-### 10.4 `balances`
-
-Command (CBOR): `[op(uint), to(tstr), amount(uint>0)]` — op `0` MINT, `1`
-TRANSFER. State entry `"b/"+account → unsigned big-endian amount`; a zero
-balance deletes the key. The sender's own account id is its member pubkey
-hex — members spend only their own balance; overspend is a no-op (balances
-never go negative). `machines.balances.minter` (32-byte hex key) restricts
-minting to one member; unset = any member may mint (set it for production).
-
-### 10.5 `doc-trail`
-
-Command (CBOR): `[entityId(tstr), entryHash(bstr), ref(tstr)]` — `ref` (URL/
-IPFS CID) stays in the message, not in state. State entry
-`"e/"+entityId → cbor([count, headHash])` where
-`head_n = blake2b256(head_{n-1} ‖ entryHash_n ‖ sender)` from a 32-zero-byte
-genesis head — an append-only per-entity hash chain a verifier can recompute
-independently from the ordered trail (`DocTrailStateMachine.computeHead`).
-
-### 10.6 Reading state (all machines)
-
-There is no typed query API yet (§9). The pattern:
-
-1. derive the key with the machine's helper (`accountKey("alice")`,
-   `itemKey("release-42")`, `entityKey("product-42")`, kv key bytes,
-   message id);
-2. `GET .../state/proof/{keyHex}` (REST) or `stateValue/stateProof` (Java) —
-   returns value + MPF proof;
-3. decode with the machine's static helpers (`decodeBalance`, `decodeItem`,
-   `decodeOwner`/`decodeValue`, `decodeEntry`).
+Additional state machines are ServiceLoader plugins maintained in
+[Yano X](https://github.com/bloxbean/yano-x/tree/main/state-machines). Their
+wire formats, typed clients, proofs, and operational guidance live with those
+plugins so Yano's core documentation does not imply that they are built in.
 
 ## 11. Writing your own state machine
 
