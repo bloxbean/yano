@@ -16,6 +16,9 @@ yaci.plugins.allow-list=com.bloxbean.cardano.yano.appchain.kafka,com.bloxbean.ca
 
 yano.app-chain.chains[0].chain-id=@CHAIN_ID@
 yano.app-chain.chains[0].state-machine=@STATE_MACHINE@
+yano.app-chain.chains[0].state.commitment-profile=mpf-blake2b256-v1
+yano.app-chain.chains[0].state.format-fingerprint=91ee14091200f1e24659112d640e877e9177779dcc81dd06117f013e9190082b
+yano.app-chain.chains[0].state.genesis-id=1111111111111111111111111111111111111111111111111111111111111111
 yano.app-chain.chains[0].signing-key=@SIGNING_KEY@
 yano.app-chain.chains[0].members=@MEMBER_KEYS@
 yano.app-chain.chains[0].threshold=2

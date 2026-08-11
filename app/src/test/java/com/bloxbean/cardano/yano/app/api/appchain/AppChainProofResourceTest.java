@@ -5,6 +5,7 @@ import com.bloxbean.cardano.vds.mpf.MpfTrie;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppAnchorCommitment;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppCapabilityManifest;
 import com.bloxbean.cardano.yano.api.appchain.AppChainGateway;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
 import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
@@ -15,6 +16,7 @@ import com.bloxbean.cardano.yano.api.appchain.state.StateProof;
 import com.bloxbean.cardano.yano.api.appchain.state.StateProofEnvelope;
 import com.bloxbean.cardano.yano.api.appchain.state.StateSnapshot;
 import com.bloxbean.cardano.yano.appchain.client.ProofVerifier;
+import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
 import org.junit.jupiter.api.Test;
 
@@ -27,8 +29,38 @@ import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class AppChainProofResourceTest {
+
+    @Test
+    void statusUsesAnExplicitNativeSafeCapabilityManifestView() {
+        AppCapabilityManifest manifest = AppCapabilityManifest.builder("demo", "1.0.0")
+                .crossCutting(new AppCapabilityManifest.CrossCutting(
+                        "capability", "1", true, "config", Map.of("mode", "test"),
+                        AppCapabilityManifest.Origin.RUNTIME_CONFIGURED))
+                .build();
+        AppChainGateway gateway = (AppChainGateway) Proxy.newProxyInstance(
+                AppChainGateway.class.getClassLoader(),
+                new Class<?>[]{AppChainGateway.class},
+                (proxy, method, arguments) -> switch (method.getName()) {
+                    case "status" -> Map.of("capabilityManifest", manifest);
+                    case "stateCommitmentIdentity" -> Optional.empty();
+                    case "toString" -> "manifest-status-gateway";
+                    case "hashCode" -> System.identityHashCode(proxy);
+                    case "equals" -> proxy == arguments[0];
+                    default -> defaultValue(method.getReturnType());
+                });
+
+        Map<?, ?> status = (Map<?, ?>) new AppChainResource.ChainScopedResource(gateway)
+                .status().getEntity();
+        Object manifestView = status.get("capabilityManifest");
+        assertFalse(manifestView instanceof AppCapabilityManifest);
+        Map<?, ?> manifestMap = (Map<?, ?>) manifestView;
+        assertEquals("demo", manifestMap.get("applicationId"));
+        assertEquals("capability", ((Map<?, ?>) ((List<?>) manifestMap.get("crossCutting"))
+                .getFirst()).get("capabilityId"));
+    }
 
     @Test
     void releaseMatchedClientCatalogEqualsRuntimeCommitmentCatalog() {
@@ -93,7 +125,7 @@ class AppChainProofResourceTest {
         AppChainResource.ChainScopedResource resource =
                 new AppChainResource.ChainScopedResource(gateway);
 
-        Response response = resource.stateProof("0a", 4L);
+        Response response = resource.stateProof("0a", "4");
         assertEquals(200, response.getStatus());
         Map<?, ?> proof = (Map<?, ?>) response.getEntity();
         assertEquals("mpf-blake2b256-v1", proof.get("profile"));
@@ -106,7 +138,7 @@ class AppChainProofResourceTest {
         assertEquals(1, ((List<?>) ((Map<?, ?>) proof.get("finalityCertificate"))
                 .get("signatures")).size());
 
-        Map<?, ?> entry = (Map<?, ?>) resource.stateEntry("0a", 4L).getEntity();
+        Map<?, ?> entry = (Map<?, ?>) resource.stateEntry("0a", "4").getEntity();
         assertFalse(entry.containsKey("proofWireHex"));
         assertEquals("PRESENT", entry.get("presence"));
         Map<?, ?> identityView = (Map<?, ?>) resource.stateIdentity().getEntity();
@@ -115,6 +147,10 @@ class AppChainProofResourceTest {
         assertEquals(2L, ((Map<?, ?>) resource.oldestProvableHeight().getEntity())
                 .get("oldestProvableHeight"));
         assertEquals(true, ((Map<?, ?>) resource.stateIntegrity().getEntity()).get("valid"));
+
+        WebApplicationException invalidHeight = assertThrows(WebApplicationException.class,
+                () -> resource.stateProof("0a", "not-a-height"));
+        assertEquals(400, invalidHeight.getResponse().getStatus());
     }
 
     @Test

@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "id": "com.bloxbean.cardano.yano.appchain.eutxo.bridge.cardano",
-  "version": "0.1.0-pre11",
+  "version": "${pluginVersion}",
   "yanoApi": { "min": 3, "max": 3, "minLevel": 4 },
   "dependencies": [
     {
       "id": "com.bloxbean.cardano.yano.appchain.eutxo",
-      "minVersion": "0.1.0-pre11",
+      "minVersion": "${pluginVersion}",
       "maxVersionExclusive": "0.2.0"
     }
   ],

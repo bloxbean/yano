@@ -77,7 +77,8 @@ class AppChainProjectTest {
                 .containsEntry("firstPartyMetadata",
                         golden("appchain-first-party-metadata.json"))
                 .containsEntry("releaseIndex",
-                        golden("appchain-release-capability-index.json"))
+                        packagedResourceDigest(
+                                "appchain-release-capability-index.json"))
                 .containsEntry("releaseAcceptanceIndex",
                         golden("appchain-release-acceptance-index.json"))
                 .containsEntry("metadataTrustSchema",
@@ -1394,5 +1395,13 @@ class AppChainProjectTest {
             hashes.load(input);
         }
         return hashes.getProperty(name);
+    }
+
+    private static String packagedResourceDigest(String name) throws IOException {
+        try (var input = AppChainProjectTest.class.getClassLoader().getResourceAsStream(
+                "appchain-dx/v1alpha1/" + name)) {
+            if (input == null) throw new IOException("missing packaged metadata " + name);
+            return AppChainProjectCatalog.sha256(input.readAllBytes());
+        }
     }
 }

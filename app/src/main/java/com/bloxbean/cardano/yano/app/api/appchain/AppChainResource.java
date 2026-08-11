@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.app.api.appchain;
 
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import com.bloxbean.cardano.yano.api.appchain.AppCapabilityManifest;
 import com.bloxbean.cardano.yano.api.appchain.AppChainGateway;
 import com.bloxbean.cardano.yano.api.appchain.AppChainGateways;
 import com.bloxbean.cardano.yano.api.appchain.AppQueryPath;
@@ -221,7 +222,7 @@ public class AppChainResource {
     @Operation(hidden = true)
     @Path("state/proof/{keyHex}")
     public Response stateProof(@Encoded @PathParam("keyHex") String keyHex,
-                               @QueryParam("height") Long height) {
+                               @QueryParam("height") String height) {
         return singleChain().stateProof(keyHex, height);
     }
 
@@ -229,7 +230,7 @@ public class AppChainResource {
     @Operation(hidden = true)
     @Path("state/entry/{keyHex}")
     public Response stateEntry(@Encoded @PathParam("keyHex") String keyHex,
-                               @QueryParam("height") Long height) {
+                               @QueryParam("height") String height) {
         return singleChain().stateEntry(keyHex, height);
     }
 
@@ -748,6 +749,10 @@ public class AppChainResource {
         public Response status() {
             try {
                 Map<String, Object> status = new LinkedHashMap<>(gateway.status());
+                Object capabilityManifest = status.get("capabilityManifest");
+                if (capabilityManifest instanceof AppCapabilityManifest manifest) {
+                    status.put("capabilityManifest", capabilityManifestView(manifest));
+                }
                 optionalStateIdentity(gateway).ifPresent(identity -> status.put(
                         "stateCommitment", commitmentView(identity, gateway.tipHeight(),
                                 gateway.stateRoot(), safeOldestProvableHeight(gateway))));
@@ -1615,16 +1620,28 @@ public class AppChainResource {
         @GET
         @Path("state/proof/{keyHex}")
         public Response stateProof(@Encoded @PathParam("keyHex") String keyHex,
-                                   @QueryParam("height") Long height) {
-            return stateLookup(keyHex, height, true);
+                                   @QueryParam("height") String height) {
+            return stateLookup(keyHex, parseProofHeight(height), true);
         }
 
         /** Current or retained historical logical entry without native proof bytes. */
         @GET
         @Path("state/entry/{keyHex}")
         public Response stateEntry(@Encoded @PathParam("keyHex") String keyHex,
-                                   @QueryParam("height") Long height) {
-            return stateLookup(keyHex, height, false);
+                                   @QueryParam("height") String height) {
+            return stateLookup(keyHex, parseProofHeight(height), false);
+        }
+
+        private static Long parseProofHeight(String height) {
+            if (height == null || height.isBlank()) {
+                return null;
+            }
+            try {
+                return Long.valueOf(height);
+            } catch (NumberFormatException invalid) {
+                throw jsonError(Response.Status.BAD_REQUEST,
+                        "State proof height must be a positive integer");
+            }
         }
 
         @GET
@@ -2191,6 +2208,68 @@ public class AppChainResource {
             result.put("version", version);
             result.put("stateRoot", HexUtil.encodeHexString(stateRoot));
             result.put("oldestProvableHeight", oldestProvableHeight);
+            return result;
+        }
+
+        static Map<String, Object> capabilityManifestView(AppCapabilityManifest manifest) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("schemaVersion", manifest.schemaVersion());
+            result.put("applicationId", manifest.applicationId());
+            result.put("applicationVersion", manifest.applicationVersion());
+            result.put("manifestDigest", manifest.manifestDigest());
+
+            List<Map<String, Object>> components = new ArrayList<>();
+            for (AppCapabilityManifest.Component component : manifest.components()) {
+                Map<String, Object> value = new LinkedHashMap<>();
+                value.put("id", component.id());
+                value.put("version", component.version());
+                value.put("configurationId", component.configurationId());
+                value.put("stateNamespace", component.stateNamespace());
+                value.put("topics", component.topics());
+                value.put("querySubjects", component.querySubjects());
+                value.put("origin", component.origin().name());
+                components.add(value);
+            }
+            result.put("components", components);
+
+            List<Map<String, Object>> workflows = new ArrayList<>();
+            for (AppCapabilityManifest.Workflow workflow : manifest.workflows()) {
+                Map<String, Object> value = new LinkedHashMap<>();
+                value.put("id", workflow.id());
+                value.put("version", workflow.version());
+                value.put("participantComponentIds", workflow.participantComponentIds());
+                value.put("topic", workflow.topic());
+                value.put("effectTypes", workflow.effectTypes());
+                value.put("origin", workflow.origin().name());
+                workflows.add(value);
+            }
+            result.put("workflows", workflows);
+
+            List<Map<String, Object>> crossCutting = new ArrayList<>();
+            for (AppCapabilityManifest.CrossCutting capability : manifest.crossCutting()) {
+                Map<String, Object> value = new LinkedHashMap<>();
+                value.put("capabilityId", capability.capabilityId());
+                value.put("version", capability.version());
+                value.put("enabled", capability.enabled());
+                value.put("configurationDigest", capability.configurationDigest());
+                value.put("attributes", capability.attributes());
+                value.put("origin", capability.origin().name());
+                crossCutting.add(value);
+            }
+            result.put("crossCutting", crossCutting);
+
+            List<Map<String, Object>> proofSubjects = new ArrayList<>();
+            for (AppCapabilityManifest.ProofSubject subject : manifest.proofSubjects()) {
+                Map<String, Object> value = new LinkedHashMap<>();
+                value.put("subjectId", subject.subjectId());
+                value.put("subjectVersion", subject.subjectVersion());
+                value.put("componentId", subject.componentId());
+                value.put("keyNamespace", subject.keyNamespace());
+                value.put("verificationTarget", subject.verificationTarget());
+                value.put("descriptorDigest", subject.descriptorDigest());
+                proofSubjects.add(value);
+            }
+            result.put("proofSubjects", proofSubjects);
             return result;
         }
 

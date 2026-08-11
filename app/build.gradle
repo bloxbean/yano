@@ -74,7 +74,7 @@ if (includeNativePluginConformanceFixtureProperty != null
 }
 def includeNativePluginConformanceFixture = Boolean.parseBoolean(
         includeNativePluginConformanceFixtureProperty ?: 'false')
-def declaredPluginManifestVersion = providers.gradleProperty('version').get()
+def declaredPluginManifestVersion = project.version.toString()
 
 // Every build-time bundle must have an explicit Gradle project root. Mappings
 // with includeProvided also add non-annotation compileOnly dependencies because
@@ -1008,6 +1008,11 @@ def pluginConformanceRuntimeArguments = { int httpPort, int nodePort,
             "-Dyano.app-chain.members=${pluginConformanceMemberKey}",
             '-Dyano.app-chain.threshold=1',
             '-Dyano.app-chain.state-machine=conformance-machine',
+            '-Dyano.app-chain.state.commitment-profile=mpf-blake2b256-v1',
+            '-Dyano.app-chain.state.format-fingerprint='
+                    + '91ee14091200f1e24659112d640e877e9177779dcc81dd06117f013e9190082b',
+            '-Dyano.app-chain.state.genesis-id='
+                    + '1111111111111111111111111111111111111111111111111111111111111111',
             '-Dyano.app-chain.sequencer.mode=conformance-mode',
             '-Dyano.app-chain.l1.stability-depth=1',
             '-Dyano.app-chain.observers.audit.type=conformance-observer',
@@ -1362,8 +1367,8 @@ def assertPluginOperationsAdapters = { int httpPort, int timeoutSeconds,
     def summary = new groovy.json.JsonSlurper().parseText(summaryResponse.text)
     // Must match PluginApiVersion.CURRENT_MAJOR / CURRENT_LEVEL (core-api).
     if (!(summary.catalogFingerprint ==~ /sha256:[0-9a-f]{64}/)
-            || summary.pluginApiMajor != 1
-            || summary.pluginApiLevel != 2
+            || summary.pluginApiMajor != 3
+            || summary.pluginApiLevel != 4
             || !(summary.generation instanceof Number)
             || !(summary.totals instanceof Map)
             || !summary.totals.containsKey('observedContributions')
@@ -2261,8 +2266,12 @@ tasks.register('packagedJvmPluginCatalogSmoke') {
             if (!java.nio.file.Files.isRegularFile(logFile)) {
                 return '<packaged JVM process produced no log>'
             }
-            java.nio.file.Files.readAllLines(logFile).takeRight(200)
-                    .join(System.lineSeparator())
+            def lines = java.nio.file.Files.readAllLines(logFile)
+            def excerpt = lines.size() <= 400
+                    ? lines
+                    : (lines.take(150) + ['... packaged JVM log omitted ...']
+                    + lines.takeRight(250))
+            excerpt.join(System.lineSeparator())
         }
         try {
             process = processBuilder.start()

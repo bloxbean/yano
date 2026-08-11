@@ -77,6 +77,9 @@ tasks.register('generateAppChainMetadata', JavaExec) {
         copy {
             from('src/main/resources/appchain-dx/v1alpha1')
             exclude 'skills/**'
+            filesMatching('appchain-release-capability-index.json') {
+                expand(yanoVersion: project.version.toString())
+            }
             into(generatedMetadataDirectory.get().dir('appchain-dx/v1alpha1').asFile)
         }
     }
@@ -90,6 +93,9 @@ tasks.named('jar') {
 
 tasks.named('processResources') {
     dependsOn tasks.named('generateAppChainMetadata')
+    filesMatching('appchain-dx/v1alpha1/appchain-release-capability-index.json') {
+        expand(yanoVersion: project.version.toString())
+    }
     from(generatedMetadataDirectory) {
         exclude 'appchain-dx/v1alpha1/**'
     }
@@ -179,9 +185,10 @@ tasks.register('verifyReleaseCapabilityVersion') {
     group = 'verification'
     description = 'Verifies release-pinned DX metadata matches this Yano build version'
     doLast {
-        def index = new groovy.json.JsonSlurper().parse(
-                file('src/main/resources/appchain-dx/v1alpha1/'
-                        + 'appchain-release-capability-index.json'))
+        def template = file('src/main/resources/appchain-dx/v1alpha1/'
+                + 'appchain-release-capability-index.json').getText('UTF-8')
+        def index = new groovy.json.JsonSlurper().parseText(
+                template.replace('${yanoVersion}', project.version.toString()))
         if (index.yanoVersion != project.version.toString()) {
             throw new GradleException(
                     "Release DX index version ${index.yanoVersion} does not match ${project.version}")

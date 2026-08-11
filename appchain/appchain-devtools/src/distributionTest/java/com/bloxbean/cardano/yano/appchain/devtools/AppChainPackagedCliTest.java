@@ -47,7 +47,12 @@ class AppChainPackagedCliTest {
                     signing-key: %s
                     members: %s
                     threshold: 1
-                """.formatted(signingKey, "a".repeat(64)), StandardCharsets.UTF_8);
+                    state:
+                      commitment-profile: mpf-blake2b256-v1
+                      format-fingerprint: 91ee14091200f1e24659112d640e877e9177779dcc81dd06117f013e9190082b
+                      genesis-id: %s
+                """.formatted(signingKey, "a".repeat(64), "11".repeat(32)),
+                StandardCharsets.UTF_8);
         Result resolved = run(launcher, "config", "validate", "--mode", "resolved",
                 "--format", "json", "--config", resolvedConfig.toString());
         Result effective = run(launcher, "config", "effective", "--mode", "resolved",

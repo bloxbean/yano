@@ -83,7 +83,7 @@ docker compose -p "$KAFKA_SECURE_PROJECT" -f "$COMPOSE_FILE" up \
 run_profile() {
   local profile="$1" port="$2"
   shift 2
-  "$ROOT_DIR/gradlew" :appchain-kafka:test \
+  "$ROOT_DIR/gradlew" :appchain-kafka:integrationTest \
     --tests '*KafkaPublishRealIntegrationTest.publishesEffectsAndFinalizedBlocksThroughOneRealBroker' \
     -Dyano.kafka.integration.bootstrap="localhost:$port" \
     -Dyano.kafka.integration.security-profile="$profile" \

@@ -191,6 +191,215 @@ tasks.named('check') {
     dependsOn tasks.named('verifyAdr013Slf4jAlignment')
 }
 
+def repositorySplitAllocationFile = layout.projectDirectory.file(
+        'config/repository-split/allocation-v1.json')
+
+tasks.register('verifyRepositorySplitAllocation') {
+    group = 'verification'
+    description = 'Validates the ADR-030 module, path, debt, and regression ownership manifest.'
+    inputs.file(repositorySplitAllocationFile)
+
+    doLast {
+        def manifest = new groovy.json.JsonSlurper().parse(
+                repositorySplitAllocationFile.asFile)
+        def failures = []
+        def allowedDispositions = [
+                'retain', 'move', 'split', 'temporary-retain'
+        ] as Set
+
+        if (manifest.schemaVersion != 1) {
+            failures.add("schemaVersion must be 1, found ${manifest.schemaVersion}")
+        }
+        if (manifest.sourceRepository != 'yano'
+                || manifest.downstreamRepository != 'yano-x') {
+            failures.add('repository identities must be yano -> yano-x')
+        }
+        if (!(manifest.sourceCommit ==~ /[0-9a-f]{40}/)) {
+            failures.add('sourceCommit must be a full lowercase Git commit id')
+        }
+
+        def owners = manifest.owners?.keySet() ?: [] as Set
+        def modules = manifest.modules ?: []
+        def duplicateValues = { values ->
+            values.groupBy { it }.findAll { value, occurrences ->
+                value != null && occurrences.size() > 1
+            }.keySet().sort()
+        }
+        duplicateValues(modules*.sourcePath).each {
+            failures.add("duplicate sourcePath ${it}")
+        }
+        duplicateValues(modules*.sourceDirectory).each {
+            failures.add("duplicate sourceDirectory ${it}")
+        }
+        duplicateValues(modules*.targetPath).each {
+            failures.add("duplicate targetPath ${it}")
+        }
+        duplicateValues(modules*.targetDirectory).each {
+            failures.add("duplicate targetDirectory ${it}")
+        }
+        duplicateValues(modules*.artifactId).each {
+            failures.add("duplicate artifactId ${it}")
+        }
+
+        def declaredProjects = modules.collectEntries { module ->
+            [(module.sourcePath): module]
+        }
+        def actualProjects = rootProject.subprojects.collectEntries { candidate ->
+            def relativeDirectory = rootProject.projectDir.toPath()
+                    .relativize(candidate.projectDir.toPath()).toString()
+                    .replace(File.separatorChar, '/' as char)
+            [(candidate.path): relativeDirectory]
+        }
+        (actualProjects.keySet() - declaredProjects.keySet()).sort().each {
+            failures.add("unclassified Gradle project ${it} (${actualProjects[it]})")
+        }
+        (declaredProjects.keySet() - actualProjects.keySet()).sort().each {
+            failures.add("manifest project ${it} is not included by settings.gradle")
+        }
+
+        modules.each { module ->
+            def label = module.sourcePath ?: '<missing sourcePath>'
+            if (!(module.disposition in allowedDispositions)) {
+                failures.add("${label} has invalid disposition ${module.disposition}")
+            }
+            if (!(module.owner in owners)) {
+                failures.add("${label} has unknown owner ${module.owner}")
+            }
+            if (!module.sourceDirectory
+                    || !layout.projectDirectory.dir(module.sourceDirectory).asFile.isDirectory()) {
+                failures.add("${label} sourceDirectory does not exist: ${module.sourceDirectory}")
+            }
+            if (actualProjects[label]
+                    && actualProjects[label] != module.sourceDirectory) {
+                failures.add("${label} directory is ${actualProjects[label]}, manifest says "
+                        + module.sourceDirectory)
+            }
+            if (!module.targetPath || !module.targetDirectory
+                    || !module.publicationType) {
+                failures.add("${label} is missing target/publication metadata")
+            }
+            if (module.disposition == 'move') {
+                if (module.owner != 'yano-x') {
+                    failures.add("${label} moves downstream but owner is ${module.owner}")
+                }
+                if (!module.artifactId?.startsWith('yano-x-')) {
+                    failures.add("${label} downstream artifact must start with yano-x-")
+                }
+                if (!module.targetPath.startsWith(':')
+                        || !module.targetPath.substring(1).contains(':')) {
+                    failures.add("${label} must use a hierarchical Yano X targetPath")
+                }
+            }
+            if (module.publicationType == 'runtime-plugin'
+                    && !module.pluginBundleId) {
+                failures.add("${label} runtime plugin is missing pluginBundleId")
+            }
+            if (module.disposition == 'split'
+                    && (!module.splitTargets || module.splitTargets.size() < 2)) {
+                failures.add("${label} split allocation needs at least two explicit outcomes")
+            }
+        }
+
+        def pathAllocations = manifest.pathAllocations ?: []
+        duplicateValues(pathAllocations*.prefix).each {
+            failures.add("duplicate path allocation ${it}")
+        }
+        pathAllocations.each { allocation ->
+            if (!allocation.prefix || !(allocation.owner in owners)
+                    || !(allocation.disposition in allowedDispositions)
+                    || !allocation.reason) {
+                failures.add("invalid path allocation ${allocation}")
+            }
+        }
+
+        def moduleRoots = modules*.sourceDirectory
+        def allocationPrefixes = pathAllocations*.prefix
+        def trackedFiles = providers.exec {
+            workingDir rootProject.projectDir
+            commandLine 'git', 'ls-files'
+        }.standardOutput.asText.get().readLines().findAll { !it.isBlank() }
+        trackedFiles.each { trackedPath ->
+            def ownedByModule = moduleRoots.any { moduleRoot ->
+                trackedPath == moduleRoot || trackedPath.startsWith(moduleRoot + '/')
+            }
+            def ownedByPathRule = allocationPrefixes.any { prefix ->
+                trackedPath == prefix || trackedPath.startsWith(prefix)
+            }
+            if (!ownedByModule && !ownedByPathRule) {
+                failures.add("tracked path has no ADR-030 owner: ${trackedPath}")
+            }
+        }
+
+        def firstPartyManifestFiles = fileTree(rootProject.projectDir) {
+            include 'appchain/**/src/main/resources/META-INF/yano/plugins/*.json'
+        }.files.sort { left, right -> left.path <=> right.path }
+        firstPartyManifestFiles.each { manifestFile ->
+            def manifestTemplate = manifestFile.getText('UTF-8')
+            def pluginManifest = new groovy.json.JsonSlurper().parseText(manifestTemplate)
+            if (pluginManifest.version != '${pluginVersion}') {
+                failures.add("first-party plugin version must be generated: "
+                        + rootProject.projectDir.toPath().relativize(manifestFile.toPath()))
+            }
+            def templateKeys = (manifestTemplate =~ /\$\{([^}]+)\}/).collect {
+                it[1]
+            }.toSet()
+            if (templateKeys != ['pluginVersion'] as Set) {
+                failures.add("first-party plugin template keys must be [pluginVersion]: "
+                        + rootProject.projectDir.toPath().relativize(manifestFile.toPath())
+                        + " has ${templateKeys.sort()}")
+            }
+        }
+        def releaseIndexTemplate = file('appchain/appchain-devtools/src/main/resources/'
+                + 'appchain-dx/v1alpha1/appchain-release-capability-index.json')
+        def releaseIndex = new groovy.json.JsonSlurper().parse(releaseIndexTemplate)
+        if (releaseIndex.yanoVersion != '${yanoVersion}') {
+            failures.add('DX release capability version must be generated from the build')
+        }
+
+        def debt = manifest.technicalDebt ?: []
+        def expectedDebtIds = (1..23).collect { "P${it}" } as Set
+        if ((debt*.id as Set) != expectedDebtIds) {
+            failures.add("technicalDebt ids must be P1-P23, found ${(debt*.id).sort()}")
+        }
+        debt.each { item ->
+            if (!(item.owner in owners) || !(item.targetPhase ==~ /[A-F]/)
+                    || !item.action || !item.regressionGuard) {
+                failures.add("technical debt ${item.id} lacks owner, phase, action, or guard")
+            }
+        }
+
+        def heavySuiteIds = [
+                'appchain-extended',
+                'appchain-crypto',
+                'distribution-check',
+                'native-plugin-conformance',
+                'connector-fault-matrix',
+                'effect-failover-e2e'
+        ] as Set
+        def suites = manifest.regressionSuites ?: []
+        if (!suites*.id.containsAll(heavySuiteIds)) {
+            failures.add('regressionSuites does not contain all six heavy app-chain jobs')
+        }
+        suites.each { suite ->
+            if (!suite.id || !suite.command || !suite.protects) {
+                failures.add("invalid regression suite ${suite}")
+            }
+        }
+
+        if (!failures.isEmpty()) {
+            throw new GradleException('ADR-030 allocation verification failed:\n - '
+                    + failures.join('\n - '))
+        }
+        logger.lifecycle(
+                'ADR-030 allocation verified: {} projects, {} tracked paths, {} debt items, {} suites',
+                modules.size(), trackedFiles.size(), debt.size(), suites.size())
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyRepositorySplitAllocation')
+}
+
 ext.ossrhUsername = System.getenv('MAVEN_USERNAME')
 ext.ossrhPassword = System.getenv('MAVEN_PASSWORD')
 
@@ -405,6 +614,19 @@ subprojects {
             showStandardStreams = verbose
         }
 
+    }
+
+    // First-party app-chain manifests are source templates. Their bundle and
+    // dependency versions must follow the owning Gradle publication rather
+    // than being copied into every JSON file at release time.
+    tasks.matching { it.name == 'processResources' }.configureEach {
+        def pluginManifestVersion = project.version.toString()
+        inputs.property('pluginManifestVersion', pluginManifestVersion)
+        filesMatching('META-INF/yano/plugins/*.json') {
+            filter { line ->
+                line.replace('${pluginVersion}', pluginManifestVersion)
+            }
+        }
     }
 }
 

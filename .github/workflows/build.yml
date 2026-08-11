@@ -50,6 +50,8 @@ jobs:
           cache: 'gradle'
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
+      - name: Verify ADR-030 repository allocation
+        run: ./gradlew verifyRepositorySplitAllocation -PskipSigning=true --stacktrace
       - name: Build with Gradle
         run: ./gradlew build -PskipSigning=true --stacktrace
       - name: Verify app-chain cluster operator safety contracts

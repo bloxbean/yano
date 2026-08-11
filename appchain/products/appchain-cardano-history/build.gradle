@@ -30,7 +30,7 @@ tasks.named('compileJava') {
 
 tasks.named('processResources') {
     filesMatching('META-INF/yano/plugins/*.json') {
-        expand(productVersion: project.version.toString())
+        expand(pluginVersion: project.version.toString())
     }
 }
 

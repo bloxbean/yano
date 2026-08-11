@@ -88,10 +88,9 @@ for required in (
         'stable_receipt_signature()',
         'capture_effect_inventory()',
         'cluster_state_signature()',
-        'cluster_tip()',
-        'assert_replay_advanced_only_tip()',
+        'assert_read_only_preserved_cluster_state()',
         'map(del(.tipHeight))',
-        "strictly later consensus tip",
+        "changed consensus tip, state, membership, or governed profile",
         '/effects?fromHeight=0&limit=100',
         '== ["ipfs.pin", "kafka.publish", "object.put"]',
         'and ([.effects[].effectIdHashHex] | unique | length) == 3',
@@ -100,8 +99,8 @@ for required in (
         'host immediate replay changed the logical effect inventory',
         'Compose retained restart/replay changed the logical effect inventory',
         'host retained restart/replay changed the logical effect inventory',
-        "'Compose immediate replay'",
-        "'host immediate replay'",
+        "'Compose immediate read-only verification'",
+        "'host immediate read-only verification'",
         'Compose retained restart/replay changed app-chain state or membership',
         'host retained restart/replay changed app-chain state or membership',
         'semantic_signature()',
@@ -176,8 +175,8 @@ if source.count("capture_effect_inventory ") != 6:
     raise SystemExit("each deployment run/replay generation must prove its exact logical effects")
 if source.count("capture_cluster_state ") != 10:
     raise SystemExit("every first/replay/restart generation must prove exact cluster state")
-if source.count("assert_replay_advanced_only_tip ") != 4:
-    raise SystemExit("every immediate/retained replay must preserve logical state while advancing tip")
+if source.count("assert_read_only_preserved_cluster_state ") != 4:
+    raise SystemExit("every immediate/retained verification must preserve exact cluster state")
 if source.count("assert_executor_activity ") != 2:
     raise SystemExit("both deployments must prove live executor status and bounded metrics")
 stable_start = source.index("stable_receipt_signature() {")

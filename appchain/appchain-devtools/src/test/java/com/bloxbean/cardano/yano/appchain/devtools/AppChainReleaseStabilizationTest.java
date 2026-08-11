@@ -192,9 +192,10 @@ class AppChainReleaseStabilizationTest {
         Map<String, String> properties =
                 catalog.capability("settlement:zeroj-validity")
                         .properties();
+        assertThat(identities.get("yanoVersion"))
+                .as("the historical acceptance run remains pinned to its source build")
+                .matches("0\\.1\\.0-pre\\d+");
         assertThat(identities)
-                .containsEntry("yanoVersion",
-                        catalog.releaseIndex().yanoVersion())
                 .containsEntry("transactionFormat",
                         properties.get(
                                 "machines.eutxo.validity."

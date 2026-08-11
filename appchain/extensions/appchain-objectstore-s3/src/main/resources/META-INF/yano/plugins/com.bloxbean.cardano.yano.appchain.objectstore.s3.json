@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "com.bloxbean.cardano.yano.appchain.objectstore.s3",
-  "version": "0.1.0-pre11",
+  "version": "${pluginVersion}",
   "yanoApi": { "min": 3, "max": 3, "minLevel": 4 },
   "dependencies": [],
   "contributions": [

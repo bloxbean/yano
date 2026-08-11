@@ -1,17 +1,17 @@
 {
   "schemaVersion": 1,
   "id": "com.bloxbean.cardano.yano.appchain.showcase",
-  "version": "${showcaseVersion}",
+  "version": "${pluginVersion}",
   "yanoApi": { "min": 3, "max": 3, "minLevel": 4 },
   "dependencies": [
     {
       "id": "com.bloxbean.cardano.yano.appchain.stdlib",
-      "minVersion": "${showcaseVersion}",
+      "minVersion": "${pluginVersion}",
       "maxVersionExclusive": "0.2.0"
     },
     {
       "id": "com.bloxbean.cardano.yano.appchain.role-workflow",
-      "minVersion": "${showcaseVersion}",
+      "minVersion": "${pluginVersion}",
       "maxVersionExclusive": "0.2.0"
     }
   ],

@@ -216,6 +216,13 @@ grep -Fxq 'yano.app-chain.chains[0].anchor.max-interval-minutes=60' \
 grep -Fxq 'yano.app-chain.chains[0].block.max-messages=64' \
   "$NODE_DIR/node0.properties" \
   || fail "Compose demo does not retain the normal 64-message block cap"
+for identity_setting in \
+  'yano.app-chain.chains[0].state.commitment-profile=mpf-blake2b256-v1' \
+  'yano.app-chain.chains[0].state.format-fingerprint=91ee14091200f1e24659112d640e877e9177779dcc81dd06117f013e9190082b' \
+  'yano.app-chain.chains[0].state.genesis-id=1111111111111111111111111111111111111111111111111111111111111111'; do
+  [ "$(grep -hFx "$identity_setting" "$NODE_DIR"/*.properties | wc -l | tr -d ' ')" -eq 3 ] \
+    || fail "Compose members do not share complete state commitment identity"
+done
 [ "$(grep -hFx 'yano.app-chain.chains[0].machines.composite.evidence-capacity-per-block=8' \
     "$NODE_DIR"/*.properties | wc -l | tr -d ' ')" -eq 3 ] \
   || fail "Compose members do not share the committed evidence capacity"

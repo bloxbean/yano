@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "id": "com.bloxbean.cardano.yano.appchain.cardano-history",
-  "version": "${productVersion}",
+  "version": "${pluginVersion}",
   "yanoApi": { "min": 3, "max": 3, "minLevel": 4 },
   "dependencies": [
     {
       "id": "com.bloxbean.cardano.yano.appchain.stdlib",
-      "minVersion": "${productVersion}",
+      "minVersion": "${pluginVersion}",
       "maxVersionExclusive": "0.2.0"
     }
   ],

@@ -61,7 +61,7 @@ tasks.named('compileJava') {
 
 tasks.named('processResources') {
     filesMatching('META-INF/yano/plugins/*.json') {
-        expand(showcaseVersion: project.version.toString())
+        expand(pluginVersion: project.version.toString())
     }
 }
 
@@ -94,10 +94,12 @@ tasks.register('generateShowcaseVersion') {
     }
 }
 
-def embeddedYanoRoot = "yano-${project.version}"
+def embeddedYanoRoot = appDistribution.flatMap { it.archiveFile }.map {
+    it.asFile.name.replaceFirst(/\.zip$/, '')
+}
 def stripEmbeddedYanoRoot = { details ->
     def segments = details.relativePath.segments.toList()
-    def rootIndex = segments.findIndexOf { it == embeddedYanoRoot }
+    def rootIndex = segments.findIndexOf { it == embeddedYanoRoot.get() }
     if (rootIndex < 0) {
         throw new GradleException("Unexpected Yano distribution path: ${segments.join('/')}")
     }

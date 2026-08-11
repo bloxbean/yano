@@ -258,7 +258,8 @@ assert_junit() {
   class_name="$2"
   minimum="$3"
   expected="$4"
-  result="$(module_dir "$module")/build/test-results/test/TEST-$class_name.xml"
+  suite="${5:-test}"
+  result="$(module_dir "$module")/build/test-results/$suite/TEST-$class_name.xml"
   python3 - "$result" "$minimum" "$expected" <<'PY'
 import pathlib
 import sys
@@ -305,16 +306,21 @@ for secret_path in sys.argv[2:]:
 PY
 }
 
-run_gradle() {
+run_gradle_task() {
   label="$1"
   module="$2"
-  shift 2
+  test_task="$3"
+  shift 3
+  clean_task=cleanTest
+  if [ "$test_task" = integrationTest ]; then
+    clean_task=cleanIntegrationTest
+  fi
   printf '\n[%s]\n' "$label"
   log_name="$(printf '%s' "$label" | tr '[:upper:] /' '[:lower:]--' \
     | tr -cd 'a-z0-9._-')"
   log_file="$FAULT_ROOT/logs/$log_name.log"
   if "$GRADLEW" --console=plain --stacktrace \
-      "${module}:cleanTest" "${module}:test" "$@" >"$log_file" 2>&1; then
+      "${module}:$clean_task" "${module}:$test_task" "$@" >"$log_file" 2>&1; then
     assert_log_has_no_credentials "$log_file" \
       || fail "a connector test log retained credential material"
     grep -E '^BUILD SUCCESSFUL' "$log_file" | tail -n 1
@@ -328,14 +334,28 @@ run_gradle() {
   fi
 }
 
+run_gradle() {
+  label="$1"
+  module="$2"
+  shift 2
+  run_gradle_task "$label" "$module" test "$@"
+}
+
+run_integration_gradle() {
+  label="$1"
+  module="$2"
+  shift 2
+  run_gradle_task "$label" "$module" integrationTest "$@"
+}
+
 run_real_case() {
   label="$1"
   module="$2"
   class_name="$3"
   method="$4"
   shift 4
-  run_gradle "$label" "$module" --tests "$class_name.$method" "$@"
-  assert_junit "$module" "$class_name" 1 "$method()"
+  run_integration_gradle "$label" "$module" --tests "$class_name.$method" "$@"
+  assert_junit "$module" "$class_name" 1 "$method()" integrationTest
 }
 
 printf 'Connector fault matrix project: %s\n' "$PROJECT"
@@ -427,16 +447,17 @@ run_real_case "Kafka unavailable service" \
 compose start kafka >/dev/null
 wait_healthy kafka || fail "Kafka did not recover after unavailable-service test"
 
-run_gradle "RustFS real conditional creation, conflict, checksum, versioning and Object Lock" \
+run_integration_gradle "RustFS real conditional creation, conflict, checksum, versioning and Object Lock" \
   "$S3_MODULE" \
   --tests "$S3_REAL_CLASS.executorConfirmsOnceReconcilesAfterRestartAndNeverResurrectsDeletedKey" \
   --tests "$S3_AWS_REAL_CLASS.conditionalVersionedPromotionAndNoResurrectionProfile" \
   --tests "$S3_AWS_REAL_CLASS.governanceObjectLockIsActuallyEnforcedAndBypassIsExplicit" \
   "${S3_PROPS[@]}"
 assert_junit "$S3_MODULE" "$S3_REAL_CLASS" 1 \
-  "executorConfirmsOnceReconcilesAfterRestartAndNeverResurrectsDeletedKey()"
+  "executorConfirmsOnceReconcilesAfterRestartAndNeverResurrectsDeletedKey()" integrationTest
 assert_junit "$S3_MODULE" "$S3_AWS_REAL_CLASS" 2 \
-  "conditionalVersionedPromotionAndNoResurrectionProfile()|governanceObjectLockIsActuallyEnforcedAndBypassIsExplicit()"
+  "conditionalVersionedPromotionAndNoResurrectionProfile()|governanceObjectLockIsActuallyEnforcedAndBypassIsExplicit()" \
+  integrationTest
 run_real_case "RustFS retention-control drift fails closed" \
   "$RUNNER_MODULE" "$S3_BOOTSTRAP_REAL_CLASS" \
   retentionControlDriftFailsClosedAgainstRealRustFs \

@@ -665,13 +665,13 @@ assert_plugin_inventory() {
           and (.lifecycle == "VALIDATED" or .lifecycle == "ACTIVE")
           and (.health == "UNKNOWN" or .health == "UP")
           and .failure.code == "NONE" and .metricsStale == false))
-        and ([.items[] | select(.selected) | .contributionCount] | add) == 15
+        and ([.items[] | select(.selected) | .contributionCount] | add) == 23
         and .nextAfter == null' "$bundles" "$key_file" \
       || fail "$phase node $node plugin inventory differs from the demo catalog"
     fingerprint="$(jq -r '.catalogFingerprint' "$summary")"
     jq -e --arg fingerprint "$fingerprint" '
-      .catalogFingerprint == $fingerprint and .pluginApiMajor == 1
-      and .pluginApiLevel >= 1 and .totals.selectedBundles == 8
+      .catalogFingerprint == $fingerprint and .pluginApiMajor == 3
+      and .pluginApiLevel == 4 and .totals.selectedBundles == 7
       and .totals.failedBundles == 0 and .totals.degradedBundles == 0
       and .totals.staleSources == 0' "$summary" >/dev/null \
       || fail "$phase node $node plugin summary is unhealthy"
@@ -772,67 +772,10 @@ cluster_state_signature() {
   jq -S -c 'map(del(.tipHeight))' "$1"
 }
 
-cluster_tip() {
-  jq -e -r '
-    ([.[].tipHeight] | unique) as $tips
-    | if ($tips | length) == 1 then $tips[0]
-      else error("cluster members do not share one tip") end
-  ' "$1"
-}
-
-assert_replay_advanced_only_tip() {
-  local before="$1" after="$2" label="$3" base="$4" chain="$5"
-  local before_tip after_tip node port valid deadline=$((SECONDS + 180))
-  before_tip="$(cluster_tip "$before")"
-  while [ "$SECONDS" -lt "$deadline" ]; do
-    [ "$(cluster_state_signature "$before")" = "$(cluster_state_signature "$after")" ] \
-      || fail "$label changed app-chain state or membership"
-    after_tip="$(cluster_tip "$after")"
-    if [ "$after_tip" -gt "$before_tip" ]; then
-      return 0
-    fi
-    sleep 1
-    valid=true
-    for node in 0 1 2; do
-      port=$((base + node))
-      bounded_get "http://127.0.0.1:$port/api/v1/app-chain/chains/$chain/status" \
-        "$ROOT/replay-wait-$base-node$node-status.json" 1048576 2>/dev/null \
-        || valid=false
-    done
-    if [ "$valid" = true ] && jq -s -e --arg chain "$chain" \
-        --arg machine "$EXPECTED_STATE_MACHINE" '
-        length == 3 and all(.[];
-          .chainId == $chain and .running == true and .tipHeight >= 1
-          and (.stateRoot | test("^[0-9a-f]{64}$"))
-          and (.memberKey | test("^[0-9a-f]{64}$"))
-          and .members == 3 and .threshold == 2
-          and .stateMachine == $machine
-          and (($machine != "composite" and $machine != "role-evidence") or (
-            .stateMachineStatus.mode == "governed"
-            and .stateMachineStatus.currentEpoch == 0
-            and (.stateMachineStatus.activeProfileDigest
-              | test("^[0-9a-f]{64}$"))
-            and (.stateMachineStatus as $machineStatus
-              | ($machineStatus.catalogDigests
-                | index($machineStatus.activeProfileDigest)) != null)
-            and .stateMachineStatus.catalogReady == true
-            and (.stateMachineStatus.currentMembershipDigest
-              | test("^[0-9a-f]{64}$")))))
-        and ([.[].tipHeight] | unique | length) == 1
-        and ([.[].stateRoot] | unique | length) == 1
-        and ([.[].memberKey] | unique | length) == 3' \
-        "$ROOT/replay-wait-$base-node0-status.json" \
-        "$ROOT/replay-wait-$base-node1-status.json" \
-        "$ROOT/replay-wait-$base-node2-status.json" >/dev/null 2>&1; then
-      jq -S -c -s '[.[] | {chainId, running, tipHeight, stateRoot, memberKey,
-        members, threshold, stateMachine, stateMachineStatus}]' \
-        "$ROOT/replay-wait-$base-node0-status.json" \
-        "$ROOT/replay-wait-$base-node1-status.json" \
-        "$ROOT/replay-wait-$base-node2-status.json" > "$after.tmp"
-      mv "$after.tmp" "$after"
-    fi
-  done
-  fail "$label was not recorded at a strictly later consensus tip"
+assert_read_only_preserved_cluster_state() {
+  local before="$1" after="$2" label="$3"
+  cmp -s "$before" "$after" \
+    || fail "$label changed consensus tip, state, membership, or governed profile"
 }
 
 assert_report() {
@@ -840,12 +783,14 @@ assert_report() {
   [ -f "$report" ] && [ ! -L "$report" ] \
     && [ "$(wc -c < "$report" | tr -d ' ')" -le 1048576 ] \
     || fail 'scenario report is missing, unsafe, or oversized'
-  jq -e --arg evidence "$evidence" --arg chain "$chain" \
+  if ! jq -e --arg evidence "$evidence" --arg chain "$chain" \
     --arg continuationCheck "$EXPECTED_CONTINUATION_CHECK" \
     --arg workflowCheck "$EXPECTED_WORKFLOW_CHECK" \
     --argjson finalityBundles "$EXPECTED_FINALITY_BUNDLES" '
     def passed($name):
       ([.checks[] | select(.name == $name and .status == "PASS")] | length) == 1;
+    def checked($name; $status):
+      ([.checks[] | select(.name == $name and .status == $status)] | length) == 1;
     .schemaVersion == 1 and .evidenceId == $evidence
     and .outcome == "PASS" and .failureCode == null
     and .chain.chainId == $chain and .chain.businessStatus == "READY"
@@ -864,19 +809,32 @@ assert_report() {
     and .anchor.memberObservedTransactionVisibleOnAllMembers == true
     and .anchor.memberObservedDatumCommitmentVerified == true
     and ([.checks[].name] | length) == ([.checks[].name] | unique | length)
-    and passed("AUTHENTICATED_STORAGE_RESULTS")
-    and passed($workflowCheck)
-    and passed($continuationCheck)
-    and passed("THREE_NODE_STATE_AGREEMENT")
-    and passed("COMPOSED_EFFECT_PROOFS")
-    and passed("KAFKA_ACKNOWLEDGEMENT_AND_EVENT")
-    and passed("PORTABLE_ANCHOR_LINKAGE")
-    and passed("PORTABLE_ANCHOR_TXS_VISIBLE_ON_ALL_MEMBERS")
-    and passed("PORTABLE_ANCHOR_DATUM_COMMITMENTS_VERIFIED")
-    and passed("APP_CHAIN_MEMBER_ANCHOR_OBSERVATION")
-    and passed("MEMBER_OBSERVED_ANCHOR_TX_VISIBLE_ON_ALL_MEMBERS")
-    and passed("MEMBER_OBSERVED_ANCHOR_DATUM_COMMITMENT_VERIFIED")' "$report" >/dev/null \
-    || fail 'scenario report does not close the deployment-neutral acceptance contract'
+    and ((
+      passed("AUTHENTICATED_STORAGE_RESULTS")
+      and passed($workflowCheck)
+      and passed($continuationCheck)
+      and passed("THREE_NODE_STATE_AGREEMENT")
+      and passed("COMPOSED_EFFECT_PROOFS")
+      and passed("KAFKA_ACKNOWLEDGEMENT_AND_EVENT")
+      and passed("PORTABLE_ANCHOR_LINKAGE")
+      and passed("PORTABLE_ANCHOR_TXS_VISIBLE_ON_ALL_MEMBERS")
+      and passed("PORTABLE_ANCHOR_DATUM_COMMITMENTS_VERIFIED")
+      and passed("APP_CHAIN_MEMBER_ANCHOR_OBSERVATION")
+      and passed("MEMBER_OBSERVED_ANCHOR_TX_VISIBLE_ON_ALL_MEMBERS")
+      and passed("MEMBER_OBSERVED_ANCHOR_DATUM_COMMITMENT_VERIFIED")
+    ) or (
+      .operation == "VERIFY"
+      and passed("SERVICES_PROBED")
+      and passed("READ_ONLY_EXTERNAL_STORAGE_VERIFIED")
+      and passed("READ_ONLY_FINALITY_AND_STATE_PROOFS")
+      and passed("READ_ONLY_EFFECT_AND_KAFKA_PROOFS")
+      and checked("BUSINESS_CLAIM_NOT_EVALUATED"; "NOT_EVALUATED")
+      and passed("READ_ONLY_VERIFICATION_COMPLETE")
+    ))' "$report" >/dev/null; then
+    jq -c '{schemaVersion,evidenceId,operation,outcome,failureCode,chain,storage,kafka,anchor,
+      checks:[.checks[] | {name,status}]}' "$report" >&2 || true
+    fail 'scenario report does not close the deployment-neutral acceptance contract'
+  fi
 }
 
 LAST_REPORT=""
@@ -1103,9 +1061,8 @@ cmp -s "$ROOT/compose-first-effects.json" "$ROOT/compose-replay-effects.json" \
 capture_cluster_state compose-replay "$COMPOSE_HTTP_BASE" "$COMPOSE_CHAIN" \
   "$ROOT/compose-replay-state.json" \
   || fail 'Compose members did not agree after immediate replay'
-assert_replay_advanced_only_tip "$ROOT/compose-first-state.json" \
-  "$ROOT/compose-replay-state.json" 'Compose immediate replay' \
-  "$COMPOSE_HTTP_BASE" "$COMPOSE_CHAIN"
+assert_read_only_preserved_cluster_state "$ROOT/compose-first-state.json" \
+  "$ROOT/compose-replay-state.json" 'Compose immediate read-only verification'
 [ "$(find "$COMPOSE_REPORTS" -maxdepth 1 -type f -name 'report-*.json' \
     | wc -l | tr -d ' ')" -eq 2 ] || fail 'Compose replay did not create exactly two attempt reports'
 [ "$(stable_receipt_signature "$COMPOSE_FIRST")" \
@@ -1147,9 +1104,9 @@ cmp -s "$ROOT/compose-first-effects.json" "$ROOT/compose-post-restart-effects.js
 capture_cluster_state compose-post-restart-replay "$COMPOSE_HTTP_BASE" "$COMPOSE_CHAIN" \
   "$ROOT/compose-post-restart-replay-state.json" \
   || fail 'Compose members did not agree after retained restart/replay'
-assert_replay_advanced_only_tip "$ROOT/compose-restarted-state.json" \
-  "$ROOT/compose-post-restart-replay-state.json" 'Compose retained restart/replay' \
-  "$COMPOSE_HTTP_BASE" "$COMPOSE_CHAIN"
+assert_read_only_preserved_cluster_state "$ROOT/compose-restarted-state.json" \
+  "$ROOT/compose-post-restart-replay-state.json" \
+  'Compose retained restart/read-only verification'
 [ "$(cluster_state_signature "$ROOT/compose-first-state.json")" \
     = "$(cluster_state_signature "$ROOT/compose-post-restart-replay-state.json")" ] \
   || fail 'Compose retained restart/replay changed app-chain state or membership'
@@ -1231,9 +1188,8 @@ cmp -s "$ROOT/host-first-effects.json" "$ROOT/host-replay-effects.json" \
 capture_cluster_state host-replay "$HOST_HTTP_BASE" "$HOST_CHAIN" \
   "$ROOT/host-replay-state.json" \
   || fail 'host members did not agree after immediate replay'
-assert_replay_advanced_only_tip "$ROOT/host-first-state.json" \
-  "$ROOT/host-replay-state.json" 'host immediate replay' \
-  "$HOST_HTTP_BASE" "$HOST_CHAIN"
+assert_read_only_preserved_cluster_state "$ROOT/host-first-state.json" \
+  "$ROOT/host-replay-state.json" 'host immediate read-only verification'
 [ "$(find "$HOST_REPORTS" -maxdepth 1 -type f -name 'report-*.json' \
     | wc -l | tr -d ' ')" -eq 2 ] || fail 'host replay did not create exactly two attempt reports'
 [ "$(stable_receipt_signature "$HOST_FIRST")" = "$(stable_receipt_signature "$HOST_REPLAY")" ] \
@@ -1274,9 +1230,9 @@ cmp -s "$ROOT/host-first-effects.json" "$ROOT/host-post-restart-effects.json" \
 capture_cluster_state host-post-restart-replay "$HOST_HTTP_BASE" "$HOST_CHAIN" \
   "$ROOT/host-post-restart-replay-state.json" \
   || fail 'host members did not agree after retained restart/replay'
-assert_replay_advanced_only_tip "$ROOT/host-restarted-state.json" \
-  "$ROOT/host-post-restart-replay-state.json" 'host retained restart/replay' \
-  "$HOST_HTTP_BASE" "$HOST_CHAIN"
+assert_read_only_preserved_cluster_state "$ROOT/host-restarted-state.json" \
+  "$ROOT/host-post-restart-replay-state.json" \
+  'host retained restart/read-only verification'
 [ "$(cluster_state_signature "$ROOT/host-first-state.json")" \
     = "$(cluster_state_signature "$ROOT/host-post-restart-replay-state.json")" ] \
   || fail 'host retained restart/replay changed app-chain state or membership'
