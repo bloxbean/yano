@@ -67,7 +67,9 @@ app/build/distributions/yano-<version>.zip
 
 The zip contains `yano.jar`, `yano.sh`, config files, network genesis files,
 plugin directory scaffolding, and the JVM-only offline plugin catalog tool under
-`tools/yano-plugins/`.
+`tools/yano-plugins/`. It also contains the repository `LICENSE` and a normalized
+CycloneDX 1.6 inventory at `sbom/yano.cdx.json`; packaging fails if an external
+Maven component lacks license metadata.
 
 After extracting the JVM zip, validate or inspect one or more plugin JARs
 without loading provider code:
@@ -134,7 +136,8 @@ yano-native-0.1.0-pre4-linux-arm64.zip
 ```
 
 The zip contains the native `yano` executable, `yano.sh`, config files, and
-network genesis files. It deliberately has no plugin directory or
+network genesis files, plus the same `LICENSE` and release SBOM. It deliberately
+has no plugin directory or
 `yano-plugins` JVM runtime: native images cannot load JARs dynamically. Run the
 standalone JVM CLI on a JDK 25 operator/build host when offline validation is
 needed. Native Yano embeds only retained core providers. Optional Yano X state

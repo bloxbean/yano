@@ -9,15 +9,6 @@ public final class PluginConfigurationException extends IllegalStateException {
         super(message);
     }
 
-    static PluginConfigurationException conflictingAliases(
-            String canonicalKey,
-            String legacyKey
-    ) {
-        return new PluginConfigurationException(
-                "Conflicting plugin configuration aliases: " + canonicalKey
-                        + " and deprecated " + legacyKey);
-    }
-
     static PluginConfigurationException invalidBoolean(String key) {
         return new PluginConfigurationException(
                 "Plugin configuration must be true or false: " + key);
