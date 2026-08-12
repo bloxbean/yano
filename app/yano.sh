@@ -8,4 +8,5 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+export REPOSITORY_ROOT="$SCRIPT_DIR"
 exec "$SCRIPT_DIR/bin/yano.sh" "$@"

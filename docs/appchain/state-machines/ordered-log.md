@@ -56,11 +56,22 @@ From an extracted release directory, or from `app/` after building the source
 tree:
 
 ```bash
+./yano.sh start:devnet,appchain
+```
+
+This starts Yano's built-in `orders-chain` as a single-member ordered log. The
+identity in `config/application-appchain.yml` is deterministic and intended
+only for local testing.
+
+For the multi-node commands in the rest of this walkthrough, use an extracted
+[Yano X](https://github.com/bloxbean/yano-x) showcase distribution:
+
+```bash
 ./yano.sh appchain cluster start 3
 ```
 
-The demo hosts `orders-chain` as an `ordered-log` chain. Submit through member
-1:
+The showcase also hosts `orders-chain` as an `ordered-log` chain. Submit
+through member 1:
 
 ```bash
 ./yano.sh appchain cluster submit orders-chain order-created \
@@ -127,10 +138,12 @@ Use multiple topics in one chain when the events share the same membership,
 finality, retention, anchoring, and operational lifecycle. Use separate chains
 when any of those boundaries should differ.
 
-The local cluster launcher reads `app/config/application-appchain.yml` and
-injects node-specific member keys, peer addresses, threshold, and proposer.
-Production deployments must supply those values through their generated
-per-node configuration and secret-management flow.
+Direct Yano startup reads `config/application-appchain.yml` as a complete
+single-node configuration. The Yano X showcase launcher reads its packaged
+`yano/config/application-appchain.yml` and injects node-specific member keys,
+peer addresses, threshold, and proposer. Production deployments must supply
+those values through their generated per-node configuration and
+secret-management flow.
 
 ### Operational tuning
 
