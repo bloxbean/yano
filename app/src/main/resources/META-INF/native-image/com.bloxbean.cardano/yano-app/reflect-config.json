@@ -205,6 +205,54 @@
     "allDeclaredConstructors": true
   },
   {
+    "name": "com.bloxbean.cardano.yano.api.model.NodePeers",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.api.model.NodePeers$NodePeer",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.appchain.AppChainResource$ChainScopedResource",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.appchain.AppChainResource$ChainScopedResource$SubmitRequest",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.appchain.AppChainResource$ChainScopedResource$SnapshotRequest",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.appchain.AppChainResource$ChainScopedResource$MemberRequest",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.app.api.appchain.AppChainResource$ChainScopedResource$ThresholdRequest",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.api.appchain.MessageRef",
+    "allDeclaredFields": true,
+    "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
     "name": "com.bloxbean.cardano.yaci.core.storage.ChainTip",
     "allDeclaredFields": true,
     "allDeclaredMethods": true,
@@ -782,6 +830,22 @@
     "name": "com.bloxbean.cardano.yano.ledgerstate.AccountHistoryEventHandler",
     "allDeclaredFields": true,
     "allDeclaredMethods": true,
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders$KvRegistryProvider",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders$ApprovalsProvider",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders$BalancesProvider",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders$DocTrailProvider",
     "allDeclaredConstructors": true
   },
   {
