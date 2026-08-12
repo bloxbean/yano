@@ -1,7 +1,7 @@
 # ADR-030 Phase F independent release rehearsal evidence
 
-**Status:** Implemented on `feat/030-phase-f-release-rehearsal` in both repositories; commit and
-merge require maintainer approval.
+**Status:** Completed and merged. Yano feature commit `67a30238` was merged at `f7433138`; Yano X
+feature commit `387dc2c9` was merged to `main` at `7d77721e`.
 
 **Yano integration branch:** `feat/030_yano-x_reafactoring`
 

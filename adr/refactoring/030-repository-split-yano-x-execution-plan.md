@@ -1,7 +1,8 @@
 # ADR-030: Split Yano core from `yano-x`
 
-**Status:** Accepted. Phases A-E are merged. Phase F independent release rehearsal is implemented
-on feature branches and awaits maintainer commit/merge approval.
+**Status:** Accepted and implemented. Phases A-F are merged in Yano at `f7433138` and in Yano X at
+`7d77721e`. Release closeout still requires the controlled Phase-A performance comparison in
+Definition of Done item 15 and promotion of the first coordinated prerelease pair.
 **Date:** 2026-08-11
 **Decision owners:** Yano maintainers
 **Reviewed baseline:** `feat/037-generic-appchain-proof` at `6d364000`
