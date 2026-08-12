@@ -43,6 +43,7 @@ import com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsSource;
 import com.bloxbean.cardano.yano.catalog.BundleContribution;
 import com.bloxbean.cardano.yano.catalog.BundleDependency;
 import com.bloxbean.cardano.yano.catalog.BundleManifest;
+import com.bloxbean.cardano.yano.catalog.CatalogDigests;
 import com.bloxbean.cardano.yano.catalog.ContributionKind;
 import com.bloxbean.cardano.yano.catalog.IndexedBundle;
 import com.bloxbean.cardano.yano.catalog.IndexedLegacyProvider;
@@ -2416,7 +2417,9 @@ class PluginCatalogRuntimeTest {
                     .filteredOn(bundle -> bundle.id().equals(bundleId))
                     .singleElement()
                     .satisfies(bundle -> assertThat(bundle.digest())
-                            .isEqualTo("sha256:" + capturedDigest));
+                            .isEqualTo(CatalogDigests.artifactClosure(List.of(
+                                    new CatalogDigests.Digest("sha256:" + capturedDigest,
+                                            PluginDigestMode.JAR))).value()));
         }
         assertThat(snapshotDirectory).doesNotExist();
     }
@@ -3012,7 +3015,8 @@ class PluginCatalogRuntimeTest {
                                 assertThat(bundle.id()).isEqualTo(bundleId);
                                 assertThat(bundle.source())
                                         .isEqualTo(PluginSourceCategory.DIRECTORY);
-                                assertThat(bundle.digestMode()).isEqualTo(PluginDigestMode.JAR);
+                                assertThat(bundle.digestMode())
+                                        .isEqualTo(PluginDigestMode.ARTIFACT_CLOSURE);
                                 assertThat(bundle.legacy()).isFalse();
                             });
                     assertThat(environment.catalog().fingerprint())

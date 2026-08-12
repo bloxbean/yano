@@ -520,6 +520,9 @@ final class PluginCatalogBuilder {
             }
             try {
                 CatalogDigests.Digest actual = CatalogDigests.artifact(input.artifact());
+                if (expected.iterator().next().mode() == PluginDigestMode.ARTIFACT_CLOSURE) {
+                    actual = CatalogDigests.artifactClosure(List.of(actual));
+                }
                 if (!expected.iterator().next().equals(actual)) {
                     throw new IllegalStateException(
                             "Directory plugin artifact changed during catalog construction");

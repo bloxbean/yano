@@ -6,6 +6,7 @@ import com.bloxbean.cardano.yano.api.plugin.PluginCatalogView;
 import com.bloxbean.cardano.yano.api.plugin.PluginDigestMode;
 import com.bloxbean.cardano.yano.api.plugin.PluginSourceCategory;
 import com.bloxbean.cardano.yano.catalog.CatalogDigests;
+import com.bloxbean.cardano.yano.catalog.IndexedBundle;
 import com.bloxbean.cardano.yano.catalog.PluginArtifactScanner;
 import com.bloxbean.cardano.yano.catalog.PluginIndex;
 import com.bloxbean.cardano.yano.catalog.PluginIndexCodec;
@@ -195,6 +196,7 @@ public final class PluginRuntimeEnvironment implements AutoCloseable {
             validateDirectoryArtifacts(handle, inputs);
             handle.activateDirectoryArtifacts(
                     selectedDirectoryArtifacts(options, inputs));
+            inputs = promoteDirectoryBundleEvidence(inputs);
             boolean allowUnindexedLegacy = embeddedIndexes.isEmpty()
                     && handle.discoveryMode().allowsUnindexedLegacyProviders();
             String embeddedIndexSha256 = embeddedIndexDigests.isEmpty()
@@ -204,6 +206,40 @@ public final class PluginRuntimeEnvironment implements AutoCloseable {
         } catch (IOException e) {
             throw new IllegalStateException("Plugin catalog inputs could not be read", e);
         }
+    }
+
+    /**
+     * Directory bundles are required to be dependency-complete JARs. Publish
+     * their one-artifact executable closure to consensus consumers instead of
+     * exposing the scanner's intermediate plain-JAR evidence.
+     */
+    private static List<PluginCatalogBuilder.CatalogInput> promoteDirectoryBundleEvidence(
+            List<PluginCatalogBuilder.CatalogInput> inputs
+    ) {
+        List<PluginCatalogBuilder.CatalogInput> promoted = new ArrayList<>(inputs.size());
+        for (PluginCatalogBuilder.CatalogInput input : inputs) {
+            if (input.source() != PluginSourceCategory.DIRECTORY
+                    || input.index().bundles().isEmpty()) {
+                promoted.add(input);
+                continue;
+            }
+            if (!input.index().legacyProviders().isEmpty()) {
+                throw new IllegalStateException(
+                        "One directory artifact cannot mix manifested and legacy providers");
+            }
+            List<IndexedBundle> bundles =
+                    input.index().bundles().stream().map(bundle -> {
+                        CatalogDigests.Digest closure = CatalogDigests.artifactClosure(List.of(
+                                new CatalogDigests.Digest(
+                                        bundle.digest(), bundle.digestMode())));
+                        return new IndexedBundle(
+                                bundle.manifest(), closure.value(), closure.mode());
+                    }).toList();
+            promoted.add(new PluginCatalogBuilder.CatalogInput(
+                    new PluginIndex(input.index().schemaVersion(), bundles, List.of()),
+                    input.source(), input.artifact()));
+        }
+        return List.copyOf(promoted);
     }
 
     private static void validateDirectoryArtifacts(
