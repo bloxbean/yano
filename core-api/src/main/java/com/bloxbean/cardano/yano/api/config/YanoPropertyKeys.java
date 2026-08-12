@@ -160,23 +160,6 @@ public final class YanoPropertyKeys {
                 "yano.plugins.auto-register-annotated";
         public static final String LOGGING_ENABLED = "yano.plugins.logging.enabled";
 
-        /**
-         * Deprecated aliases accepted for one compatibility release.
-         */
-        public static final class Legacy {
-            public static final String ENABLED = "yaci.plugins.enabled";
-            public static final String DIRECTORY = "yaci.plugins.directory";
-            public static final String ALLOW_LIST = "yaci.plugins.allow-list";
-            public static final String DENY_LIST = "yaci.plugins.deny-list";
-            public static final String AUTO_REGISTER_ANNOTATED =
-                    "yaci.plugins.auto-register-annotated";
-            public static final String LOGGING_ENABLED =
-                    "yaci.plugins.logging.enabled";
-
-            private Legacy() {
-            }
-        }
-
         private Plugins() {
         }
     }

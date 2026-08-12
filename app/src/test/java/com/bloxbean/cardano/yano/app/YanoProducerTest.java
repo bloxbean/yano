@@ -95,54 +95,6 @@ class YanoProducerTest {
     }
 
     @Test
-    void deprecatedPluginNamespaceRemainsAnAliasForOneRelease() {
-        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
-        producer.appConfig = new PresentConfig(Map.of(
-                YanoPropertyKeys.Plugins.Legacy.ENABLED, "false",
-                YanoPropertyKeys.Plugins.Legacy.ALLOW_LIST, "com.example.legacy",
-                YanoPropertyKeys.Plugins.Legacy.LOGGING_ENABLED, "true"));
-
-        var options = producer.pluginOptions();
-
-        assertFalse(options.enabled());
-        assertEquals(Set.of("com.example.legacy"), options.allowList());
-        assertEquals(true, options.config().get("plugins.logging.enabled"));
-    }
-
-    @Test
-    void equalCanonicalAndDeprecatedPluginValuesAreAccepted() {
-        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
-        producer.appConfig = new PresentConfig(Map.of(
-                YanoPropertyKeys.Plugins.ENABLED, "true",
-                YanoPropertyKeys.Plugins.Legacy.ENABLED, "TRUE",
-                YanoPropertyKeys.Plugins.ALLOW_LIST, "com.example.a,com.example.b",
-                YanoPropertyKeys.Plugins.Legacy.ALLOW_LIST,
-                "com.example.a, com.example.b"));
-
-        var options = producer.pluginOptions();
-
-        assertTrue(options.enabled());
-        assertEquals(Set.of("com.example.a", "com.example.b"), options.allowList());
-    }
-
-    @Test
-    void conflictingCanonicalAndDeprecatedPluginValuesFailStartup() {
-        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
-        producer.appConfig = new PresentConfig(Map.of(
-                YanoPropertyKeys.Plugins.ENABLED, "true",
-                YanoPropertyKeys.Plugins.Legacy.ENABLED, "false"));
-
-        PluginConfigurationException failure = assertThrows(
-                PluginConfigurationException.class, producer::pluginOptions);
-
-        assertTrue(failure.getMessage().contains(YanoPropertyKeys.Plugins.ENABLED));
-        assertTrue(failure.getMessage().contains(
-                YanoPropertyKeys.Plugins.Legacy.ENABLED));
-        assertFalse(failure.getMessage().contains("true"));
-        assertFalse(failure.getMessage().contains("false"));
-    }
-
-    @Test
     void pluginStartupFailureIsRecognizedThroughWrapperCauses() {
         var pluginFailure = new PluginManager.PluginManagerException(
                 PluginManager.FailurePhase.START,

@@ -461,6 +461,11 @@ def jvmDistributionManifest = generatedDistributionMetadata.map {
 def nativeDistributionManifest = generatedDistributionMetadata.map {
     it.file('native/yano-distribution-v1.json')
 }
+def aggregateSbom = rootProject.ext.yanoAggregateSbomJson
+def releaseSbom = layout.buildDirectory.file(
+        'generated/distribution-metadata/sbom/yano.cdx.json')
+def releaseLicenseOverrides = rootProject.file(
+        'config/release-license-overrides-v1.json')
 
 def coreDistributionManifest = { String kind, boolean pluginDirectorySupported ->
     [
@@ -487,6 +492,88 @@ tasks.register('generateCoreDistributionManifests') {
             output.setText(groovy.json.JsonOutput.prettyPrint(
                     groovy.json.JsonOutput.toJson(value)) + '\n', 'UTF-8')
         }
+    }
+}
+
+tasks.register('normalizeYanoReleaseSbom') {
+    dependsOn rootProject.tasks.named('cyclonedxBom')
+    group = 'distribution'
+    description = 'Normalizes and license-checks the Yano CycloneDX release SBOM.'
+    inputs.file(aggregateSbom)
+    inputs.file(rootProject.file('LICENSE'))
+    inputs.file(releaseLicenseOverrides)
+    outputs.file(releaseSbom)
+
+    doLast {
+        def body = new groovy.json.JsonSlurper().parse(aggregateSbom.get().asFile)
+        if (body.bomFormat != 'CycloneDX' || body.specVersion != '1.6'
+                || body.metadata?.component?.name != 'yano'
+                || body.metadata.component.version != project.version.toString()
+                || !(body.components instanceof Collection)
+                || body.components.isEmpty()) {
+            throw new GradleException('Yano aggregate SBOM identity is incomplete')
+        }
+        body.remove('serialNumber')
+        body.metadata.remove('timestamp')
+        def mitLicense = [[license: [id: 'MIT']]]
+        def repositoryReference = [[
+                type: 'vcs',
+                url: 'https://github.com/bloxbean/yano.git'
+        ]]
+        body.metadata.component.remove('licenses')
+        body.metadata.component.remove('externalReferences')
+        body.metadata.component.licenses = mitLicense
+        body.metadata.component.externalReferences = repositoryReference
+        body.components.findAll { component ->
+            component.group?.toString()?.startsWith('com.bloxbean.cardano')
+        }.each { component ->
+            component.remove('licenses')
+            component.remove('externalReferences')
+            component.licenses = mitLicense
+            component.externalReferences = repositoryReference
+        }
+        def overrideDocument = new groovy.json.JsonSlurper().parse(
+                releaseLicenseOverrides)
+        if (overrideDocument.schemaVersion != 1
+                || !(overrideDocument.overrides instanceof Collection)) {
+            throw new GradleException('Yano release license overrides are invalid')
+        }
+        def licenseOverrides = overrideDocument.overrides.collectEntries { override ->
+            [("${override.group}:${override.name}:${override.version}".toString()):
+                    [[license: override.license]]]
+        }
+        def usedLicenseOverrides = [] as Set
+        body.components.each { component ->
+            def coordinate =
+                    "${component.group}:${component.name}:${component.version}".toString()
+            if ((!(component.licenses instanceof Collection)
+                    || component.licenses.isEmpty())
+                    && licenseOverrides.containsKey(coordinate)) {
+                component.licenses = licenseOverrides[coordinate]
+                usedLicenseOverrides.add(coordinate)
+            }
+        }
+        if (usedLicenseOverrides != licenseOverrides.keySet()) {
+            throw new GradleException(
+                    'Unused or shadowed Yano release license overrides: '
+                            + (licenseOverrides.keySet() - usedLicenseOverrides).sort())
+        }
+        def externalWithoutLicense = body.components.findAll { component ->
+            !component.group?.toString()?.startsWith('com.bloxbean.cardano')
+                    && (!(component.licenses instanceof Collection)
+                    || component.licenses.isEmpty())
+        }.collect { component ->
+            "${component.group}:${component.name}:${component.version}"
+        }.sort()
+        if (!externalWithoutLicense.isEmpty()) {
+            throw new GradleException(
+                    'External SBOM components lack license metadata: '
+                            + externalWithoutLicense)
+        }
+        def output = releaseSbom.get().asFile
+        output.parentFile.mkdirs()
+        output.setText(groovy.json.JsonOutput.prettyPrint(
+                groovy.json.JsonOutput.toJson(body)) + '\n', 'UTF-8')
     }
 }
 def nativeBuildArgsProperty = 'quarkus.native.additional-build-args'
@@ -1396,6 +1483,7 @@ def configureNativeGc = {
 
 tasks.register('yanoDistZip', Zip) {
     dependsOn 'quarkusBuild', 'generateCoreDistributionManifests',
+            tasks.named('normalizeYanoReleaseSbom'),
             project(':plugin-catalog').tasks.named('installDist')
     group = 'distribution'
     description = 'Creates a distributable zip with the uber-jar, config, and start script'
@@ -1404,6 +1492,10 @@ tasks.register('yanoDistZip', Zip) {
     destinationDirectory = layout.buildDirectory.dir('distributions')
 
     into("yano-${distVersion}") {
+        from(rootProject.file('LICENSE'))
+        from(releaseSbom) {
+            into 'sbom'
+        }
         from(layout.buildDirectory.file('yano.jar'))
         from(jvmDistributionManifest)
         from('bin/yano.sh') {
@@ -1451,6 +1543,7 @@ tasks.register('verifyCoreJvmDistribution') {
     doLast {
         def distribution = tasks.named('yanoDistZip', Zip).get().archiveFile.get().asFile
         def root = "yano-${distVersion}"
+        def expectedSbom = new groovy.json.JsonSlurper().parse(releaseSbom.get().asFile)
         new java.util.zip.ZipFile(distribution).withCloseable { archive ->
             def manifestEntry = archive.getEntry("${root}/yano-distribution-v1.json")
             if (manifestEntry == null) {
@@ -1473,6 +1566,18 @@ tasks.register('verifyCoreJvmDistribution') {
             }
             if (archive.getEntry("${root}/yano.jar") == null) {
                 throw new GradleException('Yano JVM distribution does not contain yano.jar')
+            }
+            if (archive.getEntry("${root}/LICENSE") == null) {
+                throw new GradleException('Yano JVM distribution is missing LICENSE')
+            }
+            def sbomEntry = archive.getEntry("${root}/sbom/yano.cdx.json")
+            def packagedSbom = sbomEntry == null ? null
+                    : archive.getInputStream(sbomEntry).withCloseable { stream ->
+                        new groovy.json.JsonSlurper().parse(stream)
+                    }
+            if (packagedSbom != expectedSbom) {
+                throw new GradleException(
+                        'Yano JVM distribution SBOM is missing or differs from its input')
             }
         }
     }
@@ -1965,7 +2070,8 @@ gradle.taskGraph.whenReady { graph ->
 }
 
 tasks.register('yanoNativeDistZip', Zip) {
-    dependsOn 'quarkusBuild', 'generateCoreDistributionManifests'
+    dependsOn 'quarkusBuild', 'generateCoreDistributionManifests',
+            tasks.named('normalizeYanoReleaseSbom')
     group = 'distribution'
     description = 'Builds the native binary and creates a distributable zip'
 
@@ -1983,6 +2089,10 @@ tasks.register('yanoNativeDistZip', Zip) {
     }
 
     into("yano-native-${distVersion}-${platform}") {
+        from(rootProject.file('LICENSE'))
+        from(releaseSbom) {
+            into 'sbom'
+        }
         from(layout.buildDirectory.file(nativeBinaryFileName())) {
             if (!isWindowsHost()) {
                 filePermissions { unix('755') }
@@ -2023,6 +2133,7 @@ tasks.register('verifyCoreNativeDistribution') {
         def distribution = tasks.named('yanoNativeDistZip', Zip).get()
                 .archiveFile.get().asFile
         def root = distribution.name.replaceFirst(/\.zip$/, '')
+        def expectedSbom = new groovy.json.JsonSlurper().parse(releaseSbom.get().asFile)
         new java.util.zip.ZipFile(distribution).withCloseable { archive ->
             def manifestEntry = archive.getEntry("${root}/yano-distribution-v1.json")
             if (manifestEntry == null) {
@@ -2043,6 +2154,18 @@ tasks.register('verifyCoreNativeDistribution') {
                 throw new GradleException(
                         'Yano native distribution contains JVM extension artifacts: '
                                 + extensionArtifacts*.name)
+            }
+            if (archive.getEntry("${root}/LICENSE") == null) {
+                throw new GradleException('Yano native distribution is missing LICENSE')
+            }
+            def sbomEntry = archive.getEntry("${root}/sbom/yano.cdx.json")
+            def packagedSbom = sbomEntry == null ? null
+                    : archive.getInputStream(sbomEntry).withCloseable { stream ->
+                        new groovy.json.JsonSlurper().parse(stream)
+                    }
+            if (packagedSbom != expectedSbom) {
+                throw new GradleException(
+                        'Yano native distribution SBOM is missing or differs from its input')
             }
         }
     }

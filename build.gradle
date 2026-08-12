@@ -6,6 +6,7 @@ plugins {
     id 'org.ajoberstar.grgit' version '5.2.0'
     id 'io.github.gradle-nexus.publish-plugin' version '2.0.0'
     id 'com.gradleup.shadow' version '9.4.1' apply false
+    id 'org.cyclonedx.bom' version '3.3.0'
 }
 
 abstract class CryptoTestLock implements
@@ -24,6 +25,25 @@ repositories {
         url "https://central.sonatype.com/repository/maven-snapshots/"
     }
 }
+
+def aggregateSbomJson = layout.buildDirectory.file(
+        "reports/cyclonedx/yano-${project.version}.cdx.json")
+allprojects { candidate ->
+    candidate.tasks.named('cyclonedxDirectBom') {
+        includeConfigs = ['runtimeClasspath']
+        includeBomSerialNumber = false
+        includeBuildSystem = false
+    }
+}
+tasks.named('cyclonedxBom') {
+    includeBomSerialNumber = false
+    includeBuildSystem = false
+    componentName = 'yano'
+    projectType = 'application'
+    jsonOutput = aggregateSbomJson
+    xmlOutput.convention((org.gradle.api.file.RegularFile) null)
+}
+ext.yanoAggregateSbomJson = aggregateSbomJson
 
 compileJava {
     sourceCompatibility = '25'
@@ -458,6 +478,7 @@ tasks.named('check') {
 
 ext.ossrhUsername = System.getenv('MAVEN_USERNAME')
 ext.ossrhPassword = System.getenv('MAVEN_PASSWORD')
+def stagingRepository = providers.gradleProperty('stagingRepository')
 
 publishing {
     publications {
@@ -682,6 +703,22 @@ subprojects {
         filesMatching('META-INF/yano/plugins/*.json') {
             filter { line ->
                 line.replace('${pluginVersion}', pluginManifestVersion)
+            }
+        }
+    }
+}
+
+// Phase/release rehearsals publish the same Maven publications to an isolated
+// repository without changing the normal Maven Local or Sonatype mechanisms.
+// A file repository is sufficient locally; CI may provide an HTTP staging URL.
+allprojects { candidate ->
+    candidate.pluginManager.withPlugin('maven-publish') {
+        if (stagingRepository.isPresent()) {
+            candidate.publishing.repositories {
+                maven {
+                    name = 'staging'
+                    url = candidate.uri(stagingRepository.get())
+                }
             }
         }
     }

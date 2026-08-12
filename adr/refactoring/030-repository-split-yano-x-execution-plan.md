@@ -1,8 +1,7 @@
 # ADR-030: Split Yano core from `yano-x`
 
-**Status:** Accepted. Phases A-D are merged. Phase E history-preserving extraction is implemented
-on feature branches and awaits maintainer commit/merge approval. Phase F release rehearsal has not
-started.
+**Status:** Accepted. Phases A-E are merged. Phase F independent release rehearsal is implemented
+on feature branches and awaits maintainer commit/merge approval.
 **Date:** 2026-08-11
 **Decision owners:** Yano maintainers
 **Reviewed baseline:** `feat/037-generic-appchain-proof` at `6d364000`
@@ -258,7 +257,7 @@ and dependency tests.
 | P10 | `runtime/.../DefaultL1EpochStateProvider` imports `ledger-state` from the engine package. | Keep the adapter in a clearly named host-bridge package and preserve an app-chain SPI free of live ledger-store types. |
 | P11 | Compatibility prose calls `minLevel` the single contract. | Enforce `yanoApi.min`, `max`, and `minLevel`; validate bundle dependency ranges and BOM alignment separately. |
 | P12 | UI and app-chain docs/config are treated as one movable block in the old plan. | Keep UI for now; split only product Java/build ownership and classify docs/config by core versus product. |
-| P13 | Yano owns the plugin loader but its settings use the legacy `yaci.plugins.*` namespace. | Make `yano.plugins.*` canonical, including `yano.plugins.directory`; retain bounded legacy aliases only for migration. |
+| P13 | Yano owns the plugin loader but its settings use the legacy `yaci.plugins.*` namespace. | Make `yano.plugins.*` canonical, including `yano.plugins.directory`; remove the unreleased legacy namespace instead of carrying a migration alias. |
 | P14 | First-party plugin manifests, fixture code, and DX release metadata duplicate a prerelease Yano version literal and break when `gradle.properties` advances. | Generate publication-coupled versions from the owning Gradle project and reject new hard-coded first-party manifest versions. |
 | P15 | The packaged JVM/native plugin smoke fixture omits mandatory deterministic state identity and asserts obsolete plugin API coordinates. | Generate a complete conformance identity, assert the current API contract, and keep the same process smoke for JVM and native distributions. |
 | P16 | Real connector harnesses select integration-test classes through the unit-test Gradle task, so the advertised CI job fails before exercising a connector. | Run real connector cases through each module's `integrationTest` source set and fail when its JUnit evidence is missing, skipped, or dirty. |
@@ -405,6 +404,11 @@ documentation and CI, JVM-only downstream cleanup, and regression evidence are r
 6. Promote releases only after both repositories' SBOM, license, dependency convergence, docs-link,
    and distribution-content gates pass.
 
+Phase F's isolated staging repositories, no-sibling/no-Maven-Local build, GraalVM smoke, packaged
+catalog parity, default/optional bundle selection, reproducibility hashes, SBOM/license gates, and
+removed prerelease debt are recorded in
+[`baselines/030-phase-f-release-rehearsal.md`](baselines/030-phase-f-release-rehearsal.md).
+
 ---
 
 ## 6. Compatibility and release policy
@@ -484,10 +488,9 @@ yano.plugins.logging.enabled=false
 The `yano-x` JVM distribution uses `yano.plugins.directory`. Native Yano does not load directory
 JARs and reports that limitation when a populated directory is configured.
 
-For one transition release, accept the corresponding `yaci.plugins.*` keys as deprecated aliases.
-Documentation and generated configuration emit only `yano.plugins.*`. If both namespaces provide
-the same setting with different values, startup fails with a configuration error; it must not choose
-one silently. `yaci.events.enabled` is outside this rename and requires a separate ownership review.
+The unreleased `yaci.plugins.*` namespace is not accepted as an alias. Documentation, generated
+configuration, and runtime resolution use only `yano.plugins.*`. `yaci.events.enabled` is outside
+this plugin-setting rename and requires a separate ownership review.
 
 ---
 
@@ -506,8 +509,8 @@ one silently. `yaci.events.enabled` is outside this rename and requires a separa
 7. The plugin CLI and runtime reject incompatible API majors/levels, duplicate contributions,
    forbidden host-class copies, invalid dependency ranges, and malformed bundles before provider
    construction.
-8. Core configuration and generated examples use `yano.plugins.*`; deprecated `yaci.plugins.*`
-   aliases warn, and conflicting old/new values fail startup.
+8. Core configuration and generated examples use `yano.plugins.*`; no unreleased
+   `yaci.plugins.*` compatibility path remains.
 9. No known app-chain technical-debt item is carried forward without the blocker, owner, target
    phase, and regression guard required by §1.2; superseded unreleased APIs and activation paths are
    deleted rather than maintained in parallel.
