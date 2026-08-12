@@ -97,5 +97,19 @@ source-export build using the same staged inputs.
 - Timestamped Maven snapshot filenames are no longer leaked into the plugin pack or combined ZIP.
 - The unreleased `yaci.plugins.*` compatibility namespace and its conflict-resolution path were
   removed. Runtime configuration now accepts only the canonical `yano.plugins.*` keys.
+- A post-split showcase deployment exposed two boundaries that archive-only rehearsal did not
+  exercise. Explicit plugin allow-lists must include manifested bundle dependencies (the showcase
+  now selects `com.bloxbean.cardano.yano.appchain.composite` for role-workflow), and local derived
+  read models must start only after their app-chain source gateways are live. Yano now orders the
+  local-read-model subsystem immediately after app-chain startup and before app-chain shutdown.
+- Directory-loaded, dependency-complete bundle catalogs now publish artifact-closure provenance.
+  This keeps authenticated-map genesis bound to the exact validator bundle closure without
+  restoring a pre-split aggregate catalog or weakening provenance validation.
+
+The post-split deployment closeout gate is a retained three-node JVM showcase with all configured
+chains using bootstrapped SCRIPT anchors, cross-node state/commitment identity agreement, capability
+manifest checks, and the EUTxO derived-index health check. Discoveries from that gate are fixed in
+the owning repository before ADR-030 is considered complete; they are not deferred as prerelease
+compatibility debt.
 
 No Phase F technical-debt deferral or prerelease compatibility alias was introduced.

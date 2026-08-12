@@ -646,8 +646,44 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     private List<Subsystem> runtimeKernelSubsystems() {
         List<Subsystem> prePublication = appChainManager == null
                 ? List.of()
-                : List.of(appChainManager);
+                : List.of(appChainManager, localReadModelSubsystem());
         return RuntimeKernelStages.create(runtimeKernelActions(), prePublication);
+    }
+
+    /**
+     * Starts derived read models only after every app-chain gateway is live.
+     * Reverse kernel shutdown then seals the read models before their source
+     * gateways stop, preserving both startup discovery and teardown ordering.
+     */
+    private Subsystem localReadModelSubsystem() {
+        return new Subsystem() {
+            private static final String NAME = "local-read-models";
+
+            @Override
+            public String name() {
+                return NAME;
+            }
+
+            @Override
+            public void start() {
+                localReadModelContributions.resume();
+            }
+
+            @Override
+            public void stop() {
+                localReadModelContributions.sealAndAwait();
+            }
+
+            @Override
+            public void close() {
+                // RuntimeNode owns and closes the registry with runtime resources.
+            }
+
+            @Override
+            public SubsystemHealth health() {
+                return SubsystemHealth.up(NAME);
+            }
+        };
     }
 
     /**
@@ -1397,7 +1433,6 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 pluginManager.startAll();
                 pluginsStarted = true;
             }
-            localReadModelContributions.resume();
             domainApiRegistry.resume();
             utxoSubsystem.initializeFilterChain(
                     pluginManager != null ? pluginManager.getStorageFilters() : List.of());
