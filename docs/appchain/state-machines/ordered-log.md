@@ -278,7 +278,8 @@ The Java client exposes the same behavior through `subscribe(...)` and
 For each finalized message, `ordered-log` writes:
 
 ```text
-message-id -> cbor([block-height, message-index, topic, sender])
+sha256("~yano/finalized-message/v1/" || message-id)
+  -> cbor([schema-version, block-height, message-index, topic, sender])
 ```
 
 It also maintains:
@@ -288,14 +289,22 @@ It also maintains:
 ```
 
 The message body remains in finalized block history and the message index; it
-is not duplicated in the state value. The state key is the 32-byte message id,
-which lets a client request an MPF inclusion proof directly:
+is not duplicated in the state value. Use the typed proof subject to resolve a
+public message ID to the reserved physical state key and request its MPF proof:
 
 ```bash
-curl -s \
-  "http://127.0.0.1:7070/api/v1/app-chain/chains/orders-chain/state/proof/$MESSAGE_ID" \
-  | jq .
+curl -s -X POST \
+  "http://127.0.0.1:7070/api/v1/app-chain/chains/orders-chain/proof-subjects/finalized-message-v1/proof" \
+  -H 'Content-Type: application/json' \
+  -d "$(jq -nc --arg id "$MESSAGE_ID" '
+    {coordinates:{"message-id":$id}, view:"latest",
+     claim:{claimId:"recorded",operands:{}}, includeEvidence:false}')" \
+  | jq '{stateRoot:.proof.stateRoot,presence:.proof.presence,position:.fact.fields,claim:.claimResult.satisfied}'
 ```
+
+The lower-level `state/proof/{keyHex}` route accepts the resolved physical key,
+not the public message ID. The separate `messages/{messageId}/proof` route
+proves membership in the finalized block's compact `messagesRoot`.
 
 That proof binds the message's finalized position, topic, and sender to the
 returned committed state root. For audit-grade verification, verify it against

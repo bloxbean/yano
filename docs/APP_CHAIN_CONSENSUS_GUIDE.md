@@ -395,12 +395,13 @@ the edge (undecodable → reject at admission / skip at apply);
 ### 10.1 `ordered-log`
 
 The default. Bodies are fully opaque — nothing is validated, everything
-finalizes. Per message it writes `messageId → cbor([height, index, topic,
-sender])` and maintains `~tip → cbor(height)`. The MPF key **is the
-message id**, which is why `state/proof/{messageIdHex}` proves a message's
-finalization at `(height, index)` against an anchored root. The record
-format is shared (`OrderedLog` in core-api) with the ZK gate so proofs never
-diverge.
+finalizes. Per message it writes
+`sha256("~yano/finalized-message/v1/" || messageId) →
+cbor([schemaVersion, height, index, topic, sender])` and maintains a namespaced
+tip record. Resolve the public message ID through the `finalized-message-v1`
+typed proof subject; `state/proof/{keyHex}` is the lower-level route for the
+resolved physical key. The record format is shared (`FinalizedMessageIndex` in
+core-api) with opt-in indexes so proofs never diverge.
 
 Additional state machines are ServiceLoader plugins maintained in
 [Yano X](https://github.com/bloxbean/yano-x/tree/main/state-machines). Their
