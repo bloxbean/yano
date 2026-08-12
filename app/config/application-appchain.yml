@@ -30,21 +30,6 @@ yano:
       membership:
         mode: governed
       block:
-        interval-ms: 1000               # propose a block every ~1s
-        # block.max-bytes (default 4 MiB) is the primary size cap; the proposer
-        # trims each block to fit it. max-messages (default 5000) is a safety
-        # backstop against tiny-message floods. Tune either for throughput.
-      # No sequencer.mode → fixed proposer; the launcher injects
-      # sequencer.proposer = node 0's member key. To rotate instead, add:
-      #   sequencer:
-      #     mode: rotating
-      #     window-slots: 10
-
-    # --- Chain 1: a key/value registry, rotating sequencer -------------------
-    chains[1]:
-      chain-id: "registry-chain"
-      state-machine: kv-registry        # built-in: owner-guarded K/V registry
-      block:
-        interval-ms: 2000
+        interval-ms: 1000
       sequencer:
         proposer: "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
