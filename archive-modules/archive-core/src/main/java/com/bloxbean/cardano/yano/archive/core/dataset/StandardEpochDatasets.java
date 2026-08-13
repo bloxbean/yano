@@ -44,6 +44,14 @@ public final class StandardEpochDatasets {
                         page.job().sourceStateVersion(), job.jobId())));
     }
 
+    public static EpochArchiveDataset<RewardFact> rewards() {
+        return dataset(ArchiveDatasetId.REWARD, (job, page, fact) -> new ArchiveRow("rewards",
+                java.util.Arrays.asList(fact.stakeCredential(), fact.credentialType(), fact.poolHash(),
+                        fact.rewardType(), fact.earnedEpoch(), fact.spendableEpoch(), fact.amount(), fact.sourceId(),
+                        page.job().boundaryBlockHash(), page.job().boundaryBlockNumber(), page.job().boundarySlot(),
+                        page.job().createdAt().getEpochSecond(), job.jobId())));
+    }
+
     private static <T> EpochArchiveDataset<T> dataset(ArchiveDatasetId id, RowFactory<T> rows) {
         return new EpochArchiveDataset<>() {
             public ArchiveDatasetId dataset() { return id; }
