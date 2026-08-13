@@ -1,48 +1,51 @@
 package com.bloxbean.cardano.yano.archive.api;
 
 import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
 import java.util.Objects;
 import java.util.UUID;
 
 /** A deterministic, retry-safe unit of archive work. */
 public record ArchiveJob(
         UUID jobId,
+        ArchiveNetworkIdentity networkIdentity,
         ArchiveDatasetId dataset,
         int projectionVersion,
         ArchiveRange range,
-        long anchorSlot,
-        byte[] anchorBlockHash,
+        ArchiveRangeAnchor anchors,
         String sourceStateVersion) {
 
     public ArchiveJob {
         Objects.requireNonNull(jobId, "jobId");
+        Objects.requireNonNull(networkIdentity, "networkIdentity");
         Objects.requireNonNull(dataset, "dataset");
         Objects.requireNonNull(range, "range");
-        Objects.requireNonNull(sourceStateVersion, "sourceStateVersion");
+        Objects.requireNonNull(anchors, "anchors");
+        sourceStateVersion = Objects.requireNonNull(sourceStateVersion, "sourceStateVersion").trim();
         if (projectionVersion < 1) throw new IllegalArgumentException("projectionVersion must be positive");
         if (dataset.sourceKind() != range.sourceKind()) throw new IllegalArgumentException("dataset/range source mismatch");
-        if (anchorSlot < 0) throw new IllegalArgumentException("anchorSlot must be non-negative");
-        if (anchorBlockHash == null || anchorBlockHash.length == 0) throw new IllegalArgumentException("anchorBlockHash is required");
-        anchorBlockHash = Arrays.copyOf(anchorBlockHash, anchorBlockHash.length);
+        if (sourceStateVersion.isEmpty()) throw new IllegalArgumentException("sourceStateVersion is required");
     }
 
-    public static ArchiveJob deterministic(ArchiveDatasetId dataset, int projectionVersion,
-                                           ArchiveRange range, long anchorSlot,
-                                           byte[] anchorBlockHash, String sourceStateVersion) {
-        Objects.requireNonNull(anchorBlockHash, "anchorBlockHash");
-        String key = dataset.logicalName() + '|' + projectionVersion + '|' + range.canonicalForm()
-                + '|' + anchorSlot + '|' + hex(anchorBlockHash) + '|' + sourceStateVersion;
-        return new ArchiveJob(UUID.nameUUIDFromBytes(key.getBytes(StandardCharsets.UTF_8)), dataset,
-                projectionVersion, range, anchorSlot, anchorBlockHash, sourceStateVersion);
+    public static ArchiveJob deterministic(ArchiveNetworkIdentity networkIdentity,
+                                           ArchiveDatasetId dataset, int projectionVersion,
+                                           ArchiveRange range, ArchiveRangeAnchor anchors,
+                                           String sourceStateVersion) {
+        Objects.requireNonNull(networkIdentity, "networkIdentity");
+        Objects.requireNonNull(anchors, "anchors");
+        String key = networkIdentity.canonicalForm() + '|' + dataset.logicalName() + '|'
+                + projectionVersion + '|' + range.canonicalForm() + '|'
+                + anchors.canonicalForm() + '|' + sourceStateVersion;
+        return new ArchiveJob(UUID.nameUUIDFromBytes(key.getBytes(StandardCharsets.UTF_8)),
+                networkIdentity, dataset, projectionVersion, range, anchors, sourceStateVersion);
     }
 
-    @Override
+    /** Compatibility name for the end anchor used as the job's commit boundary. */
+    public long anchorSlot() {
+        return anchors.endSlot();
+    }
+
+    /** Compatibility name for the end anchor used as the job's commit boundary. */
     public byte[] anchorBlockHash() {
-        return Arrays.copyOf(anchorBlockHash, anchorBlockHash.length);
-    }
-
-    private static String hex(byte[] value) {
-        return java.util.HexFormat.of().formatHex(value);
+        return anchors.endHash();
     }
 }

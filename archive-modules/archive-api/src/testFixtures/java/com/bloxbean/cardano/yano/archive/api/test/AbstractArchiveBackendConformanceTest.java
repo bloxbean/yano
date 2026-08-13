@@ -3,6 +3,8 @@ package com.bloxbean.cardano.yano.archive.api.test;
 import com.bloxbean.cardano.yano.archive.api.ArchiveBackend;
 import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import com.bloxbean.cardano.yano.archive.api.ArchiveJob;
+import com.bloxbean.cardano.yano.archive.api.ArchiveNetworkIdentity;
+import com.bloxbean.cardano.yano.archive.api.ArchiveRangeAnchor;
 import com.bloxbean.cardano.yano.archive.api.ArchiveRow;
 import com.bloxbean.cardano.yano.archive.api.BlockRange;
 import org.junit.jupiter.api.AfterEach;
@@ -73,8 +75,9 @@ public abstract class AbstractArchiveBackendConformanceTest {
     private static ArchiveJob job(long from, long to) {
         byte[] hash = new byte[32];
         Arrays.fill(hash, (byte) (to + 1));
-        return ArchiveJob.deterministic(ArchiveDatasetId.TRANSACTION, 1,
-                new BlockRange(from, to), to * 10, hash, "fixture-v1");
+        return ArchiveJob.deterministic(new ArchiveNetworkIdentity(1, "fixture-genesis"),
+                ArchiveDatasetId.TRANSACTION, 1, new BlockRange(from, to),
+                new ArchiveRangeAnchor(from * 10, hash, to * 10, hash), "fixture-v1");
     }
 
     private static ArchiveRow row(ArchiveJob job) {

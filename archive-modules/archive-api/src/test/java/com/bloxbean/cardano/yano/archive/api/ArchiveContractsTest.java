@@ -44,17 +44,33 @@ class ArchiveContractsTest {
     void deterministicJobIdentityChangesForAnyCanonicalInput() {
         byte[] hash = new byte[32];
         Arrays.fill(hash, (byte) 7);
-        var first = ArchiveJob.deterministic(ArchiveDatasetId.TRANSACTION, 1,
-                new BlockRange(10, 20), 200, hash, "source-1");
-        var retry = ArchiveJob.deterministic(ArchiveDatasetId.TRANSACTION, 1,
-                new BlockRange(10, 20), 200, hash, "source-1");
-        var otherRange = ArchiveJob.deterministic(ArchiveDatasetId.TRANSACTION, 1,
-                new BlockRange(10, 21), 200, hash, "source-1");
+        var identity = new ArchiveNetworkIdentity(1, "genesis");
+        var anchors = new ArchiveRangeAnchor(100, hash, 200, hash);
+        var first = ArchiveJob.deterministic(identity, ArchiveDatasetId.TRANSACTION, 1,
+                new BlockRange(10, 20), anchors, "source-1");
+        var retry = ArchiveJob.deterministic(identity, ArchiveDatasetId.TRANSACTION, 1,
+                new BlockRange(10, 20), anchors, "source-1");
+        var otherRange = ArchiveJob.deterministic(identity, ArchiveDatasetId.TRANSACTION, 1,
+                new BlockRange(10, 21), anchors, "source-1");
 
         assertThat(retry.jobId()).isEqualTo(first.jobId());
         assertThat(otherRange.jobId()).isNotEqualTo(first.jobId());
         hash[0] = 9;
         assertThat(first.anchorBlockHash()[0]).isEqualTo((byte) 7);
+
+        var otherNetwork = ArchiveJob.deterministic(new ArchiveNetworkIdentity(2, "genesis"),
+                ArchiveDatasetId.TRANSACTION, 1, new BlockRange(10, 20), anchors, "source-1");
+        assertThat(otherNetwork.jobId()).isNotEqualTo(first.jobId());
+    }
+
+    @Test
+    void rowAndAnchorBinaryValuesAreDefensivelyCopied() {
+        byte[] value = {1, 2, 3};
+        var row = new ArchiveRow("binary_table", java.util.List.of(value));
+        value[0] = 9;
+        assertThat((byte[]) row.values().getFirst()).containsExactly(1, 2, 3);
+        ((byte[]) row.values().getFirst())[1] = 9;
+        assertThat((byte[]) row.values().getFirst()).containsExactly(1, 2, 3);
     }
 
     @Test

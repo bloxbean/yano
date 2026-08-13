@@ -1,0 +1,21 @@
+plugins {
+    id 'java-library'
+}
+
+dependencies {
+    api project(':archive-modules:archive-api')
+    implementation libs.sqlite.jdbc
+
+    testImplementation testFixtures(project(':archive-modules:archive-api'))
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano SQLite Archive Store'
+                description = 'Standalone SQLite implementation for optional Yano archives'
+            }
+        }
+    }
+}

@@ -1,0 +1,23 @@
+plugins {
+    id 'java-library'
+    id 'java-test-fixtures'
+}
+
+dependencies {
+    api project(':archive-modules:archive-api')
+
+    testFixturesApi testFixtures(project(':archive-modules:archive-api'))
+    testFixturesApi libs.junit.jupiter.api
+    testFixturesApi libs.assertj.core
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano Archive Core'
+                description = 'Backend-neutral orchestration and dataset projections for optional Yano archives'
+            }
+        }
+    }
+}
