@@ -68,19 +68,12 @@ public final class BlockArchiveWorker<B> {
                 previous, finalizedEnd - previous, "deriving " + start + ".." + end);
         try (var lease = source.acquire(start, end, Instant.now().plus(leaseDuration))) {
             List<BlockSourceContext<B>> blocks = new ArrayList<>();
-            List<ArchiveRow> rows = new ArrayList<>();
             for (long block = start; block <= end; block++) {
                 long currentBlock = block;
                 BlockSourceContext<B> context = source.readCanonical(currentBlock)
                         .orElseThrow(() -> new ArchiveStoreException("canonical body unavailable for block "
                                 + currentBlock));
                 blocks.add(context);
-                dataset.derive(context, row -> {
-                    if (rows.size() >= config.maxRowsPerBatch()) {
-                        throw new RowLimitExceeded();
-                    }
-                    rows.add(row);
-                });
             }
             BlockSourceContext<B> first = blocks.getFirst();
             BlockSourceContext<B> last = blocks.getLast();
@@ -89,6 +82,15 @@ public final class BlockArchiveWorker<B> {
             ArchiveJob job = ArchiveJob.deterministic(network, dataset.dataset(), dataset.projectionVersion(),
                     new BlockRange(start, end), new ArchiveRangeAnchor(first.slot(), first.blockHash(),
                             last.slot(), last.blockHash()), "canonical-block-v1");
+            List<ArchiveRow> rows = new ArrayList<>();
+            for (BlockSourceContext<B> context : blocks) {
+                dataset.derive(job, context, row -> {
+                    if (rows.size() >= config.maxRowsPerBatch()) {
+                        throw new RowLimitExceeded();
+                    }
+                    rows.add(row);
+                });
+            }
             ArchiveReceipt receipt;
             try (var write = backend.begin(job)) {
                 rows.forEach(write::append);
