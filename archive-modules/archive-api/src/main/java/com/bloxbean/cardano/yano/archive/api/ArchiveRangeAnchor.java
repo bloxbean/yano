@@ -21,4 +21,19 @@ public record ArchiveRangeAnchor(long startSlot, byte[] startHash, long endSlot,
         return startSlot + ":" + HexFormat.of().formatHex(startHash) + ':'
                 + endSlot + ":" + HexFormat.of().formatHex(endHash);
     }
+
+    @Override
+    public boolean equals(Object other) {
+        return this == other || other instanceof ArchiveRangeAnchor anchor
+                && startSlot == anchor.startSlot && endSlot == anchor.endSlot
+                && Arrays.equals(startHash, anchor.startHash) && Arrays.equals(endHash, anchor.endHash);
+    }
+
+    @Override
+    public int hashCode() {
+        int result = Long.hashCode(startSlot);
+        result = 31 * result + Arrays.hashCode(startHash);
+        result = 31 * result + Long.hashCode(endSlot);
+        return 31 * result + Arrays.hashCode(endHash);
+    }
 }

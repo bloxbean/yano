@@ -22,6 +22,10 @@ public abstract class AbstractArchiveBackendConformanceTest {
 
     protected abstract ArchiveBackend createBackend() throws Exception;
 
+    protected final ArchiveBackend backend() {
+        return backend;
+    }
+
     @BeforeEach
     void openBackend() throws Exception {
         backend = createBackend();
@@ -82,7 +86,7 @@ public abstract class AbstractArchiveBackendConformanceTest {
 
     private static ArchiveRow row(ArchiveJob job) {
         return new ArchiveRow("chain_transaction", List.of(
-                new byte[32], job.anchorBlockHash(), job.range().endInclusive(), job.anchorSlot(),
+                job.anchorBlockHash(), job.anchorBlockHash(), job.range().endInclusive(), job.anchorSlot(),
                 0L, 0L, 0, true, 0L, job.jobId()));
     }
 }

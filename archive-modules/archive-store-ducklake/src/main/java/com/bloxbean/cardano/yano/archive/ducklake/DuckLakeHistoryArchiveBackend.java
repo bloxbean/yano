@@ -1,0 +1,601 @@
+package com.bloxbean.cardano.yano.archive.ducklake;
+
+import com.bloxbean.cardano.yano.archive.api.ArchiveBackend;
+import com.bloxbean.cardano.yano.archive.api.ArchiveCapabilities;
+import com.bloxbean.cardano.yano.archive.api.ArchiveCoverage;
+import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
+import com.bloxbean.cardano.yano.archive.api.ArchiveHealth;
+import com.bloxbean.cardano.yano.archive.api.ArchiveIdentity;
+import com.bloxbean.cardano.yano.archive.api.ArchiveJob;
+import com.bloxbean.cardano.yano.archive.api.ArchiveMaintenanceBudget;
+import com.bloxbean.cardano.yano.archive.api.ArchiveRange;
+import com.bloxbean.cardano.yano.archive.api.ArchiveRangeAnchor;
+import com.bloxbean.cardano.yano.archive.api.ArchiveReadSession;
+import com.bloxbean.cardano.yano.archive.api.ArchiveReceipt;
+import com.bloxbean.cardano.yano.archive.api.ArchiveRetentionCutoff;
+import com.bloxbean.cardano.yano.archive.api.ArchiveStoreException;
+import com.bloxbean.cardano.yano.archive.api.ArchiveWriteSession;
+import com.bloxbean.cardano.yano.archive.api.BlockRange;
+import com.bloxbean.cardano.yano.archive.api.EpochRange;
+import com.bloxbean.cardano.yano.archive.api.SourceKind;
+import com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.sql.Timestamp;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.EnumMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.LongAdder;
+
+/** DuckLake/SQLite-catalog backend. All historical row data is DuckLake-managed Parquet. */
+public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
+    private static final ArchiveCapabilities CAPABILITIES = new ArchiveCapabilities(
+            true, false, true, true, true);
+
+    private final ArchiveIdentity identity;
+    private final DuckLakeArchiveConfig config;
+    private final DuckDbManager manager;
+    private final boolean ownsManager;
+    private final ArchiveDirectoryLock directoryLock;
+    // A session may be closed by a different executor than the one that opened it.
+    // A semaphore preserves single-writer semantics without thread ownership.
+    private final Semaphore writer = new Semaphore(1, true);
+    private final Map<Long, LongAdder> activeSnapshots = new ConcurrentHashMap<>();
+    private final AtomicReference<ArchiveHealth> health = new AtomicReference<>(ArchiveHealth.healthy());
+    private final AtomicBoolean closed = new AtomicBoolean();
+
+    public DuckLakeHistoryArchiveBackend(ArchiveIdentity identity, DuckLakeArchiveConfig config,
+                                         DuckDbManager manager) {
+        this(identity, config, manager, false);
+    }
+
+    public static DuckLakeHistoryArchiveBackend open(ArchiveIdentity identity,
+                                                      DuckLakeArchiveConfig config,
+                                                      DuckDbManagerConfig managerConfig,
+                                                      PackagedDuckDbExtensionLoader extensions) {
+        return new DuckLakeHistoryArchiveBackend(identity, config,
+                new DuckDbManager(managerConfig, extensions), true);
+    }
+
+    private DuckLakeHistoryArchiveBackend(ArchiveIdentity identity, DuckLakeArchiveConfig config,
+                                          DuckDbManager manager, boolean ownsManager) {
+        this.identity = java.util.Objects.requireNonNull(identity, "identity");
+        if (!identity.engine().equals("ducklake")) {
+            throw new IllegalArgumentException("DuckLake backend requires engine=ducklake");
+        }
+        this.config = java.util.Objects.requireNonNull(config, "config");
+        this.manager = java.util.Objects.requireNonNull(manager, "manager");
+        this.ownsManager = ownsManager;
+        try {
+            Files.createDirectories(config.dataPath());
+        } catch (Exception e) {
+            if (ownsManager) manager.close();
+            throw new ArchiveStoreException("cannot create DuckLake data directory", e);
+        }
+        this.directoryLock = new ArchiveDirectoryLock(config.catalogPath());
+        try (DuckDbLease lease = manager.acquire(DuckDbWorkload.BULK_CATCH_UP, config.acquireTimeout())) {
+            DuckLakeSql.attach(lease.connection(), config, null, false);
+            try {
+                new DuckLakeInitializer(config).initialize(lease.connection(), identity);
+            } finally {
+                DuckLakeSql.detach(lease.connection());
+            }
+        } catch (Exception e) {
+            directoryLock.close();
+            if (ownsManager) manager.close();
+            markUnhealthy("DuckLake initialization failed", e);
+            throw e instanceof ArchiveStoreException store ? store
+                    : new ArchiveStoreException("DuckLake initialization failed", e);
+        }
+    }
+
+    @Override
+    public ArchiveIdentity identity() {
+        return identity;
+    }
+
+    @Override
+    public ArchiveCapabilities capabilities() {
+        return CAPABILITIES;
+    }
+
+    @Override
+    public ArchiveWriteSession begin(ArchiveJob job) {
+        requireOpen();
+        java.util.Objects.requireNonNull(job, "job");
+        if (!job.networkIdentity().equals(identity.networkIdentity())) {
+            throw new ArchiveStoreException("archive job network identity does not match backend");
+        }
+        acquireWriter();
+        DuckDbLease lease = null;
+        try {
+            lease = manager.acquire(DuckDbWorkload.BULK_CATCH_UP, config.acquireTimeout());
+            DuckLakeSql.attach(lease.connection(), config, null, false);
+            Optional<ArchiveReceipt> replay = findReceipt(lease.connection(), job.jobId());
+            if (replay.isPresent()) {
+                verifyReplayMetadata(job, replay.orElseThrow());
+                DuckLakeSql.detach(lease.connection());
+                lease.close();
+                return new DuckLakeWriteSession(this, job, null, replay.orElseThrow());
+            }
+            rejectCoverageOverlap(lease.connection(), job);
+            return new DuckLakeWriteSession(this, job, lease, null);
+        } catch (Exception e) {
+            if (lease != null) {
+                try { DuckLakeSql.detach(lease.connection()); } catch (SQLException ignored) { }
+                lease.close();
+            }
+            releaseWriter();
+            markDegraded("DuckLake begin failed", e);
+            throw e instanceof ArchiveStoreException store ? store
+                    : new ArchiveStoreException("failed to begin DuckLake job", e);
+        }
+    }
+
+    @Override
+    public Optional<ArchiveReceipt> findReceipt(UUID jobId) {
+        requireOpen();
+        try (CurrentRead read = currentRead()) {
+            return findReceipt(read.connection(), jobId);
+        } catch (SQLException e) {
+            markDegraded("DuckLake receipt read failed", e);
+            throw new ArchiveStoreException("failed to read DuckLake receipt", e);
+        }
+    }
+
+    @Override
+    public ArchiveCoverage coverage(ArchiveDatasetId dataset) {
+        requireOpen();
+        try (CurrentRead read = currentRead();
+             PreparedStatement query = read.connection().prepareStatement(
+                     "SELECT projection_version, source_kind, range_start, range_end, backend_generation "
+                             + "FROM history_lake.archive_coverage WHERE dataset=? ORDER BY range_start")) {
+            query.setString(1, dataset.name());
+            List<ArchiveRange> ranges = new ArrayList<>();
+            long revision = DuckLakeSql.currentSnapshot(read.connection());
+            int projectionVersion = ArchiveSchemas.schema(dataset).projectionVersion();
+            try (ResultSet rows = query.executeQuery()) {
+                while (rows.next()) {
+                    projectionVersion = rows.getInt(1);
+                    SourceKind kind = SourceKind.valueOf(rows.getString(2));
+                    long start = rows.getLong(3);
+                    long end = rows.getLong(4);
+                    ranges.add(kind == SourceKind.BLOCK ? new BlockRange(start, end) : new EpochRange(start, end));
+                }
+            }
+            return new ArchiveCoverage(dataset, projectionVersion, revision, mergeAdjacent(ranges));
+        } catch (SQLException e) {
+            markDegraded("DuckLake coverage read failed", e);
+            throw new ArchiveStoreException("failed to read DuckLake coverage", e);
+        }
+    }
+
+    @Override
+    public ArchiveReadSession openReadSession() {
+        requireOpen();
+        acquireWriter();
+        DuckDbLease lease = null;
+        try {
+            lease = manager.acquire(DuckDbWorkload.STEADY, config.acquireTimeout());
+            Connection connection = lease.connection();
+            DuckLakeSql.attach(connection, config, null, true);
+            long snapshot = DuckLakeSql.currentSnapshot(connection);
+            DuckLakeSql.detach(connection);
+            DuckLakeSql.attach(connection, config, snapshot, true);
+            retainSnapshot(snapshot);
+            return new DuckLakeReadSession(this, snapshot, lease);
+        } catch (Exception e) {
+            if (lease != null) lease.close();
+            markDegraded("DuckLake snapshot open failed", e);
+            throw new ArchiveStoreException("failed to open pinned DuckLake snapshot", e);
+        } finally {
+            releaseWriter();
+        }
+    }
+
+    @Override
+    public void invalidate(ArchiveDatasetId dataset, ArchiveRange range) {
+        mutateCommittedJobs(dataset, range, false);
+    }
+
+    @Override
+    public void applyRetention(ArchiveDatasetId dataset, ArchiveRetentionCutoff cutoff) {
+        if (dataset.sourceKind() != cutoff.sourceKind()) {
+            throw new IllegalArgumentException("retention cutoff source does not match dataset");
+        }
+        if (cutoff.beforeExclusive() == 0) return;
+        ArchiveRange range = cutoff.sourceKind() == SourceKind.BLOCK
+                ? new BlockRange(0, cutoff.beforeExclusive() - 1)
+                : new EpochRange(0, cutoff.beforeExclusive() - 1);
+        mutateCommittedJobs(dataset, range, true);
+    }
+
+    @Override
+    public void maintain(ArchiveMaintenanceBudget budget) {
+        requireOpen();
+        java.util.Objects.requireNonNull(budget, "budget");
+        acquireWriter();
+        if (!activeSnapshots.isEmpty()) {
+            releaseWriter();
+            return;
+        }
+        try (DuckDbLease lease = manager.acquire(DuckDbWorkload.BULK_CATCH_UP, config.acquireTimeout())) {
+            DuckLakeSql.attach(lease.connection(), config, null, false);
+            try {
+                long deadline = System.nanoTime() + budget.timeLimit().toNanos();
+                if (budget.maxBytesToRewrite() > 0) {
+                    int maxFiles = (int) Math.max(1, Math.min(100,
+                            budget.maxBytesToRewrite() / Math.max(1, config.targetFileSizeBytes())));
+                    executeMaintenance(lease, deadline,
+                            "CALL ducklake_merge_adjacent_files('history_lake', max_compacted_files => "
+                                    + maxFiles + ")");
+                }
+                executeMaintenance(lease, deadline,
+                        "CALL ducklake_expire_snapshots('history_lake', older_than => now() - INTERVAL '"
+                                + config.snapshotRetention().toSeconds() + " seconds')");
+                executeMaintenance(lease, deadline,
+                        "CALL ducklake_cleanup_old_files('history_lake', older_than => now() - INTERVAL '"
+                                + config.cleanupGrace().toSeconds() + " seconds')");
+                executeMaintenance(lease, deadline,
+                        "CALL ducklake_delete_orphaned_files('history_lake', older_than => now() - INTERVAL '"
+                                + config.cleanupGrace().toSeconds() + " seconds')");
+            } finally {
+                DuckLakeSql.detach(lease.connection());
+            }
+            health.set(ArchiveHealth.healthy());
+        } catch (Exception e) {
+            markDegraded("DuckLake maintenance failed", e);
+            throw new ArchiveStoreException("DuckLake maintenance failed", e);
+        } finally {
+            releaseWriter();
+        }
+    }
+
+    @Override
+    public ArchiveHealth health() {
+        return health.get();
+    }
+
+    /** Bounded explicit metadata/catalog integrity check; never runs on core threads. */
+    public void verifyIntegrity(Duration timeout) {
+        requireOpen();
+        if (timeout == null || timeout.isNegative() || timeout.isZero()) {
+            throw new IllegalArgumentException("integrity timeout must be positive");
+        }
+        long deadline = System.nanoTime() + timeout.toNanos();
+        try (CurrentRead read = currentRead(); Statement sql = boundedStatement(read.connection(), deadline)) {
+            try (ResultSet result = sql.executeQuery("SELECT "
+                    + "(SELECT count(*) FROM history_lake.archive_identity), "
+                    + "(SELECT count(*) FROM (SELECT job_id FROM history_lake.archive_commits GROUP BY job_id HAVING count(*) > 1)), "
+                    + "(SELECT count(*) FROM history_lake.archive_coverage c LEFT JOIN history_lake.archive_commits j "
+                    + "ON c.job_id=j.job_id WHERE j.job_id IS NULL)")) {
+                result.next();
+                if (result.getLong(1) != 1 || result.getLong(2) != 0 || result.getLong(3) != 0) {
+                    throw new ArchiveStoreException("DuckLake archive metadata integrity check failed");
+                }
+            }
+            // Scan every stable table so missing/corrupt committed Parquet is detected.
+            for (String table : DuckLakeSql.tables().keySet()) {
+                try (Statement tableScan = boundedStatement(read.connection(), deadline)) {
+                    tableScan.executeQuery("SELECT count(*) FROM history_lake."
+                            + DuckLakeSql.name(table)).close();
+                }
+            }
+            health.set(ArchiveHealth.healthy());
+        } catch (Exception e) {
+            markUnhealthy("DuckLake integrity check failed", e);
+            throw e instanceof ArchiveStoreException store ? store
+                    : new ArchiveStoreException("DuckLake integrity check failed", e);
+        }
+    }
+
+    /**
+     * Copies a quiescent SQLite catalog to an atomically published backup file.
+     * DuckLake Parquet data must be backed up with the same generation.
+     */
+    public Path backupCatalog(Path target) {
+        requireOpen();
+        Path normalized = java.util.Objects.requireNonNull(target, "target").toAbsolutePath().normalize();
+        if (normalized.equals(config.catalogPath())) throw new IllegalArgumentException("backup target equals catalog");
+        acquireWriter();
+        try {
+            if (!activeSnapshots.isEmpty()) {
+                throw new ArchiveStoreException("catalog backup requires all read snapshots to close");
+            }
+            Path parent = normalized.getParent();
+            if (parent == null) throw new ArchiveStoreException("catalog backup target has no parent");
+            Files.createDirectories(parent);
+            Path temporary = Files.createTempFile(parent, normalized.getFileName().toString(), ".tmp");
+            try {
+                Files.copy(config.catalogPath(), temporary, StandardCopyOption.REPLACE_EXISTING);
+                try {
+                    Files.move(temporary, normalized, StandardCopyOption.REPLACE_EXISTING,
+                            StandardCopyOption.ATOMIC_MOVE);
+                } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                    Files.move(temporary, normalized, StandardCopyOption.REPLACE_EXISTING);
+                }
+            } finally {
+                Files.deleteIfExists(temporary);
+            }
+            return normalized;
+        } catch (Exception e) {
+            throw e instanceof ArchiveStoreException store ? store
+                    : new ArchiveStoreException("DuckLake catalog backup failed", e);
+        } finally {
+            releaseWriter();
+        }
+    }
+
+    void releaseWriter() {
+        writer.release();
+    }
+
+    void releaseSnapshot(long generation) {
+        activeSnapshots.computeIfPresent(generation, (ignored, count) -> {
+            count.decrement();
+            return count.sum() <= 0 ? null : count;
+        });
+    }
+
+    private void retainSnapshot(long generation) {
+        activeSnapshots.computeIfAbsent(generation, ignored -> new LongAdder()).increment();
+    }
+
+    private void mutateCommittedJobs(ArchiveDatasetId dataset, ArchiveRange range, boolean wholeJobsOnly) {
+        requireOpen();
+        if (dataset.sourceKind() != range.sourceKind()) throw new IllegalArgumentException("dataset/range source mismatch");
+        acquireWriter();
+        try (DuckDbLease lease = manager.acquire(DuckDbWorkload.BULK_CATCH_UP, config.acquireTimeout())) {
+            Connection connection = lease.connection();
+            DuckLakeSql.attach(connection, config, null, false);
+            try {
+                try (Statement sql = connection.createStatement()) { sql.execute("BEGIN TRANSACTION"); }
+                List<UUID> jobs = findAffectedJobs(connection, dataset, range, wholeJobsOnly);
+                for (UUID jobId : jobs) deleteJobRows(connection, dataset, jobId);
+                insertInvalidation(connection, dataset, range);
+                try (Statement sql = connection.createStatement()) { sql.execute("COMMIT"); }
+            } catch (Exception e) {
+                try (Statement sql = connection.createStatement()) { sql.execute("ROLLBACK"); }
+                catch (SQLException ignored) { }
+                throw e;
+            } finally {
+                DuckLakeSql.detach(connection);
+            }
+        } catch (Exception e) {
+            markDegraded("DuckLake invalidation failed", e);
+            throw e instanceof ArchiveStoreException store ? store
+                    : new ArchiveStoreException("DuckLake invalidation failed", e);
+        } finally {
+            releaseWriter();
+        }
+    }
+
+    private List<UUID> findAffectedJobs(Connection connection, ArchiveDatasetId dataset,
+                                        ArchiveRange range, boolean wholeJobsOnly) throws SQLException {
+        String predicate = wholeJobsOnly ? "range_end <= ?" : "NOT (range_end < ? OR range_start > ?)";
+        try (PreparedStatement query = connection.prepareStatement(
+                "SELECT job_id FROM history_lake.archive_coverage WHERE dataset=? AND " + predicate)) {
+            query.setString(1, dataset.name());
+            if (wholeJobsOnly) query.setLong(2, range.endInclusive());
+            else {
+                query.setLong(2, range.startInclusive());
+                query.setLong(3, range.endInclusive());
+            }
+            List<UUID> jobs = new ArrayList<>();
+            try (ResultSet rows = query.executeQuery()) {
+                while (rows.next()) jobs.add(UUID.fromString(rows.getString(1)));
+            }
+            return jobs;
+        }
+    }
+
+    private void deleteJobRows(Connection connection, ArchiveDatasetId dataset, UUID jobId) throws SQLException {
+        try (Statement sql = connection.createStatement()) {
+            for (var table : ArchiveSchemas.schema(dataset).tables()) {
+                if (table.columns().stream().anyMatch(column -> column.name().equals("archive_job_id"))) {
+                    try (PreparedStatement delete = connection.prepareStatement("DELETE FROM history_lake."
+                            + DuckLakeSql.name(table.physicalName()) + " WHERE archive_job_id=?")) {
+                        delete.setObject(1, jobId);
+                        delete.executeUpdate();
+                    }
+                }
+            }
+        }
+        for (String table : List.of("archive_commit_counts", "archive_coverage", "archive_commits")) {
+            try (PreparedStatement delete = connection.prepareStatement(
+                    "DELETE FROM history_lake." + table + " WHERE job_id=?")) {
+                delete.setObject(1, jobId);
+                delete.executeUpdate();
+            }
+        }
+    }
+
+    private void insertInvalidation(Connection connection, ArchiveDatasetId dataset, ArchiveRange range)
+            throws SQLException {
+        try (PreparedStatement insert = connection.prepareStatement(
+                "INSERT INTO history_lake.archive_invalidations VALUES (?, ?, ?, ?, ?, current_timestamp)")) {
+            insert.setObject(1, UUID.randomUUID());
+            insert.setString(2, dataset.name());
+            insert.setString(3, range.sourceKind().name());
+            insert.setLong(4, range.startInclusive());
+            insert.setLong(5, range.endInclusive());
+            insert.executeUpdate();
+        }
+    }
+
+    private void rejectCoverageOverlap(Connection connection, ArchiveJob job) throws SQLException {
+        try (PreparedStatement query = connection.prepareStatement(
+                "SELECT count(*) FROM history_lake.archive_coverage WHERE dataset=? "
+                        + "AND NOT (range_end < ? OR range_start > ?)")) {
+            query.setString(1, job.dataset().name());
+            query.setLong(2, job.range().startInclusive());
+            query.setLong(3, job.range().endInclusive());
+            try (ResultSet row = query.executeQuery()) {
+                row.next();
+                if (row.getLong(1) != 0) {
+                    throw new ArchiveStoreException("archive job overlaps committed coverage for " + job.dataset());
+                }
+            }
+        }
+    }
+
+    private Optional<ArchiveReceipt> findReceipt(Connection connection, UUID jobId) throws SQLException {
+        try (PreparedStatement query = connection.prepareStatement(
+                "SELECT dataset, projection_version, source_kind, range_start, range_end, start_slot, start_hash, "
+                        + "end_slot, end_hash, backend_generation, ordered_digest, committed_at "
+                        + "FROM history_lake.archive_commits WHERE job_id=?")) {
+            query.setObject(1, jobId);
+            try (ResultSet row = query.executeQuery()) {
+                if (!row.next()) return Optional.empty();
+                ArchiveDatasetId dataset = ArchiveDatasetId.valueOf(row.getString(1));
+                SourceKind kind = SourceKind.valueOf(row.getString(3));
+                ArchiveRange range = kind == SourceKind.BLOCK
+                        ? new BlockRange(row.getLong(4), row.getLong(5))
+                        : new EpochRange(row.getLong(4), row.getLong(5));
+                ArchiveRangeAnchor anchors = new ArchiveRangeAnchor(row.getLong(6), row.getBytes(7),
+                        row.getLong(8), row.getBytes(9));
+                ArchiveReceipt receipt = new ArchiveReceipt(jobId, identity.networkIdentity(), dataset,
+                        row.getInt(2), range, anchors, row.getLong(10), readCounts(connection, jobId),
+                        row.getString(11), row.getTimestamp(12).toInstant());
+                if (row.next()) throw new ArchiveStoreException("duplicate archive receipt for " + jobId);
+                return Optional.of(receipt);
+            }
+        }
+    }
+
+    private Map<String, Long> readCounts(Connection connection, UUID jobId) throws SQLException {
+        try (PreparedStatement query = connection.prepareStatement(
+                "SELECT table_name, row_count FROM history_lake.archive_commit_counts WHERE job_id=?")) {
+            query.setObject(1, jobId);
+            Map<String, Long> counts = new LinkedHashMap<>();
+            try (ResultSet rows = query.executeQuery()) {
+                while (rows.next()) counts.put(rows.getString(1), rows.getLong(2));
+            }
+            return counts;
+        }
+    }
+
+    private void verifyReplayMetadata(ArchiveJob job, ArchiveReceipt receipt) {
+        if (receipt.dataset() != job.dataset() || receipt.projectionVersion() != job.projectionVersion()
+                || !receipt.range().equals(job.range()) || !receipt.anchors().equals(job.anchors())
+                || !receipt.networkIdentity().equals(job.networkIdentity())) {
+            throw new ArchiveStoreException("job ID conflicts with different committed metadata: " + job.jobId());
+        }
+    }
+
+    private CurrentRead currentRead() throws SQLException {
+        DuckDbLease lease = manager.acquire(DuckDbWorkload.STEADY, config.acquireTimeout());
+        try {
+            DuckLakeSql.attach(lease.connection(), config, null, true);
+            return new CurrentRead(lease);
+        } catch (SQLException | RuntimeException e) {
+            lease.close();
+            throw e;
+        }
+    }
+
+    private List<ArchiveRange> mergeAdjacent(List<ArchiveRange> ranges) {
+        if (ranges.isEmpty()) return List.of();
+        List<ArchiveRange> merged = new ArrayList<>();
+        ArchiveRange current = ranges.getFirst();
+        for (int i = 1; i < ranges.size(); i++) {
+            ArchiveRange next = ranges.get(i);
+            if (current.sourceKind() == next.sourceKind() && current.endInclusive() != Long.MAX_VALUE
+                    && current.endInclusive() + 1 == next.startInclusive()) {
+                current = current.sourceKind() == SourceKind.BLOCK
+                        ? new BlockRange(current.startInclusive(), next.endInclusive())
+                        : new EpochRange(current.startInclusive(), next.endInclusive());
+            } else {
+                merged.add(current);
+                current = next;
+            }
+        }
+        merged.add(current);
+        return List.copyOf(merged);
+    }
+
+    private void acquireWriter() {
+        try {
+            if (!writer.tryAcquire(config.acquireTimeout().toMillis(), TimeUnit.MILLISECONDS)) {
+                throw new ArchiveStoreException("timed out waiting for DuckLake writer");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ArchiveStoreException("interrupted waiting for DuckLake writer", e);
+        }
+    }
+
+    private void executeMaintenance(DuckDbLease lease, long deadline, String command) throws SQLException {
+        try (Statement sql = boundedStatement(lease.connection(), deadline)) {
+            sql.execute(command);
+        }
+    }
+
+    private Statement boundedStatement(Connection connection, long deadline) throws SQLException {
+        long remainingNanos = deadline - System.nanoTime();
+        if (remainingNanos <= 0) throw new ArchiveStoreException("DuckLake operation exceeded its time budget");
+        Statement statement = connection.createStatement();
+        long seconds = Math.max(1, TimeUnit.NANOSECONDS.toSeconds(remainingNanos)
+                + (remainingNanos % TimeUnit.SECONDS.toNanos(1) == 0 ? 0 : 1));
+        statement.setQueryTimeout(Math.toIntExact(Math.min(Integer.MAX_VALUE, seconds)));
+        return statement;
+    }
+
+    private void requireOpen() {
+        if (closed.get()) throw new IllegalStateException("DuckLake backend is closed");
+    }
+
+    private void markDegraded(String detail, Throwable error) {
+        health.set(new ArchiveHealth(ArchiveHealth.Status.DEGRADED,
+                detail + ": " + error.getMessage(), Instant.now()));
+    }
+
+    private void markUnhealthy(String detail, Throwable error) {
+        health.set(new ArchiveHealth(ArchiveHealth.Status.UNHEALTHY,
+                detail + ": " + error.getMessage(), Instant.now()));
+    }
+
+    @Override
+    public void close() {
+        if (!closed.compareAndSet(false, true)) return;
+        if (ownsManager) manager.close();
+        directoryLock.close();
+        health.set(new ArchiveHealth(ArchiveHealth.Status.CLOSED, "", Instant.now()));
+    }
+
+    private static final class CurrentRead implements AutoCloseable {
+        private final DuckDbLease lease;
+
+        private CurrentRead(DuckDbLease lease) {
+            this.lease = lease;
+        }
+
+        Connection connection() {
+            return lease.connection();
+        }
+
+        @Override
+        public void close() {
+            try { DuckLakeSql.detach(lease.connection()); } catch (SQLException ignored) { }
+            lease.close();
+        }
+    }
+}
