@@ -76,3 +76,4 @@ cf-rewards-calculation = "org.cardanofoundation:cf-rewards-calculation:1.0.2"
 
 duckdb-jdbc = "org.duckdb:duckdb_jdbc:1.5.5.0"
 sqlite-jdbc = "org.xerial:sqlite-jdbc:3.53.1.0"
+flyway-core = "org.flywaydb:flyway-core:12.2.0"
