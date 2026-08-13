@@ -31,6 +31,7 @@ class ChainStateCapabilityTest {
             assertThat(chainState).isInstanceOf(RocksDbAccess.class);
             assertThat(chainState).isInstanceOf(RollbackCapableStore.class);
             assertThat(chainState).isInstanceOf(NonceStateStore.class);
+            assertThat(chainState).isInstanceOf(ArchiveChainStateCapabilities.class);
         }
     }
 
@@ -41,6 +42,7 @@ class ChainStateCapabilityTest {
         assertThat(chainState).isInstanceOf(ByronEbHeaderStore.class);
         assertThat(chainState).isInstanceOf(OriginRollbackCapable.class);
         assertThat(chainState).isInstanceOf(NonceStateStore.class);
+        assertThat(chainState).isInstanceOf(ArchiveChainStateCapabilities.class);
 
         assertThat(chainState).isNotInstanceOf(ChainStateRecovery.class);
         assertThat(chainState).isNotInstanceOf(EraMetadataStore.class);

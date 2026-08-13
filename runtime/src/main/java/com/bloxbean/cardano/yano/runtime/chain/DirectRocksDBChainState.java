@@ -6,6 +6,7 @@ import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.db.RocksDbAccess;
 import com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore;
@@ -46,7 +47,8 @@ import java.util.OptionalLong;
 public class DirectRocksDBChainState implements ChainState, AutoCloseable, RocksDbSupplier,
         NonceStateStore, RocksDbAccess, RollbackCapableStore, ByronEbHeaderStore,
         OriginRollbackCapable, ChainStateRecovery, ChainStateSnapshots, NearestSlotLookup,
-        BootstrapChainStateWriter, EraMetadataStore, ByronGenesisUtxoMetadataStore {
+        BootstrapChainStateWriter, EraMetadataStore, ByronGenesisUtxoMetadataStore,
+        ArchiveChainStateCapabilities {
 
     private static final byte[] TIP_KEY = "tip".getBytes(StandardCharsets.UTF_8);
     private static final byte[] HEADER_TIP_KEY = "header_tip".getBytes(StandardCharsets.UTF_8);
@@ -530,6 +532,52 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
             return hasBlock(blockHash);
         } catch (Exception e) {
             return false;
+        }
+    }
+
+    @Override
+    public Optional<CanonicalBlockReference> getCanonicalBlockReference(long blockNumber) {
+        if (blockNumber < 0) return Optional.empty();
+        try {
+            byte[] slotBytes = db.get(slotByNumberHandle, longToBytes(blockNumber));
+            if (slotBytes == null) return Optional.empty();
+            long slot = bytesToLong(slotBytes);
+            byte[] blockHash = db.get(slotToHashHandle, longToBytes(slot));
+            return blockHash == null
+                    ? Optional.empty()
+                    : Optional.of(new CanonicalBlockReference(blockNumber, slot, blockHash));
+        } catch (Exception e) {
+            log.warn("Failed to read canonical reference for block {}: {}", blockNumber, e.toString());
+            return Optional.empty();
+        }
+    }
+
+    @Override
+    public OptionalLong getEarliestRetainedBodyBlockNumber() {
+        try {
+            long start = 0;
+            byte[] cursorBytes = db.get(metadataHandle, BlockPruner.CURSOR_KEY);
+            if (cursorBytes != null && cursorBytes.length == Long.BYTES) {
+                start = Math.max(0, bytesToLong(cursorBytes) + 1);
+            }
+            try (RocksIterator it = db.newIterator(slotByNumberHandle)) {
+                it.seek(longToBytes(start));
+                while (it.isValid()) {
+                    if (it.key().length == Long.BYTES && it.value().length == Long.BYTES) {
+                        long blockNumber = bytesToLong(it.key());
+                        long slot = bytesToLong(it.value());
+                        byte[] hash = db.get(slotToHashHandle, longToBytes(slot));
+                        if (hash != null && db.get(blocksHandle, hash) != null) {
+                            return OptionalLong.of(blockNumber);
+                        }
+                    }
+                    it.next();
+                }
+            }
+            return OptionalLong.empty();
+        } catch (Exception e) {
+            log.warn("Failed to read earliest retained block body: {}", e.toString());
+            return OptionalLong.empty();
         }
     }
 

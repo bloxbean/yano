@@ -37,6 +37,7 @@ import com.bloxbean.cardano.yano.ledgerstate.EpochStakeSnapshotService;
 import com.bloxbean.cardano.yano.ledgerstate.NetworkConfigBuilder;
 import com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter;
 import com.bloxbean.cardano.yano.runtime.account.AccountStateStoreDiscovery;
+import com.bloxbean.cardano.yano.runtime.chain.ArchiveChainStateCapabilities;
 import com.bloxbean.cardano.yano.runtime.chain.ByronGenesisUtxoMetadataStore;
 import com.bloxbean.cardano.yano.runtime.chain.ChainStateSnapshots;
 import com.bloxbean.cardano.yano.runtime.chain.EraMetadataStore;
@@ -993,6 +994,23 @@ public final class LedgerStateSubsystem implements Subsystem {
         @Override
         public com.bloxbean.cardano.yaci.core.model.Era getBlockEra(long blockNumber) {
             return chainState.getBlockEra(blockNumber);
+        }
+
+        @Override
+        public java.util.Optional<com.bloxbean.cardano.yano.api.CanonicalBlockReference>
+        getCanonicalBlockReference(long blockNumber) {
+            if (chainState instanceof ArchiveChainStateCapabilities capabilities) {
+                return capabilities.getCanonicalBlockReference(blockNumber);
+            }
+            return java.util.Optional.empty();
+        }
+
+        @Override
+        public java.util.OptionalLong getEarliestRetainedBodyBlockNumber() {
+            if (chainState instanceof ArchiveChainStateCapabilities capabilities) {
+                return capabilities.getEarliestRetainedBodyBlockNumber();
+            }
+            return java.util.OptionalLong.empty();
         }
     }
 }

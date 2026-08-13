@@ -1,0 +1,37 @@
+plugins {
+    id 'java-library'
+    id 'java-test-fixtures'
+}
+
+dependencies {
+    api project(':core-api')
+    integrationTestImplementation libs.duckdb.jdbc
+    integrationTestImplementation libs.sqlite.jdbc
+    testFixturesApi libs.junit.jupiter.api
+    testFixturesApi libs.assertj.core
+}
+
+tasks.register('archiveLayoutBenchmark', JavaExec) {
+    group = 'verification'
+    description = 'Measures normalized and wide archive layouts for a Yaci Store address_utxo Parquet fixture.'
+    dependsOn integrationTestClasses
+    classpath = sourceSets.integrationTest.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.archive.benchmark.ArchiveLayoutBenchmark'
+    if (project.hasProperty('fixture')) {
+        args project.property('fixture')
+    }
+    if (project.hasProperty('benchmarkOutput')) {
+        args project.property('benchmarkOutput')
+    }
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano Archive API'
+                description = 'Backend-neutral contracts for optional Yano archive datasets'
+            }
+        }
+    }
+}
