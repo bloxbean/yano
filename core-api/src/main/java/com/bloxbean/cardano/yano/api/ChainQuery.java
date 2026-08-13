@@ -8,6 +8,10 @@ import com.bloxbean.cardano.yaci.helper.listener.BlockChainDataListener;
  * producer controls.
  */
 public interface ChainQuery extends ChainBlockReader {
+    /** Best known upstream target height; empty for producer/offline modes. */
+    default java.util.OptionalLong getSyncTargetBlockNumber() {
+        return java.util.OptionalLong.empty();
+    }
     byte[] getBlock(byte[] blockHash);
 
     boolean recoverChain();
@@ -19,4 +23,13 @@ public interface ChainQuery extends ChainBlockReader {
     void registerListeners(Object... listeners);
 
     void registerListener(Object listener, SubscriptionOptions sbOptions);
+
+    /**
+     * Installs an optional derived-data low watermark before block pruning
+     * starts. Core sync never waits for the consumer; pruning only observes
+     * its oldest durable source lease.
+     */
+    default void setBlockBodyRetentionBoundary(BlockBodyRetentionBoundary boundary) {
+        throw new UnsupportedOperationException("block-body retention boundary is unavailable");
+    }
 }

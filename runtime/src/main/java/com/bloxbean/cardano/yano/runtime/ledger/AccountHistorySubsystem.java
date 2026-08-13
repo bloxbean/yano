@@ -27,6 +27,7 @@ import java.util.Objects;
  * reconciliation, pruning, snapshot-restore reinitialization, and rollback
  * verification.
  */
+@Deprecated
 public final class AccountHistorySubsystem implements Subsystem {
     private final YanoConfig config;
     private final RuntimeOptions runtimeOptions;

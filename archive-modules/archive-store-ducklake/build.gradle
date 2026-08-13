@@ -5,6 +5,7 @@ plugins {
 dependencies {
     api project(':archive-modules:archive-api')
     implementation libs.duckdb.jdbc
+    implementation libs.sqlite.jdbc
 
     testImplementation testFixtures(project(':archive-modules:archive-api'))
 }

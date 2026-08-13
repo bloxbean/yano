@@ -37,9 +37,13 @@ public final class EpochArchiveWorker<T> {
     }
 
     public boolean runNext() {
-        long previous = progress.load(dataset.dataset(), ArchiveTrack.BACKFILL)
-                .map(ArchiveProgress::coordinate).orElse(-1L);
-        var pending = source.pendingAfter(previous, 1);
+        return runNext(Long.MAX_VALUE);
+    }
+
+    public boolean runNext(long maximumBoundaryBlock) {
+        var pending = source.pending(16).stream()
+                .filter(job -> job.boundaryBlockNumber() <= maximumBoundaryBlock)
+                .limit(1).toList();
         if (pending.isEmpty()) return false;
         var sourceJob = pending.getFirst();
         ArchiveJob job = ArchiveJob.deterministic(sourceJob.networkIdentity(), dataset.dataset(),
@@ -62,6 +66,7 @@ public final class EpochArchiveWorker<T> {
             var receipt = write.commit();
             progress.save(new ArchiveProgress(dataset.dataset(), ArchiveTrack.BACKFILL, sourceJob.epoch(),
                     sourceJob.boundarySlot(), sourceJob.boundaryBlockHash(), receipt.backendGeneration()), receipt);
+            source.acknowledge(sourceJob);
             return true;
         }
     }

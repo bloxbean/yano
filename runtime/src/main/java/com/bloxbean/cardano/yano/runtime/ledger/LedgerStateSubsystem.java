@@ -35,7 +35,6 @@ import com.bloxbean.cardano.yano.ledgerstate.EpochParamTracker;
 import com.bloxbean.cardano.yano.ledgerstate.EpochRewardCalculator;
 import com.bloxbean.cardano.yano.ledgerstate.EpochStakeSnapshotService;
 import com.bloxbean.cardano.yano.ledgerstate.NetworkConfigBuilder;
-import com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter;
 import com.bloxbean.cardano.yano.runtime.account.AccountStateStoreDiscovery;
 import com.bloxbean.cardano.yano.runtime.chain.ArchiveChainStateCapabilities;
 import com.bloxbean.cardano.yano.runtime.chain.ByronGenesisUtxoMetadataStore;
@@ -62,7 +61,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.ServiceLoader;
 import java.util.function.Supplier;
 
 /**
@@ -85,6 +83,8 @@ public final class LedgerStateSubsystem implements Subsystem {
     private final Supplier<byte[]> genesisHashSupplier;
     private final InMemoryDevnetGenesis inMemoryDevnetGenesis;
     private final AccountHistorySubsystem accountHistorySubsystem;
+    private volatile com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink epochArchiveStagingSink =
+            com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.NOOP;
 
     private AccountStateStore accountStateStore;
     private AccountHistoryStore accountHistoryStore;
@@ -156,6 +156,17 @@ public final class LedgerStateSubsystem implements Subsystem {
 
     public EpochBoundaryProcessor epochBoundaryProcessor() {
         return epochBoundaryProcessor;
+    }
+
+    public void setEpochArchiveStagingSink(
+            com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink sink) {
+        epochArchiveStagingSink = sink != null ? sink
+                : com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.NOOP;
+        if (accountStateStore instanceof DefaultAccountStateStore store) {
+            store.setEpochArchiveStagingSink(epochArchiveStagingSink);
+        } else if (epochBoundaryProcessor != null) {
+            epochBoundaryProcessor.setEpochArchiveStagingSink(epochArchiveStagingSink);
+        }
     }
 
     public EpochParamProvider epochParamProvider() {
@@ -307,50 +318,6 @@ public final class LedgerStateSubsystem implements Subsystem {
         accountHistorySubsystem.ensureRolledBack(rollbackPoint);
     }
 
-    /**
-     * Delete exported epoch snapshot directories after a rollback target.
-     */
-    public void cleanupSnapshotExportsAfterRollback(int targetEpoch) {
-        Object exportDirObj = runtimeOptions.globals().get(YanoPropertyKeys.SnapshotExport.DIR);
-        if (exportDirObj == null) {
-            return;
-        }
-        String exportDir = String.valueOf(exportDirObj);
-        if (exportDir.isBlank()) {
-            return;
-        }
-
-        java.io.File dir = new java.io.File(exportDir);
-        if (!dir.exists() || !dir.isDirectory()) {
-            return;
-        }
-
-        java.io.File[] epochDirs = dir.listFiles(f -> f.isDirectory() && f.getName().startsWith("epoch="));
-        if (epochDirs == null) {
-            return;
-        }
-
-        int deleted = 0;
-        for (java.io.File epochDir : epochDirs) {
-            try {
-                int epoch = Integer.parseInt(epochDir.getName().substring("epoch=".length()));
-                if (epoch > targetEpoch) {
-                    Files.walk(epochDir.toPath())
-                            .sorted(java.util.Comparator.reverseOrder())
-                            .map(java.nio.file.Path::toFile)
-                            .forEach(java.io.File::delete);
-                    deleted++;
-                }
-            } catch (NumberFormatException ignored) {
-            } catch (Exception e) {
-                log.warn("Failed to delete epoch snapshot export dir {}: {}", epochDir, e.getMessage());
-            }
-        }
-        if (deleted > 0) {
-            log.info("Ledger snapshot export cleanup deleted {} epoch directories after epoch {}", deleted, targetEpoch);
-        }
-    }
-
     public void handleEraTransition(BlockAppliedEvent event) {
         if (event == null || event.era() == null || eraMetadataStore == null) {
             return;
@@ -467,14 +434,6 @@ public final class LedgerStateSubsystem implements Subsystem {
         if (accountHistoryStore != null) {
             // Input-side address resolution for the address-tx index (ADR-033 M2).
             accountHistoryStore.setUtxoState(utxoStateSupplier.get());
-            // Reward-history hook: must wire HERE — the calculator is created in
-            // wireDefaultAccountStateStore, which runs before this store exists.
-            if (accountHistoryStore.isRewardsHistoryEnabled()
-                    && accountStateStore instanceof DefaultAccountStateStore defaultStore
-                    && defaultStore.getRewardCalculator() != null) {
-                defaultStore.getRewardCalculator().setRewardHistoryStore(accountHistoryStore);
-                log.info("Per-epoch reward history enabled (ADR-033 M2)");
-            }
         }
 
         this.accountStateEventHandler = new AccountStateEventHandler(eventBus, accountStateStore);
@@ -540,7 +499,7 @@ public final class LedgerStateSubsystem implements Subsystem {
         wireGovernance(defaultStore, paramTrackerInstance);
 
         defaultStore.migrateAcctRegSlots();
-        wireSnapshotExporter(defaultStore);
+        defaultStore.setEpochArchiveStagingSink(epochArchiveStagingSink);
     }
 
     private EpochParamTracker wireEpochParamTracker(DefaultAccountStateStore defaultStore,
@@ -725,41 +684,6 @@ public final class LedgerStateSubsystem implements Subsystem {
             epochBoundaryProcessor.setGovernanceEpochProcessor(govEpochProcessor);
         }
         log.info("Governance subsystem enabled (block processor + epoch processor)");
-    }
-
-    private void wireSnapshotExporter(DefaultAccountStateStore defaultStore) {
-        boolean exportEnabled = resolveBoolean(runtimeOptions.globals(), YanoPropertyKeys.SnapshotExport.ENABLED, false);
-        if (!exportEnabled) {
-            return;
-        }
-
-        String exportDir = String.valueOf(runtimeOptions.globals().getOrDefault(
-                YanoPropertyKeys.SnapshotExport.DIR, "data"));
-        var loader = ServiceLoader.load(EpochSnapshotExporter.class);
-        var impl = loader.findFirst();
-        if (impl.isPresent()) {
-            var exporter = impl.get();
-            exporter.setOutputDir(exportDir);
-            exporter.setNetworkMagic(config.getProtocolMagic());
-            var exportOptions = Map.of(
-                    "stake", String.valueOf(runtimeOptions.globals().getOrDefault(
-                            YanoPropertyKeys.SnapshotExport.STAKE, "false")),
-                    "drep-dist", String.valueOf(runtimeOptions.globals().getOrDefault(
-                            YanoPropertyKeys.SnapshotExport.DREP_DIST, "true")),
-                    "adapot", String.valueOf(runtimeOptions.globals().getOrDefault(
-                            YanoPropertyKeys.SnapshotExport.ADAPOT, "true")),
-                    "proposals", String.valueOf(runtimeOptions.globals().getOrDefault(
-                            YanoPropertyKeys.SnapshotExport.PROPOSALS, "true")));
-            exporter.configure(exportOptions);
-            defaultStore.setSnapshotExporter(exporter);
-            if (epochBoundaryProcessor != null) {
-                epochBoundaryProcessor.setSnapshotExporter(exporter);
-            }
-            log.info("Epoch snapshot export enabled: {} -> {}", exporter.getClass().getSimpleName(), exportDir);
-        } else {
-            log.warn("Snapshot export enabled but no EpochSnapshotExporter implementation found on classpath. "
-                    + "Add the epoch-export module to enable parquet export.");
-        }
     }
 
     private void reconcileAccountStateStore() {

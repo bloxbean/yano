@@ -70,9 +70,9 @@ public class GovernanceEpochProcessor {
     // Era provider for Conway detection — uses era metadata instead of protocolMajor.
     private volatile EraProvider eraProvider;
 
-    // Optional epoch snapshot exporter for debugging (NOOP when disabled)
-    private com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter snapshotExporter =
-            com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter.NOOP;
+    private com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink archiveStaging =
+            com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.NOOP;
+    private volatile com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Boundary archiveBoundary;
 
     /**
      * Commits boundary delta journal entries. Injected from DefaultAccountStateStore.
@@ -203,9 +203,15 @@ public class GovernanceEpochProcessor {
         this.eraProvider = eraProvider;
     }
 
-    public void setSnapshotExporter(com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter exporter) {
-        this.snapshotExporter = exporter != null ? exporter
-                : com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter.NOOP;
+    public void setEpochArchiveStagingSink(
+            com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink sink) {
+        this.archiveStaging = sink != null ? sink
+                : com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.NOOP;
+    }
+
+    public void setBoundaryCoordinates(
+            com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Boundary boundary) {
+        this.archiveBoundary = boundary;
     }
 
     /**
@@ -233,13 +239,18 @@ public class GovernanceEpochProcessor {
         long boundarySlot = paramProvider.getEpochSlotCalc().epochToStartSlot(newEpoch);
 
         EnactmentResult enactment;
+        List<com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.FactWriter<?>> enactmentWriters =
+                new ArrayList<>();
         try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
             List<DeltaOp> deltaOps = new ArrayList<>();
-            enactment = processEnactmentPhase(previousEpoch, newEpoch, batch, deltaOps);
+            enactment = processEnactmentPhase(previousEpoch, newEpoch, batch, deltaOps, enactmentWriters);
             if (boundaryDeltaWriter != null) {
                 boundaryDeltaWriter.commit(boundarySlot, DefaultAccountStateStore.PHASE_GOV_ENACT, batch, deltaOps);
             }
             db.write(wo, batch);
+            commitArchiveWriters(enactmentWriters);
+        } finally {
+            closeArchiveWriters(enactmentWriters);
         }
 
         // Read spendable reward_rest AFTER Phase 1 commit.
@@ -250,10 +261,12 @@ public class GovernanceEpochProcessor {
         }
 
         // Phase 2: DRep distribution + Ratification + newly expired proposals + donations
+        List<com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.FactWriter<?>> ratificationWriters =
+                new ArrayList<>();
         try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
             List<DeltaOp> deltaOps = new ArrayList<>();
             GovernanceEpochResult result = processRatificationPhase(previousEpoch, newEpoch,
-                    enactment, batch, deltaOps, utxoBalances, spendableRewardRest);
+                    enactment, batch, deltaOps, utxoBalances, spendableRewardRest, ratificationWriters);
             // Include AdaPot treasury adjustment atomically in Phase 2 batch
             if (adaPotBatchAdjuster != null) {
                 BigInteger govTreasuryDelta = result.treasuryDelta().add(result.donations());
@@ -265,7 +278,10 @@ public class GovernanceEpochProcessor {
                 boundaryDeltaWriter.commit(boundarySlot, DefaultAccountStateStore.PHASE_GOV_RATIFY, batch, deltaOps);
             }
             db.write(wo, batch);
+            commitArchiveWriters(ratificationWriters);
             return result;
+        } finally {
+            closeArchiveWriters(ratificationWriters);
         }
     }
 
@@ -281,8 +297,18 @@ public class GovernanceEpochProcessor {
      * This matches Haskell NEWEPOCH: ENACT creates reward_rest → committed → DRep dist sees them.
      */
     private EnactmentResult processEnactmentPhase(int previousEpoch, int newEpoch,
-                                                   WriteBatch batch, List<DeltaOp> deltaOps)
+                                                   WriteBatch batch, List<DeltaOp> deltaOps,
+                                                   List<com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.FactWriter<?>> archiveWriters)
             throws RocksDBException {
+        var governanceArchive = archiveStaging.enabled(
+                com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset.GOVERNANCE_PROPOSAL_STATUS)
+                ? archiveStaging.openGovernance(newEpoch, "lifecycle") : null;
+        var rewardArchive = archiveStaging.enabled(
+                com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset.REWARD)
+                ? archiveStaging.openRewards(newEpoch, "governance") : null;
+        if (governanceArchive != null) archiveWriters.add(governanceArchive);
+        if (rewardArchive != null) archiveWriters.add(rewardArchive);
+        Set<GovActionId> archivedLifecycle = new java.util.HashSet<>();
 
         // Bootstrap Conway genesis once when Conway is reachable. Fresh devnets can start
         // directly in Conway at epoch 0, so there is no Byron/Babbage -> Conway boundary.
@@ -320,6 +346,8 @@ public class GovernanceEpochProcessor {
             if (proposal != null) {
                 BigInteger delta = enactmentProcessor.enact(id, proposal, newEpoch, batch, deltaOps);
                 treasuryDelta = treasuryDelta.add(delta);
+                appendGovernanceLifecycle(governanceArchive, archivedLifecycle, id, proposal,
+                        newEpoch, "enactment", "enacted", "pending_enactment_applied");
                 log.info("Phase 1 enacted: {}/{} type={}", id.getTransactionId().substring(0, 8),
                         id.getGov_action_index(), proposal.actionType());
             }
@@ -351,6 +379,8 @@ public class GovernanceEpochProcessor {
                     log.info("Treasury withdrawal to {} unclaimed, returned to treasury",
                             entry.getKey().substring(0, Math.min(16, entry.getKey().length())));
                 }
+                if (stored) appendRewardRest(rewardArchive, entry.getKey(), entry.getValue(),
+                        previousEpoch, newEpoch, "treasury_withdrawal", "governance-treasury-" + newEpoch);
             }
         }
 
@@ -373,6 +403,8 @@ public class GovernanceEpochProcessor {
 
         // 3b. Expired proposals (pending drops from previous boundary): refund deposit + remove
         for (GovActionId id : pendingDropIds) {
+            appendGovernanceLifecycle(governanceArchive, archivedLifecycle, id, allProposals.get(id),
+                    newEpoch, "removal", "dropped_expired", "expired_at_prior_boundary");
             depositRefunds = depositRefunds.add(
                     refundAndRemove(id, allProposals, removedIds, aggregatedRefunds, batch, deltaOps));
         }
@@ -388,6 +420,8 @@ public class GovernanceEpochProcessor {
             if (proposal == null) continue;
             Set<GovActionId> siblings = proposalDropService.findSiblings(id, proposal, allProposals);
             for (GovActionId sibId : siblings) {
+                appendGovernanceLifecycle(governanceArchive, archivedLifecycle, sibId, allProposals.get(sibId),
+                        newEpoch, "removal", "dropped_sibling", "sibling_of_enacted_action");
                 BigInteger refunded = refundAndRemove(sibId, allProposals, removedIds, aggregatedRefunds, batch, deltaOps);
                 depositRefunds = depositRefunds.add(refunded);
                 if (refunded.signum() > 0) siblingDropCount++;
@@ -395,6 +429,8 @@ public class GovernanceEpochProcessor {
                 GovActionRecord sib = allProposals.get(sibId);
                 if (sib != null) {
                     for (GovActionId descId : proposalDropService.findDescendants(sibId, sib, allProposals)) {
+                        appendGovernanceLifecycle(governanceArchive, archivedLifecycle, descId, allProposals.get(descId),
+                                newEpoch, "removal", "dropped_descendant", "descendant_of_dropped_sibling");
                         refunded = refundAndRemove(descId, allProposals, removedIds, aggregatedRefunds, batch, deltaOps);
                         depositRefunds = depositRefunds.add(refunded);
                         if (refunded.signum() > 0) siblingDropCount++;
@@ -408,6 +444,8 @@ public class GovernanceEpochProcessor {
             GovActionRecord proposal = allProposals.get(id);
             if (proposal == null) continue;
             for (GovActionId descId : proposalDropService.findDescendants(id, proposal, allProposals)) {
+                appendGovernanceLifecycle(governanceArchive, archivedLifecycle, descId, allProposals.get(descId),
+                        newEpoch, "removal", "dropped_descendant", "descendant_of_expired_action");
                 BigInteger refunded = refundAndRemove(descId, allProposals, removedIds, aggregatedRefunds, batch, deltaOps);
                 depositRefunds = depositRefunds.add(refunded);
                 if (refunded.signum() > 0) siblingDropCount++;
@@ -433,6 +471,8 @@ public class GovernanceEpochProcessor {
                 if (!stored) {
                     unclaimedRefunds = unclaimedRefunds.add(entry.getValue());
                 }
+                if (stored) appendRewardRest(rewardArchive, entry.getKey(), entry.getValue(),
+                        previousEpoch, newEpoch, "proposal_refund", "governance-refund-" + newEpoch);
             }
         }
 
@@ -442,6 +482,52 @@ public class GovernanceEpochProcessor {
         }
 
         return new EnactmentResult(treasuryDelta, depositRefunds);
+    }
+
+    private void appendGovernanceLifecycle(
+            com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.FactWriter<
+                    com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.GovernanceFact> writer,
+            Set<GovActionId> seen, GovActionId id, GovActionRecord proposal, int epoch,
+            String phase, String status, String reason) {
+        if (writer == null || proposal == null || !seen.add(id)) return;
+        writer.append(new com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.GovernanceFact(
+                id.getTransactionId(), id.getGov_action_index(), proposal.actionType().name(), phase,
+                status, reason, proposal.deposit(), proposal.returnAddress(), proposal.proposedInEpoch(),
+                proposal.expiresAfterEpoch()));
+    }
+
+    private void appendRewardRest(
+            com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.FactWriter<
+                    com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.RewardFact> writer,
+            String rewardAccount, BigInteger amount, int earnedEpoch, int spendableEpoch,
+            String type, String sourceId) {
+        if (writer == null || rewardAccount == null || rewardAccount.length() < 58) return;
+        try {
+            int header = Integer.parseInt(rewardAccount.substring(0, 2), 16);
+            int credentialType = (header & 0x10) != 0 ? 1 : 0;
+            writer.append(new com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.RewardFact(
+                    credentialType, rewardAccount.substring(2, 58), null, type, earnedEpoch,
+                    spendableEpoch, amount, sourceId));
+        } catch (RuntimeException ignored) {
+            // storeRewardRest has already rejected malformed reward accounts.
+        }
+    }
+
+    private static void commitArchiveWriters(
+            List<com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.FactWriter<?>> writers) {
+        writers.forEach(com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.FactWriter::commit);
+    }
+
+    private static void closeArchiveWriters(
+            List<com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.FactWriter<?>> writers) {
+        for (var writer : writers) {
+            try {
+                writer.close();
+            } catch (Exception ignored) {
+                // Capture failures are recorded by the staging sink and never
+                // replace an authoritative ledger exception.
+            }
+        }
     }
 
     /**
@@ -485,7 +571,8 @@ public class GovernanceEpochProcessor {
                                                             WriteBatch batch, List<DeltaOp> deltaOps,
                                                             Map<com.bloxbean.cardano.yano.ledgerstate.UtxoBalanceAggregator.CredentialKey,
                                                                     BigInteger> utxoBalances,
-                                                            Map<String, BigInteger> spendableRewardRest)
+                                                            Map<String, BigInteger> spendableRewardRest,
+                                                            List<com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.FactWriter<?>> archiveWriters)
             throws RocksDBException {
         long start = System.currentTimeMillis();
         int protocolVersion = resolveProtocolMajor(newEpoch);
@@ -511,29 +598,27 @@ public class GovernanceEpochProcessor {
             }
         }
 
-        // Export DRep distribution snapshot with expiry info for debugging
-        if (snapshotExporter != com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter.NOOP) {
+        if (archiveStaging.enabled(
+                com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset.DREP_DISTRIBUTION)) {
             int numDormant = governanceStore.getNumDormantEpochs();
             var allDRepStates = governanceStore.getAllDRepStates();
-            var exportEntries = drepDist.entrySet().stream()
-                    .map(e -> {
+            var writer = archiveStaging.openDrep(newEpoch);
+            archiveWriters.add(writer);
+                for (var e : drepDist.entrySet()) {
                         DRepDistKey dk = e.getKey();
-                        // Virtual DReps (ABSTAIN/NO_CONFIDENCE): no expiry record, not expiry-gated.
-                        // Use -1 for expiry fields (N/A), active=true (not subject to expiry checks).
                         if (dk.drepType() > 1) {
-                            return new com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter.DRepDistEntry(
-                                    dk.drepType(), dk.drepHash(), e.getValue(), -1, -1, -1, true);
+                            writer.append(new com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.DrepFact(
+                                    dk.drepType(), dk.drepHash(), e.getValue(), null, numDormant, null, true));
+                            continue;
                         }
                         DRepStateRecord state = allDRepStates.get(new CredentialKey(dk.drepType(), dk.drepHash()));
                         int storedExpiry = (state != null) ? state.expiryEpoch() : -1;
                         int effectiveExpiry = storedExpiry + numDormant;
                         boolean active = isDRepActiveForExport(effectiveExpiry, newEpoch);
-                        return new com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter.DRepDistEntry(
+                        writer.append(new com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.DrepFact(
                                 dk.drepType(), dk.drepHash(), e.getValue(),
-                                storedExpiry, numDormant, effectiveExpiry, active);
-                    })
-                    .toList();
-            snapshotExporter.exportDRepDistribution(newEpoch, exportEntries);
+                                storedExpiry, numDormant, effectiveExpiry, active));
+                }
         }
 
         // Build set of ACTIVE (non-expired) DRep keys for ratification tally.
@@ -596,16 +681,16 @@ public class GovernanceEpochProcessor {
             }
         }
 
-        // Export proposal status for debugging
-        if (snapshotExporter != com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter.NOOP) {
-            var statusEntries = results.stream()
-                    .map(r -> new com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter.ProposalStatusEntry(
+        if (archiveStaging.enabled(
+                com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset.GOVERNANCE_PROPOSAL_STATUS)) {
+            var writer = archiveStaging.openGovernance(newEpoch, "ratification");
+            archiveWriters.add(writer);
+                for (var r : results) writer.append(
+                        new com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.GovernanceFact(
                             r.govActionId().getTransactionId(), r.govActionId().getGov_action_index(),
-                            r.proposal().actionType().name(), r.status().name(),
+                            r.proposal().actionType().name(), "ratification", r.status().name(), r.decisionReason(),
                             r.proposal().deposit(), r.proposal().returnAddress(),
-                            r.proposal().proposedInEpoch(), r.proposal().expiresAfterEpoch()))
-                    .toList();
-            snapshotExporter.exportProposalStatus(newEpoch, statusEntries);
+                            r.proposal().proposedInEpoch(), r.proposal().expiresAfterEpoch()));
         }
 
         // 4. Store NEWLY expired proposals as pending drops for next boundary.

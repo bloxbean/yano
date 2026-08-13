@@ -218,7 +218,6 @@ class YanoAssemblyTest {
                 Map.entry(YanoPropertyKeys.Ledger.REWARDS_ENABLED, true),
                 Map.entry(YanoPropertyKeys.Ledger.EPOCH_PARAMS_TRACKING_ENABLED, true),
                 Map.entry(YanoPropertyKeys.Ledger.GOVERNANCE_ENABLED, true),
-                Map.entry(YanoPropertyKeys.SnapshotExport.ENABLED, true),
                 Map.entry(YanoPropertyKeys.Utxo.ENABLED, true)));
 
         RuntimeOptions resolved = YanoAssembly.applyBootstrapPartialStatePolicy(config, options);
@@ -233,7 +232,6 @@ class YanoAssemblyTest {
         assertEquals(false, resolved.globals().get(YanoPropertyKeys.Ledger.REWARDS_ENABLED));
         assertEquals(false, resolved.globals().get(YanoPropertyKeys.Ledger.EPOCH_PARAMS_TRACKING_ENABLED));
         assertEquals(false, resolved.globals().get(YanoPropertyKeys.Ledger.GOVERNANCE_ENABLED));
-        assertEquals(false, resolved.globals().get(YanoPropertyKeys.SnapshotExport.ENABLED));
         assertEquals(true, resolved.globals().get(YanoPropertyKeys.Utxo.ENABLED));
         assertFalse(YanoAssembly.effectiveDerivedLedgerStateEnabled(config, true));
     }

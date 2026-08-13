@@ -3,14 +3,19 @@ package com.bloxbean.cardano.yano.archive.core.dataset;
 import java.math.BigInteger;
 import java.util.List;
 
-public record UtxoHistoryFact(List<Address> newAddresses, List<Output> outputs,
+public record UtxoHistoryFact(int era, List<PointerRegistration> pointerRegistrations,
+                              List<Address> newAddresses, List<Output> outputs,
                               List<Asset> assets, List<Input> inputs,
                               List<Datum> datums, List<Script> scripts) {
     public UtxoHistoryFact {
+        pointerRegistrations = List.copyOf(pointerRegistrations);
         newAddresses = List.copyOf(newAddresses); outputs = List.copyOf(outputs);
         assets = List.copyOf(assets); inputs = List.copyOf(inputs);
         datums = List.copyOf(datums); scripts = List.copyOf(scripts);
     }
+
+    public record PointerRegistration(long slot, int txIndex, int certIndex,
+                                      String credentialType, byte[] credential) { }
 
     public record Address(byte[] addressKey, byte[] rawAddress, String displayAddress, Integer networkId,
                           String addressType, String paymentCredentialType, byte[] paymentCredential,

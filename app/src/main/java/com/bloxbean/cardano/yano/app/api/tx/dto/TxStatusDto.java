@@ -9,11 +9,9 @@ import com.fasterxml.jackson.annotation.JsonProperty;
  * poll one endpoint instead of interpreting 404s.
  *
  * <p>Semantics: {@code confirmations} is depth-style (0 = in the tip block),
- * matching this API's block responses. {@code unknown} means the node cannot
- * currently resolve the hash — which includes deeply-settled transactions
- * whose outputs were all spent and pruned past the UTXO store's retention
- * window. Wallets should only treat {@code unknown} as actionable for
- * transactions they submitted recently.
+ * matching this API's block responses. When archive history is enabled,
+ * {@code unknown} is returned only after complete transaction coverage was
+ * searched; an uncovered range is reported explicitly as unavailable.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record TxStatusDto(

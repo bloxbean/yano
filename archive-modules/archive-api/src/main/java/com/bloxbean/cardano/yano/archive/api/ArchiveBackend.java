@@ -22,6 +22,18 @@ public interface ArchiveBackend extends AutoCloseable {
 
     ArchiveReadSession openReadSession();
 
+    /** Bounded repositories backed by the same generation-pinned read session. */
+    default ArchiveRepositorySet repositories() {
+        throw new UnsupportedOperationException("archive backend does not expose repositories");
+    }
+
+    /** Optimized, locator-backed where necessary, and always verified against the pinned row store. */
+    default Optional<ArchiveRecord> findTransaction(ArchiveReadSession session, byte[] txHash) {
+        ArchiveQuery query = new ArchiveQuery(new BlockRange(0, Long.MAX_VALUE),
+                java.util.Map.of("tx_hash", txHash), ArchivePageCursor.Order.ASC, 1, Optional.empty());
+        return repositories().records(ArchiveDatasetId.TRANSACTION).query(session, query).rows().stream().findFirst();
+    }
+
     void invalidate(ArchiveDatasetId dataset, ArchiveRange range);
 
     void applyRetention(ArchiveDatasetId dataset, ArchiveRetentionCutoff cutoff);

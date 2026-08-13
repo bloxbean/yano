@@ -47,4 +47,15 @@ public interface LedgerQuery {
     }
 
     long slotToUnixTime(long slot);
+
+    /** Converts a canonical slot using the genesis-derived era/epoch schedule. */
+    default long slotToEpoch(long slot) {
+        throw new UnsupportedOperationException("slot-to-epoch conversion unavailable");
+    }
+
+    /** Installs the optional epoch archive capture before startup recovery runs. */
+    default void setEpochArchiveStagingSink(
+            com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink sink) {
+        throw new UnsupportedOperationException("epoch archive staging is unavailable");
+    }
 }

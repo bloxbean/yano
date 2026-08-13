@@ -1,0 +1,1197 @@
+package com.bloxbean.cardano.yano.app.archive;
+
+import com.bloxbean.cardano.client.crypto.Blake2bUtil;
+import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import com.bloxbean.cardano.yano.api.ChainQuery;
+import com.bloxbean.cardano.yano.api.LedgerQuery;
+import com.bloxbean.cardano.yano.api.config.YanoConfig;
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
+import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
+import com.bloxbean.cardano.yano.api.events.RollbackEvent;
+import com.bloxbean.cardano.yano.archive.api.*;
+import com.bloxbean.cardano.yano.archive.core.config.*;
+import com.bloxbean.cardano.yano.archive.core.dataset.BlockArchiveDataset;
+import com.bloxbean.cardano.yano.archive.core.dataset.AddressTransactionDataset;
+import com.bloxbean.cardano.yano.archive.core.dataset.StandardBlockDatasets;
+import com.bloxbean.cardano.yano.archive.core.dataset.UtxoHistoryDataset;
+import com.bloxbean.cardano.yano.archive.core.address.*;
+import com.bloxbean.cardano.yano.archive.core.hot.RocksDbHotHistoryStore;
+import com.bloxbean.cardano.yano.archive.core.hot.HotArchiveRows;
+import com.bloxbean.cardano.yano.archive.core.source.ChainBlockArchiveSource;
+import com.bloxbean.cardano.yano.archive.core.source.EpochArchiveJob;
+import com.bloxbean.cardano.yano.archive.core.source.YaciBlockArchiveDecoder;
+import com.bloxbean.cardano.yano.archive.core.source.YaciBlockDecoder;
+import com.bloxbean.cardano.yano.archive.core.source.YaciUtxoHistoryDecoder;
+import com.bloxbean.cardano.yano.archive.core.worker.*;
+import com.bloxbean.cardano.yano.runtime.config.NetworkGenesisConfig;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import com.bloxbean.cardano.yaci.events.api.DomainEventListener;
+import org.eclipse.microprofile.config.Config;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.EOFException;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicLong;
+
+/**
+ * Thin application composition boundary for ADR-034. Disabled history returns
+ * before ServiceLoader, RocksDB, Flyway, SQLite, or DuckDB initialization.
+ */
+@ApplicationScoped
+public class HistoryArchiveService implements AutoCloseable {
+    private static final Logger log = LoggerFactory.getLogger(HistoryArchiveService.class);
+    private static final String SNAPSHOT_PREFIX = "yano.snapshot-export.";
+    private static final String LEGACY_HISTORY_ENABLED = "yano.account-history.enabled";
+
+    private final Config config;
+    private volatile boolean configuredEnabled;
+    private volatile String initializationError;
+    private volatile ArchiveConfiguration archiveConfig;
+    private volatile ArchiveBackend backend;
+    private volatile RocksDbHotHistoryStore controlStore;
+    private volatile ArchiveSubsystem subsystem;
+    private volatile ArchiveWorkerMetrics metrics = new ArchiveWorkerMetrics();
+    private volatile ChainQuery chain;
+    private volatile ActivationStore activations;
+    private volatile EpochArchiveStagingService epochStaging;
+    private volatile LedgerQuery ledger;
+    private volatile AddressTransactionDataset liveAddressDataset;
+    private volatile AddressTransactionDataset backfillAddressDataset;
+    private volatile List<SequentialOutpointResolver.Entry> backfillGenesisEntries = List.of();
+    private final AccountHistoryProvider archiveAccountHistory = new ArchiveAccountHistoryProvider(this);
+    private final EnumMap<ArchiveDatasetId, DatasetRunner> blockWorkers = new EnumMap<>(ArchiveDatasetId.class);
+    private final EnumMap<ArchiveDatasetId, DatasetRunner> liveWorkers = new EnumMap<>(ArchiveDatasetId.class);
+    private final EnumMap<ArchiveDatasetId, Long> appliedRetention = new EnumMap<>(ArchiveDatasetId.class);
+    private final EnumMap<ArchiveDatasetId, Integer> promotionBatchBlocks = new EnumMap<>(ArchiveDatasetId.class);
+    private final AtomicLong pendingRollbackEpoch = new AtomicLong(Long.MAX_VALUE);
+    private final AtomicLong pendingRollbackSlot = new AtomicLong(Long.MAX_VALUE);
+
+    @Inject
+    public HistoryArchiveService(Config config) {
+        this.config = Objects.requireNonNull(config, "config");
+    }
+
+    public synchronized void initialize(ChainQuery chain, LedgerQuery ledger, YanoConfig nodeConfig) {
+        if (archiveConfig != null || subsystem != null) return;
+        this.chain = Objects.requireNonNull(chain, "chain");
+        this.ledger = Objects.requireNonNull(ledger, "ledger");
+        Objects.requireNonNull(nodeConfig, "nodeConfig");
+        configuredEnabled = bool(YanoPropertyKeys.History.ENABLED, false);
+        rejectRemovedConfiguration();
+        if (!configuredEnabled) {
+            log.info("Optional history archive is disabled");
+            return;
+        }
+        if (isNativeImage()) {
+            throw new IllegalArgumentException("yano.history.enabled=true is not supported in a native-image build");
+        }
+
+        try {
+            // History is composed before RuntimeNode.start() so that epoch staging and
+            // retention boundaries are installed before sync can apply another block.
+            // LedgerQuery's runtime genesis view is populated by start(), therefore use
+            // the same already-resolved immutable genesis files as the runtime here.
+            NetworkGenesisConfig genesis = NetworkGenesisConfig.load(nodeConfig.getShelleyGenesisFile(),
+                    nodeConfig.getByronGenesisFile(), nodeConfig.getAlonzoGenesisFile(),
+                    nodeConfig.getConwayGenesisFile());
+            String genesisHash = genesisHash(nodeConfig);
+            int magic = Math.toIntExact(genesis.getNetworkMagic());
+            ArchiveSafetyWindows safety = ArchiveSafetyWindows.resolve(genesis.getSecurityParam(),
+                    autoLong(YanoPropertyKeys.History.ROLLBACK_RETENTION_BLOCKS),
+                    autoLong(YanoPropertyKeys.History.FINALITY_BLOCKS));
+            Path directory = Path.of(string(YanoPropertyKeys.History.DIR, "./history"))
+                    .toAbsolutePath().normalize();
+            ArchiveEngine engine = enumValue(YanoPropertyKeys.History.ENGINE, "ducklake", ArchiveEngine.class);
+            ArchiveStartMode defaultStart = startMode(string(YanoPropertyKeys.History.START_MODE, "full-required"));
+            ArchiveWorkerConfig workerConfig = new ArchiveWorkerConfig(
+                    Duration.ofMillis(longValue(YanoPropertyKeys.History.WORKER_POLL_MILLIS, 1_000)),
+                    intValue(YanoPropertyKeys.History.WORKER_MAX_BLOCKS, 1_000),
+                    intValue(YanoPropertyKeys.History.WORKER_MAX_ROWS, 250_000),
+                    longValue(YanoPropertyKeys.History.WORKER_CORE_LAG, 100));
+            Map<ArchiveDatasetId, DatasetArchiveConfig> datasets = datasetConfig(defaultStart);
+            validateEpochPrerequisites(datasets);
+            archiveConfig = new ArchiveConfiguration(true, directory, engine, defaultStart,
+                    bool(YanoPropertyKeys.History.LIVE_ENABLED, true), workerConfig, safety, datasets);
+
+            Path hot = directory.resolve("hot-rocksdb");
+            Path temp = Path.of(string("yano.history.duckdb.temp-directory", directory.resolve("tmp").toString()));
+            Map<String, Path> paths = new LinkedHashMap<>();
+            paths.put("core", Path.of(nodeConfig.getRocksDBPath()));
+            paths.put("hot", hot);
+            paths.put("temp", temp);
+            if (engine == ArchiveEngine.SQLITE) {
+                paths.put("sqlite", Path.of(string("yano.history.archive.sqlite.path",
+                        directory.resolve("history.sqlite").toString())));
+            } else {
+                Path catalog = Path.of(string("yano.history.archive.ducklake.catalog.path",
+                        directory.resolve("ducklake-catalog.sqlite").toString()));
+                paths.put("ducklake-catalog", catalog);
+                paths.put("ducklake-tx-locator", catalog.resolveSibling(
+                        catalog.getFileName() + ".tx-locator.sqlite"));
+                paths.put("ducklake-data", Path.of(string("yano.history.archive.ducklake.data-path",
+                        directory.resolve("ducklake-data").toString())));
+            }
+            ArchivePathValidator.requireDisjoint(paths);
+            Files.createDirectories(directory);
+            activations = new ActivationStore(directory.resolve("control/activation.properties"));
+            controlStore = new RocksDbHotHistoryStore(hot);
+
+            String engineName = engine.name().toLowerCase(Locale.ROOT);
+            ArchiveIdentity identity = new ArchiveIdentity(stableArchiveId(magic, genesisHash, engineName, directory),
+                    engineName, 1, magic, genesisHash);
+            ArchiveBackendProvider provider = ServiceLoader.load(ArchiveBackendProvider.class).stream()
+                    .map(ServiceLoader.Provider::get)
+                    .filter(candidate -> candidate.engine().equals(engineName))
+                    .findFirst().orElseThrow(() -> new IllegalStateException(
+                            "archive backend provider not packaged for engine " + engineName));
+            backend = provider.open(identity, directory, backendProperties(directory, engine));
+            EnumSet<com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset> epochDatasets =
+                    EnumSet.noneOf(com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset.class);
+            if (datasetEnabled(ArchiveDatasetId.EPOCH_STAKE)) epochDatasets.add(
+                    com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset.EPOCH_STAKE);
+            if (datasetEnabled(ArchiveDatasetId.DREP_DISTRIBUTION)) epochDatasets.add(
+                    com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset.DREP_DISTRIBUTION);
+            if (datasetEnabled(ArchiveDatasetId.ADA_POT)) epochDatasets.add(
+                    com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset.ADA_POT);
+            if (datasetEnabled(ArchiveDatasetId.GOVERNANCE_PROPOSAL_STATUS)) epochDatasets.add(
+                    com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset.GOVERNANCE_PROPOSAL_STATUS);
+            if (datasetEnabled(ArchiveDatasetId.REWARD)) epochDatasets.add(
+                    com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset.REWARD);
+            epochStaging = new EpochArchiveStagingService(chain, ledger, identity.networkIdentity(),
+                    directory.resolve("epoch-source"), epochDatasets);
+            initializeEpochActivations();
+            ledger.setEpochArchiveStagingSink(epochStaging);
+            // Install the retention boundary only after every external archive
+            // resource has opened successfully. A failed optional subsystem
+            // must never leave core pruning pointed at a closed control store.
+            chain.setBlockBodyRetentionBoundary(controlStore);
+
+            var decoder = new YaciBlockArchiveDecoder(ledger::slotToEpoch, ledger::slotToUnixTime);
+            var source = new ChainBlockArchiveSource<>(chain, decoder, controlStore);
+            CoreSyncView syncView = new CoreSyncView() {
+                public long localBlock() {
+                    return chain.getLocalTip() == null ? 0 : chain.getLocalTip().getBlockNumber();
+                }
+                public long targetBlock() { return chain.getSyncTargetBlockNumber().orElseGet(this::localBlock); }
+            };
+            registerBlockWorker(ArchiveDatasetId.TRANSACTION, StandardBlockDatasets.transactions(), source,
+                    identity.networkIdentity(), workerConfig, syncView);
+            registerBlockWorker(ArchiveDatasetId.ACCOUNT_EVENT, StandardBlockDatasets.accountEvents(), source,
+                    identity.networkIdentity(), workerConfig, syncView);
+            registerBlockWorker(ArchiveDatasetId.UTXO_HISTORY,
+                    new UtxoHistoryDataset(controlStore, "backfill", ArchiveTrack.BACKFILL),
+                    new ChainBlockArchiveSource<>(chain,
+                            new YaciUtxoHistoryDecoder(ledger::slotToEpoch, ledger::slotToUnixTime,
+                                    chain::getBlockEra, genesisUtxoOutputs(genesis)), controlStore),
+                    identity.networkIdentity(), workerConfig, syncView);
+            if (archiveConfig.liveEnabled()) {
+                registerLiveWorker(ArchiveDatasetId.TRANSACTION, StandardBlockDatasets.transactions(), source,
+                        identity.networkIdentity(), workerConfig);
+                registerLiveWorker(ArchiveDatasetId.ACCOUNT_EVENT, StandardBlockDatasets.accountEvents(), source,
+                        identity.networkIdentity(), workerConfig);
+                registerLiveWorker(ArchiveDatasetId.UTXO_HISTORY,
+                        new UtxoHistoryDataset(controlStore, "live", ArchiveTrack.LIVE),
+                        new ChainBlockArchiveSource<>(chain,
+                                new YaciUtxoHistoryDecoder(ledger::slotToEpoch, ledger::slotToUnixTime,
+                                        chain::getBlockEra), controlStore),
+                        identity.networkIdentity(), workerConfig);
+                if (datasetEnabled(ArchiveDatasetId.ADDRESS_TRANSACTION)
+                        && ledger.getUtxoState() != null && ledger.getUtxoState().isEnabled()) {
+                    var liveAddress = new AddressTransactionDataset(controlStore, new AddressKeyCodec(),
+                            "live", ArchiveTrack.LIVE);
+                    liveAddressDataset = liveAddress;
+                    initializeAddressLiveResolver(liveAddress);
+                    registerLiveWorker(ArchiveDatasetId.ADDRESS_TRANSACTION, liveAddress,
+                            new ChainBlockArchiveSource<>(chain,
+                                    new YaciBlockDecoder(ledger::slotToEpoch, ledger::slotToUnixTime,
+                                            chain::getBlockEra), controlStore),
+                            identity.networkIdentity(), workerConfig);
+                } else if (datasetEnabled(ArchiveDatasetId.ADDRESS_TRANSACTION)) {
+                    log.warn("Address live history disabled because a complete core UTXO snapshot is unavailable");
+                }
+                long liveStart = (chain.getLocalTip() == null ? -1 : chain.getLocalTip().getBlockNumber()) + 1;
+                for (ArchiveDatasetId id : liveWorkers.keySet()) {
+                    activations.putIfAbsent(id, ArchiveTrack.LIVE, liveStart);
+                }
+            }
+            if (datasetEnabled(ArchiveDatasetId.ADDRESS_TRANSACTION)) {
+                var addressDataset = new AddressTransactionDataset(controlStore, new AddressKeyCodec());
+                backfillAddressDataset = addressDataset;
+                backfillGenesisEntries = genesisOutpoints(genesis, addressDataset);
+                initializeAddressBackfillResolver(addressDataset);
+                var addressSource = new ChainBlockArchiveSource<>(chain,
+                        new YaciBlockDecoder(ledger::slotToEpoch, ledger::slotToUnixTime,
+                                chain::getBlockEra), controlStore);
+                registerBlockWorker(ArchiveDatasetId.ADDRESS_TRANSACTION, addressDataset, addressSource,
+                        identity.networkIdentity(), workerConfig, syncView);
+            }
+            long persistedTip = chain.getLocalTip() == null ? -1 : chain.getLocalTip().getBlockNumber();
+            for (ArchiveDatasetId dataset : ArchiveDatasetId.values()) {
+                if (dataset.sourceKind() == SourceKind.BLOCK && !blockWorkers.containsKey(dataset)) {
+                    controlStore.releaseBlockBodyRequirement(dataset);
+                }
+            }
+            for (ArchiveDatasetId dataset : blockWorkers.keySet()) {
+                long start = activations.start(dataset).orElseGet(() -> activationStart(dataset, persistedTip));
+                if (start >= 0) controlStore.requireBlockBodiesFrom(dataset, start);
+            }
+            subsystem = new ArchiveSubsystem(true, workerConfig.pollInterval(), this::runBoundedWork);
+            chain.registerListeners(this);
+            log.info("History archive initialized: engine={}, dir={}, finalityBlocks={}, rollbackBlocks={}",
+                    engineName, directory, safety.archiveFinalityBlocks(), safety.rollbackRetentionBlocks());
+        } catch (IllegalArgumentException e) {
+            closePartial();
+            throw e;
+        } catch (Exception e) {
+            initializationError = e.getMessage();
+            log.error("History archive failed closed; core node may continue: {}", e.toString(), e);
+            closePartial();
+        }
+    }
+
+    public synchronized void start() {
+        if (subsystem != null) subsystem.start();
+    }
+
+    public boolean enabled() {
+        return configuredEnabled;
+    }
+
+    public boolean available() {
+        return backend != null && backend.health().status() != ArchiveHealth.Status.UNHEALTHY
+                && backend.health().status() != ArchiveHealth.Status.CLOSED;
+    }
+
+    public Optional<ArchiveBackend> backend() {
+        return Optional.ofNullable(backend);
+    }
+
+    public AccountHistoryProvider accountHistoryProvider() { return archiveAccountHistory; }
+
+    boolean datasetAvailable(ArchiveDatasetId dataset) {
+        return available() && datasetEnabled(dataset) && (!backend.coverage(dataset).completeRanges().isEmpty()
+                || (controlStore != null && controlStore.load(dataset, ArchiveTrack.LIVE).isPresent()));
+    }
+
+    List<ArchiveRecord> hotRecords(ArchiveDatasetId dataset, String table, Map<String, Object> filters) {
+        if (controlStore == null || !archiveConfig.liveEnabled()) return List.of();
+        try (var snapshot = controlStore.snapshot()) {
+            return HotArchiveRows.read(snapshot, dataset, table, filters);
+        }
+    }
+
+    com.bloxbean.cardano.yano.archive.core.hot.HotHistorySnapshot openHotSnapshot() {
+        return controlStore == null || !archiveConfig.liveEnabled() ? null : controlStore.snapshot();
+    }
+
+    public TransactionLookup findTransaction(byte[] txHash) {
+        ArchiveBackend current = backend;
+        if (current == null || !datasetEnabled(ArchiveDatasetId.TRANSACTION)) {
+            return TransactionLookup.unavailable("transaction history is disabled or unavailable");
+        }
+        if (controlStore != null) {
+            try (var snapshot = controlStore.snapshot()) {
+                var live = HotArchiveRows.read(snapshot, ArchiveDatasetId.TRANSACTION, "chain_transaction",
+                        Map.of("tx_hash", txHash));
+                if (!live.isEmpty()) return TransactionLookup.found(live.getFirst());
+            }
+        }
+        ArchiveCoverage coverage = current.coverage(ArchiveDatasetId.TRANSACTION);
+        if (coverage.completeRanges().isEmpty()) return TransactionLookup.incomplete("transaction history has no coverage");
+        try (ArchiveReadSession read = current.openReadSession()) {
+            Optional<ArchiveRecord> found = current.findTransaction(read, txHash);
+            if (found.isPresent()) return TransactionLookup.found(found.orElseThrow());
+        }
+        long tip = chain != null && chain.getLocalTip() != null ? chain.getLocalTip().getBlockNumber() : -1;
+        boolean coversTip = tip < 0 || coverage.covers(tip) || liveCoverageBridgesToTip(ArchiveDatasetId.TRANSACTION, coverage, tip);
+        return coversTip ? TransactionLookup.notFound() : TransactionLookup.incomplete("transaction history is catching up");
+    }
+
+    private boolean liveCoverageBridgesToTip(ArchiveDatasetId dataset, ArchiveCoverage cold, long tip) {
+        if (controlStore == null) return false;
+        ArchiveProgress live = controlStore.load(dataset, ArchiveTrack.LIVE).orElse(null);
+        if (live == null || live.coordinate() < tip) return false;
+        long activation = activations.start(dataset, ArchiveTrack.LIVE).orElse(Long.MAX_VALUE);
+        return activation == 0 || cold.covers(activation - 1);
+    }
+
+    public Map<String, Object> status() {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("enabled", configuredEnabled);
+        result.put("available", available());
+        if (initializationError != null) result.put("error", initializationError);
+        if (archiveConfig == null) return result;
+        result.put("engine", archiveConfig.engine().name().toLowerCase(Locale.ROOT));
+        result.put("directory", archiveConfig.historyDirectory().toString());
+        result.put("finalityBlocks", archiveConfig.safetyWindows().archiveFinalityBlocks());
+        result.put("rollbackRetentionBlocks", archiveConfig.safetyWindows().rollbackRetentionBlocks());
+        if (backend != null) {
+            result.put("health", backend.health());
+            try (ArchiveReadSession read = backend.openReadSession()) {
+                result.put("generation", read.generation());
+            }
+            Map<String, Object> datasets = new LinkedHashMap<>();
+            for (ArchiveDatasetId id : ArchiveDatasetId.values()) {
+                DatasetArchiveConfig selected = archiveConfig.datasets().get(id);
+                Map<String, Object> dataset = new LinkedHashMap<>();
+                dataset.put("enabled", selected.enabled());
+                dataset.put("startMode", selected.startMode().name().toLowerCase(Locale.ROOT));
+                dataset.put("retentionEpochs", selected.retentionEpochs());
+                if (selected.enabled()) {
+                    dataset.put("coverage", backend.coverage(id));
+                    dataset.put("workers", metrics.dataset(id));
+                }
+                datasets.put(id.logicalName(), dataset);
+            }
+            result.put("datasets", datasets);
+        }
+        if (epochStaging != null) epochStaging.error().ifPresent(value -> result.put("epochStagingError", value));
+        return result;
+    }
+
+    private void runBoundedWork() {
+        if (backend == null || chain == null) return;
+        var tip = chain.getLocalTip();
+        if (tip == null) return;
+        processPendingEpochRollback();
+        processPendingLiveRollback(tip.getBlockNumber());
+        long finalized = tip.getBlockNumber() - archiveConfig.safetyWindows().archiveFinalityBlocks();
+        if (finalized < 0) return;
+        for (var entry : blockWorkers.entrySet()) {
+            ArchiveDatasetId dataset = entry.getKey();
+            try {
+                long start = activations.start(dataset).orElseGet(() -> activationStart(dataset, tip.getBlockNumber()));
+                if (start >= 0) {
+                    entry.getValue().run(start, finalized);
+                    long undoCutoff = tip.getBlockNumber()
+                            - archiveConfig.safetyWindows().rollbackRetentionBlocks();
+                    if (undoCutoff >= start) controlStore.pruneUndoThrough(dataset, ArchiveTrack.BACKFILL, undoCutoff);
+                    promoteLiveRows(dataset, finalized);
+                }
+            } catch (BackfillActivationInvalidatedException e) {
+                reactivateBackfillDataset(dataset, e.activation());
+            } catch (Exception e) {
+                metrics.update(dataset, ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.DEGRADED,
+                        -1, 0, e.getMessage());
+                log.warn("History worker {} paused: {}", dataset.logicalName(), e.toString());
+            }
+        }
+        if (archiveConfig.liveEnabled()) {
+            for (var entry : liveWorkers.entrySet()) {
+                ArchiveDatasetId dataset = entry.getKey();
+                try {
+                    long activation = activations.start(dataset, ArchiveTrack.LIVE).orElseGet(() -> {
+                        long value = tip.getBlockNumber() + 1;
+                        activations.putIfAbsent(dataset, ArchiveTrack.LIVE, value);
+                        return value;
+                    });
+                    entry.getValue().run(activation, tip.getBlockNumber());
+                    long undoCutoff = tip.getBlockNumber()
+                            - archiveConfig.safetyWindows().rollbackRetentionBlocks();
+                    if (undoCutoff >= activation) {
+                        controlStore.pruneUndoThrough(dataset, ArchiveTrack.LIVE, undoCutoff);
+                    }
+                } catch (LiveActivationInvalidatedException e) {
+                    recoverLiveCanonicalMismatch(dataset, e.activation(), tip.getBlockNumber());
+                } catch (Exception e) {
+                    metrics.update(dataset, ArchiveTrack.LIVE, ArchiveWorkerStatus.State.DEGRADED,
+                            -1, 0, e.getMessage());
+                    log.warn("Live history worker {} paused: {}", dataset.logicalName(), e.toString());
+                }
+            }
+        }
+        runEpochWork(finalized);
+        applyRetention(tip.getBlockNumber(), tip.getSlot());
+    }
+
+    /** Event-thread work is deliberately constant-time; archive I/O stays on the optional worker. */
+    @DomainEventListener(order = 1_000)
+    public void onRollback(RollbackEvent event) {
+        if (!event.realReorg() || event.target() == null || ledger == null) return;
+        long targetEpoch = ledger.slotToEpoch(event.target().getSlot());
+        pendingRollbackEpoch.accumulateAndGet(targetEpoch, Math::min);
+        pendingRollbackSlot.accumulateAndGet(event.target().getSlot(), Math::min);
+    }
+
+    private void processPendingLiveRollback(long currentTip) {
+        long targetSlot = pendingRollbackSlot.getAndSet(Long.MAX_VALUE);
+        if (targetSlot == Long.MAX_VALUE || controlStore == null) return;
+        long targetBlock = blockAtOrBeforeSlot(targetSlot, currentTip);
+        invalidateBlockArchivesAfterRollback(targetBlock);
+        for (ArchiveDatasetId dataset : liveWorkers.keySet()) {
+            ArchiveProgress progress = controlStore.load(dataset, ArchiveTrack.LIVE).orElse(null);
+            if (progress == null || progress.coordinate() <= targetBlock) continue;
+            long activation = activations.start(dataset, ArchiveTrack.LIVE).orElse(targetBlock + 1);
+            try {
+                if (targetBlock < activation - 1) {
+                    reactivateLiveDataset(dataset, activation, currentTip, targetBlock);
+                } else if (targetBlock == activation - 1) {
+                    controlStore.resetTrackFrom(dataset, ArchiveTrack.LIVE, activation);
+                } else {
+                    controlStore.rollbackTo(dataset, ArchiveTrack.LIVE, targetBlock);
+                }
+                metrics.update(dataset, ArchiveTrack.LIVE, ArchiveWorkerStatus.State.IDLE,
+                        targetBlock, currentTip - targetBlock, "exact rollback applied");
+            } catch (Exception e) {
+                reactivateLiveDataset(dataset, activation, currentTip, targetBlock);
+            }
+        }
+    }
+
+    private void invalidateBlockArchivesAfterRollback(long targetBlock) {
+        for (ArchiveDatasetId dataset : blockWorkers.keySet()) {
+            invalidateFinalizedBlockDataset(dataset, targetBlock);
+        }
+    }
+
+    private void invalidateFinalizedBlockDataset(ArchiveDatasetId dataset, long commonBlock) {
+        ArchiveCoverage coverage = backend.coverage(dataset);
+        long last = coverage.completeRanges().stream().mapToLong(ArchiveRange::endInclusive)
+                .max().orElse(commonBlock);
+        if (last <= commonBlock) return;
+        backend.invalidate(dataset, new BlockRange(Math.addExact(commonBlock, 1), last));
+        reactivateBackfillDataset(dataset, activations.start(dataset).orElse(0));
+        log.warn("Invalidated finalized {} archive after canonical rollback to block {}",
+                dataset.logicalName(), commonBlock);
+    }
+
+    private void recoverLiveCanonicalMismatch(ArchiveDatasetId dataset, long activation, long currentTip) {
+        ArchiveProgress progress = controlStore.load(dataset, ArchiveTrack.LIVE).orElse(null);
+        long common = activation - 1;
+        if (progress != null) {
+            for (long block = Math.min(progress.coordinate(), currentTip); block >= activation; block--) {
+                var checkpoint = controlStore.checkpoint(dataset, ArchiveTrack.LIVE, block);
+                var canonical = chain.getCanonicalBlockReference(block);
+                if (checkpoint.isEmpty() || canonical.isEmpty()) break;
+                if (checkpoint.isPresent() && canonical.isPresent()
+                        && Arrays.equals(checkpoint.orElseThrow().blockHash(), canonical.orElseThrow().blockHash())) {
+                    common = block;
+                    break;
+                }
+            }
+        }
+        invalidateFinalizedBlockDataset(dataset, common);
+        reactivateLiveDataset(dataset, activation, currentTip, common);
+    }
+
+    private long blockAtOrBeforeSlot(long targetSlot, long currentTip) {
+        long low = 0, high = currentTip, answer = -1;
+        while (low <= high) {
+            long middle = low + ((high - low) >>> 1);
+            var reference = chain.getCanonicalBlockReference(middle);
+            if (reference.isEmpty()) {
+                high = middle - 1;
+                continue;
+            }
+            if (reference.orElseThrow().slot() <= targetSlot) {
+                answer = middle;
+                low = middle + 1;
+            } else {
+                high = middle - 1;
+            }
+        }
+        return answer;
+    }
+
+    private void processPendingEpochRollback() {
+        long targetEpoch = pendingRollbackEpoch.getAndSet(Long.MAX_VALUE);
+        if (targetEpoch == Long.MAX_VALUE) return;
+        try {
+            int discarded = epochStaging == null ? 0 : epochStaging.discardAfterEpoch(targetEpoch);
+            for (ArchiveDatasetId dataset : ArchiveDatasetId.values()) {
+                if (dataset.sourceKind() != SourceKind.EPOCH || !datasetEnabled(dataset)) continue;
+                ArchiveCoverage coverage = backend.coverage(dataset);
+                long last = coverage.completeRanges().stream().mapToLong(ArchiveRange::endInclusive)
+                        .max().orElse(targetEpoch);
+                if (last > targetEpoch) {
+                    backend.invalidate(dataset, new EpochRange(Math.addExact(targetEpoch, 1), last));
+                    controlStore.clearTrack(dataset, ArchiveTrack.BACKFILL, List.of());
+                }
+            }
+            log.info("Applied archive epoch rollback through epoch {}; discarded {} staged source jobs",
+                    targetEpoch, discarded);
+        } catch (Exception e) {
+            pendingRollbackEpoch.accumulateAndGet(targetEpoch, Math::min);
+            log.warn("Archive epoch rollback is pending retry through epoch {}: {}", targetEpoch, e.toString());
+        }
+    }
+
+    private void applyRetention(long tipBlock, long tipSlot) {
+        long currentEpoch = ledger.slotToEpoch(tipSlot);
+        for (var entry : archiveConfig.datasets().entrySet()) {
+            long epochs = entry.getValue().retentionEpochs();
+            if (!entry.getValue().enabled() || epochs == 0 || currentEpoch < epochs) continue;
+            ArchiveDatasetId dataset = entry.getKey();
+            long cutoffEpoch = currentEpoch - epochs;
+            long cutoff = dataset.sourceKind() == SourceKind.EPOCH
+                    ? cutoffEpoch : firstBlockAtOrAfterEpoch(cutoffEpoch, tipBlock);
+            if (cutoff <= 0 || appliedRetention.getOrDefault(dataset, -1L) >= cutoff) continue;
+            backend.applyRetention(dataset, new ArchiveRetentionCutoff(dataset.sourceKind(), cutoff));
+            appliedRetention.put(dataset, cutoff);
+        }
+    }
+
+    private long firstBlockAtOrAfterEpoch(long epoch, long tipBlock) {
+        long low = 0, high = tipBlock, answer = tipBlock;
+        while (low <= high) {
+            long middle = low + ((high - low) >>> 1);
+            var reference = chain.getCanonicalBlockReference(middle);
+            if (reference.isEmpty()) { low = middle + 1; continue; }
+            long selectedEpoch = ledger.slotToEpoch(reference.orElseThrow().slot());
+            if (selectedEpoch >= epoch) { answer = middle; high = middle - 1; }
+            else low = middle + 1;
+        }
+        return answer;
+    }
+
+    private void reactivateLiveDataset(ArchiveDatasetId dataset, long oldActivation, long currentTip,
+                                       long replayAfterBlock) {
+        List<byte[]> prefixes = com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas.schema(dataset)
+                .tables().stream().filter(table -> !table.physicalName().equals("datums")
+                        && !table.physicalName().equals("scripts"))
+                .map(table -> ("archive-row/" + table.physicalName() + "/")
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8))
+                .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+        if (dataset == ArchiveDatasetId.ADDRESS_TRANSACTION) {
+            prefixes.add("resolver/live/".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        }
+        if (dataset == ArchiveDatasetId.ADDRESS_TRANSACTION || dataset == ArchiveDatasetId.UTXO_HISTORY) {
+            prefixes.add("pointer/live/".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        }
+        controlStore.clearTrack(dataset, ArchiveTrack.LIVE, prefixes);
+        long replacement = Math.addExact(replayAfterBlock, 1);
+        if (dataset == ArchiveDatasetId.ADDRESS_TRANSACTION && liveAddressDataset != null
+                && ledger != null && ledger.getUtxoState() != null && ledger.getUtxoState().isEnabled()) {
+            liveAddressDataset.resetResolver();
+            replacement = Math.addExact(seedResolverSnapshot(ledger.getUtxoState(), liveAddressDataset), 1);
+        }
+        activations.replace(dataset, ArchiveTrack.LIVE, replacement);
+        metrics.update(dataset, ArchiveTrack.LIVE, ArchiveWorkerStatus.State.IDLE,
+                currentTip, 0, "reactivated after rollback crossed the live anchor");
+        log.warn("Reactivated {} live history at block {} after canonical rollback invalidated anchor {}",
+                dataset.logicalName(), replacement, oldActivation);
+    }
+
+    private void reactivateBackfillDataset(ArchiveDatasetId dataset, long activation) {
+        List<byte[]> prefixes = new ArrayList<>();
+        if (dataset == ArchiveDatasetId.ADDRESS_TRANSACTION) {
+            prefixes.add("resolver/backfill/".getBytes(StandardCharsets.UTF_8));
+        }
+        if (dataset == ArchiveDatasetId.ADDRESS_TRANSACTION || dataset == ArchiveDatasetId.UTXO_HISTORY) {
+            prefixes.add("pointer/backfill/".getBytes(StandardCharsets.UTF_8));
+        }
+        controlStore.clearTrack(dataset, ArchiveTrack.BACKFILL, prefixes);
+        long replacement = activation;
+        if (dataset == ArchiveDatasetId.ADDRESS_TRANSACTION && backfillAddressDataset != null) {
+            backfillAddressDataset.resetResolver();
+            ArchiveStartMode mode = archiveConfig.datasets().get(dataset).startMode();
+            if (mode == ArchiveStartMode.TIP) {
+                if (ledger == null || ledger.getUtxoState() == null || !ledger.getUtxoState().isEnabled()) {
+                    throw new ArchiveStoreException("address history tip reactivation requires core UTXO state");
+                }
+                replacement = Math.addExact(
+                        seedResolverSnapshot(ledger.getUtxoState(), backfillAddressDataset), 1);
+                activations.replace(dataset, ArchiveTrack.BACKFILL, replacement);
+            } else {
+                backfillAddressDataset.seedGenesis(backfillGenesisEntries);
+            }
+        }
+        controlStore.requireBlockBodiesFrom(dataset, replacement);
+        metrics.update(dataset, ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.IDLE,
+                replacement - 1, 0, "rebuilding after rollback crossed retained undo");
+        log.warn("Reset {} backfill to activation {} after rollback crossed retained undo",
+                dataset.logicalName(), replacement);
+    }
+
+    private void runEpochWork(long finalized) {
+        EpochArchiveStagingService staging = epochStaging;
+        if (staging == null) return;
+        record Key(ArchiveDatasetId dataset, long epoch, long block) { }
+        Map<Key, List<EpochPending>> groups = new TreeMap<>(Comparator
+                .comparingLong(Key::block).thenComparing(key -> key.dataset().name()).thenComparingLong(Key::epoch));
+        for (var binding : staging.sources()) {
+            for (var job : staging.pending(binding, 16)) {
+                long activation = activations.start(job.dataset()).orElseThrow(() ->
+                        new ArchiveStoreException("missing epoch activation for " + job.dataset().logicalName()));
+                if (job.epoch() >= activation && job.boundaryBlockNumber() <= finalized) {
+                    groups.computeIfAbsent(new Key(job.dataset(), job.epoch(), job.boundaryBlockNumber()),
+                            ignored -> new ArrayList<>()).add(new EpochPending(binding, job));
+                }
+            }
+        }
+        int completed = 0;
+        for (var group : groups.values()) {
+            group.sort(Comparator.comparing(item -> item.job().sourceReference()));
+            commitEpochGroup(group);
+            if (++completed == 4) break;
+        }
+    }
+
+    private void commitEpochGroup(List<EpochPending> group) {
+        EpochArchiveJob first = group.getFirst().job();
+        for (EpochPending item : group) {
+            EpochArchiveJob job = item.job();
+            if (job.dataset() != first.dataset() || job.epoch() != first.epoch()
+                    || job.boundaryBlockNumber() != first.boundaryBlockNumber()
+                    || !Arrays.equals(job.boundaryBlockHash(), first.boundaryBlockHash())) {
+                throw new ArchiveStoreException("epoch source parts do not share a canonical boundary");
+            }
+        }
+        ArchiveJob job = ArchiveJob.deterministic(first.networkIdentity(), first.dataset(),
+                first.projectionVersion(), new EpochRange(first.epoch(), first.epoch()),
+                new ArchiveRangeAnchor(first.boundarySlot(), first.boundaryBlockHash(),
+                        first.boundarySlot(), first.boundaryBlockHash()), "ledger-boundary-v1");
+        try (ArchiveWriteSession write = backend.begin(job)) {
+            for (EpochPending item : group) appendEpochPart(item, job, write);
+            ArchiveReceipt receipt = write.commit();
+            controlStore.save(new ArchiveProgress(first.dataset(), ArchiveTrack.BACKFILL, first.epoch(),
+                    first.boundarySlot(), first.boundaryBlockHash(), receipt.backendGeneration()), receipt);
+            for (EpochPending item : group) acknowledgeEpochPart(item);
+        }
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private void appendEpochPart(EpochPending item, ArchiveJob archiveJob, ArchiveWriteSession write) {
+        var binding = item.binding();
+        var source = binding.source();
+        int pageSize = Math.min(10_000, archiveConfig.worker().maxRowsPerBatch());
+        try (var lease = source.acquire(item.job(), java.time.Instant.now().plusSeconds(300))) {
+            Optional<String> cursor = Optional.empty();
+            do {
+                var page = source.read(item.job(), cursor, pageSize, lease);
+                List<ArchiveRow> derived = new ArrayList<>();
+                binding.projection().derive(archiveJob, page,
+                        (java.util.function.Consumer) (value -> derived.add((ArchiveRow) value)));
+                if (derived.size() > archiveConfig.worker().maxRowsPerBatch()) {
+                    throw new ArchiveStoreException("epoch archive row bound exceeded");
+                }
+                derived.forEach(write::append);
+                cursor = page.nextCursor();
+            } while (cursor.isPresent());
+        }
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private void acknowledgeEpochPart(EpochPending item) {
+        epochStaging.acknowledge(item.binding(), item.job());
+    }
+
+    private record EpochPending(EpochArchiveStagingService.SourceBinding binding, EpochArchiveJob job) { }
+
+    private void initializeEpochActivations() {
+        var tip = chain.getLocalTip();
+        long currentEpoch = tip == null ? 0 : ledger.slotToEpoch(tip.getSlot());
+        for (var entry : archiveConfig.datasets().entrySet()) {
+            ArchiveDatasetId dataset = entry.getKey();
+            DatasetArchiveConfig selected = entry.getValue();
+            if (!selected.enabled() || dataset.sourceKind() != SourceKind.EPOCH) continue;
+            OptionalLong existing = activations.start(dataset);
+            if (selected.startMode() == ArchiveStartMode.FULL_REQUIRED) {
+                if ((existing.isPresent() && existing.getAsLong() != 0)
+                        || (existing.isEmpty() && currentEpoch > 0)) {
+                    throw new IllegalArgumentException(dataset.logicalName()
+                            + " full-required archive must be enabled from epoch 0; current epoch is "
+                            + currentEpoch);
+                }
+                activations.putIfAbsent(dataset, 0);
+            } else if (existing.isEmpty()) {
+                long start = selected.startMode() == ArchiveStartMode.TIP
+                        ? Math.addExact(currentEpoch, 1) : currentEpoch;
+                activations.putIfAbsent(dataset, start);
+            }
+        }
+    }
+
+    void promoteLiveRows(ArchiveDatasetId dataset, long finalized) {
+        String table = switch (dataset) {
+            case TRANSACTION -> "chain_transaction";
+            case ACCOUNT_EVENT -> "account_events";
+            case ADDRESS_TRANSACTION -> "address_transactions";
+            case UTXO_HISTORY -> null; // multiple-table cleanup is handled below
+            default -> null;
+        };
+        List<String> tables = dataset == ArchiveDatasetId.UTXO_HISTORY
+                ? List.of("addresses", "transaction_outputs", "transaction_output_assets", "transaction_inputs",
+                        "datums", "scripts")
+                : table == null ? List.of() : List.of(table);
+        if (tables.isEmpty()) return;
+        ArchiveProgress live = controlStore.load(dataset, ArchiveTrack.LIVE).orElse(null);
+        if (live == null) return;
+        long activation = activations.start(dataset, ArchiveTrack.LIVE).orElse(live.coordinate() + 1);
+        long promotableEnd = Math.min(finalized, live.coordinate());
+        if (promotableEnd < activation) return;
+        long candidateStart = activation;
+        List<ArchiveRange> coverage = backend.coverage(dataset).completeRanges();
+        for (ArchiveRange range : coverage) {
+            if (range.endInclusive() < candidateStart) continue;
+            if (range.startInclusive() > candidateStart) break;
+            candidateStart = Math.addExact(range.endInclusive(), 1);
+        }
+        if (candidateStart > promotableEnd) {
+            cleanupPromotedRows(dataset, tables, coverage, promotableEnd);
+            return;
+        }
+        long promotionStart = candidateStart;
+        long nextCovered = coverage.stream().filter(range -> range.startInclusive() > promotionStart)
+                .mapToLong(ArchiveRange::startInclusive).min().orElse(Long.MAX_VALUE);
+        int defaultPromotionBlocks = Math.min(100, archiveConfig.worker().maxBlocksPerBatch());
+        int selectedPromotionBlocks = promotionBatchBlocks.getOrDefault(dataset, defaultPromotionBlocks);
+        long candidateEnd = Math.min(promotableEnd, promotionStart + selectedPromotionBlocks - 1L);
+        if (nextCovered != Long.MAX_VALUE) candidateEnd = Math.min(candidateEnd, nextCovered - 1);
+        long promotionEnd = candidateEnd;
+        var first = chain.getCanonicalBlockReference(promotionStart).orElseThrow(() ->
+                new ArchiveStoreException("live promotion start is no longer canonical: " + promotionStart));
+        var last = chain.getCanonicalBlockReference(promotionEnd).orElseThrow(() ->
+                new ArchiveStoreException("live promotion end is no longer canonical: " + promotionEnd));
+        ArchiveJob job = ArchiveJob.deterministic(backend.identity().networkIdentity(), dataset,
+                com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas.schema(dataset).projectionVersion(),
+                new BlockRange(promotionStart, promotionEnd),
+                new ArchiveRangeAnchor(first.slot(), first.blockHash(), last.slot(), last.blockHash()),
+                "hot-promotion-v1");
+        try (var snapshot = controlStore.snapshot()) {
+            List<byte[]> keys = new ArrayList<>();
+            Set<String> datumHashes = new HashSet<>();
+            Set<String> scriptHashes = new HashSet<>();
+            int[] rowCount = {0};
+            try (var write = backend.begin(job)) {
+                for (String selected : tables) {
+                    List<ArchiveRecord> rows;
+                    if (selected.equals("datums") || selected.equals("scripts")) {
+                        Set<String> selectedHashes = selected.equals("datums") ? datumHashes : scriptHashes;
+                        String column = selected.equals("datums") ? "datum_hash" : "script_hash";
+                        rows = HotArchiveRows.allRows(snapshot, dataset, selected).stream()
+                                .filter(row -> selectedHashes.contains(HexUtil.encodeHexString((byte[]) row.value(column))))
+                                .toList();
+                        for (ArchiveRecord row : rows) {
+                            keys.add(HotArchiveRows.put(dataset, new ArchiveRow(row.table(),
+                                    new ArrayList<>(row.values().values()))).key());
+                        }
+                    } else {
+                        rows = HotArchiveRows.rowsInRange(snapshot, dataset, selected,
+                                promotionStart, promotionEnd);
+                        keys.addAll(HotArchiveRows.keysInRange(snapshot, dataset, selected,
+                                promotionStart, promotionEnd));
+                    }
+                    for (ArchiveRecord row : rows) {
+                        if (++rowCount[0] > archiveConfig.worker().maxRowsPerBatch()) {
+                            promotionBatchBlocks.put(dataset, Math.max(1, selectedPromotionBlocks / 2));
+                            throw new ArchiveStoreException("live promotion row bound exceeded for block "
+                                    + promotionStart + ".." + promotionEnd);
+                        }
+                        if (selected.equals("transaction_outputs")) {
+                            Object datum = row.value("datum_hash");
+                            Object script = row.value("reference_script_hash");
+                            if (datum instanceof byte[] bytes) datumHashes.add(HexUtil.encodeHexString(bytes));
+                            if (script instanceof byte[] bytes) scriptHashes.add(HexUtil.encodeHexString(bytes));
+                        }
+                        write.append(promotionRow(row, job.jobId()));
+                    }
+                }
+                write.commit();
+            }
+            if (!keys.isEmpty()) controlStore.deleteData(dataset, keys);
+        }
+        if (selectedPromotionBlocks < defaultPromotionBlocks) {
+            promotionBatchBlocks.put(dataset, Math.min(defaultPromotionBlocks, selectedPromotionBlocks * 2));
+        }
+        log.debug("Promoted {} live history blocks {}..{} directly from pinned hot rows",
+                dataset.logicalName(), promotionStart, promotionEnd);
+    }
+
+    private void cleanupPromotedRows(ArchiveDatasetId dataset, List<String> tables,
+                                     List<ArchiveRange> coverage, long finalized) {
+        try (var snapshot = controlStore.snapshot()) {
+            List<byte[]> keys = new ArrayList<>();
+            for (String selected : tables) {
+                if (selected.equals("datums") || selected.equals("scripts")) continue;
+                for (ArchiveRange range : coverage) {
+                    if (range.startInclusive() > finalized) break;
+                    keys.addAll(HotArchiveRows.keysInRange(snapshot, dataset, selected,
+                            range.startInclusive(), Math.min(finalized, range.endInclusive())));
+                }
+            }
+            if (!keys.isEmpty()) controlStore.deleteData(dataset, keys);
+        }
+    }
+
+    private static ArchiveRow promotionRow(ArchiveRecord record, UUID jobId) {
+        Map<String, Object> values = new LinkedHashMap<>(record.values());
+        if (values.containsKey("archive_job_id")) values.put("archive_job_id", jobId);
+        return new ArchiveRow(record.table(), new ArrayList<>(values.values()));
+    }
+
+    private long activationStart(ArchiveDatasetId dataset, long tip) {
+        ArchiveStartMode mode = archiveConfig.datasets().get(dataset).startMode();
+        long earliest = chain.getEarliestRetainedBodyBlockNumber().orElse(Long.MAX_VALUE);
+        long start = switch (mode) {
+            case FULL_REQUIRED -> {
+                if (tip < 0 && earliest == Long.MAX_VALUE) yield 0;
+                if (earliest > 0) throw new ArchiveStoreException(
+                        "full-required history cannot start: earliest retained body is " + earliest);
+                yield 0;
+            }
+            case EARLIEST_AVAILABLE -> earliest == Long.MAX_VALUE ? (tip < 0 ? 0 : -1) : earliest;
+            case TIP -> Math.addExact(tip, 1);
+        };
+        if (start >= 0) activations.putIfAbsent(dataset, start);
+        return start;
+    }
+
+    private <B> void registerBlockWorker(ArchiveDatasetId id, BlockArchiveDataset<B> dataset,
+                                         ChainBlockArchiveSource<B> source, ArchiveNetworkIdentity network,
+                                         ArchiveWorkerConfig workerConfig, CoreSyncView syncView) {
+        if (!datasetEnabled(id)) return;
+        var worker = new BlockArchiveWorker<>(network, source, backend, controlStore,
+                workerConfig, syncView, metrics, Duration.ofMinutes(5));
+        blockWorkers.put(id, (start, end) -> worker.runBatch(dataset, start, end));
+    }
+
+    private <B> void registerLiveWorker(ArchiveDatasetId id, BlockArchiveDataset<B> dataset,
+                                        ChainBlockArchiveSource<B> source, ArchiveNetworkIdentity network,
+                                        ArchiveWorkerConfig workerConfig) {
+        if (!datasetEnabled(id)) return;
+        var worker = new LiveBlockArchiveWorker<>(network, source, controlStore, workerConfig, metrics);
+        liveWorkers.put(id, (start, end) -> worker.runBatch(dataset, start, end));
+    }
+
+    private List<SequentialOutpointResolver.Entry> genesisOutpoints(
+            NetworkGenesisConfig genesis, AddressTransactionDataset dataset) {
+        List<SequentialOutpointResolver.Entry> result = new ArrayList<>();
+        LinkedHashSet<String> addresses = new LinkedHashSet<>();
+        addresses.addAll(genesis.getInitialFunds().keySet());
+        addresses.addAll(genesis.getAllByronBalances().keySet());
+        for (String address : addresses) {
+            AddressTransactionDataset.AddressParts parts = dataset.address(address);
+            byte[] txHash = Blake2bUtil.blake2bHash256(parts.raw());
+            result.add(new SequentialOutpointResolver.Entry(new Outpoint(txHash, 0),
+                    new ResolvedOutput(parts.addressKey(), parts.paymentCredential(), parts.stakeCredential())));
+        }
+        return List.copyOf(result);
+    }
+
+    private List<YaciUtxoHistoryDecoder.GenesisOutput> genesisUtxoOutputs(NetworkGenesisConfig genesis) {
+        List<YaciUtxoHistoryDecoder.GenesisOutput> result = new ArrayList<>(
+                genesis.getInitialFunds().size() + genesis.getAllByronBalances().size());
+        genesis.getInitialFunds().forEach((address, amount) -> result.add(
+                new YaciUtxoHistoryDecoder.GenesisOutput(address, amount, "genesis_shelley")));
+        genesis.getAllByronBalances().forEach((address, amount) -> result.add(
+                new YaciUtxoHistoryDecoder.GenesisOutput(address, amount, "genesis_byron")));
+        return List.copyOf(result);
+    }
+
+    private void initializeAddressBackfillResolver(AddressTransactionDataset dataset) {
+        OptionalLong existingActivation = activations.start(ArchiveDatasetId.ADDRESS_TRANSACTION,
+                ArchiveTrack.BACKFILL);
+        if (existingActivation.isPresent() && dataset.resolverSeeded()) return;
+
+        dataset.resetResolver();
+        ArchiveStartMode mode = archiveConfig.datasets().get(ArchiveDatasetId.ADDRESS_TRANSACTION).startMode();
+        long activation;
+        if (mode == ArchiveStartMode.TIP) {
+            if (ledger.getUtxoState() == null || !ledger.getUtxoState().isEnabled()) {
+                throw new ArchiveStoreException("address history start-mode=tip requires core UTXO state");
+            }
+            activation = Math.addExact(seedResolverSnapshot(ledger.getUtxoState(), dataset), 1);
+        } else {
+            long earliest = chain.getEarliestRetainedBodyBlockNumber().orElse(0);
+            if (mode == ArchiveStartMode.EARLIEST_AVAILABLE && earliest > 0) {
+                throw new ArchiveStoreException("address history earliest-available requires retained bodies "
+                        + "from genesis; earliest retained block is " + earliest
+                        + ". Use start-mode=tip for an activation-point UTXO snapshot");
+            }
+            dataset.seedGenesis(backfillGenesisEntries);
+            activation = 0;
+        }
+        if (existingActivation.isPresent()) {
+            activations.replace(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.BACKFILL, activation);
+        } else {
+            activations.putIfAbsent(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.BACKFILL, activation);
+        }
+    }
+
+    private void initializeAddressLiveResolver(AddressTransactionDataset dataset) {
+        OptionalLong existingActivation = activations.start(ArchiveDatasetId.ADDRESS_TRANSACTION,
+                ArchiveTrack.LIVE);
+        if (existingActivation.isPresent() && dataset.resolverSeeded()) return;
+
+        dataset.resetResolver();
+        long activation = Math.addExact(seedResolverSnapshot(ledger.getUtxoState(), dataset), 1);
+        if (existingActivation.isPresent()) {
+            activations.replace(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.LIVE, activation);
+        } else {
+            activations.putIfAbsent(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.LIVE, activation);
+        }
+    }
+
+    private long seedResolverSnapshot(com.bloxbean.cardano.yano.api.utxo.UtxoState utxos,
+                                      AddressTransactionDataset dataset) {
+        Path staging = null;
+        try {
+            Path stagingDirectory = archiveConfig.historyDirectory().resolve("control/resolver-snapshots");
+            Files.createDirectories(stagingDirectory);
+            staging = Files.createTempFile(stagingDirectory, "live-utxo-", ".snapshot");
+            long snapshotBlock;
+            try (var output = new DataOutputStream(new BufferedOutputStream(Files.newOutputStream(staging)))) {
+                snapshotBlock = utxos.forEachUtxoRecord(utxo -> {
+                    try {
+                        output.writeUTF(utxo.outpoint().txHash());
+                        output.writeInt(utxo.outpoint().index());
+                        output.writeUTF(utxo.address());
+                    } catch (IOException e) {
+                        throw new UncheckedIOException(e);
+                    }
+                });
+            }
+            if (snapshotBlock < 0) throw new ArchiveStoreException("complete UTXO snapshot point is unavailable");
+
+            // Release the core RocksDB snapshot before writing resolver pages
+            // to the optional archive RocksDB.
+            List<SequentialOutpointResolver.Entry> page = new ArrayList<>(10_000);
+            try (var input = new DataInputStream(new BufferedInputStream(Files.newInputStream(staging)))) {
+                while (true) {
+                    try {
+                        String txHash = input.readUTF();
+                        int index = input.readInt();
+                        var parts = dataset.address(input.readUTF());
+                        page.add(new SequentialOutpointResolver.Entry(
+                                new Outpoint(HexUtil.decodeHexString(txHash), index),
+                                new ResolvedOutput(parts.addressKey(), parts.paymentCredential(),
+                                        parts.stakeCredential())));
+                        if (page.size() == 10_000) {
+                            dataset.seedResolver(page, false);
+                            page.clear();
+                        }
+                    } catch (EOFException complete) {
+                        break;
+                    }
+                }
+            }
+            if (!page.isEmpty()) dataset.seedResolver(page, false);
+            dataset.seedResolver(List.of(), true);
+            return snapshotBlock;
+        } catch (UncheckedIOException e) {
+            throw new ArchiveStoreException("cannot materialize the live UTXO resolver snapshot", e.getCause());
+        } catch (IOException e) {
+            throw new ArchiveStoreException("cannot seed the live UTXO resolver", e);
+        } finally {
+            if (staging != null) {
+                try {
+                    Files.deleteIfExists(staging);
+                } catch (IOException e) {
+                    log.warn("Could not delete resolver snapshot {}: {}", staging, e.toString());
+                }
+            }
+        }
+    }
+
+    private Map<ArchiveDatasetId, DatasetArchiveConfig> datasetConfig(ArchiveStartMode defaultStart) {
+        EnumMap<ArchiveDatasetId, DatasetArchiveConfig> result = new EnumMap<>(ArchiveDatasetId.class);
+        for (ArchiveDatasetId id : ArchiveDatasetId.values()) {
+            String name = configName(id);
+            boolean defaultEnabled = id == ArchiveDatasetId.ACCOUNT_EVENT;
+            boolean enabled = bool("yano.history.datasets." + name + ".enabled", defaultEnabled);
+            ArchiveStartMode mode = startMode(string("yano.history.datasets." + name + ".start-mode",
+                    defaultStart.name().toLowerCase(Locale.ROOT).replace('_', '-')));
+            long retention = longValue("yano.history.datasets." + name + ".retention-epochs", 0);
+            result.put(id, new DatasetArchiveConfig(enabled, mode, retention));
+        }
+        return result;
+    }
+
+    private void validateEpochPrerequisites(Map<ArchiveDatasetId, DatasetArchiveConfig> datasets) {
+        boolean anyEpoch = datasets.entrySet().stream()
+                .anyMatch(entry -> entry.getKey().sourceKind() == SourceKind.EPOCH && entry.getValue().enabled());
+        if (anyEpoch && !bool(YanoPropertyKeys.AccountState.ENABLED, false)) {
+            throw new IllegalArgumentException("epoch archive datasets require yano.account-state.enabled=true");
+        }
+        requireDatasetFeature(datasets, ArchiveDatasetId.EPOCH_STAKE,
+                YanoPropertyKeys.EpochSnapshot.AMOUNTS_ENABLED);
+        requireDatasetFeature(datasets, ArchiveDatasetId.DREP_DISTRIBUTION,
+                YanoPropertyKeys.Ledger.GOVERNANCE_ENABLED);
+        requireDatasetFeature(datasets, ArchiveDatasetId.ADA_POT,
+                YanoPropertyKeys.Ledger.ADAPOT_ENABLED);
+        requireDatasetFeature(datasets, ArchiveDatasetId.GOVERNANCE_PROPOSAL_STATUS,
+                YanoPropertyKeys.Ledger.GOVERNANCE_ENABLED);
+        requireDatasetFeature(datasets, ArchiveDatasetId.REWARD,
+                YanoPropertyKeys.Ledger.REWARDS_ENABLED);
+    }
+
+    private void requireDatasetFeature(Map<ArchiveDatasetId, DatasetArchiveConfig> datasets,
+                                       ArchiveDatasetId dataset, String property) {
+        if (datasets.get(dataset).enabled() && !bool(property, false)) {
+            throw new IllegalArgumentException(dataset.logicalName() + " archive requires " + property + "=true");
+        }
+    }
+
+    private Map<String, String> backendProperties(Path directory, ArchiveEngine engine) {
+        Map<String, String> properties = new HashMap<>();
+        if (engine == ArchiveEngine.SQLITE) {
+            properties.put("database.path", string("yano.history.archive.sqlite.path",
+                    directory.resolve("history.sqlite").toString()));
+        } else {
+            properties.put("catalog.path", string("yano.history.archive.ducklake.catalog.path",
+                    directory.resolve("ducklake-catalog.sqlite").toString()));
+            properties.put("data.path", string("yano.history.archive.ducklake.data-path",
+                    directory.resolve("ducklake-data").toString()));
+            properties.put("temp.path", string("yano.history.duckdb.temp-directory",
+                    directory.resolve("tmp").toString()));
+            properties.put("extensions.path", string("yano.history.archive.ducklake.extensions-path",
+                    directory.resolve("extensions").toString()));
+            properties.put("duckdb.max-total-memory-bytes", Long.toString(sizeBytes(
+                    string(YanoPropertyKeys.History.DUCKDB_MAX_TOTAL_MEMORY, "256MB"))));
+            properties.put("duckdb.max-concurrent-queries", Integer.toString(intValue(
+                    YanoPropertyKeys.History.DUCKDB_MAX_CONCURRENT_QUERIES, 2)));
+            properties.put("duckdb.max-temp-directory-bytes", Long.toString(sizeBytes(
+                    string(YanoPropertyKeys.History.DUCKDB_MAX_TEMP_SIZE, "2GB"))));
+            properties.put("duckdb.steady-memory-bytes", Long.toString(sizeBytes(
+                    string(YanoPropertyKeys.History.DUCKDB_STEADY_MEMORY, "128MB"))));
+            properties.put("duckdb.steady-threads", Integer.toString(intValue(
+                    YanoPropertyKeys.History.DUCKDB_STEADY_THREADS, 1)));
+            properties.put("duckdb.bulk-memory-bytes", Long.toString(sizeBytes(
+                    string(YanoPropertyKeys.History.DUCKDB_BULK_MEMORY, "128MB"))));
+            properties.put("duckdb.bulk-threads", Integer.toString(intValue(
+                    YanoPropertyKeys.History.DUCKDB_BULK_THREADS, 1)));
+            properties.put("duckdb.max-concurrent-bulk-jobs", Integer.toString(intValue(
+                    YanoPropertyKeys.History.DUCKDB_BULK_JOBS, 1)));
+        }
+        return Map.copyOf(properties);
+    }
+
+    private String genesisHash(YanoConfig nodeConfig) throws Exception {
+        if (nodeConfig.getShelleyGenesisHash() != null && !nodeConfig.getShelleyGenesisHash().isBlank()) {
+            return nodeConfig.getShelleyGenesisHash().toLowerCase(Locale.ROOT);
+        }
+        if (nodeConfig.getShelleyGenesisFile() == null || nodeConfig.getShelleyGenesisFile().isBlank()) {
+            throw new IllegalArgumentException("Shelley genesis hash/file is required for archive identity");
+        }
+        return HexUtil.encodeHexString(Blake2bUtil.blake2bHash256(
+                Files.readAllBytes(Path.of(nodeConfig.getShelleyGenesisFile()))));
+    }
+
+    private void rejectRemovedConfiguration() {
+        boolean removedSnapshot = false;
+        for (String name : config.getPropertyNames()) {
+            if (name.startsWith(SNAPSHOT_PREFIX)
+                    && config.getOptionalValue(name, String.class).filter(value -> !value.isBlank()).isPresent()) {
+                removedSnapshot = true;
+            }
+        }
+        if (removedSnapshot) {
+            throw new IllegalArgumentException("yano.snapshot-export.* was removed; enable the equivalent "
+                    + "yano.history.datasets.* dataset instead");
+        }
+        if (configuredEnabled && bool(LEGACY_HISTORY_ENABLED, false)) {
+            throw new IllegalArgumentException("yano.account-history.enabled was removed; use yano.history.enabled "
+                    + "and per-dataset yano.history.datasets.* settings");
+        }
+    }
+
+    private boolean datasetEnabled(ArchiveDatasetId dataset) {
+        return archiveConfig != null && archiveConfig.datasets().get(dataset).enabled();
+    }
+
+    private static String configName(ArchiveDatasetId id) {
+        return switch (id) {
+            case ACCOUNT_EVENT -> "account-events";
+            case ADDRESS_TRANSACTION -> "address-transactions";
+            case TRANSACTION -> "transactions";
+            case UTXO_HISTORY -> "utxo-history";
+            case REWARD -> "rewards";
+            case EPOCH_STAKE -> "epoch-stake";
+            case DREP_DISTRIBUTION -> "drep-distribution";
+            case ADA_POT -> "ada-pots";
+            case GOVERNANCE_PROPOSAL_STATUS -> "governance-proposal-status";
+        };
+    }
+
+    private boolean bool(String name, boolean fallback) {
+        return config.getOptionalValue(name, Boolean.class).orElse(fallback);
+    }
+    private String string(String name, String fallback) {
+        return config.getOptionalValue(name, String.class).orElse(fallback);
+    }
+    private long longValue(String name, long fallback) {
+        return config.getOptionalValue(name, Long.class).orElse(fallback);
+    }
+    private int intValue(String name, int fallback) {
+        return config.getOptionalValue(name, Integer.class).orElse(fallback);
+    }
+    private Long autoLong(String name) {
+        String value = string(name, "auto").trim();
+        return value.equalsIgnoreCase("auto") ? null : Long.parseLong(value);
+    }
+    private static ArchiveStartMode startMode(String value) {
+        return ArchiveStartMode.valueOf(value.trim().toUpperCase(Locale.ROOT).replace('-', '_'));
+    }
+    private <T extends Enum<T>> T enumValue(String name, String fallback, Class<T> type) {
+        String value = config.getOptionalValue(name, String.class).orElse(fallback);
+        return Enum.valueOf(type, value.trim().toUpperCase(Locale.ROOT).replace('-', '_'));
+    }
+    static long sizeBytes(String input) {
+        String value = input.trim().toUpperCase(Locale.ROOT).replace("IB", "B");
+        long multiplier = 1;
+        if (value.endsWith("KB")) { multiplier = 1024L; value = value.substring(0, value.length() - 2); }
+        else if (value.endsWith("MB")) { multiplier = 1024L * 1024; value = value.substring(0, value.length() - 2); }
+        else if (value.endsWith("GB")) { multiplier = 1024L * 1024 * 1024; value = value.substring(0, value.length() - 2); }
+        else if (value.endsWith("B")) value = value.substring(0, value.length() - 1);
+        return Math.multiplyExact(Long.parseLong(value.trim()), multiplier);
+    }
+    private static UUID stableArchiveId(int magic, String genesis, String engine, Path directory) {
+        return UUID.nameUUIDFromBytes((magic + "|" + genesis + "|" + engine + "|" + directory)
+                .getBytes(StandardCharsets.UTF_8));
+    }
+    private static boolean isNativeImage() {
+        return System.getProperty("org.graalvm.nativeimage.imagecode") != null;
+    }
+
+    @Override
+    public synchronized void close() {
+        closePartial();
+    }
+
+    private void closePartial() {
+        // Join the optional worker before detaching dependencies or closing JNI
+        // stores. shutdownNow alone permits in-flight RocksDB/DuckDB calls to race
+        // native handle destruction during graceful application shutdown.
+        if (subsystem != null) subsystem.close();
+        subsystem = null;
+        if (ledger != null) try { ledger.setEpochArchiveStagingSink(
+                com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.NOOP); } catch (Exception ignored) { }
+        epochStaging = null;
+        liveAddressDataset = null;
+        backfillAddressDataset = null;
+        backfillGenesisEntries = List.of();
+        if (chain != null) try { chain.setBlockBodyRetentionBoundary(
+                com.bloxbean.cardano.yano.api.BlockBodyRetentionBoundary.NONE); } catch (Exception ignored) { }
+        if (backend != null) try { backend.close(); } catch (Exception ignored) { }
+        backend = null;
+        if (controlStore != null) try { controlStore.close(); } catch (Exception ignored) { }
+        controlStore = null;
+        blockWorkers.clear();
+        liveWorkers.clear();
+        appliedRetention.clear();
+    }
+
+    public record TransactionLookup(State state, ArchiveRecord row, String detail) {
+        public enum State { FOUND, NOT_FOUND, INCOMPLETE, UNAVAILABLE }
+        public static TransactionLookup found(ArchiveRecord row) { return new TransactionLookup(State.FOUND, row, ""); }
+        public static TransactionLookup notFound() { return new TransactionLookup(State.NOT_FOUND, null, ""); }
+        public static TransactionLookup incomplete(String detail) { return new TransactionLookup(State.INCOMPLETE, null, detail); }
+        public static TransactionLookup unavailable(String detail) { return new TransactionLookup(State.UNAVAILABLE, null, detail); }
+    }
+
+    @FunctionalInterface
+    private interface DatasetRunner { long run(long start, long finalizedEnd); }
+}

@@ -11,6 +11,7 @@ import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
 import com.bloxbean.cardano.yano.app.api.addresses.dto.AddressSummaryDto;
 import com.bloxbean.cardano.yano.app.api.addresses.dto.AddressTxDto;
 import com.bloxbean.cardano.yano.app.api.utxos.dto.AmountDto;
+import com.bloxbean.cardano.yano.app.archive.HistoryArchiveService;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.GET;
@@ -45,6 +46,14 @@ public class AddressResource {
     @Inject
     LedgerQuery ledgerQuery;
 
+    @Inject
+    HistoryArchiveService historyArchive;
+
+    private AccountHistoryProvider historyProvider() {
+        if (historyArchive != null && historyArchive.enabled()) return historyArchive.accountHistoryProvider();
+        return ledgerQuery.getAccountHistoryProvider();
+    }
+
     @GET
     @Path("/addresses/{address}/transactions")
     public Response getAddressTransactions(@PathParam("address") String address,
@@ -53,11 +62,11 @@ public class AddressResource {
                                            @QueryParam("order") @DefaultValue("asc") String order,
                                            @QueryParam("use_payment_credential") @DefaultValue("false")
                                            boolean usePaymentCredential) {
-        AccountHistoryProvider history = ledgerQuery.getAccountHistoryProvider();
+        AccountHistoryProvider history = historyProvider();
         if (history == null || !history.isEnabled() || !history.isAddressTxEnabled()) {
             return Response.status(Response.Status.SERVICE_UNAVAILABLE)
                     .entity(Map.of("error", "Address transaction history disabled "
-                            + "(enable yano.account-history.enabled and yano.account-history.address-tx-enabled)"))
+                            + "(enable yano.history and address-transactions dataset)"))
                     .build();
         }
         String resolvedOrder = "desc".equalsIgnoreCase(order) ? "desc"
@@ -68,7 +77,7 @@ public class AddressResource {
                     .build();
         }
         int safePage = Math.max(1, page);
-        int safeCount = Math.min(Math.max(1, count), 100);
+        int safeCount = count <= 0 ? 20 : Math.min(count, 100);
 
         List<AddressTxDto> body = history
                 .getAddressTransactionsForAddress(address, usePaymentCredential, safePage, safeCount, resolvedOrder)
@@ -140,7 +149,7 @@ public class AddressResource {
         // Blockfrost 404s for a never-seen address; without full history we only
         // know "no unspent UTXO now", which is the same signal a wallet needs.
         if (!any) {
-            AccountHistoryProvider history = ledgerQuery.getAccountHistoryProvider();
+            AccountHistoryProvider history = historyProvider();
             boolean everUsed = history != null && history.isEnabled() && history.isAddressTxEnabled()
                     && !history.getAddressTransactionsForAddress(address, false, 1, 1, "asc").isEmpty();
             if (!everUsed) {
@@ -153,7 +162,7 @@ public class AddressResource {
         }
 
         List<AmountDto> amountDtos = new ArrayList<>();
-        amounts.forEach((unit, quantity) -> amountDtos.add(new AmountDto(unit, quantity)));
+        amounts.forEach((unit, quantity) -> amountDtos.add(new AmountDto(unit, quantity.toString())));
         return Response.ok(new AddressSummaryDto(address, amountDtos, stakeAddress, type, script)).build();
     }
 }

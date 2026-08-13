@@ -13,6 +13,7 @@ import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.api.util.CardanoBech32Ids;
 import com.bloxbean.cardano.yano.app.api.EpochUtil;
 import com.bloxbean.cardano.yano.app.api.accounts.dto.AccountStateDtos.*;
+import com.bloxbean.cardano.yano.app.archive.HistoryArchiveService;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
@@ -38,12 +39,16 @@ public class AccountStateResource {
     @Inject
     LedgerQuery ledgerQuery;
 
+    @Inject
+    HistoryArchiveService historyArchive;
+
     private AccountStateStore store() {
         LedgerStateProvider provider = ledgerQuery.getLedgerStateProvider();
         return provider instanceof AccountStateStore accountStateStore ? accountStateStore : null;
     }
 
     private AccountHistoryProvider historyProvider() {
+        if (historyArchive != null && historyArchive.enabled()) return historyArchive.accountHistoryProvider();
         return ledgerQuery.getAccountHistoryProvider();
     }
 
@@ -319,8 +324,7 @@ public class AccountStateResource {
         Response unavailable = historyUnavailable(history, false);
         if (unavailable != null) return unavailable;
         if (!history.isRewardsHistoryEnabled()) {
-            return featureUnavailable("Reward history disabled "
-                    + "(enable yano.account-history.rewards-enabled)");
+            return featureUnavailable("Reward history disabled (enable yano.history.datasets.rewards.enabled)");
         }
         String resolvedOrder = normalizeOrder(order);
         if (resolvedOrder == null) return badRequest("order must be asc or desc");
@@ -369,7 +373,7 @@ public class AccountStateResource {
     public Response getAccountTransactions(@PathParam("stakeAddress") String stakeAddress,
                                            @QueryParam("page") @DefaultValue("1") int page,
                                            @QueryParam("count") @DefaultValue("20") int count,
-                                           @QueryParam("order") @DefaultValue("desc") String order) {
+                                           @QueryParam("order") @DefaultValue("asc") String order) {
         StakeCredentialRef credential = parseStakeCredential(stakeAddress);
         if (credential == null) return badRequest("Invalid stake address");
         AccountHistoryProvider history = historyProvider();
@@ -377,7 +381,7 @@ public class AccountStateResource {
         if (unavailable != null) return unavailable;
         if (!history.isAddressTxEnabled()) {
             return featureUnavailable("Address transaction history disabled "
-                    + "(enable yano.account-history.address-tx-enabled)");
+                    + "(enable yano.history.datasets.address-transactions.enabled)");
         }
         String resolvedOrder = normalizeOrder(order);
         if (resolvedOrder == null) return badRequest("order must be asc or desc");

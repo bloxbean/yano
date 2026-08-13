@@ -18,6 +18,7 @@ import com.bloxbean.cardano.yaci.events.impl.NoopEventBus;
 import com.bloxbean.cardano.yaci.helper.*;
 import com.bloxbean.cardano.yaci.helper.listener.BlockChainDataListener;
 import com.bloxbean.cardano.yano.api.ChainQuery;
+import com.bloxbean.cardano.yano.api.BlockBodyRetentionBoundary;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.NodeLifecycle;
@@ -1204,6 +1205,11 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
     public AccountHistoryStore getAccountHistoryStore() {
         return ledgerStateSubsystem.accountHistoryStore();
+    }
+
+    @Override
+    public void setBlockBodyRetentionBoundary(BlockBodyRetentionBoundary boundary) {
+        chainStorage.setBlockBodyRetentionBoundary(boundary);
     }
 
     private void completeStartupDerivedStateRecovery() {
@@ -2449,6 +2455,19 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     }
 
     @Override
+    public long slotToEpoch(long slot) {
+        EpochParamProvider provider = effectiveEpochParamProvider();
+        if (provider == null) throw new IllegalStateException("epoch parameters are unavailable");
+        return provider.getEpochSlotCalc().slotToEpoch(slot);
+    }
+
+    @Override
+    public void setEpochArchiveStagingSink(
+            com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink sink) {
+        ledgerStateSubsystem.setEpochArchiveStagingSink(sink);
+    }
+
+    @Override
     public java.util.Map<String, Object> getEpochCalcStatus() {
         return ledgerStateSubsystem.epochCalcStatus();
     }
@@ -2619,13 +2638,6 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                     + newHeaderTip.getSlot() + " after adhoc rollback to " + targetSlot);
         }
 
-        // Resolve target epoch for cleanup
-        Integer targetEpoch = null;
-        EpochParamProvider epochParamProvider = getEpochParamProvider();
-        if (epochParamProvider != null) {
-            targetEpoch = epochParamProvider.getEpochSlotCalc().slotToEpoch(targetSlot);
-        }
-
         log.info("=== Adhoc Rollback Complete ===");
         log.info("New tip: slot={}, block={}", newTip != null ? newTip.getSlot() : "none",
                 newTip != null ? newTip.getBlockNumber() : "none");
@@ -2633,10 +2645,6 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 newHeaderTip != null ? newHeaderTip.getSlot() : "none",
                 newHeaderTip != null ? newHeaderTip.getBlockNumber() : "none");
 
-        // Cleanup derived ledger export artifacts.
-        if (targetEpoch != null) {
-            ledgerStateSubsystem.cleanupSnapshotExportsAfterRollback(targetEpoch);
-        }
     }
 
     private void rollbackDevnetToSlot(long targetSlot) {
@@ -3405,6 +3413,13 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     }
 
     @Override
+    public java.util.OptionalLong getSyncTargetBlockNumber() {
+        var remote = syncSubsystem.remoteTip();
+        return remote == null ? java.util.OptionalLong.empty()
+                : java.util.OptionalLong.of(remote.getBlock());
+    }
+
+    @Override
     public byte[] getBlock(byte[] blockHash) {
         return chainState.getBlock(blockHash);
     }
@@ -3417,6 +3432,23 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     @Override
     public Era getBlockEra(long blockNumber) {
         return chainState.getBlockEra(blockNumber);
+    }
+
+    @Override
+    public Optional<com.bloxbean.cardano.yano.api.CanonicalBlockReference> getCanonicalBlockReference(
+            long blockNumber) {
+        if (chainState instanceof com.bloxbean.cardano.yano.runtime.chain.ArchiveChainStateCapabilities capabilities) {
+            return capabilities.getCanonicalBlockReference(blockNumber);
+        }
+        return Optional.empty();
+    }
+
+    @Override
+    public java.util.OptionalLong getEarliestRetainedBodyBlockNumber() {
+        if (chainState instanceof com.bloxbean.cardano.yano.runtime.chain.ArchiveChainStateCapabilities capabilities) {
+            return capabilities.getEarliestRetainedBodyBlockNumber();
+        }
+        return java.util.OptionalLong.empty();
     }
 
     public RuntimeMaintenanceGate getMaintenanceGate() {

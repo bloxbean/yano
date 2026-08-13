@@ -15,7 +15,7 @@ public final class StandardEpochDatasets {
         return dataset(ArchiveDatasetId.EPOCH_STAKE, (job, page, fact) -> new ArchiveRow("epoch_stakes", List.of(
                 page.job().epoch(), fact.credentialType(), fact.stakeCredential(), fact.poolHash(), fact.amount(),
                 page.job().boundaryBlockHash(), page.job().boundaryBlockNumber(), page.job().boundarySlot(),
-                page.job().createdAt().getEpochSecond(), page.job().sourceStateVersion(), job.jobId())));
+                page.job().boundaryBlockTime(), page.job().sourceStateVersion(), job.jobId())));
     }
 
     public static EpochArchiveDataset<DrepDistributionFact> drepDistribution() {
@@ -23,7 +23,7 @@ public final class StandardEpochDatasets {
                 java.util.Arrays.asList(page.job().epoch(), fact.drepType(), fact.credential(), fact.amount(),
                         fact.storedExpiry(), fact.dormantEpochs(), fact.effectiveExpiry(), fact.active(),
                         page.job().boundaryBlockHash(), page.job().boundaryBlockNumber(), page.job().boundarySlot(),
-                        page.job().createdAt().getEpochSecond(), page.job().sourceStateVersion(), job.jobId())));
+                        page.job().boundaryBlockTime(), page.job().sourceStateVersion(), job.jobId())));
     }
 
     public static EpochArchiveDataset<AdaPotFact> adaPot() {
@@ -31,7 +31,7 @@ public final class StandardEpochDatasets {
                 page.job().epoch(), fact.treasury(), fact.reserves(), fact.deposits(), fact.fees(),
                 fact.distributed(), fact.undistributed(), fact.rewardsPot(), fact.poolRewardsPot(),
                 page.job().boundaryBlockHash(), page.job().boundaryBlockNumber(), page.job().boundarySlot(),
-                page.job().createdAt().getEpochSecond(), page.job().sourceStateVersion(), job.jobId())));
+                page.job().boundaryBlockTime(), page.job().sourceStateVersion(), job.jobId())));
     }
 
     public static EpochArchiveDataset<GovernanceProposalStatusFact> governanceProposalStatus() {
@@ -40,7 +40,7 @@ public final class StandardEpochDatasets {
                         fact.txHash(), fact.governanceActionIndex(), fact.actionType(), fact.observationPhase(),
                         fact.statusCode(), fact.decisionReason(), fact.deposit(), fact.returnAddress(),
                         fact.submittedEpoch(), fact.expiresAfterEpoch(), page.job().boundaryBlockHash(),
-                        page.job().boundaryBlockNumber(), page.job().boundarySlot(), page.job().createdAt().getEpochSecond(),
+                        page.job().boundaryBlockNumber(), page.job().boundarySlot(), page.job().boundaryBlockTime(),
                         page.job().sourceStateVersion(), job.jobId())));
     }
 
@@ -49,7 +49,7 @@ public final class StandardEpochDatasets {
                 java.util.Arrays.asList(fact.stakeCredential(), fact.credentialType(), fact.poolHash(),
                         fact.rewardType(), fact.earnedEpoch(), fact.spendableEpoch(), fact.amount(), fact.sourceId(),
                         page.job().boundaryBlockHash(), page.job().boundaryBlockNumber(), page.job().boundarySlot(),
-                        page.job().createdAt().getEpochSecond(), job.jobId())));
+                        page.job().boundaryBlockTime(), job.jobId())));
     }
 
     private static <T> EpochArchiveDataset<T> dataset(ArchiveDatasetId id, RowFactory<T> rows) {

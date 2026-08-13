@@ -25,6 +25,7 @@ import java.nio.ByteOrder;
 import java.util.*;
 import java.util.function.Function;
 
+@Deprecated
 public final class AccountHistoryStore implements AccountHistoryProvider, RollbackCapableStore {
     static final byte TYPE_WITHDRAWAL = 0x01;
     static final byte TYPE_DELEGATION = 0x02;

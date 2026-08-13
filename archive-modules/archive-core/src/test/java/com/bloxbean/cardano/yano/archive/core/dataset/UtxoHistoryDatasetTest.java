@@ -13,7 +13,7 @@ class UtxoHistoryDatasetTest {
         byte[] hash = {1}; byte[] address = {2}; byte[] stake = {3};
         ArchiveJob job = ArchiveJob.deterministic(new ArchiveNetworkIdentity(1, "g"), ArchiveDatasetId.UTXO_HISTORY,
                 1, new BlockRange(1, 1), new ArchiveRangeAnchor(10, hash, 10, hash), "v1");
-        var facts = new UtxoHistoryFact(
+        var facts = new UtxoHistoryFact(com.bloxbean.cardano.yaci.core.model.Era.Conway.getValue(), List.of(),
                 List.of(new UtxoHistoryFact.Address(address, new byte[] {4}, "addr", 0, "base", "key",
                         new byte[] {5}, "credential", "key", stake, null, null, null)),
                 List.of(new UtxoHistoryFact.Output(hash, 0, 0, "regular", address, new byte[] {5}, stake,

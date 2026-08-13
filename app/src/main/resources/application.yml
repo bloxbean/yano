@@ -180,6 +180,7 @@ yano:
   account:
     stake-balance-index-enabled: true
   account-history:
+    # Legacy PR-only index. Do not enable with yano.history.
     enabled: false
     tx-events-enabled: true
     rewards-enabled: false
@@ -188,6 +189,39 @@ yano:
     # rollback-safety-slots: 4320
     prune-interval-seconds: 300
     prune-batch-size: 50000
+  # ADR-034 archive is fully optional. Disabled means no archive driver,
+  # Flyway, worker thread, history RocksDB, or archive write is initialized.
+  history:
+    enabled: false
+    dir: ./history
+    start-mode: full-required
+    live-enabled: true
+    archive:
+      engine: ducklake
+      finality-blocks: auto
+    rollback:
+      retention-blocks: auto
+    worker:
+      poll-interval-millis: 1000
+      max-blocks-per-batch: 1000
+      max-rows-per-batch: 250000
+      bulk-pause-core-lag-blocks: 100
+    datasets:
+      account-events: { enabled: true, retention-epochs: 0 }
+      transactions: { enabled: true, retention-epochs: 0 }
+      address-transactions: { enabled: false, retention-epochs: 0 }
+      utxo-history: { enabled: false, retention-epochs: 0 }
+      rewards: { enabled: false, retention-epochs: 0 }
+      epoch-stake: { enabled: false, start-mode: earliest-available, retention-epochs: 0 }
+      drep-distribution: { enabled: false, start-mode: earliest-available, retention-epochs: 0 }
+      ada-pots: { enabled: false, start-mode: earliest-available, retention-epochs: 0 }
+      governance-proposal-status: { enabled: false, start-mode: earliest-available, retention-epochs: 0 }
+    duckdb:
+      max-total-memory: 256MB
+      max-concurrent-queries: 2
+      max-temp-directory-size: 2GB
+      steady-state: { memory-limit: 128MB, threads: 1 }
+      bulk-catch-up: { memory-limit: 128MB, threads: 1, max-concurrent-jobs: 1 }
   epoch-snapshot:
     amounts-enabled: true
   adapot:
@@ -264,11 +298,19 @@ yano:
       protocol-parameters-file: config/network/devnet/protocol-param.json
     account-state:
       enabled: true
-    # Wallet APIs (ADR-033 M2) on by default in devnet so e2e/probe exercise them.
+    # Keep the legacy PR-only implementation off; exercise the new isolated
+    # SQLite archive in devnet without requiring retained genesis bodies.
     account-history:
+      enabled: false
+    history:
       enabled: true
-      address-tx-enabled: true
-      rewards-enabled: true
+      archive:
+        engine: sqlite
+      start-mode: tip
+      datasets:
+        account-events: { enabled: true, start-mode: tip }
+        transactions: { enabled: true, start-mode: tip }
+        address-transactions: { enabled: true, start-mode: tip }
     epoch-snapshot:
       amounts-enabled: true           # UTXO balance aggregation in snapshots
     adapot:
@@ -403,10 +445,15 @@ yano:
     account-state:
       enabled: true
     account-history:
+      enabled: false
+    history:
       enabled: true
-      tx-events-enabled: true
-      address-tx-enabled: true
-      rewards-enabled: true
+      start-mode: earliest-available
+      datasets:
+        account-events: { enabled: true }
+        transactions: { enabled: true }
+        address-transactions: { enabled: true }
+        rewards: { enabled: true, start-mode: earliest-available }
     adapot:
       enabled: true
     rewards:

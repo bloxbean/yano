@@ -6,6 +6,8 @@ plugins {
 dependencies {
     api project(':archive-modules:archive-api')
     implementation libs.rocksdb
+    implementation libs.cardano.client.address
+    implementation libs.cardano.client.core
 
     testFixturesApi testFixtures(project(':archive-modules:archive-api'))
     testFixturesApi libs.junit.jupiter.api

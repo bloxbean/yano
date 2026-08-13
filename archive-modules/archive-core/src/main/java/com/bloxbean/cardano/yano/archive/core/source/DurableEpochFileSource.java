@@ -37,29 +37,23 @@ public final class DurableEpochFileSource<T> implements EpochArchiveSource<T> {
     }
 
     public void stage(EpochArchiveJob job, Iterable<T> facts) {
+        try (var writer = open(job)) {
+            for (T fact : facts) writer.append(fact);
+            writer.commit();
+        }
+    }
+
+    public StagingWriter<T> open(EpochArchiveJob job) {
         requireJob(job);
         Path rows = rows(job.jobId());
         Path manifest = manifest(job.jobId());
-        if (Files.exists(rows) && Files.exists(manifest)) return;
+        if (Files.exists(rows) && Files.exists(manifest)) return StagingWriter.noop();
         try {
-            Path temporaryRows = Files.createTempFile(directory, job.jobId().toString(), ".rows.tmp");
-            long count = 0;
-            try (DataOutputStream out = new DataOutputStream(new BufferedOutputStream(Files.newOutputStream(temporaryRows)))) {
-                for (T fact : facts) {
-                    byte[] encoded = codec.encode(fact);
-                    out.writeInt(encoded.length);
-                    out.write(encoded);
-                    count++;
-                }
-            }
-            Properties properties = properties(job);
-            properties.setProperty("rowCount", Long.toString(count));
-            Path temporaryManifest = Files.createTempFile(directory, job.jobId().toString(), ".manifest.tmp");
-            try (var out = Files.newOutputStream(temporaryManifest)) { properties.store(out, "yano epoch source"); }
-            move(temporaryRows, rows);
-            move(temporaryManifest, manifest);
+            Path temporaryRows = directory.resolve(job.jobId() + ".rows.partial");
+            Files.deleteIfExists(temporaryRows);
+            return new FileStagingWriter(job, temporaryRows);
         } catch (Exception e) {
-            throw new ArchiveStoreException("cannot stage durable epoch source " + job.jobId(), e);
+            throw new ArchiveStoreException("cannot open epoch source staging " + job.jobId(), e);
         }
     }
 
@@ -78,6 +72,40 @@ public final class DurableEpochFileSource<T> implements EpochArchiveSource<T> {
     @Override public Optional<EpochArchiveJob> find(UUID jobId) {
         Path manifest = manifest(jobId);
         return Files.exists(manifest) ? Optional.of(readManifest(manifest)) : Optional.empty();
+    }
+
+    @Override
+    public void acknowledge(EpochArchiveJob job) {
+        requireJob(job);
+        try {
+            Files.deleteIfExists(manifest(job.jobId()));
+            Files.deleteIfExists(rows(job.jobId()));
+        } catch (Exception e) {
+            throw new ArchiveStoreException("cannot acknowledge epoch source " + job.jobId(), e);
+        }
+    }
+
+    /**
+     * Removes uncommitted source material made non-canonical by a rollback.
+     * This is intentionally source-local: committed archive rows are
+     * invalidated separately by the backend generation protocol.
+     */
+    public int discardAfterEpoch(long epochInclusive) {
+        int discarded = 0;
+        try (var files = Files.list(directory)) {
+            for (Path path : files.filter(candidate -> candidate.getFileName().toString().endsWith(".properties"))
+                    .toList()) {
+                EpochArchiveJob job = readManifest(path);
+                if (job.epoch() > epochInclusive) {
+                    acknowledge(job);
+                    discarded++;
+                }
+            }
+            return discarded;
+        } catch (Exception e) {
+            throw e instanceof ArchiveStoreException store ? store
+                    : new ArchiveStoreException("cannot discard rolled-back epoch sources", e);
+        }
     }
 
     @Override public ArchiveSourceLease acquire(EpochArchiveJob job, Instant expiresAt) {
@@ -138,6 +166,7 @@ public final class DurableEpochFileSource<T> implements EpochArchiveSource<T> {
         p.setProperty("genesis", job.networkIdentity().genesisHash()); p.setProperty("dataset", job.dataset().name());
         p.setProperty("projection", Integer.toString(job.projectionVersion())); p.setProperty("epoch", Long.toString(job.epoch()));
         p.setProperty("block", Long.toString(job.boundaryBlockNumber())); p.setProperty("slot", Long.toString(job.boundarySlot()));
+        p.setProperty("blockTime", Long.toString(job.boundaryBlockTime()));
         p.setProperty("hash", java.util.HexFormat.of().formatHex(job.boundaryBlockHash()));
         p.setProperty("state", job.sourceStateVersion()); p.setProperty("reference", job.sourceReference());
         p.setProperty("created", Long.toString(job.createdAt().toEpochMilli())); return p;
@@ -150,7 +179,8 @@ public final class DurableEpochFileSource<T> implements EpochArchiveSource<T> {
                     new ArchiveNetworkIdentity(Integer.parseInt(p.getProperty("magic")), p.getProperty("genesis")),
                     ArchiveDatasetId.valueOf(p.getProperty("dataset")), Integer.parseInt(p.getProperty("projection")),
                     Long.parseLong(p.getProperty("epoch")), Long.parseLong(p.getProperty("block")),
-                    Long.parseLong(p.getProperty("slot")), java.util.HexFormat.of().parseHex(p.getProperty("hash")),
+                    Long.parseLong(p.getProperty("slot")), Long.parseLong(p.getProperty("blockTime")),
+                    java.util.HexFormat.of().parseHex(p.getProperty("hash")),
                     p.getProperty("state"), p.getProperty("reference"),
                     Instant.ofEpochMilli(Long.parseLong(p.getProperty("created"))));
         } catch (Exception e) { throw new ArchiveStoreException("invalid epoch source manifest " + path, e); }
@@ -159,7 +189,71 @@ public final class DurableEpochFileSource<T> implements EpochArchiveSource<T> {
     private Path rows(UUID id) { return directory.resolve(id + ".rows"); }
     private Path manifest(UUID id) { return directory.resolve(id + ".properties"); }
     private void move(Path from, Path to) throws java.io.IOException {
-        try { Files.move(from, to, StandardCopyOption.ATOMIC_MOVE); }
-        catch (java.nio.file.AtomicMoveNotSupportedException e) { Files.move(from, to); }
+        try { Files.move(from, to, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE); }
+        catch (java.nio.file.AtomicMoveNotSupportedException e) {
+            Files.move(from, to, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    public interface StagingWriter<T> extends AutoCloseable {
+        void append(T fact);
+        void commit();
+        @Override void close();
+        static <T> StagingWriter<T> noop() {
+            return new StagingWriter<>() {
+                public void append(T ignored) { }
+                public void commit() { }
+                public void close() { }
+            };
+        }
+    }
+
+    private final class FileStagingWriter implements StagingWriter<T> {
+        private final EpochArchiveJob job;
+        private final Path temporary;
+        private final DataOutputStream output;
+        private long count;
+        private boolean committed;
+
+        private FileStagingWriter(EpochArchiveJob job, Path temporary) throws java.io.IOException {
+            this.job = job;
+            this.temporary = temporary;
+            this.output = new DataOutputStream(new BufferedOutputStream(Files.newOutputStream(temporary)));
+        }
+
+        public void append(T fact) {
+            if (committed) throw new IllegalStateException("epoch source writer is closed");
+            try {
+                byte[] encoded = codec.encode(fact);
+                output.writeInt(encoded.length);
+                output.write(encoded);
+                count++;
+            } catch (Exception e) {
+                throw new ArchiveStoreException("cannot append epoch source " + job.jobId(), e);
+            }
+        }
+
+        public void commit() {
+            if (committed) return;
+            try {
+                output.flush();
+                output.close();
+                Properties p = properties(job);
+                p.setProperty("rowCount", Long.toString(count));
+                Path temporaryManifest = Files.createTempFile(directory, job.jobId().toString(), ".manifest.tmp");
+                try (var out = Files.newOutputStream(temporaryManifest)) { p.store(out, "yano epoch source"); }
+                move(temporary, rows(job.jobId()));
+                move(temporaryManifest, manifest(job.jobId()));
+                committed = true;
+            } catch (Exception e) {
+                throw new ArchiveStoreException("cannot commit epoch source " + job.jobId(), e);
+            }
+        }
+
+        public void close() {
+            if (committed) return;
+            try { output.close(); } catch (Exception ignored) { }
+            try { Files.deleteIfExists(temporary); } catch (Exception ignored) { }
+        }
     }
 }
