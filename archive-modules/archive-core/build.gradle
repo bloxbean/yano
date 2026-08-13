@@ -5,6 +5,7 @@ plugins {
 
 dependencies {
     api project(':archive-modules:archive-api')
+    implementation libs.rocksdb
 
     testFixturesApi testFixtures(project(':archive-modules:archive-api'))
     testFixturesApi libs.junit.jupiter.api

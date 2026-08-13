@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.runtime.storage;
 
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
+import com.bloxbean.cardano.yano.api.BlockBodyRetentionBoundary;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.db.RocksDbAccess;
@@ -39,6 +40,7 @@ public final class ChainStorageSubsystem implements Subsystem {
     private final RuntimeMaintenanceGate maintenanceGate = new RuntimeMaintenanceGate();
 
     private PruneService blockPruneService;
+    private BlockBodyRetentionBoundary blockBodyRetentionBoundary = BlockBodyRetentionBoundary.NONE;
     private boolean closed;
 
     public ChainStorageSubsystem(YanoConfig config, RuntimeOptions runtimeOptions, Logger log) {
@@ -134,11 +136,17 @@ public final class ChainStorageSubsystem implements Subsystem {
                 runtimeOptions.globals().get(YanoPropertyKeys.Chain.BLOCK_PRUNE_INTERVAL_SECONDS),
                 120L);
         blockPruneService = new PruneService(
-                new BlockPruner(chainState, rocks, blockPruneDepth, pruneBatch),
+                new BlockPruner(chainState, rocks, blockPruneDepth, pruneBatch, blockBodyRetentionBoundary),
                 Math.max(1L, pruneIntervalSec) * 1000L);
         blockPruneService.start();
         log.info("Block body prune service started (retention={} blocks, batch={}, interval={}s)",
                 blockPruneDepth, pruneBatch, pruneIntervalSec);
+    }
+
+    /** Must be installed before the prune service starts. */
+    public void setBlockBodyRetentionBoundary(BlockBodyRetentionBoundary boundary) {
+        if (blockPruneService != null) throw new IllegalStateException("block prune service already started");
+        blockBodyRetentionBoundary = boundary == null ? BlockBodyRetentionBoundary.NONE : boundary;
     }
 
     @Override

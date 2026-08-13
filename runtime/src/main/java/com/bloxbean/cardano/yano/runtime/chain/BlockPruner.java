@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.runtime.chain;
 
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
+import com.bloxbean.cardano.yano.api.BlockBodyRetentionBoundary;
 import com.bloxbean.cardano.yano.runtime.db.RocksDbSupplier;
 import com.bloxbean.cardano.yano.runtime.utxo.Prunable;
 import org.rocksdb.*;
@@ -35,12 +36,19 @@ public final class BlockPruner implements Prunable {
     private final RocksDbSupplier rocksDbSupplier;
     private final int retentionBlocks;
     private final int batchSize;
+    private final BlockBodyRetentionBoundary retentionBoundary;
 
     public BlockPruner(ChainState chainState, RocksDbSupplier rocksDbSupplier, int retentionBlocks, int batchSize) {
+        this(chainState, rocksDbSupplier, retentionBlocks, batchSize, BlockBodyRetentionBoundary.NONE);
+    }
+
+    public BlockPruner(ChainState chainState, RocksDbSupplier rocksDbSupplier, int retentionBlocks, int batchSize,
+                       BlockBodyRetentionBoundary retentionBoundary) {
         this.chainState = chainState;
         this.rocksDbSupplier = rocksDbSupplier;
         this.retentionBlocks = retentionBlocks;
         this.batchSize = batchSize;
+        this.retentionBoundary = retentionBoundary == null ? BlockBodyRetentionBoundary.NONE : retentionBoundary;
     }
 
     @Override
@@ -63,6 +71,11 @@ public final class BlockPruner implements Prunable {
             }
 
             long cutoff = tip.getBlockNumber() - retentionBlocks;
+            var oldestRequired = retentionBoundary.oldestRequiredBlockNumber();
+            if (oldestRequired.isPresent()) {
+                if (oldestRequired.getAsLong() == 0) return;
+                cutoff = Math.min(cutoff, oldestRequired.getAsLong() - 1);
+            }
 
             // Read cursor (-1 means never pruned)
             long cursor = -1;
