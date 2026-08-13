@@ -40,4 +40,23 @@ public final class StandardBlockDatasets {
             }
         };
     }
+
+    public static BlockArchiveDataset<ArchiveBlockFacts> addressTransactions() {
+        return new BlockArchiveDataset<>() {
+            public ArchiveDatasetId dataset() { return ArchiveDatasetId.ADDRESS_TRANSACTION; }
+            public int projectionVersion() { return 1; }
+            public void derive(ArchiveJob job, BlockSourceContext<ArchiveBlockFacts> block,
+                               java.util.function.Consumer<ArchiveRow> sink) {
+                for (AddressTransactionFact tx : block.block().addressTransactions()) {
+                    for (AddressSubject subject : tx.subjects()) {
+                        sink.accept(new ArchiveRow("address_transactions", List.of(subject.subjectType(),
+                                subject.subjectKey(), tx.txHash(), block.blockHash(), block.blockNumber(),
+                                block.slot(), block.epoch(), block.blockTime().getEpochSecond(), tx.txIndex(),
+                                tx.inputCount(), tx.outputCount(), tx.collateralInputCount(),
+                                tx.collateralReturnCount(), job.jobId())));
+                    }
+                }
+            }
+        };
+    }
 }
