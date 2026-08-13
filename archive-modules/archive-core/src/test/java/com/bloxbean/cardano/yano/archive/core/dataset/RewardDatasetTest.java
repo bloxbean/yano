@@ -12,7 +12,8 @@ class RewardDatasetTest {
     void archiveOnlyRewardsUseStableSourceIdsWithoutBoundedSequenceNumbers() {
         byte[] hash = {1};
         var source = new EpochArchiveJob(UUID.randomUUID(), new ArchiveNetworkIdentity(1, "g"),
-                ArchiveDatasetId.REWARD, 1, 20, 100, 200, hash, "reward-v1", "rewards/20", Instant.EPOCH);
+                ArchiveDatasetId.REWARD, 1, 20, 100, 200, 1_700_000_000L,
+                hash, "reward-v1", "rewards/20", Instant.EPOCH);
         ArchiveJob job = ArchiveJob.deterministic(source.networkIdentity(), ArchiveDatasetId.REWARD, 1,
                 new EpochRange(20, 20), new ArchiveRangeAnchor(200, hash, 200, hash), "reward-v1");
         List<ArchiveRow> rows = new ArrayList<>();

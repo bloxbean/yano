@@ -13,10 +13,16 @@ public interface EpochArchiveSource<T> {
 
     List<EpochArchiveJob> pendingAfter(long epochExclusive, int limit);
 
+    /** All unacknowledged jobs, including multiple parts for one epoch. */
+    default List<EpochArchiveJob> pending(int limit) { return pendingAfter(-1, limit); }
+
     Optional<EpochArchiveJob> find(UUID jobId);
 
     ArchiveSourceLease acquire(EpochArchiveJob job, Instant expiresAt);
 
     EpochSourcePage<T> read(EpochArchiveJob job, Optional<String> cursor, int limit,
                             ArchiveSourceLease lease);
+
+    /** Called only after the backend commit receipt and progress are durable. */
+    default void acknowledge(EpochArchiveJob job) { }
 }

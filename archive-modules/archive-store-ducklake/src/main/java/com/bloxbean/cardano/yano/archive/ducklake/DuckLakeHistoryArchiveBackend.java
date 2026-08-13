@@ -13,12 +13,14 @@ import com.bloxbean.cardano.yano.archive.api.ArchiveRangeAnchor;
 import com.bloxbean.cardano.yano.archive.api.ArchiveReadSession;
 import com.bloxbean.cardano.yano.archive.api.ArchiveReceipt;
 import com.bloxbean.cardano.yano.archive.api.ArchiveRetentionCutoff;
+import com.bloxbean.cardano.yano.archive.api.ArchiveRepositorySet;
 import com.bloxbean.cardano.yano.archive.api.ArchiveStoreException;
 import com.bloxbean.cardano.yano.archive.api.ArchiveWriteSession;
 import com.bloxbean.cardano.yano.archive.api.BlockRange;
 import com.bloxbean.cardano.yano.archive.api.EpochRange;
 import com.bloxbean.cardano.yano.archive.api.SourceKind;
 import com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas;
+import com.bloxbean.cardano.yano.archive.api.internal.JdbcArchiveRepositorySet;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -32,6 +34,7 @@ import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -61,6 +64,14 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
     private final Map<Long, LongAdder> activeSnapshots = new ConcurrentHashMap<>();
     private final AtomicReference<ArchiveHealth> health = new AtomicReference<>(ArchiveHealth.healthy());
     private final AtomicBoolean closed = new AtomicBoolean();
+    private DuckLakeTransactionLocator transactionLocator;
+    private final ArchiveRepositorySet repositories = new JdbcArchiveRepositorySet(
+            session -> {
+                if (!(session instanceof DuckLakeReadSession duckLake)) {
+                    throw new IllegalArgumentException("read session does not belong to DuckLake backend");
+                }
+                return duckLake.connection();
+            }, "history_lake.", "history_lake.archive_coverage");
 
     public DuckLakeHistoryArchiveBackend(ArchiveIdentity identity, DuckLakeArchiveConfig config,
                                          DuckDbManager manager) {
@@ -95,6 +106,8 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
             DuckLakeSql.attach(lease.connection(), config, null, false);
             try {
                 new DuckLakeInitializer(config).initialize(lease.connection(), identity);
+                transactionLocator = new DuckLakeTransactionLocator(config.catalogPath());
+                transactionLocator.rebuildIfRequired(lease.connection(), DuckLakeSql.currentSnapshot(lease.connection()));
             } finally {
                 DuckLakeSql.detach(lease.connection());
             }
@@ -209,6 +222,25 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
         } finally {
             releaseWriter();
         }
+    }
+
+    @Override
+    public ArchiveRepositorySet repositories() {
+        return repositories;
+    }
+
+    @Override
+    public Optional<com.bloxbean.cardano.yano.archive.api.ArchiveRecord> findTransaction(
+            ArchiveReadSession session, byte[] txHash) {
+        if (!(session instanceof DuckLakeReadSession read)) {
+            throw new IllegalArgumentException("read session does not belong to DuckLake backend");
+        }
+        var block = transactionLocator.block(read.connection(), read.generation(), txHash);
+        if (block.isEmpty()) return Optional.empty();
+        var query = new com.bloxbean.cardano.yano.archive.api.ArchiveQuery(
+                new BlockRange(block.getAsLong(), block.getAsLong()), Map.of("tx_hash", txHash),
+                com.bloxbean.cardano.yano.archive.api.ArchivePageCursor.Order.ASC, 1, Optional.empty());
+        return repositories.records(ArchiveDatasetId.TRANSACTION).query(session, query).rows().stream().findFirst();
     }
 
     @Override
@@ -348,6 +380,10 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
         writer.release();
     }
 
+    void updateTransactionLocator(long generation, Collection<DuckLakeTransactionLocator.Entry> entries) {
+        transactionLocator.advance(generation, entries);
+    }
+
     void releaseSnapshot(long generation) {
         activeSnapshots.computeIfPresent(generation, (ignored, count) -> {
             count.decrement();
@@ -369,9 +405,17 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
             try {
                 try (Statement sql = connection.createStatement()) { sql.execute("BEGIN TRANSACTION"); }
                 List<UUID> jobs = findAffectedJobs(connection, dataset, range, wholeJobsOnly);
+                if (wholeJobsOnly && jobs.isEmpty()) {
+                    try (Statement sql = connection.createStatement()) { sql.execute("ROLLBACK"); }
+                    return;
+                }
                 for (UUID jobId : jobs) deleteJobRows(connection, dataset, jobId);
+                if (dataset == ArchiveDatasetId.UTXO_HISTORY && !jobs.isEmpty()) reconcileAddressDimension(connection);
                 insertInvalidation(connection, dataset, range);
                 try (Statement sql = connection.createStatement()) { sql.execute("COMMIT"); }
+                if (dataset == ArchiveDatasetId.TRANSACTION) {
+                    transactionLocator.removeJobs(DuckLakeSql.currentSnapshot(connection), jobs);
+                }
             } catch (Exception e) {
                 try (Statement sql = connection.createStatement()) { sql.execute("ROLLBACK"); }
                 catch (SQLException ignored) { }
@@ -385,6 +429,18 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
                     : new ArchiveStoreException("DuckLake invalidation failed", e);
         } finally {
             releaseWriter();
+        }
+    }
+
+    private void reconcileAddressDimension(Connection connection) throws SQLException {
+        try (Statement sql = connection.createStatement()) {
+            sql.execute("DELETE FROM history_lake.addresses a WHERE NOT EXISTS (SELECT 1 "
+                    + "FROM history_lake.transaction_outputs o WHERE o.address_key=a.address_key)");
+            sql.execute("UPDATE history_lake.addresses a SET first_seen_block_number=selected.block_number, "
+                    + "first_seen_slot=selected.slot, first_seen_epoch=selected.epoch FROM ("
+                    + "SELECT address_key, block_number, slot, epoch FROM history_lake.transaction_outputs "
+                    + "QUALIFY row_number() OVER (PARTITION BY address_key ORDER BY block_number, tx_index, output_index)=1"
+                    + ") selected WHERE selected.address_key=a.address_key");
         }
     }
 
@@ -577,6 +633,7 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
         if (ownsManager) manager.close();
+        if (transactionLocator != null) transactionLocator.close();
         directoryLock.close();
         health.set(new ArchiveHealth(ArchiveHealth.Status.CLOSED, "", Instant.now()));
     }

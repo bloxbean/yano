@@ -40,8 +40,7 @@ public final class YanoAssembly {
             YanoPropertyKeys.Ledger.ADAPOT_ENABLED,
             YanoPropertyKeys.Ledger.REWARDS_ENABLED,
             YanoPropertyKeys.Ledger.EPOCH_PARAMS_TRACKING_ENABLED,
-            YanoPropertyKeys.Ledger.GOVERNANCE_ENABLED,
-            YanoPropertyKeys.SnapshotExport.ENABLED
+            YanoPropertyKeys.Ledger.GOVERNANCE_ENABLED
     };
 
     private YanoAssembly() {

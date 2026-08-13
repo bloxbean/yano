@@ -66,10 +66,10 @@ public class EventsResource {
                         break;
                     }
                     if (event == null) {
-                        sink.send(sse.newEventBuilder().comment("heartbeat").build());
+                        awaitSend(sink, sse.newEventBuilder().comment("heartbeat").build());
                         continue;
                     }
-                    sink.send(sse.newEventBuilder()
+                    awaitSend(sink, sse.newEventBuilder()
                             .name(event.topic())
                             .mediaType(MediaType.APPLICATION_JSON_TYPE)
                             .data(toJson(event))
@@ -85,7 +85,7 @@ public class EventsResource {
 
     private static void sendError(Sse sse, SseEventSink sink, String message) {
         try (sink) {
-            sink.send(sse.newEventBuilder()
+            awaitSend(sink, sse.newEventBuilder()
                     .name("error")
                     .mediaType(MediaType.APPLICATION_JSON_TYPE)
                     .data(MAPPER.writeValueAsString(Map.of("error", message)))
@@ -93,6 +93,14 @@ public class EventsResource {
         } catch (Exception e) {
             log.debug("Unable to send SSE error event: {}", e.toString());
         }
+    }
+
+    private static void awaitSend(SseEventSink sink, jakarta.ws.rs.sse.OutboundSseEvent event)
+            throws Exception {
+        // Completion is the only reliable signal that the remote client is
+        // still writable. The virtual thread may block without tying up an
+        // event-loop or core-sync thread.
+        sink.send(event).toCompletableFuture().get(30, TimeUnit.SECONDS);
     }
 
     private static String toJson(NodeEventStream.NodeEvent event) throws Exception {

@@ -8,11 +8,12 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.nio.charset.StandardCharsets;
 
 /**
- * Canonical address → 28-byte index keys. BOTH address-keyed indexes (the
- * UTXO store's utxo_addr CF and the account-history address-tx rows) derive
- * their keys here, so they can never disagree on what an address hashes to.
+ * Canonical Shelley credential extraction and the legacy 28-byte address
+ * hash used by the core UTXO index. ADR-034 exact-address archive subjects
+ * deliberately use the separate collision-checked 32-byte AddressKeyCodec.
  */
 public final class AddressKeyUtil {
     private AddressKeyUtil() {
@@ -24,7 +25,7 @@ public final class AddressKeyUtil {
             byte[] raw = AddressUtil.addressToBytes(bech32OrHex);
             return Blake2bUtil.blake2bHash224(raw);
         } catch (Exception e) {
-            return Blake2bUtil.blake2bHash224(bech32OrHex.getBytes());
+            return Blake2bUtil.blake2bHash224(bech32OrHex.getBytes(StandardCharsets.UTF_8));
         }
     }
 
@@ -64,7 +65,8 @@ public final class AddressKeyUtil {
         } catch (Exception e) {
             // Fall back to hashing the literal string (mirrors addrHash28).
         }
-        byte[] addrHash = Blake2bUtil.blake2bHash224(raw != null ? raw : bech32OrHex.getBytes());
+        byte[] addrHash = Blake2bUtil.blake2bHash224(raw != null ? raw
+                : bech32OrHex.getBytes(StandardCharsets.UTF_8));
         if (addrHash.length == 28) {
             scopes.add(new ScopedHash(0, HexUtil.encodeHexString(addrHash)));
         }

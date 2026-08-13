@@ -13,12 +13,14 @@ import com.bloxbean.cardano.yano.archive.api.ArchiveRangeAnchor;
 import com.bloxbean.cardano.yano.archive.api.ArchiveReadSession;
 import com.bloxbean.cardano.yano.archive.api.ArchiveReceipt;
 import com.bloxbean.cardano.yano.archive.api.ArchiveRetentionCutoff;
+import com.bloxbean.cardano.yano.archive.api.ArchiveRepositorySet;
 import com.bloxbean.cardano.yano.archive.api.ArchiveStoreException;
 import com.bloxbean.cardano.yano.archive.api.ArchiveWriteSession;
 import com.bloxbean.cardano.yano.archive.api.BlockRange;
 import com.bloxbean.cardano.yano.archive.api.EpochRange;
 import com.bloxbean.cardano.yano.archive.api.SourceKind;
 import com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas;
+import com.bloxbean.cardano.yano.archive.api.internal.JdbcArchiveRepositorySet;
 import org.sqlite.SQLiteConnection;
 import org.sqlite.SQLiteConfig;
 
@@ -59,6 +61,13 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
     private final AtomicReference<ArchiveHealth> health = new AtomicReference<>(ArchiveHealth.healthy());
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicBoolean fileLockClosed = new AtomicBoolean();
+    private final ArchiveRepositorySet repositories = new JdbcArchiveRepositorySet(
+            session -> {
+                if (!(session instanceof SqliteReadSession sqlite)) {
+                    throw new IllegalArgumentException("read session does not belong to SQLite backend");
+                }
+                return sqlite.connection();
+            }, "", "archive_coverage");
 
     public SqliteHistoryArchiveBackend(ArchiveIdentity identity, SqliteArchiveConfig config) {
         this.identity = java.util.Objects.requireNonNull(identity, "identity");
@@ -184,6 +193,11 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
             markDegraded("SQLite snapshot open failed", e);
             throw new ArchiveStoreException("failed to open SQLite read snapshot", e);
         }
+    }
+
+    @Override
+    public ArchiveRepositorySet repositories() {
+        return repositories;
     }
 
     @Override
@@ -330,11 +344,18 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
             connection.setAutoCommit(false);
             try {
                 List<String> jobs = findAffectedJobs(connection, dataset, range, wholeJobsOnly);
+                if (wholeJobsOnly && jobs.isEmpty()) {
+                    connection.rollback();
+                    return;
+                }
                 try (PreparedStatement delete = connection.prepareStatement("DELETE FROM archive_commits WHERE job_id=?")) {
                     for (String job : jobs) {
                         delete.setString(1, job);
                         delete.executeUpdate();
                     }
+                }
+                if (dataset == ArchiveDatasetId.UTXO_HISTORY && !jobs.isEmpty()) {
+                    reconcileAddressDimension(connection);
                 }
                 try (PreparedStatement insert = connection.prepareStatement(
                         "INSERT INTO archive_invalidations VALUES (?, ?, ?, ?, ?, ?)")) {
@@ -358,6 +379,16 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
                     : new ArchiveStoreException("SQLite invalidation failed", e);
         } finally {
             releaseWriter();
+        }
+    }
+
+    private void reconcileAddressDimension(Connection connection) throws SQLException {
+        try (Statement sql = connection.createStatement()) {
+            sql.executeUpdate("DELETE FROM addresses WHERE NOT EXISTS (SELECT 1 FROM transaction_outputs o "
+                    + "WHERE o.address_key=addresses.address_key)");
+            sql.executeUpdate("UPDATE addresses SET (first_seen_block_number, first_seen_slot, first_seen_epoch)="
+                    + "(SELECT o.block_number, o.slot, o.epoch FROM transaction_outputs o "
+                    + "WHERE o.address_key=addresses.address_key ORDER BY o.block_number, o.tx_index, o.output_index LIMIT 1)");
         }
     }
 

@@ -223,9 +223,9 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     private HashMap<String, HashSet<String>> batchReverseAdded;    // "drepType:drepHash" -> set of "ct:hash"
     private HashMap<String, HashSet<String>> batchReverseRemoved;  // "drepType:drepHash" -> set of "ct:hash"
 
-    // Optional epoch snapshot exporter for debugging (NOOP when disabled)
-    private com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter snapshotExporter =
-            com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter.NOOP;
+    private volatile com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink archiveStaging =
+            com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.NOOP;
+    private volatile com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Boundary archiveBoundary;
 
     // Optional governance subsystem
     private volatile com.bloxbean.cardano.yano.ledgerstate.governance.GovernanceBlockProcessor governanceBlockProcessor;
@@ -350,9 +350,18 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         this.epochBoundaryProcessor = processor;
     }
 
-    public void setSnapshotExporter(com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter exporter) {
-        this.snapshotExporter = exporter != null ? exporter
-                : com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter.NOOP;
+    public void setEpochArchiveStagingSink(
+            com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink sink) {
+        this.archiveStaging = sink != null ? sink
+                : com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.NOOP;
+        if (epochBoundaryProcessor != null) epochBoundaryProcessor.setEpochArchiveStagingSink(this.archiveStaging);
+    }
+
+    @Override
+    public void prepareEpochBoundary(int previousEpoch, int newEpoch, long slot, long blockNumber) {
+        archiveBoundary = new com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Boundary(
+                previousEpoch, newEpoch, slot, blockNumber);
+        if (epochBoundaryProcessor != null) epochBoundaryProcessor.setBoundaryCoordinates(archiveBoundary);
     }
 
     /**
@@ -1733,6 +1742,9 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             if (perCredentialTotal.isEmpty()) {
                 return;
             }
+            try (var rewardArchive = archiveStaging.enabled(
+                    com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset.REWARD)
+                    ? archiveStaging.openRewards(epoch, "mir") : null) {
 
             int credited = 0;
             int skipped = 0;
@@ -1764,6 +1776,12 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 } else {
                     creditedTreasury = creditedTreasury.add(amount);
                 }
+                if (rewardArchive != null) rewardArchive.append(
+                        new com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.RewardFact(
+                                ck.typeInt(), ck.hash(), null,
+                                mirType == REWARD_REST_MIR_RESERVES ? "mir_reserves" : "mir_treasury",
+                                epoch - 1, epoch, amount,
+                                (mirType == REWARD_REST_MIR_RESERVES ? "mir-reserves-" : "mir-treasury-") + epoch));
             }
             for (byte[] key : keysToDelete) {
                 deleteStateWithDelta(key, batch, deltaOps);
@@ -1785,9 +1803,11 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             long boundarySlot = slotForEpochStart(epoch);
             commitBoundaryDelta(boundarySlot, PHASE_MIR, batch, deltaOps);
             db.write(wo, batch);
+            if (rewardArchive != null) rewardArchive.commit();
             if (credited > 0 || skipped > 0) {
                 log.info("Credited {} MIR reward_rest entries for epoch {}: total={} (reserves={}, treasury={}), skipped={} deregistered",
                         credited, epoch, totalCredited, creditedReserves, creditedTreasury, skipped);
+            }
             }
         } catch (Exception e) {
             log.error("creditMirRewardRest failed: {}", e.toString(), e);
@@ -2441,11 +2461,16 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     public void handleEpochTransition(int previousEpoch, int newEpoch) {
         if (!enabled) return;
 
+        var boundary = archiveBoundary;
+        if (boundary != null) archiveStaging.beginBoundary(boundary);
+
         // Process epoch boundary: rewards, adapot, protocol params, governance
         if (epochBoundaryProcessor != null) {
             try {
                 epochBoundaryProcessor.processEpochBoundary(previousEpoch, newEpoch);
+                if (boundary != null) archiveStaging.completeBoundary(boundary);
             } catch (Exception e) {
+                if (boundary != null) archiveStaging.abortBoundary(boundary);
                 log.warn("Epoch boundary processing failed for {} -> {}: {}",
                         previousEpoch, newEpoch, e.getMessage(), e);
                 throw new RuntimeException("Epoch boundary processing failed for "
@@ -3501,12 +3526,18 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     public java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> createAndCommitDelegationSnapshot(
             int epoch, java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> precomputedUtxoBalances) {
         java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> utxoBalances = null;
+        var archiveWriter = archiveStaging.enabled(
+                com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset.EPOCH_STAKE)
+                ? archiveStaging.openStake(epoch) : null;
         try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
-            utxoBalances = createDelegationSnapshot(epoch, batch, precomputedUtxoBalances);
+            utxoBalances = createDelegationSnapshot(epoch, batch, precomputedUtxoBalances, archiveWriter);
             db.write(wo, batch);
+            if (archiveWriter != null) archiveWriter.commit();
         } catch (Exception ex) {
             log.error("Failed to create delegation snapshot for epoch {}: {}", epoch, ex.toString());
             throw new RuntimeException("Failed to create delegation snapshot for epoch " + epoch, ex);
+        } finally {
+            if (archiveWriter != null) archiveWriter.close();
         }
         return utxoBalances;
     }
@@ -3520,7 +3551,10 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
     private java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> createDelegationSnapshot(
             int epoch, WriteBatch batch,
-            java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> precomputedUtxoBalances) throws RocksDBException {
+            java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> precomputedUtxoBalances,
+            com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.FactWriter<
+                    com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.StakeFact> archiveWriter)
+            throws RocksDBException {
         byte[] epochBytes = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(epoch).array();
         int count = 0;
         int skippedUnregistered = 0;
@@ -3606,11 +3640,6 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             // Fallback: compute inline. Era not available here — uses protocol version fallback.
             utxoBalances = aggregateUtxoBalances(epoch);
         }
-
-        // Collect entries for export (only allocate list when exporter is active)
-        final java.util.List<com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter.StakeEntry> exportEntries =
-                (snapshotExporter != com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter.NOOP)
-                        ? new java.util.ArrayList<>() : null;
 
         try (RocksIterator it = db.newIterator(cfState)) {
             it.seek(new byte[]{PREFIX_POOL_DELEG});
@@ -3707,11 +3736,9 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 batch.put(cfEpochSnapshot, snapshotKey, snapshotVal);
                 count++;
 
-                // Collect for export (only if exporter is active)
-                if (exportEntries != null) {
-                    exportEntries.add(new com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter.StakeEntry(
-                            credType, credHash, deleg.poolHash(), stakeAmount));
-                }
+                if (archiveWriter != null) archiveWriter.append(
+                        new com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.StakeFact(
+                                credType, credHash, deleg.poolHash(), stakeAmount));
 
 
                 it.next();
@@ -3722,11 +3749,6 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         batch.put(cfState, META_LAST_SNAPSHOT_EPOCH, epochMeta);
         log.info("Created delegation snapshot for epoch {} ({} delegations, amounts={}, skipped: {} unregistered, {} zero-balance, {} retired-pool, {} stale-delegation, {} dereg-after-deleg)",
                 epoch, count, utxoBalances != null, skippedUnregistered, skippedZeroBalance, skippedRetiredPool, skippedStaleDelegation, skippedDeregAfterDeleg);
-
-        // Export stake snapshot for debugging
-        if (exportEntries != null) {
-            snapshotExporter.exportStakeSnapshot(epoch, exportEntries);
-        }
 
         return utxoBalances;
     }

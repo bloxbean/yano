@@ -62,9 +62,11 @@ public class EpochRewardCalculator {
     private org.rocksdb.WriteBatch rewardBatch;
     private List<DefaultAccountStateStore.DeltaOp> rewardDeltaOps;
     private DefaultAccountStateStore.BatchStateOverlay rewardStateOverlay;
-    // Reward history rows (ADR-033 M2), flushed atomically with the batch.
-    private AccountHistoryStore rewardHistoryStore;
-    private List<AccountHistoryStore.RewardHistoryEntry> pendingRewardHistory;
+    private volatile com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink archiveStaging =
+            com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.NOOP;
+    private volatile com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Boundary archiveBoundary;
+    private com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.FactWriter<
+            com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.RewardFact> rewardArchiveWriter;
 
     public EpochRewardCalculator(RocksDB db, ColumnFamilyHandle cfState,
                                  ColumnFamilyHandle cfEpochSnapshot, boolean enabled) {
@@ -110,12 +112,15 @@ public class EpochRewardCalculator {
         this.accountStateStore = store;
     }
 
-    /**
-     * Enables per-epoch reward history (ADR-033 M2): every creditReward is
-     * buffered and flushed into the boundary batch on commit.
-     */
-    public void setRewardHistoryStore(AccountHistoryStore rewardHistoryStore) {
-        this.rewardHistoryStore = rewardHistoryStore;
+    public void setEpochArchiveStagingSink(
+            com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink sink) {
+        this.archiveStaging = sink != null ? sink
+                : com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.NOOP;
+    }
+
+    public void setArchiveBoundary(
+            com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Boundary boundary) {
+        this.archiveBoundary = boundary;
     }
 
     public void setEraProvider(EraProvider eraProvider) {
@@ -130,11 +135,13 @@ public class EpochRewardCalculator {
      * Open a WriteBatch for delta-aware reward distribution.
      * Must be called before calculateAndDistribute() and paired with commitRewardBatch().
      */
-    void beginRewardBatch() {
+    void beginRewardBatch(int archiveEpoch, String part) {
         this.rewardBatch = new org.rocksdb.WriteBatch();
         this.rewardDeltaOps = new ArrayList<>();
         this.rewardStateOverlay = new DefaultAccountStateStore.BatchStateOverlay();
-        this.pendingRewardHistory = new ArrayList<>();
+        this.rewardArchiveWriter = archiveStaging.enabled(
+                com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset.REWARD)
+                ? archiveStaging.openRewards(archiveEpoch, part) : null;
     }
 
     /**
@@ -157,19 +164,17 @@ public class EpochRewardCalculator {
      */
     void commitRewardBatch(long boundarySlot, byte phase) throws RocksDBException {
         if (rewardBatch == null) return;
+        var archiveWriter = rewardArchiveWriter;
         try (var wo = new org.rocksdb.WriteOptions()) {
-            if (rewardHistoryStore != null && pendingRewardHistory != null && !pendingRewardHistory.isEmpty()) {
-                // Same WriteBatch: reward history rows commit atomically with the credits.
-                // The phase scopes the row keys (PHASE_REWARDS vs PHASE_POOLREAP share a boundary slot).
-                rewardHistoryStore.appendRewardRows(rewardBatch, boundarySlot, phase, pendingRewardHistory);
-            }
             accountStateStore.commitBoundaryDelta(boundarySlot, phase, rewardBatch, rewardDeltaOps);
             db.write(wo, rewardBatch);
+            if (archiveWriter != null) archiveWriter.commit();
         } finally {
+            if (archiveWriter != null) archiveWriter.close();
             rewardBatch.close();
             rewardBatch = null;
             rewardDeltaOps = null;
-            pendingRewardHistory = null;
+            rewardArchiveWriter = null;
             if (rewardStateOverlay != null) {
                 rewardStateOverlay.clear();
             }
@@ -754,10 +759,12 @@ public class EpochRewardCalculator {
         accountStateStore.putStateWithDelta(rewardKey,
                 AccountStateCborCodec.encodeAccumulatedReward(reward), rewardBatch, rewardDeltaOps, rewardStateOverlay);
 
-        if (rewardHistoryStore != null && rewardHistoryStore.isRewardsHistoryEnabled()
-                && pendingRewardHistory != null) {
-            pendingRewardHistory.add(new AccountHistoryStore.RewardHistoryEntry(
-                    credType, credHash, amount, earnedEpoch, rewardType.name(), poolHash));
+        if (rewardArchiveWriter != null) {
+            int spendableEpoch = archiveBoundary != null ? archiveBoundary.newEpoch() : earnedEpoch + 2;
+            String sourceId = poolHash != null && !poolHash.isBlank() ? poolHash : "ledger";
+            rewardArchiveWriter.append(new com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.RewardFact(
+                    credType, credHash, poolHash, rewardType.name(), earnedEpoch, spendableEpoch,
+                    amount, sourceId));
         }
     }
 

@@ -20,6 +20,8 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
@@ -36,6 +38,7 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
     private final ArchiveReceipt replayReceipt;
     private boolean committed;
     private boolean closed;
+    private final List<DuckLakeTransactionLocator.Entry> transactionEntries = new ArrayList<>();
 
     DuckLakeWriteSession(DuckLakeHistoryArchiveBackend backend, ArchiveJob job,
                          DuckDbLease lease, ArchiveReceipt replayReceipt) {
@@ -75,6 +78,11 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
         if (jobColumn >= 0 && !job.jobId().equals(values.get(jobColumn))) {
             throw new ArchiveStoreException("row archive_job_id does not match active job for " + row.table());
         }
+        if (job.dataset() == com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.TRANSACTION
+                && row.table().equals("chain_transaction")) {
+            transactionEntries.add(new DuckLakeTransactionLocator.Entry((byte[]) values.get(0),
+                    ((Number) values.get(2)).longValue(), job.jobId()));
+        }
         if (replayReceipt != null) {
             rowCounts.merge(row.table(), 1L, Long::sum);
             updateDigest(row);
@@ -101,6 +109,7 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
                 close();
                 throw new ArchiveStoreException("committed job retry has different rows: " + job.jobId());
             }
+            backend.updateTransactionLocator(replayReceipt.backendGeneration(), transactionEntries);
             committed = true;
             close();
             return replayReceipt;
@@ -122,10 +131,11 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
                 throw new ArchiveStoreException("DuckLake generation mismatch after commit: predicted="
                         + predictedGeneration + ", actual=" + actualGeneration);
             }
-            committed = true;
             ArchiveReceipt receipt = new ArchiveReceipt(job.jobId(), job.networkIdentity(), job.dataset(),
                     job.projectionVersion(), job.range(), job.anchors(), actualGeneration,
                     rowCounts, orderedDigest, committedAt);
+            backend.updateTransactionLocator(actualGeneration, transactionEntries);
+            committed = true;
             close();
             return receipt;
         } catch (SQLException | ArithmeticException e) {
@@ -158,7 +168,17 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
                 ArchiveTableSchema schema = allowedTables.get(table);
                 String target = "history_lake." + DuckLakeSql.name(table);
                 String staging = stagingName(table);
-                if (isContentAddressed(table)) {
+                if (table.equals("addresses")) {
+                    String selected = "(SELECT * FROM " + staging
+                            + " QUALIFY row_number() OVER (PARTITION BY address_key "
+                            + "ORDER BY first_seen_block_number, first_seen_slot)=1)";
+                    sql.execute("DELETE FROM " + target + " t USING " + selected + " s WHERE "
+                            + keyJoin(schema, "s", "t")
+                            + " AND s.first_seen_block_number < t.first_seen_block_number");
+                    sql.execute("INSERT INTO " + target + " SELECT s.* FROM " + selected
+                            + " s WHERE NOT EXISTS (SELECT 1 FROM " + target + " t WHERE "
+                            + keyJoin(schema, "s", "t") + ")");
+                } else if (isContentAddressed(table)) {
                     sql.execute("INSERT INTO " + target + " SELECT s.* FROM " + staging + " s WHERE NOT EXISTS ("
                             + "SELECT 1 FROM " + target + " t WHERE " + keyJoin(schema, "s", "t") + ")");
                 } else {
@@ -181,12 +201,33 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
                     result.next();
                     duplicateCount = result.getLong(1);
                 }
-                if (duplicateCount != 0) {
+                if (duplicateCount != 0 && !table.equals("addresses")) {
                     throw new ArchiveStoreException("duplicate logical primary key in job for " + table);
                 }
 
                 String target = "history_lake." + DuckLakeSql.name(table);
-                if (isContentAddressed(table)) {
+                if (table.equals("addresses")) {
+                    String staticDifference = schema.columns().subList(0, 13).stream()
+                            .filter(column -> !schema.primaryKey().contains(column.name()))
+                            .map(column -> "s." + DuckLakeSql.name(column.name()) + " IS DISTINCT FROM t."
+                                    + DuckLakeSql.name(column.name()))
+                            .reduce((left, right) -> left + " OR " + right).orElse("false");
+                    try (var result = sql.executeQuery("SELECT count(*) FROM " + staging + " s JOIN " + target
+                            + " t ON " + keyJoin(schema, "s", "t") + " WHERE " + staticDifference)) {
+                        result.next();
+                        if (result.getLong(1) != 0) {
+                            throw new ArchiveStoreException("address dimension conflict for canonical address key");
+                        }
+                    }
+                    try (var result = sql.executeQuery("SELECT count(*) FROM " + staging + " GROUP BY address_key "
+                            + "HAVING count(DISTINCT hash(raw_address, display_address, network_id, address_type, "
+                            + "payment_credential_type, payment_credential, stake_reference_type, "
+                            + "stake_credential_type, stake_credential, pointer_slot, pointer_tx_index, "
+                            + "pointer_cert_index)) > 1")) {
+                        if (result.next()) throw new ArchiveStoreException(
+                                "address dimension conflict within archive job");
+                    }
+                } else if (isContentAddressed(table)) {
                     String difference = schema.columns().stream()
                             .filter(column -> !schema.primaryKey().contains(column.name()))
                             .map(column -> "s." + DuckLakeSql.name(column.name()) + " IS DISTINCT FROM t."

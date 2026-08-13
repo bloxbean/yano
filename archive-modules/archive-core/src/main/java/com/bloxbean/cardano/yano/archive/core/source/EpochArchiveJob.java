@@ -11,7 +11,8 @@ import java.util.UUID;
 /** Restart-discoverable reference to an immutable epoch-derived source. */
 public record EpochArchiveJob(UUID jobId, ArchiveNetworkIdentity networkIdentity,
                               ArchiveDatasetId dataset, int projectionVersion,
-                              long epoch, long boundaryBlockNumber, long boundarySlot, byte[] boundaryBlockHash,
+                              long epoch, long boundaryBlockNumber, long boundarySlot, long boundaryBlockTime,
+                              byte[] boundaryBlockHash,
                               String sourceStateVersion, String sourceReference,
                               Instant createdAt) {
     public EpochArchiveJob {
@@ -21,7 +22,8 @@ public record EpochArchiveJob(UUID jobId, ArchiveNetworkIdentity networkIdentity
         if (dataset.sourceKind() != com.bloxbean.cardano.yano.archive.api.SourceKind.EPOCH) {
             throw new IllegalArgumentException("epoch job requires an epoch dataset");
         }
-        if (projectionVersion < 1 || epoch < 0 || boundaryBlockNumber < 0 || boundarySlot < 0) {
+        if (projectionVersion < 1 || epoch < 0 || boundaryBlockNumber < 0
+                || boundarySlot < 0 || boundaryBlockTime < 0) {
             throw new IllegalArgumentException("invalid epoch job coordinate");
         }
         if (boundaryBlockHash == null || boundaryBlockHash.length == 0) {
@@ -42,6 +44,7 @@ public record EpochArchiveJob(UUID jobId, ArchiveNetworkIdentity networkIdentity
         if (!(other instanceof EpochArchiveJob that)) return false;
         return projectionVersion == that.projectionVersion && epoch == that.epoch
                 && boundaryBlockNumber == that.boundaryBlockNumber && boundarySlot == that.boundarySlot
+                && boundaryBlockTime == that.boundaryBlockTime
                 && jobId.equals(that.jobId) && networkIdentity.equals(that.networkIdentity)
                 && dataset == that.dataset && Arrays.equals(boundaryBlockHash, that.boundaryBlockHash)
                 && sourceStateVersion.equals(that.sourceStateVersion)
@@ -50,7 +53,8 @@ public record EpochArchiveJob(UUID jobId, ArchiveNetworkIdentity networkIdentity
 
     @Override public int hashCode() {
         int result = Objects.hash(jobId, networkIdentity, dataset, projectionVersion, epoch,
-                boundaryBlockNumber, boundarySlot, sourceStateVersion, sourceReference, createdAt);
+                boundaryBlockNumber, boundarySlot, boundaryBlockTime,
+                sourceStateVersion, sourceReference, createdAt);
         return 31 * result + Arrays.hashCode(boundaryBlockHash);
     }
 }

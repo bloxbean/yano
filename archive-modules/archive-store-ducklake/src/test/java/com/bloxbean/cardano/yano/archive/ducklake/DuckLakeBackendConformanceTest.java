@@ -150,6 +150,42 @@ class DuckLakeBackendConformanceTest extends AbstractArchiveBackendConformanceTe
     }
 
     @Test
+    void transactionLocatorSurvivesRestartAndVerifiesAgainstPinnedRows() {
+        ArchiveIdentity identity = backend().identity();
+        ArchiveJob job = job(20, 29, (byte) 8);
+        byte[] txHash = new byte[32];
+        Arrays.fill(txHash, (byte) 8);
+        commit(backend(), job, row(job, (byte) 8, 23));
+        try (var read = backend().openReadSession()) {
+            assertThat(backend().findTransaction(read, txHash)).isPresent();
+        }
+        backend().close();
+
+        try (var reopened = open(identity); var read = reopened.openReadSession()) {
+            assertThat(reopened.findTransaction(read, txHash)).isPresent();
+            reopened.invalidate(ArchiveDatasetId.TRANSACTION, new BlockRange(20, 29));
+        }
+        try (var reopened = open(identity); var read = reopened.openReadSession()) {
+            assertThat(reopened.findTransaction(read, txHash)).isEmpty();
+        }
+    }
+
+    @Test
+    void transactionLocatorHonorsEachPinnedGenerationAcrossInvalidation() {
+        ArchiveJob job = job(30, 39, (byte) 9);
+        byte[] txHash = new byte[32];
+        Arrays.fill(txHash, (byte) 9);
+        commit(backend(), job, row(job, (byte) 9, 33));
+        try (var before = backend().openReadSession()) {
+            backend().invalidate(ArchiveDatasetId.TRANSACTION, new BlockRange(30, 39));
+            try (var current = backend().openReadSession()) {
+                assertThat(backend().findTransaction(current, txHash)).isEmpty();
+            }
+            assertThat(backend().findTransaction(before, txHash)).isPresent();
+        }
+    }
+
+    @Test
     void independentReadOnlyDuckDbClientCanQueryCommittedArchive() throws Exception {
         ArchiveJob job = job(0, 9, (byte) 6);
         commit(backend(), job, row(job, (byte) 6, 9));

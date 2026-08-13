@@ -125,10 +125,13 @@ public final class BlockPruner implements Prunable {
                     it.next();
                 }
 
-                if (deleted > 0) {
+                if (lastPrunedBlock > cursor) {
                     batch.put(metadataCf, CURSOR_KEY, longToBytes(lastPrunedBlock));
                     db.write(wo, batch);
-                    log.info("Block pruner: deleted {} block bodies, cursor now at block {}", deleted, lastPrunedBlock);
+                    if (deleted > 0) {
+                        log.info("Block pruner: deleted {} block bodies, cursor now at block {}",
+                                deleted, lastPrunedBlock);
+                    }
                 }
             }
         } catch (Exception e) {

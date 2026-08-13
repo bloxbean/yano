@@ -394,6 +394,28 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     }
 
     @Override
+    public long forEachUtxoRecord(java.util.function.Consumer<Utxo> consumer) {
+        if (!enabled || db == null) return -1;
+        org.rocksdb.Snapshot snapshot = db.getSnapshot();
+        try (org.rocksdb.ReadOptions options = new org.rocksdb.ReadOptions().setSnapshot(snapshot);
+             RocksIterator it = db.newIterator(cfUnspent, options)) {
+            byte[] applied = db.get(cfMeta, options, META_LAST_APPLIED_BLOCK);
+            long snapshotBlock = applied == null ? 0
+                    : ByteBuffer.wrap(applied).order(ByteOrder.BIG_ENDIAN).getLong();
+            for (it.seekToFirst(); it.isValid(); it.next()) {
+                String txHash = UtxoKeyUtil.txHashFromOutpointKey(it.key());
+                int index = UtxoKeyUtil.outputIndexFromOutpointKey(it.key());
+                consumer.accept(decodeStoredToUtxo(it.value(), new Outpoint(txHash, index)));
+            }
+            return snapshotBlock;
+        } catch (RocksDBException e) {
+            throw new IllegalStateException("failed to capture UTXO snapshot", e);
+        } finally {
+            db.releaseSnapshot(snapshot);
+        }
+    }
+
+    @Override
     public void forEachUtxoAtSlot(long maxSlot, java.util.function.BiConsumer<String, BigInteger> consumer) {
         if (!enabled || db == null) return;
         // Use a RocksDB snapshot for a consistent point-in-time view.

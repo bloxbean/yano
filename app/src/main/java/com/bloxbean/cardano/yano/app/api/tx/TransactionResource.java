@@ -17,6 +17,7 @@ import com.bloxbean.cardano.yano.app.api.tx.dto.TxDto;
 import com.bloxbean.cardano.yano.app.api.tx.dto.TxInputsOutputsDto;
 import com.bloxbean.cardano.yano.app.api.tx.dto.TxStatusDto;
 import com.bloxbean.cardano.yano.app.api.tx.dto.TxUtxoDto;
+import com.bloxbean.cardano.yano.app.archive.HistoryArchiveService;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
@@ -43,6 +44,9 @@ public class TransactionResource {
     @Inject
     TxGateway txGateway;
 
+    @Inject
+    HistoryArchiveService historyArchive;
+
     /**
      * Wallet-facing status: {@code in_block} (with confirmations), {@code pending}
      * (in this node's mempool), or {@code unknown}. Always 200 for a well-formed
@@ -57,6 +61,33 @@ public class TransactionResource {
                     .build();
         }
         String normalized = txHash.toLowerCase();
+
+        if (historyArchive.enabled()) {
+            HistoryArchiveService.TransactionLookup lookup = historyArchive.findTransaction(
+                    HexUtil.decodeHexString(normalized));
+            if (lookup.state() == HistoryArchiveService.TransactionLookup.State.FOUND) {
+                var row = lookup.row();
+                long blockNumber = ((Number) row.value("block_number")).longValue();
+                long slot = ((Number) row.value("slot")).longValue();
+                long blockTime = ((Number) row.value("block_time")).longValue();
+                String blockHash = HexUtil.encodeHexString((byte[]) row.value("block_hash"));
+                var tip = chainQuery != null ? chainQuery.getLocalTip() : null;
+                long confirmations = tip == null ? 0 : Math.max(0, tip.getBlockNumber() - blockNumber);
+                return Response.ok(TxStatusDto.inBlock(normalized, blockNumber, blockHash,
+                        slot, blockTime, confirmations)).build();
+            }
+            if (txGateway.isTransactionInMemPool(normalized)) {
+                return Response.ok(TxStatusDto.pending(normalized)).build();
+            }
+            if (lookup.state() == HistoryArchiveService.TransactionLookup.State.INCOMPLETE
+                    || lookup.state() == HistoryArchiveService.TransactionLookup.State.UNAVAILABLE) {
+                return Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                        .entity(Map.of("tx_hash", normalized, "status", "incomplete",
+                                "detail", lookup.detail()))
+                        .build();
+            }
+            return Response.ok(TxStatusDto.unknown(normalized)).build();
+        }
 
         UtxoState utxoState = ledgerQuery.getUtxoState();
         if (utxoState != null && utxoState.isEnabled()) {

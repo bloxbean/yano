@@ -11,7 +11,9 @@ import com.bloxbean.cardano.yano.archive.api.BlockRange;
 import com.bloxbean.cardano.yano.archive.core.config.ArchiveWorkerConfig;
 import com.bloxbean.cardano.yano.archive.core.dataset.BlockArchiveDataset;
 import com.bloxbean.cardano.yano.archive.core.dataset.BlockSourceContext;
+import com.bloxbean.cardano.yano.archive.core.dataset.StatefulBlockArchiveDataset;
 import com.bloxbean.cardano.yano.archive.core.source.BlockArchiveSource;
+import com.bloxbean.cardano.yano.archive.core.hot.RocksDbHotHistoryStore;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -48,6 +50,7 @@ public final class BlockArchiveWorker<B> {
     /** Processes at most one configured batch and returns the last committed block. */
     public long runBatch(BlockArchiveDataset<B> dataset, long requestedStart, long finalizedEnd) {
         Objects.requireNonNull(dataset, "dataset");
+        reconcileCommittedTip(dataset, requestedStart);
         long previous = progress.load(dataset.dataset(), ArchiveTrack.BACKFILL)
                 .map(ArchiveProgress::coordinate).orElse(requestedStart - 1);
         long start = Math.max(requestedStart, previous + 1);
@@ -61,6 +64,14 @@ public final class BlockArchiveWorker<B> {
                     ArchiveWorkerStatus.State.PAUSED_CORE_LAG, previous, coreSync.lag(),
                     "core sync has priority");
             return previous;
+        }
+        long alreadyCoveredEnd = backend.coverage(dataset.dataset()).completeRanges().stream()
+                .filter(range -> range.startInclusive() <= start && range.endInclusive() >= start)
+                .mapToLong(com.bloxbean.cardano.yano.archive.api.ArchiveRange::endInclusive)
+                .findFirst().orElse(-1);
+        if (alreadyCoveredEnd >= start) {
+            return advanceThroughCovered(dataset, start, Math.min(finalizedEnd,
+                    Math.min(alreadyCoveredEnd, start + config.maxBlocksPerBatch() - 1L)));
         }
 
         long end = Math.min(finalizedEnd, Math.addExact(start, config.maxBlocksPerBatch() - 1L));
@@ -83,6 +94,9 @@ public final class BlockArchiveWorker<B> {
                     new BlockRange(start, end), new ArchiveRangeAnchor(first.slot(), first.blockHash(),
                             last.slot(), last.blockHash()), "canonical-block-v1");
             List<ArchiveRow> rows = new ArrayList<>();
+            if (dataset instanceof StatefulBlockArchiveDataset<B> stateful) {
+                stateful.beginBatch(job, List.copyOf(blocks));
+            }
             for (BlockSourceContext<B> context : blocks) {
                 dataset.derive(job, context, row -> {
                     if (rows.size() >= config.maxRowsPerBatch()) {
@@ -98,19 +112,93 @@ public final class BlockArchiveWorker<B> {
                 recheck(last);
                 receipt = write.commit();
             }
-            progress.save(new ArchiveProgress(dataset.dataset(), ArchiveTrack.BACKFILL,
-                    end, last.slot(), last.blockHash(), receipt.backendGeneration()), receipt);
+            if (dataset instanceof StatefulBlockArchiveDataset<B> stateful) {
+                stateful.commitBatch(receipt);
+            } else {
+                progress.save(new ArchiveProgress(dataset.dataset(), ArchiveTrack.BACKFILL,
+                        end, last.slot(), last.blockHash(), receipt.backendGeneration()), receipt);
+            }
             metrics.update(dataset.dataset(), ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.IDLE,
                     end, finalizedEnd - end, "committed generation " + receipt.backendGeneration());
             return end;
         } catch (RowLimitExceeded e) {
+            abortStateful(dataset);
             metrics.update(dataset.dataset(), ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.DEGRADED,
                     previous, finalizedEnd - previous, "row limit exceeded; reduce block batch size");
             throw new ArchiveStoreException("archive row limit exceeded before a complete block range", e);
         } catch (RuntimeException e) {
+            abortStateful(dataset);
             metrics.update(dataset.dataset(), ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.DEGRADED,
                     previous, finalizedEnd - previous, e.getMessage());
             throw e;
+        }
+    }
+
+    private long advanceThroughCovered(BlockArchiveDataset<B> dataset, long start, long end) {
+        try (var lease = source.acquire(start, end, Instant.now().plus(leaseDuration))) {
+            List<BlockSourceContext<B>> blocks = new ArrayList<>();
+            for (long block = start; block <= end; block++) {
+                long current = block;
+                blocks.add(source.readCanonical(current).orElseThrow(() ->
+                        new ArchiveStoreException("canonical covered body unavailable for block " + current)));
+            }
+            BlockSourceContext<B> first = blocks.getFirst();
+            BlockSourceContext<B> last = blocks.getLast();
+            recheck(first);
+            recheck(last);
+            long generation;
+            try (var read = backend.openReadSession()) { generation = read.generation(); }
+            if (dataset instanceof StatefulBlockArchiveDataset<B> stateful) {
+                ArchiveJob job = ArchiveJob.deterministic(network, dataset.dataset(), dataset.projectionVersion(),
+                        new BlockRange(start, end), new ArchiveRangeAnchor(first.slot(), first.blockHash(),
+                        last.slot(), last.blockHash()), "covered-canonical-v1");
+                stateful.beginBatch(job, List.copyOf(blocks));
+                try {
+                    for (BlockSourceContext<B> block : blocks) dataset.derive(job, block, ignored -> { });
+                    stateful.commitCoveredBatch(generation);
+                } catch (RuntimeException e) {
+                    stateful.abortBatch();
+                    throw e;
+                }
+            } else if (progress instanceof RocksDbHotHistoryStore hot) {
+                hot.saveCoveredProgress(new ArchiveProgress(dataset.dataset(), ArchiveTrack.BACKFILL,
+                        end, last.slot(), last.blockHash(), generation));
+            } else {
+                throw new ArchiveStoreException("covered range requires a durable hot progress store");
+            }
+            metrics.update(dataset.dataset(), ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.IDLE,
+                    end, 0, "advanced through live-promoted coverage");
+            return end;
+        }
+    }
+
+    private void reconcileCommittedTip(BlockArchiveDataset<B> dataset, long requestedStart) {
+        ArchiveProgress current = progress.load(dataset.dataset(), ArchiveTrack.BACKFILL).orElse(null);
+        if (current == null) return;
+        BlockSourceContext<B> canonical = source.readCanonical(current.coordinate()).orElse(null);
+        if (canonical != null && canonical.slot() == current.slot()
+                && Arrays.equals(canonical.blockHash(), current.blockHash())) return;
+        // Backend invalidation is job-atomic. Rebuilding from the dataset's
+        // activation anchor is slower than partial surgery but cannot leave a
+        // prefix whose receipt/coverage was removed with an overlapping job.
+        backend.invalidate(dataset.dataset(), new BlockRange(requestedStart, current.coordinate()));
+        if (progress instanceof RocksDbHotHistoryStore hot) {
+            try {
+                hot.resetTrackFrom(dataset.dataset(), ArchiveTrack.BACKFILL, requestedStart);
+            } catch (IllegalStateException e) {
+                throw new BackfillActivationInvalidatedException(dataset.dataset(), requestedStart, e);
+            }
+        } else {
+            throw new ArchiveStoreException("canonical history changed but progress store cannot re-activate");
+        }
+        metrics.update(dataset.dataset(), ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.RUNNING,
+                requestedStart - 1, 0, "canonical rollback detected; rebuilding from activation anchor");
+    }
+
+    @SuppressWarnings("unchecked")
+    private void abortStateful(BlockArchiveDataset<B> dataset) {
+        if (dataset instanceof StatefulBlockArchiveDataset<?> stateful) {
+            ((StatefulBlockArchiveDataset<B>) stateful).abortBatch();
         }
     }
 

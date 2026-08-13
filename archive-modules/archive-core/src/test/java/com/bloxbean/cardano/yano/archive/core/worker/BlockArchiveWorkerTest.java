@@ -7,9 +7,11 @@ import com.bloxbean.cardano.yano.archive.core.dataset.BlockSourceContext;
 import com.bloxbean.cardano.yano.archive.core.source.ArchiveSourceLease;
 import com.bloxbean.cardano.yano.archive.core.source.BlockArchiveSource;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -17,6 +19,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class BlockArchiveWorkerTest {
+    @TempDir Path temp;
     @Test
     void commitsBoundedCanonicalRangeThenPersistsCursorBeforeLeaseRelease() {
         FixtureSource source = new FixtureSource(0, 4);
@@ -57,8 +60,31 @@ class BlockArchiveWorkerTest {
         assertThat(source.leaseClosed).isTrue();
     }
 
+    @Test
+    void advancesDurableCursorThroughLivePromotedCoverageWithoutRewritingBackend() {
+        FixtureSource source = new FixtureSource(0, 1);
+        RecordingBackend backend = new RecordingBackend();
+        backend.coverage = List.of(new BlockRange(0, 1));
+        try (var progress = new com.bloxbean.cardano.yano.archive.core.hot.RocksDbHotHistoryStore(
+                temp.resolve("covered"))) {
+            ArchiveWorkerConfig config = new ArchiveWorkerConfig(Duration.ofMillis(10), 2, 10, 5);
+            CoreSyncView sync = new CoreSyncView() {
+                public long localBlock() { return 1; }
+                public long targetBlock() { return 1; }
+            };
+            var worker = new BlockArchiveWorker<>(new ArchiveNetworkIdentity(1, "fixture"), source,
+                    backend, progress, config, sync, new ArchiveWorkerMetrics(), Duration.ofMinutes(1));
+
+            assertThat(worker.runBatch(dataset(), 0, 1)).isEqualTo(1);
+            assertThat(backend.rows).isEmpty();
+            assertThat(progress.load(ArchiveDatasetId.TRANSACTION, ArchiveTrack.BACKFILL))
+                    .get().extracting(ArchiveProgress::coordinate).isEqualTo(1L);
+            assertThat(progress.oldestRequiredBlockNumber()).hasValue(2);
+        }
+    }
+
     private BlockArchiveWorker<String> worker(FixtureSource source, RecordingBackend backend,
-                                              MemoryProgress progress, ArchiveWorkerMetrics metrics,
+                                              ArchiveProgressStore progress, ArchiveWorkerMetrics metrics,
                                               java.util.function.LongSupplier lag) {
         ArchiveWorkerConfig config = new ArchiveWorkerConfig(Duration.ofMillis(10), 2, 10, 5);
         CoreSyncView sync = new CoreSyncView() {
@@ -120,6 +146,7 @@ class BlockArchiveWorkerTest {
 
     private static final class RecordingBackend implements ArchiveBackend {
         final List<ArchiveRow> rows = new ArrayList<>();
+        List<ArchiveRange> coverage = List.of();
         boolean committed;
         public ArchiveIdentity identity() { return new ArchiveIdentity(UUID.randomUUID(), "fixture", 1, 1, "fixture"); }
         public ArchiveCapabilities capabilities() { return new ArchiveCapabilities(true, false, false, false, false); }
@@ -135,8 +162,11 @@ class BlockArchiveWorkerTest {
             };
         }
         public Optional<ArchiveReceipt> findReceipt(UUID jobId) { return Optional.empty(); }
-        public ArchiveCoverage coverage(ArchiveDatasetId dataset) { return new ArchiveCoverage(dataset, 1, 0, List.of()); }
-        public ArchiveReadSession openReadSession() { throw new UnsupportedOperationException(); }
+        public ArchiveCoverage coverage(ArchiveDatasetId dataset) { return new ArchiveCoverage(dataset, 1, 1, coverage); }
+        public ArchiveReadSession openReadSession() { return new ArchiveReadSession() {
+            public long generation() { return 1; }
+            public void close() { }
+        }; }
         public void invalidate(ArchiveDatasetId dataset, ArchiveRange range) { }
         public void applyRetention(ArchiveDatasetId dataset, ArchiveRetentionCutoff cutoff) { }
         public void maintain(ArchiveMaintenanceBudget budget) { }

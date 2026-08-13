@@ -280,6 +280,32 @@ public final class YanoPropertyKeys {
         }
     }
 
+    /** Optional asynchronous history/archive settings (ADR-034). */
+    public static final class History {
+        public static final String PREFIX = "yano.history.";
+        public static final String ENABLED = PREFIX + "enabled";
+        public static final String DIR = PREFIX + "dir";
+        public static final String START_MODE = PREFIX + "start-mode";
+        public static final String LIVE_ENABLED = PREFIX + "live-enabled";
+        public static final String ENGINE = PREFIX + "archive.engine";
+        public static final String FINALITY_BLOCKS = PREFIX + "archive.finality-blocks";
+        public static final String ROLLBACK_RETENTION_BLOCKS = PREFIX + "rollback.retention-blocks";
+        public static final String WORKER_POLL_MILLIS = PREFIX + "worker.poll-interval-millis";
+        public static final String WORKER_MAX_BLOCKS = PREFIX + "worker.max-blocks-per-batch";
+        public static final String WORKER_MAX_ROWS = PREFIX + "worker.max-rows-per-batch";
+        public static final String WORKER_CORE_LAG = PREFIX + "worker.bulk-pause-core-lag-blocks";
+        public static final String DUCKDB_MAX_TOTAL_MEMORY = PREFIX + "duckdb.max-total-memory";
+        public static final String DUCKDB_MAX_CONCURRENT_QUERIES = PREFIX + "duckdb.max-concurrent-queries";
+        public static final String DUCKDB_MAX_TEMP_SIZE = PREFIX + "duckdb.max-temp-directory-size";
+        public static final String DUCKDB_STEADY_MEMORY = PREFIX + "duckdb.steady-state.memory-limit";
+        public static final String DUCKDB_STEADY_THREADS = PREFIX + "duckdb.steady-state.threads";
+        public static final String DUCKDB_BULK_MEMORY = PREFIX + "duckdb.bulk-catch-up.memory-limit";
+        public static final String DUCKDB_BULK_THREADS = PREFIX + "duckdb.bulk-catch-up.threads";
+        public static final String DUCKDB_BULK_JOBS = PREFIX + "duckdb.bulk-catch-up.max-concurrent-jobs";
+
+        private History() { }
+    }
+
     /**
      * Epoch snapshot materialization settings.
      */
@@ -306,21 +332,6 @@ public final class YanoPropertyKeys {
                 "yano.auto-checkpoint-interval";
 
         private Ledger() {
-        }
-    }
-
-    /**
-     * Snapshot export settings for offline diagnostics and comparisons.
-     */
-    public static final class SnapshotExport {
-        public static final String ENABLED = "yano.snapshot-export.enabled";
-        public static final String DIR = "yano.snapshot-export.dir";
-        public static final String STAKE = "yano.snapshot-export.stake";
-        public static final String DREP_DIST = "yano.snapshot-export.drep-dist";
-        public static final String ADAPOT = "yano.snapshot-export.adapot";
-        public static final String PROPOSALS = "yano.snapshot-export.proposals";
-
-        private SnapshotExport() {
         }
     }
 

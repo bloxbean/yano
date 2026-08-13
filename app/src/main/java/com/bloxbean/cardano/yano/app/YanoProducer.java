@@ -25,6 +25,7 @@ import com.bloxbean.cardano.yano.api.config.UpstreamValidationStartConfig;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.app.bootstrap.BootstrapConfigParser;
+import com.bloxbean.cardano.yano.app.archive.HistoryArchiveService;
 import com.bloxbean.cardano.yano.bootstrap.providers.DefaultBootstrapDataProviderFactory;
 import com.bloxbean.cardano.yano.devnet.YanoDevnetAssembly;
 import com.bloxbean.cardano.yano.runtime.assembly.YanoAssembly;
@@ -86,6 +87,9 @@ public class YanoProducer {
 
     @Inject
     Config appConfig;
+
+    @Inject
+    HistoryArchiveService historyArchive;
 
     @ConfigProperty(name = YanoPropertyKeys.NETWORK, defaultValue = "mainnet")
     String network;
@@ -356,22 +360,10 @@ public class YanoProducer {
     boolean epochParamsTrackingEnabled;
     @ConfigProperty(name = YanoPropertyKeys.Ledger.GOVERNANCE_ENABLED, defaultValue = "false")
     boolean governanceEnabled;
-    @ConfigProperty(name = YanoPropertyKeys.SnapshotExport.ENABLED, defaultValue = "false")
-    boolean snapshotExportEnabled;
-    @ConfigProperty(name = YanoPropertyKeys.SnapshotExport.STAKE, defaultValue = "false")
-    boolean snapshotExportStake;
-    @ConfigProperty(name = YanoPropertyKeys.SnapshotExport.DREP_DIST, defaultValue = "true")
-    boolean snapshotExportDrepDist;
-    @ConfigProperty(name = YanoPropertyKeys.SnapshotExport.ADAPOT, defaultValue = "true")
-    boolean snapshotExportAdaPot;
-    @ConfigProperty(name = YanoPropertyKeys.SnapshotExport.PROPOSALS, defaultValue = "true")
-    boolean snapshotExportProposals;
     @ConfigProperty(name = YanoPropertyKeys.Ledger.EXIT_ON_EPOCH_CALC_ERROR, defaultValue = "false")
     boolean exitOnEpochCalcError;
     @ConfigProperty(name = YanoPropertyKeys.Ledger.AUTO_CHECKPOINT_INTERVAL, defaultValue = "0")
     int autoCheckpointInterval;
-    @ConfigProperty(name = YanoPropertyKeys.SnapshotExport.DIR, defaultValue = "data")
-    String snapshotExportDir;
 
     // Block body pruning config
     @ConfigProperty(name = YanoPropertyKeys.Chain.BLOCK_BODY_PRUNE_DEPTH, defaultValue = "0")
@@ -510,6 +502,10 @@ public class YanoProducer {
     private Yano ensureYano() {
         if (yano != null) {
             return yano;
+        }
+        if (accountHistoryEnabled) {
+            throw new IllegalArgumentException("yano.account-history.enabled was removed; use yano.history.enabled "
+                    + "and yano.history.datasets.* settings");
         }
 
         log.info("Creating Yano with network: {}", network);
@@ -724,7 +720,7 @@ public class YanoProducer {
         // Account state
         globals.put(YanoPropertyKeys.AccountState.ENABLED, accountStateEnabled);
         globals.put(YanoPropertyKeys.AccountState.STAKE_BALANCE_INDEX_ENABLED, stakeBalanceIndexEnabled);
-        globals.put(YanoPropertyKeys.AccountHistory.ENABLED, accountHistoryEnabled);
+        globals.put(YanoPropertyKeys.AccountHistory.ENABLED, false);
         globals.put(YanoPropertyKeys.AccountHistory.TX_EVENTS_ENABLED, accountHistoryTxEventsEnabled);
         globals.put(YanoPropertyKeys.AccountHistory.REWARDS_ENABLED, accountHistoryRewardsEnabled);
         globals.put(YanoPropertyKeys.AccountHistory.ADDRESS_TX_ENABLED, accountHistoryAddressTxEnabled);
@@ -739,12 +735,6 @@ public class YanoProducer {
         globals.put(YanoPropertyKeys.Ledger.REWARDS_ENABLED, rewardsEnabled);
         globals.put(YanoPropertyKeys.Ledger.EPOCH_PARAMS_TRACKING_ENABLED, epochParamsTrackingEnabled);
         globals.put(YanoPropertyKeys.Ledger.GOVERNANCE_ENABLED, governanceEnabled);
-        globals.put(YanoPropertyKeys.SnapshotExport.ENABLED, snapshotExportEnabled);
-        globals.put(YanoPropertyKeys.SnapshotExport.DIR, snapshotExportDir);
-        globals.put(YanoPropertyKeys.SnapshotExport.STAKE, snapshotExportStake);
-        globals.put(YanoPropertyKeys.SnapshotExport.DREP_DIST, snapshotExportDrepDist);
-        globals.put(YanoPropertyKeys.SnapshotExport.ADAPOT, snapshotExportAdaPot);
-        globals.put(YanoPropertyKeys.SnapshotExport.PROPOSALS, snapshotExportProposals);
         globals.put(YanoPropertyKeys.Ledger.EXIT_ON_EPOCH_CALC_ERROR, exitOnEpochCalcError);
         globals.put(YanoPropertyKeys.Ledger.AUTO_CHECKPOINT_INTERVAL, autoCheckpointInterval);
 
@@ -936,10 +926,13 @@ public class YanoProducer {
         log.info("Yano application starting up...");
         log.info("Auto-sync-start enabled: {}", autoSyncStart);
 
+        Yano node = ensureYano();
+        historyArchive.initialize(node.chain(), node.ledger(), (YanoConfig) node.lifecycle().getConfig());
+
         if (autoSyncStart) {
             try {
                 log.info("Auto-starting Yano synchronization...");
-                ensureYano().start();
+                node.start();
                 log.info("Yano started automatically and syncing with {} network", network);
                 log.info("REST API available at {}/ for manual control", nodeApiBaseUrl());
             } catch (Exception e) {
@@ -955,6 +948,9 @@ public class YanoProducer {
             log.info("Auto-sync is disabled. Start manually via: curl -X POST {}/start", nodeApiBaseUrl());
             log.info("REST API available at {}/", nodeApiBaseUrl());
         }
+        // Archive work is optional and starts only after authoritative startup
+        // recovery completed. Manual-start mode starts it from YanoResource.
+        if (node.lifecycle().isRunning()) historyArchive.start();
     }
 
     private String nodeApiBaseUrl() {
@@ -1167,6 +1163,9 @@ public class YanoProducer {
 
     void onStop(@Observes ShutdownEvent event) {
         log.info("Yano application shutting down...");
+        // Stop and join optional archive work while its core query dependencies
+        // and native stores are still valid.
+        historyArchive.close();
         if (yano != null) {
             log.info("Stopping Yano...");
             yano.close();

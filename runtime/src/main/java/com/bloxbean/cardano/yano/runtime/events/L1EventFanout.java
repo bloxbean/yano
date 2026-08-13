@@ -24,6 +24,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 public final class L1EventFanout implements NodeEventStream {
     private static final Logger log = LoggerFactory.getLogger(L1EventFanout.class);
     private static final int SUBSCRIBER_QUEUE_CAPACITY = 1024;
+    /** Runs after authoritative ledger listeners (currently 100-112). */
+    static final int COMMITTED_STATE_PRIORITY = 1_000;
 
     private final EventBus eventBus;
     private final CopyOnWriteArrayList<ClientSubscription> subscribers = new CopyOnWriteArrayList<>();
@@ -55,12 +57,17 @@ public final class L1EventFanout implements NodeEventStream {
         if (eventBus == null || busSubscribed) {
             return;
         }
-        SubscriptionOptions options = SubscriptionOptions.builder().build();
+        SubscriptionOptions options = SubscriptionOptions.builder()
+                .priority(COMMITTED_STATE_PRIORITY)
+                .build();
         eventBus.subscribe(BlockAppliedEvent.class, ctx -> {
             var event = ctx.event();
             deliver(NodeEvent.block(event.slot(), event.blockNumber(), event.blockHash()));
         }, options);
         eventBus.subscribe(RollbackEvent.class, ctx -> {
+            if (!ctx.event().realReorg()) {
+                return; // peer reconnect/chain-sync intersection is not a canonical reorganization
+            }
             var target = ctx.event().target();
             deliver(NodeEvent.rollback(
                     target != null ? target.getSlot() : -1,

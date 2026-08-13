@@ -12,5 +12,4 @@
   Good-to-Fix (design debt):
 
   6. Governance delta-journal integration (rollback support)
-  7. Make snapshotExporter volatile
   8. Hardcoded pool deposit fallback → use EpochParamProvider
