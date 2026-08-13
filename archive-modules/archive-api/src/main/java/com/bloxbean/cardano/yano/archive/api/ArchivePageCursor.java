@@ -13,7 +13,7 @@ public record ArchivePageCursor(ArchiveDatasetId dataset, int projectionVersion,
         Objects.requireNonNull(dataset, "dataset");
         Objects.requireNonNull(filterDigest, "filterDigest");
         Objects.requireNonNull(order, "order");
-        lastOrderingValues = List.copyOf(lastOrderingValues);
+        lastOrderingValues = List.copyOf(Objects.requireNonNull(lastOrderingValues, "lastOrderingValues"));
         if (projectionVersion < 1 || archiveBoundary < 0 || coverageRevision < 0 || lastOrderingValues.isEmpty()) {
             throw new IllegalArgumentException("invalid archive page cursor");
         }
