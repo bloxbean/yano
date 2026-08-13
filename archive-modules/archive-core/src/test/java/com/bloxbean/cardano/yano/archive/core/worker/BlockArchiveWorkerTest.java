@@ -73,10 +73,10 @@ class BlockArchiveWorkerTest {
         return new BlockArchiveDataset<>() {
             public ArchiveDatasetId dataset() { return ArchiveDatasetId.TRANSACTION; }
             public int projectionVersion() { return 1; }
-            public void derive(BlockSourceContext<String> source, java.util.function.Consumer<ArchiveRow> sink) {
+            public void derive(ArchiveJob job, BlockSourceContext<String> source, java.util.function.Consumer<ArchiveRow> sink) {
                 sink.accept(new ArchiveRow("chain_transaction", List.of(source.blockHash(), source.blockHash(),
                         source.blockNumber(), source.slot(), source.epoch(), source.blockTime().getEpochSecond(),
-                        0, true, 0L, UUID.nameUUIDFromBytes(source.blockHash()))));
+                        0, true, 0L, job.jobId())));
             }
         };
     }
