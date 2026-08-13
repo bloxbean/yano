@@ -5,6 +5,7 @@ plugins {
 dependencies {
     api project(':archive-modules:archive-api')
     implementation libs.sqlite.jdbc
+    implementation libs.flyway.core
 
     testImplementation testFixtures(project(':archive-modules:archive-api'))
 }
