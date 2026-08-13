@@ -29,7 +29,7 @@ import java.nio.charset.StandardCharsets;
 public final class BlockPruner implements Prunable {
 
     private static final Logger log = LoggerFactory.getLogger(BlockPruner.class);
-    private static final byte[] CURSOR_KEY = "prune.block.cursor".getBytes(StandardCharsets.UTF_8);
+    static final byte[] CURSOR_KEY = "prune.block.cursor".getBytes(StandardCharsets.UTF_8);
 
     private final ChainState chainState;
     private final RocksDbSupplier rocksDbSupplier;

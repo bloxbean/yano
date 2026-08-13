@@ -21,6 +21,7 @@ include 'ledger-state'
 include 'ccl-ledger-rules'
 include 'scalus-bridge'
 include 'epoch-export'
+include ':archive-modules:archive-api'
 // App-chain modules live under appchain/ (plugins under appchain/extensions/);
 // project names are kept flat so artifact ids stay yano-appchain-*.
 include 'appchain-stdlib'

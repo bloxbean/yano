@@ -89,6 +89,11 @@ class BlockPrunerTest {
         for (int i = 0; i < 10; i++) {
             assertNotNull(chain.getBlockHeader(hash(i)), "Header " + i + " should be preserved");
         }
+
+        assertEquals(7L, chain.getEarliestRetainedBodyBlockNumber().orElseThrow());
+        var reference = chain.getCanonicalBlockReference(3).orElseThrow();
+        assertEquals(30L, reference.slot());
+        assertArrayEquals(hash(3), reference.blockHash());
     }
 
     @Test
