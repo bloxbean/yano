@@ -33,6 +33,6 @@ public record DuckLakeArchiveConfig(
     public static DuckLakeArchiveConfig defaults(Path historyDirectory) {
         return new DuckLakeArchiveConfig(historyDirectory.resolve("ducklake-catalog.sqlite"),
                 historyDirectory.resolve("ducklake-data"), Duration.ofSeconds(5), 10, 100,
-                256L * 1024 * 1024, 250_000, Duration.ofHours(168), Duration.ofHours(24));
+                32L * 1024 * 1024, 100_000, Duration.ofHours(168), Duration.ofHours(24));
     }
 }

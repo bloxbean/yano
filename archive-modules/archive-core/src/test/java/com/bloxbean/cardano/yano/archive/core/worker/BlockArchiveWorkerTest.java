@@ -182,6 +182,31 @@ class BlockArchiveWorkerTest {
     }
 
     @Test
+    void remembersSafeRangeAndProbesGrowthOnlyAfterRepeatedSuccess() {
+        FixtureSource source = new FixtureSource(0, 15);
+        RecordingBackend backend = new RecordingBackend();
+        backend.maximumRangeBlocks = 2;
+        MemoryProgress progress = new MemoryProgress();
+        ArchiveWorkerConfig config = new ArchiveWorkerConfig(Duration.ofMillis(10), 8, 100, 5);
+        CoreSyncView sync = new CoreSyncView() {
+            public long localBlock() { return 15; }
+            public long targetBlock() { return 15; }
+        };
+        var worker = new BlockArchiveWorker<>(new ArchiveNetworkIdentity(1, "fixture"), source,
+                backend, progress, config, sync, new ArchiveWorkerMetrics(), Duration.ofMinutes(1));
+
+        assertThat(worker.runBatch(dataset(), 0, 15)).isEqualTo(1);
+        assertThat(backend.attempts).isEqualTo(3); // 8, 4, then 2 blocks.
+        assertThat(worker.runBatch(dataset(), 0, 15)).isEqualTo(3);
+        assertThat(worker.runBatch(dataset(), 0, 15)).isEqualTo(5);
+        assertThat(backend.attempts).isEqualTo(5); // Reuses 2 without failed probes.
+
+        backend.maximumRangeBlocks = 8;
+        assertThat(worker.runBatch(dataset(), 0, 15)).isEqualTo(9);
+        assertThat(backend.attempts).isEqualTo(6); // Three safe batches unlock a 4-block probe.
+    }
+
+    @Test
     void changedCanonicalAnchorAbortsBackendAndDoesNotAdvanceCursor() {
         FixtureSource source = new FixtureSource(0, 0);
         source.changeAfterRead = true;

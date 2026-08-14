@@ -1300,6 +1300,14 @@ public class HistoryArchiveService implements AutoCloseable {
                     directory.resolve("tmp").toString()));
             properties.put("extensions.path", string("yano.history.archive.ducklake.extensions-path",
                     directory.resolve("extensions").toString()));
+            properties.put("target-file-size-bytes", Long.toString(sizeBytes(string(
+                    YanoPropertyKeys.History.DUCKLAKE_TARGET_FILE_SIZE, "32MB"))));
+            properties.put("row-group-size", Integer.toString(intValue(
+                    YanoPropertyKeys.History.DUCKLAKE_ROW_GROUP_SIZE, 100_000)));
+            properties.put("snapshot-retention-hours", Long.toString(longValue(
+                    YanoPropertyKeys.History.DUCKLAKE_SNAPSHOT_RETENTION_HOURS, 168)));
+            properties.put("cleanup-grace-hours", Long.toString(longValue(
+                    YanoPropertyKeys.History.DUCKLAKE_CLEANUP_GRACE_HOURS, 24)));
             properties.put("duckdb.max-total-memory-bytes", Long.toString(sizeBytes(
                     string(YanoPropertyKeys.History.DUCKDB_MAX_TOTAL_MEMORY, "256MB"))));
             properties.put("duckdb.max-concurrent-queries", Integer.toString(intValue(

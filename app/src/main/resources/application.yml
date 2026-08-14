@@ -244,6 +244,11 @@ yano:
     archive:
       engine: ducklake
       finality-blocks: auto
+      ducklake:
+        target-file-size: 32MB
+        row-group-size: 100000
+        snapshot-retention-hours: 168
+        cleanup-grace-hours: 24
     rollback:
       retention-blocks: auto
     worker:

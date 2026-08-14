@@ -1122,8 +1122,10 @@ part of DuckLake. Wallet APIs merge hot and cold through the typed repositories.
 
 Epoch is the default coarse partition. Additional credential/hash bucketing is
 introduced only when measurements show that it improves pruning without a
-small-file explosion. Writers target approximately 128-512 MB files and
-100,000-1,000,000 rows per row group, then tune from benchmark data. Rows are
+small-file explosion. The bounded-memory default targets approximately 32 MB
+files and 100,000 rows per row group, then tunes from benchmark data. Larger
+targets are appropriate only when the operator raises the bulk DuckDB memory
+budget as well. Rows are
 sorted for dominant predicates and stable ordering.
 
 Set DuckLake data inlining to `0` for this archive. Even small history batches
@@ -1716,8 +1718,8 @@ yano:
           busy-timeout-millis: 5000
           max-retries: 10
         data-path: ./history/ducklake-data
-        target-file-size: 256MB
-        row-group-size: 250000
+        target-file-size: 32MB
+        row-group-size: 100000
         data-inlining-row-limit: 0
         snapshot-retention-hours: 168
         cleanup-grace-hours: 24

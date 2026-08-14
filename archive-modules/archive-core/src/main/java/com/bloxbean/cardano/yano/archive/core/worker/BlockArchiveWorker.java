@@ -33,6 +33,10 @@ public final class BlockArchiveWorker<B> {
     private final CoreSyncView coreSync;
     private final ArchiveWorkerMetrics metrics;
     private final Duration leaseDuration;
+    private int preferredBlocksPerBatch;
+    private int successfulBatchesAtPreferredSize;
+
+    private static final int SUCCESSES_BEFORE_GROWTH_PROBE = 3;
 
     public BlockArchiveWorker(ArchiveNetworkIdentity network, BlockArchiveSource<B> source,
                               ArchiveBackend backend, ArchiveProgressStore progress,
@@ -46,6 +50,7 @@ public final class BlockArchiveWorker<B> {
         this.coreSync = Objects.requireNonNull(coreSync, "coreSync");
         this.metrics = Objects.requireNonNull(metrics, "metrics");
         this.leaseDuration = Objects.requireNonNull(leaseDuration, "leaseDuration");
+        this.preferredBlocksPerBatch = config.maxBlocksPerBatch();
     }
 
     /** Processes at most one configured batch and returns the last committed block. */
@@ -75,7 +80,7 @@ public final class BlockArchiveWorker<B> {
                     Math.min(alreadyCoveredEnd, start + config.maxBlocksPerBatch() - 1L)));
         }
 
-        long end = Math.min(finalizedEnd, Math.addExact(start, config.maxBlocksPerBatch() - 1L));
+        long end = Math.min(finalizedEnd, Math.addExact(start, preferredBlocksPerBatch - 1L));
         while (true) {
             metrics.update(dataset.dataset(), ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.RUNNING,
                     previous, finalizedEnd - previous, "deriving " + start + ".." + end);
@@ -123,6 +128,7 @@ public final class BlockArchiveWorker<B> {
                 }
                 metrics.update(dataset.dataset(), ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.IDLE,
                         end, finalizedEnd - end, "committed generation " + receipt.backendGeneration());
+                recordSuccessfulBatch(Math.toIntExact(end - start + 1), end < finalizedEnd);
                 return end;
             } catch (RowLimitExceeded | ArchiveBatchCapacityException e) {
                 abortStateful(dataset);
@@ -134,6 +140,9 @@ public final class BlockArchiveWorker<B> {
                 }
                 long attemptedEnd = end;
                 end = start + (end - start) / 2;
+                preferredBlocksPerBatch = Math.min(preferredBlocksPerBatch,
+                        Math.toIntExact(end - start + 1));
+                successfulBatchesAtPreferredSize = 0;
                 metrics.update(dataset.dataset(), ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.RUNNING,
                         previous, finalizedEnd - previous, limit + " exceeded for " + start + ".."
                                 + attemptedEnd + "; retrying " + start + ".." + end);
@@ -144,6 +153,19 @@ public final class BlockArchiveWorker<B> {
                 throw e;
             }
         }
+    }
+
+    private void recordSuccessfulBatch(int committedBlocks, boolean moreFinalizedBlocksAvailable) {
+        if (!moreFinalizedBlocksAvailable || committedBlocks != preferredBlocksPerBatch
+                || preferredBlocksPerBatch >= config.maxBlocksPerBatch()) {
+            successfulBatchesAtPreferredSize = 0;
+            return;
+        }
+        successfulBatchesAtPreferredSize++;
+        if (successfulBatchesAtPreferredSize < SUCCESSES_BEFORE_GROWTH_PROBE) return;
+        preferredBlocksPerBatch = (int) Math.min(config.maxBlocksPerBatch(),
+                Math.multiplyExact((long) preferredBlocksPerBatch, 2L));
+        successfulBatchesAtPreferredSize = 0;
     }
 
     private long advanceThroughCovered(BlockArchiveDataset<B> dataset, long start, long end) {

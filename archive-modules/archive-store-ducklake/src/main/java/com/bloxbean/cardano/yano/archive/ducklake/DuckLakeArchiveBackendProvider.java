@@ -5,6 +5,7 @@ import com.bloxbean.cardano.yano.archive.api.ArchiveBackendProvider;
 import com.bloxbean.cardano.yano.archive.api.ArchiveIdentity;
 
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Map;
 
 /** ServiceLoader entry point; runtime passes only prevalidated properties. */
@@ -17,16 +18,9 @@ public final class DuckLakeArchiveBackendProvider implements ArchiveBackendProvi
     @Override
     public ArchiveBackend open(ArchiveIdentity expectedIdentity, Path historyDirectory,
                                Map<String, String> validatedProperties) {
-        Path catalog = path(validatedProperties, "catalog.path",
-                historyDirectory.resolve("ducklake-catalog.sqlite"));
-        Path data = path(validatedProperties, "data.path", historyDirectory.resolve("ducklake-data"));
+        DuckLakeArchiveConfig archiveConfig = archiveConfig(historyDirectory, validatedProperties);
         Path temp = path(validatedProperties, "temp.path", historyDirectory.resolve("tmp"));
         Path extensions = path(validatedProperties, "extensions.path", historyDirectory.resolve("extensions"));
-        DuckLakeArchiveConfig defaults = DuckLakeArchiveConfig.defaults(historyDirectory);
-        DuckLakeArchiveConfig archiveConfig = new DuckLakeArchiveConfig(catalog, data,
-                defaults.acquireTimeout(), defaults.maxRetries(), defaults.retryWaitMillis(),
-                defaults.targetFileSizeBytes(), defaults.rowGroupSize(),
-                defaults.snapshotRetention(), defaults.cleanupGrace());
         DuckDbManagerConfig defaultsManager = DuckDbManagerConfig.defaults(temp);
         DuckDbManagerConfig manager = new DuckDbManagerConfig(
                 number(validatedProperties, "duckdb.max-total-memory-bytes", defaultsManager.maxTotalMemoryBytes()),
@@ -44,7 +38,23 @@ public final class DuckLakeArchiveBackendProvider implements ArchiveBackendProvi
                 new PackagedDuckDbExtensionLoader(extensions));
     }
 
-    private Path path(Map<String, String> properties, String name, Path fallback) {
+    static DuckLakeArchiveConfig archiveConfig(Path historyDirectory,
+                                               Map<String, String> validatedProperties) {
+        Path catalog = path(validatedProperties, "catalog.path",
+                historyDirectory.resolve("ducklake-catalog.sqlite"));
+        Path data = path(validatedProperties, "data.path", historyDirectory.resolve("ducklake-data"));
+        DuckLakeArchiveConfig defaults = DuckLakeArchiveConfig.defaults(historyDirectory);
+        return new DuckLakeArchiveConfig(catalog, data,
+                defaults.acquireTimeout(), defaults.maxRetries(), defaults.retryWaitMillis(),
+                number(validatedProperties, "target-file-size-bytes", defaults.targetFileSizeBytes()),
+                integer(validatedProperties, "row-group-size", defaults.rowGroupSize()),
+                Duration.ofHours(number(validatedProperties, "snapshot-retention-hours",
+                        defaults.snapshotRetention().toHours())),
+                Duration.ofHours(number(validatedProperties, "cleanup-grace-hours",
+                        defaults.cleanupGrace().toHours())));
+    }
+
+    private static Path path(Map<String, String> properties, String name, Path fallback) {
         String configured = properties.get(name);
         return configured == null || configured.isBlank() ? fallback : Path.of(configured);
     }

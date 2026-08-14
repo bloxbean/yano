@@ -293,6 +293,14 @@ public final class YanoPropertyKeys {
         public static final String LIVE_ENABLED = PREFIX + "live-enabled";
         public static final String ENGINE = PREFIX + "archive.engine";
         public static final String FINALITY_BLOCKS = PREFIX + "archive.finality-blocks";
+        public static final String DUCKLAKE_TARGET_FILE_SIZE =
+                PREFIX + "archive.ducklake.target-file-size";
+        public static final String DUCKLAKE_ROW_GROUP_SIZE =
+                PREFIX + "archive.ducklake.row-group-size";
+        public static final String DUCKLAKE_SNAPSHOT_RETENTION_HOURS =
+                PREFIX + "archive.ducklake.snapshot-retention-hours";
+        public static final String DUCKLAKE_CLEANUP_GRACE_HOURS =
+                PREFIX + "archive.ducklake.cleanup-grace-hours";
         public static final String ROLLBACK_RETENTION_BLOCKS = PREFIX + "rollback.retention-blocks";
         public static final String WORKER_POLL_MILLIS = PREFIX + "worker.poll-interval-millis";
         public static final String WORKER_MAX_BLOCKS = PREFIX + "worker.max-blocks-per-batch";
