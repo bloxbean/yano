@@ -298,6 +298,9 @@ public final class YanoPropertyKeys {
         public static final String WORKER_MAX_BLOCKS = PREFIX + "worker.max-blocks-per-batch";
         public static final String WORKER_MAX_ROWS = PREFIX + "worker.max-rows-per-batch";
         public static final String WORKER_CORE_LAG = PREFIX + "worker.bulk-pause-core-lag-blocks";
+        public static final String MAINTENANCE_INTERVAL_SECONDS = PREFIX + "maintenance.interval-seconds";
+        public static final String MAINTENANCE_TIME_LIMIT_SECONDS = PREFIX + "maintenance.time-limit-seconds";
+        public static final String MAINTENANCE_MAX_REWRITE = PREFIX + "maintenance.max-bytes-to-rewrite";
         public static final String DUCKDB_MAX_TOTAL_MEMORY = PREFIX + "duckdb.max-total-memory";
         public static final String DUCKDB_MAX_CONCURRENT_QUERIES = PREFIX + "duckdb.max-concurrent-queries";
         public static final String DUCKDB_MAX_TEMP_SIZE = PREFIX + "duckdb.max-temp-directory-size";

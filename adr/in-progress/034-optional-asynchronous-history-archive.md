@@ -1700,6 +1700,11 @@ yano:
     rollback:
       retention-blocks: auto        # auto = 2 * genesis k
 
+    maintenance:
+      interval-seconds: 300         # optional worker only; never core apply
+      time-limit-seconds: 5         # hard per-run query deadline
+      max-bytes-to-rewrite: 512MB   # bounds each compaction pass
+
     archive:
       engine: ducklake                  # ducklake | sqlite
       finality-blocks: auto          # auto = 2 * genesis k

@@ -27,6 +27,12 @@ yano:
       finality-blocks: auto
     rollback:
       retention-blocks: auto
+    maintenance:
+      # Explicit bounded maintenance compacts DuckLake's streamed small files
+      # and performs backend cleanup outside core block application.
+      interval-seconds: 300
+      time-limit-seconds: 5
+      max-bytes-to-rewrite: 512MB
     datasets:
       # Wallet-facing history enabled by this profile.
       account-events:

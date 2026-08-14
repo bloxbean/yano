@@ -43,6 +43,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -81,6 +82,12 @@ public class HistoryArchiveService implements AutoCloseable {
     private final AtomicLong pendingRollbackEpoch = new AtomicLong(Long.MAX_VALUE);
     private final AtomicLong pendingRollbackSlot = new AtomicLong(Long.MAX_VALUE);
     private final AtomicLong pendingEpochRollbackSlot = new AtomicLong(Long.MAX_VALUE);
+    private final AtomicLong nextMaintenanceNanos = new AtomicLong(Long.MAX_VALUE);
+    private volatile Duration maintenanceInterval = Duration.ofMinutes(5);
+    private volatile ArchiveMaintenanceBudget maintenanceBudget =
+            new ArchiveMaintenanceBudget(Duration.ofSeconds(5), 512L * 1024 * 1024);
+    private volatile Instant lastMaintenanceAt;
+    private volatile String maintenanceError;
     private final ReentrantReadWriteLock lifecycleLock = new ReentrantReadWriteLock(true);
 
     @Inject
@@ -126,6 +133,15 @@ public class HistoryArchiveService implements AutoCloseable {
                     intValue(YanoPropertyKeys.History.WORKER_MAX_BLOCKS, 1_000),
                     intValue(YanoPropertyKeys.History.WORKER_MAX_ROWS, 250_000),
                     longValue(YanoPropertyKeys.History.WORKER_CORE_LAG, 100));
+            maintenanceInterval = Duration.ofSeconds(longValue(
+                    YanoPropertyKeys.History.MAINTENANCE_INTERVAL_SECONDS, 300));
+            if (maintenanceInterval.isNegative() || maintenanceInterval.isZero()) {
+                throw new IllegalArgumentException("history maintenance interval must be positive");
+            }
+            maintenanceBudget = new ArchiveMaintenanceBudget(Duration.ofSeconds(longValue(
+                    YanoPropertyKeys.History.MAINTENANCE_TIME_LIMIT_SECONDS, 5)), sizeBytes(string(
+                    YanoPropertyKeys.History.MAINTENANCE_MAX_REWRITE, "512MB")));
+            nextMaintenanceNanos.set(nextMaintenanceDeadline(System.nanoTime(), maintenanceInterval));
             Map<ArchiveDatasetId, DatasetArchiveConfig> datasets = datasetConfig(defaultStart);
             validateEpochPrerequisites(datasets);
             archiveConfig = new ArchiveConfiguration(true, directory, engine, defaultStart,
@@ -408,6 +424,13 @@ public class HistoryArchiveService implements AutoCloseable {
                 datasets.put(id.logicalName(), dataset);
             }
             result.put("datasets", datasets);
+            Map<String, Object> maintenance = new LinkedHashMap<>();
+            maintenance.put("intervalSeconds", maintenanceInterval.toSeconds());
+            maintenance.put("timeLimitSeconds", maintenanceBudget.timeLimit().toSeconds());
+            maintenance.put("maxBytesToRewrite", maintenanceBudget.maxBytesToRewrite());
+            maintenance.put("lastCompletedAt", lastMaintenanceAt);
+            maintenance.put("error", maintenanceError);
+            result.put("maintenance", maintenance);
         }
         if (epochStaging != null) epochStaging.error().ifPresent(value -> result.put("epochStagingError", value));
         return result;
@@ -480,6 +503,34 @@ public class HistoryArchiveService implements AutoCloseable {
         }
         runEpochWork(finalized);
         applyRetention(tip.getBlockNumber(), tip.getSlot());
+        runMaintenanceIfDue();
+    }
+
+    void runMaintenanceIfDue() {
+        ArchiveBackend selected = backend;
+        if (selected == null) return;
+        long now = System.nanoTime();
+        long due = nextMaintenanceNanos.get();
+        if (now < due || !nextMaintenanceNanos.compareAndSet(
+                due, nextMaintenanceDeadline(now, maintenanceInterval))) return;
+        try {
+            selected.maintain(maintenanceBudget);
+            lastMaintenanceAt = Instant.now();
+            maintenanceError = null;
+            log.info("History archive maintenance completed within {}s / {} bytes rewrite budget",
+                    maintenanceBudget.timeLimit().toSeconds(), maintenanceBudget.maxBytesToRewrite());
+        } catch (Exception e) {
+            maintenanceError = e.getMessage();
+            log.warn("History archive maintenance deferred after bounded failure: {}", e.toString());
+        }
+    }
+
+    static long nextMaintenanceDeadline(long nowNanos, Duration interval) {
+        try {
+            return Math.addExact(nowNanos, interval.toNanos());
+        } catch (ArithmeticException overflow) {
+            return Long.MAX_VALUE;
+        }
     }
 
     /** Event-thread work is deliberately constant-time; archive I/O stays on the optional worker. */
@@ -1340,6 +1391,7 @@ public class HistoryArchiveService implements AutoCloseable {
         blockWorkers.clear();
         liveWorkers.clear();
         appliedRetention.clear();
+        nextMaintenanceNanos.set(Long.MAX_VALUE);
     }
 
     public record TransactionLookup(State state, ArchiveRecord row, String detail) {
