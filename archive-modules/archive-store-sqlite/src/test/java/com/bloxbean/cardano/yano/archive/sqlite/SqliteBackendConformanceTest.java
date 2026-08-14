@@ -15,8 +15,6 @@ import com.bloxbean.cardano.yano.archive.api.SourceKind;
 import com.bloxbean.cardano.yano.archive.api.test.AbstractArchiveBackendConformanceTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.flywaydb.core.Flyway;
-import org.flywaydb.core.api.MigrationVersion;
 
 import java.math.BigInteger;
 import java.nio.file.Files;
@@ -54,13 +52,26 @@ class SqliteBackendConformanceTest extends AbstractArchiveBackendConformanceTest
         }
         try (var connection = DriverManager.getConnection("jdbc:sqlite:" + config().databasePath());
              var query = connection.createStatement();
-             var result = query.executeQuery("SELECT version, success FROM flyway_schema_history ORDER BY installed_rank")) {
+             var result = query.executeQuery("SELECT version, success FROM "
+                     + SqliteArchiveInitializer.SCHEMA_HISTORY_TABLE + " ORDER BY installed_rank")) {
             assertThat(result.next()).isTrue();
             assertThat(result.getString(1)).isEqualTo("1");
             assertThat(result.getBoolean(2)).isTrue();
-            assertThat(result.next()).isTrue();
-            assertThat(result.getString(1)).isEqualTo("2");
-            assertThat(result.getBoolean(2)).isTrue();
+            assertThat(result.next()).isFalse();
+        }
+        try (var connection = DriverManager.getConnection("jdbc:sqlite:" + config().databasePath());
+             var query = connection.createStatement();
+             var fee = query.executeQuery("SELECT \"notnull\" FROM pragma_table_info('chain_transaction') "
+                     + "WHERE name='fee'")) {
+            assertThat(fee.next()).isTrue();
+            assertThat(fee.getInt(1)).isZero();
+        }
+        try (var connection = DriverManager.getConnection("jdbc:sqlite:" + config().databasePath());
+             var query = connection.createStatement();
+             var drepType = query.executeQuery("SELECT count(*) FROM pragma_table_info('account_events') "
+                     + "WHERE name='drep_type'")) {
+            assertThat(drepType.next()).isTrue();
+            assertThat(drepType.getInt(1)).isOne();
         }
     }
 
@@ -244,32 +255,6 @@ class SqliteBackendConformanceTest extends AbstractArchiveBackendConformanceTest
             assertThat(result.next()).isTrue();
             assertThat(result.getString(1)).isEqualTo(quantity.toString());
             assertThat(result.getString(2)).isEqualTo("text");
-        }
-    }
-
-    @Test
-    void v3MigrationNormalizesLegacyCredentialTypeLabels() throws Exception {
-        Path database = temp.resolve("legacy-label.sqlite");
-        String url = "jdbc:sqlite:" + database;
-        Flyway.configure().dataSource(url, null, null)
-                .locations(SqliteArchiveInitializer.MIGRATION_LOCATION)
-                .target(MigrationVersion.fromVersion("2")).load().migrate();
-        try (var connection = DriverManager.getConnection(url);
-             var sql = connection.createStatement()) {
-            sql.executeUpdate("INSERT INTO archive_commits VALUES "
-                    + "('job','ACCOUNT_EVENT',1,'BLOCK',0,0,0,X'01',0,X'01','fixture',1,'digest',0)");
-            sql.executeUpdate("INSERT INTO account_events VALUES "
-                    + "(X'01','addr_keyhash','withdrawal',X'02',X'03',0,0,0,0,0,0,NULL,NULL,1,'job')");
-        }
-
-        Flyway.configure().dataSource(url, null, null)
-                .locations(SqliteArchiveInitializer.MIGRATION_LOCATION).load().migrate();
-
-        try (var connection = DriverManager.getConnection(url);
-             var result = connection.createStatement().executeQuery(
-                     "SELECT stake_credential_type FROM account_events")) {
-            assertThat(result.next()).isTrue();
-            assertThat(result.getString(1)).isEqualTo("key");
         }
     }
 

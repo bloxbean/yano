@@ -15,6 +15,7 @@ import java.util.UUID;
 
 final class SqliteArchiveInitializer {
     static final String MIGRATION_LOCATION = "classpath:db/migration/history-sqlite";
+    static final String SCHEMA_HISTORY_TABLE = "yano_archive_schema_history";
 
     private final SqliteArchiveConfig config;
 
@@ -27,6 +28,7 @@ final class SqliteArchiveInitializer {
         Flyway flyway = Flyway.configure()
                 .dataSource(url, null, null)
                 .locations(MIGRATION_LOCATION)
+                .table(SCHEMA_HISTORY_TABLE)
                 .baselineOnMigrate(false)
                 .cleanDisabled(true)
                 .validateMigrationNaming(true)

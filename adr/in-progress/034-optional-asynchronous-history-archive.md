@@ -1163,11 +1163,23 @@ the Xerial SQLite JDBC driver, and the required Flyway SQLite database support.
 On enabled-backend startup, before the worker or history API accepts work, Yano
 runs `validate` and `migrate` programmatically against this file.
 
+The archive path is a Yano-owned, dedicated SQLite database file; it must not
+point at a host application's database. This remains true when Yano is embedded
+as a Java library. Yano scans only its archive migration location and records
+those migrations in the module-specific `yano_archive_schema_history` table,
+so a host application's `V1`, `V10`, or other Flyway versions cannot collide
+with archive versions. Yaci Store-style reserved version ranges are unnecessary
+here because its modules intentionally share a database and migration history,
+whereas this backend does not.
+
 Flyway rules are strict:
 
 - `baselineOnMigrate=false`; an unknown non-empty database is not silently
   adopted;
 - `clean` is disabled in production;
+- the unreleased initial schema is consolidated in `V1__archive_schema.sql`;
+  after the first release, applied migrations are immutable and changes roll
+  forward through `V2`, `V3`, and later versions;
 - migration checksums are validated and failed/unknown migrations make only
   the history subsystem unavailable;
 - exactly one process may migrate or write the database; concurrent migration
@@ -1177,8 +1189,8 @@ Flyway rules are strict:
   migration transaction and SQLite does not support nested transactions;
 - destructive or long data rewrites use an explicitly tested restartable
   migration/rebuild plan rather than an unbounded startup migration;
-- the `flyway_schema_history` table, application tables, indexes, triggers, and
-  views are backed up together.
+- the `yano_archive_schema_history` table, application tables, indexes,
+  triggers, and views are backed up together.
 
 The initial schema uses `chain_transaction` for the logical transaction
 dataset, matching DuckLake. It also includes stable unversioned address, output,
@@ -1186,7 +1198,7 @@ asset, input, optional datum/script, account-event, address-transaction,
 reward, epoch-stake, DRep-distribution, Ada-pot, governance-proposal-status,
 `archive_commit`, and `archive_coverage` tables, plus convenience views
 equivalent to the DuckLake views. Flyway versions the schema through
-`flyway_schema_history`; table names do not repeat that version. It uses
+`yano_archive_schema_history`; table names do not repeat that version. It uses
 declared primary/unique keys and B-tree indexes only for documented query
 predicates, including transaction hash, outpoint, address/credential plus
 ordering key, asset identity, epoch, canonical block range, and archive job ID.
