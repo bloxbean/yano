@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.archive.ducklake;
 
 import com.bloxbean.cardano.yano.archive.api.ArchiveBackend;
+import com.bloxbean.cardano.yano.archive.api.ArchiveBatchCapacityException;
 import com.bloxbean.cardano.yano.archive.api.ArchiveCapabilities;
 import com.bloxbean.cardano.yano.archive.api.ArchiveCoverage;
 import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
@@ -342,14 +343,21 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
         }
         try (DuckDbLease lease = manager.acquire(DuckDbWorkload.BULK_CATCH_UP, config.acquireTimeout())) {
             DuckLakeSql.attach(lease.connection(), config, null, false);
+            ArchiveBatchCapacityException compactionDeferred = null;
             try {
                 long deadline = System.nanoTime() + budget.timeLimit().toNanos();
                 if (budget.maxBytesToRewrite() > 0) {
                     int maxFiles = (int) Math.max(1, Math.min(100,
                             budget.maxBytesToRewrite() / Math.max(1, config.targetFileSizeBytes())));
-                    executeMaintenance(lease, deadline,
-                            "CALL ducklake_merge_adjacent_files('history_lake', max_compacted_files => "
-                                    + maxFiles + ")");
+                    try {
+                        executeMaintenance(lease, deadline,
+                                "CALL ducklake_merge_adjacent_files('history_lake', max_compacted_files => "
+                                        + maxFiles + ")");
+                    } catch (SQLException e) {
+                        if (!DuckLakeWriteSession.isCapacityFailure(e)) throw e;
+                        compactionDeferred = new ArchiveBatchCapacityException(
+                                "DuckLake compaction exceeded its configured budget", e);
+                    }
                 }
                 executeMaintenance(lease, deadline,
                         "CALL ducklake_expire_snapshots('history_lake', older_than => now() - INTERVAL '"
@@ -364,12 +372,29 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
                 DuckLakeSql.detach(lease.connection());
             }
             health.set(ArchiveHealth.healthy());
+            if (compactionDeferred != null) throw compactionDeferred;
+        } catch (ArchiveBatchCapacityException e) {
+            // Compaction/cleanup is optional and its bounded resource pressure
+            // does not make committed archive data unhealthy. The caller
+            // records the deferred maintenance detail for operators.
+            health.set(ArchiveHealth.healthy());
+            throw e;
         } catch (Exception e) {
+            if (!degradesArchiveHealth(e)) {
+                health.set(ArchiveHealth.healthy());
+                throw new ArchiveBatchCapacityException(
+                        "DuckLake maintenance exceeded its configured budget", e);
+            }
             markDegraded("DuckLake maintenance failed", e);
             throw new ArchiveStoreException("DuckLake maintenance failed", e);
         } finally {
             releaseWriter();
         }
+    }
+
+    static boolean degradesArchiveHealth(Throwable maintenanceFailure) {
+        return !(maintenanceFailure instanceof ArchiveBatchCapacityException)
+                && !DuckLakeWriteSession.isCapacityFailure(maintenanceFailure);
     }
 
     @Override

@@ -39,6 +39,18 @@ class DuckLakeBackendConformanceTest extends AbstractArchiveBackendConformanceTe
                 new java.sql.SQLException("constraint violation"))).isFalse();
     }
 
+    @Test
+    void boundedMaintenanceCapacityDoesNotDegradeCommittedDataHealth() {
+        var capacity = new com.bloxbean.cardano.yano.archive.api.ArchiveBatchCapacityException(
+                "bounded compaction", new java.sql.SQLException("Out of Memory Error"));
+
+        assertThat(DuckLakeHistoryArchiveBackend.degradesArchiveHealth(capacity)).isFalse();
+        assertThat(DuckLakeHistoryArchiveBackend.degradesArchiveHealth(
+                new java.sql.SQLException("Out of Memory Error"))).isFalse();
+        assertThat(DuckLakeHistoryArchiveBackend.degradesArchiveHealth(
+                new java.sql.SQLException("catalog corruption"))).isTrue();
+    }
+
     @Override
     protected ArchiveBackend createBackend() {
         return open(identity(UUID.randomUUID()));
