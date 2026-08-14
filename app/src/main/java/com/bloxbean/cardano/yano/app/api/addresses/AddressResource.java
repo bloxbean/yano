@@ -21,6 +21,8 @@ import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
@@ -40,6 +42,7 @@ import java.util.Map;
 @Path("/")
 @Produces(MediaType.APPLICATION_JSON)
 public class AddressResource {
+    private static final Logger log = LoggerFactory.getLogger(AddressResource.class);
     private static final int SUMMARY_PAGE_SIZE = 100;
     private static final int SUMMARY_MAX_PAGES = 100;
 
@@ -84,13 +87,22 @@ public class AddressResource {
         int safePage = Math.max(1, page);
         int safeCount = count <= 0 ? 20 : Math.min(count, 100);
 
-        List<AddressTxDto> body = history
-                .getAddressTransactionsForAddress(address, usePaymentCredential, safePage, safeCount, resolvedOrder)
-                .stream()
-                .map(r -> new AddressTxDto(r.txHash(), r.txIdx(), r.blockNo(),
-                        ledgerQuery.slotToUnixTime(r.slot()), r.slot()))
-                .toList();
-        return Response.ok(body).build();
+        try {
+            List<AddressTxDto> body = history
+                    .getAddressTransactionsForAddress(address, usePaymentCredential,
+                            safePage, safeCount, resolvedOrder)
+                    .stream()
+                    .map(r -> new AddressTxDto(r.txHash(), r.txIdx(), r.blockNo(),
+                            ledgerQuery.slotToUnixTime(r.slot()), r.slot()))
+                    .toList();
+            return Response.ok(body).build();
+        } catch (IllegalStateException e) {
+            log.warn("Address history read failed: {}", e.getMessage());
+            log.debug("Address history read failure details", e);
+            return Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                    .entity(Map.of("error", "Address history read failed"))
+                    .build();
+        }
     }
 
     @GET
