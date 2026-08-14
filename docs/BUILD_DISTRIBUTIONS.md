@@ -71,6 +71,20 @@ plugin directory scaffolding, and the JVM-only offline plugin catalog tool under
 CycloneDX 1.6 inventory at `sbom/yano.cdx.json`; packaging fails if an external
 Maven component lacks license metadata.
 
+After extracting the zip, start a network with the optional ADR-034 history
+archive by composing the bundled `history` profile after the network profile:
+
+```bash
+./yano.sh start:preprod,history
+# or
+./yano.sh start:mainnet,history
+```
+
+The profile uses DuckLake and full-required coverage by default. Set
+`YANO_HISTORY_START_MODE=earliest-available` only when partial coverage from
+the oldest retained block is intentional. History is not supported by the
+native-image distribution.
+
 After extracting the JVM zip, validate or inspect one or more plugin JARs
 without loading provider code:
 

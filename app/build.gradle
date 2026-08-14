@@ -1586,6 +1586,9 @@ tasks.register('verifyCoreJvmDistribution') {
             if (archive.getEntry("${root}/yano.jar") == null) {
                 throw new GradleException('Yano JVM distribution does not contain yano.jar')
             }
+            if (archive.getEntry("${root}/config/application-history.yml") == null) {
+                throw new GradleException('Yano JVM distribution is missing the history profile')
+            }
             if (archive.getEntry("${root}/LICENSE") == null) {
                 throw new GradleException('Yano JVM distribution is missing LICENSE')
             }

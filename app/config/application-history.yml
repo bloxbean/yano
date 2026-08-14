@@ -1,0 +1,48 @@
+# Optional asynchronous history archive profile (ADR-034).
+#
+# Compose this after a network profile, for example:
+#   ./yano.sh start:preprod,history
+#   ./yano.sh start:mainnet,history
+#
+# History currently requires the JVM distribution; native-image startup rejects
+# yano.history.enabled=true. The default full-required mode fails clearly if a
+# complete block source is unavailable. For an intentionally partial archive on
+# a previously pruned node, override YANO_HISTORY_START_MODE=earliest-available.
+
+yano:
+  account-state:
+    enabled: true
+  account-history:
+    # Removed synchronous implementation. Keep disabled when ADR-034 history is used.
+    enabled: false
+  rewards:
+    enabled: true
+  history:
+    enabled: true
+    dir: ${YANO_HISTORY_DIR:./history}
+    start-mode: ${YANO_HISTORY_START_MODE:full-required}
+    live-enabled: true
+    archive:
+      engine: ducklake
+      finality-blocks: auto
+    rollback:
+      retention-blocks: auto
+    datasets:
+      # Wallet-facing history enabled by this profile.
+      account-events: { enabled: true, retention-epochs: 0 }
+      transactions: { enabled: true, retention-epochs: 0 }
+      address-transactions: { enabled: true, retention-epochs: 0 }
+      rewards: { enabled: true, start-mode: earliest-available, retention-epochs: 0 }
+
+      # Larger analytics datasets remain explicit operator choices.
+      utxo-history: { enabled: false, retention-epochs: 0 }
+      epoch-stake: { enabled: false, start-mode: earliest-available, retention-epochs: 0 }
+      drep-distribution: { enabled: false, start-mode: earliest-available, retention-epochs: 0 }
+      ada-pots: { enabled: false, start-mode: earliest-available, retention-epochs: 0 }
+      governance-proposal-status: { enabled: false, start-mode: earliest-available, retention-epochs: 0 }
+    duckdb:
+      max-total-memory: 256MB
+      max-concurrent-queries: 2
+      max-temp-directory-size: 2GB
+      steady-state: { memory-limit: 128MB, threads: 1 }
+      bulk-catch-up: { memory-limit: 128MB, threads: 1, max-concurrent-jobs: 1 }
