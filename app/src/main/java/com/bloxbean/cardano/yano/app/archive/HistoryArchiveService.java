@@ -466,8 +466,8 @@ public class HistoryArchiveService implements AutoCloseable {
                 }
             } catch (Exception e) {
                 metrics.update(dataset, ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.DEGRADED,
-                        -1, 0, e.getMessage());
-                log.warn("History worker {} paused: {}", dataset.logicalName(), e.toString());
+                        -1, 0, failureDetail(e));
+                log.warn("History worker {} paused", dataset.logicalName(), e);
             }
         }
         if (archiveConfig.liveEnabled()) {
@@ -496,8 +496,8 @@ public class HistoryArchiveService implements AutoCloseable {
                     }
                 } catch (Exception e) {
                     metrics.update(dataset, ArchiveTrack.LIVE, ArchiveWorkerStatus.State.DEGRADED,
-                            -1, 0, e.getMessage());
-                    log.warn("Live history worker {} paused: {}", dataset.logicalName(), e.toString());
+                            -1, 0, failureDetail(e));
+                    log.warn("Live history worker {} paused", dataset.logicalName(), e);
                 }
             }
         }
@@ -531,6 +531,11 @@ public class HistoryArchiveService implements AutoCloseable {
         } catch (ArithmeticException overflow) {
             return Long.MAX_VALUE;
         }
+    }
+
+    private static String failureDetail(Throwable failure) {
+        String message = failure.getMessage();
+        return message == null || message.isBlank() ? failure.toString() : message;
     }
 
     /** Event-thread work is deliberately constant-time; archive I/O stays on the optional worker. */

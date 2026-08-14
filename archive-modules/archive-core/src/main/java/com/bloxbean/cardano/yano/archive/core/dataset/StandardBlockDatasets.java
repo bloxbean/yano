@@ -17,7 +17,7 @@ public final class StandardBlockDatasets {
             public void derive(ArchiveJob job, BlockSourceContext<ArchiveBlockFacts> block,
                                java.util.function.Consumer<ArchiveRow> sink) {
                 for (TransactionFact tx : block.block().transactions()) {
-                    sink.accept(new ArchiveRow("chain_transaction", List.of(tx.txHash(), block.blockHash(),
+                    sink.accept(new ArchiveRow("chain_transaction", java.util.Arrays.asList(tx.txHash(), block.blockHash(),
                             block.blockNumber(), block.slot(), block.epoch(), block.blockTime().getEpochSecond(),
                             tx.txIndex(), tx.valid(), tx.fee(), job.jobId())));
                 }
