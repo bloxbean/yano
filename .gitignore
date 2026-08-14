@@ -187,7 +187,9 @@ __pycache__/
 *.pyc
 /node-app/chainstate-preprod/
 **/chainstate*/
-**/data*/
+# Runtime databases named exactly "data". Do not use data* here: it also
+# matches Java source packages such as archive/core/dataset.
+**/data/
 
 # Compatibility test data (downloaded haskell cardano-node + scratch state)
 /test-data-dir/

@@ -436,9 +436,8 @@ yano:
       conway-genesis-file: config/network/sanchonet/conway-genesis.json
       protocol-parameters-file: config/network/sanchonet/protocol-param.json
 
-# Wallet-serving node profile (ADR-033): relay defaults plus every index the
-# desktop wallet needs — address/account tx history, reward history, UTXO
-# indexing by address hash AND payment credential.
+# Wallet-serving node profile. Archive history stays opt-in until its network
+# regression and recovery gates have passed.
 # Activate with -Dquarkus.profile=wallet[,preprod|mainnet|preview].
 "%wallet":
   yano:
@@ -447,7 +446,7 @@ yano:
     account-history:
       enabled: false
     history:
-      enabled: true
+      enabled: false
       start-mode: earliest-available
       datasets:
         account-events: { enabled: true }

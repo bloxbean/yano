@@ -15,6 +15,8 @@ import com.bloxbean.cardano.yano.archive.api.SourceKind;
 import com.bloxbean.cardano.yano.archive.api.test.AbstractArchiveBackendConformanceTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.flywaydb.core.Flyway;
+import org.flywaydb.core.api.MigrationVersion;
 
 import java.math.BigInteger;
 import java.nio.file.Files;
@@ -245,6 +247,32 @@ class SqliteBackendConformanceTest extends AbstractArchiveBackendConformanceTest
         }
     }
 
+    @Test
+    void v3MigrationNormalizesLegacyCredentialTypeLabels() throws Exception {
+        Path database = temp.resolve("legacy-label.sqlite");
+        String url = "jdbc:sqlite:" + database;
+        Flyway.configure().dataSource(url, null, null)
+                .locations(SqliteArchiveInitializer.MIGRATION_LOCATION)
+                .target(MigrationVersion.fromVersion("2")).load().migrate();
+        try (var connection = DriverManager.getConnection(url);
+             var sql = connection.createStatement()) {
+            sql.executeUpdate("INSERT INTO archive_commits VALUES "
+                    + "('job','ACCOUNT_EVENT',1,'BLOCK',0,0,0,X'01',0,X'01','fixture',1,'digest',0)");
+            sql.executeUpdate("INSERT INTO account_events VALUES "
+                    + "(X'01','addr_keyhash','withdrawal',X'02',X'03',0,0,0,0,0,0,NULL,NULL,1,'job')");
+        }
+
+        Flyway.configure().dataSource(url, null, null)
+                .locations(SqliteArchiveInitializer.MIGRATION_LOCATION).load().migrate();
+
+        try (var connection = DriverManager.getConnection(url);
+             var result = connection.createStatement().executeQuery(
+                     "SELECT stake_credential_type FROM account_events")) {
+            assertThat(result.next()).isTrue();
+            assertThat(result.getString(1)).isEqualTo("key");
+        }
+    }
+
     private SqliteHistoryArchiveBackend open(ArchiveIdentity identity, SqliteArchiveConfig config) {
         return new SqliteHistoryArchiveBackend(identity, config);
     }
@@ -269,7 +297,8 @@ class SqliteBackendConformanceTest extends AbstractArchiveBackendConformanceTest
     private ArchiveJob archiveJob(ArchiveDatasetId dataset, long from, long to, byte marker) {
         byte[] hash = new byte[32];
         Arrays.fill(hash, marker);
-        return ArchiveJob.deterministic(new ArchiveNetworkIdentity(1, "fixture-genesis"), dataset, 1,
+        return ArchiveJob.deterministic(new ArchiveNetworkIdentity(1, "fixture-genesis"), dataset,
+                com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas.schema(dataset).projectionVersion(),
                 new BlockRange(from, to), new ArchiveRangeAnchor(from * 10, hash, to * 10, hash), "fixture-v1");
     }
 

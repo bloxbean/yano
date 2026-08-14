@@ -17,6 +17,7 @@ import com.bloxbean.cardano.yano.archive.core.dataset.UtxoHistoryDataset;
 import com.bloxbean.cardano.yano.archive.core.address.*;
 import com.bloxbean.cardano.yano.archive.core.hot.RocksDbHotHistoryStore;
 import com.bloxbean.cardano.yano.archive.core.hot.HotArchiveRows;
+import com.bloxbean.cardano.yano.archive.core.hot.HotHistorySnapshot;
 import com.bloxbean.cardano.yano.archive.core.source.ChainBlockArchiveSource;
 import com.bloxbean.cardano.yano.archive.core.source.EpochArchiveJob;
 import com.bloxbean.cardano.yano.archive.core.source.YaciBlockArchiveDecoder;
@@ -44,6 +45,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
  * Thin application composition boundary for ADR-034. Disabled history returns
@@ -77,6 +79,8 @@ public class HistoryArchiveService implements AutoCloseable {
     private final EnumMap<ArchiveDatasetId, Integer> promotionBatchBlocks = new EnumMap<>(ArchiveDatasetId.class);
     private final AtomicLong pendingRollbackEpoch = new AtomicLong(Long.MAX_VALUE);
     private final AtomicLong pendingRollbackSlot = new AtomicLong(Long.MAX_VALUE);
+    private final AtomicLong pendingEpochRollbackSlot = new AtomicLong(Long.MAX_VALUE);
+    private final ReentrantReadWriteLock lifecycleLock = new ReentrantReadWriteLock(true);
 
     @Inject
     public HistoryArchiveService(Config config) {
@@ -178,8 +182,10 @@ public class HistoryArchiveService implements AutoCloseable {
             // must never leave core pruning pointed at a closed control store.
             chain.setBlockBodyRetentionBoundary(controlStore);
 
-            var decoder = new YaciBlockArchiveDecoder(ledger::slotToEpoch, ledger::slotToUnixTime);
+            var decoder = new YaciBlockArchiveDecoder(ledger::slotToEpoch, ledger::slotToUnixTime,
+                    chain::getBlockEra);
             var source = new ChainBlockArchiveSource<>(chain, decoder, controlStore);
+            var genesisHistoryOutputs = genesisUtxoOutputs(genesis);
             CoreSyncView syncView = new CoreSyncView() {
                 public long localBlock() {
                     return chain.getLocalTip() == null ? 0 : chain.getLocalTip().getBlockNumber();
@@ -194,7 +200,7 @@ public class HistoryArchiveService implements AutoCloseable {
                     new UtxoHistoryDataset(controlStore, "backfill", ArchiveTrack.BACKFILL),
                     new ChainBlockArchiveSource<>(chain,
                             new YaciUtxoHistoryDecoder(ledger::slotToEpoch, ledger::slotToUnixTime,
-                                    chain::getBlockEra, genesisUtxoOutputs(genesis)), controlStore),
+                                    chain::getBlockEra, genesisHistoryOutputs), controlStore),
                     identity.networkIdentity(), workerConfig, syncView);
             if (archiveConfig.liveEnabled()) {
                 registerLiveWorker(ArchiveDatasetId.TRANSACTION, StandardBlockDatasets.transactions(), source,
@@ -205,7 +211,7 @@ public class HistoryArchiveService implements AutoCloseable {
                         new UtxoHistoryDataset(controlStore, "live", ArchiveTrack.LIVE),
                         new ChainBlockArchiveSource<>(chain,
                                 new YaciUtxoHistoryDecoder(ledger::slotToEpoch, ledger::slotToUnixTime,
-                                        chain::getBlockEra), controlStore),
+                                        chain::getBlockEra, genesisHistoryOutputs), controlStore),
                         identity.networkIdentity(), workerConfig);
                 if (datasetEnabled(ArchiveDatasetId.ADDRESS_TRANSACTION)
                         && ledger.getUtxoState() != null && ledger.getUtxoState().isEnabled()) {
@@ -281,8 +287,18 @@ public class HistoryArchiveService implements AutoCloseable {
     public AccountHistoryProvider accountHistoryProvider() { return archiveAccountHistory; }
 
     boolean datasetAvailable(ArchiveDatasetId dataset) {
-        return available() && datasetEnabled(dataset) && (!backend.coverage(dataset).completeRanges().isEmpty()
-                || (controlStore != null && controlStore.load(dataset, ArchiveTrack.LIVE).isPresent()));
+        lifecycleLock.readLock().lock();
+        try {
+            return available() && datasetEnabled(dataset) && (!backend.coverage(dataset).completeRanges().isEmpty()
+                    || (controlStore != null && controlStore.load(dataset, ArchiveTrack.LIVE).isPresent()));
+        } finally {
+            lifecycleLock.readLock().unlock();
+        }
+    }
+
+    QueryLease openQueryLease() {
+        lifecycleLock.readLock().lock();
+        return lifecycleLock.readLock()::unlock;
     }
 
     List<ArchiveRecord> hotRecords(ArchiveDatasetId dataset, String table, Map<String, Object> filters) {
@@ -296,27 +312,44 @@ public class HistoryArchiveService implements AutoCloseable {
         return controlStore == null || !archiveConfig.liveEnabled() ? null : controlStore.snapshot();
     }
 
+    Optional<BlockRange> liveCoverage(ArchiveDatasetId dataset) {
+        if (dataset.sourceKind() != SourceKind.BLOCK || controlStore == null || !archiveConfig.liveEnabled()) {
+            return Optional.empty();
+        }
+        ArchiveProgress progress = controlStore.load(dataset, ArchiveTrack.LIVE).orElse(null);
+        OptionalLong start = activations.start(dataset, ArchiveTrack.LIVE);
+        if (progress == null || start.isEmpty() || progress.coordinate() < start.getAsLong()) {
+            return Optional.empty();
+        }
+        return Optional.of(new BlockRange(start.getAsLong(), progress.coordinate()));
+    }
+
     public TransactionLookup findTransaction(byte[] txHash) {
-        ArchiveBackend current = backend;
-        if (current == null || !datasetEnabled(ArchiveDatasetId.TRANSACTION)) {
-            return TransactionLookup.unavailable("transaction history is disabled or unavailable");
-        }
-        if (controlStore != null) {
-            try (var snapshot = controlStore.snapshot()) {
-                var live = HotArchiveRows.read(snapshot, ArchiveDatasetId.TRANSACTION, "chain_transaction",
-                        Map.of("tx_hash", txHash));
-                if (!live.isEmpty()) return TransactionLookup.found(live.getFirst());
+        lifecycleLock.readLock().lock();
+        try {
+            ArchiveBackend current = backend;
+            if (current == null || !datasetEnabled(ArchiveDatasetId.TRANSACTION)) {
+                return TransactionLookup.unavailable("transaction history is disabled or unavailable");
             }
+            if (controlStore != null) {
+                try (var snapshot = controlStore.snapshot()) {
+                    var live = HotArchiveRows.read(snapshot, ArchiveDatasetId.TRANSACTION, "chain_transaction",
+                            Map.of("tx_hash", txHash));
+                    if (!live.isEmpty()) return TransactionLookup.found(live.getFirst());
+                }
+            }
+            ArchiveCoverage coverage = current.coverage(ArchiveDatasetId.TRANSACTION);
+            if (coverage.completeRanges().isEmpty()) return TransactionLookup.incomplete("transaction history has no coverage");
+            try (ArchiveReadSession read = current.openReadSession()) {
+                Optional<ArchiveRecord> found = current.findTransaction(read, txHash);
+                if (found.isPresent()) return TransactionLookup.found(found.orElseThrow());
+            }
+            long tip = chain != null && chain.getLocalTip() != null ? chain.getLocalTip().getBlockNumber() : -1;
+            boolean coversTip = tip < 0 || coverage.covers(tip) || liveCoverageBridgesToTip(ArchiveDatasetId.TRANSACTION, coverage, tip);
+            return coversTip ? TransactionLookup.notFound() : TransactionLookup.incomplete("transaction history is catching up");
+        } finally {
+            lifecycleLock.readLock().unlock();
         }
-        ArchiveCoverage coverage = current.coverage(ArchiveDatasetId.TRANSACTION);
-        if (coverage.completeRanges().isEmpty()) return TransactionLookup.incomplete("transaction history has no coverage");
-        try (ArchiveReadSession read = current.openReadSession()) {
-            Optional<ArchiveRecord> found = current.findTransaction(read, txHash);
-            if (found.isPresent()) return TransactionLookup.found(found.orElseThrow());
-        }
-        long tip = chain != null && chain.getLocalTip() != null ? chain.getLocalTip().getBlockNumber() : -1;
-        boolean coversTip = tip < 0 || coverage.covers(tip) || liveCoverageBridgesToTip(ArchiveDatasetId.TRANSACTION, coverage, tip);
-        return coversTip ? TransactionLookup.notFound() : TransactionLookup.incomplete("transaction history is catching up");
     }
 
     private boolean liveCoverageBridgesToTip(ArchiveDatasetId dataset, ArchiveCoverage cold, long tip) {
@@ -328,6 +361,15 @@ public class HistoryArchiveService implements AutoCloseable {
     }
 
     public Map<String, Object> status() {
+        lifecycleLock.readLock().lock();
+        try {
+            return buildStatus();
+        } finally {
+            lifecycleLock.readLock().unlock();
+        }
+    }
+
+    private Map<String, Object> buildStatus() {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("enabled", configuredEnabled);
         result.put("available", available());
@@ -365,7 +407,7 @@ public class HistoryArchiveService implements AutoCloseable {
         if (backend == null || chain == null) return;
         var tip = chain.getLocalTip();
         if (tip == null) return;
-        processPendingEpochRollback();
+        processPendingEpochRollback(tip.getBlockNumber());
         processPendingLiveRollback(tip.getBlockNumber());
         long finalized = tip.getBlockNumber() - archiveConfig.safetyWindows().archiveFinalityBlocks();
         if (finalized < 0) return;
@@ -381,7 +423,14 @@ public class HistoryArchiveService implements AutoCloseable {
                     promoteLiveRows(dataset, finalized);
                 }
             } catch (BackfillActivationInvalidatedException e) {
-                reactivateBackfillDataset(dataset, e.activation());
+                try {
+                    reactivateBackfillDataset(dataset, e.activation());
+                } catch (Exception recoveryFailure) {
+                    metrics.update(dataset, ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.DEGRADED,
+                            -1, 0, recoveryFailure.getMessage());
+                    log.warn("History worker {} reactivation paused: {}",
+                            dataset.logicalName(), recoveryFailure.toString());
+                }
             } catch (Exception e) {
                 metrics.update(dataset, ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.DEGRADED,
                         -1, 0, e.getMessage());
@@ -404,7 +453,14 @@ public class HistoryArchiveService implements AutoCloseable {
                         controlStore.pruneUndoThrough(dataset, ArchiveTrack.LIVE, undoCutoff);
                     }
                 } catch (LiveActivationInvalidatedException e) {
-                    recoverLiveCanonicalMismatch(dataset, e.activation(), tip.getBlockNumber());
+                    try {
+                        recoverLiveCanonicalMismatch(dataset, e.activation(), tip.getBlockNumber());
+                    } catch (Exception recoveryFailure) {
+                        metrics.update(dataset, ArchiveTrack.LIVE, ArchiveWorkerStatus.State.DEGRADED,
+                                -1, 0, recoveryFailure.getMessage());
+                        log.warn("Live history worker {} reactivation paused: {}",
+                                dataset.logicalName(), recoveryFailure.toString());
+                    }
                 } catch (Exception e) {
                     metrics.update(dataset, ArchiveTrack.LIVE, ArchiveWorkerStatus.State.DEGRADED,
                             -1, 0, e.getMessage());
@@ -423,30 +479,48 @@ public class HistoryArchiveService implements AutoCloseable {
         long targetEpoch = ledger.slotToEpoch(event.target().getSlot());
         pendingRollbackEpoch.accumulateAndGet(targetEpoch, Math::min);
         pendingRollbackSlot.accumulateAndGet(event.target().getSlot(), Math::min);
+        pendingEpochRollbackSlot.accumulateAndGet(event.target().getSlot(), Math::min);
     }
 
     private void processPendingLiveRollback(long currentTip) {
         long targetSlot = pendingRollbackSlot.getAndSet(Long.MAX_VALUE);
         if (targetSlot == Long.MAX_VALUE || controlStore == null) return;
-        long targetBlock = blockAtOrBeforeSlot(targetSlot, currentTip);
-        invalidateBlockArchivesAfterRollback(targetBlock);
-        for (ArchiveDatasetId dataset : liveWorkers.keySet()) {
-            ArchiveProgress progress = controlStore.load(dataset, ArchiveTrack.LIVE).orElse(null);
-            if (progress == null || progress.coordinate() <= targetBlock) continue;
-            long activation = activations.start(dataset, ArchiveTrack.LIVE).orElse(targetBlock + 1);
-            try {
-                if (targetBlock < activation - 1) {
-                    reactivateLiveDataset(dataset, activation, currentTip, targetBlock);
-                } else if (targetBlock == activation - 1) {
-                    controlStore.resetTrackFrom(dataset, ArchiveTrack.LIVE, activation);
-                } else {
-                    controlStore.rollbackTo(dataset, ArchiveTrack.LIVE, targetBlock);
+        boolean retry = false;
+        try {
+            long targetBlock = blockAtOrBeforeSlot(targetSlot, currentTip);
+            invalidateBlockArchivesAfterRollback(targetBlock);
+            for (ArchiveDatasetId dataset : liveWorkers.keySet()) {
+                ArchiveProgress progress = controlStore.load(dataset, ArchiveTrack.LIVE).orElse(null);
+                if (progress == null || progress.coordinate() <= targetBlock) continue;
+                long activation = activations.start(dataset, ArchiveTrack.LIVE).orElse(targetBlock + 1);
+                try {
+                    if (targetBlock < activation - 1) {
+                        reactivateLiveDataset(dataset, activation, currentTip, targetBlock);
+                    } else if (targetBlock == activation - 1) {
+                        controlStore.resetTrackFrom(dataset, ArchiveTrack.LIVE, activation);
+                    } else {
+                        controlStore.rollbackTo(dataset, ArchiveTrack.LIVE, targetBlock);
+                    }
+                    metrics.update(dataset, ArchiveTrack.LIVE, ArchiveWorkerStatus.State.IDLE,
+                            targetBlock, currentTip - targetBlock, "exact rollback applied");
+                } catch (Exception rollbackFailure) {
+                    try {
+                        reactivateLiveDataset(dataset, activation, currentTip, targetBlock);
+                    } catch (Exception recoveryFailure) {
+                        retry = true;
+                        recoveryFailure.addSuppressed(rollbackFailure);
+                        metrics.update(dataset, ArchiveTrack.LIVE, ArchiveWorkerStatus.State.DEGRADED,
+                                targetBlock, currentTip - targetBlock, recoveryFailure.getMessage());
+                        log.warn("Live history rollback for {} is pending retry: {}",
+                                dataset.logicalName(), recoveryFailure.toString());
+                    }
                 }
-                metrics.update(dataset, ArchiveTrack.LIVE, ArchiveWorkerStatus.State.IDLE,
-                        targetBlock, currentTip - targetBlock, "exact rollback applied");
-            } catch (Exception e) {
-                reactivateLiveDataset(dataset, activation, currentTip, targetBlock);
             }
+        } catch (Exception e) {
+            retry = true;
+            log.warn("Live archive rollback is pending retry through slot {}: {}", targetSlot, e.toString());
+        } finally {
+            if (retry) pendingRollbackSlot.accumulateAndGet(targetSlot, Math::min);
         }
     }
 
@@ -505,25 +579,24 @@ public class HistoryArchiveService implements AutoCloseable {
         return answer;
     }
 
-    private void processPendingEpochRollback() {
+    private void processPendingEpochRollback(long currentTip) {
         long targetEpoch = pendingRollbackEpoch.getAndSet(Long.MAX_VALUE);
-        if (targetEpoch == Long.MAX_VALUE) return;
+        long targetSlot = pendingEpochRollbackSlot.getAndSet(Long.MAX_VALUE);
+        if (targetEpoch == Long.MAX_VALUE || targetSlot == Long.MAX_VALUE) return;
+        long targetBlock = blockAtOrBeforeSlot(targetSlot, currentTip);
         try {
-            int discarded = epochStaging == null ? 0 : epochStaging.discardAfterEpoch(targetEpoch);
+            int discarded = epochStaging == null ? 0 : epochStaging.discardAfterBlock(targetBlock);
             for (ArchiveDatasetId dataset : ArchiveDatasetId.values()) {
                 if (dataset.sourceKind() != SourceKind.EPOCH || !datasetEnabled(dataset)) continue;
-                ArchiveCoverage coverage = backend.coverage(dataset);
-                long last = coverage.completeRanges().stream().mapToLong(ArchiveRange::endInclusive)
-                        .max().orElse(targetEpoch);
-                if (last > targetEpoch) {
-                    backend.invalidate(dataset, new EpochRange(Math.addExact(targetEpoch, 1), last));
+                if (backend.invalidateEpochJobsAfterSlot(dataset, targetSlot) > 0) {
                     controlStore.clearTrack(dataset, ArchiveTrack.BACKFILL, List.of());
                 }
             }
-            log.info("Applied archive epoch rollback through epoch {}; discarded {} staged source jobs",
-                    targetEpoch, discarded);
+            log.info("Applied archive epoch rollback through epoch {}, slot {}, block {}; discarded {} staged source jobs",
+                    targetEpoch, targetSlot, targetBlock, discarded);
         } catch (Exception e) {
             pendingRollbackEpoch.accumulateAndGet(targetEpoch, Math::min);
+            pendingEpochRollbackSlot.accumulateAndGet(targetSlot, Math::min);
             log.warn("Archive epoch rollback is pending retry through epoch {}: {}", targetEpoch, e.toString());
         }
     }
@@ -762,18 +835,16 @@ public class HistoryArchiveService implements AutoCloseable {
                 "hot-promotion-v1");
         try (var snapshot = controlStore.snapshot()) {
             List<byte[]> keys = new ArrayList<>();
-            Set<String> datumHashes = new HashSet<>();
-            Set<String> scriptHashes = new HashSet<>();
             int[] rowCount = {0};
             try (var write = backend.begin(job)) {
                 for (String selected : tables) {
                     List<ArchiveRecord> rows;
                     if (selected.equals("datums") || selected.equals("scripts")) {
-                        Set<String> selectedHashes = selected.equals("datums") ? datumHashes : scriptHashes;
-                        String column = selected.equals("datums") ? "datum_hash" : "script_hash";
-                        rows = HotArchiveRows.allRows(snapshot, dataset, selected).stream()
-                                .filter(row -> selectedHashes.contains(HexUtil.encodeHexString((byte[]) row.value(column))))
-                                .toList();
+                        // Content-addressed payloads can be revealed by a spending transaction
+                        // after the referenced output has already moved cold. They therefore
+                        // cannot be selected only from outputs in this promotion range. Commit
+                        // every currently-hot payload atomically; backend inserts are idempotent.
+                        rows = HotArchiveRows.allRows(snapshot, dataset, selected);
                         for (ArchiveRecord row : rows) {
                             keys.add(HotArchiveRows.put(dataset, new ArchiveRow(row.table(),
                                     new ArrayList<>(row.values().values()))).key());
@@ -789,12 +860,6 @@ public class HistoryArchiveService implements AutoCloseable {
                             promotionBatchBlocks.put(dataset, Math.max(1, selectedPromotionBlocks / 2));
                             throw new ArchiveStoreException("live promotion row bound exceeded for block "
                                     + promotionStart + ".." + promotionEnd);
-                        }
-                        if (selected.equals("transaction_outputs")) {
-                            Object datum = row.value("datum_hash");
-                            Object script = row.value("reference_script_hash");
-                            if (datum instanceof byte[] bytes) datumHashes.add(HexUtil.encodeHexString(bytes));
-                            if (script instanceof byte[] bytes) scriptHashes.add(HexUtil.encodeHexString(bytes));
                         }
                         write.append(promotionRow(row, job.jobId()));
                     }
@@ -822,8 +887,45 @@ public class HistoryArchiveService implements AutoCloseable {
                             range.startInclusive(), Math.min(finalized, range.endInclusive())));
                 }
             }
+            if (dataset == ArchiveDatasetId.UTXO_HISTORY) {
+                // Payload rows have no block coordinate: a witness may reveal a datum or
+                // script for an output that is already cold. Delete only payloads whose
+                // content hash is demonstrably present in the cold archive. This keeps
+                // the cleanup-only path bounded without losing newer witness content.
+                keys.addAll(archivedContentKeys(snapshot, "datums", "datum_hash", finalized));
+                keys.addAll(archivedContentKeys(snapshot, "scripts", "script_hash", finalized));
+            }
             if (!keys.isEmpty()) controlStore.deleteData(dataset, keys);
         }
+    }
+
+    private List<byte[]> archivedContentKeys(HotHistorySnapshot snapshot,
+                                             String table, String hashColumn, long finalized) {
+        List<ArchiveRecord> hotRows = HotArchiveRows.allRows(snapshot, ArchiveDatasetId.UTXO_HISTORY, table);
+        if (hotRows.isEmpty()) return List.of();
+        List<byte[]> removable = new ArrayList<>();
+        var repository = backend.repositories().records(ArchiveDatasetId.UTXO_HISTORY);
+        try (var read = backend.openReadSession()) {
+            for (int start = 0; start < hotRows.size(); start += 500) {
+                List<ArchiveRecord> batch = hotRows.subList(start, Math.min(hotRows.size(), start + 500));
+                List<byte[]> hashes = batch.stream().map(row -> (byte[]) row.value(hashColumn)).toList();
+                var query = new ArchiveQuery(new BlockRange(0, Math.max(0, finalized)),
+                        Map.of("__table", table, hashColumn, hashes),
+                        ArchivePageCursor.Order.ASC, batch.size(), Optional.empty());
+                Set<String> coldHashes = new HashSet<>();
+                for (ArchiveRecord cold : repository.query(read, query).rows()) {
+                    coldHashes.add(HexUtil.encodeHexString((byte[]) cold.value(hashColumn)));
+                }
+                for (ArchiveRecord hot : batch) {
+                    byte[] hash = (byte[]) hot.value(hashColumn);
+                    if (coldHashes.contains(HexUtil.encodeHexString(hash))) {
+                        removable.add(HotArchiveRows.put(ArchiveDatasetId.UTXO_HISTORY,
+                                new ArchiveRow(hot.table(), new ArrayList<>(hot.values().values()))).key());
+                    }
+                }
+            }
+        }
+        return removable;
     }
 
     private static ArchiveRow promotionRow(ArchiveRecord record, UUID jobId) {
@@ -894,7 +996,9 @@ public class HistoryArchiveService implements AutoCloseable {
     private void initializeAddressBackfillResolver(AddressTransactionDataset dataset) {
         OptionalLong existingActivation = activations.start(ArchiveDatasetId.ADDRESS_TRANSACTION,
                 ArchiveTrack.BACKFILL);
-        if (existingActivation.isPresent() && dataset.resolverSeeded()) return;
+        if (existingActivation.isPresent() && dataset.resolverSeeded()
+                && dataset.resolverBaseBlock().isPresent()
+                && existingActivation.getAsLong() == dataset.resolverBaseBlock().getAsLong() + 1) return;
 
         dataset.resetResolver();
         ArchiveStartMode mode = archiveConfig.datasets().get(ArchiveDatasetId.ADDRESS_TRANSACTION).startMode();
@@ -924,7 +1028,9 @@ public class HistoryArchiveService implements AutoCloseable {
     private void initializeAddressLiveResolver(AddressTransactionDataset dataset) {
         OptionalLong existingActivation = activations.start(ArchiveDatasetId.ADDRESS_TRANSACTION,
                 ArchiveTrack.LIVE);
-        if (existingActivation.isPresent() && dataset.resolverSeeded()) return;
+        if (existingActivation.isPresent() && dataset.resolverSeeded()
+                && dataset.resolverBaseBlock().isPresent()
+                && existingActivation.getAsLong() == dataset.resolverBaseBlock().getAsLong() + 1) return;
 
         dataset.resetResolver();
         long activation = Math.addExact(seedResolverSnapshot(ledger.getUtxoState(), dataset), 1);
@@ -955,6 +1061,10 @@ public class HistoryArchiveService implements AutoCloseable {
                 });
             }
             if (snapshotBlock < 0) throw new ArchiveStoreException("complete UTXO snapshot point is unavailable");
+            var snapshotEra = chain.getBlockEra(snapshotBlock);
+            if (snapshotEra == null) {
+                throw new ArchiveStoreException("UTXO snapshot era is unavailable at block " + snapshotBlock);
+            }
 
             // Release the core RocksDB snapshot before writing resolver pages
             // to the optional archive RocksDB.
@@ -964,7 +1074,7 @@ public class HistoryArchiveService implements AutoCloseable {
                     try {
                         String txHash = input.readUTF();
                         int index = input.readInt();
-                        var parts = dataset.address(input.readUTF());
+                        var parts = dataset.address(input.readUTF(), snapshotEra.getValue());
                         page.add(new SequentialOutpointResolver.Entry(
                                 new Outpoint(HexUtil.decodeHexString(txHash), index),
                                 new ResolvedOutput(parts.addressKey(), parts.paymentCredential(),
@@ -979,7 +1089,7 @@ public class HistoryArchiveService implements AutoCloseable {
                 }
             }
             if (!page.isEmpty()) dataset.seedResolver(page, false);
-            dataset.seedResolver(List.of(), true);
+            dataset.completeResolverSeed(snapshotBlock);
             return snapshotBlock;
         } catch (UncheckedIOException e) {
             throw new ArchiveStoreException("cannot materialize the live UTXO resolver snapshot", e.getCause());
@@ -1158,7 +1268,12 @@ public class HistoryArchiveService implements AutoCloseable {
 
     @Override
     public synchronized void close() {
-        closePartial();
+        lifecycleLock.writeLock().lock();
+        try {
+            closePartial();
+        } finally {
+            lifecycleLock.writeLock().unlock();
+        }
     }
 
     private void closePartial() {
@@ -1194,4 +1309,9 @@ public class HistoryArchiveService implements AutoCloseable {
 
     @FunctionalInterface
     private interface DatasetRunner { long run(long start, long finalizedEnd); }
+
+    @FunctionalInterface
+    interface QueryLease extends AutoCloseable {
+        @Override void close();
+    }
 }

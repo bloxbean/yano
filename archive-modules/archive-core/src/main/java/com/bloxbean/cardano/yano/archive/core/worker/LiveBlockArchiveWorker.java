@@ -46,6 +46,7 @@ public final class LiveBlockArchiveWorker<B> {
                     new ArchiveStoreException("canonical live body unavailable for block " + current));
             blocks.add(context);
         }
+        verifyParentChain(blocks, progress);
         StatefulBlockArchiveDataset<B> statefulDataset = null;
         if (dataset instanceof StatefulBlockArchiveDataset<B> stateful) {
             statefulDataset = stateful;
@@ -89,5 +90,18 @@ public final class LiveBlockArchiveWorker<B> {
         metrics.update(dataset.dataset(), ArchiveTrack.LIVE, ArchiveWorkerStatus.State.IDLE,
                 end, tip - end, "live projection updated");
         return end;
+    }
+
+    private void verifyParentChain(List<BlockSourceContext<B>> blocks, ArchiveProgress prior) {
+        if (blocks.isEmpty()) return;
+        if (prior != null && !Arrays.equals(blocks.getFirst().parentHash(), prior.blockHash())) {
+            throw new ArchiveStoreException("live archive batch does not extend its committed parent");
+        }
+        for (int index = 1; index < blocks.size(); index++) {
+            if (!Arrays.equals(blocks.get(index).parentHash(), blocks.get(index - 1).blockHash())) {
+                throw new ArchiveStoreException("mixed canonical forks in live archive batch at block "
+                        + blocks.get(index).blockNumber());
+            }
+        }
     }
 }

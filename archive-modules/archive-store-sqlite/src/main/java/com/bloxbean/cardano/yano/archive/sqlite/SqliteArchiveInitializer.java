@@ -120,7 +120,8 @@ final class SqliteArchiveInitializer {
                 try (ResultSet result = query.executeQuery()) {
                     if (!result.next() || result.getInt(1) != entry.getValue().projectionVersion()
                             || result.next()) {
-                        throw new ArchiveStoreException("SQLite projection metadata mismatch for " + entry.getKey());
+                        throw new ArchiveStoreException("SQLite projection metadata mismatch for " + entry.getKey()
+                                + "; rebuild the unreleased preview archive directory");
                     }
                 }
             }

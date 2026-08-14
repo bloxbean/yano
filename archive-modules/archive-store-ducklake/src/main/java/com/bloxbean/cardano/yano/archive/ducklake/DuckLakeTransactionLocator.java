@@ -40,8 +40,12 @@ final class DuckLakeTransactionLocator implements AutoCloseable {
         return block(txHash);
     }
 
-    synchronized void advance(long generation, Collection<Entry> entries) {
+    synchronized void advance(Connection duckLake, long generation, Collection<Entry> entries) {
         try (Connection connection = open()) {
+            if (generation(connection) != generation - 1) {
+                rebuild(duckLake, generation);
+                return;
+            }
             connection.setAutoCommit(false);
             try (PreparedStatement insert = connection.prepareStatement(
                     "INSERT INTO tx_locator VALUES(?,?,?) ON CONFLICT(tx_hash) DO UPDATE SET block_number=excluded.block_number,job_id=excluded.job_id")) {
@@ -69,6 +73,12 @@ final class DuckLakeTransactionLocator implements AutoCloseable {
     synchronized void rebuildIfRequired(Connection duckLake, long generation) {
         try (Connection locator = open()) {
             if (generation(locator) == generation) return;
+        } catch (SQLException e) { throw new ArchiveStoreException("transaction locator generation read failed", e); }
+        rebuild(duckLake, generation);
+    }
+
+    synchronized void rebuild(Connection duckLake, long generation) {
+        try (Connection locator = open()) {
             locator.setAutoCommit(false);
             try (Statement clear = locator.createStatement()) { clear.executeUpdate("DELETE FROM tx_locator"); }
             try (Statement scan = duckLake.createStatement();

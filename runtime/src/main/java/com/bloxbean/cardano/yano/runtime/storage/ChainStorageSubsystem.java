@@ -1,8 +1,8 @@
 package com.bloxbean.cardano.yano.runtime.storage;
 
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
-import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
 import com.bloxbean.cardano.yano.api.BlockBodyRetentionBoundary;
+import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.db.RocksDbAccess;
@@ -27,6 +27,8 @@ import org.slf4j.Logger;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
+import java.util.OptionalLong;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
  * Storage-owned runtime boundary for chain-state construction, storage
@@ -40,7 +42,8 @@ public final class ChainStorageSubsystem implements Subsystem {
     private final RuntimeMaintenanceGate maintenanceGate = new RuntimeMaintenanceGate();
 
     private PruneService blockPruneService;
-    private BlockBodyRetentionBoundary blockBodyRetentionBoundary = BlockBodyRetentionBoundary.NONE;
+    private final MutableBlockBodyRetentionBoundary blockBodyRetentionBoundary =
+            new MutableBlockBodyRetentionBoundary();
     private boolean closed;
 
     public ChainStorageSubsystem(YanoConfig config, RuntimeOptions runtimeOptions, Logger log) {
@@ -143,10 +146,8 @@ public final class ChainStorageSubsystem implements Subsystem {
                 blockPruneDepth, pruneBatch, pruneIntervalSec);
     }
 
-    /** Must be installed before the prune service starts. */
     public void setBlockBodyRetentionBoundary(BlockBodyRetentionBoundary boundary) {
-        if (blockPruneService != null) throw new IllegalStateException("block prune service already started");
-        blockBodyRetentionBoundary = boundary == null ? BlockBodyRetentionBoundary.NONE : boundary;
+        blockBodyRetentionBoundary.setDelegate(boundary);
     }
 
     @Override
@@ -235,5 +236,30 @@ public final class ChainStorageSubsystem implements Subsystem {
             }
         }
         return def;
+    }
+
+    /** Stable boundary captured by the pruner with safe optional-consumer detach. */
+    private static final class MutableBlockBodyRetentionBoundary implements BlockBodyRetentionBoundary {
+        private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
+        private BlockBodyRetentionBoundary delegate = BlockBodyRetentionBoundary.NONE;
+
+        @Override
+        public OptionalLong oldestRequiredBlockNumber() {
+            lock.readLock().lock();
+            try {
+                return delegate.oldestRequiredBlockNumber();
+            } finally {
+                lock.readLock().unlock();
+            }
+        }
+
+        void setDelegate(BlockBodyRetentionBoundary boundary) {
+            lock.writeLock().lock();
+            try {
+                delegate = boundary == null ? BlockBodyRetentionBoundary.NONE : boundary;
+            } finally {
+                lock.writeLock().unlock();
+            }
+        }
     }
 }

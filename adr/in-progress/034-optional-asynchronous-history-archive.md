@@ -715,6 +715,13 @@ tx hash, block hash, block number, slot, epoch, block time,
 transaction index, validity, fee
 ```
 
+`fee` is the actual ledger fee when it is available without consulting mutable
+core state: the declared fee for a valid transaction and `totalCollateral` for
+a phase-2-invalid Babbage-or-later transaction. It is null for Byron and for an
+invalid transaction in an era whose collateral fee would require resolving
+historical inputs. The archive never labels the invalid transaction's declared
+fee as the collateral actually collected.
+
 Any additional scalar transaction fields require the Phase 0 schema decision
 to name their ledger meaning, type, historical availability, and query/API use;
 “other selected facts” is not an implementation contract.

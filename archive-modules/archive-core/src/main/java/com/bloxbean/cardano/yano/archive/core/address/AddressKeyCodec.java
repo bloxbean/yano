@@ -1,8 +1,8 @@
 package com.bloxbean.cardano.yano.archive.core.address;
 
+import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.yano.archive.api.ArchiveStoreException;
 
-import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -24,16 +24,12 @@ public final class AddressKeyCodec {
         if (canonicalAddressBytes == null || canonicalAddressBytes.length == 0) {
             throw new IllegalArgumentException("canonical address bytes are required");
         }
-        try {
-            byte[] key = MessageDigest.getInstance("SHA-256").digest(canonicalAddressBytes);
-            byte[] previous = observed.putIfAbsent(new Key(key), canonicalAddressBytes.clone());
-            if (previous != null && !Arrays.equals(previous, canonicalAddressBytes)) {
-                throw new ArchiveStoreException("address-key collision for " + HexFormat.of().formatHex(key));
-            }
-            return key;
-        } catch (java.security.NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 unavailable", e);
+        byte[] key = Blake2bUtil.blake2bHash256(canonicalAddressBytes);
+        byte[] previous = observed.putIfAbsent(new Key(key), canonicalAddressBytes.clone());
+        if (previous != null && !Arrays.equals(previous, canonicalAddressBytes)) {
+            throw new ArchiveStoreException("address-key collision for " + HexFormat.of().formatHex(key));
         }
+        return key;
     }
 
     private record Key(byte[] bytes) {

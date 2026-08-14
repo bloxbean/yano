@@ -37,6 +37,11 @@ public final class ChainBlockArchiveSource<B> implements BlockArchiveSource<B> {
     }
 
     @Override
+    public Optional<com.bloxbean.cardano.yano.api.CanonicalBlockReference> canonicalReference(long blockNumber) {
+        return reader.getCanonicalBlockReference(blockNumber);
+    }
+
+    @Override
     public ArchiveSourceLease acquire(long startBlock, long endBlock, Instant expiresAt) {
         long earliest = earliestRetainedBody();
         if (startBlock < earliest) {

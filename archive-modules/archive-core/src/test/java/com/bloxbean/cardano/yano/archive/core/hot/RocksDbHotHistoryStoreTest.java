@@ -41,6 +41,23 @@ class RocksDbHotHistoryStoreTest {
     }
 
     @Test
+    void sameBlockCreateThenReplaceRollsBackWithoutPhantomValue() {
+        byte[] key = bytes("same-block");
+        try (var store = new RocksDbHotHistoryStore(temp.resolve("same-block-undo"))) {
+            store.applyBlock(ArchiveDatasetId.TRANSACTION, checkpoint(0, 0, 0, -1),
+                    List.of(), progress(0, 0, 0));
+            store.applyBlock(ArchiveDatasetId.TRANSACTION, checkpoint(1, 10, 1, 0),
+                    List.of(new HotHistoryMutation(key, bytes("created")),
+                            new HotHistoryMutation(key, bytes("replaced"))), progress(1, 10, 1));
+            assertThat(store.get(ArchiveDatasetId.TRANSACTION, key)).contains(bytes("replaced"));
+
+            store.rollbackTo(ArchiveDatasetId.TRANSACTION, ArchiveTrack.LIVE, 0);
+
+            assertThat(store.get(ArchiveDatasetId.TRANSACTION, key)).isEmpty();
+        }
+    }
+
+    @Test
     void missingUndoFailsClosedAndPrunedUndoCannotSupportDeepRollback() {
         try (var store = new RocksDbHotHistoryStore(temp.resolve("hot"))) {
             store.applyBlock(ArchiveDatasetId.TRANSACTION, checkpoint(1, 10, 1, 0), List.of(), progress(1, 10, 1));

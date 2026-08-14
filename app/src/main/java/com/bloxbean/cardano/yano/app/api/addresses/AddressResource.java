@@ -76,6 +76,11 @@ public class AddressResource {
                     .entity(Map.of("error", "order must be asc or desc"))
                     .build();
         }
+        if (page > 1_000) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("error", "page exceeds the bounded history lookup window"))
+                    .build();
+        }
         int safePage = Math.max(1, page);
         int safeCount = count <= 0 ? 20 : Math.min(count, 100);
 

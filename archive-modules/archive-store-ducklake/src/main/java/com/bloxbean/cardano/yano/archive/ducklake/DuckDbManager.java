@@ -68,6 +68,8 @@ public final class DuckDbManager implements AutoCloseable {
                 if (releaseBulk) bulkPermits.release();
             });
         } catch (InterruptedException e) {
+            if (totalAcquired) totalPermits.release();
+            if (bulkAcquired) bulkPermits.release();
             Thread.currentThread().interrupt();
             throw new SQLException("interrupted waiting for a DuckDB slot", e);
         } catch (SQLException | RuntimeException | Error e) {

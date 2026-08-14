@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.archive.ducklake;
 import com.bloxbean.cardano.yano.archive.api.ArchiveBackend;
 import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import com.bloxbean.cardano.yano.archive.api.ArchiveIdentity;
+import com.bloxbean.cardano.yano.archive.api.ArchiveHealth;
 import com.bloxbean.cardano.yano.archive.api.ArchiveJob;
 import com.bloxbean.cardano.yano.archive.api.ArchiveMaintenanceBudget;
 import com.bloxbean.cardano.yano.archive.api.ArchiveNetworkIdentity;
@@ -113,6 +114,25 @@ class DuckLakeBackendConformanceTest extends AbstractArchiveBackendConformanceTe
         assertThatThrownBy(() -> open(new ArchiveIdentity(UUID.randomUUID(), "ducklake", 1, 2, "other-genesis")))
                 .isInstanceOf(ArchiveStoreException.class)
                 .hasMessageContaining("identity mismatch");
+    }
+
+    @Test
+    void closeReturnsWithoutRacingPinnedReaderAndReleasesResourcesWhenReaderEnds() throws Exception {
+        ArchiveIdentity identity = backend().identity();
+        var read = backend().openReadSession();
+        long started = System.nanoTime();
+        backend().close();
+
+        assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(1));
+        assertThat(backend().health().status()).isEqualTo(ArchiveHealth.Status.CLOSED);
+        assertThatThrownBy(() -> open(identity))
+                .isInstanceOf(ArchiveStoreException.class)
+                .hasMessageContaining("already has a writer");
+
+        read.close();
+        try (var reopened = open(identity)) {
+            assertThat(reopened.health().status()).isEqualTo(ArchiveHealth.Status.HEALTHY);
+        }
     }
 
     @Test
@@ -242,7 +262,9 @@ class DuckLakeBackendConformanceTest extends AbstractArchiveBackendConformanceTe
         byte[] hash = new byte[32];
         Arrays.fill(hash, marker);
         return ArchiveJob.deterministic(new ArchiveNetworkIdentity(1, "fixture-genesis"),
-                ArchiveDatasetId.TRANSACTION, 1, new BlockRange(from, to),
+                ArchiveDatasetId.TRANSACTION,
+                com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas
+                        .schema(ArchiveDatasetId.TRANSACTION).projectionVersion(), new BlockRange(from, to),
                 new ArchiveRangeAnchor(from * 10, hash, to * 10, hash), "fixture-v1");
     }
 

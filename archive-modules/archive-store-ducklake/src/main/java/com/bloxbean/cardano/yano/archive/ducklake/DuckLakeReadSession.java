@@ -10,12 +10,15 @@ final class DuckLakeReadSession implements ArchiveReadSession {
     private final DuckLakeHistoryArchiveBackend backend;
     private final long generation;
     private final DuckDbLease lease;
+    private final Runnable releaseGate;
     private final AtomicBoolean closed = new AtomicBoolean();
 
-    DuckLakeReadSession(DuckLakeHistoryArchiveBackend backend, long generation, DuckDbLease lease) {
+    DuckLakeReadSession(DuckLakeHistoryArchiveBackend backend, long generation, DuckDbLease lease,
+                        Runnable releaseGate) {
         this.backend = backend;
         this.generation = generation;
         this.lease = lease;
+        this.releaseGate = releaseGate;
     }
 
     @Override
@@ -37,6 +40,7 @@ final class DuckLakeReadSession implements ArchiveReadSession {
         } finally {
             lease.close();
             backend.releaseSnapshot(generation);
+            releaseGate.run();
         }
     }
 }

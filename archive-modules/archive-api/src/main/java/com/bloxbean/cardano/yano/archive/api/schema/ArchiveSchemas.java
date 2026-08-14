@@ -9,7 +9,7 @@ import java.util.Map;
 import static com.bloxbean.cardano.yano.archive.api.schema.ArchiveValueType.*;
 
 /**
- * Stable version-one physical schema contract shared by both archive engines.
+ * Stable physical schema contract shared by both archive engines.
  * Backend migrations map these logical types to DuckLake and SQLite types.
  */
 public final class ArchiveSchemas {
@@ -27,26 +27,26 @@ public final class ArchiveSchemas {
 
     private static Map<ArchiveDatasetId, ArchiveDatasetSchema> build() {
         var schemas = new EnumMap<ArchiveDatasetId, ArchiveDatasetSchema>(ArchiveDatasetId.class);
-        schemas.put(ArchiveDatasetId.TRANSACTION, dataset(ArchiveDatasetId.TRANSACTION,
+        schemas.put(ArchiveDatasetId.TRANSACTION, dataset(ArchiveDatasetId.TRANSACTION, 2,
                 table("chain_transaction", pk("tx_hash"),
                         b("tx_hash"), b("block_hash"), l("block_number"), l("slot"), l("epoch"),
-                        l("block_time"), i("tx_index"), bool("valid"), l("fee"), uuid("archive_job_id")),
+                        l("block_time"), i("tx_index"), bool("valid"), ln("fee"), uuid("archive_job_id")),
                 order("block_number", "tx_index", "tx_hash")));
-        schemas.put(ArchiveDatasetId.ACCOUNT_EVENT, dataset(ArchiveDatasetId.ACCOUNT_EVENT,
+        schemas.put(ArchiveDatasetId.ACCOUNT_EVENT, dataset(ArchiveDatasetId.ACCOUNT_EVENT, 2,
                 table("account_events", pk("stake_credential", "slot", "tx_index", "event_index", "event_type", "tx_hash"),
                         b("stake_credential"), s("stake_credential_type"), s("event_type"), b("tx_hash"),
                         b("block_hash"), l("block_number"), l("slot"), l("epoch"), l("block_time"),
-                        i("tx_index"), l("event_index"), bn("pool_hash"), bn("drep_credential"),
+                        i("tx_index"), l("event_index"), bn("pool_hash"), sn("drep_type"), bn("drep_credential"),
                         ln("amount"), uuid("archive_job_id")),
                 order("slot", "tx_index", "event_index", "event_type", "tx_hash")));
-        schemas.put(ArchiveDatasetId.ADDRESS_TRANSACTION, dataset(ArchiveDatasetId.ADDRESS_TRANSACTION,
+        schemas.put(ArchiveDatasetId.ADDRESS_TRANSACTION, dataset(ArchiveDatasetId.ADDRESS_TRANSACTION, 2,
                 table("address_transactions", pk("subject_type", "subject_key", "tx_hash"),
                         s("subject_type"), b("subject_key"), b("tx_hash"), b("block_hash"),
                         l("block_number"), l("slot"), l("epoch"), l("block_time"), i("tx_index"),
                         i("input_count"), i("output_count"), i("collateral_input_count"),
                         i("collateral_return_count"), uuid("archive_job_id")),
                 order("block_number", "tx_index", "tx_hash")));
-        schemas.put(ArchiveDatasetId.UTXO_HISTORY, dataset(ArchiveDatasetId.UTXO_HISTORY,
+        schemas.put(ArchiveDatasetId.UTXO_HISTORY, dataset(ArchiveDatasetId.UTXO_HISTORY, 2,
                 table("addresses", pk("address_key"), b("address_key"), b("raw_address"), sn("display_address"),
                         in("network_id"), s("address_type"), sn("payment_credential_type"), bn("payment_credential"),
                         s("stake_reference_type"), sn("stake_credential_type"), bn("stake_credential"),
@@ -67,7 +67,7 @@ public final class ArchiveSchemas {
                 table("datums", pk("datum_hash"), b("datum_hash"), b("cbor")),
                 table("scripts", pk("script_hash"), b("script_hash"), s("script_type"), b("cbor")),
                 order("block_number", "tx_index", "output_index", "tx_hash")));
-        schemas.put(ArchiveDatasetId.REWARD, dataset(ArchiveDatasetId.REWARD,
+        schemas.put(ArchiveDatasetId.REWARD, dataset(ArchiveDatasetId.REWARD, 2,
                 table("rewards", pk("stake_credential", "earned_epoch", "reward_type", "source_id"),
                         b("stake_credential"), s("stake_credential_type"), bn("pool_hash"), s("reward_type"),
                         l("earned_epoch"), l("spendable_epoch"), l("amount"), s("source_id"),
@@ -80,7 +80,7 @@ public final class ArchiveSchemas {
                         l("boundary_block_number"), l("boundary_slot"), l("boundary_block_time"),
                         s("source_state_version"), uuid("archive_job_id")),
                 order("epoch", "stake_credential")));
-        schemas.put(ArchiveDatasetId.DREP_DISTRIBUTION, dataset(ArchiveDatasetId.DREP_DISTRIBUTION,
+        schemas.put(ArchiveDatasetId.DREP_DISTRIBUTION, dataset(ArchiveDatasetId.DREP_DISTRIBUTION, 2,
                 table("drep_distributions", pk("epoch", "drep_type", "drep_credential"), l("epoch"),
                         s("drep_type"), bn("drep_credential"), l("amount"), ln("stored_expiry"),
                         l("dormant_epochs"), ln("effective_expiry"), bool("active"), b("boundary_block_hash"),
@@ -106,14 +106,27 @@ public final class ArchiveSchemas {
 
     private static ArchiveDatasetSchema dataset(ArchiveDatasetId id, ArchiveTableSchema table,
                                                 List<String> order) {
-        return new ArchiveDatasetSchema(id, 1, List.of(table), order);
+        return dataset(id, 1, table, order);
+    }
+
+    private static ArchiveDatasetSchema dataset(ArchiveDatasetId id, int projectionVersion,
+                                                ArchiveTableSchema table, List<String> order) {
+        return new ArchiveDatasetSchema(id, projectionVersion, List.of(table), order);
     }
 
     private static ArchiveDatasetSchema dataset(ArchiveDatasetId id, ArchiveTableSchema t1,
                                                 ArchiveTableSchema t2, ArchiveTableSchema t3,
                                                 ArchiveTableSchema t4, ArchiveTableSchema t5,
                                                 ArchiveTableSchema t6, List<String> order) {
-        return new ArchiveDatasetSchema(id, 1, List.of(t1, t2, t3, t4, t5, t6), order);
+        return dataset(id, 1, t1, t2, t3, t4, t5, t6, order);
+    }
+
+    private static ArchiveDatasetSchema dataset(ArchiveDatasetId id, int projectionVersion,
+                                                ArchiveTableSchema t1, ArchiveTableSchema t2,
+                                                ArchiveTableSchema t3, ArchiveTableSchema t4,
+                                                ArchiveTableSchema t5, ArchiveTableSchema t6,
+                                                List<String> order) {
+        return new ArchiveDatasetSchema(id, projectionVersion, List.of(t1, t2, t3, t4, t5, t6), order);
     }
 
     private static ArchiveTableSchema table(String name, List<String> pk, ArchiveColumn... columns) {

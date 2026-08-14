@@ -109,7 +109,6 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
                 close();
                 throw new ArchiveStoreException("committed job retry has different rows: " + job.jobId());
             }
-            backend.updateTransactionLocator(replayReceipt.backendGeneration(), transactionEntries);
             committed = true;
             close();
             return replayReceipt;
@@ -134,7 +133,7 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
             ArchiveReceipt receipt = new ArchiveReceipt(job.jobId(), job.networkIdentity(), job.dataset(),
                     job.projectionVersion(), job.range(), job.anchors(), actualGeneration,
                     rowCounts, orderedDigest, committedAt);
-            backend.updateTransactionLocator(actualGeneration, transactionEntries);
+            backend.updateTransactionLocator(connection, actualGeneration, transactionEntries);
             committed = true;
             close();
             return receipt;
@@ -179,7 +178,11 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
                             + " s WHERE NOT EXISTS (SELECT 1 FROM " + target + " t WHERE "
                             + keyJoin(schema, "s", "t") + ")");
                 } else if (isContentAddressed(table)) {
-                    sql.execute("INSERT INTO " + target + " SELECT s.* FROM " + staging + " s WHERE NOT EXISTS ("
+                    String selected = "(SELECT * FROM " + staging + " QUALIFY row_number() OVER (PARTITION BY "
+                            + schema.primaryKey().stream().map(DuckLakeSql::name)
+                            .reduce((left, right) -> left + ", " + right).orElseThrow()
+                            + ")=1)";
+                    sql.execute("INSERT INTO " + target + " SELECT s.* FROM " + selected + " s WHERE NOT EXISTS ("
                             + "SELECT 1 FROM " + target + " t WHERE " + keyJoin(schema, "s", "t") + ")");
                 } else {
                     sql.execute("INSERT INTO " + target + " SELECT * FROM " + staging);
@@ -201,7 +204,7 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
                     result.next();
                     duplicateCount = result.getLong(1);
                 }
-                if (duplicateCount != 0 && !table.equals("addresses")) {
+                if (duplicateCount != 0 && !table.equals("addresses") && !isContentAddressed(table)) {
                     throw new ArchiveStoreException("duplicate logical primary key in job for " + table);
                 }
 
@@ -238,6 +241,17 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
                         result.next();
                         if (result.getLong(1) != 0) {
                             throw new ArchiveStoreException("content-addressed payload conflict for " + table);
+                        }
+                    }
+                    String payload = schema.columns().stream()
+                            .filter(column -> !schema.primaryKey().contains(column.name()))
+                            .map(column -> DuckLakeSql.name(column.name()))
+                            .reduce((left, right) -> left + ", " + right).orElseThrow();
+                    try (var result = sql.executeQuery("SELECT 1 FROM " + staging + " GROUP BY " + keys
+                            + " HAVING count(DISTINCT hash(" + payload + ")) > 1 LIMIT 1")) {
+                        if (result.next()) {
+                            throw new ArchiveStoreException("content-addressed payload conflict within job for "
+                                    + table);
                         }
                     }
                 } else {

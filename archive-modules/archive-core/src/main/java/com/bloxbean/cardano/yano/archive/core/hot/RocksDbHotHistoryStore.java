@@ -135,7 +135,9 @@ public final class RocksDbHotHistoryStore implements ArchiveProgressStore, Block
             for (long block = progress.coordinate(); block > commonBlock; block--) {
                 byte[] encoded = database.get(undoKey(dataset, track, block));
                 if (encoded == null) throw new IllegalStateException("missing exact undo for block " + block);
-                for (Undo undo : decodeUndo(encoded)) {
+                List<Undo> undoEntries = decodeUndo(encoded);
+                for (int index = undoEntries.size() - 1; index >= 0; index--) {
+                    Undo undo = undoEntries.get(index);
                     if (undo.previous == null) batch.delete(undo.key);
                     else batch.put(undo.key, undo.previous);
                 }
@@ -173,7 +175,9 @@ public final class RocksDbHotHistoryStore implements ArchiveProgressStore, Block
             for (long block = progress.coordinate(); block >= firstBlock; block--) {
                 byte[] encoded = database.get(undoKey(dataset, track, block));
                 if (encoded == null) throw new IllegalStateException("missing exact undo for block " + block);
-                for (Undo undo : decodeUndo(encoded)) {
+                List<Undo> undoEntries = decodeUndo(encoded);
+                for (int index = undoEntries.size() - 1; index >= 0; index--) {
+                    Undo undo = undoEntries.get(index);
                     if (undo.previous == null) batch.delete(undo.key);
                     else batch.put(undo.key, undo.previous);
                 }
@@ -222,6 +226,22 @@ public final class RocksDbHotHistoryStore implements ArchiveProgressStore, Block
         requireOpen();
         try { return Optional.ofNullable(database.get(dataKey(dataset, logicalKey))); }
         catch (RocksDBException e) { throw new IllegalStateException("hot-history read failed", e); }
+    }
+
+    public List<HotHistorySnapshot.Entry> scanDataPrefix(ArchiveDatasetId dataset, byte[] logicalPrefix) {
+        requireOpen();
+        byte[] physicalPrefix = dataKey(dataset, logicalPrefix);
+        byte[] datasetPrefix = dataKey(dataset, new byte[0]);
+        List<HotHistorySnapshot.Entry> result = new ArrayList<>();
+        try (var iterator = database.newIterator()) {
+            for (iterator.seek(physicalPrefix); iterator.isValid() && startsWith(iterator.key(), physicalPrefix);
+                 iterator.next()) {
+                result.add(new HotHistorySnapshot.Entry(
+                        Arrays.copyOfRange(iterator.key(), datasetPrefix.length, iterator.key().length),
+                        iterator.value()));
+            }
+            return List.copyOf(result);
+        }
     }
 
     /** Deletes already-promoted live rows; active RocksDB snapshots retain their old view. */

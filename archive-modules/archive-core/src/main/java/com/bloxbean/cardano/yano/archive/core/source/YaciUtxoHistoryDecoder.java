@@ -7,6 +7,8 @@ import com.bloxbean.cardano.client.api.util.ReferenceScriptUtil;
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.yaci.core.model.*;
 import com.bloxbean.cardano.yaci.core.model.certs.StakeRegistration;
+import com.bloxbean.cardano.yaci.core.model.certs.StakeDeregistration;
+import com.bloxbean.cardano.yaci.core.model.certs.UnregCert;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
 import com.bloxbean.cardano.yano.api.util.AddressKeyUtil;
@@ -64,6 +66,7 @@ public final class YaciUtxoHistoryDecoder implements CanonicalBlockDecoder<UtxoH
     UtxoHistoryFact derive(Block block, long slot, boolean includeGenesis) {
         int era = block.getEra() == null ? Era.Conway.getValue() : block.getEra().getValue();
         List<UtxoHistoryFact.PointerRegistration> pointerRegistrations = new ArrayList<>();
+        List<UtxoHistoryFact.PointerDeregistration> pointerDeregistrations = new ArrayList<>();
         List<UtxoHistoryFact.Address> addresses = new ArrayList<>();
         List<UtxoHistoryFact.Output> outputs = new ArrayList<>();
         List<UtxoHistoryFact.Asset> assets = new ArrayList<>();
@@ -103,12 +106,23 @@ public final class YaciUtxoHistoryDecoder implements CanonicalBlockDecoder<UtxoH
             boolean valid = !invalid.contains(txIndex);
             if (valid && era < Era.Conway.getValue() && tx.getCertificates() != null) {
                 for (int certIndex = 0; certIndex < tx.getCertificates().size(); certIndex++) {
-                    if (tx.getCertificates().get(certIndex) instanceof StakeRegistration registration
+                    var certificate = tx.getCertificates().get(certIndex);
+                    if (certificate instanceof StakeRegistration registration
                             && registration.getStakeCredential() != null) {
                         var credential = registration.getStakeCredential();
                         pointerRegistrations.add(new UtxoHistoryFact.PointerRegistration(slot, txIndex, certIndex,
                                 credential.getType().name().equals("ADDR_KEYHASH") ? "key" : "script",
                                 hex(credential.getHash(), "pointer stake credential")));
+                    } else if ((certificate instanceof StakeDeregistration
+                            || certificate instanceof UnregCert)) {
+                        var credential = certificate instanceof StakeDeregistration deregistration
+                                ? deregistration.getStakeCredential()
+                                : ((UnregCert) certificate).getStakeCredential();
+                        if (credential != null) pointerDeregistrations.add(
+                                new UtxoHistoryFact.PointerDeregistration(
+                                        txIndex, certIndex,
+                                        credential.getType().name().equals("ADDR_KEYHASH") ? "key" : "script",
+                                        hex(credential.getHash(), "pointer stake credential")));
                     }
                 }
             }
@@ -128,7 +142,8 @@ public final class YaciUtxoHistoryDecoder implements CanonicalBlockDecoder<UtxoH
             }
             addWitnessDatums(block, txIndex, datums);
         }
-        return new UtxoHistoryFact(era, pointerRegistrations, addresses, outputs, assets, inputs,
+        return new UtxoHistoryFact(era, pointerRegistrations, pointerDeregistrations,
+                addresses, outputs, assets, inputs,
                 new ArrayList<>(datums.values()), new ArrayList<>(scripts.values()));
     }
 

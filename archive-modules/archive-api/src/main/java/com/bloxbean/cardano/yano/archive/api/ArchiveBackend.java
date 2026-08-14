@@ -36,6 +36,15 @@ public interface ArchiveBackend extends AutoCloseable {
 
     void invalidate(ArchiveDatasetId dataset, ArchiveRange range);
 
+    /**
+     * Invalidates whole epoch jobs whose canonical boundary is later than the
+     * supplied rollback slot. Epoch numbers alone are insufficient because a
+     * boundary block can be rolled back while the target remains in that epoch.
+     *
+     * @return number of committed jobs removed
+     */
+    int invalidateEpochJobsAfterSlot(ArchiveDatasetId dataset, long rollbackSlot);
+
     void applyRetention(ArchiveDatasetId dataset, ArchiveRetentionCutoff cutoff);
 
     void maintain(ArchiveMaintenanceBudget budget);

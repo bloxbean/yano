@@ -86,6 +86,7 @@ public final class BlockArchiveWorker<B> {
                                 + currentBlock));
                 blocks.add(context);
             }
+            verifyParentChain(blocks, progress.load(dataset.dataset(), ArchiveTrack.BACKFILL).orElse(null));
             BlockSourceContext<B> first = blocks.getFirst();
             BlockSourceContext<B> last = blocks.getLast();
             recheck(first);
@@ -142,6 +143,7 @@ public final class BlockArchiveWorker<B> {
                 blocks.add(source.readCanonical(current).orElseThrow(() ->
                         new ArchiveStoreException("canonical covered body unavailable for block " + current)));
             }
+            verifyParentChain(blocks, progress.load(dataset.dataset(), ArchiveTrack.BACKFILL).orElse(null));
             BlockSourceContext<B> first = blocks.getFirst();
             BlockSourceContext<B> last = blocks.getLast();
             recheck(first);
@@ -175,7 +177,7 @@ public final class BlockArchiveWorker<B> {
     private void reconcileCommittedTip(BlockArchiveDataset<B> dataset, long requestedStart) {
         ArchiveProgress current = progress.load(dataset.dataset(), ArchiveTrack.BACKFILL).orElse(null);
         if (current == null) return;
-        BlockSourceContext<B> canonical = source.readCanonical(current.coordinate()).orElse(null);
+        var canonical = source.canonicalReference(current.coordinate()).orElse(null);
         if (canonical != null && canonical.slot() == current.slot()
                 && Arrays.equals(canonical.blockHash(), current.blockHash())) return;
         // Backend invalidation is job-atomic. Rebuilding from the dataset's
@@ -208,6 +210,20 @@ public final class BlockArchiveWorker<B> {
                         + expected.blockNumber()));
         if (current.slot() != expected.slot() || !Arrays.equals(current.blockHash(), expected.blockHash())) {
             throw new ArchiveStoreException("canonical anchor changed at block " + expected.blockNumber());
+        }
+    }
+
+    private void verifyParentChain(List<BlockSourceContext<B>> blocks, ArchiveProgress prior) {
+        if (blocks.isEmpty()) return;
+        if (prior != null && blocks.getFirst().blockNumber() == prior.coordinate() + 1
+                && !Arrays.equals(blocks.getFirst().parentHash(), prior.blockHash())) {
+            throw new ArchiveStoreException("archive batch does not extend its committed parent");
+        }
+        for (int index = 1; index < blocks.size(); index++) {
+            if (!Arrays.equals(blocks.get(index).parentHash(), blocks.get(index - 1).blockHash())) {
+                throw new ArchiveStoreException("mixed canonical forks in archive batch at block "
+                        + blocks.get(index).blockNumber());
+            }
         }
     }
 

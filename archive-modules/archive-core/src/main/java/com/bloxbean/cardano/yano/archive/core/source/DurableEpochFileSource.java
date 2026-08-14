@@ -32,7 +32,10 @@ public final class DurableEpochFileSource<T> implements EpochArchiveSource<T> {
         this.dataset = dataset;
         this.directory = directory.toAbsolutePath().normalize();
         this.codec = java.util.Objects.requireNonNull(codec, "codec");
-        try { Files.createDirectories(this.directory); }
+        try {
+            Files.createDirectories(this.directory);
+            cleanInterruptedWrites();
+        }
         catch (Exception e) { throw new ArchiveStoreException("cannot create epoch source directory", e); }
     }
 
@@ -97,6 +100,25 @@ public final class DurableEpochFileSource<T> implements EpochArchiveSource<T> {
                     .toList()) {
                 EpochArchiveJob job = readManifest(path);
                 if (job.epoch() > epochInclusive) {
+                    acknowledge(job);
+                    discarded++;
+                }
+            }
+            return discarded;
+        } catch (Exception e) {
+            throw e instanceof ArchiveStoreException store ? store
+                    : new ArchiveStoreException("cannot discard rolled-back epoch sources", e);
+        }
+    }
+
+    /** Removes source jobs whose boundary block is no longer canonical. */
+    public int discardAfterBlock(long blockInclusive) {
+        int discarded = 0;
+        try (var files = Files.list(directory)) {
+            for (Path path : files.filter(candidate -> candidate.getFileName().toString().endsWith(".properties"))
+                    .toList()) {
+                EpochArchiveJob job = readManifest(path);
+                if (job.boundaryBlockNumber() > blockInclusive) {
                     acknowledge(job);
                     discarded++;
                 }
@@ -188,6 +210,27 @@ public final class DurableEpochFileSource<T> implements EpochArchiveSource<T> {
 
     private Path rows(UUID id) { return directory.resolve(id + ".rows"); }
     private Path manifest(UUID id) { return directory.resolve(id + ".properties"); }
+
+    private void cleanInterruptedWrites() throws java.io.IOException {
+        try (var files = Files.list(directory)) {
+            for (Path path : files.filter(Files::isRegularFile).toList()) {
+                String name = path.getFileName().toString();
+                if (name.endsWith(".partial") || name.endsWith(".manifest.tmp")) {
+                    Files.deleteIfExists(path);
+                } else if (name.endsWith(".rows")) {
+                    String id = name.substring(0, name.length() - ".rows".length());
+                    if (!Files.exists(directory.resolve(id + ".properties"))) Files.deleteIfExists(path);
+                } else if (name.contains(".lease-")) {
+                    try {
+                        long expires = Long.parseLong(Files.readString(path).trim());
+                        if (expires <= Instant.now().toEpochMilli()) Files.deleteIfExists(path);
+                    } catch (RuntimeException malformed) {
+                        Files.deleteIfExists(path);
+                    }
+                }
+            }
+        }
+    }
     private void move(Path from, Path to) throws java.io.IOException {
         try { Files.move(from, to, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE); }
         catch (java.nio.file.AtomicMoveNotSupportedException e) {

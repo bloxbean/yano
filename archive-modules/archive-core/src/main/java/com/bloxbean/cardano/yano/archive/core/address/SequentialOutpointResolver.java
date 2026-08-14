@@ -39,6 +39,13 @@ public final class SequentialOutpointResolver {
         return genesisSeeded;
     }
 
+    public java.util.OptionalLong seedBaseBlock() {
+        byte[] marker = store.get(ArchiveDatasetId.ADDRESS_TRANSACTION, seeded).orElse(null);
+        return marker != null && marker.length == Long.BYTES
+                ? java.util.OptionalLong.of(ByteBuffer.wrap(marker).getLong())
+                : java.util.OptionalLong.empty();
+    }
+
     public void seedEntries(Iterable<Entry> outputs, boolean complete) {
         java.util.List<com.bloxbean.cardano.yano.archive.core.hot.HotHistoryMutation> mutations = new java.util.ArrayList<>(10_001);
         for (Entry entry : outputs) {
@@ -49,11 +56,14 @@ public final class SequentialOutpointResolver {
             }
         }
         if (!mutations.isEmpty()) store.seed(ArchiveDatasetId.ADDRESS_TRANSACTION, mutations);
-        if (complete) {
-            store.seed(ArchiveDatasetId.ADDRESS_TRANSACTION, java.util.List.of(
-                    new com.bloxbean.cardano.yano.archive.core.hot.HotHistoryMutation(seeded, new byte[] {1})));
-            genesisSeeded = true;
-        }
+        if (complete) completeSeed(-1);
+    }
+
+    public void completeSeed(long baseBlock) {
+        store.seed(ArchiveDatasetId.ADDRESS_TRANSACTION, java.util.List.of(
+                new com.bloxbean.cardano.yano.archive.core.hot.HotHistoryMutation(
+                        seeded, ByteBuffer.allocate(Long.BYTES).putLong(baseBlock).array())));
+        genesisSeeded = true;
     }
 
     public Optional<ResolvedOutput> resolve(Outpoint outpoint) {

@@ -1,9 +1,10 @@
 package com.bloxbean.cardano.yano.archive.core.source;
 
 import com.bloxbean.cardano.yaci.core.model.Block;
+import com.bloxbean.cardano.yaci.core.model.Era;
 import com.bloxbean.cardano.yaci.core.model.TransactionBody;
 import com.bloxbean.cardano.yaci.core.model.certs.*;
-import com.bloxbean.cardano.yaci.core.model.serializers.BlockSerializer;
+import com.bloxbean.cardano.yaci.core.model.governance.Drep;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
 import com.bloxbean.cardano.yano.archive.api.ArchiveStoreException;
@@ -12,16 +13,24 @@ import com.bloxbean.cardano.yano.archive.core.dataset.*;
 import java.math.BigInteger;
 import java.time.Instant;
 import java.util.*;
+import java.util.function.LongFunction;
 import java.util.function.LongUnaryOperator;
 
 /** Pure canonical-block decoder for resolver-independent block datasets. */
 public final class YaciBlockArchiveDecoder implements CanonicalBlockDecoder<ArchiveBlockFacts> {
     private final LongUnaryOperator slotToEpoch;
     private final LongUnaryOperator slotToUnixTime;
+    private final YaciBlockDecoder blockDecoder;
 
     public YaciBlockArchiveDecoder(LongUnaryOperator slotToEpoch, LongUnaryOperator slotToUnixTime) {
+        this(slotToEpoch, slotToUnixTime, ignored -> null);
+    }
+
+    public YaciBlockArchiveDecoder(LongUnaryOperator slotToEpoch, LongUnaryOperator slotToUnixTime,
+                                   LongFunction<Era> storedEra) {
         this.slotToEpoch = Objects.requireNonNull(slotToEpoch, "slotToEpoch");
         this.slotToUnixTime = Objects.requireNonNull(slotToUnixTime, "slotToUnixTime");
+        this.blockDecoder = new YaciBlockDecoder(slotToEpoch, slotToUnixTime, storedEra);
     }
 
     @Override
@@ -29,8 +38,8 @@ public final class YaciBlockArchiveDecoder implements CanonicalBlockDecoder<Arch
                                                         CanonicalBlockReference reference,
                                                         byte[] body) {
         try {
-            Block block = BlockSerializer.INSTANCE.deserialize(body);
-            return decodeBlock(blockNumber, reference, block);
+            BlockSourceContext<Block> decoded = blockDecoder.decode(blockNumber, reference, body);
+            return decodeBlock(blockNumber, reference, decoded.block());
         } catch (ArchiveStoreException e) {
             throw e;
         } catch (Exception e) {
@@ -58,7 +67,9 @@ public final class YaciBlockArchiveDecoder implements CanonicalBlockDecoder<Arch
                 TransactionBody tx = bodies.get(txIndex);
                 byte[] txHash = requiredHash(tx.getTxHash(), "transaction hash");
                 boolean valid = !invalid.contains(txIndex);
-                transactions.add(new TransactionFact(txHash, txIndex, valid, exactLong(tx.getFee(), "fee")));
+                BigInteger archivedFee = valid ? tx.getFee() : tx.getTotalCollateral();
+                transactions.add(new TransactionFact(txHash, txIndex, valid,
+                        exactLongNullable(archivedFee, valid ? "fee" : "total collateral")));
                 if (valid) deriveAccountEvents(tx, txHash, txIndex, epoch, accountEvents);
             }
             return new BlockSourceContext<>(blockNumber, slot, epoch,
@@ -77,9 +88,9 @@ public final class YaciBlockArchiveDecoder implements CanonicalBlockDecoder<Arch
         if (tx.getWithdrawals() != null) {
             for (var withdrawal : tx.getWithdrawals().entrySet()) {
                 Credential credential = rewardCredential(withdrawal.getKey());
-                if (credential != null && withdrawal.getValue() != null && withdrawal.getValue().signum() > 0) {
+                if (credential != null && withdrawal.getValue() != null) {
                     sink.add(event(credential, "withdrawal", txHash, txIndex, eventIndex,
-                            null, null, exactLong(withdrawal.getValue(), "withdrawal")));
+                            null, null, null, exactLong(withdrawal.getValue(), "withdrawal")));
                 }
                 eventIndex++;
             }
@@ -100,8 +111,14 @@ public final class YaciBlockArchiveDecoder implements CanonicalBlockDecoder<Arch
                 case StakeDelegation value -> addDelegation(sink, value.getStakeCredential(),
                         value.getStakePoolId() == null ? null : value.getStakePoolId().getPoolKeyHash(),
                         txHash, txIndex, index);
-                case StakeVoteDelegCert value -> addDelegation(sink, value.getStakeCredential(),
-                        value.getPoolKeyHash(), txHash, txIndex, index);
+                case StakeVoteDelegCert value -> {
+                    addDelegation(sink, value.getStakeCredential(), value.getPoolKeyHash(),
+                            txHash, txIndex, index);
+                    addDrepDelegation(sink, value.getStakeCredential(), value.getDrep(),
+                            txHash, txIndex, index + 1);
+                }
+                case VoteDelegCert value -> addDrepDelegation(sink, value.getStakeCredential(), value.getDrep(),
+                        txHash, txIndex, index);
                 case StakeRegDelegCert value -> {
                     addRegistration(sink, value.getStakeCredential(), "registration", txHash, txIndex, index,
                             value.getCoin());
@@ -112,6 +129,14 @@ public final class YaciBlockArchiveDecoder implements CanonicalBlockDecoder<Arch
                     addRegistration(sink, value.getStakeCredential(), "registration", txHash, txIndex, index,
                             value.getCoin());
                     addDelegation(sink, value.getStakeCredential(), value.getPoolKeyHash(),
+                            txHash, txIndex, index + 1);
+                    addDrepDelegation(sink, value.getStakeCredential(), value.getDrep(),
+                            txHash, txIndex, index + 2);
+                }
+                case VoteRegDelegCert value -> {
+                    addRegistration(sink, value.getStakeCredential(), "registration", txHash, txIndex, index,
+                            value.getCoin());
+                    addDrepDelegation(sink, value.getStakeCredential(), value.getDrep(),
                             txHash, txIndex, index + 1);
                 }
                 case MoveInstataneous value -> addMir(sink, value, txHash, txIndex, index, epoch);
@@ -124,7 +149,7 @@ public final class YaciBlockArchiveDecoder implements CanonicalBlockDecoder<Arch
                                         byte[] txHash, int txIndex, long eventIndex, BigInteger amount) {
         Credential credential = credential(value);
         if (credential != null) sink.add(event(credential, type, txHash, txIndex, eventIndex,
-                null, null, amount == null ? null : exactLong(amount, type)));
+                null, null, null, amount == null ? null : exactLong(amount, type)));
     }
 
     private static void addDelegation(List<AccountEventFact> sink, StakeCredential value, String poolHash,
@@ -132,8 +157,24 @@ public final class YaciBlockArchiveDecoder implements CanonicalBlockDecoder<Arch
         Credential credential = credential(value);
         if (credential != null && poolHash != null && !poolHash.isBlank()) {
             sink.add(event(credential, "delegation", txHash, txIndex, eventIndex,
-                    requiredHash(poolHash, "pool hash"), null, null));
+                    requiredHash(poolHash, "pool hash"), null, null, null));
         }
+    }
+
+    private static void addDrepDelegation(List<AccountEventFact> sink, StakeCredential stakeCredential,
+                                          Drep drep, byte[] txHash, int txIndex, long eventIndex) {
+        Credential credential = credential(stakeCredential);
+        if (credential == null || drep == null || drep.getType() == null) return;
+        String drepType = switch (drep.getType()) {
+            case ADDR_KEYHASH -> "key";
+            case SCRIPTHASH -> "script";
+            case ABSTAIN -> "always_abstain";
+            case NO_CONFIDENCE -> "always_no_confidence";
+        };
+        byte[] drepCredential = drep.getHash() == null || drep.getHash().isBlank()
+                ? null : requiredHash(drep.getHash(), "DRep credential");
+        sink.add(event(credential, "drep_delegation", txHash, txIndex, eventIndex,
+                null, drepType, drepCredential, null));
     }
 
     private static void addMir(List<AccountEventFact> sink, MoveInstataneous value, byte[] txHash,
@@ -143,12 +184,12 @@ public final class YaciBlockArchiveDecoder implements CanonicalBlockDecoder<Arch
         for (var entry : value.getStakeCredentialCoinMap().entrySet()) {
             Credential credential = credential(entry.getKey());
             BigInteger amount = entry.getValue();
-            if (credential != null && amount != null && amount.signum() > 0) {
+            if (credential != null && amount != null && amount.signum() != 0) {
                 String type = value.isTreasury() ? "mir_treasury" : "mir_reserves";
                 // Epoch is retained in the enclosing block columns. The event
                 // index is unbounded and collision-free across certificate rows.
                 sink.add(event(credential, type, txHash, txIndex, baseIndex + item,
-                        null, null, exactLong(amount, "MIR amount")));
+                        null, null, null, exactLong(amount, "MIR amount")));
             }
             item++;
         }
@@ -156,14 +197,14 @@ public final class YaciBlockArchiveDecoder implements CanonicalBlockDecoder<Arch
 
     private static AccountEventFact event(Credential credential, String type, byte[] txHash,
                                           int txIndex, long eventIndex, byte[] poolHash,
-                                          byte[] drepCredential, Long amount) {
+                                          String drepType, byte[] drepCredential, Long amount) {
         return new AccountEventFact(credential.hash(), credential.type(), type, txHash, txIndex,
-                eventIndex, poolHash, drepCredential, amount);
+                eventIndex, poolHash, drepType, drepCredential, amount);
     }
 
     private static Credential credential(StakeCredential credential) {
         if (credential == null || credential.getHash() == null || credential.getHash().isBlank()) return null;
-        return new Credential(credential.getType().name().toLowerCase(Locale.ROOT),
+        return new Credential(credential.getType().name().equals("ADDR_KEYHASH") ? "key" : "script",
                 requiredHash(credential.getHash(), "stake credential"));
     }
 
@@ -199,6 +240,10 @@ public final class YaciBlockArchiveDecoder implements CanonicalBlockDecoder<Arch
         } catch (ArithmeticException e) {
             throw new ArchiveStoreException(field + " exceeds signed 64-bit schema", e);
         }
+    }
+
+    private static Long exactLongNullable(BigInteger value, String field) {
+        return value == null ? null : exactLong(value, field);
     }
 
     private record Credential(String type, byte[] hash) { }

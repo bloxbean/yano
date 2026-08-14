@@ -5,6 +5,7 @@ import com.bloxbean.cardano.yano.archive.core.dataset.*;
 import com.bloxbean.cardano.yano.archive.core.hot.RocksDbHotHistoryStore;
 import com.bloxbean.cardano.yano.archive.core.worker.ArchiveProgress;
 import com.bloxbean.cardano.yano.archive.core.worker.ArchiveTrack;
+import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -25,6 +26,8 @@ class AddressHistoryTest {
     void canonicalAddressKeyIsStableAndResolverRequiresGenesisSeed() {
         AddressKeyCodec codec = new AddressKeyCodec();
         assertThat(codec.key(new byte[] {1, 2})).isEqualTo(codec.key(new byte[] {1, 2}));
+        assertThat(codec.key(new byte[] {1, 2})).containsExactly(
+                Blake2bUtil.blake2bHash256(new byte[] {1, 2}));
         try (var hot = new RocksDbHotHistoryStore(temp.resolve("hot"))) {
             SequentialOutpointResolver resolver = new SequentialOutpointResolver(hot);
             Outpoint genesis = new Outpoint(new byte[] {9}, 0);
@@ -36,6 +39,41 @@ class AddressHistoryTest {
         try (var reopened = new RocksDbHotHistoryStore(temp.resolve("hot"))) {
             SequentialOutpointResolver resolver = new SequentialOutpointResolver(reopened);
             assertThat(resolver.resolve(new Outpoint(new byte[] {9}, 0))).isPresent();
+        }
+    }
+
+    @Test
+    void addressRoleCountsArePerSubjectRatherThanWholeTransaction() {
+        String firstAddress = "60" + "33".repeat(28);
+        String secondAddress = "60" + "44".repeat(28);
+        var tx = com.bloxbean.cardano.yaci.core.model.TransactionBody.builder()
+                .txHash("11".repeat(32)).outputs(List.of(
+                        com.bloxbean.cardano.yaci.core.model.TransactionOutput.builder().address(firstAddress).build(),
+                        com.bloxbean.cardano.yaci.core.model.TransactionOutput.builder().address(secondAddress).build()))
+                .build();
+        var block = com.bloxbean.cardano.yaci.core.model.Block.builder()
+                .era(com.bloxbean.cardano.yaci.core.model.Era.Conway)
+                .transactionBodies(List.of(tx)).invalidTransactions(List.of()).build();
+        var context = new BlockSourceContext<>(1, 10, 0, Instant.EPOCH,
+                new byte[]{1}, new byte[0], block);
+        ArchiveJob job = ArchiveJob.deterministic(new ArchiveNetworkIdentity(1, "g"),
+                ArchiveDatasetId.ADDRESS_TRANSACTION, 2, new BlockRange(1, 1),
+                new ArchiveRangeAnchor(10, new byte[]{1}, 10, new byte[]{1}), "v2");
+
+        try (var state = new RocksDbHotHistoryStore(temp.resolve("subject-counts"))) {
+            var dataset = new AddressTransactionDataset(state, new AddressKeyCodec());
+            dataset.seedGenesis(List.of());
+            dataset.beginBatch(job, List.of(context));
+            List<ArchiveRow> rows = new ArrayList<>();
+            dataset.derive(job, context, rows::add);
+
+            assertThat(rows).allSatisfy(row -> {
+                assertThat(row.values().get(9)).isEqualTo(0);
+                assertThat(row.values().get(10)).isEqualTo(1);
+                assertThat(row.values().get(11)).isEqualTo(0);
+                assertThat(row.values().get(12)).isEqualTo(0);
+            });
+            dataset.abortBatch();
         }
     }
 
@@ -109,6 +147,49 @@ class AddressHistoryTest {
             assertThat(hot.load(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.BACKFILL))
                     .get().extracting(ArchiveProgress::coordinate).isEqualTo(2L);
             assertThat(new SequentialOutpointResolver(hot).resolve(new Outpoint(firstHash, 0))).isEmpty();
+        }
+    }
+
+    @Test
+    void duplicateOutpointAcceptsOnlyIdenticalReplayAndRejectsConflictingContent() {
+        String txHash = "11".repeat(32);
+        String address = "60" + "33".repeat(28);
+        var tx = com.bloxbean.cardano.yaci.core.model.TransactionBody.builder()
+                .txHash(txHash).outputs(List.of(
+                        com.bloxbean.cardano.yaci.core.model.TransactionOutput.builder().address(address).build()))
+                .build();
+        var block = com.bloxbean.cardano.yaci.core.model.Block.builder()
+                .era(com.bloxbean.cardano.yaci.core.model.Era.Conway)
+                .transactionBodies(List.of(tx)).invalidTransactions(List.of()).build();
+        var context = new BlockSourceContext<>(1, 10, 0, Instant.EPOCH,
+                new byte[] {1}, new byte[0], block);
+        ArchiveJob job = ArchiveJob.deterministic(new ArchiveNetworkIdentity(1, "g"),
+                ArchiveDatasetId.ADDRESS_TRANSACTION, 2, new BlockRange(1, 1),
+                new ArchiveRangeAnchor(10, new byte[] {1}, 10, new byte[] {1}), "v2");
+
+        try (var state = new RocksDbHotHistoryStore(temp.resolve("duplicate-outpoint"))) {
+            var dataset = new AddressTransactionDataset(state, new AddressKeyCodec());
+            dataset.seedGenesis(List.of());
+            dataset.beginBatch(job, List.of(context));
+            dataset.derive(job, context, ignored -> { });
+            dataset.commitCoveredBatch(0);
+
+            // Re-applying the same resolver fact after interrupted rollback is idempotent.
+            dataset.beginBatch(job, List.of(context));
+            dataset.derive(job, context, ignored -> { });
+            dataset.abortBatch();
+        }
+
+        try (var state = new RocksDbHotHistoryStore(temp.resolve("conflicting-outpoint"))) {
+            Outpoint outpoint = new Outpoint(java.util.HexFormat.of().parseHex(txHash), 0);
+            var dataset = new AddressTransactionDataset(state, new AddressKeyCodec());
+            dataset.seedGenesis(List.of(new SequentialOutpointResolver.Entry(outpoint,
+                    new ResolvedOutput(new byte[] {9}, null, null))));
+            dataset.beginBatch(job, List.of(context));
+            assertThatThrownBy(() -> dataset.derive(job, context, ignored -> { }))
+                    .isInstanceOf(ArchiveStoreException.class)
+                    .hasMessageContaining("conflicting address-history outpoint");
+            dataset.abortBatch();
         }
     }
 

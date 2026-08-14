@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.archive.core.dataset;
 import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import com.bloxbean.cardano.yano.archive.api.ArchiveJob;
 import com.bloxbean.cardano.yano.archive.api.ArchiveRow;
+import com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas;
 import com.bloxbean.cardano.yano.archive.core.source.EpochSourcePage;
 
 import java.util.List;
@@ -55,7 +56,7 @@ public final class StandardEpochDatasets {
     private static <T> EpochArchiveDataset<T> dataset(ArchiveDatasetId id, RowFactory<T> rows) {
         return new EpochArchiveDataset<>() {
             public ArchiveDatasetId dataset() { return id; }
-            public int projectionVersion() { return 1; }
+            public int projectionVersion() { return ArchiveSchemas.schema(dataset()).projectionVersion(); }
             public void derive(ArchiveJob job, EpochSourcePage<T> page, Consumer<ArchiveRow> sink) {
                 page.rows().forEach(fact -> sink.accept(rows.row(job, page, fact)));
             }

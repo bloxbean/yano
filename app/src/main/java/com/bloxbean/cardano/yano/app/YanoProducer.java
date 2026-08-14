@@ -1165,11 +1165,14 @@ public class YanoProducer {
         log.info("Yano application shutting down...");
         // Stop and join optional archive work while its core query dependencies
         // and native stores are still valid.
-        historyArchive.close();
-        if (yano != null) {
-            log.info("Stopping Yano...");
-            yano.close();
-            log.info("Yano stopped");
+        try {
+            historyArchive.close();
+        } finally {
+            if (yano != null) {
+                log.info("Stopping Yano...");
+                yano.close();
+                log.info("Yano stopped");
+            }
         }
     }
 

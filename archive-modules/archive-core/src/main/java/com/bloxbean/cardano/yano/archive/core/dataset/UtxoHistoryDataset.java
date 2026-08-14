@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.archive.core.dataset;
 import com.bloxbean.cardano.yaci.core.model.Era;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.archive.api.*;
+import com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas;
 import com.bloxbean.cardano.yano.archive.core.address.SequentialPointerResolver;
 import com.bloxbean.cardano.yano.archive.core.address.SequentialPointerResolver.PointerCoordinate;
 import com.bloxbean.cardano.yano.archive.core.address.SequentialPointerResolver.ResolvedStakeCredential;
@@ -21,6 +22,7 @@ public final class UtxoHistoryDataset implements LiveStatefulBlockArchiveDataset
     private List<BlockSourceContext<UtxoHistoryFact>> blocks = List.of();
     private List<HotBlockUpdate> updates = List.of();
     private Map<PointerCoordinate, ResolvedStakeCredential> pendingPointers = Map.of();
+    private Set<PointerCoordinate> pendingDeletedPointers = Set.of();
     private int blockIndex;
 
     /** Projection-only constructor used by isolated schema tests. */
@@ -37,13 +39,14 @@ public final class UtxoHistoryDataset implements LiveStatefulBlockArchiveDataset
     }
 
     @Override public ArchiveDatasetId dataset() { return ArchiveDatasetId.UTXO_HISTORY; }
-    @Override public int projectionVersion() { return 1; }
+    @Override public int projectionVersion() { return ArchiveSchemas.schema(dataset()).projectionVersion(); }
 
     @Override
     public void beginBatch(ArchiveJob job, List<BlockSourceContext<UtxoHistoryFact>> blocks) {
         this.blocks = List.copyOf(blocks);
         this.updates = new ArrayList<>(blocks.size());
         this.pendingPointers = new HashMap<>();
+        this.pendingDeletedPointers = new HashSet<>();
         this.blockIndex = 0;
     }
 
@@ -56,17 +59,42 @@ public final class UtxoHistoryDataset implements LiveStatefulBlockArchiveDataset
         var facts = block.block();
         List<HotHistoryMutation> pointerMutations = new ArrayList<>();
         if (state != null) {
-            for (var registration : facts.pointerRegistrations()) {
-                PointerCoordinate coordinate = new PointerCoordinate(registration.slot(), registration.txIndex(),
-                        registration.certIndex());
-                ResolvedStakeCredential credential = new ResolvedStakeCredential(
-                        registration.credentialType(), registration.credential());
-                ResolvedStakeCredential previous = pendingPointers.putIfAbsent(coordinate, credential);
-                if (previous != null && (!previous.type().equals(credential.type())
-                        || !Arrays.equals(previous.hash(), credential.hash()))) {
-                    throw new ArchiveStoreException("conflicting pointer registration at " + coordinate);
+            List<PointerLifecycle> lifecycle = new ArrayList<>();
+            facts.pointerRegistrations().forEach(value -> lifecycle.add(new PointerLifecycle(
+                    value.txIndex(), value.certIndex(), value, null)));
+            facts.pointerDeregistrations().forEach(value -> lifecycle.add(new PointerLifecycle(
+                    value.txIndex(), value.certIndex(), null, value)));
+            lifecycle.sort(Comparator.comparingInt(PointerLifecycle::txIndex)
+                    .thenComparingInt(PointerLifecycle::certIndex));
+            for (PointerLifecycle event : lifecycle) {
+                if (event.registration() != null) {
+                    var registration = event.registration();
+                    PointerCoordinate coordinate = new PointerCoordinate(registration.slot(), registration.txIndex(),
+                            registration.certIndex());
+                    ResolvedStakeCredential credential = new ResolvedStakeCredential(
+                            registration.credentialType(), registration.credential());
+                    ResolvedStakeCredential previous = pendingPointers.putIfAbsent(coordinate, credential);
+                    if (previous != null && (!previous.type().equals(credential.type())
+                            || !Arrays.equals(previous.hash(), credential.hash()))) {
+                        throw new ArchiveStoreException("conflicting pointer registration at " + coordinate);
+                    }
+                    pendingDeletedPointers.remove(coordinate);
+                    pointerMutations.addAll(pointers.putMutations(coordinate, credential));
+                } else {
+                    var deregistration = event.deregistration();
+                    var credential = new ResolvedStakeCredential(
+                            deregistration.credentialType(), deregistration.credential());
+                    for (var pending : new ArrayList<>(pendingPointers.entrySet())) {
+                        if (sameCredential(pending.getValue(), credential)) {
+                            pendingDeletedPointers.add(pending.getKey());
+                            pointerMutations.addAll(pointers.deleteMutations(pending.getKey(), pending.getValue()));
+                            pendingPointers.remove(pending.getKey());
+                        }
+                    }
+                    var deletion = pointers.deleteCredential(credential);
+                    pendingDeletedPointers.addAll(deletion.coordinates());
+                    pointerMutations.addAll(deletion.mutations());
                 }
-                pointerMutations.add(pointers.putMutation(coordinate, credential));
             }
         }
 
@@ -120,9 +148,12 @@ public final class UtxoHistoryDataset implements LiveStatefulBlockArchiveDataset
         }
         PointerCoordinate coordinate = new PointerCoordinate(address.pointerSlot(), address.pointerTxIndex(),
                 address.pointerCertIndex());
-        ResolvedStakeCredential credential = Optional.ofNullable(pendingPointers.get(coordinate))
-                .or(() -> pointers.resolve(coordinate))
-                .orElseThrow(() -> new ArchiveStoreException("unresolved pre-Conway pointer address " + coordinate));
+        ResolvedStakeCredential credential = pendingDeletedPointers.contains(coordinate) ? null
+                : Optional.ofNullable(pendingPointers.get(coordinate))
+                        .or(() -> pointers.resolve(coordinate)).orElse(null);
+        if (credential == null) {
+            return new ResolvedAddress(copyAddress(address, "pointer_unresolved", null, null), null);
+        }
         return new ResolvedAddress(copyAddress(address, "pointer_resolved", credential.type(), credential.hash()),
                 credential.hash());
     }
@@ -176,8 +207,16 @@ public final class UtxoHistoryDataset implements LiveStatefulBlockArchiveDataset
         blocks = List.of();
         updates = List.of();
         pendingPointers = Map.of();
+        pendingDeletedPointers = Set.of();
         blockIndex = 0;
     }
 
     private record ResolvedAddress(UtxoHistoryFact.Address address, byte[] stakeCredential) { }
+    private record PointerLifecycle(int txIndex, int certIndex,
+                                    UtxoHistoryFact.PointerRegistration registration,
+                                    UtxoHistoryFact.PointerDeregistration deregistration) { }
+
+    private static boolean sameCredential(ResolvedStakeCredential left, ResolvedStakeCredential right) {
+        return left.type().equals(right.type()) && Arrays.equals(left.hash(), right.hash());
+    }
 }

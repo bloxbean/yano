@@ -47,6 +47,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.concurrent.locks.StampedLock;
 
 /** DuckLake/SQLite-catalog backend. All historical row data is DuckLake-managed Parquet. */
 public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
@@ -61,9 +62,13 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
     // A session may be closed by a different executor than the one that opened it.
     // A semaphore preserves single-writer semantics without thread ownership.
     private final Semaphore writer = new Semaphore(1, true);
+    // Stamps are not thread-owned, so a request/session may be closed by a
+    // different executor while backup and shutdown still wait for quiescence.
+    private final StampedLock sessionGate = new StampedLock();
     private final Map<Long, LongAdder> activeSnapshots = new ConcurrentHashMap<>();
     private final AtomicReference<ArchiveHealth> health = new AtomicReference<>(ArchiveHealth.healthy());
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final AtomicBoolean resourcesClosed = new AtomicBoolean();
     private DuckLakeTransactionLocator transactionLocator;
     private final ArchiveRepositorySet repositories = new JdbcArchiveRepositorySet(
             session -> {
@@ -97,7 +102,7 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
         this.ownsManager = ownsManager;
         try {
             Files.createDirectories(config.dataPath());
-        } catch (Exception e) {
+        } catch (Exception | Error e) {
             if (ownsManager) manager.close();
             throw new ArchiveStoreException("cannot create DuckLake data directory", e);
         }
@@ -136,6 +141,11 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
         java.util.Objects.requireNonNull(job, "job");
         if (!job.networkIdentity().equals(identity.networkIdentity())) {
             throw new ArchiveStoreException("archive job network identity does not match backend");
+        }
+        int currentProjection = ArchiveSchemas.schema(job.dataset()).projectionVersion();
+        if (job.projectionVersion() != currentProjection) {
+            throw new ArchiveStoreException("archive job projection version " + job.projectionVersion()
+                    + " does not match current " + currentProjection + " for " + job.dataset());
         }
         acquireWriter();
         DuckDbLease lease = null;
@@ -203,10 +213,10 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
 
     @Override
     public ArchiveReadSession openReadSession() {
-        requireOpen();
-        acquireWriter();
+        long gateStamp = sessionGate.readLock();
         DuckDbLease lease = null;
         try {
+            requireOpen();
             lease = manager.acquire(DuckDbWorkload.STEADY, config.acquireTimeout());
             Connection connection = lease.connection();
             DuckLakeSql.attach(connection, config, null, true);
@@ -214,13 +224,12 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
             DuckLakeSql.detach(connection);
             DuckLakeSql.attach(connection, config, snapshot, true);
             retainSnapshot(snapshot);
-            return new DuckLakeReadSession(this, snapshot, lease);
-        } catch (Exception e) {
+            return new DuckLakeReadSession(this, snapshot, lease, () -> releaseRead(gateStamp));
+        } catch (Exception | Error e) {
             if (lease != null) lease.close();
+            releaseRead(gateStamp);
             markDegraded("DuckLake snapshot open failed", e);
             throw new ArchiveStoreException("failed to open pinned DuckLake snapshot", e);
-        } finally {
-            releaseWriter();
         }
     }
 
@@ -236,16 +245,78 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
             throw new IllegalArgumentException("read session does not belong to DuckLake backend");
         }
         var block = transactionLocator.block(read.connection(), read.generation(), txHash);
-        if (block.isEmpty()) return Optional.empty();
         var query = new com.bloxbean.cardano.yano.archive.api.ArchiveQuery(
-                new BlockRange(block.getAsLong(), block.getAsLong()), Map.of("tx_hash", txHash),
+                block.isPresent() ? new BlockRange(block.getAsLong(), block.getAsLong())
+                        : new BlockRange(0, Long.MAX_VALUE), Map.of("tx_hash", txHash),
                 com.bloxbean.cardano.yano.archive.api.ArchivePageCursor.Order.ASC, 1, Optional.empty());
-        return repositories.records(ArchiveDatasetId.TRANSACTION).query(session, query).rows().stream().findFirst();
+        Optional<com.bloxbean.cardano.yano.archive.api.ArchiveRecord> located = repositories
+                .records(ArchiveDatasetId.TRANSACTION).query(session, query).rows().stream().findFirst();
+        if (located.isPresent() || block.isEmpty()) return located;
+        // The locator is an accelerator only. A stale positive must never turn
+        // into a false negative against the pinned authoritative snapshot.
+        var fallback = new com.bloxbean.cardano.yano.archive.api.ArchiveQuery(
+                new BlockRange(0, Long.MAX_VALUE), Map.of("tx_hash", txHash),
+                com.bloxbean.cardano.yano.archive.api.ArchivePageCursor.Order.ASC, 1, Optional.empty());
+        return repositories.records(ArchiveDatasetId.TRANSACTION).query(session, fallback)
+                .rows().stream().findFirst();
     }
 
     @Override
     public void invalidate(ArchiveDatasetId dataset, ArchiveRange range) {
         mutateCommittedJobs(dataset, range, false);
+    }
+
+    @Override
+    public int invalidateEpochJobsAfterSlot(ArchiveDatasetId dataset, long rollbackSlot) {
+        if (dataset.sourceKind() != SourceKind.EPOCH) {
+            throw new IllegalArgumentException("boundary-slot invalidation requires an epoch dataset");
+        }
+        if (rollbackSlot < 0) throw new IllegalArgumentException("rollbackSlot must be non-negative");
+        requireOpen();
+        acquireWriter();
+        try (DuckDbLease lease = manager.acquire(DuckDbWorkload.BULK_CATCH_UP, config.acquireTimeout())) {
+            Connection connection = lease.connection();
+            DuckLakeSql.attach(connection, config, null, false);
+            try {
+                try (Statement sql = connection.createStatement()) { sql.execute("BEGIN TRANSACTION"); }
+                List<UUID> jobs = new ArrayList<>();
+                long firstEpoch = Long.MAX_VALUE;
+                long lastEpoch = -1;
+                try (PreparedStatement query = connection.prepareStatement(
+                        "SELECT job_id, range_start, range_end FROM history_lake.archive_commits "
+                                + "WHERE dataset=? AND source_kind='EPOCH' AND end_slot>?")) {
+                    query.setString(1, dataset.name());
+                    query.setLong(2, rollbackSlot);
+                    try (ResultSet rows = query.executeQuery()) {
+                        while (rows.next()) {
+                            jobs.add(UUID.fromString(rows.getString(1)));
+                            firstEpoch = Math.min(firstEpoch, rows.getLong(2));
+                            lastEpoch = Math.max(lastEpoch, rows.getLong(3));
+                        }
+                    }
+                }
+                if (jobs.isEmpty()) {
+                    try (Statement sql = connection.createStatement()) { sql.execute("ROLLBACK"); }
+                    return 0;
+                }
+                for (UUID job : jobs) deleteJobRows(connection, dataset, job);
+                insertInvalidation(connection, dataset, new EpochRange(firstEpoch, lastEpoch));
+                try (Statement sql = connection.createStatement()) { sql.execute("COMMIT"); }
+                return jobs.size();
+            } catch (Exception e) {
+                try (Statement sql = connection.createStatement()) { sql.execute("ROLLBACK"); }
+                catch (SQLException ignored) { }
+                throw e;
+            } finally {
+                DuckLakeSql.detach(connection);
+            }
+        } catch (Exception e) {
+            markDegraded("DuckLake epoch rollback invalidation failed", e);
+            throw e instanceof ArchiveStoreException store ? store
+                    : new ArchiveStoreException("DuckLake epoch rollback invalidation failed", e);
+        } finally {
+            releaseWriter();
+        }
     }
 
     @Override
@@ -348,9 +419,11 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
         Path normalized = java.util.Objects.requireNonNull(target, "target").toAbsolutePath().normalize();
         if (normalized.equals(config.catalogPath())) throw new IllegalArgumentException("backup target equals catalog");
         acquireWriter();
+        long gateStamp = 0;
         try {
-            if (!activeSnapshots.isEmpty()) {
-                throw new ArchiveStoreException("catalog backup requires all read snapshots to close");
+            gateStamp = sessionGate.tryWriteLock(config.acquireTimeout().toMillis(), TimeUnit.MILLISECONDS);
+            if (gateStamp == 0) {
+                throw new ArchiveStoreException("timed out waiting for DuckLake readers before catalog backup");
             }
             Path parent = normalized.getParent();
             if (parent == null) throw new ArchiveStoreException("catalog backup target has no parent");
@@ -368,20 +441,26 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
                 Files.deleteIfExists(temporary);
             }
             return normalized;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ArchiveStoreException("interrupted waiting for DuckLake readers before catalog backup", e);
         } catch (Exception e) {
             throw e instanceof ArchiveStoreException store ? store
                     : new ArchiveStoreException("DuckLake catalog backup failed", e);
         } finally {
+            if (gateStamp != 0) sessionGate.unlockWrite(gateStamp);
             releaseWriter();
         }
     }
 
     void releaseWriter() {
         writer.release();
+        finishCloseIfIdle();
     }
 
-    void updateTransactionLocator(long generation, Collection<DuckLakeTransactionLocator.Entry> entries) {
-        transactionLocator.advance(generation, entries);
+    void updateTransactionLocator(Connection connection, long generation,
+                                  Collection<DuckLakeTransactionLocator.Entry> entries) {
+        transactionLocator.advance(connection, generation, entries);
     }
 
     void releaseSnapshot(long generation) {
@@ -414,7 +493,7 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
                 insertInvalidation(connection, dataset, range);
                 try (Statement sql = connection.createStatement()) { sql.execute("COMMIT"); }
                 if (dataset == ArchiveDatasetId.TRANSACTION) {
-                    transactionLocator.removeJobs(DuckLakeSql.currentSnapshot(connection), jobs);
+                    transactionLocator.rebuild(connection, DuckLakeSql.currentSnapshot(connection));
                 }
             } catch (Exception e) {
                 try (Statement sql = connection.createStatement()) { sql.execute("ROLLBACK"); }
@@ -558,12 +637,16 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
     }
 
     private CurrentRead currentRead() throws SQLException {
-        DuckDbLease lease = manager.acquire(DuckDbWorkload.STEADY, config.acquireTimeout());
+        long gateStamp = sessionGate.readLock();
+        DuckDbLease lease = null;
         try {
+            requireOpen();
+            lease = manager.acquire(DuckDbWorkload.STEADY, config.acquireTimeout());
             DuckLakeSql.attach(lease.connection(), config, null, true);
-            return new CurrentRead(lease);
-        } catch (SQLException | RuntimeException e) {
-            lease.close();
+            return new CurrentRead(lease, () -> releaseRead(gateStamp));
+        } catch (SQLException | RuntimeException | Error e) {
+            if (lease != null) lease.close();
+            releaseRead(gateStamp);
             throw e;
         }
     }
@@ -593,6 +676,10 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
             if (!writer.tryAcquire(config.acquireTimeout().toMillis(), TimeUnit.MILLISECONDS)) {
                 throw new ArchiveStoreException("timed out waiting for DuckLake writer");
             }
+            if (closed.get()) {
+                releaseWriter();
+                throw new IllegalStateException("DuckLake backend is closed");
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new ArchiveStoreException("interrupted waiting for DuckLake writer", e);
@@ -620,11 +707,13 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
     }
 
     private void markDegraded(String detail, Throwable error) {
+        if (closed.get()) return;
         health.set(new ArchiveHealth(ArchiveHealth.Status.DEGRADED,
                 detail + ": " + error.getMessage(), Instant.now()));
     }
 
     private void markUnhealthy(String detail, Throwable error) {
+        if (closed.get()) return;
         health.set(new ArchiveHealth(ArchiveHealth.Status.UNHEALTHY,
                 detail + ": " + error.getMessage(), Instant.now()));
     }
@@ -632,17 +721,48 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
     @Override
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
-        if (ownsManager) manager.close();
-        if (transactionLocator != null) transactionLocator.close();
-        directoryLock.close();
         health.set(new ArchiveHealth(ArchiveHealth.Status.CLOSED, "", Instant.now()));
+        finishCloseIfIdle();
+    }
+
+    private void releaseRead(long gateStamp) {
+        sessionGate.unlockRead(gateStamp);
+        finishCloseIfIdle();
+    }
+
+    /**
+     * Close native resources only after all readers and the writer are idle.
+     * This method never waits: shutdown marks the backend closed immediately,
+     * and the last active session completes deferred cleanup. Forcibly closing
+     * DuckDB/JNI handles underneath a stuck request would reintroduce the
+     * use-after-free race this gate is intended to prevent.
+     */
+    private void finishCloseIfIdle() {
+        if (!closed.get() || resourcesClosed.get() || !writer.tryAcquire()) return;
+        long gateStamp = sessionGate.tryWriteLock();
+        if (gateStamp == 0) {
+            writer.release();
+            return;
+        }
+        try {
+            if (resourcesClosed.compareAndSet(false, true)) {
+                if (transactionLocator != null) transactionLocator.close();
+                if (ownsManager) manager.close();
+                directoryLock.close();
+            }
+        } finally {
+            sessionGate.unlockWrite(gateStamp);
+            writer.release();
+        }
     }
 
     private static final class CurrentRead implements AutoCloseable {
         private final DuckDbLease lease;
+        private final Runnable releaseGate;
 
-        private CurrentRead(DuckDbLease lease) {
+        private CurrentRead(DuckDbLease lease, Runnable releaseGate) {
             this.lease = lease;
+            this.releaseGate = releaseGate;
         }
 
         Connection connection() {
@@ -651,8 +771,12 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
 
         @Override
         public void close() {
-            try { DuckLakeSql.detach(lease.connection()); } catch (SQLException ignored) { }
-            lease.close();
+            try {
+                try { DuckLakeSql.detach(lease.connection()); } catch (SQLException ignored) { }
+                lease.close();
+            } finally {
+                releaseGate.run();
+            }
         }
     }
 }

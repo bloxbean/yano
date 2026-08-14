@@ -177,6 +177,9 @@ public class EpochBoundaryProcessor {
 
     public void setEpochArchiveStagingSink(EpochArchiveStagingSink sink) {
         this.archiveStaging = sink != null ? sink : EpochArchiveStagingSink.NOOP;
+        if (rewardCalculator != null) {
+            rewardCalculator.setEpochArchiveStagingSink(this.archiveStaging);
+        }
         if (governanceEpochProcessor != null) {
             governanceEpochProcessor.setEpochArchiveStagingSink(this.archiveStaging);
         }

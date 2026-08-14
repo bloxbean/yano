@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.archive.core.dataset;
 import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import com.bloxbean.cardano.yano.archive.api.ArchiveJob;
 import com.bloxbean.cardano.yano.archive.api.ArchiveRow;
+import com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas;
 
 import java.util.List;
 
@@ -12,7 +13,7 @@ public final class StandardBlockDatasets {
     public static BlockArchiveDataset<ArchiveBlockFacts> transactions() {
         return new BlockArchiveDataset<>() {
             public ArchiveDatasetId dataset() { return ArchiveDatasetId.TRANSACTION; }
-            public int projectionVersion() { return 1; }
+            public int projectionVersion() { return ArchiveSchemas.schema(dataset()).projectionVersion(); }
             public void derive(ArchiveJob job, BlockSourceContext<ArchiveBlockFacts> block,
                                java.util.function.Consumer<ArchiveRow> sink) {
                 for (TransactionFact tx : block.block().transactions()) {
@@ -27,14 +28,14 @@ public final class StandardBlockDatasets {
     public static BlockArchiveDataset<ArchiveBlockFacts> accountEvents() {
         return new BlockArchiveDataset<>() {
             public ArchiveDatasetId dataset() { return ArchiveDatasetId.ACCOUNT_EVENT; }
-            public int projectionVersion() { return 1; }
+            public int projectionVersion() { return ArchiveSchemas.schema(dataset()).projectionVersion(); }
             public void derive(ArchiveJob job, BlockSourceContext<ArchiveBlockFacts> block,
                                java.util.function.Consumer<ArchiveRow> sink) {
                 for (AccountEventFact event : block.block().accountEvents()) {
                     sink.accept(new ArchiveRow("account_events", java.util.Arrays.asList(event.stakeCredential(),
                             event.credentialType(), event.eventType(), event.txHash(), block.blockHash(),
                             block.blockNumber(), block.slot(), block.epoch(), block.blockTime().getEpochSecond(),
-                            event.txIndex(), event.eventIndex(), event.poolHash(), event.drepCredential(),
+                            event.txIndex(), event.eventIndex(), event.poolHash(), event.drepType(), event.drepCredential(),
                             event.amount(), job.jobId())));
                 }
             }
@@ -44,7 +45,7 @@ public final class StandardBlockDatasets {
     public static BlockArchiveDataset<ArchiveBlockFacts> addressTransactions() {
         return new BlockArchiveDataset<>() {
             public ArchiveDatasetId dataset() { return ArchiveDatasetId.ADDRESS_TRANSACTION; }
-            public int projectionVersion() { return 1; }
+            public int projectionVersion() { return ArchiveSchemas.schema(dataset()).projectionVersion(); }
             public void derive(ArchiveJob job, BlockSourceContext<ArchiveBlockFacts> block,
                                java.util.function.Consumer<ArchiveRow> sink) {
                 for (AddressTransactionFact tx : block.block().addressTransactions()) {

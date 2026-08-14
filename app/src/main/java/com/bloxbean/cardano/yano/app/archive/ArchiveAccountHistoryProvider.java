@@ -113,56 +113,72 @@ final class ArchiveAccountHistoryProvider implements AccountHistoryProvider {
 
     private List<ArchiveRecord> query(ArchiveDatasetId dataset, Map<String, Object> filters,
                                       int page, int count, String order) {
-        ArchiveBackend backend = service.backend().orElseThrow(() -> new IllegalStateException("history unavailable"));
-        String table = switch (dataset) {
-            case ACCOUNT_EVENT -> "account_events";
-            case ADDRESS_TRANSACTION -> "address_transactions";
-            case REWARD -> "rewards";
-            default -> throw new IllegalArgumentException("unsupported compatibility dataset");
-        };
-        var hotSnapshot = service.openHotSnapshot();
-        try {
-        List<ArchiveRecord> hot = hotSnapshot == null ? List.of()
-                : com.bloxbean.cardano.yano.archive.core.hot.HotArchiveRows.read(
-                        hotSnapshot, dataset, table, filters);
-        ArchiveCoverage coverage = backend.coverage(dataset);
-        if (coverage.completeRanges().isEmpty()) {
-            if (hot.isEmpty()) throw new IllegalStateException("history coverage is incomplete");
-            Comparator<ArchiveRecord> comparator = comparator(dataset);
-            if (!"asc".equalsIgnoreCase(order)) comparator = comparator.reversed();
-            return hot.stream().sorted(comparator)
-                    .skip(Math.multiplyExact((long) Math.max(0, page - 1), count)).limit(count).toList();
+        if (page < 1 || count < 1 || count > 100) {
+            throw new IllegalArgumentException("history page/count is out of range");
         }
-        ArchiveRange range = newRange(dataset, coverage.completeRanges().getFirst().startInclusive(),
-                coverage.completeRanges().getLast().endInclusive());
-        long offset = Math.multiplyExact((long) Math.max(0, page - 1), count);
+        long offset = Math.multiplyExact((long) page - 1, count);
         long target = Math.addExact(offset, count);
-        if (target > Integer.MAX_VALUE) throw new IllegalArgumentException("requested history page is too large");
-        try (ArchiveReadSession read = backend.openReadSession()) {
-            Comparator<ArchiveRecord> comparator = comparator(dataset);
-            if (!"asc".equalsIgnoreCase(order)) comparator = comparator.reversed();
-            ArchivePageCursor.Order selectedOrder = "asc".equalsIgnoreCase(order)
-                    ? ArchivePageCursor.Order.ASC : ArchivePageCursor.Order.DESC;
-            int coldTarget = Math.toIntExact(Math.min(Integer.MAX_VALUE, target + hot.size()));
-            List<ArchiveRecord> merged = new ArrayList<>();
-            Optional<ArchivePageCursor> cursor = Optional.empty();
-            do {
-                int remaining = coldTarget - merged.size();
-                if (remaining <= 0) break;
-                ArchiveQueryResult<ArchiveRecord> result = backend.repositories().records(dataset).query(read,
-                        new ArchiveQuery(range, filters, selectedOrder, Math.min(remaining, 100), cursor));
-                if (!result.complete()) throw new IllegalStateException("history coverage is incomplete");
-                merged.addAll(result.rows());
-                cursor = result.nextCursor();
-            } while (cursor.isPresent());
-            merged.addAll(hot);
-            merged.sort(comparator);
-            LinkedHashMap<String, ArchiveRecord> unique = new LinkedHashMap<>();
-            for (ArchiveRecord row : merged) unique.putIfAbsent(identity(dataset, row), row);
-            return unique.values().stream().skip(offset).limit(count).toList();
+        if (target > 100_000) {
+            throw new IllegalArgumentException("history page exceeds the bounded lookup window");
         }
-        } finally {
-            if (hotSnapshot != null) hotSnapshot.close();
+        try (var ignored = service.openQueryLease()) {
+            ArchiveBackend backend = service.backend()
+                    .orElseThrow(() -> new IllegalStateException("history unavailable"));
+            String table = switch (dataset) {
+                case ACCOUNT_EVENT -> "account_events";
+                case ADDRESS_TRANSACTION -> "address_transactions";
+                case REWARD -> "rewards";
+                default -> throw new IllegalArgumentException("unsupported compatibility dataset");
+            };
+            var hotSnapshot = service.openHotSnapshot();
+            try {
+                List<ArchiveRecord> hot = hotSnapshot == null ? List.of()
+                        : com.bloxbean.cardano.yano.archive.core.hot.HotArchiveRows.read(
+                                hotSnapshot, dataset, table, filters);
+                ArchiveCoverage coverage = backend.coverage(dataset);
+                Optional<BlockRange> liveCoverage = service.liveCoverage(dataset);
+                if (coverage.completeRanges().isEmpty()) {
+                    if (liveCoverage.isEmpty()) throw new IllegalStateException("history coverage is incomplete");
+                    Comparator<ArchiveRecord> comparator = comparator(dataset);
+                    if (!"asc".equalsIgnoreCase(order)) comparator = comparator.reversed();
+                    return hot.stream().sorted(comparator)
+                            .skip(offset).limit(count).toList();
+                }
+                if (liveCoverage.isPresent()) {
+                    long coldEnd = coverage.completeRanges().getLast().endInclusive();
+                    long liveStart = liveCoverage.orElseThrow().startInclusive();
+                    if (liveStart > Math.addExact(coldEnd, 1)) {
+                        throw new IllegalStateException("history coverage has a cold/live gap");
+                    }
+                }
+                ArchiveRange range = newRange(dataset, coverage.completeRanges().getFirst().startInclusive(),
+                        coverage.completeRanges().getLast().endInclusive());
+                try (ArchiveReadSession read = backend.openReadSession()) {
+                    Comparator<ArchiveRecord> comparator = comparator(dataset);
+                    if (!"asc".equalsIgnoreCase(order)) comparator = comparator.reversed();
+                    ArchivePageCursor.Order selectedOrder = "asc".equalsIgnoreCase(order)
+                            ? ArchivePageCursor.Order.ASC : ArchivePageCursor.Order.DESC;
+                    int coldTarget = Math.toIntExact(Math.min(Integer.MAX_VALUE, target + hot.size()));
+                    List<ArchiveRecord> merged = new ArrayList<>();
+                    Optional<ArchivePageCursor> cursor = Optional.empty();
+                    do {
+                        int remaining = coldTarget - merged.size();
+                        if (remaining <= 0) break;
+                        ArchiveQueryResult<ArchiveRecord> result = backend.repositories().records(dataset).query(read,
+                                new ArchiveQuery(range, filters, selectedOrder, Math.min(remaining, 100), cursor));
+                        if (!result.complete()) throw new IllegalStateException("history coverage is incomplete");
+                        merged.addAll(result.rows());
+                        cursor = result.nextCursor();
+                    } while (cursor.isPresent());
+                    merged.addAll(hot);
+                    merged.sort(comparator);
+                    LinkedHashMap<String, ArchiveRecord> unique = new LinkedHashMap<>();
+                    for (ArchiveRecord row : merged) unique.putIfAbsent(identity(dataset, row), row);
+                    return unique.values().stream().skip(offset).limit(count).toList();
+                }
+            } finally {
+                if (hotSnapshot != null) hotSnapshot.close();
+            }
         }
     }
 

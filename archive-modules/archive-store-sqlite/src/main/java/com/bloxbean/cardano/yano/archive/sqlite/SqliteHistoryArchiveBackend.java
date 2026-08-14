@@ -102,6 +102,11 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
         if (!job.networkIdentity().equals(identity.networkIdentity())) {
             throw new ArchiveStoreException("archive job network identity does not match backend");
         }
+        int currentProjection = ArchiveSchemas.schema(job.dataset()).projectionVersion();
+        if (job.projectionVersion() != currentProjection) {
+            throw new ArchiveStoreException("archive job projection version " + job.projectionVersion()
+                    + " does not match current " + currentProjection + " for " + job.dataset());
+        }
         acquireWriter();
         Connection connection = null;
         try {
@@ -203,6 +208,70 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
     @Override
     public void invalidate(ArchiveDatasetId dataset, ArchiveRange range) {
         mutateCommittedJobs(dataset, range, false);
+    }
+
+    @Override
+    public int invalidateEpochJobsAfterSlot(ArchiveDatasetId dataset, long rollbackSlot) {
+        if (dataset.sourceKind() != SourceKind.EPOCH) {
+            throw new IllegalArgumentException("boundary-slot invalidation requires an epoch dataset");
+        }
+        if (rollbackSlot < 0) throw new IllegalArgumentException("rollbackSlot must be non-negative");
+        requireOpen();
+        acquireWriter();
+        try (Connection connection = SqliteArchiveSql.open(config, false)) {
+            ((SQLiteConnection) connection).setCurrentTransactionMode(SQLiteConfig.TransactionMode.IMMEDIATE);
+            connection.setAutoCommit(false);
+            try {
+                List<String> jobs = new ArrayList<>();
+                long firstEpoch = Long.MAX_VALUE;
+                long lastEpoch = -1;
+                try (PreparedStatement query = connection.prepareStatement(
+                        "SELECT job_id, range_start, range_end FROM archive_commits "
+                                + "WHERE dataset=? AND source_kind='EPOCH' AND end_slot>?")) {
+                    query.setString(1, dataset.name());
+                    query.setLong(2, rollbackSlot);
+                    try (ResultSet rows = query.executeQuery()) {
+                        while (rows.next()) {
+                            jobs.add(rows.getString(1));
+                            firstEpoch = Math.min(firstEpoch, rows.getLong(2));
+                            lastEpoch = Math.max(lastEpoch, rows.getLong(3));
+                        }
+                    }
+                }
+                if (jobs.isEmpty()) {
+                    connection.rollback();
+                    return 0;
+                }
+                try (PreparedStatement delete = connection.prepareStatement(
+                        "DELETE FROM archive_commits WHERE job_id=?")) {
+                    for (String job : jobs) {
+                        delete.setString(1, job);
+                        delete.executeUpdate();
+                    }
+                }
+                try (PreparedStatement insert = connection.prepareStatement(
+                        "INSERT INTO archive_invalidations VALUES (?, ?, 'EPOCH', ?, ?, ?)")) {
+                    insert.setString(1, UUID.randomUUID().toString());
+                    insert.setString(2, dataset.name());
+                    insert.setLong(3, firstEpoch);
+                    insert.setLong(4, lastEpoch);
+                    insert.setLong(5, Instant.now().toEpochMilli());
+                    insert.executeUpdate();
+                }
+                incrementGeneration(connection);
+                connection.commit();
+                return jobs.size();
+            } catch (Exception e) {
+                connection.rollback();
+                throw e;
+            }
+        } catch (Exception e) {
+            markDegraded("SQLite epoch rollback invalidation failed", e);
+            throw e instanceof ArchiveStoreException store ? store
+                    : new ArchiveStoreException("SQLite epoch rollback invalidation failed", e);
+        } finally {
+            releaseWriter();
+        }
     }
 
     @Override

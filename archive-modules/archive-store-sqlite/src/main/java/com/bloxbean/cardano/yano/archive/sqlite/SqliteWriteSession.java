@@ -73,7 +73,7 @@ final class SqliteWriteSession implements ArchiveWriteSession {
         }
         List<Object> key = logicalKey(table, row);
         if (!logicalKeys.computeIfAbsent(row.table(), ignored -> new HashSet<>()).add(key)
-                && !row.table().equals("addresses")) {
+                && !row.table().equals("addresses") && !isContentAddressed(row.table())) {
             throw new ArchiveStoreException("duplicate logical primary key in job for " + row.table());
         }
 
@@ -216,8 +216,7 @@ final class SqliteWriteSession implements ArchiveWriteSession {
                 for (int index = 0; index <= 12; index++) {
                     Object expected = row.values().get(index);
                     Object actual = expected instanceof byte[] ? existing.getBytes(index + 1) : existing.getObject(index + 1);
-                    if (expected instanceof byte[] bytes ? !Arrays.equals(bytes, (byte[]) actual)
-                            : !Objects.equals(expected, actual)) {
+                    if (!sameValue(expected, actual)) {
                         throw new ArchiveStoreException("address dimension conflict for canonical address key");
                     }
                 }
@@ -242,7 +241,7 @@ final class SqliteWriteSession implements ArchiveWriteSession {
             Object value = row.values().get(columnIndex(table, column));
             key.add(value instanceof byte[] bytes ? ByteBuffer.wrap(bytes.clone()).asReadOnlyBuffer() : value);
         }
-        return List.copyOf(key);
+        return java.util.Collections.unmodifiableList(key);
     }
 
     private int columnIndex(ArchiveTableSchema table, String name) {

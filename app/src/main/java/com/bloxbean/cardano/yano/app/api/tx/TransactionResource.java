@@ -62,6 +62,13 @@ public class TransactionResource {
         }
         String normalized = txHash.toLowerCase();
 
+        // Pending transactions are the dominant polling case and cannot exist in
+        // the immutable archive yet. Avoid an expensive cold locator fallback on
+        // every poll while the transaction is waiting in this node's mempool.
+        if (txGateway.isTransactionInMemPool(normalized)) {
+            return Response.ok(TxStatusDto.pending(normalized)).build();
+        }
+
         if (historyArchive.enabled()) {
             HistoryArchiveService.TransactionLookup lookup = historyArchive.findTransaction(
                     HexUtil.decodeHexString(normalized));
@@ -75,9 +82,6 @@ public class TransactionResource {
                 long confirmations = tip == null ? 0 : Math.max(0, tip.getBlockNumber() - blockNumber);
                 return Response.ok(TxStatusDto.inBlock(normalized, blockNumber, blockHash,
                         slot, blockTime, confirmations)).build();
-            }
-            if (txGateway.isTransactionInMemPool(normalized)) {
-                return Response.ok(TxStatusDto.pending(normalized)).build();
             }
             if (lookup.state() == HistoryArchiveService.TransactionLookup.State.INCOMPLETE
                     || lookup.state() == HistoryArchiveService.TransactionLookup.State.UNAVAILABLE) {
@@ -107,10 +111,6 @@ public class TransactionResource {
                             null, 0, 0, 0)).build();
                 }
             }
-        }
-
-        if (txGateway.isTransactionInMemPool(normalized)) {
-            return Response.ok(TxStatusDto.pending(normalized)).build();
         }
         return Response.ok(TxStatusDto.unknown(normalized)).build();
     }

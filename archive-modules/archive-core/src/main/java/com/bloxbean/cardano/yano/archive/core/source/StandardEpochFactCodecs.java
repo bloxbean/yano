@@ -13,8 +13,8 @@ public final class StandardEpochFactCodecs {
             (out, v) -> { text(out, v.credentialType()); bytes(out, v.stakeCredential()); bytes(out, v.poolHash()); out.writeLong(v.amount()); },
             in -> new EpochStakeFact(text(in), bytes(in), bytes(in), in.readLong()));
     public static final EpochFactCodec<DrepDistributionFact> DREP = codec(
-            (out, v) -> { text(out, v.drepType()); bytes(out, v.credential()); out.writeLong(v.amount()); nullableLong(out, v.storedExpiry()); out.writeLong(v.dormantEpochs()); nullableLong(out, v.effectiveExpiry()); out.writeBoolean(v.active()); },
-            in -> new DrepDistributionFact(text(in), bytes(in), in.readLong(), nullableLong(in), in.readLong(), nullableLong(in), in.readBoolean()));
+            (out, v) -> { text(out, v.drepType()); nullableBytes(out, v.credential()); out.writeLong(v.amount()); nullableLong(out, v.storedExpiry()); out.writeLong(v.dormantEpochs()); nullableLong(out, v.effectiveExpiry()); out.writeBoolean(v.active()); },
+            in -> new DrepDistributionFact(text(in), nullableBytes(in), in.readLong(), nullableLong(in), in.readLong(), nullableLong(in), in.readBoolean()));
     public static final EpochFactCodec<AdaPotFact> ADA_POT = codec(
             (out, v) -> { out.writeLong(v.treasury()); out.writeLong(v.reserves()); out.writeLong(v.deposits()); out.writeLong(v.fees()); out.writeLong(v.distributed()); out.writeLong(v.undistributed()); out.writeLong(v.rewardsPot()); out.writeLong(v.poolRewardsPot()); },
             in -> new AdaPotFact(in.readLong(), in.readLong(), in.readLong(), in.readLong(), in.readLong(), in.readLong(), in.readLong(), in.readLong()));

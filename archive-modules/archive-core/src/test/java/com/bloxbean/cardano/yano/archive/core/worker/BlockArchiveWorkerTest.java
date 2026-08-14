@@ -61,6 +61,27 @@ class BlockArchiveWorkerTest {
     }
 
     @Test
+    void mixedForkInsideBatchFailsBeforeBackendWrite() {
+        FixtureSource source = new FixtureSource(0, 1) {
+            @Override public Optional<BlockSourceContext<String>> readCanonical(long block) {
+                Optional<BlockSourceContext<String>> original = super.readCanonical(block);
+                if (block != 1 || original.isEmpty()) return original;
+                BlockSourceContext<String> value = original.orElseThrow();
+                return Optional.of(new BlockSourceContext<>(value.blockNumber(), value.slot(), value.epoch(),
+                        value.blockTime(), value.blockHash(), new byte[] {99}, value.block()));
+            }
+        };
+        RecordingBackend backend = new RecordingBackend();
+
+        assertThatThrownBy(() -> worker(source, backend, new MemoryProgress(),
+                new ArchiveWorkerMetrics(), () -> 0).runBatch(dataset(), 0, 1))
+                .isInstanceOf(ArchiveStoreException.class)
+                .hasMessageContaining("mixed canonical forks");
+        assertThat(backend.rows).isEmpty();
+        assertThat(backend.committed).isFalse();
+    }
+
+    @Test
     void advancesDurableCursorThroughLivePromotedCoverageWithoutRewritingBackend() {
         FixtureSource source = new FixtureSource(0, 1);
         RecordingBackend backend = new RecordingBackend();
@@ -81,6 +102,27 @@ class BlockArchiveWorkerTest {
                     .get().extracting(ArchiveProgress::coordinate).isEqualTo(1L);
             assertThat(progress.oldestRequiredBlockNumber()).hasValue(2);
         }
+    }
+
+    @Test
+    void prunedCommittedBodyDoesNotMasqueradeAsCanonicalRollback() {
+        FixtureSource source = new FixtureSource(1, 1) {
+            @Override public Optional<com.bloxbean.cardano.yano.api.CanonicalBlockReference> canonicalReference(
+                    long block) {
+                return block == 0 ? Optional.of(new com.bloxbean.cardano.yano.api.CanonicalBlockReference(
+                        0, 0, new byte[] {1})) : super.canonicalReference(block);
+            }
+        };
+        RecordingBackend backend = new RecordingBackend();
+        MemoryProgress progress = new MemoryProgress();
+        progress.value = Optional.of(new ArchiveProgress(ArchiveDatasetId.TRANSACTION, ArchiveTrack.BACKFILL,
+                0, 0, new byte[] {1}, 1));
+
+        long result = worker(source, backend, progress, new ArchiveWorkerMetrics(), () -> 0)
+                .runBatch(dataset(), 0, 0);
+
+        assertThat(result).isZero();
+        assertThat(backend.invalidated).isFalse();
     }
 
     private BlockArchiveWorker<String> worker(FixtureSource source, RecordingBackend backend,
@@ -107,7 +149,7 @@ class BlockArchiveWorkerTest {
         };
     }
 
-    private static final class FixtureSource implements BlockArchiveSource<String> {
+    private static class FixtureSource implements BlockArchiveSource<String> {
         private final long first;
         private final long last;
         int reads;
@@ -148,6 +190,7 @@ class BlockArchiveWorkerTest {
         final List<ArchiveRow> rows = new ArrayList<>();
         List<ArchiveRange> coverage = List.of();
         boolean committed;
+        boolean invalidated;
         public ArchiveIdentity identity() { return new ArchiveIdentity(UUID.randomUUID(), "fixture", 1, 1, "fixture"); }
         public ArchiveCapabilities capabilities() { return new ArchiveCapabilities(true, false, false, false, false); }
         public ArchiveWriteSession begin(ArchiveJob job) {
@@ -167,7 +210,8 @@ class BlockArchiveWorkerTest {
             public long generation() { return 1; }
             public void close() { }
         }; }
-        public void invalidate(ArchiveDatasetId dataset, ArchiveRange range) { }
+        public void invalidate(ArchiveDatasetId dataset, ArchiveRange range) { invalidated = true; }
+        public int invalidateEpochJobsAfterSlot(ArchiveDatasetId dataset, long rollbackSlot) { return 0; }
         public void applyRetention(ArchiveDatasetId dataset, ArchiveRetentionCutoff cutoff) { }
         public void maintain(ArchiveMaintenanceBudget budget) { }
         public ArchiveHealth health() { return ArchiveHealth.healthy(); }

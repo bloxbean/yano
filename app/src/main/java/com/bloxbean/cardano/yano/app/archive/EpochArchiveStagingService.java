@@ -34,6 +34,11 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
         this.root = root.toAbsolutePath().normalize(); this.enabled = Set.copyOf(enabled);
         try {
             Files.createDirectories(completedDirectory());
+            try (var files = Files.list(completedDirectory())) {
+                for (Path path : files.filter(Files::isRegularFile).toList()) {
+                    if (path.getFileName().toString().endsWith(".tmp")) Files.deleteIfExists(path);
+                }
+            }
             if (Files.exists(failureMarker())) error = Files.readString(failureMarker(), StandardCharsets.UTF_8);
         }
         catch (Exception e) { throw new ArchiveStoreException("cannot create epoch completion directory", e); }
@@ -79,9 +84,23 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
         int discarded = 0;
         for (SourceBinding<?> binding : sources()) discarded += binding.source().discardAfterEpoch(epoch);
         try (var markers = Files.list(completedDirectory())) {
-            for (Path marker : markers.filter(Files::isRegularFile).toList()) {
+            for (Path marker : markers.filter(path -> Files.isRegularFile(path)
+                    && path.getFileName().toString().endsWith(".properties")).toList()) {
                 Properties values = readProperties(marker);
                 if (Long.parseLong(values.getProperty("newEpoch")) > epoch) Files.deleteIfExists(marker);
+            }
+        } catch (Exception e) { throw new ArchiveStoreException("cannot discard epoch completion markers", e); }
+        return discarded;
+    }
+
+    int discardAfterBlock(long block) {
+        int discarded = 0;
+        for (SourceBinding<?> binding : sources()) discarded += binding.source().discardAfterBlock(block);
+        try (var markers = Files.list(completedDirectory())) {
+            for (Path marker : markers.filter(path -> Files.isRegularFile(path)
+                    && path.getFileName().toString().endsWith(".properties")).toList()) {
+                Properties values = readProperties(marker);
+                if (Long.parseLong(values.getProperty("block")) > block) Files.deleteIfExists(marker);
             }
         } catch (Exception e) { throw new ArchiveStoreException("cannot discard epoch completion markers", e); }
         return discarded;
@@ -96,7 +115,8 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
     public FactWriter<DrepFact> openDrep(int epoch) {
         return writer(Dataset.DREP_DISTRIBUTION, ArchiveDatasetId.DREP_DISTRIBUTION, epoch, "distribution",
                 StandardEpochFactCodecs.DREP, StandardEpochDatasets.drepDistribution(), fact ->
-                        new DrepDistributionFact(drepType(fact.drepType()), nullableHex(fact.credentialHash()),
+                        new DrepDistributionFact(drepType(fact.drepType()),
+                                fact.drepType() <= 1 ? nullableHex(fact.credentialHash()) : null,
                                 exact(fact.amount()), fact.storedExpiry() == null ? null : fact.storedExpiry().longValue(),
                                 fact.dormantEpochs(), fact.effectiveExpiry() == null ? null : fact.effectiveExpiry().longValue(),
                                 fact.active()));

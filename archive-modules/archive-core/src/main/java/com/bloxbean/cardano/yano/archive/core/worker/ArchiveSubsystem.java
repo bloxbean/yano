@@ -39,13 +39,13 @@ public final class ArchiveSubsystem implements AutoCloseable {
     @Override public void close() {
         started.set(false);
         ScheduledExecutorService current = executor;
-        executor = null;
         if (current == null) return;
         current.shutdownNow();
         try {
             if (!current.awaitTermination(30, TimeUnit.SECONDS)) {
                 throw new IllegalStateException("archive worker did not stop within 30 seconds");
             }
+            executor = null;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("interrupted while stopping archive worker", e);

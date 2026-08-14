@@ -5,10 +5,12 @@ import com.bloxbean.cardano.yano.api.ChainQuery;
 import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink;
 import com.bloxbean.cardano.yano.archive.api.ArchiveNetworkIdentity;
+import com.bloxbean.cardano.yano.archive.core.dataset.DrepDistributionFact;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.math.BigInteger;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.EnumSet;
 import java.util.Optional;
@@ -81,5 +83,73 @@ class EpochArchiveStagingServiceTest {
         var failedRestart = new EpochArchiveStagingService(chain, ledger, network, temp, enabled);
         assertThat(failedRestart.error()).isPresent();
         assertThat(failedRestart.enabled(EpochArchiveStagingSink.Dataset.EPOCH_STAKE)).isFalse();
+    }
+
+    @Test
+    void virtualDrepsUseNullableCredentialsAndSurviveDurableCodec() {
+        ChainQuery chain = mock(ChainQuery.class);
+        LedgerQuery ledger = mock(LedgerQuery.class);
+        when(chain.getCanonicalBlockReference(20)).thenReturn(Optional.of(
+                new CanonicalBlockReference(20, 200, new byte[] {1, 2, 3})));
+        when(ledger.slotToUnixTime(200)).thenReturn(1_700_000_000L);
+        var staging = new EpochArchiveStagingService(chain, ledger,
+                new ArchiveNetworkIdentity(1, "genesis"), temp,
+                EnumSet.of(EpochArchiveStagingSink.Dataset.DREP_DISTRIBUTION));
+        var boundary = new EpochArchiveStagingSink.Boundary(4, 5, 200, 20);
+
+        staging.beginBoundary(boundary);
+        try (var writer = staging.openDrep(5)) {
+            writer.append(new EpochArchiveStagingSink.DrepFact(
+                    2, "abstain", BigInteger.TEN, null, 0, null, true));
+            writer.commit();
+        }
+        staging.completeBoundary(boundary);
+
+        var binding = staging.sources().iterator().next();
+        var job = staging.pending(binding, 1).getFirst();
+        try (var lease = binding.source().acquire(job, java.time.Instant.now().plusSeconds(30))) {
+            Object decoded = binding.source().read(job, Optional.empty(), 1, lease).rows().getFirst();
+            assertThat(decoded).isInstanceOf(DrepDistributionFact.class);
+            assertThat(((DrepDistributionFact) decoded).drepType()).isEqualTo("always_abstain");
+            assertThat(((DrepDistributionFact) decoded).credential()).isNull();
+        }
+        assertThat(staging.error()).isEmpty();
+    }
+
+    @Test
+    void rollbackDiscardsSameEpochReplacementByBoundaryBlockAndIgnoresTmpMarkers() throws Exception {
+        ChainQuery chain = mock(ChainQuery.class);
+        LedgerQuery ledger = mock(LedgerQuery.class);
+        when(chain.getCanonicalBlockReference(30)).thenReturn(Optional.of(
+                new CanonicalBlockReference(30, 300, new byte[] {3})));
+        when(chain.getCanonicalBlockReference(31)).thenReturn(Optional.of(
+                new CanonicalBlockReference(31, 310, new byte[] {4})));
+        when(ledger.slotToUnixTime(300)).thenReturn(1_700_000_000L);
+        when(ledger.slotToUnixTime(310)).thenReturn(1_700_000_010L);
+        var enabled = EnumSet.of(EpochArchiveStagingSink.Dataset.EPOCH_STAKE);
+        var staging = new EpochArchiveStagingService(chain, ledger,
+                new ArchiveNetworkIdentity(1, "genesis"), temp, enabled);
+        stageStake(staging, new EpochArchiveStagingSink.Boundary(4, 5, 300, 30), 5, "01");
+        stageStake(staging, new EpochArchiveStagingSink.Boundary(4, 5, 310, 31), 5, "02");
+        Files.writeString(temp.resolve("completed").resolve("orphan.tmp"), "incomplete");
+
+        var restarted = new EpochArchiveStagingService(chain, ledger,
+                new ArchiveNetworkIdentity(1, "genesis"), temp, enabled);
+        assertThat(restarted.discardAfterBlock(30)).isEqualTo(1);
+        var binding = restarted.sources().iterator().next();
+        assertThat(restarted.pending(binding, 10)).singleElement()
+                .extracting(com.bloxbean.cardano.yano.archive.core.source.EpochArchiveJob::boundaryBlockNumber)
+                .isEqualTo(30L);
+        assertThat(temp.resolve("completed").resolve("orphan.tmp")).doesNotExist();
+    }
+
+    private static void stageStake(EpochArchiveStagingService staging,
+                                   EpochArchiveStagingSink.Boundary boundary, int epoch, String hash) {
+        staging.beginBoundary(boundary);
+        try (var writer = staging.openStake(epoch)) {
+            writer.append(new EpochArchiveStagingSink.StakeFact(0, hash, "03", BigInteger.ONE));
+            writer.commit();
+        }
+        staging.completeBoundary(boundary);
     }
 }

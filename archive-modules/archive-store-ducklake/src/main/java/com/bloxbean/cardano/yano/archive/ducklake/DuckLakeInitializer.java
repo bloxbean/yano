@@ -124,6 +124,7 @@ final class DuckLakeInitializer {
                     throw new ArchiveStoreException("DuckLake archive identity mismatch: expected=" + expected
                             + ", actual=" + actual);
                 }
+                verifyProjectionVersions(connection);
                 return;
             }
         }
@@ -145,6 +146,22 @@ final class DuckLakeInitializer {
                 insert.addBatch();
             }
             insert.executeBatch();
+        }
+    }
+
+    private void verifyProjectionVersions(Connection connection) throws SQLException {
+        try (PreparedStatement query = connection.prepareStatement(
+                "SELECT projection_version FROM history_lake.archive_schema WHERE dataset=?")) {
+            for (var entry : ArchiveSchemas.all().entrySet()) {
+                query.setString(1, entry.getKey().logicalName());
+                try (ResultSet result = query.executeQuery()) {
+                    if (!result.next() || result.getInt(1) != entry.getValue().projectionVersion()
+                            || result.next()) {
+                        throw new ArchiveStoreException("DuckLake projection metadata mismatch for "
+                                + entry.getKey() + "; rebuild the unreleased preview archive directory");
+                    }
+                }
+            }
         }
     }
 

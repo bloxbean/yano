@@ -15,10 +15,16 @@ class ArchiveContractsTest {
         assertThat(ArchiveSchemas.all().keySet()).isEqualTo(EnumSet.allOf(ArchiveDatasetId.class));
         ArchiveSchemas.all().forEach((dataset, schema) -> {
             assertThat(schema.dataset()).isEqualTo(dataset);
-            assertThat(schema.projectionVersion()).isEqualTo(1);
+            assertThat(schema.projectionVersion()).isPositive();
             assertThat(schema.tables()).isNotEmpty();
             assertThat(schema.paginationOrder()).isNotEmpty();
         });
+        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.TRANSACTION).projectionVersion()).isEqualTo(2);
+        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.ACCOUNT_EVENT).projectionVersion()).isEqualTo(2);
+        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.ADDRESS_TRANSACTION).projectionVersion()).isEqualTo(2);
+        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.UTXO_HISTORY).projectionVersion()).isEqualTo(2);
+        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.REWARD).projectionVersion()).isEqualTo(2);
+        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.DREP_DISTRIBUTION).projectionVersion()).isEqualTo(2);
     }
 
     @Test
