@@ -26,6 +26,9 @@ public class RuntimeMaintenanceGateFilter implements ContainerRequestFilter, Con
     @Inject
     RuntimeMaintenanceGate maintenanceGate;
 
+    @Inject
+    RuntimeMaintenanceReadLease requestLease;
+
     @Override
     public void filter(ContainerRequestContext requestContext) {
         if (isExclusiveMaintenanceEndpoint(
@@ -34,15 +37,15 @@ public class RuntimeMaintenanceGateFilter implements ContainerRequestFilter, Con
         }
 
         String operation = requestContext.getMethod() + " " + requestContext.getUriInfo().getPath(false);
-        requestContext.setProperty(READ_LEASE_PROPERTY, maintenanceGate.enterRead(operation));
+        requestLease.open(maintenanceGate, operation);
+        requestContext.setProperty(READ_LEASE_PROPERTY, Boolean.TRUE);
     }
 
     @Override
     public void filter(ContainerRequestContext requestContext, ContainerResponseContext responseContext)
             throws IOException {
-        Object lease = requestContext.getProperty(READ_LEASE_PROPERTY);
-        if (lease instanceof RuntimeMaintenanceGate.ReadLease readLease) {
-            readLease.close();
+        if (requestContext.getProperty(READ_LEASE_PROPERTY) != null) {
+            requestLease.close();
             requestContext.removeProperty(READ_LEASE_PROPERTY);
         }
     }
