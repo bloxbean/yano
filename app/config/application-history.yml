@@ -13,7 +13,7 @@ yano:
   account-state:
     enabled: true
   account-history:
-    # Removed synchronous implementation. Keep disabled when ADR-034 history is used.
+    # Legacy synchronous PR-only index. Unsupported and must remain disabled.
     enabled: false
   rewards:
     enabled: true
@@ -29,20 +29,48 @@ yano:
       retention-blocks: auto
     datasets:
       # Wallet-facing history enabled by this profile.
-      account-events: { enabled: true, retention-epochs: 0 }
-      transactions: { enabled: true, retention-epochs: 0 }
-      address-transactions: { enabled: true, retention-epochs: 0 }
-      rewards: { enabled: true, start-mode: earliest-available, retention-epochs: 0 }
+      account-events:
+        enabled: true
+        retention-epochs: 0
+      transactions:
+        enabled: true
+        retention-epochs: 0
+      address-transactions:
+        enabled: true
+        retention-epochs: 0
+      rewards:
+        enabled: true
+        start-mode: earliest-available
+        retention-epochs: 0
 
       # Larger analytics datasets remain explicit operator choices.
-      utxo-history: { enabled: false, retention-epochs: 0 }
-      epoch-stake: { enabled: false, start-mode: earliest-available, retention-epochs: 0 }
-      drep-distribution: { enabled: false, start-mode: earliest-available, retention-epochs: 0 }
-      ada-pots: { enabled: false, start-mode: earliest-available, retention-epochs: 0 }
-      governance-proposal-status: { enabled: false, start-mode: earliest-available, retention-epochs: 0 }
+      utxo-history:
+        enabled: false
+        retention-epochs: 0
+      epoch-stake:
+        enabled: false
+        start-mode: earliest-available
+        retention-epochs: 0
+      drep-distribution:
+        enabled: false
+        start-mode: earliest-available
+        retention-epochs: 0
+      ada-pots:
+        enabled: false
+        start-mode: earliest-available
+        retention-epochs: 0
+      governance-proposal-status:
+        enabled: false
+        start-mode: earliest-available
+        retention-epochs: 0
     duckdb:
       max-total-memory: 256MB
       max-concurrent-queries: 2
       max-temp-directory-size: 2GB
-      steady-state: { memory-limit: 128MB, threads: 1 }
-      bulk-catch-up: { memory-limit: 128MB, threads: 1, max-concurrent-jobs: 1 }
+      steady-state:
+        memory-limit: 128MB
+        threads: 1
+      bulk-catch-up:
+        memory-limit: 128MB
+        threads: 1
+        max-concurrent-jobs: 1
