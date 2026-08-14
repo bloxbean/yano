@@ -5,8 +5,10 @@ import com.bloxbean.cardano.client.crypto.api.SigningProvider;
 import com.bloxbean.cardano.client.crypto.config.CryptoConfiguration;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.plugin.PluginActivationException;
 import com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider;
 import com.bloxbean.cardano.yano.api.appchain.signer.SignerProviderFactory;
+import com.bloxbean.cardano.yano.runtime.plugins.PluginProviderRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -17,6 +19,8 @@ import org.slf4j.LoggerFactory;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
 
@@ -25,9 +29,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * ADR-006 E4.3: a member's signing key resolves through a custom
- * SignerProviderFactory (ServiceLoader) instead of a raw seed — the node never
- * holds the key material directly. Registered via
- * META-INF/services (see test resources).
+ * catalog-selected SignerProviderFactory instead of a raw seed — the node
+ * never holds the key material directly.
  */
 @Timeout(60)
 class CustomSignerProviderTest {
@@ -81,9 +84,11 @@ class CustomSignerProviderTest {
                 .proposerKeyHex(pub)
                 .threshold(1)
                 .blockIntervalMs(300)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         node = new AppChainSubsystem(config, 42, null, null,
-                tempDir.resolve("ledger").toString(), null, log);
+                tempDir.resolve("ledger").toString(), null,
+                signerRegistry(), log);
         node.start();
 
         String id = node.submit("t", "signed via provider".getBytes(StandardCharsets.UTF_8));
@@ -102,12 +107,32 @@ class CustomSignerProviderTest {
                 .memberKeysHex(Set.of(pub))
                 .proposerKeyHex(pub)
                 .threshold(1)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         assertThatThrownBy(() -> new AppChainSubsystem(config, 42, null, null,
-                tempDir.resolve("ledger2").toString(), null, log))
-                .isInstanceOf(IllegalArgumentException.class)
+                tempDir.resolve("ledger2").toString(), null,
+                signerRegistry(), log))
+                .isInstanceOf(PluginActivationException.class)
                 .hasMessageContaining("no-such-scheme")
                 .hasMessageContaining("test-seed");
+    }
+
+    private static PluginProviderRegistry signerRegistry() {
+        SignerProviderFactory factory = new TestSeedSignerFactory();
+        return new PluginProviderRegistry() {
+            @Override
+            public <P> Optional<P> find(Class<P> providerType, String selector) {
+                return providerType == SignerProviderFactory.class
+                        && factory.scheme().equals(selector)
+                        ? Optional.of(providerType.cast(factory)) : Optional.empty();
+            }
+
+            @Override
+            public <P> List<String> names(Class<P> providerType) {
+                return providerType == SignerProviderFactory.class
+                        ? List.of(factory.scheme()) : List.of();
+            }
+        };
     }
 
     private static void awaitTrue(String what, BooleanSupplier condition) throws InterruptedException {

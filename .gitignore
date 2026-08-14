@@ -187,6 +187,9 @@ __pycache__/
 *.pyc
 /node-app/chainstate-preprod/
 **/chainstate*/
+**/appchain-state*/
+**/appchain-chainstate*/
+**/appchain-indexers*/
 # Runtime databases named exactly "data". Do not use data* here: it also
 # matches Java source packages such as archive/core/dataset.
 **/data/

@@ -35,6 +35,30 @@ public final class GenesisFileResolver {
      * Resolve a genesis file path using an explicit resource classloader.
      */
     public static String resolve(String userPath, long magic, String filename, ClassLoader classLoader) {
+        return resolveWithLoaders(userPath, magic, filename, resourceLoaders(classLoader));
+    }
+
+    /**
+     * Resolve bootstrap input from trusted host/application loaders only.
+     * Unlike the compatibility overload, this method never consults the
+     * calling thread's context loader, which may be a selected plugin loader.
+     */
+    public static String resolveHostOnly(
+            String userPath,
+            long magic,
+            String filename,
+            ClassLoader hostClassLoader
+    ) {
+        return resolveWithLoaders(
+                userPath, magic, filename, hostResourceLoaders(hostClassLoader));
+    }
+
+    private static String resolveWithLoaders(
+            String userPath,
+            long magic,
+            String filename,
+            Iterable<ClassLoader> resourceLoaders
+    ) {
         if (userPath != null && !userPath.isBlank()) {
             if (new File(userPath).exists()) {
                 return userPath;
@@ -48,7 +72,7 @@ public final class GenesisFileResolver {
         }
 
         String classpathResource = "genesis/" + networkDir + "/" + filename;
-        for (ClassLoader loader : resourceLoaders(classLoader)) {
+        for (ClassLoader loader : resourceLoaders) {
             try (InputStream is = loader.getResourceAsStream(classpathResource)) {
                 if (is == null) {
                     continue;
@@ -75,6 +99,18 @@ public final class GenesisFileResolver {
         ClassLoader contextLoader = Thread.currentThread().getContextClassLoader();
         if (contextLoader != null) {
             loaders.add(contextLoader);
+        }
+        ClassLoader runtimeLoader = GenesisFileResolver.class.getClassLoader();
+        if (runtimeLoader != null) {
+            loaders.add(runtimeLoader);
+        }
+        return loaders;
+    }
+
+    private static Iterable<ClassLoader> hostResourceLoaders(ClassLoader explicitLoader) {
+        var loaders = new LinkedHashSet<ClassLoader>();
+        if (explicitLoader != null) {
+            loaders.add(explicitLoader);
         }
         ClassLoader runtimeLoader = GenesisFileResolver.class.getClassLoader();
         if (runtimeLoader != null) {

@@ -1,10 +1,19 @@
 # App-chain script anchor — Aiken implementation (opt-in)
 
-The opt-in twin of the bundled julc/Java anchor validators
-(ADR app-layer/008.4; ABI: `core-api/src/main/cddl/appchain/anchor-v1.cddl`).
-Same datum/redeemer ABI, same rules — both implementations pass the SAME
-conformance vectors (`appchain-anchor-onchain` test suite runs both artifacts
-on julc-vm-java).
+The source of the supported clean-baseline anchor validators
+(ADR app-layer/031; ABI: `core-api/src/main/cddl/appchain/anchor-v1.cddl`).
+The checked artifacts are executed by the `appchain-anchor-onchain` conformance suite on
+`julc-vm-java`.
+
+Both the consumed and continuing datum must have the exact
+`Constr(0, [11 fields])` v1 shape. The validators bind chain genesis, application ID,
+commitment profile and format fingerprint in addition to a `chain-id` of 1..128 bytes,
+a non-negative height, 32-byte block hash and state
+root, 1..32 strictly sorted unique 32-byte member keys, and a threshold in the
+member range. Plutus exposes `chain-id` only as bytes, so the on-chain scripts
+cannot prove that it is UTF-8 or reject an embedded NUL. The public/off-chain
+`AnchorDatumV1` codec enforces canonical UTF-8 and rejects NUL before encoding
+or after decoding.
 
 ## Using it
 
@@ -29,8 +38,8 @@ only when the source changes, and re-run the conformance suite:
 
 ```bash
 aiken build                       # regenerates plutus.json
-# re-extract artifacts/ (double-CBOR cborHex envelopes) — see git history
-# then: ./gradlew :appchain-anchor-onchain:test   (runs vectors on BOTH artifacts)
+# re-extract artifacts/ (double-CBOR cborHex envelopes)
+# then: ./gradlew :appchain-anchor-onchain:test
 ```
 
 `artifacts/*.plutus.json` wrap the blueprint `compiledCode` (single-CBOR flat
@@ -39,7 +48,12 @@ UPLC) in one more CBOR byte-string layer, matching the Cardano text-envelope
 
 ## Sizes (informational)
 
-| script | Aiken | julc |
-|---|---|---|
-| anchor validator (spend) | 1191 B | 1988 B |
-| thread policy (mint) | 382 B | 748 B |
+| script | checked size |
+|---|---:|
+| anchor validator (spend) | 1929 B |
+| thread policy (mint) | 362 B |
+
+Values are the checked artifact JSON `sizeBytes` fields. They are identity and
+deployment diagnostics, not execution-budget measurements; the shared
+conformance suite separately checks both implementations against Cardano's
+per-transaction CPU and memory limits.

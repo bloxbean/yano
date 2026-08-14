@@ -1,0 +1,68 @@
+[
+  {
+    "name": "com.bloxbean.cardano.yano.catalog.BundleManifestParser$RawContribution",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.catalog.BundleManifestParser$RawDependency",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.catalog.BundleManifestParser$RawManifest",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.catalog.BundleManifestParser$RawYanoApi",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.catalog.PluginIndexCodec$RawBundle",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.catalog.PluginIndexCodec$RawContribution",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.catalog.PluginIndexCodec$RawDependency",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.catalog.PluginIndexCodec$RawIndex",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.catalog.PluginIndexCodec$RawLegacyProvider",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.catalog.PluginIndexCodec$RawManifest",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "com.bloxbean.cardano.yano.catalog.PluginIndexCodec$RawYanoApi",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  }
+]

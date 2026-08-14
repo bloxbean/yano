@@ -11,5 +11,9 @@ public interface SequencerModeProvider {
 
     String id();
 
+    /**
+     * Create a fresh mode instance owned by the requesting chain. The same
+     * instance must not be returned by another invocation or provider.
+     */
     SequencerMode create(SequencerContext context);
 }

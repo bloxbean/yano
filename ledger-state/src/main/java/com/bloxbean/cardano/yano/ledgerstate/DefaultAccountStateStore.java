@@ -281,6 +281,19 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
     // --- Optional subsystem wiring ---
 
+    /** Number of epoch snapshots retained by this store. */
+    public int snapshotRetentionEpochs() {
+        return snapshotRetentionEpochs;
+    }
+
+    /** Open one consistent close-scoped view for asynchronous epoch observers. */
+    public HistoricalEpochStateView openHistoricalEpochStateView() {
+        if (!enabled || db == null || cfEpochSnapshot == null) {
+            throw new IllegalStateException("persistent historical epoch state is unavailable");
+        }
+        return new HistoricalEpochStateView(db, cfEpochSnapshot, cfState);
+    }
+
     /**
      * Set the UtxoState reference for UTXO balance aggregation at epoch boundary.
      * Must be called before epoch snapshots with amounts are needed.

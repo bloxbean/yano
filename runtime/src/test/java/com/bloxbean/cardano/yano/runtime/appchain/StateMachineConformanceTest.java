@@ -1,6 +1,8 @@
 package com.bloxbean.cardano.yano.runtime.appchain;
 
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
@@ -8,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -45,6 +48,25 @@ class StateMachineConformanceTest {
                 .hasMessageContaining("height 1");
     }
 
+    @Test
+    void upgradeHarness_restartsBeforeAndAfterActivation() {
+        AtomicInteger newMachineCreations = new AtomicInteger();
+        AppStateMachineProvider oldProvider = provider("restart-probe", OrderedLogStateMachine::new);
+        AppStateMachineProvider newProvider = provider("restart-probe", () -> {
+            newMachineCreations.incrementAndGet();
+            return new OrderedLogStateMachine();
+        });
+
+        StateMachineConformance.upgrade(oldProvider, newProvider)
+                .activationAt("change-v2", 5)
+                .blocks(12)
+                .runs(2)
+                .assertReplayStable();
+
+        // Two uninterrupted runs plus two boundary runs, each reopened once.
+        assertThat(newMachineCreations).hasValue(6);
+    }
+
     private static AppStateMachineProvider provider(String id,
                                                     java.util.function.Supplier<AppStateMachine> factory) {
         return new AppStateMachineProvider() {
@@ -61,7 +83,8 @@ class StateMachineConformanceTest {
         }
 
         @Override
-        public void apply(AppBlock block, AppStateWriter writer) {
+        public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
             writer.put(("h" + block.height()).getBytes(StandardCharsets.UTF_8),
                     String.valueOf(System.nanoTime()).getBytes(StandardCharsets.UTF_8));
         }

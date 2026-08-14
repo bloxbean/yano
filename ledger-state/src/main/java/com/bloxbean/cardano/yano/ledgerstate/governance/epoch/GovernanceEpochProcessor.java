@@ -18,6 +18,7 @@ import java.util.Set;
 import com.bloxbean.cardano.yano.ledgerstate.governance.model.CommitteeMemberRecord;
 import com.bloxbean.cardano.yano.ledgerstate.governance.model.DRepStateRecord;
 import com.bloxbean.cardano.yano.ledgerstate.governance.model.GovActionRecord;
+import com.bloxbean.cardano.yano.ledgerstate.governance.model.ProposalLifecycleRecord;
 import com.bloxbean.cardano.yano.ledgerstate.governance.model.RatificationResult;
 import com.bloxbean.cardano.yano.ledgerstate.governance.ratification.EnactmentProcessor;
 import com.bloxbean.cardano.yano.ledgerstate.governance.ratification.ProposalDropService;
@@ -149,7 +150,8 @@ public class GovernanceEpochProcessor {
     }
 
     /** Result of governance Phase 1 (enactment + treasury withdrawals + deposit refunds). */
-    record EnactmentResult(BigInteger treasuryDelta, BigInteger depositRefunds) {}
+    record EnactmentResult(BigInteger treasuryDelta, BigInteger depositRefunds,
+                           Map<GovActionId, ProposalLifecycleRecord> lifecycleUpdates) {}
 
     public GovernanceEpochProcessor(RocksDB db, ColumnFamilyHandle cfState, ColumnFamilyHandle cfDelta,
                                     GovernanceStateStore governanceStore,
@@ -394,9 +396,13 @@ public class GovernanceEpochProcessor {
         BigInteger depositRefunds = BigInteger.ZERO;
         Map<String, BigInteger> aggregatedRefunds = new java.util.HashMap<>();
         Set<GovActionId> removedIds = new java.util.LinkedHashSet<>();
+        Map<GovActionId, ProposalLifecycleRecord> lifecycleUpdates = new LinkedHashMap<>();
 
         // 3a. Enacted proposals: refund deposit + remove
         for (GovActionId id : pendingEnactmentIds) {
+            putLifecycleUpdate(lifecycleUpdates, id, allProposals,
+                    com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatus.ENACTED,
+                    com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatusReason.ENACTED);
             depositRefunds = depositRefunds.add(
                     refundAndRemove(id, allProposals, removedIds, aggregatedRefunds, batch, deltaOps));
         }
@@ -405,6 +411,9 @@ public class GovernanceEpochProcessor {
         for (GovActionId id : pendingDropIds) {
             appendGovernanceLifecycle(governanceArchive, archivedLifecycle, id, allProposals.get(id),
                     newEpoch, "removal", "dropped_expired", "expired_at_prior_boundary");
+            putLifecycleUpdate(lifecycleUpdates, id, allProposals,
+                    com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatus.EXPIRED,
+                    com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatusReason.EXPIRED);
             depositRefunds = depositRefunds.add(
                     refundAndRemove(id, allProposals, removedIds, aggregatedRefunds, batch, deltaOps));
         }
@@ -422,6 +431,9 @@ public class GovernanceEpochProcessor {
             for (GovActionId sibId : siblings) {
                 appendGovernanceLifecycle(governanceArchive, archivedLifecycle, sibId, allProposals.get(sibId),
                         newEpoch, "removal", "dropped_sibling", "sibling_of_enacted_action");
+                putLifecycleUpdate(lifecycleUpdates, sibId, allProposals,
+                        com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatus.DROPPED,
+                        com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatusReason.SUPERSEDED);
                 BigInteger refunded = refundAndRemove(sibId, allProposals, removedIds, aggregatedRefunds, batch, deltaOps);
                 depositRefunds = depositRefunds.add(refunded);
                 if (refunded.signum() > 0) siblingDropCount++;
@@ -431,6 +443,9 @@ public class GovernanceEpochProcessor {
                     for (GovActionId descId : proposalDropService.findDescendants(sibId, sib, allProposals)) {
                         appendGovernanceLifecycle(governanceArchive, archivedLifecycle, descId, allProposals.get(descId),
                                 newEpoch, "removal", "dropped_descendant", "descendant_of_dropped_sibling");
+                        putLifecycleUpdate(lifecycleUpdates, descId, allProposals,
+                                com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatus.DROPPED,
+                                com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatusReason.INVALIDATED);
                         refunded = refundAndRemove(descId, allProposals, removedIds, aggregatedRefunds, batch, deltaOps);
                         depositRefunds = depositRefunds.add(refunded);
                         if (refunded.signum() > 0) siblingDropCount++;
@@ -446,6 +461,9 @@ public class GovernanceEpochProcessor {
             for (GovActionId descId : proposalDropService.findDescendants(id, proposal, allProposals)) {
                 appendGovernanceLifecycle(governanceArchive, archivedLifecycle, descId, allProposals.get(descId),
                         newEpoch, "removal", "dropped_descendant", "descendant_of_expired_action");
+                putLifecycleUpdate(lifecycleUpdates, descId, allProposals,
+                        com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatus.DROPPED,
+                        com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatusReason.INVALIDATED);
                 BigInteger refunded = refundAndRemove(descId, allProposals, removedIds, aggregatedRefunds, batch, deltaOps);
                 depositRefunds = depositRefunds.add(refunded);
                 if (refunded.signum() > 0) siblingDropCount++;
@@ -481,7 +499,21 @@ public class GovernanceEpochProcessor {
             log.info("Unclaimed proposal deposit refunds going to treasury: {}", unclaimedRefunds);
         }
 
-        return new EnactmentResult(treasuryDelta, depositRefunds);
+        // Phase 1 removes enacted/dropped proposals before Phase 2. Persist the
+        // terminal facts now, without the public snapshot marker, so a crash and
+        // Phase-2 retry can recover them after the active records are gone.
+        governanceStore.storeProposalLifecycleEntries(newEpoch, lifecycleUpdates, batch, deltaOps);
+
+        return new EnactmentResult(treasuryDelta, depositRefunds, Map.copyOf(lifecycleUpdates));
+    }
+
+    private static void putLifecycleUpdate(Map<GovActionId, ProposalLifecycleRecord> updates,
+                                           GovActionId id,
+                                           Map<GovActionId, GovActionRecord> proposals,
+                                           com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatus status,
+                                           com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatusReason reason) {
+        GovActionRecord proposal = proposals.get(id);
+        if (proposal != null) updates.putIfAbsent(id, lifecycle(proposal, status, reason));
     }
 
     private void appendGovernanceLifecycle(
@@ -594,9 +626,10 @@ public class GovernanceEpochProcessor {
             DRepDistKey dk = entry.getKey();
             if (dk.drepType() <= 1) {
                 governanceStore.storeDRepDistEntry(newEpoch, dk.drepType(),
-                        dk.drepHash(), entry.getValue(), batch);
+                        dk.drepHash(), entry.getValue(), batch, deltaOps);
             }
         }
+        governanceStore.storeDRepDistributionSnapshotMarker(newEpoch, batch, deltaOps);
 
         if (archiveStaging.enabled(
                 com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset.DREP_DISTRIBUTION)) {
@@ -681,16 +714,44 @@ public class GovernanceEpochProcessor {
             }
         }
 
+        // Persist a complete epoch-pinned lifecycle snapshot. Begin with the previous
+        // boundary so terminal states remain directly provable, apply Phase 1 terminal
+        // transitions, then overlay the status of every proposal present at this boundary.
+        Map<GovActionId, ProposalLifecycleRecord> lifecycleSnapshot =
+                new LinkedHashMap<>(governanceStore.getProposalLifecycleSnapshot(previousEpoch));
+        lifecycleSnapshot.putAll(governanceStore.getProposalLifecycleSnapshot(newEpoch));
+        lifecycleSnapshot.putAll(enactment.lifecycleUpdates());
+        for (var entry : activeProposals.entrySet()) {
+            lifecycleSnapshot.put(entry.getKey(), lifecycle(entry.getValue(),
+                    com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatus.ACTIVE,
+                    com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatusReason.NONE));
+        }
+        for (RatificationResult result : results) {
+            var status = switch (result.status()) {
+                case ACTIVE -> com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatus.ACTIVE;
+                case RATIFIED -> com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatus.RATIFIED;
+                case EXPIRED -> com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatus.EXPIRED;
+            };
+            var reason = switch (result.status()) {
+                case ACTIVE -> com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatusReason.NONE;
+                case RATIFIED -> com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatusReason.RATIFIED;
+                case EXPIRED -> com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatusReason.EXPIRED;
+            };
+            lifecycleSnapshot.put(result.govActionId(), lifecycle(result.proposal(), status, reason));
+        }
+        governanceStore.storeProposalLifecycleSnapshot(newEpoch, lifecycleSnapshot, batch, deltaOps);
+
         if (archiveStaging.enabled(
                 com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset.GOVERNANCE_PROPOSAL_STATUS)) {
             var writer = archiveStaging.openGovernance(newEpoch, "ratification");
             archiveWriters.add(writer);
-                for (var r : results) writer.append(
-                        new com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.GovernanceFact(
+            for (var r : results) {
+                writer.append(new com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.GovernanceFact(
                             r.govActionId().getTransactionId(), r.govActionId().getGov_action_index(),
                             r.proposal().actionType().name(), "ratification", r.status().name(), r.decisionReason(),
                             r.proposal().deposit(), r.proposal().returnAddress(),
                             r.proposal().proposedInEpoch(), r.proposal().expiresAfterEpoch()));
+            }
         }
 
         // 4. Store NEWLY expired proposals as pending drops for next boundary.
@@ -734,6 +795,34 @@ public class GovernanceEpochProcessor {
                 depositRefunds, donations, !epochHadActiveProposals, ratifiableProposals.size());
 
         return new GovernanceEpochResult(treasuryDelta, depositRefunds, donations);
+    }
+
+    private static ProposalLifecycleRecord lifecycle(
+            GovActionRecord proposal,
+            com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatus status,
+            com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatusReason reason) {
+        return new ProposalLifecycleRecord(actionType(proposal.actionType()), status, reason,
+                proposal.proposedInEpoch(), proposal.expiresAfterEpoch());
+    }
+
+    private static com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceActionType actionType(
+            GovActionType type) {
+        return switch (type) {
+            case PARAMETER_CHANGE_ACTION ->
+                    com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceActionType.PARAMETER_CHANGE;
+            case HARD_FORK_INITIATION_ACTION ->
+                    com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceActionType.HARD_FORK_INITIATION;
+            case TREASURY_WITHDRAWALS_ACTION ->
+                    com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceActionType.TREASURY_WITHDRAWALS;
+            case NO_CONFIDENCE ->
+                    com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceActionType.NO_CONFIDENCE;
+            case UPDATE_COMMITTEE ->
+                    com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceActionType.UPDATE_COMMITTEE;
+            case NEW_CONSTITUTION ->
+                    com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceActionType.NEW_CONSTITUTION;
+            case INFO_ACTION ->
+                    com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceActionType.INFO_ACTION;
+        };
     }
 
     // ===== Active DRep Keys =====

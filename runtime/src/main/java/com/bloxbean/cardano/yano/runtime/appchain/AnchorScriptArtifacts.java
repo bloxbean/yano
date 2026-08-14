@@ -25,10 +25,10 @@ import java.util.Objects;
  * Resolves the script-anchor artifacts (ADR app-layer/008.4 §2.4) and derives
  * the on-chain identity from them. Everything downstream — thread policy id,
  * validator script hash, anchor address — is computed from the CONFIGURED
- * compiled UPLC artifact, never from validator sources, so the julc default
- * and the Aiken opt-in are interchangeable behind the same refs:
+ * compiled UPLC artifact, never from validator sources. The release Aiken
+ * artifact is the single bundled implementation:
  * <ul>
- *   <li>{@code builtin:julc} — bundled artifact from
+ *   <li>{@code builtin:aiken} — bundled release artifact from
  *       {@code META-INF/plutus/*.plutus.json} (appchain-anchor-onchain jar)</li>
  *   <li>{@code file:/path} — a blueprint-style JSON ({@code cborHex} field)
  *       or a raw double-CBOR UPLC hex file</li>
@@ -93,7 +93,7 @@ final class AnchorScriptArtifacts {
     /** Resolve a ref to the unparameterized double-CBOR UPLC hex. */
     static String resolve(String ref, String builtinResource) {
         String trimmed = ref == null ? "" : ref.trim();
-        if (trimmed.isEmpty() || AnchorScriptConfig.BUILTIN_JULC.equals(trimmed)) {
+        if (trimmed.isEmpty() || AnchorScriptConfig.BUILTIN_AIKEN.equals(trimmed)) {
             return readBuiltin(builtinResource);
         }
         if (trimmed.startsWith("hex:")) {
@@ -111,7 +111,7 @@ final class AnchorScriptArtifacts {
             }
         }
         throw new IllegalArgumentException("Unsupported anchor script ref '" + ref
-                + "' — expected builtin:julc, file:/path or hex:...");
+                + "' — expected builtin:aiken, file:/path or hex:...");
     }
 
     private static String readBuiltin(String resource) {

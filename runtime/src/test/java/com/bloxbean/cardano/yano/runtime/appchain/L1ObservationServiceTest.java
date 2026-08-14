@@ -11,6 +11,8 @@ import com.bloxbean.cardano.yaci.core.model.TransactionOutput;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observation;
+import com.bloxbean.cardano.yano.api.appchain.SequencedL1Observation;
+import com.bloxbean.cardano.yano.api.appchain.l1view.L1Observer;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,9 +21,16 @@ import java.io.ByteArrayOutputStream;
 import java.math.BigInteger;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 
 /**
  * L1 observation recomputation + verification-window semantics (ADR 008.4
@@ -83,6 +92,11 @@ class L1ObservationServiceTest {
                 .build();
     }
 
+    private SequencedL1Observation sequenced(L1Observation observation) {
+        AppMessage message = message(observation);
+        return new SequencedL1Observation(0, message.getMessageId(), observation);
+    }
+
     @Test
     void observers_computeDepositAndMetadataClaims() throws Exception {
         L1ObservationService service = service();
@@ -96,7 +110,8 @@ class L1ObservationServiceTest {
                 .containsExactlyInAnyOrder("deposits", "registry");
         for (L1Observation observation : observed) {
             assertThat(observation.slot()).isEqualTo(100);
-            assertThat(observation.txHash()).isEqualTo(HexUtil.decodeHexString("aa".repeat(32)));
+            assertThat(observation.transactionAnchor().transactionHash())
+                    .isEqualTo(HexUtil.decodeHexString("aa".repeat(32)));
             // Codec round-trip
             L1Observation decoded = L1Observation.decode(observation.encode());
             assertThat(decoded).isNotNull();
@@ -111,6 +126,180 @@ class L1ObservationServiceTest {
         service.onL1Block(100, fill(32, 1),
                 block("bb".repeat(32), "addr_test1qother", 5_000_000, null));
         assertThat(service.drainInjectable(Long.MAX_VALUE)).isEmpty();
+    }
+
+    @Test
+    void observerFailureLogRetainsOnlyTheExceptionType() {
+        String secret = "https://user:password@example.test/?token=do-not-log";
+        Logger logger = mock(Logger.class);
+        L1Observer observer = new L1Observer() {
+            @Override
+            public String observerId() {
+                return "failing-observer";
+            }
+
+            @Override
+            public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
+                throw new IllegalStateException(secret);
+            }
+        };
+        L1ObservationService service = new L1ObservationService(List.of(observer), 64, logger);
+
+        service.onL1Block(123, fill(32, 7), null);
+
+        verify(logger).warn("L1 observer failed on slot {} (errorType={})",
+                123L, IllegalStateException.class.getName());
+        verifyNoMoreInteractions(logger);
+        assertThat(service.drainInjectable(Long.MAX_VALUE)).isEmpty();
+    }
+
+    @Test
+    void containableObserverErrorDoesNotStarveHealthyObserver() {
+        AtomicBoolean healthyCalled = new AtomicBoolean();
+        L1Observer failing = new L1Observer() {
+            @Override public String observerId() { return "asserting-observer"; }
+            @Override
+            public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
+                throw new AssertionError("sensitive assertion");
+            }
+        };
+        L1Observer healthy = new L1Observer() {
+            @Override public String observerId() { return "healthy-observer"; }
+            @Override
+            public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
+                healthyCalled.set(true);
+                return List.of();
+            }
+        };
+        Logger logger = mock(Logger.class);
+        L1ObservationService service =
+                new L1ObservationService(List.of(failing, healthy), 64, logger);
+
+        service.onL1Block(321, fill(32, 8), null);
+
+        assertThat(healthyCalled).isTrue();
+        verify(logger).warn("L1 observer failed on slot {} (errorType={})",
+                321L, AssertionError.class.getName());
+    }
+
+    @Test
+    void interruptedObserverRestoresInterruptBeforeDiagnosticsAndContinues() {
+        AtomicBoolean interruptedWhenLogged = new AtomicBoolean();
+        AtomicBoolean healthyCalled = new AtomicBoolean();
+        L1Observer interrupted = new L1Observer() {
+            @Override public String observerId() { return "interrupted-observer"; }
+            @Override
+            public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
+                return sneakyThrow(new InterruptedException("sensitive interrupt detail"));
+            }
+        };
+        L1Observer healthy = new L1Observer() {
+            @Override public String observerId() { return "healthy-observer"; }
+            @Override
+            public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
+                healthyCalled.set(true);
+                return List.of();
+            }
+        };
+        Logger logger = mock(Logger.class);
+        doAnswer(ignored -> {
+            interruptedWhenLogged.set(Thread.currentThread().isInterrupted());
+            return null;
+        }).when(logger).warn("L1 observer failed on slot {} (errorType={})",
+                323L, InterruptedException.class.getName());
+        L1ObservationService service =
+                new L1ObservationService(List.of(interrupted, healthy), 64, logger);
+
+        try {
+            service.onL1Block(323, fill(32, 10), null);
+
+            assertThat(interruptedWhenLogged).isTrue();
+            assertThat(healthyCalled).isTrue();
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+        } finally {
+            // Do not leak the deliberately restored flag into the JUnit worker.
+            Thread.interrupted();
+        }
+    }
+
+    @Test
+    void recoverableDiagnosticErrorDoesNotStarveHealthyObserver() {
+        AtomicBoolean healthyCalled = new AtomicBoolean();
+        L1Observer failing = new L1Observer() {
+            @Override public String observerId() { return "failing-observer"; }
+            @Override
+            public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
+                throw new IllegalStateException("sensitive observer detail");
+            }
+        };
+        L1Observer healthy = new L1Observer() {
+            @Override public String observerId() { return "healthy-observer"; }
+            @Override
+            public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
+                healthyCalled.set(true);
+                return List.of();
+            }
+        };
+        Logger logger = mock(Logger.class);
+        doThrow(new AssertionError("diagnostic backend failure")).when(logger)
+                .warn("L1 observer failed on slot {} (errorType={})",
+                        324L, IllegalStateException.class.getName());
+        L1ObservationService service =
+                new L1ObservationService(List.of(failing, healthy), 64, logger);
+
+        service.onL1Block(324, fill(32, 11), null);
+
+        assertThat(healthyCalled).isTrue();
+    }
+
+    @Test
+    void processFatalDiagnosticFailureIsRethrown() {
+        AtomicBoolean healthyCalled = new AtomicBoolean();
+        L1Observer failing = new L1Observer() {
+            @Override public String observerId() { return "failing-observer"; }
+            @Override
+            public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
+                throw new IllegalStateException("sensitive observer detail");
+            }
+        };
+        L1Observer healthy = new L1Observer() {
+            @Override public String observerId() { return "healthy-observer"; }
+            @Override
+            public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
+                healthyCalled.set(true);
+                return List.of();
+            }
+        };
+        TestVirtualMachineError fatal = new TestVirtualMachineError();
+        Logger logger = mock(Logger.class);
+        doThrow(fatal).when(logger).warn(
+                "L1 observer failed on slot {} (errorType={})",
+                325L, IllegalStateException.class.getName());
+        L1ObservationService service =
+                new L1ObservationService(List.of(failing, healthy), 64, logger);
+
+        assertThatThrownBy(() -> service.onL1Block(325, fill(32, 12), null))
+                .isSameAs(fatal);
+        assertThat(healthyCalled).isFalse();
+    }
+
+    @Test
+    void processFatalObserverFailureIsRethrown() {
+        TestVirtualMachineError fatal = new TestVirtualMachineError();
+        L1Observer observer = new L1Observer() {
+            @Override public String observerId() { return "fatal-observer"; }
+            @Override
+            public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
+                throw fatal;
+            }
+        };
+        Logger logger = mock(Logger.class);
+        L1ObservationService service =
+                new L1ObservationService(List.of(observer), 64, logger);
+
+        assertThatThrownBy(() -> service.onL1Block(322, fill(32, 9), null))
+                .isSameAs(fatal);
+        verifyNoInteractions(logger);
     }
 
     @Test
@@ -149,46 +338,35 @@ class L1ObservationServiceTest {
                 .filter(o -> o.observerId().equals("deposits")).findFirst().orElseThrow();
 
         // OK: matches own recomputation
-        assertThat(follower.verify(message(deposit)))
+        assertThat(follower.verify(sequenced(deposit)))
                 .isEqualTo(AppChainEngine.L1RefVerdict.OK);
 
         // MISMATCH: tampered claim (fail-closed)
-        L1Observation tampered = new L1Observation(deposit.observerId(), deposit.txHash(),
+        L1Observation tampered = L1Observation.transaction(deposit.observerId(),
+                deposit.transactionAnchor().transactionHash(),
                 deposit.slot(), deposit.blockHash(), new byte[]{0x00});
-        assertThat(follower.verify(message(tampered)))
+        assertThat(follower.verify(sequenced(tampered)))
                 .isEqualTo(AppChainEngine.L1RefVerdict.MISMATCH);
 
         // MISMATCH: wrong L1 block hash at that slot
-        L1Observation wrongBlock = new L1Observation(deposit.observerId(), deposit.txHash(),
+        L1Observation wrongBlock = L1Observation.transaction(deposit.observerId(),
+                deposit.transactionAnchor().transactionHash(),
                 deposit.slot(), fill(32, 9), deposit.claim());
-        assertThat(follower.verify(message(wrongBlock)))
+        assertThat(follower.verify(sequenced(wrongBlock)))
                 .isEqualTo(AppChainEngine.L1RefVerdict.MISMATCH);
 
         // MISMATCH: fabricated observation at an in-window slot we saw
-        L1Observation fabricated = new L1Observation("deposits", fill(32, 7), 110,
+        L1Observation fabricated = L1Observation.transaction("deposits", fill(32, 7), 110,
                 fill(32, 2), deposit.claim());
-        assertThat(follower.verify(message(fabricated)))
+        assertThat(follower.verify(sequenced(fabricated)))
                 .isEqualTo(AppChainEngine.L1RefVerdict.MISMATCH);
 
         // AHEAD: newer than our L1 view
-        L1Observation ahead = new L1Observation(deposit.observerId(), deposit.txHash(),
+        L1Observation ahead = L1Observation.transaction(deposit.observerId(),
+                deposit.transactionAnchor().transactionHash(),
                 999, deposit.blockHash(), deposit.claim());
-        assertThat(follower.verify(message(ahead)))
+        assertThat(follower.verify(sequenced(ahead)))
                 .isEqualTo(AppChainEngine.L1RefVerdict.AHEAD);
-
-        // MISMATCH: topic/body disagreement (fail-closed)
-        AppMessage wrongTopic = AppMessage.builder()
-                .messageId(new byte[32]).chainId("test-chain")
-                .topic("~l1/other").sender(new byte[32]).body(deposit.encode()).build();
-        assertThat(follower.verify(wrongTopic))
-                .isEqualTo(AppChainEngine.L1RefVerdict.MISMATCH);
-
-        // MISMATCH: undecodable body
-        AppMessage garbage = AppMessage.builder()
-                .messageId(new byte[32]).chainId("test-chain")
-                .topic("~l1/deposits").sender(new byte[32]).body(new byte[]{0x01}).build();
-        assertThat(follower.verify(garbage))
-                .isEqualTo(AppChainEngine.L1RefVerdict.MISMATCH);
     }
 
     @Test
@@ -202,15 +380,15 @@ class L1ObservationServiceTest {
         for (int i = 0; i < 200; i++) {
             follower.onL1Block(200 + i, fill(32, 3), block("dd".repeat(32), "addr_x", 1, null));
         }
-        assertThat(follower.verify(message(deposit)))
+        assertThat(follower.verify(sequenced(deposit)))
                 .isEqualTo(AppChainEngine.L1RefVerdict.UNKNOWN);
 
         // Rollback below an observed slot: the observation is forgotten and
         // the slot is now AHEAD of the rolled-back view
         follower.onL1Rollback(150);
-        L1Observation later = new L1Observation("deposits", fill(32, 5), 300,
+        L1Observation later = L1Observation.transaction("deposits", fill(32, 5), 300,
                 fill(32, 3), deposit.claim());
-        assertThat(follower.verify(message(later)))
+        assertThat(follower.verify(sequenced(later)))
                 .isEqualTo(AppChainEngine.L1RefVerdict.AHEAD);
     }
 
@@ -218,13 +396,22 @@ class L1ObservationServiceTest {
     void misconfiguredObserver_failsFast() {
         assertThatThrownBy(() -> L1ObservationService.fromConfig(Map.of(
                 "observers.x.type", "no-such-type"), 128, null, log))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Unknown L1 observer type");
+                .isInstanceOf(com.bloxbean.cardano.yano.api.plugin.PluginActivationException.class)
+                .hasMessageContaining("plugin L1 observer type 'no-such-type'")
+                .hasMessageContaining("is not selected");
         assertThatThrownBy(() -> L1ObservationService.fromConfig(Map.of(
                 "observers.x.type", "address-deposit"), 128, null, log))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("address is required");
         assertThat(L1ObservationService.fromConfig(Map.of("sinks.a.b", "c"), 128, null, log))
                 .isNull();
+    }
+
+    private static final class TestVirtualMachineError extends VirtualMachineError {
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T, E extends Throwable> T sneakyThrow(Throwable failure) throws E {
+        throw (E) failure;
     }
 }

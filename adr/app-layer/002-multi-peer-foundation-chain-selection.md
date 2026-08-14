@@ -1,10 +1,16 @@
 # ADR-002: Multi-Peer Foundation with Pluggable Chain Selection
 
 ## Status
-Draft
+Historical draft — superseded by Yano's P2P/consensus architecture
 
 ## Date
 2026-03-11
+
+> **Current-status note (2026-07-17):** The multi-peer foundation was delivered
+> and subsequently evolved outside this draft before the current app-chain
+> architecture was finalized. Treat the proposal below as design history, not
+> as the active runtime contract. ADR-005 and the current implementation are
+> authoritative; remaining work is indexed in [open_item.md](open_item.md).
 
 ## Context
 

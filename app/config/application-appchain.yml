@@ -1,72 +1,35 @@
 # =============================================================================
-# App-chain cluster demo config  (external — lives in app/config, NOT bundled
-# in the jar). Activated with the `appchain` Quarkus profile, e.g.
-#   -Dquarkus.profile=devnet,appchain
-# Direct use via `./yano.sh start:devnet,appchain` starts a standalone,
-# single-member demo using the deterministic identity below. The cluster
-# launcher overrides that identity and injects the per-node/topology values.
+# Standalone app-chain demo config (external — lives in app/config, not in the
+# application JAR). Activate it with the `appchain` Quarkus profile, for example:
+#   ./yano.sh start:devnet,appchain
 #
-# WHAT THIS FILE DEFINES (shared, identical on every node): the per-chain
-# "flavor" — chain-id, state machine, block cadence, and sequencer intent.
+# Direct use starts the built-in ordered-log application as a single-member
+# demo. The deterministic identity below is for local testing only and must
+# never be used in production.
 #
-# STANDALONE DEFAULT IDENTITY (TESTING ONLY — NEVER USE IN PRODUCTION):
-# seed  = 0101010101010101010101010101010101010101010101010101010101010101
-# pub   = 8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c
+# seed = 0101010101010101010101010101010101010101010101010101010101010101
+# pub  = 8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c
 #
-# WHAT THE LAUNCHER OVERRIDES (differs per node / per cluster size): members,
-# threshold, this node's signing-key, peers, and — for fixed-proposer chains —
-# the proposer. So the SAME file runs standalone or as a 3-node/9-node cluster;
-# you never hand-edit member lists here.
-#
-# ADD / REMOVE CHAINS FREELY: any chains[i] with a chain-id is hosted. The
-# launcher auto-discovers however many you define (indices must start at 0 and
-# be contiguous). Each chain is fully independent — its own ledger, state
-# machine, members view, sequencer and (optional) L1 anchor.
+# Yano contains the app-chain host and ordered-log application. Install JVM
+# extensions, or use the Yano X showcase, for additional state machines.
 # =============================================================================
 yano:
   app-chain:
-    # --- Chain 0: an append-only ordered log, fixed proposer (node 0) --------
+    storage:
+      path: ${YANO_APP_CHAIN_STORAGE_PATH:appchain-chainstate}
     chains[0]:
       chain-id: "orders-chain"
       signing-key: "0101010101010101010101010101010101010101010101010101010101010101"
       members: "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
       threshold: 1
-      state-machine: ordered-log        # built-in: append-only log (default)
+      state-machine: ordered-log
+      state:
+        commitment-profile: mpf-blake2b256-v1
+        format-fingerprint: 91ee14091200f1e24659112d640e877e9177779dcc81dd06117f013e9190082b
+        genesis-id: c2b9c92a865dfa7c218a1a6e49f1dd88163372e40466009876458c01609d0d70
+      membership:
+        mode: governed
       block:
-        interval-ms: 1000               # propose a block every ~1s
-        # block.max-bytes (default 4 MiB) is the primary size cap; the proposer
-        # trims each block to fit it. max-messages (default 5000) is a safety
-        # backstop against tiny-message floods. Tune either for throughput.
-      # No sequencer.mode → fixed proposer. The cluster launcher overrides this
-      # with node 0's member key. To rotate instead, replace proposer with:
+        interval-ms: 1000
       sequencer:
         proposer: "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
-        # mode: rotating
-        # window-slots: 10
-
-    # --- Chain 1: a key/value registry, rotating sequencer -------------------
-    chains[1]:
-      chain-id: "registry-chain"
-      signing-key: "0101010101010101010101010101010101010101010101010101010101010101"
-      members: "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
-      threshold: 1
-      state-machine: kv-registry        # built-in: owner-guarded K/V registry
-      block:
-        interval-ms: 2000
-      sequencer:
-        mode: rotating                  # L1-slot-clocked rotation across members
-        window-slots: 10                # ~10 devnet slots (~10s) per proposer turn
-      machines:
-        kv-registry:
-          value-format: utf8            # PUT values must be valid UTF-8
-
-    # --- Add more chains here, e.g. a third with L1 anchoring ----------------
-    # chains[2]:
-    #   chain-id: "audit-chain"
-    #   state-machine: ordered-log
-    #   block:
-    #     interval-ms: 1000
-    #   anchor:
-    #     enabled: true
-    #     mode: script                  # ADR 008.4 script anchors (A2)
-    #     # signing-key + every-blocks are injected by `cluster.sh --anchor`

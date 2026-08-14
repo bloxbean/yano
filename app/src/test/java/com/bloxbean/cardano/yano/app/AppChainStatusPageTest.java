@@ -6,10 +6,11 @@ import org.hamcrest.Matchers;
 import org.junit.jupiter.api.Test;
 
 import static io.restassured.RestAssured.given;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * ADR app-layer/008.1 I1.9: the app-chain status page is served as a static
- * resource next to the L1 status page, and the two cross-link.
+ * ADR-028 UI-M2: the shared console artifact serves the app-chain operations
+ * route next to the L1 status route, and the two cross-link.
  */
 @QuarkusTest
 @TestProfile(NoAutoStartTestProfile.class)
@@ -17,18 +18,20 @@ class AppChainStatusPageTest {
 
     @Test
     void appChainStatusPage_isServed() {
-        given()
+        String page = given()
                 .when().get("/ui/app-chain/index.html")
                 .then()
                 .statusCode(200)
-                .body(Matchers.containsString("Yano · App Chain"))
-                // key panels the page binds data to
-                .body(Matchers.containsString("id=\"chainSelect\""))
-                .body(Matchers.containsString("id=\"heroTip\""))
-                .body(Matchers.containsString("id=\"anchorList\""))
-                .body(Matchers.containsString("id=\"blocksBody\""))
-                // links back to the L1 page
-                .body(Matchers.containsString("href=\"../status/\""));
+                .extract().asString();
+
+        assertTrue(page.contains("Yano · App Chains"));
+        assertTrue(page.contains("data-console-route=\"app-chain\""));
+        for (String panel : new String[]{"App-chain operations", "Consensus &amp; traffic",
+                "L1 anchor", "Effect executors", "Profile governance", "Live messages",
+                "Recent blocks", "Finalized message", "Authenticated fetch SSE"}) {
+            assertTrue(page.contains(panel), panel);
+        }
+        assertTrue(page.contains("href=\"../status/\""));
     }
 
     @Test
@@ -37,9 +40,40 @@ class AppChainStatusPageTest {
                 .when().get("/ui/status/index.html")
                 .then()
                 .statusCode(200)
+                .body(Matchers.containsString("Yano · Node Status"))
                 .body(Matchers.containsString("href=\"../app-chain/\""))
-                // local-producer hero branch (devnet BP shows production, not sync %)
-                .body(Matchers.containsString("Local Producer"))
-                .body(Matchers.containsString("PRODUCING"));
+                .body(Matchers.containsString("Transaction diffusion"))
+                .body(Matchers.containsString("browser session · up to 1 hour"));
     }
+
+    @Test
+    void eutxoExplorerIsARealPackagedStaticPage() {
+        String page = given()
+                .when().get("/ui/app-chain/eutxo/index.html")
+                .then()
+                .statusCode(200)
+                .extract().asString();
+
+        assertTrue(page.contains("Yano · EUTxO Explorer"));
+        assertTrue(page.contains("data-console-route=\"eutxo\""));
+        assertTrue(page.contains("Lifecycle explorer"));
+        assertTrue(page.contains(
+                "transaction, message, claim, outpoint, or address"));
+    }
+
+    @Test
+    void authenticatedMapConsoleIsARealPackagedStaticPage() {
+        String page = given()
+                .when().get("/ui/app-chain/authenticated-map/index.html")
+                .then()
+                .statusCode(200)
+                .extract().asString();
+
+        assertTrue(page.contains("Yano · Authenticated Map"));
+        assertTrue(page.contains("data-console-route=\"authenticated-map\""));
+        assertTrue(page.contains("Committed state console"));
+        assertTrue(page.contains(
+                "Exact records, receipts, approvals, and proofs from the committed authenticated map."));
+    }
+
 }

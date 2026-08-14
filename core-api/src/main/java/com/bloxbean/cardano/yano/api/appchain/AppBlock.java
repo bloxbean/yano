@@ -10,7 +10,7 @@ import java.util.Objects;
  * given a total order by the sequencer, binding the post-state commitment root.
  * See adr/app-layer/005 §4.3 and cddl/appchain/app-block.cddl.
  *
- * @param version      block format version (currently 1)
+ * @param version      block format version (currently 2)
  * @param chainId      app-chain identity
  * @param height       global per-chain sequence (genesis app block = 1)
  * @param prevHash     hash of the previous app block (32 zero bytes at height 1)
@@ -36,7 +36,7 @@ public record AppBlock(int version,
                        byte[] proposer,
                        FinalityCert cert) {
 
-    public static final int BLOCK_VERSION = 1;
+    public static final int BLOCK_VERSION = 2;
     public static final byte[] GENESIS_PREV_HASH = new byte[32];
 
     public AppBlock {

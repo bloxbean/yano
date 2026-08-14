@@ -55,22 +55,20 @@ Run a standalone local blockchain with automatic block production.
 
 ### Standalone App-Chain Demo
 
-Add the `appchain` profile to start the bundled `orders-chain` and
-`registry-chain` demos as single-member chains:
+Add the `appchain` profile to start the built-in `orders-chain` as a
+single-member ordered log:
 
 ```bash
-# Local devnet block producer + standalone app chains
+# Local devnet block producer plus the standalone ordered log
 ./yano.sh start:devnet,appchain
 
-# Public-network sync + standalone app chains
+# Public-network sync plus the standalone ordered log
 ./yano.sh start:preprod,appchain
 ```
 
-Both chains use threshold `1` and a deterministic demo identity from
-`config/application-appchain.yml`. That identity is for testing only and must
-not be used in production. For a multi-node demo, use
-`./appchain-cluster/cluster.sh start 3`; the cluster launcher overrides the
-standalone identity with per-node keys, membership, peers, and threshold.
+The demo uses threshold `1` and a deterministic identity from
+`config/application-appchain.yml`. That identity is for local testing only.
+Use the Yano X showcase for multi-node examples and additional state machines.
 
 ## Key Features
 
@@ -80,7 +78,8 @@ standalone identity with per-node keys, membership, peers, and threshold.
 - **Plutus script evaluation** — `POST /api/v1/utils/txs/evaluate` (Ogmios-compatible)
 - **Health check** — `http://localhost:8080/q/health/ready`
 - **Cardano N2N server** on port 13337
-- **Plugin system** — drop plugin JARs in the `plugins/` directory
+- **JVM plugin system** — load extension JARs from the `plugins/` directory
+- **GraalVM native runtime** — closed-world Yano core image with the built-in ordered log
 - **Composable profiles** — `./yano.sh start:<network>,<behavior>[,<validation>]`, `./yano.sh --profile=<profiles>`, or `-Dquarkus.profile=<profiles>`
 
 ## Configuration
@@ -117,6 +116,7 @@ The `config/` directory contains genesis files and protocol parameters for each 
 ```
 config/
   application.yml
+  application-appchain.yml
   application-preprod.yml
   application-relay.yml
   application-praos-lite.yml
@@ -146,12 +146,14 @@ yano.sh                Start script
 yano.jar               Uber-jar (JVM distribution)
 yano                   Native binary (native distribution)
 config/                Genesis and protocol parameter files
-plugins/               Drop plugin JARs here
+plugins/               JVM-only extension JARs
+tools/yano-plugins/    JVM-only offline plugin catalog validator/inspector
 ```
 
 ## More Information
 
 - Custom profiles: `CUSTOM_PROFILE.md`
 - Build distributions: `docs/BUILD_DISTRIBUTIONS.md` in the source repository
-- GitHub: https://github.com/bloxbean/yaci
+- Plugin operations: `docs/PLUGIN_OPERATIONS.md` in the source repository
+- GitHub: https://github.com/bloxbean/yano
 - License: MIT

@@ -2,6 +2,8 @@ package com.bloxbean.cardano.yano.runtime.appchain;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
 import com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider;
 import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
@@ -31,7 +33,8 @@ public class TestKvStateMachineProvider implements AppStateMachineProvider {
             }
 
             @Override
-            public void apply(AppBlock block, AppStateWriter writer) {
+            public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
                 for (AppMessage message : block.messages()) {
                     String body = new String(message.getBody(), StandardCharsets.UTF_8);
                     int eq = body.indexOf('=');

@@ -26,6 +26,8 @@ class YanoConfigTest {
         assertThat(config.getRemotePort()).isEqualTo(32000);
         assertThat(config.getServerPort()).isEqualTo(13337);
         assertThat(config.isUseRocksDB()).isTrue();
+        assertThat(config.getAppChainStoragePath())
+                .isEqualTo(YanoConfig.DEFAULT_APP_CHAIN_STORAGE_PATH);
 
         assertThatCode(config::validate).doesNotThrowAnyException();
     }

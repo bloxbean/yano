@@ -18,6 +18,8 @@ public interface L1ObserverProvider {
     /**
      * @param observerId the configured instance id (config key segment)
      * @param settings   the {@code observers.<id>.*} settings (key = suffix)
+     * @return a fresh observer owned by this configured instance; it must not
+     *         be shared with another factory invocation or provider
      */
     L1Observer create(String observerId, Map<String, String> settings);
 }

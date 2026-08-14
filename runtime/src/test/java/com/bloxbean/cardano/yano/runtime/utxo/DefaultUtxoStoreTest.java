@@ -481,6 +481,8 @@ class DefaultUtxoStoreTest {
         publishBlock(100, 1, "aa".repeat(32), block);
 
         assertEquals(100, store.getLatestAppliedSlot());
+        assertEquals(100, store.getLatestAppliedPoint().slot());
+        assertEquals("aa".repeat(32), store.getLatestAppliedPoint().blockHash());
     }
 
     @Test
@@ -596,6 +598,8 @@ class DefaultUtxoStoreTest {
         // After rollback, block 2 should be undone while block 1 remains.
         assertTrue(store.getLatestAppliedSlot() <= 199);
         assertEquals(1, store.getLastAppliedBlock());
+        assertEquals(100, store.getLatestAppliedPoint().slot());
+        assertEquals("a1".repeat(32), store.getLatestAppliedPoint().blockHash());
     }
 
     @Test

@@ -1,8 +1,19 @@
 [versions]
 yaci = "0.5.0-pre12"
-cardano-client-lib = "0.8.0-pre4"
+cardano-client-lib = "0.8.0-pre5-dev1"
 julc="0.1.0-pre14"
-zeroj = "0.1.0-pre7"
+zeroj = "0.1.0-pre10"
+bouncycastle = "1.84"
+aws-sdk = "2.48.0"
+# AWS SDK 2.48.0 declares this optional CRT version; review and update them together.
+aws-crt = "0.47.3"
+# Keep every Jackson family selected by standalone Yano libraries on the same
+# security-reviewed patch line. The Quarkus app has an additional alignment
+# rule because its enforced platform otherwise selects 2.21.2.
+jackson = "2.21.4"
+smallrye-config = "3.16.0"
+flyway = "13.0.0"
+sqlite-jdbc = "3.53.2.1"
 
 [libraries]
 yaci-core = { module = "com.bloxbean.cardano:yaci-core", version.ref = "yaci" }
@@ -24,17 +35,23 @@ cardano-client-cip20 = { module = "com.bloxbean.cardano:cardano-client-cip20", v
 
 cardano-client-mpf = { module = "com.bloxbean.cardano:cardano-client-merkle-patricia-forestry", version.ref = "cardano-client-lib" }
 cardano-client-mpf-rocksdb = { module = "com.bloxbean.cardano:cardano-client-merkle-patricia-forestry-rocksdb", version.ref = "cardano-client-lib" }
+cardano-client-jmt = { module = "com.bloxbean.cardano:cardano-client-jellyfish-merkle", version.ref = "cardano-client-lib" }
+cardano-client-jmt-rocksdb = { module = "com.bloxbean.cardano:cardano-client-jellyfish-merkle-rocksdb", version.ref = "cardano-client-lib" }
 
 julc-vm-java={ module = "com.bloxbean.cardano:julc-vm-java", version.ref = "julc" }
 julc-cardano-client-lib={ module = "com.bloxbean.cardano:julc-cardano-client-lib", version.ref = "julc" }
 
 cbor = "co.nstant.in:cbor:0.9"
+bouncycastle-bcprov = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
+# Keep standalone library compilation aligned with the Yaci 0.5.0-pre12
+# runtime line. The Quarkus application resolves its independently managed
+# patched Netty line from the Quarkus BOM and is verified as a final image.
 netty = "io.netty:netty-all:4.1.131.Final"
 project-reactor-core = "io.projectreactor:reactor-core:3.6.10"
 project-reactor-test = "io.projectreactor:reactor-test:3.6.10"
 
-slf4j-api = "org.slf4j:slf4j-api:2.0.11"
-slf4j-reload4j="org.slf4j:slf4j-reload4j:2.0.11"
+slf4j-api = "org.slf4j:slf4j-api:2.0.18"
+slf4j-reload4j="org.slf4j:slf4j-reload4j:2.0.18"
 
 lombok="org.projectlombok:lombok:1.18.44"
 
@@ -49,9 +66,20 @@ assertj-core="org.assertj:assertj-core:3.21.0"
 
 reload4j="ch.qos.reload4j:reload4j:1.2.22"
 
-jackson-databind = "com.fasterxml.jackson.core:jackson-databind:2.17.0"
-jackson-dataformat-cbor = "com.fasterxml.jackson.dataformat:jackson-dataformat-cbor:2.17.0"
-kafka-clients = "org.apache.kafka:kafka-clients:3.7.1"
+jackson-bom = { module = "com.fasterxml.jackson:jackson-bom", version.ref = "jackson" }
+jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson" }
+jackson-dataformat-cbor = { module = "com.fasterxml.jackson.dataformat:jackson-dataformat-cbor", version.ref = "jackson" }
+jackson-dataformat-yaml = { module = "com.fasterxml.jackson.dataformat:jackson-dataformat-yaml", version.ref = "jackson" }
+smallrye-config-core = { module = "io.smallrye.config:smallrye-config-core", version.ref = "smallrye-config" }
+smallrye-config-yaml = { module = "io.smallrye.config:smallrye-config-source-yaml", version.ref = "smallrye-config" }
+flyway-core = { module = "org.flywaydb:flyway-core", version.ref = "flyway" }
+sqlite-jdbc = { module = "org.xerial:sqlite-jdbc", version.ref = "sqlite-jdbc" }
+kafka-clients = "org.apache.kafka:kafka-clients:4.3.1"
+snappy-java = "org.xerial.snappy:snappy-java:1.1.10.8"
+lz4-java = "at.yawk.lz4:lz4-java:1.10.2"
+aws-sdk-s3 = { module = "software.amazon.awssdk:s3", version.ref = "aws-sdk" }
+aws-sdk-url-connection-client = { module = "software.amazon.awssdk:url-connection-client", version.ref = "aws-sdk" }
+aws-crt = { module = "software.amazon.awssdk.crt:aws-crt", version.ref = "aws-crt" }
 spring-boot-autoconfigure = "org.springframework.boot:spring-boot-autoconfigure:3.5.6"
 spring-context = "org.springframework:spring-context:6.2.11"
 spring-boot-test = "org.springframework.boot:spring-boot-test:3.5.6"
@@ -61,6 +89,14 @@ zeroj-verifier-plonk = { module = "com.bloxbean.cardano:zeroj-verifier-plonk", v
 zeroj-patterns = { module = "com.bloxbean.cardano:zeroj-patterns", version.ref = "zeroj" }
 zeroj-api = { module = "com.bloxbean.cardano:zeroj-api", version.ref = "zeroj" }
 zeroj-bbs = { module = "com.bloxbean.cardano:zeroj-bbs", version.ref = "zeroj" }
+zeroj-backend-spi = { module = "com.bloxbean.cardano:zeroj-backend-spi", version.ref = "zeroj" }
+zeroj-bls12381 = { module = "com.bloxbean.cardano:zeroj-bls12381", version.ref = "zeroj" }
+zeroj-circuit-dsl = { module = "com.bloxbean.cardano:zeroj-circuit-dsl", version.ref = "zeroj" }
+zeroj-circuit-lib = { module = "com.bloxbean.cardano:zeroj-circuit-lib", version.ref = "zeroj" }
+zeroj-codec = { module = "com.bloxbean.cardano:zeroj-codec", version.ref = "zeroj" }
+zeroj-crypto = { module = "com.bloxbean.cardano:zeroj-crypto", version.ref = "zeroj" }
+zeroj-mpf-poseidon = { module = "com.bloxbean.cardano:zeroj-mpf-poseidon", version.ref = "zeroj" }
+zeroj-onchain-julc = { module = "com.bloxbean.cardano:zeroj-onchain-julc", version.ref = "zeroj" }
 archunit = "com.tngtech.archunit:archunit:1.4.1"
 
 rocksdb="org.rocksdb:rocksdbjni:9.11.2"
@@ -75,5 +111,3 @@ aiken-java-binding = "com.bloxbean.cardano:aiken-java-binding:0.1.0"
 cf-rewards-calculation = "org.cardanofoundation:cf-rewards-calculation:1.0.2"
 
 duckdb-jdbc = "org.duckdb:duckdb_jdbc:1.5.5.0"
-sqlite-jdbc = "org.xerial:sqlite-jdbc:3.53.1.0"
-flyway-core = "org.flywaydb:flyway-core:12.2.0"

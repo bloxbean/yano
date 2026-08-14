@@ -5,3 +5,5 @@ services:
       YANO_NETWORK: ${YANO_NETWORK:-preview}
     volumes:
       - ${YANO_CHAINSTATE_PATH:-../chainstate-preview}:/app/chainstate
+      - ${YANO_APPCHAIN_STATE_PATH:-../appchain-chainstate-preview}:/app/appchain-chainstate
+      - ${YANO_APPCHAIN_INDEXER_PATH:-../appchain-indexers-preview}:/app/appchain-indexers

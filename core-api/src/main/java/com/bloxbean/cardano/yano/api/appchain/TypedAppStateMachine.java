@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.api.appchain;
 
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yano.api.appchain.codec.MessageCodec;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
 
 import java.util.Objects;
 
@@ -42,15 +43,20 @@ public abstract class TypedAppStateMachine<T> implements AppStateMachine {
     }
 
     @Override
-    public final void apply(AppBlock block, AppStateWriter writer) {
-        for (AppMessage message : block.messages()) {
+    public final void apply(
+            AppBlockExecutionContext context,
+            AppStateWriter writer,
+            AppEffectEmitter effects
+    ) {
+        AppBlock block = context.block();
+        for (AppMessage message : context.messages()) {
             T payload;
             try {
                 payload = codec.decode(message.getBody());
             } catch (Exception e) {
                 continue; // filtered at admission; deterministic skip
             }
-            applyMessage(payload, message, block, writer);
+            applyMessage(payload, message, block, writer, effects);
         }
     }
 
@@ -65,4 +71,14 @@ public abstract class TypedAppStateMachine<T> implements AppStateMachine {
      * (the consensus clock — use it instead of wall-clock).
      */
     protected abstract void applyMessage(T payload, AppMessage envelope, AppBlock block, AppStateWriter writer);
+
+    /**
+     * Effect-emitting variant (ADR app-layer/010 F1); the default delegates
+     * to the 4-arg form so existing typed machines are untouched. Override
+     * this one to emit effects.
+     */
+    protected void applyMessage(T payload, AppMessage envelope, AppBlock block, AppStateWriter writer,
+                                AppEffectEmitter effects) {
+        applyMessage(payload, envelope, block, writer);
+    }
 }

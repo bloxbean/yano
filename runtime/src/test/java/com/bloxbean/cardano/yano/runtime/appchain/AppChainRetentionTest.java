@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.runtime.appchain;
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceBundle;
 import com.bloxbean.cardano.yano.api.appchain.evidence.EvidenceVerifier;
@@ -53,6 +54,7 @@ class AppChainRetentionTest {
                 .proposerKeyHex(pubA)
                 .threshold(1)
                 .blockIntervalMs(300)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         node = new AppChainSubsystem(config, 42, null, null,
                 tempDir.resolve("ledger").toString(), null, log);
@@ -73,7 +75,7 @@ class AppChainRetentionTest {
         long firstHeight = node.messageHeight(HexUtil.decodeHexString(firstId)).orElseThrow();
 
         // Prune bodies below the tip (simulating an L1_FINAL anchor at the tip)
-        int pruned = node.ledgerOrNull().pruneBodiesBelow(tip - 1);
+        int pruned = node.pruneBodiesBelowForTesting(tip - 1);
         assertThat(pruned).isGreaterThan(0);
 
         // Body of the first block is gone...
@@ -93,10 +95,13 @@ class AppChainRetentionTest {
 
         // Evidence for the pruned message still verifies (finality + inclusion)
         EvidenceBundle bundle = node.evidence(HexUtil.decodeHexString(firstId)).orElseThrow();
-        assertThat(EvidenceVerifier.verify(bundle).valid()).isTrue();
+        EvidenceVerifier.Result retained = EvidenceVerifier.verify(
+                bundle, "retention-chain", Set.of(pubA), 1);
+        assertThat(retained.valid()).isTrue();
+        assertThat(retained.messageContentVerified()).isFalse();
 
         // Idempotent: re-pruning the same range is a no-op
-        assertThat(node.ledgerOrNull().pruneBodiesBelow(tip - 1)).isEqualTo(0);
+        assertThat(node.pruneBodiesBelowForTesting(tip - 1)).isEqualTo(0);
     }
 
     private static void awaitTrue(String what, BooleanSupplier condition) throws InterruptedException {

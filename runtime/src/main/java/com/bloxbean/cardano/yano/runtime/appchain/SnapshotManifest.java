@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.runtime.appchain;
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.appchain.signer.SignerProvider;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -21,9 +22,9 @@ import java.util.stream.Stream;
 
 /**
  * Signed snapshot manifest (ADR app-layer/008.1 I1.7): binds a RocksDB
- * checkpoint to a specific certified tip — chain id, height, tip block hash,
- * state root, membership epochs, last confirmed anchor and a sha256 of every
- * file — signed by the snapshotting member's key. Restore verification runs
+ * checkpoint to a specific certified tip — chain id, genesis/profile identity,
+ * height, tip block hash, state root, membership epochs, last confirmed anchor,
+ * and a sha256 of every file — signed by the snapshotting member's key. Restore verification runs
  * BEFORE the DB is opened (RocksDB mutates files on open); a marker file
  * records success so normal restarts skip re-verification.
  */
@@ -41,14 +42,29 @@ final class SnapshotManifest {
     /** Write the manifest + detached signature into a freshly created snapshot dir. */
     static void write(Path snapshotDir, String chainId, long height, byte[] tipBlockHash,
                       byte[] stateRoot, byte[] memberEpochsBytes, String lastAnchorTx,
-                      long lastAnchorToHeight, SignerProvider signer) {
+                      long lastAnchorToHeight, StateCommitmentIdentity stateIdentity,
+                      SignerProvider signer) {
         try {
             Map<String, Object> manifest = new LinkedHashMap<>();
-            manifest.put("version", 1);
+            manifest.put("version", 2);
+            // Ledger format (ADR-010 FX-M2): the CF set this checkpoint carries.
+            // A build that lists fewer CFs cannot open this snapshot (RocksDB
+            // refuses unlisted families) — this field turns that into an
+            // operator-readable diagnostic instead of a bare RocksDB error.
+            manifest.put("ledgerFormat", 3);
+            manifest.put("columnFamilies", java.util.List.of("default", "app_blocks", "app_meta",
+                    "app_msgs", "mpf_nodes", "app_query_index", "app_fx_records", "app_fx_runtime",
+                    "jmt_nodes", "jmt_values", "jmt_roots", "jmt_stale", "jmt_metadata"));
             manifest.put("chainId", chainId);
             manifest.put("height", height);
             manifest.put("blockHash", tipBlockHash != null ? HexUtil.encodeHexString(tipBlockHash) : "");
             manifest.put("stateRoot", stateRoot != null ? HexUtil.encodeHexString(stateRoot) : "");
+            manifest.put("stateCommitmentIdentitySchema", stateIdentity.schemaVersion());
+            manifest.put("stateCommitmentProfile", stateIdentity.profile().id());
+            manifest.put("stateCommitmentFormatFingerprint",
+                    HexUtil.encodeHexString(stateIdentity.profile().formatFingerprint()));
+            manifest.put("stateCommitmentGenesisId",
+                    HexUtil.encodeHexString(stateIdentity.genesisId()));
             manifest.put("memberEpochsHash", HexUtil.encodeHexString(
                     Blake2bUtil.blake2bHash256(memberEpochsBytes != null ? memberEpochsBytes : new byte[0])));
             if (lastAnchorTx != null && !lastAnchorTx.isBlank()) {
@@ -85,6 +101,11 @@ final class SnapshotManifest {
         try {
             byte[] manifestBytes = Files.readAllBytes(manifestPath);
             JsonNode manifest = MAPPER.readTree(manifestBytes);
+            int version = manifest.path("version").asInt(-1);
+            if (version < 1 || version > 2) {
+                throw new IllegalStateException(
+                        "Unsupported snapshot manifest version: " + version);
+            }
 
             String signerKey = manifest.path("signerKey").asText("").toLowerCase(Locale.ROOT);
             if (!trustedKeysHex.contains(signerKey)) {
@@ -124,12 +145,14 @@ final class SnapshotManifest {
      * ledger's tip must be exactly the snapshot the manifest attests.
      */
     static void verifyPostOpen(JsonNode manifest, long tipHeight, byte[] tipBlockHash,
-                               byte[] stateRoot, byte[] memberEpochsBytes) {
+                               byte[] stateRoot, byte[] memberEpochsBytes,
+                               StateCommitmentIdentity stateIdentity) {
         long height = manifest.path("height").asLong();
         if (tipHeight != height) {
             throw new IllegalStateException("Restored ledger tip " + tipHeight
                     + " != manifest height " + height);
         }
+        verifyStateIdentity(manifest, stateIdentity);
         if (height == 0) {
             return; // empty-ledger snapshot: nothing more to bind
         }
@@ -145,6 +168,23 @@ final class SnapshotManifest {
                 Blake2bUtil.blake2bHash256(memberEpochsBytes != null ? memberEpochsBytes : new byte[0]));
         if (!epochsHash.equals(manifest.path("memberEpochsHash").asText(""))) {
             throw new IllegalStateException("Restored membership epochs do not match the manifest");
+        }
+    }
+
+    private static void verifyStateIdentity(
+            JsonNode manifest,
+            StateCommitmentIdentity stateIdentity
+    ) {
+        if (manifest.path("stateCommitmentIdentitySchema").asInt(-1)
+                != stateIdentity.schemaVersion()
+                || !manifest.path("stateCommitmentProfile").asText("")
+                .equals(stateIdentity.profile().id())
+                || !manifest.path("stateCommitmentFormatFingerprint").asText("")
+                .equals(HexUtil.encodeHexString(stateIdentity.profile().formatFingerprint()))
+                || !manifest.path("stateCommitmentGenesisId").asText("")
+                .equals(HexUtil.encodeHexString(stateIdentity.genesisId()))) {
+            throw new IllegalStateException(
+                    "Restored snapshot state commitment identity does not match local genesis");
         }
     }
 

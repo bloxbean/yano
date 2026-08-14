@@ -89,6 +89,24 @@ class AppChainL1RefTest {
     }
 
     @Test
+    void messageBeforeStableView_waitsWithoutCreatingAnInvalidVoteLock() throws Exception {
+        EventBus busA = new SimpleEventBus();
+        EventBus busB = new SimpleEventBus();
+        AppChainSubsystem[] nodes = startPair(busA, busB);
+
+        nodes[0].submit("t", "restored-history".getBytes(StandardCharsets.UTF_8));
+        Thread.sleep(1_500);
+        assertThat(nodes[0].tipHeight()).isZero();
+        assertThat(nodes[1].tipHeight()).isZero();
+
+        feedL1(busA, 1, 10, 0);
+        feedL1(busB, 1, 10, 0);
+        awaitTrue("deferred message finalized after stable L1 view became available",
+                () -> nodes[0].tipHeight() >= 1 && nodes[1].tipHeight() >= 1);
+        assertThat(nodes[0].block(1).orElseThrow().l1Slot()).isGreaterThan(0);
+    }
+
+    @Test
     void fabricatedL1Ref_rejectedByFollower() throws Exception {
         EventBus busA = new SimpleEventBus();
         EventBus busB = new SimpleEventBus();
@@ -172,7 +190,8 @@ class AppChainL1RefTest {
                 .proposerKeyHex(proposerHex)
                 .threshold(2)
                 .blockIntervalMs(500)
-                .l1StabilityDepth(DEPTH);
+                .l1StabilityDepth(DEPTH)
+                .stateCommitmentIdentity(TestStateCommitments.MPF);
     }
 
     private AppChainSubsystem startNode(String name, byte[] signingKey, EventBus eventBus,
