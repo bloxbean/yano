@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.ledgerstate.governance.epoch;
 import com.bloxbean.cardano.yaci.core.model.DrepVoteThresholds;
 import com.bloxbean.cardano.yaci.core.model.PoolVotingThresholds;
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionType;
+import com.bloxbean.cardano.yaci.core.model.governance.GovActionId;
 import com.bloxbean.cardano.yaci.core.types.UnitInterval;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.ledgerstate.EpochParamTracker;
@@ -33,6 +34,25 @@ import static org.assertj.core.api.Assertions.assertThat;
 class GovernanceEpochProcessorTest {
 
     @TempDir Path tempDir;
+
+    @Test
+    @DisplayName("Governance reward archive rows preserve same-account proposal sources")
+    void governanceRewardArchiveRows_preserveSameAccountProposalSources() {
+        String transaction = "11".repeat(32);
+        String rewardAccount = "e0" + "22".repeat(28);
+        BigInteger deposit = BigInteger.valueOf(100_000_000_000L);
+
+        var first = GovernanceEpochProcessor.governanceArchiveRow(
+                "governance-refund", new GovActionId(transaction, 0), rewardAccount, deposit);
+        var second = GovernanceEpochProcessor.governanceArchiveRow(
+                "governance-refund", new GovActionId(transaction, 1), rewardAccount, deposit);
+
+        assertThat(first.rewardAccount()).isEqualTo(second.rewardAccount());
+        assertThat(first.amount()).isEqualTo(deposit);
+        assertThat(second.amount()).isEqualTo(deposit);
+        assertThat(first.sourceId()).isEqualTo("governance-refund:" + transaction + "#0");
+        assertThat(second.sourceId()).isEqualTo("governance-refund:" + transaction + "#1");
+    }
 
     @Test
     @DisplayName("Ratification active check uses previous epoch boundary semantics")

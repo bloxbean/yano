@@ -359,6 +359,7 @@ public class GovernanceEpochProcessor {
         //    Created here (Phase 1) so DRep distribution in Phase 2 includes them via spendableRewardRest.
         if (rewardRestStore != null) {
             Map<String, BigInteger> aggregatedWithdrawals = new java.util.HashMap<>();
+            List<ArchiveRewardRest> withdrawalArchiveRows = rewardArchive != null ? new ArrayList<>() : null;
             for (GovActionId id : pendingEnactmentIds) {
                 GovActionRecord enactedProposal = allProposals.get(id);
                 if (enactedProposal != null && enactedProposal.govAction()
@@ -366,10 +367,15 @@ public class GovernanceEpochProcessor {
                     if (twa.getWithdrawals() != null) {
                         for (var entry : twa.getWithdrawals().entrySet()) {
                             aggregatedWithdrawals.merge(entry.getKey(), entry.getValue(), BigInteger::add);
+                            if (withdrawalArchiveRows != null) {
+                                withdrawalArchiveRows.add(governanceArchiveRow(
+                                        "governance-treasury", id, entry.getKey(), entry.getValue()));
+                            }
                         }
                     }
                 }
             }
+            Set<String> storedWithdrawalAccounts = rewardArchive != null ? new java.util.HashSet<>() : null;
             for (var entry : aggregatedWithdrawals.entrySet()) {
                 boolean stored = rewardRestStore.storeRewardRest(
                         newEpoch,
@@ -381,8 +387,15 @@ public class GovernanceEpochProcessor {
                     log.info("Treasury withdrawal to {} unclaimed, returned to treasury",
                             entry.getKey().substring(0, Math.min(16, entry.getKey().length())));
                 }
-                if (stored) appendRewardRest(rewardArchive, entry.getKey(), entry.getValue(),
-                        previousEpoch, newEpoch, "treasury_withdrawal", "governance-treasury-" + newEpoch);
+                if (stored && storedWithdrawalAccounts != null) storedWithdrawalAccounts.add(entry.getKey());
+            }
+            if (withdrawalArchiveRows != null) {
+                for (ArchiveRewardRest row : withdrawalArchiveRows) {
+                    if (storedWithdrawalAccounts.contains(row.rewardAccount())) {
+                        appendRewardRest(rewardArchive, row.rewardAccount(), row.amount(), previousEpoch,
+                                newEpoch, "treasury_withdrawal", row.sourceId());
+                    }
+                }
             }
         }
 
@@ -395,6 +408,7 @@ public class GovernanceEpochProcessor {
         //    for sibling/descendant discovery throughout Phase 1.
         BigInteger depositRefunds = BigInteger.ZERO;
         Map<String, BigInteger> aggregatedRefunds = new java.util.HashMap<>();
+        List<ArchiveRewardRest> refundArchiveRows = rewardArchive != null ? new ArrayList<>() : null;
         Set<GovActionId> removedIds = new java.util.LinkedHashSet<>();
         Map<GovActionId, ProposalLifecycleRecord> lifecycleUpdates = new LinkedHashMap<>();
 
@@ -404,7 +418,8 @@ public class GovernanceEpochProcessor {
                     com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatus.ENACTED,
                     com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatusReason.ENACTED);
             depositRefunds = depositRefunds.add(
-                    refundAndRemove(id, allProposals, removedIds, aggregatedRefunds, batch, deltaOps));
+                    refundAndRemove(id, allProposals, removedIds, aggregatedRefunds, refundArchiveRows,
+                            batch, deltaOps));
         }
 
         // 3b. Expired proposals (pending drops from previous boundary): refund deposit + remove
@@ -415,7 +430,8 @@ public class GovernanceEpochProcessor {
                     com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatus.EXPIRED,
                     com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatusReason.EXPIRED);
             depositRefunds = depositRefunds.add(
-                    refundAndRemove(id, allProposals, removedIds, aggregatedRefunds, batch, deltaOps));
+                    refundAndRemove(id, allProposals, removedIds, aggregatedRefunds, refundArchiveRows,
+                            batch, deltaOps));
         }
 
         // 3c. Siblings and descendants of enacted proposals.
@@ -434,7 +450,8 @@ public class GovernanceEpochProcessor {
                 putLifecycleUpdate(lifecycleUpdates, sibId, allProposals,
                         com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatus.DROPPED,
                         com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatusReason.SUPERSEDED);
-                BigInteger refunded = refundAndRemove(sibId, allProposals, removedIds, aggregatedRefunds, batch, deltaOps);
+                BigInteger refunded = refundAndRemove(sibId, allProposals, removedIds, aggregatedRefunds,
+                        refundArchiveRows, batch, deltaOps);
                 depositRefunds = depositRefunds.add(refunded);
                 if (refunded.signum() > 0) siblingDropCount++;
                 // Descendants of each dropped sibling
@@ -446,7 +463,8 @@ public class GovernanceEpochProcessor {
                         putLifecycleUpdate(lifecycleUpdates, descId, allProposals,
                                 com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatus.DROPPED,
                                 com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatusReason.INVALIDATED);
-                        refunded = refundAndRemove(descId, allProposals, removedIds, aggregatedRefunds, batch, deltaOps);
+                        refunded = refundAndRemove(descId, allProposals, removedIds, aggregatedRefunds,
+                                refundArchiveRows, batch, deltaOps);
                         depositRefunds = depositRefunds.add(refunded);
                         if (refunded.signum() > 0) siblingDropCount++;
                     }
@@ -464,7 +482,8 @@ public class GovernanceEpochProcessor {
                 putLifecycleUpdate(lifecycleUpdates, descId, allProposals,
                         com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatus.DROPPED,
                         com.bloxbean.cardano.yano.api.appchain.l1view.GovernanceProposalStatusReason.INVALIDATED);
-                BigInteger refunded = refundAndRemove(descId, allProposals, removedIds, aggregatedRefunds, batch, deltaOps);
+                BigInteger refunded = refundAndRemove(descId, allProposals, removedIds, aggregatedRefunds,
+                        refundArchiveRows, batch, deltaOps);
                 depositRefunds = depositRefunds.add(refunded);
                 if (refunded.signum() > 0) siblingDropCount++;
             }
@@ -479,6 +498,7 @@ public class GovernanceEpochProcessor {
 
         // Store aggregated refunds as reward_rest
         BigInteger unclaimedRefunds = BigInteger.ZERO;
+        Set<String> storedRefundAccounts = rewardArchive != null ? new java.util.HashSet<>() : null;
         if (rewardRestStore != null) {
             for (var entry : aggregatedRefunds.entrySet()) {
                 boolean stored = rewardRestStore.storeRewardRest(
@@ -489,8 +509,15 @@ public class GovernanceEpochProcessor {
                 if (!stored) {
                     unclaimedRefunds = unclaimedRefunds.add(entry.getValue());
                 }
-                if (stored) appendRewardRest(rewardArchive, entry.getKey(), entry.getValue(),
-                        previousEpoch, newEpoch, "proposal_refund", "governance-refund-" + newEpoch);
+                if (stored && storedRefundAccounts != null) storedRefundAccounts.add(entry.getKey());
+            }
+            if (refundArchiveRows != null) {
+                for (ArchiveRewardRest row : refundArchiveRows) {
+                    if (storedRefundAccounts.contains(row.rewardAccount())) {
+                        appendRewardRest(rewardArchive, row.rewardAccount(), row.amount(), previousEpoch,
+                                newEpoch, "proposal_refund", row.sourceId());
+                    }
+                }
             }
         }
 
@@ -571,6 +598,7 @@ public class GovernanceEpochProcessor {
      */
     private BigInteger refundAndRemove(GovActionId id, Map<GovActionId, GovActionRecord> allProposals,
                                        Set<GovActionId> removedIds, Map<String, BigInteger> aggregatedRefunds,
+                                       List<ArchiveRewardRest> refundArchiveRows,
                                        WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
         GovActionRecord proposal = allProposals.get(id);
         if (proposal == null) return BigInteger.ZERO;
@@ -578,12 +606,27 @@ public class GovernanceEpochProcessor {
         BigInteger deposit = proposal.deposit();
         if (deposit.signum() > 0) {
             aggregatedRefunds.merge(proposal.returnAddress(), deposit, BigInteger::add);
+            if (refundArchiveRows != null) {
+                refundArchiveRows.add(governanceArchiveRow(
+                        "governance-refund", id, proposal.returnAddress(), deposit));
+            }
         }
         governanceStore.removeProposal(id, batch, deltaOps);
         governanceStore.removeVotesForProposal(id.getTransactionId(),
                 id.getGov_action_index(), batch, deltaOps);
         return deposit;
     }
+
+    static String governanceRewardSourceId(String prefix, GovActionId id) {
+        return prefix + ':' + id.getTransactionId() + '#' + id.getGov_action_index();
+    }
+
+    static ArchiveRewardRest governanceArchiveRow(String prefix, GovActionId id,
+                                                   String rewardAccount, BigInteger amount) {
+        return new ArchiveRewardRest(rewardAccount, amount, governanceRewardSourceId(prefix, id));
+    }
+
+    record ArchiveRewardRest(String rewardAccount, BigInteger amount, String sourceId) {}
 
     /**
      * Phase 2: DRep distribution + Ratification + newly expired proposals + donations.

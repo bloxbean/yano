@@ -67,7 +67,7 @@ public final class ArchiveSchemas {
                 table("datums", pk("datum_hash"), b("datum_hash"), b("cbor")),
                 table("scripts", pk("script_hash"), b("script_hash"), s("script_type"), b("cbor")),
                 order("block_number", "tx_index", "output_index", "tx_hash")));
-        schemas.put(ArchiveDatasetId.REWARD, dataset(ArchiveDatasetId.REWARD, 2,
+        schemas.put(ArchiveDatasetId.REWARD, dataset(ArchiveDatasetId.REWARD, 3,
                 table("rewards", pk("stake_credential", "earned_epoch", "reward_type", "source_id"),
                         b("stake_credential"), s("stake_credential_type"), bn("pool_hash"), s("reward_type"),
                         l("earned_epoch"), l("spendable_epoch"), l("amount"), s("source_id"),

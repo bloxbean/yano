@@ -1595,8 +1595,11 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     }
 
     /**
-     * Store a reward_rest entry (deferred reward: proposal refund, treasury withdrawal, etc.).
-     * The reward becomes part of stake at the spendable_epoch snapshot.
+     * Store a typed reward_rest aggregate (deferred reward: proposal refund, treasury withdrawal, etc.).
+     * The key keeps reward types separate and combines only amounts that share the same
+     * spendable epoch, type, and credential. Source-level event identity belongs to the
+     * optional archive projection, not authoritative ledger balance state. The reward
+     * becomes part of stake at the spendable_epoch snapshot.
      *
      * @param spendableEpoch Epoch when the reward becomes spendable and counts toward stake
      * @param type           Reward type (REWARD_REST_PROPOSAL_REFUND, etc.)
