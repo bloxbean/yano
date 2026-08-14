@@ -97,6 +97,7 @@ public final class DuckDbManager implements AutoCloseable {
             statement.execute("SET enable_progress_bar = false");
             statement.execute("SET memory_limit = '" + workloadConfig.memoryLimitBytes() + "B'");
             statement.execute("SET threads = " + workloadConfig.threads());
+            statement.execute("SET preserve_insertion_order = false");
             statement.execute("SET temp_directory = '" + sqlString(config.tempDirectory().toAbsolutePath().normalize().toString()) + "'");
             statement.execute("SET max_temp_directory_size = '" + config.maxTempDirectoryBytes() + "B'");
         }

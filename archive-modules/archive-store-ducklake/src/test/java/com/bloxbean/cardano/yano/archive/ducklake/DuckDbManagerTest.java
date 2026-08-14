@@ -23,6 +23,7 @@ class DuckDbManagerTest {
 
             assertThat(setting(bulk, "memory_limit")).isEqualTo("128.0 MiB");
             assertThat(setting(steady, "threads")).isEqualTo("1");
+            assertThat(setting(steady, "preserve_insertion_order")).isEqualTo("false");
             assertThat(setting(steady, "autoinstall_known_extensions")).isEqualTo("false");
             assertThat(setting(steady, "autoload_known_extensions")).isEqualTo("false");
             try (var statement = steady.createBoundedStatement(Duration.ofSeconds(3))) {

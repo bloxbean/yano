@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.archive.ducklake;
 
 import com.bloxbean.cardano.yano.archive.api.ArchiveJob;
+import com.bloxbean.cardano.yano.archive.api.ArchiveBatchCapacityException;
 import com.bloxbean.cardano.yano.archive.api.ArchiveReceipt;
 import com.bloxbean.cardano.yano.archive.api.ArchiveRow;
 import com.bloxbean.cardano.yano.archive.api.ArchiveStoreException;
@@ -95,6 +96,9 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
             rowCounts.merge(row.table(), 1L, Long::sum);
             updateDigest(row);
         } catch (SQLException e) {
+            if (isCapacityFailure(e)) {
+                throw new ArchiveBatchCapacityException("DuckLake staging exceeded its configured budget", e);
+            }
             throw new ArchiveStoreException("failed to stage DuckLake row for " + row.table(), e);
         }
     }
@@ -137,7 +141,13 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
             committed = true;
             close();
             return receipt;
-        } catch (SQLException | ArithmeticException e) {
+        } catch (SQLException e) {
+            if (isCapacityFailure(e)) {
+                throw new ArchiveBatchCapacityException(
+                        "DuckLake commit exceeded its configured budget for job " + job.jobId(), e);
+            }
+            throw new ArchiveStoreException("failed to commit DuckLake archive job " + job.jobId(), e);
+        } catch (ArithmeticException e) {
             throw new ArchiveStoreException("failed to commit DuckLake archive job " + job.jobId(), e);
         } finally {
             if (!committed) close();
@@ -276,6 +286,18 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
 
     private boolean isContentAddressed(String table) {
         return table.equals("datums") || table.equals("scripts");
+    }
+
+    static boolean isCapacityFailure(Throwable failure) {
+        for (Throwable current = failure; current != null; current = current.getCause()) {
+            String message = current.getMessage();
+            if (message != null && (message.contains("Out of Memory Error")
+                    || message.contains("failed to allocate data of size")
+                    || message.contains("max_temp_directory_size"))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void insertCommit(long generation, String orderedDigest, Instant committedAt) throws SQLException {

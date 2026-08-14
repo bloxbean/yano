@@ -30,6 +30,15 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class DuckLakeBackendConformanceTest extends AbstractArchiveBackendConformanceTest {
     @TempDir Path temp;
 
+    @Test
+    void classifiesOnlyDuckDbResourceExhaustionAsRetryableBatchCapacity() {
+        assertThat(DuckLakeWriteSession.isCapacityFailure(
+                new java.sql.SQLException("Out of Memory Error: failed to allocate data of size 16 MiB")))
+                .isTrue();
+        assertThat(DuckLakeWriteSession.isCapacityFailure(
+                new java.sql.SQLException("constraint violation"))).isFalse();
+    }
+
     @Override
     protected ArchiveBackend createBackend() {
         return open(identity(UUID.randomUUID()));

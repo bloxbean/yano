@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.archive.core.worker;
 
 import com.bloxbean.cardano.yano.archive.api.ArchiveBackend;
+import com.bloxbean.cardano.yano.archive.api.ArchiveBatchCapacityException;
 import com.bloxbean.cardano.yano.archive.api.ArchiveJob;
 import com.bloxbean.cardano.yano.archive.api.ArchiveNetworkIdentity;
 import com.bloxbean.cardano.yano.archive.api.ArchiveRangeAnchor;
@@ -75,63 +76,73 @@ public final class BlockArchiveWorker<B> {
         }
 
         long end = Math.min(finalizedEnd, Math.addExact(start, config.maxBlocksPerBatch() - 1L));
-        metrics.update(dataset.dataset(), ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.RUNNING,
-                previous, finalizedEnd - previous, "deriving " + start + ".." + end);
-        try (var lease = source.acquire(start, end, Instant.now().plus(leaseDuration))) {
-            List<BlockSourceContext<B>> blocks = new ArrayList<>();
-            for (long block = start; block <= end; block++) {
-                long currentBlock = block;
-                BlockSourceContext<B> context = source.readCanonical(currentBlock)
-                        .orElseThrow(() -> new ArchiveStoreException("canonical body unavailable for block "
-                                + currentBlock));
-                blocks.add(context);
-            }
-            verifyParentChain(blocks, progress.load(dataset.dataset(), ArchiveTrack.BACKFILL).orElse(null));
-            BlockSourceContext<B> first = blocks.getFirst();
-            BlockSourceContext<B> last = blocks.getLast();
-            recheck(first);
-            recheck(last);
-            ArchiveJob job = ArchiveJob.deterministic(network, dataset.dataset(), dataset.projectionVersion(),
-                    new BlockRange(start, end), new ArchiveRangeAnchor(first.slot(), first.blockHash(),
-                            last.slot(), last.blockHash()), "canonical-block-v1");
-            List<ArchiveRow> rows = new ArrayList<>();
-            if (dataset instanceof StatefulBlockArchiveDataset<B> stateful) {
-                stateful.beginBatch(job, List.copyOf(blocks));
-            }
-            for (BlockSourceContext<B> context : blocks) {
-                dataset.derive(job, context, row -> {
-                    if (rows.size() >= config.maxRowsPerBatch()) {
-                        throw new RowLimitExceeded();
-                    }
-                    rows.add(row);
-                });
-            }
-            ArchiveReceipt receipt;
-            try (var write = backend.begin(job)) {
-                rows.forEach(write::append);
+        while (true) {
+            metrics.update(dataset.dataset(), ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.RUNNING,
+                    previous, finalizedEnd - previous, "deriving " + start + ".." + end);
+            try (var lease = source.acquire(start, end, Instant.now().plus(leaseDuration))) {
+                List<BlockSourceContext<B>> blocks = new ArrayList<>();
+                for (long block = start; block <= end; block++) {
+                    long currentBlock = block;
+                    BlockSourceContext<B> context = source.readCanonical(currentBlock)
+                            .orElseThrow(() -> new ArchiveStoreException("canonical body unavailable for block "
+                                    + currentBlock));
+                    blocks.add(context);
+                }
+                verifyParentChain(blocks, progress.load(dataset.dataset(), ArchiveTrack.BACKFILL).orElse(null));
+                BlockSourceContext<B> first = blocks.getFirst();
+                BlockSourceContext<B> last = blocks.getLast();
                 recheck(first);
                 recheck(last);
-                receipt = write.commit();
+                ArchiveJob job = ArchiveJob.deterministic(network, dataset.dataset(), dataset.projectionVersion(),
+                        new BlockRange(start, end), new ArchiveRangeAnchor(first.slot(), first.blockHash(),
+                                last.slot(), last.blockHash()), "canonical-block-v1");
+                List<ArchiveRow> rows = new ArrayList<>();
+                if (dataset instanceof StatefulBlockArchiveDataset<B> stateful) {
+                    stateful.beginBatch(job, List.copyOf(blocks));
+                }
+                for (BlockSourceContext<B> context : blocks) {
+                    dataset.derive(job, context, row -> {
+                        if (rows.size() >= config.maxRowsPerBatch()) {
+                            throw new RowLimitExceeded();
+                        }
+                        rows.add(row);
+                    });
+                }
+                ArchiveReceipt receipt;
+                try (var write = backend.begin(job)) {
+                    rows.forEach(write::append);
+                    recheck(first);
+                    recheck(last);
+                    receipt = write.commit();
+                }
+                if (dataset instanceof StatefulBlockArchiveDataset<B> stateful) {
+                    stateful.commitBatch(receipt);
+                } else {
+                    progress.save(new ArchiveProgress(dataset.dataset(), ArchiveTrack.BACKFILL,
+                            end, last.slot(), last.blockHash(), receipt.backendGeneration()), receipt);
+                }
+                metrics.update(dataset.dataset(), ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.IDLE,
+                        end, finalizedEnd - end, "committed generation " + receipt.backendGeneration());
+                return end;
+            } catch (RowLimitExceeded | ArchiveBatchCapacityException e) {
+                abortStateful(dataset);
+                String limit = e instanceof RowLimitExceeded ? "row limit" : "backend capacity";
+                if (end == start) {
+                    metrics.update(dataset.dataset(), ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.DEGRADED,
+                            previous, finalizedEnd - previous, "single block exceeds archive " + limit);
+                    throw new ArchiveStoreException("archive " + limit + " exceeded for block " + start, e);
+                }
+                long attemptedEnd = end;
+                end = start + (end - start) / 2;
+                metrics.update(dataset.dataset(), ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.RUNNING,
+                        previous, finalizedEnd - previous, limit + " exceeded for " + start + ".."
+                                + attemptedEnd + "; retrying " + start + ".." + end);
+            } catch (RuntimeException e) {
+                abortStateful(dataset);
+                metrics.update(dataset.dataset(), ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.DEGRADED,
+                        previous, finalizedEnd - previous, e.getMessage());
+                throw e;
             }
-            if (dataset instanceof StatefulBlockArchiveDataset<B> stateful) {
-                stateful.commitBatch(receipt);
-            } else {
-                progress.save(new ArchiveProgress(dataset.dataset(), ArchiveTrack.BACKFILL,
-                        end, last.slot(), last.blockHash(), receipt.backendGeneration()), receipt);
-            }
-            metrics.update(dataset.dataset(), ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.IDLE,
-                    end, finalizedEnd - end, "committed generation " + receipt.backendGeneration());
-            return end;
-        } catch (RowLimitExceeded e) {
-            abortStateful(dataset);
-            metrics.update(dataset.dataset(), ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.DEGRADED,
-                    previous, finalizedEnd - previous, "row limit exceeded; reduce block batch size");
-            throw new ArchiveStoreException("archive row limit exceeded before a complete block range", e);
-        } catch (RuntimeException e) {
-            abortStateful(dataset);
-            metrics.update(dataset.dataset(), ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.DEGRADED,
-                    previous, finalizedEnd - previous, e.getMessage());
-            throw e;
         }
     }
 

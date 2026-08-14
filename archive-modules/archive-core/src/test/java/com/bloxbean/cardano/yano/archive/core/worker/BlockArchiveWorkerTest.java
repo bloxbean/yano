@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yano.archive.api.*;
 import com.bloxbean.cardano.yano.archive.core.config.ArchiveWorkerConfig;
 import com.bloxbean.cardano.yano.archive.core.dataset.BlockArchiveDataset;
 import com.bloxbean.cardano.yano.archive.core.dataset.BlockSourceContext;
+import com.bloxbean.cardano.yano.archive.core.dataset.StatefulBlockArchiveDataset;
 import com.bloxbean.cardano.yano.archive.core.source.ArchiveSourceLease;
 import com.bloxbean.cardano.yano.archive.core.source.BlockArchiveSource;
 import org.junit.jupiter.api.Test;
@@ -12,6 +13,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.time.Duration;
 import java.time.Instant;
 import java.nio.file.Path;
+import java.sql.SQLException;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -43,6 +45,140 @@ class BlockArchiveWorkerTest {
         assertThat(worker.runBatch(dataset(), 0, 4)).isEqualTo(-1);
         assertThat(source.reads).isZero();
         assertThat(source.leases).isZero();
+    }
+
+    @Test
+    void retriesASmallerCompleteRangeWhenRowsExceedTheBatchLimit() {
+        FixtureSource source = new FixtureSource(0, 1);
+        RecordingBackend backend = new RecordingBackend();
+        MemoryProgress progress = new MemoryProgress();
+        ArchiveWorkerMetrics metrics = new ArchiveWorkerMetrics();
+        ArchiveWorkerConfig config = new ArchiveWorkerConfig(Duration.ofMillis(10), 2, 3, 5);
+        CoreSyncView sync = new CoreSyncView() {
+            public long localBlock() { return 1; }
+            public long targetBlock() { return 1; }
+        };
+        var worker = new BlockArchiveWorker<>(new ArchiveNetworkIdentity(1, "fixture"), source,
+                backend, progress, config, sync, metrics, Duration.ofMinutes(1));
+        BlockArchiveDataset<String> twoRowsPerBlock = new BlockArchiveDataset<>() {
+            public ArchiveDatasetId dataset() { return ArchiveDatasetId.TRANSACTION; }
+            public int projectionVersion() { return 1; }
+            public void derive(ArchiveJob job, BlockSourceContext<String> block,
+                               java.util.function.Consumer<ArchiveRow> sink) {
+                for (int index = 0; index < 2; index++) {
+                    sink.accept(new ArchiveRow("chain_transaction", List.of(block.blockHash(),
+                            block.blockHash(), block.blockNumber(), block.slot(), block.epoch(),
+                            block.blockTime().getEpochSecond(), index, true, 0L, job.jobId())));
+                }
+            }
+        };
+
+        assertThat(worker.runBatch(twoRowsPerBlock, 0, 1)).isZero();
+        assertThat(backend.rows).hasSize(2);
+        assertThat(progress.value.orElseThrow().coordinate()).isZero();
+        assertThat(source.leases).isEqualTo(2);
+        assertThat(metrics.dataset(ArchiveDatasetId.TRANSACTION).get(ArchiveTrack.BACKFILL).state())
+                .isEqualTo(ArchiveWorkerStatus.State.IDLE);
+    }
+
+    @Test
+    void failsOnlyWhenOneBlockAloneExceedsTheRowLimit() {
+        FixtureSource source = new FixtureSource(0, 0);
+        RecordingBackend backend = new RecordingBackend();
+        ArchiveWorkerConfig config = new ArchiveWorkerConfig(Duration.ofMillis(10), 1, 1, 5);
+        CoreSyncView sync = new CoreSyncView() {
+            public long localBlock() { return 0; }
+            public long targetBlock() { return 0; }
+        };
+        var worker = new BlockArchiveWorker<>(new ArchiveNetworkIdentity(1, "fixture"), source,
+                backend, new MemoryProgress(), config, sync, new ArchiveWorkerMetrics(), Duration.ofMinutes(1));
+        BlockArchiveDataset<String> twoRows = new BlockArchiveDataset<>() {
+            public ArchiveDatasetId dataset() { return ArchiveDatasetId.TRANSACTION; }
+            public int projectionVersion() { return 1; }
+            public void derive(ArchiveJob job, BlockSourceContext<String> block,
+                               java.util.function.Consumer<ArchiveRow> sink) {
+                sink.accept(new ArchiveRow("chain_transaction", List.of()));
+                sink.accept(new ArchiveRow("chain_transaction", List.of()));
+            }
+        };
+
+        assertThatThrownBy(() -> worker.runBatch(twoRows, 0, 0))
+                .isInstanceOf(ArchiveStoreException.class)
+                .hasMessageContaining("row limit exceeded for block 0");
+        assertThat(backend.committed).isFalse();
+    }
+
+    @Test
+    void abortsStatefulAttemptBeforeRetryingTheSmallerRange() {
+        FixtureSource source = new FixtureSource(0, 1);
+        RecordingBackend backend = new RecordingBackend();
+        ArchiveWorkerConfig config = new ArchiveWorkerConfig(Duration.ofMillis(10), 2, 3, 5);
+        CoreSyncView sync = new CoreSyncView() {
+            public long localBlock() { return 1; }
+            public long targetBlock() { return 1; }
+        };
+        var worker = new BlockArchiveWorker<>(new ArchiveNetworkIdentity(1, "fixture"), source,
+                backend, new MemoryProgress(), config, sync, new ArchiveWorkerMetrics(), Duration.ofMinutes(1));
+        class StatefulFixture implements StatefulBlockArchiveDataset<String> {
+            int begins;
+            int aborts;
+            int commits;
+            int workingMutations;
+            int committedMutations;
+            public ArchiveDatasetId dataset() { return ArchiveDatasetId.UTXO_HISTORY; }
+            public int projectionVersion() { return 1; }
+            public void beginBatch(ArchiveJob job, List<BlockSourceContext<String>> blocks) {
+                begins++;
+                assertThat(workingMutations).isZero();
+            }
+            public void derive(ArchiveJob job, BlockSourceContext<String> block,
+                               java.util.function.Consumer<ArchiveRow> sink) {
+                workingMutations++;
+                sink.accept(new ArchiveRow("chain_transaction", List.of()));
+                sink.accept(new ArchiveRow("chain_transaction", List.of()));
+            }
+            public void commitBatch(ArchiveReceipt receipt) {
+                commits++;
+                committedMutations = workingMutations;
+                workingMutations = 0;
+            }
+            public void commitCoveredBatch(long backendGeneration) { throw new AssertionError(); }
+            public void abortBatch() {
+                aborts++;
+                workingMutations = 0;
+            }
+        }
+        StatefulFixture dataset = new StatefulFixture();
+
+        assertThat(worker.runBatch(dataset, 0, 1)).isZero();
+        assertThat(dataset.begins).isEqualTo(2);
+        assertThat(dataset.aborts).isEqualTo(1);
+        assertThat(dataset.commits).isEqualTo(1);
+        assertThat(dataset.committedMutations).isEqualTo(1);
+        assertThat(backend.rows).hasSize(2);
+    }
+
+    @Test
+    void retriesASmallerRangeWhenTheBackendResourceBudgetIsExceeded() {
+        FixtureSource source = new FixtureSource(0, 3);
+        RecordingBackend backend = new RecordingBackend();
+        backend.maximumRangeBlocks = 2;
+        MemoryProgress progress = new MemoryProgress();
+        ArchiveWorkerMetrics metrics = new ArchiveWorkerMetrics();
+        ArchiveWorkerConfig config = new ArchiveWorkerConfig(Duration.ofMillis(10), 4, 100, 5);
+        CoreSyncView sync = new CoreSyncView() {
+            public long localBlock() { return 3; }
+            public long targetBlock() { return 3; }
+        };
+        var worker = new BlockArchiveWorker<>(new ArchiveNetworkIdentity(1, "fixture"), source,
+                backend, progress, config, sync, metrics, Duration.ofMinutes(1));
+
+        assertThat(worker.runBatch(dataset(), 0, 3)).isEqualTo(1);
+        assertThat(backend.attempts).isEqualTo(2);
+        assertThat(backend.rows).hasSize(2);
+        assertThat(progress.value.orElseThrow().coordinate()).isEqualTo(1);
+        assertThat(metrics.dataset(ArchiveDatasetId.TRANSACTION).get(ArchiveTrack.BACKFILL).state())
+                .isEqualTo(ArchiveWorkerStatus.State.IDLE);
     }
 
     @Test
@@ -191,15 +327,23 @@ class BlockArchiveWorkerTest {
         List<ArchiveRange> coverage = List.of();
         boolean committed;
         boolean invalidated;
+        long maximumRangeBlocks = Long.MAX_VALUE;
+        int attempts;
         public ArchiveIdentity identity() { return new ArchiveIdentity(UUID.randomUUID(), "fixture", 1, 1, "fixture"); }
         public ArchiveCapabilities capabilities() { return new ArchiveCapabilities(true, false, false, false, false); }
         public ArchiveWriteSession begin(ArchiveJob job) {
+            List<ArchiveRow> pending = new ArrayList<>();
             return new ArchiveWriteSession() {
-                public void append(ArchiveRow row) { rows.add(row); }
+                public void append(ArchiveRow row) { pending.add(row); }
                 public ArchiveReceipt commit() {
+                    attempts++;
+                    if (job.range().endInclusive() - job.range().startInclusive() + 1 > maximumRangeBlocks) {
+                        throw new ArchiveBatchCapacityException("fixture capacity", new SQLException("capacity"));
+                    }
                     committed = true;
+                    rows.addAll(pending);
                     return new ArchiveReceipt(job.jobId(), job.networkIdentity(), job.dataset(), job.projectionVersion(),
-                            job.range(), job.anchors(), 1, Map.of("chain_transaction", (long) rows.size()), "digest", Instant.EPOCH);
+                            job.range(), job.anchors(), 1, Map.of("chain_transaction", (long) pending.size()), "digest", Instant.EPOCH);
                 }
                 public void close() { }
             };
