@@ -474,6 +474,7 @@ public class HistoryArchiveService implements AutoCloseable {
             for (var entry : liveWorkers.entrySet()) {
                 ArchiveDatasetId dataset = entry.getKey();
                 try {
+                    reanchorStaleLiveTrack(dataset, tip.getBlockNumber());
                     long activation = activations.start(dataset, ArchiveTrack.LIVE).orElseGet(() -> {
                         long value = tip.getBlockNumber() + 1;
                         activations.putIfAbsent(dataset, ArchiveTrack.LIVE, value);
@@ -504,6 +505,29 @@ public class HistoryArchiveService implements AutoCloseable {
         runEpochWork(finalized);
         applyRetention(tip.getBlockNumber(), tip.getSlot());
         runMaintenanceIfDue();
+    }
+
+    private void reanchorStaleLiveTrack(ArchiveDatasetId dataset, long currentTip) {
+        OptionalLong target = chain.getSyncTargetBlockNumber();
+        if (target.isEmpty()) return;
+        long activation = activations.start(dataset, ArchiveTrack.LIVE).orElse(-1);
+        if (activation < 0) return;
+        long liveCoordinate = controlStore.load(dataset, ArchiveTrack.LIVE)
+                .map(ArchiveProgress::coordinate).orElse(activation - 1);
+        if (!shouldReanchorLive(currentTip, target.getAsLong(), liveCoordinate,
+                archiveConfig.worker().bulkPauseCoreLagBlocks(),
+                archiveConfig.safetyWindows().rollbackRetentionBlocks())) return;
+        reactivateLiveDataset(dataset, activation, currentTip, currentTip,
+                "live lag exceeded rollback retention after core reached its upstream target");
+    }
+
+    static boolean shouldReanchorLive(long localBlock, long targetBlock, long liveBlock,
+                                      long maximumCoreLag, long rollbackRetentionBlocks) {
+        if (localBlock < 0 || targetBlock < 0 || liveBlock < -1
+                || maximumCoreLag < 0 || rollbackRetentionBlocks < 1) return false;
+        long coreLag = Math.max(0, targetBlock - localBlock);
+        long liveLag = Math.max(0, localBlock - liveBlock);
+        return coreLag <= maximumCoreLag && liveLag > rollbackRetentionBlocks;
     }
 
     void runMaintenanceIfDue() {
@@ -697,6 +721,12 @@ public class HistoryArchiveService implements AutoCloseable {
 
     private void reactivateLiveDataset(ArchiveDatasetId dataset, long oldActivation, long currentTip,
                                        long replayAfterBlock) {
+        reactivateLiveDataset(dataset, oldActivation, currentTip, replayAfterBlock,
+                "canonical rollback invalidated the live anchor");
+    }
+
+    private void reactivateLiveDataset(ArchiveDatasetId dataset, long oldActivation, long currentTip,
+                                       long replayAfterBlock, String reason) {
         List<byte[]> prefixes = com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas.schema(dataset)
                 .tables().stream().filter(table -> !table.physicalName().equals("datums")
                         && !table.physicalName().equals("scripts"))
@@ -718,9 +748,9 @@ public class HistoryArchiveService implements AutoCloseable {
         }
         activations.replace(dataset, ArchiveTrack.LIVE, replacement);
         metrics.update(dataset, ArchiveTrack.LIVE, ArchiveWorkerStatus.State.IDLE,
-                currentTip, 0, "reactivated after rollback crossed the live anchor");
-        log.warn("Reactivated {} live history at block {} after canonical rollback invalidated anchor {}",
-                dataset.logicalName(), replacement, oldActivation);
+                currentTip, 0, "reactivated: " + reason);
+        log.warn("Reactivated {} live history at block {}; previous anchor {} ({})",
+                dataset.logicalName(), replacement, oldActivation, reason);
     }
 
     private void reactivateBackfillDataset(ArchiveDatasetId dataset, long activation) {

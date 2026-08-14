@@ -65,6 +65,16 @@ class HistoryArchiveActivationTest {
     }
 
     @Test
+    void reanchorsAStaleLiveTrackOnlyAfterCoreReachesItsUpstreamTarget() {
+        assertThat(HistoryArchiveService.shouldReanchorLive(
+                5_000_000, 5_000_010, 500_000, 100, 4_320)).isTrue();
+        assertThat(HistoryArchiveService.shouldReanchorLive(
+                4_000_000, 5_000_000, 500_000, 100, 4_320)).isFalse();
+        assertThat(HistoryArchiveService.shouldReanchorLive(
+                5_000_000, 5_000_010, 4_998_000, 100, 4_320)).isFalse();
+    }
+
+    @Test
     void emptyByronChainSeedsLiveAddressResolverFromGenesisAtBlockOne() throws Exception {
         var service = new HistoryArchiveService(mock(Config.class));
         var chain = mock(ChainQuery.class);
