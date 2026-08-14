@@ -2,7 +2,17 @@ package com.bloxbean.cardano.yano.runtime.appchain;
 
 import com.bloxbean.cardano.client.crypto.KeyGenUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppBlockExecutionContext;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
+import com.bloxbean.cardano.yano.api.appchain.AppStateMachine;
+import com.bloxbean.cardano.yano.api.appchain.AppStateWriter;
+import com.bloxbean.cardano.yano.api.appchain.effects.AppEffectEmitter;
+import com.bloxbean.cardano.yano.api.appchain.effects.EffectIntent;
+import com.bloxbean.cardano.yano.api.appchain.effects.ResultPolicy;
+import com.bloxbean.cardano.yano.api.appchain.codec.AppBlockCodec;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentProfiles;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -15,10 +25,12 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * ADR-006 E5.3: an atomic ledger snapshot restores full state on a fresh node
@@ -30,6 +42,7 @@ class AppChainSnapshotTest {
 
     private static final Logger log = LoggerFactory.getLogger(AppChainSnapshotTest.class);
     private static final byte[] KEY_A = seed(150);
+    private static final byte[] KEY_B = seed(151);
 
     @TempDir
     Path tempDir;
@@ -42,6 +55,19 @@ class AppChainSnapshotTest {
     }
 
     @Test
+    void effectRuntimeOwnerFingerprint_isBoundedCanonicalAndUnambiguous() {
+        String longIdentity = "x".repeat(512);
+        String first = AppChainSubsystem.effectRuntimeOwner(
+                longIdentity, Set.of("cardano.payment", "webhook"));
+        String reordered = AppChainSubsystem.effectRuntimeOwner(
+                longIdentity, new java.util.LinkedHashSet<>(List.of("webhook", "cardano.payment")));
+
+        assertThat(first).isEqualTo(reordered).hasSize(68);
+        assertThat(AppChainSubsystem.effectRuntimeOwner("a:types=b", Set.of("c")))
+                .isNotEqualTo(AppChainSubsystem.effectRuntimeOwner("a", Set.of("b:types=c")));
+    }
+
+    @Test
     void snapshotRestore_reproducesStateWithoutReplay() throws Exception {
         String pubA = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_A));
         AppChainConfig config = AppChainConfig.builder("snap-chain")
@@ -50,6 +76,7 @@ class AppChainSnapshotTest {
                 .proposerKeyHex(pubA)
                 .threshold(1)
                 .blockIntervalMs(300)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         source = new AppChainSubsystem(config, 42, null, null,
                 tempDir.resolve("source").toString(), null, log);
@@ -68,6 +95,24 @@ class AppChainSnapshotTest {
         Path snapshotDir = tempDir.resolve("snapshot");
         long snapHeight = source.snapshot(snapshotDir.toString());
         assertThat(snapHeight).isEqualTo(sourceTip);
+        var manifest = new com.fasterxml.jackson.databind.ObjectMapper().readTree(
+                java.nio.file.Files.readAllBytes(snapshotDir.resolve(
+                        SnapshotManifest.MANIFEST_FILE)));
+        assertThat(manifest.path("version").asInt()).isEqualTo(2);
+        assertThat(manifest.path("stateCommitmentProfile").asText())
+                .isEqualTo(StateCommitmentProfiles.MPF_BLAKE2B256_V1);
+        assertThat(manifest.has("legacyStateCommitment")).isFalse();
+        StateCommitmentIdentity wrongIdentity = StateCommitmentIdentity.explicit(
+                StateCommitmentProfiles.MPF, seed(99));
+        assertThatThrownBy(() -> SnapshotManifest.verifyPostOpen(
+                manifest,
+                sourceTip,
+                AppBlockCodec.blockHash(source.block(sourceTip).orElseThrow()),
+                sourceRoot,
+                null,
+                wrongIdentity))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("state commitment identity");
 
         // Open a fresh subsystem whose ledger is the restored snapshot.
         // Subsystem appends "/<chainId>" to the base path, so place the snapshot
@@ -98,6 +143,136 @@ class AppChainSnapshotTest {
                     .exists();
         } finally {
             restored.stop();
+        }
+    }
+
+    @Test
+    void snapshotRestore_onDifferentExecutor_resetsAndQuarantinesRuntime() throws Exception {
+        String pubA = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_A));
+        String pubB = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_B));
+        Set<String> members = Set.of(pubA, pubB);
+        Map<String, String> effectSettings = Map.of(
+                "effects.enabled", "true",
+                "effects.executor.enabled", "true",
+                "effects.external.enabled", "true");
+
+        AppChainConfig sourceConfig = AppChainConfig.builder("snap-chain")
+                .signingKeyHex(HexUtil.encodeHexString(KEY_A))
+                .memberKeysHex(members)
+                .proposerKeyHex(pubA)
+                .threshold(1)
+                .blockIntervalMs(200)
+                .pluginSettings(effectSettings)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .build();
+        source = new AppChainSubsystem(sourceConfig, 42, null, snapshotEffectEmitter(),
+                tempDir.resolve("source-fx").toString(), null, log);
+        source.start();
+        String messageId = source.submit("t", "execute-me".getBytes(StandardCharsets.UTF_8));
+        byte[] messageIdBytes = HexUtil.decodeHexString(messageId);
+        awaitTrue("effect finalized", () -> source.messageHeight(messageIdBytes).isPresent());
+        long effectHeight = source.messageHeight(messageIdBytes).orElseThrow();
+        assertThat(source.effect(effectHeight, 0)).isPresent();
+        awaitTrue("effect intaken", () -> source.effectRuntimeStatus(effectHeight, 0).isPresent());
+        assertThat(source.claimEffects("worker-a", Set.of(), 1, 60)).hasSize(1);
+        assertThat(source.effectRuntimeStatus(effectHeight, 0).orElseThrow().get("status"))
+                .isEqualTo("EXTERNAL");
+
+        long sourceTip = source.tipHeight();
+        byte[] sourceRoot = source.stateRoot();
+        Path snapshotDir = tempDir.resolve("snapshot-fx");
+        source.snapshot(snapshotDir.toString());
+
+        Path restoreBase = tempDir.resolve("restore-fx");
+        java.nio.file.Files.createDirectories(restoreBase);
+        copyDir(snapshotDir, restoreBase.resolve("snap-chain"));
+
+        AppChainConfig targetConfig = AppChainConfig.builder("snap-chain")
+                .signingKeyHex(HexUtil.encodeHexString(KEY_B))
+                .memberKeysHex(members)
+                .proposerKeyHex(pubA)
+                .threshold(1)
+                .blockIntervalMs(200)
+                .pluginSettings(effectSettings)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .build();
+        AppChainSubsystem restored = new AppChainSubsystem(targetConfig, 42, null,
+                snapshotEffectEmitter(), restoreBase.toString(), null, log);
+        restored.start();
+        try {
+            assertThat(restored.tipHeight()).isEqualTo(sourceTip);
+            assertThat(restored.stateRoot()).isEqualTo(sourceRoot);
+            assertThat(restored.effect(effectHeight, 0)).isPresent();
+            assertThat(restored.effectRuntimeStatus(effectHeight, 0).orElseThrow().get("status"))
+                    .isEqualTo("QUARANTINED");
+            assertThat(restored.claimEffects("worker-b", Set.of(), 1, 60)).isEmpty();
+
+            assertThat(restored.requeueEffect(effectHeight, 0)).isTrue();
+            assertThat(restored.claimEffects("worker-b", Set.of(), 1, 60)).hasSize(1);
+        } finally {
+            restored.stop();
+        }
+    }
+
+    @Test
+    void memberKeyRotation_onSameExecutorPreservesReadyResult() throws Exception {
+        String pubA = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_A));
+        String pubB = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_B));
+        Set<String> members = Set.of(pubA, pubB);
+        Map<String, String> effectSettings = Map.of(
+                "effects.enabled", "true",
+                "effects.executor.enabled", "true",
+                "effects.external.enabled", "true");
+        Path ledgerBase = tempDir.resolve("rotation-fx");
+
+        AppChainConfig beforeRotation = AppChainConfig.builder("snap-chain")
+                .signingKeyHex(HexUtil.encodeHexString(KEY_A))
+                .memberKeysHex(members)
+                .proposerKeyHex(pubA)
+                .threshold(1)
+                .blockIntervalMs(200)
+                .pluginSettings(effectSettings)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .build();
+        source = new AppChainSubsystem(beforeRotation, 42, null,
+                snapshotEffectEmitter(ResultPolicy.CHAIN), ledgerBase.toString(), null, log);
+        source.start();
+        String messageId = source.submit("t", "pay-me".getBytes(StandardCharsets.UTF_8));
+        byte[] messageIdBytes = HexUtil.decodeHexString(messageId);
+        awaitTrue("effect finalized", () -> source.messageHeight(messageIdBytes).isPresent());
+        long effectHeight = source.messageHeight(messageIdBytes).orElseThrow();
+        awaitTrue("effect intaken", () -> source.effectRuntimeStatus(effectHeight, 0).isPresent());
+        assertThat(source.claimEffects("worker-a", Set.of(), 1, 60)).hasSize(1);
+        assertThat(source.reportEffect("worker-a", effectHeight, 0, true,
+                "tx-rotation".getBytes(StandardCharsets.UTF_8), null)).isTrue();
+        assertThat(source.effectRuntimeStatus(effectHeight, 0).orElseThrow().get("status"))
+                .isEqualTo("DONE");
+        long tipBeforeRotation = source.tipHeight();
+        byte[] rootBeforeRotation = source.stateRoot();
+        source.stop();
+        source = null;
+
+        AppChainConfig afterRotation = AppChainConfig.builder("snap-chain")
+                .signingKeyHex(HexUtil.encodeHexString(KEY_B))
+                .memberKeysHex(members)
+                .proposerKeyHex(pubA)
+                .threshold(1)
+                .blockIntervalMs(200)
+                .pluginSettings(effectSettings)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .build();
+        AppChainSubsystem rotated = new AppChainSubsystem(afterRotation, 42, null,
+                snapshotEffectEmitter(ResultPolicy.CHAIN), ledgerBase.toString(), null, log);
+        rotated.start();
+        try {
+            assertThat(rotated.tipHeight()).isEqualTo(tipBeforeRotation);
+            assertThat(rotated.stateRoot()).isEqualTo(rootBeforeRotation);
+            assertThat(rotated.effectRuntimeStatus(effectHeight, 0).orElseThrow().get("status"))
+                    .isEqualTo("DONE");
+            assertThat(rotated.effectStats().get("resultBacklog")).isEqualTo(1L);
+            assertThat(ledgerBase.resolve("snap-chain.effect-executor-id")).exists();
+        } finally {
+            rotated.stop();
         }
     }
 
@@ -140,7 +315,7 @@ class AppChainSnapshotTest {
         copyDir(snapshotDir, ledgerDir);
 
         // Re-sign the manifest with a key that is NOT in the member set
-        byte[] rogueSeed = seed(151);
+        byte[] rogueSeed = seed(152);
         AppMessageSigner rogue = new AppMessageSigner(HexUtil.encodeHexString(rogueSeed));
         byte[] manifestBytes = java.nio.file.Files.readAllBytes(
                 ledgerDir.resolve(SnapshotManifest.MANIFEST_FILE));
@@ -167,6 +342,7 @@ class AppChainSnapshotTest {
                 .proposerKeyHex(pubA)
                 .threshold(1)
                 .blockIntervalMs(300)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         source = new AppChainSubsystem(config, 42, null, null,
                 tempDir.resolve("source").toString(), null, log);
@@ -190,6 +366,28 @@ class AppChainSnapshotTest {
                 throw new RuntimeException(e);
             }
         });
+    }
+
+    private static AppStateMachine snapshotEffectEmitter() {
+        return snapshotEffectEmitter(ResultPolicy.NONE);
+    }
+
+    private static AppStateMachine snapshotEffectEmitter(ResultPolicy resultPolicy) {
+        return new AppStateMachine() {
+            @Override public String id() { return "snapshot-effect-emitter"; }
+            @Override
+            public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) {
+            AppBlock block = context.block();
+                block.messages().stream()
+                        .filter(message -> !message.getTopic().startsWith("~"))
+                        .forEach(message -> effects.emit(EffectIntent
+                                .of("snapshot.effect", message.getBody())
+                                .scope("snapshot/" + message.getMessageIdHex())
+                                .result(resultPolicy)
+                                .sourceMessageId(message.getMessageId())
+                                .build()));
+            }
+        };
     }
 
     private static void awaitTrue(String what, BooleanSupplier condition) throws InterruptedException {

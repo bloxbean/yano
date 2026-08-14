@@ -8,10 +8,12 @@ Draft
 
 2026-04-28
 
+API-prefix contract amended 2026-07-14.
+
 ## Context
 
-`node-app` currently exposes production REST resources with the API version
-hard-coded in each JAX-RS resource class:
+At proposal time, the application module exposed production REST resources
+with the API version hard-coded in each JAX-RS resource class:
 
 - `YaciNodeResource`: `@Path("/api/v1/node")`
 - `BlockResource`: `@Path("/api/v1/blocks")`
@@ -29,7 +31,7 @@ are still too expensive or too diagnostic-focused.
 The next API work should:
 
 - avoid repeating `/api/v1` in every resource class,
-- make the public prefix configurable through `yano.api-prefix`, defaulting
+- move the public prefix to one reproducible artifact build input, defaulting
   to `/api/v1`,
 - preserve existing URLs by default,
 - add production endpoints for AdaPot and account state,
@@ -49,14 +51,15 @@ Blockfrost references used for compatibility:
   - `GET /accounts/{stake_address}/mirs`
   - `GET /accounts/{stake_address}/addresses`
   - `GET /accounts/{stake_address}/addresses/assets`
-- `node-app` currently uses RESTEasy Classic, which supports a root path for all
+- the application uses RESTEasy Classic, which supports a root path for all
   REST endpoints via `quarkus.resteasy.path`, resolved relative to
   `quarkus.http.root-path`.
 
 ## Goals
 
-1. Move the public API prefix out of individual resource paths.
-2. Keep `GET /api/v1/...` behavior unchanged with default config.
+1. Move the public API prefix out of individual resource paths and bind it to
+   one reproducible artifact contract.
+2. Keep `GET /api/v1/...` behavior unchanged in the default artifact.
 3. Add cheap production AdaPot endpoints.
 4. Add Blockfrost-compatible account endpoints backed by direct indexes.
 5. Identify which debug endpoints can be promoted and which must remain debug.
@@ -74,26 +77,42 @@ Blockfrost references used for compatibility:
 
 ## API Prefix Plan
 
-### Configuration
+### Artifact build configuration
 
-Add a new config property:
+RESTEasy Classic fixes its application path during Quarkus augmentation. The
+prefix is therefore an **artifact build contract**, not mutable deployment
+configuration. The only supported input is:
 
-```yaml
-yano:
-  api-prefix: /api/v1
+```bash
+./gradlew :app:quarkusBuild -PyanoApiPrefix=/api/v1
 ```
 
-Use it to configure the REST application root:
+`-PyanoApiPrefix` defaults to `/api/v1`. Its value is at most 256 characters
+and is either `/` or a canonical absolute path of unescaped
+`[A-Za-z0-9._~-]+` segments, without empty, `.` or `..` segments or a trailing
+slash. Invalid values fail the Gradle build.
 
-```yaml
-quarkus:
-  resteasy:
-    path: ${yano.api-prefix:/api/v1}
-```
+One generation step writes the same canonical value into:
 
-`node-app` currently uses RESTEasy Classic (`quarkus-resteasy`), so the
-implemented property is `quarkus.resteasy.path`. If the app later migrates to
-Quarkus REST, revisit this property name.
+- literal `quarkus.resteasy.path` and `yano.api-prefix` build configuration;
+- literal, reserved `quarkus.http.root-path=/`;
+- raw classpath marker `META-INF/yano-api-prefix-v1`;
+- immutable dashboard discovery resource
+  `/ui/plugins/api-prefix.json`.
+
+System properties and environment variables for `yano.api-prefix`,
+`quarkus.resteasy.path`, or `quarkus.http.root-path` are runtime-style inputs
+and are rejected if they are present during the build. On process startup, a
+high-priority guard compares effective `yano.api-prefix` and
+`quarkus.resteasy.path` with the raw artifact marker and requires
+`quarkus.http.root-path=/`. Any launch-time drift aborts before node or plugin
+initialization. A deployment that needs `/bf`, `/`, or another prefix builds a
+separate artifact with `-PyanoApiPrefix`; it does not edit launch config.
+
+The `app` module uses RESTEasy Classic (`quarkus-resteasy`), so the generated
+routing property is `quarkus.resteasy.path`. If the app later migrates to
+Quarkus REST, the generator, raw marker, startup guard, dashboard discovery
+document, and three-prefix packaging gates must move together.
 
 Then refactor production resources to use relative resource paths:
 
@@ -111,21 +130,23 @@ server-level REST root path cannot reliably own the API prefix.
 
 ### Debug Path Policy
 
-Keep debug endpoints outside the public prefix by default:
+RESTEasy's application path applies to every JAX-RS resource, including
+`DebugSnapshotResource`. Debug endpoints therefore live at:
 
 ```text
-/api/debug/...
+<artifact-api-prefix>/api/debug/...
 ```
 
-If a future deployment wants debug endpoints under the same prefix, add a
-separate explicit property such as:
-
-```yaml
-yano.debug-api-prefix: /api/debug
-```
-
-Do not couple debug endpoint routing to the public Blockfrost-compatible API
+For example, the default artifact serves `/api/v1/api/debug/...`, an `/bf`
+artifact serves `/bf/api/debug/...`, and the root-prefix artifact serves
+`/api/debug/...`. The resource keeps its relative `api/debug` namespace and is
+not presented as Blockfrost-compatible merely because it shares the artifact
 prefix.
+
+A genuinely prefix-exempt or separately rooted debug surface would require a
+distinct host routing/listener design. It cannot be obtained by changing a
+second launch property without violating the immutable artifact-prefix
+contract, and is outside this ADR.
 
 ## Production AdaPot Endpoints
 
@@ -177,9 +198,10 @@ Performance:
 
 Promote from debug:
 
-- `GET /api/debug/adapot/{epoch}` can be promoted.
-- `GET /api/debug/adapot-chain` can be promoted only after adding pagination,
-  range bounds, response shape cleanup, and production error handling.
+- `GET <artifact-api-prefix>/api/debug/adapot/{epoch}` can be promoted.
+- `GET <artifact-api-prefix>/api/debug/adapot-chain` can be promoted only after
+  adding pagination, range bounds, response shape cleanup, and production
+  error handling.
 
 ## Blockfrost-Compatible Account Endpoint Plan
 
@@ -436,7 +458,8 @@ Blockfrost has account UTXO models in its OpenAPI clients. Yano should expose
 this only after adding a direct stake-credential-to-UTXO index.
 
 Do not promote the current debug implementation of
-`/api/debug/utxo-balance/{credHash}` as-is. It iterates every unspent UTXO and
+`<artifact-api-prefix>/api/debug/utxo-balance/{credHash}` as-is. It iterates
+every unspent UTXO and
 extracts delegation credentials from each address, which is too expensive for a
 production endpoint on mainnet.
 
@@ -583,17 +606,17 @@ Operational constraints:
 
 | Debug endpoint | Production action | Reason |
 | --- | --- | --- |
-| `/api/debug/adapot/{epoch}` | Promote | RocksDB point lookup, stable semantics |
-| `/api/debug/adapot-chain` | Promote after pagination | Cheap bounded range, but needs limits |
-| `/api/debug/pool-params/{poolHash}` | Consider promote under `/pools/{pool_id}` | Point lookup, useful public data |
-| `/api/debug/pool-params/{poolHash}/epoch/{epoch}` | Consider promote later | Historical pool params are useful but need response compatibility |
-| `/api/debug/epoch-fees/{epoch}` | Consider promote under `/epochs/{number}` | Cheap if retained, but retention must be explicit |
-| `/api/debug/epoch-block-counts/{epoch}` | Keep debug or add paged pool stats | Can be large and retention-dependent |
-| `/api/debug/epoch-snapshot/{epoch}` | Keep debug | Large response, snapshot retention-dependent |
-| `/api/debug/reward-inputs/{epoch}` | Keep debug | Diagnostic, large, reward-calculation internal shape |
-| `/api/debug/utxo-balance/{credHash}` | Do not promote | Full UTXO scan; replace with index-backed account balance |
-| `/api/debug/deregistered-accounts/{epoch}` | Keep debug initially | Diagnostic and slot-range scan behavior |
-| `/api/debug/retired-pools/{epoch}` | Consider promote under pools | Bounded list, but align with Blockfrost pool endpoint names |
+| `<artifact-api-prefix>/api/debug/adapot/{epoch}` | Promote | RocksDB point lookup, stable semantics |
+| `<artifact-api-prefix>/api/debug/adapot-chain` | Promote after pagination | Cheap bounded range, but needs limits |
+| `<artifact-api-prefix>/api/debug/pool-params/{poolHash}` | Consider promote under `/pools/{pool_id}` | Point lookup, useful public data |
+| `<artifact-api-prefix>/api/debug/pool-params/{poolHash}/epoch/{epoch}` | Consider promote later | Historical pool params are useful but need response compatibility |
+| `<artifact-api-prefix>/api/debug/epoch-fees/{epoch}` | Consider promote under `/epochs/{number}` | Cheap if retained, but retention must be explicit |
+| `<artifact-api-prefix>/api/debug/epoch-block-counts/{epoch}` | Keep debug or add paged pool stats | Can be large and retention-dependent |
+| `<artifact-api-prefix>/api/debug/epoch-snapshot/{epoch}` | Keep debug | Large response, snapshot retention-dependent |
+| `<artifact-api-prefix>/api/debug/reward-inputs/{epoch}` | Keep debug | Diagnostic, large, reward-calculation internal shape |
+| `<artifact-api-prefix>/api/debug/utxo-balance/{credHash}` | Do not promote | Full UTXO scan; replace with index-backed account balance |
+| `<artifact-api-prefix>/api/debug/deregistered-accounts/{epoch}` | Keep debug initially | Diagnostic and slot-range scan behavior |
+| `<artifact-api-prefix>/api/debug/retired-pools/{epoch}` | Consider promote under pools | Bounded list, but align with Blockfrost pool endpoint names |
 
 ## Response Compatibility Rules
 
@@ -619,30 +642,38 @@ For Yano extension endpoints:
 
 ### Phase 1: Prefix Refactor
 
-Status: completed on 2026-04-28.
+Status: completed on 2026-04-28; artifact-contract hardening added on
+2026-07-14.
 
-- Added `yano.api-prefix` default `/api/v1`.
-- Configured RESTEasy Classic root path using
-  `quarkus.resteasy.path: ${yano.api-prefix:/api/v1}`.
+- Added the strict `-PyanoApiPrefix` artifact input, default `/api/v1`.
+- Generate literal `yano.api-prefix` and `quarkus.resteasy.path` values, the
+  reserved HTTP root, the raw artifact marker, and dashboard discovery JSON
+  from that one input.
 - Converted production resource class paths from absolute `/api/v1/...` to
   relative paths.
-- Left debug endpoints unchanged at `/api/debug`.
-- Updated startup log messages to use the configured API prefix.
+- Kept the resource namespace `api/debug`; its effective route is
+  `<artifact-api-prefix>/api/debug` because RESTEasy applies one application
+  path to every JAX-RS resource.
+- Updated startup log messages to use the verified artifact API prefix.
 - Added tests proving default routes remain unchanged.
-- Added a non-default `/bf` prefix test using only `yano.api-prefix`.
+- Added packaged artifact gates for default `/api/v1`, non-default `/bf`, and
+  root `/`, including startup rejection for drift in either prefix property or
+  the reserved HTTP root.
 
 Verification:
 
 ```bash
-./gradlew :node-app:test \
-  --tests com.bloxbean.cardano.yano.app.YaciNodeResourceTest \
-  --tests com.bloxbean.cardano.yano.app.ApiPrefixResourceTest \
-  --tests com.bloxbean.cardano.yano.app.api.devnet.DevnetResourceTest
+./gradlew :app:packagedApiPrefixContractSmoke -PskipSigning=true
+./gradlew :app:packagedApiPrefixContractSmoke -PyanoApiPrefix=/bf \
+  -PskipSigning=true
+./gradlew :app:packagedApiPrefixContractSmoke -PyanoApiPrefix=/ \
+  -PskipSigning=true
 ```
 
-Result: passed. The test run emits existing Java 25/JBoss Threads shutdown
-warnings and an existing warning about `config/application.yml.working`, but the
-Gradle task succeeds.
+The original 2026-04-28 route tests passed. All three packaged artifact gates
+above passed after hardening, and a 257-character prefix was rejected before
+augmentation. ADR-011.4 records the full JVM/native and plugin closure evidence
+for the current branch artifacts.
 
 ### Phase 2: Production AdaPot API
 
@@ -1255,19 +1286,20 @@ access warnings, SLF4J provider warnings, Gradle deprecation warnings, and
 
 - Mark promoted debug endpoints as deprecated in debug docs.
 - Add OpenAPI descriptions for all production APIs.
-- Keep heavy diagnostic endpoints under `/api/debug`.
+- Keep heavy diagnostic endpoints under
+  `<artifact-api-prefix>/api/debug`.
 - Document which features require `utxo`, `account-state`, `adapot`,
   `rewards`, or `governance` to be enabled.
 
 ## Risks and Open Questions
 
-- `node-app` uses RESTEasy Classic today, so Phase 1 uses
-  `quarkus.resteasy.path`. If the app moves to Quarkus REST, the equivalent
-  property may be `quarkus.rest.path` and should be re-tested.
-- REST root path configuration is normally resolved at application startup. For
-  native images, confirm whether changing `yano.api-prefix` requires a
-  rebuild or only a runtime config update before documenting native deployment
-  behavior.
+- the `app` module uses RESTEasy Classic today, so the generated route contract
+  uses `quarkus.resteasy.path`. A move to Quarkus REST must identify its
+  build-time path property and preserve the one-input generation and drift
+  guard; changing only the property name would be incomplete.
+- JVM and native API prefixes both require an artifact rebuild. Runtime prefix
+  mutation is deliberately unsupported because it can diverge generated
+  routes, startup logs, filters, and static dashboard discovery.
 - Blockfrost's account aggregate fields require historical sums. Current Yano
   state has the current reward balance but not all cumulative histories exposed
   through stable production interfaces.
@@ -1283,10 +1315,12 @@ access warnings, SLF4J provider warnings, Gradle deprecation warnings, and
 
 Proceed with a phased API plan:
 
-1. centralize the public REST prefix,
+1. centralize the public REST prefix as a reproducible build-time artifact
+   contract with launch-time drift rejection,
 2. promote cheap AdaPot reads first,
 3. add Blockfrost-compatible account endpoints only after direct account and
    stake-credential UTXO indexes exist,
-4. keep heavy diagnostic endpoints under `/api/debug`,
+4. keep heavy diagnostic endpoints under
+   `<artifact-api-prefix>/api/debug`,
 5. prefer correctness and predictable performance over premature endpoint
    coverage.

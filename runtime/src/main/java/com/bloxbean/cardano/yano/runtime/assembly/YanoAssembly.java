@@ -5,6 +5,8 @@ import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.runtime.internal.RuntimeNode;
+import com.bloxbean.cardano.yano.runtime.plugins.PluginLoaderHandle;
+import com.bloxbean.cardano.yano.runtime.plugins.PluginRuntimeEnvironment;
 import com.bloxbean.cardano.yano.runtime.config.InMemoryDevnetGenesis;
 import com.bloxbean.cardano.yano.runtime.kernel.Schedulers;
 import com.bloxbean.cardano.yano.runtime.producer.ProducerMode;
@@ -12,6 +14,7 @@ import com.bloxbean.cardano.yano.runtime.producer.ProducerStartupPlan;
 import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidationPipeline;
 import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidator;
 import com.bloxbean.cardano.yano.runtime.tx.TransactionBootstrapOptions;
+import com.bloxbean.cardano.yano.runtime.util.LifecycleFailures;
 import com.bloxbean.cardano.yano.runtime.tx.TransactionServices;
 import com.bloxbean.cardano.yano.runtime.tx.TransactionServicesFactory;
 import org.slf4j.Logger;
@@ -147,6 +150,7 @@ public final class YanoAssembly {
         private TransactionServicesFactory transactionServicesFactory;
         private BodyValidator bodyValidator = BodyValidator.none();
         private BootstrapDataProvider bootstrapDataProvider;
+        private PluginLoaderHandle pluginLoader;
         private boolean adhocRollbackConfigured;
         private long adhocRollbackToSlot = -1;
         private int adhocRollbackToEpoch = -1;
@@ -168,6 +172,12 @@ public final class YanoAssembly {
 
         public Builder bootstrapDataProvider(BootstrapDataProvider bootstrapDataProvider) {
             this.bootstrapDataProvider = bootstrapDataProvider;
+            return this;
+        }
+
+        /** Transfer an explicit plugin loader lifetime into the runtime. */
+        public Builder pluginLoader(PluginLoaderHandle pluginLoader) {
+            this.pluginLoader = Objects.requireNonNull(pluginLoader, "pluginLoader");
             return this;
         }
 
@@ -197,22 +207,46 @@ public final class YanoAssembly {
         public Yano build() {
             validateRole();
             Schedulers schedulers = new Schedulers();
-            RuntimeNode runtimeNode = new RuntimeNode(
-                    config, runtimeOptions, inMemoryGenesis, producerStartupPlan(), schedulers, bodyValidator);
-            applyPreStartConfiguration(runtimeNode);
-            installTransactionServices(runtimeNode);
-            return new RuntimeYano(
-                    runtimeNode,
-                    runtimeNode,
-                    runtimeNode,
-                    runtimeNode,
-                    runtimeNode,
-                    runtimeNode,
-                    runtimeNode.getMaintenanceGate(),
-                    runtimeNode,
-                    runtimeNode,
-                    role,
-                    schedulers);
+            PluginRuntimeEnvironment pluginEnvironment = null;
+            RuntimeNode runtimeNode = null;
+            try {
+                pluginEnvironment = PluginRuntimeEnvironment.open(
+                        runtimeOptions.plugins(), pluginLoader != null
+                                ? pluginLoader
+                                : PluginLoaderHandle.classpath(
+                                        Thread.currentThread().getContextClassLoader()));
+                runtimeNode = new RuntimeNode(config, runtimeOptions, inMemoryGenesis,
+                        producerStartupPlan(), schedulers, bodyValidator, pluginEnvironment);
+                applyPreStartConfiguration(runtimeNode);
+                installTransactionServices(runtimeNode);
+                return new RuntimeYano(
+                        runtimeNode,
+                        runtimeNode,
+                        runtimeNode,
+                        runtimeNode,
+                        runtimeNode,
+                        runtimeNode,
+                        runtimeNode.getMaintenanceGate(),
+                        runtimeNode,
+                        runtimeNode,
+                        role,
+                        schedulers);
+            } catch (Throwable failure) {
+                RuntimeNode failedRuntimeNode = runtimeNode;
+                PluginRuntimeEnvironment failedPluginEnvironment = pluginEnvironment;
+                throw cleanupBuildFailure(failure,
+                        () -> {
+                            if (failedRuntimeNode != null) {
+                                failedRuntimeNode.close();
+                            }
+                        },
+                        () -> {
+                            if (failedPluginEnvironment != null) {
+                                failedPluginEnvironment.close();
+                            }
+                        },
+                        schedulers::close);
+            }
         }
 
         private void applyPreStartConfiguration(RuntimeNode runtimeNode) {
@@ -300,6 +334,33 @@ public final class YanoAssembly {
                         true);
             };
         }
+    }
+
+    /**
+     * Runs every construction rollback action and preserves fatal-error
+     * precedence. A cleanup action may encounter the same throwable as the
+     * construction path, so self-suppression must not abort later cleanup.
+     */
+    static RuntimeException cleanupBuildFailure(Throwable primary, Runnable... cleanupActions) {
+        Throwable outcome = Objects.requireNonNull(primary, "primary");
+        for (Runnable cleanupAction : cleanupActions) {
+            try {
+                Objects.requireNonNull(cleanupAction, "cleanupAction").run();
+            } catch (Throwable cleanupFailure) {
+                outcome = mergeCleanupFailure(outcome, cleanupFailure);
+            }
+        }
+        if (outcome instanceof Error error) {
+            throw error;
+        }
+        if (outcome instanceof RuntimeException runtime) {
+            return runtime;
+        }
+        return new IllegalStateException("Yano assembly construction failed", outcome);
+    }
+
+    private static Throwable mergeCleanupFailure(Throwable current, Throwable next) {
+        return LifecycleFailures.merge(current, next);
     }
 
     /**

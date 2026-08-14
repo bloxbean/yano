@@ -1,0 +1,187 @@
+plugins {
+    id 'java-library'
+    id 'com.github.node-gradle.node' version '7.1.0'
+}
+
+node {
+    version = '22.12.0'
+    download = true
+    workDir = file("${project.projectDir}/.gradle/nodejs")
+    npmWorkDir = file("${project.projectDir}/.gradle/npm")
+    nodeProjectDir = file("${project.projectDir}/frontend")
+}
+
+def generatedUi = layout.buildDirectory.dir(
+        'generated/console-ui/META-INF/resources/ui')
+sourceSets.main.resources.srcDir(
+        layout.buildDirectory.dir('generated/console-ui'))
+
+tasks.register('npmCi', NpmTask) {
+    args = ['ci']
+    inputs.files('frontend/package.json', 'frontend/package-lock.json')
+    outputs.dir('frontend/node_modules')
+}
+
+tasks.register('buildFrontend', NpmTask) {
+    dependsOn tasks.named('npmCi')
+    args = ['run', 'build']
+    inputs.dir('frontend/src')
+    inputs.file(rootProject.file('static/logo-dark.svg'))
+    inputs.files('frontend/package.json', 'frontend/package-lock.json',
+            'frontend/svelte.config.js', 'frontend/vite.config.ts',
+            'frontend/tsconfig.json')
+    outputs.dir(generatedUi)
+}
+
+tasks.register('checkFrontend', NpmTask) {
+    dependsOn tasks.named('npmCi')
+    args = ['run', 'check']
+}
+
+tasks.register('testFrontend', NpmTask) {
+    dependsOn tasks.named('npmCi')
+    args = ['run', 'test']
+}
+
+tasks.register('verifyEmbeddedAssetBudget') {
+    dependsOn tasks.named('buildFrontend')
+    group = 'verification'
+    description = 'Enforces the one-megabyte gzip budget for the embedded console'
+    inputs.dir(generatedUi)
+
+    doLast {
+        long gzipBytes = 0
+        fileTree(generatedUi).matching {
+            include '**/*'
+        }.files.findAll { it.isFile() }.each { asset ->
+            def compressed = new ByteArrayOutputStream()
+            new java.util.zip.GZIPOutputStream(compressed).withCloseable { gzip ->
+                asset.withInputStream { input -> input.transferTo(gzip) }
+            }
+            gzipBytes += compressed.size()
+        }
+        if (gzipBytes > 1024 * 1024) {
+            throw new GradleException(
+                    "Embedded console exceeds the 1 MiB gzip budget: ${gzipBytes} bytes")
+        }
+        logger.lifecycle("Embedded console gzip budget passed: ${gzipBytes} / 1048576 bytes")
+    }
+}
+
+tasks.register('verifyStaticConsoleContract') {
+    dependsOn tasks.named('buildFrontend')
+    group = 'verification'
+    description = 'Checks packaged routes, responsive CSS, landmarks, and critical console controls'
+    inputs.dir(generatedUi)
+
+    doLast {
+        def root = generatedUi.get().asFile
+        def requiredPages = [
+                'index.html',
+                'status/index.html',
+                'app-chain/index.html',
+                'app-chain/eutxo/index.html',
+                'app-chain/authenticated-map/index.html',
+                'plugins/index.html',
+                'observability/index.html'
+        ]
+        requiredPages.each { relative ->
+            def page = new File(root, relative)
+            if (!page.isFile()) {
+                throw new GradleException("Embedded console page is missing: ${relative}")
+            }
+            if (!page.getText('UTF-8').contains('name="viewport"')) {
+                throw new GradleException("Embedded console page lacks a viewport: ${relative}")
+            }
+        }
+
+        def landing = new File(root, 'index.html').getText('UTF-8')
+        [
+                'aria-label="Console"',
+                'alt="Yano"',
+                'data:image/svg+xml',
+                'Yano Console'
+        ].each { marker ->
+            if (!landing.contains(marker)) {
+                throw new GradleException("Embedded console shell lacks marker: ${marker}")
+            }
+        }
+
+        def textAssets = fileTree(root).matching {
+            include '**/*.html', '**/*.js', '**/*.css'
+        }.files.collect { it.getText('UTF-8') }
+        [
+                'Raw effect statistics',
+                'Load latest anchored proof',
+                'Expected proof-value SHA-256',
+                'Verify proof'
+        ].each { marker ->
+            if (!textAssets.any { it.contains(marker) }) {
+                throw new GradleException("Embedded console controls lack marker: ${marker}")
+            }
+        }
+        if (!textAssets.any { it.contains('@media (width>=48rem)') }) {
+            throw new GradleException('Embedded console lacks the maintained responsive breakpoint')
+        }
+        if (!textAssets.any { it.contains('data-console-route="eutxo"') }) {
+            throw new GradleException('Embedded console lacks the capability-gated EUTxO explorer')
+        }
+        if (!textAssets.any { it.contains('data-console-route="authenticated-map"') }) {
+            throw new GradleException('Embedded console lacks the capability-gated authenticated-map console')
+        }
+
+        def appChainSource = file('frontend/src/routes/app-chain/+page.svelte').getText('UTF-8')
+        def primaryViewMarkers = [
+                'data-app-chain-view="operations"',
+                'data-app-chain-view="capabilities"',
+                'data-app-chain-view="proofs"'
+        ]
+        def previousView = -1
+        primaryViewMarkers.each { marker ->
+            def viewIndex = appChainSource.indexOf(marker)
+            if (viewIndex <= previousView) {
+                throw new GradleException(
+                        "App-chain console primary view order is invalid at marker: ${marker}")
+            }
+            previousView = viewIndex
+        }
+        if (!appChainSource.contains('data-proof-lab-navigation="workflows"')
+                || !appChainSource.contains("[['message', 'Message'], ['state', 'State'], ['import', 'Import and verify'],")) {
+            throw new GradleException('App-chain console lacks the released Proof Lab workflow order')
+        }
+        def operationSectionMarkers = [
+                'data-app-chain-section="finalized"',
+                'data-app-chain-section="effects"'
+        ]
+        def previousSection = -1
+        operationSectionMarkers.each { marker ->
+            def sectionIndex = appChainSource.indexOf(marker)
+            if (sectionIndex <= previousSection) {
+                throw new GradleException(
+                        "App-chain console section order is invalid at marker: ${marker}")
+            }
+            previousSection = sectionIndex
+        }
+        logger.lifecycle('Embedded console static/responsive contract passed')
+    }
+}
+
+tasks.register('consoleZip', Zip) {
+    dependsOn tasks.named('buildFrontend')
+    archiveFileName = "yano-console-ui-${project.version}.zip"
+    destinationDirectory = layout.buildDirectory.dir('distributions')
+    from(generatedUi)
+}
+
+tasks.named('processResources') {
+    dependsOn tasks.named('buildFrontend')
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('checkFrontend'), tasks.named('testFrontend'),
+            tasks.named('verifyEmbeddedAssetBudget'), tasks.named('verifyStaticConsoleContract')
+}
+
+tasks.named('assemble') {
+    dependsOn tasks.named('consoleZip')
+}

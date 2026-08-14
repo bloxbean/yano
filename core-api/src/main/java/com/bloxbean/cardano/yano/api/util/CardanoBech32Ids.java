@@ -1,7 +1,7 @@
 package com.bloxbean.cardano.yano.api.util;
 
-import com.bloxbean.cardano.client.address.AddressProvider;
 import com.bloxbean.cardano.client.address.Address;
+import com.bloxbean.cardano.client.address.AddressProvider;
 import com.bloxbean.cardano.client.address.Credential;
 import com.bloxbean.cardano.client.common.model.Network;
 import com.bloxbean.cardano.client.common.model.Networks;
@@ -11,6 +11,8 @@ import com.bloxbean.cardano.client.transaction.spec.governance.DRep;
 import com.bloxbean.cardano.client.transaction.spec.governance.DRepType;
 import com.bloxbean.cardano.yaci.core.common.Constants;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
+
+import java.util.Arrays;
 
 /**
  * Shared Cardano bech32 id formatter.
@@ -23,6 +25,36 @@ public final class CardanoBech32Ids {
     public static final int SCRIPT_HASH = 1;
 
     private CardanoBech32Ids() {
+    }
+
+    /** Canonical reward-address projection used by account and proof APIs. */
+    public record StakeCredential(String stakeAddress, int credentialType,
+                                  String credentialHash, int networkId) {
+    }
+
+    /**
+     * Parse a Bech32 or raw-hex Cardano reward address with CCL.
+     *
+     * <p>Base, enterprise, pointer, and malformed addresses are rejected. The
+     * returned credential is network-independent; {@code networkId} remains
+     * available to presentation layers that want to warn about another
+     * network's address prefix.</p>
+     */
+    public static StakeCredential stakeCredential(String value) {
+        if (isBlank(value) || value.length() > 256) return null;
+        try {
+            Address address = CardanoHex.isHex(value)
+                    ? new Address(HexUtil.decodeHexString(value)) : new Address(value);
+            byte[] bytes = address.getBytes();
+            if (bytes.length != 29) return null;
+            int header = bytes[0] & 0xff;
+            int addressType = header >>> 4;
+            if (addressType != 0x0e && addressType != 0x0f) return null;
+            return new StakeCredential(address.toBech32(), addressType == 0x0f ? 1 : 0,
+                    HexUtil.encodeHexString(Arrays.copyOfRange(bytes, 1, 29)), header & 0x0f);
+        } catch (Exception malformed) {
+            return null;
+        }
     }
 
     public static String stakeAddress(int credType, String credHash, long protocolMagic) {

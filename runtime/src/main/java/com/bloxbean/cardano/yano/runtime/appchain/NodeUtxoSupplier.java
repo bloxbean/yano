@@ -20,11 +20,11 @@ import java.util.function.Supplier;
  * collateral/change balancing, ex-unit evaluation) runs against local state
  * with no provider round-trips (Iteration 4, ADR 008.4 delivery notes).
  */
-final class NodeUtxoSupplier implements UtxoSupplier {
+public final class NodeUtxoSupplier implements UtxoSupplier {
 
     private final Supplier<UtxoState> utxoStateSupplier;
 
-    NodeUtxoSupplier(Supplier<UtxoState> utxoStateSupplier) {
+    public NodeUtxoSupplier(Supplier<UtxoState> utxoStateSupplier) {
         this.utxoStateSupplier = utxoStateSupplier;
     }
 

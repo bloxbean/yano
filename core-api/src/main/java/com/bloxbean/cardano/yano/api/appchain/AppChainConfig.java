@@ -1,9 +1,13 @@
 package com.bloxbean.cardano.yano.api.appchain;
 
+import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+
+import com.bloxbean.cardano.yano.api.appchain.state.StateCommitmentIdentity;
 
 /**
  * Configuration of one app chain this node participates in.
@@ -25,11 +29,11 @@ import java.util.Set;
  * @param stateMachineId    built-in state machine id ("ordered-log") — custom
  *                          state machines are supplied programmatically or via
  *                          plugins (AppStateMachineProvider)
- * @param ledgerPath        RocksDB directory for the app ledger; null = derive
- *                          from the node storage path
+ * @param ledgerPath        optional programmatic RocksDB directory for the app ledger
  * @param anchor            L1 anchoring policy; null = anchoring disabled
  * @param l1StabilityDepth  minimum depth (blocks) of the L1 reference carried in
  *                          app blocks; 0 = no L1 reference
+ * @param epochStabilityDepth block depth required before epoch observations are offered
  * @param webhookUrls       webhook sinks receiving finalized blocks
  *                          (at-least-once, ordered, per-sink persisted cursor)
  * @param retentionEnabled  prune message bodies below the last L1_FINAL anchor
@@ -62,6 +66,7 @@ public record AppChainConfig(String chainId,
                              String ledgerPath,
                              AnchorConfig anchor,
                              int l1StabilityDepth,
+                             int epochStabilityDepth,
                              List<String> webhookUrls,
                              boolean retentionEnabled,
                              int retentionKeepBlocks,
@@ -88,31 +93,52 @@ public record AppChainConfig(String chainId,
     public static final int DEFAULT_MAX_BLOCK_MESSAGES = 5000;
     public static final String DEFAULT_STATE_MACHINE = "ordered-log";
     public static final int DEFAULT_POOL_MAX_MESSAGES = 10_000;
-
-    /** Pre-008.1 signature (no pool capacity / seq enforcement) — kept for source compatibility. */
-    public AppChainConfig(String chainId, String signingKeyHex, Set<String> memberKeysHex,
-                          List<AppPeer> peers, int maxMessageBytes, long maxTtlSeconds,
-                          long defaultTtlSeconds, String proposerKeyHex, int threshold,
-                          long blockIntervalMs, int maxBlockMessages, String stateMachineId,
-                          String ledgerPath, AnchorConfig anchor, int l1StabilityDepth,
-                          List<String> webhookUrls, boolean retentionEnabled,
-                          int retentionKeepBlocks, Map<String, String> pluginSettings) {
-        this(chainId, signingKeyHex, memberKeysHex, peers, maxMessageBytes, maxTtlSeconds,
-                defaultTtlSeconds, proposerKeyHex, threshold, blockIntervalMs, maxBlockMessages,
-                DEFAULT_BLOCK_MAX_BYTES, stateMachineId, ledgerPath, anchor, l1StabilityDepth,
-                webhookUrls, retentionEnabled, retentionKeepBlocks, DEFAULT_POOL_MAX_MESSAGES,
-                false, pluginSettings);
-    }
+    /** Maximum UTF-8 size of a chain identity in blocks, evidence, and anchor datum v1. */
+    public static final int MAX_CHAIN_ID_BYTES = 128;
+    /** Maximum membership size representable by the v1 finality/evidence/anchor profile. */
+    public static final int MAX_MEMBERS = 32;
+    /** Maximum serialized app-block size accepted by the v2 runtime/evidence profile. */
+    public static final long MAX_BLOCK_BYTES = 16L * 1024 * 1024;
+    /** Conservative non-body bytes for one maximal v1 message and block header. */
+    public static final int BLOCK_ENVELOPE_HEADROOM_BYTES = 1_024;
+    /** Conservative encoded bytes reserved per possible finality signature. */
+    public static final int CERT_SIGNATURE_HEADROOM_BYTES = 128;
+    /** Certificate growth reserved for the maximal v1 membership, including governed growth. */
+    public static final int MAX_FINALITY_CERT_HEADROOM_BYTES =
+            CERT_SIGNATURE_HEADROOM_BYTES * MAX_MEMBERS;
+    /** Worst-case headroom for a finalized block under the maximal member profile. */
+    public static final int MAX_FINALIZED_BLOCK_HEADROOM_BYTES =
+            BLOCK_ENVELOPE_HEADROOM_BYTES + MAX_FINALITY_CERT_HEADROOM_BYTES;
+    /** Maximum opaque message body accepted by the v1 runtime/evidence profile. */
+    public static final int MAX_MESSAGE_BYTES =
+            (int) MAX_BLOCK_BYTES - MAX_FINALIZED_BLOCK_HEADROOM_BYTES;
+    /** Maximum messages whose signatures may be verified in one v1 block. */
+    public static final int MAX_BLOCK_MESSAGES = 10_000;
+    /** Maximum UTF-8 topic size in a v1 app-message envelope. */
+    public static final int MAX_TOPIC_BYTES = 256;
+    /** Exact Ed25519 signature/proof size in the v1 message and finality profile. */
+    public static final int ED25519_SIGNATURE_BYTES = 64;
 
     public AppChainConfig {
         Objects.requireNonNull(chainId, "chainId");
-        if (chainId.isBlank())
-            throw new IllegalArgumentException("chainId must not be blank");
+        if (chainId.isBlank() || chainId.indexOf('\0') >= 0
+                || !StandardCharsets.UTF_8.newEncoder().canEncode(chainId)
+                || chainId.getBytes(StandardCharsets.UTF_8).length > MAX_CHAIN_ID_BYTES) {
+            throw new IllegalArgumentException("chainId must be 1.." + MAX_CHAIN_ID_BYTES
+                    + " valid UTF-8 bytes without NUL");
+        }
         Objects.requireNonNull(signingKeyHex, "signingKeyHex (yano.app-chain.signing-key) is required");
         memberKeysHex = memberKeysHex != null ? Set.copyOf(memberKeysHex) : Set.of();
+        if (memberKeysHex.size() > MAX_MEMBERS) {
+            throw new IllegalArgumentException("members must contain at most " + MAX_MEMBERS
+                    + " keys");
+        }
         peers = peers != null ? List.copyOf(peers) : List.of();
         if (maxMessageBytes <= 0)
             maxMessageBytes = DEFAULT_MAX_MESSAGE_BYTES;
+        if (maxMessageBytes > MAX_MESSAGE_BYTES)
+            throw new IllegalArgumentException("max-message-bytes must be <= "
+                    + MAX_MESSAGE_BYTES);
         if (maxTtlSeconds <= 0)
             maxTtlSeconds = DEFAULT_MAX_TTL_SECONDS;
         if (defaultTtlSeconds <= 0)
@@ -124,13 +150,25 @@ public record AppChainConfig(String chainId,
             blockIntervalMs = DEFAULT_BLOCK_INTERVAL_MS;
         if (maxBlockMessages <= 0)
             maxBlockMessages = DEFAULT_MAX_BLOCK_MESSAGES;
+        if (maxBlockMessages > MAX_BLOCK_MESSAGES)
+            throw new IllegalArgumentException("block.max-messages must be <= "
+                    + MAX_BLOCK_MESSAGES);
         if (blockMaxBytes <= 0)
             blockMaxBytes = DEFAULT_BLOCK_MAX_BYTES;
-        // A block must hold at least one full-size message.
-        if (blockMaxBytes < maxMessageBytes)
-            blockMaxBytes = maxMessageBytes;
+        if (blockMaxBytes > MAX_BLOCK_BYTES)
+            throw new IllegalArgumentException("block.max-bytes must be <= "
+                    + MAX_BLOCK_BYTES);
+        long requiredSingleMessageBytes = (long) maxMessageBytes
+                + BLOCK_ENVELOPE_HEADROOM_BYTES
+                + MAX_FINALITY_CERT_HEADROOM_BYTES;
+        if (blockMaxBytes < requiredSingleMessageBytes)
+            throw new IllegalArgumentException("block.max-bytes must reserve the v1 finalized "
+                    + "envelope/certificate headroom (minimum "
+                    + requiredSingleMessageBytes + " for this profile)");
         if (stateMachineId == null || stateMachineId.isBlank())
             stateMachineId = DEFAULT_STATE_MACHINE;
+        if (epochStabilityDepth < 0)
+            throw new IllegalArgumentException("l1.epoch-stability-depth must be nonnegative");
         webhookUrls = webhookUrls != null ? List.copyOf(webhookUrls) : List.of();
         if (retentionKeepBlocks < 0)
             retentionKeepBlocks = 0;
@@ -164,12 +202,14 @@ public record AppChainConfig(String chainId,
         private String ledgerPath;
         private AnchorConfig anchor;
         private int l1StabilityDepth;
+        private int epochStabilityDepth = -1;
         private List<String> webhookUrls = List.of();
         private boolean retentionEnabled;
         private int retentionKeepBlocks;
         private int poolMaxMessages = DEFAULT_POOL_MAX_MESSAGES;
         private boolean enforceSenderSeq;
         private Map<String, String> pluginSettings = Map.of();
+        private StateCommitmentIdentity stateCommitmentIdentity;
 
         private Builder(String chainId) {
             this.chainId = chainId;
@@ -190,6 +230,7 @@ public record AppChainConfig(String chainId,
         public Builder ledgerPath(String value) { this.ledgerPath = value; return this; }
         public Builder anchor(AnchorConfig value) { this.anchor = value; return this; }
         public Builder l1StabilityDepth(int value) { this.l1StabilityDepth = value; return this; }
+        public Builder epochStabilityDepth(int value) { this.epochStabilityDepth = value; return this; }
         public Builder webhookUrls(List<String> value) { this.webhookUrls = value; return this; }
         public Builder retentionEnabled(boolean value) { this.retentionEnabled = value; return this; }
         public Builder retentionKeepBlocks(int value) { this.retentionKeepBlocks = value; return this; }
@@ -197,13 +238,42 @@ public record AppChainConfig(String chainId,
         public Builder enforceSenderSeq(boolean value) { this.enforceSenderSeq = value; return this; }
         public Builder pluginSettings(Map<String, String> value) { this.pluginSettings = value; return this; }
 
+        /**
+         * Adds the complete authenticated-state identity without making callers
+         * manually copy its three consensus-critical settings.
+         */
+        public Builder stateCommitmentIdentity(StateCommitmentIdentity identity) {
+            Objects.requireNonNull(identity, "identity");
+            if (stateCommitmentIdentity != null && !stateCommitmentIdentity.equals(identity)) {
+                throw new IllegalArgumentException("conflicting state commitment identity");
+            }
+            this.stateCommitmentIdentity = identity;
+            return this;
+        }
+
         public AppChainConfig build() {
             return new AppChainConfig(chainId, signingKeyHex, memberKeysHex, peers,
                     maxMessageBytes, maxTtlSeconds, defaultTtlSeconds, proposerKeyHex,
                     threshold, blockIntervalMs, maxBlockMessages, blockMaxBytes, stateMachineId,
-                    ledgerPath, anchor, l1StabilityDepth, webhookUrls,
+                    ledgerPath, anchor, l1StabilityDepth,
+                    epochStabilityDepth >= 0 ? epochStabilityDepth : l1StabilityDepth, webhookUrls,
                     retentionEnabled, retentionKeepBlocks, poolMaxMessages, enforceSenderSeq,
-                    pluginSettings);
+                    effectivePluginSettings());
+        }
+
+        private Map<String, String> effectivePluginSettings() {
+            Map<String, String> merged = new LinkedHashMap<>(
+                    pluginSettings != null ? pluginSettings : Map.of());
+            if (stateCommitmentIdentity != null) {
+                stateCommitmentIdentity.settings().forEach((key, value) -> {
+                    String existing = merged.putIfAbsent(key, value);
+                    if (existing != null && !existing.equals(value)) {
+                        throw new IllegalArgumentException(
+                                "conflicting state commitment setting: " + key);
+                    }
+                });
+            }
+            return Map.copyOf(merged);
         }
     }
 
@@ -218,6 +288,16 @@ public record AppChainConfig(String chainId,
 
     public boolean anchoringEnabled() {
         return anchor != null && anchor.enabled();
+    }
+
+    /** Bytes reserved in a proposal so adding a maximal valid certificate stays within the block cap. */
+    public long finalityCertHeadroomBytes() {
+        return MAX_FINALITY_CERT_HEADROOM_BYTES;
+    }
+
+    /** Maximum empty-certificate proposal size for this membership profile. */
+    public long proposalMaxBytes() {
+        return blockMaxBytes - finalityCertHeadroomBytes();
     }
 
     /**
@@ -297,7 +377,7 @@ public record AppChainConfig(String chainId,
      * ref selects a compiled Plutus V3 UPLC artifact; script hash and address
      * are ALWAYS derived from the resolved artifact, never from source:
      * <ul>
-     *   <li>{@code builtin:julc} — the bundled julc-compiled artifact</li>
+     *   <li>{@code builtin:aiken} — the bundled release Aiken artifact</li>
      *   <li>{@code file:/path} — a .plutus.json blueprint or raw double-CBOR hex file</li>
      *   <li>{@code hex:...} — inline double-CBOR UPLC hex</li>
      * </ul>
@@ -307,17 +387,17 @@ public record AppChainConfig(String chainId,
      */
     public record AnchorScriptConfig(String validatorRef, String threadPolicyRef) {
 
-        public static final String BUILTIN_JULC = "builtin:julc";
+        public static final String BUILTIN_AIKEN = "builtin:aiken";
 
         public static AnchorScriptConfig defaults() {
-            return new AnchorScriptConfig(BUILTIN_JULC, BUILTIN_JULC);
+            return new AnchorScriptConfig(BUILTIN_AIKEN, BUILTIN_AIKEN);
         }
 
         public AnchorScriptConfig {
             if (validatorRef == null || validatorRef.isBlank())
-                validatorRef = BUILTIN_JULC;
+                validatorRef = BUILTIN_AIKEN;
             if (threadPolicyRef == null || threadPolicyRef.isBlank())
-                threadPolicyRef = BUILTIN_JULC;
+                threadPolicyRef = BUILTIN_AIKEN;
         }
     }
 

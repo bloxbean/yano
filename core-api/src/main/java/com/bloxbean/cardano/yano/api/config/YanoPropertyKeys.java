@@ -152,9 +152,13 @@ public final class YanoPropertyKeys {
      * Plugin discovery and plugin runtime settings.
      */
     public static final class Plugins {
-        public static final String ENABLED = "yaci.plugins.enabled";
-        public static final String DIRECTORY = "yaci.plugins.directory";
-        public static final String LOGGING_ENABLED = "yaci.plugins.logging.enabled";
+        public static final String ENABLED = "yano.plugins.enabled";
+        public static final String DIRECTORY = "yano.plugins.directory";
+        public static final String ALLOW_LIST = "yano.plugins.allow-list";
+        public static final String DENY_LIST = "yano.plugins.deny-list";
+        public static final String AUTO_REGISTER_ANNOTATED =
+                "yano.plugins.auto-register-annotated";
+        public static final String LOGGING_ENABLED = "yano.plugins.logging.enabled";
 
         private Plugins() {
         }
@@ -496,6 +500,8 @@ public final class YanoPropertyKeys {
      */
     public static final class AppChain {
         public static final String ENABLED = "yano.app-chain.enabled";
+        /** Node-local root directory containing one RocksDB ledger per hosted app chain. */
+        public static final String STORAGE_PATH = "yano.app-chain.storage.path";
         /**
          * Multi-chain config (ADR 006 E5.2): runtime-globals key holding a
          * List of Maps of suffix-keyed chain settings, populated by adapters
@@ -531,6 +537,18 @@ public final class YanoPropertyKeys {
         public static final String BLOCK_MAX_BYTES = "yano.app-chain.block.max-bytes";
         /** Built-in state machine id; default "ordered-log". */
         public static final String STATE_MACHINE = "yano.app-chain.state-machine";
+        /** Require an MPF profile whose state proofs can be consumed by L1 validators. */
+        public static final String STATE_L1_PROOF_CONSUMPTION_REQUIRED =
+                "yano.app-chain.state.l1-proof-consumption-required";
+        /** Node-local opt-in reachability pruning for retained MPF proof roots. */
+        public static final String STATE_PROOF_PRUNING_ENABLED =
+                "yano.app-chain.state.proof-pruning.enabled";
+        /** Number of contiguous finalized app heights kept available for new proofs. */
+        public static final String STATE_PROOF_PRUNING_RETAIN_HEIGHTS =
+                "yano.app-chain.state.proof-pruning.retain-heights";
+        /** Delay between background proof-pruning passes. */
+        public static final String STATE_PROOF_PRUNING_INTERVAL_SECONDS =
+                "yano.app-chain.state.proof-pruning.interval-seconds";
         public static final String ANCHOR_ENABLED = "yano.app-chain.anchor.enabled";
         /** Anchor wallet Ed25519 payment key (hex, 32-byte seed). */
         public static final String ANCHOR_SIGNING_KEY = "yano.app-chain.anchor.signing-key";
@@ -543,7 +561,7 @@ public final class YanoPropertyKeys {
         public static final String ANCHOR_FALLBACK_FEE_LOVELACE = "yano.app-chain.anchor.fallback-fee-lovelace";
         /** Anchor mode: metadata (default, A1) or script (A2, ADR 008.4). */
         public static final String ANCHOR_MODE = "yano.app-chain.anchor.mode";
-        /** Script-anchor validator artifact ref: builtin:julc | file:/path | hex:... */
+        /** Script-anchor validator artifact ref: builtin:aiken | file:/path | hex:... */
         public static final String ANCHOR_SCRIPT_VALIDATOR = "yano.app-chain.anchor.script.validator";
         /** Script-anchor thread-policy artifact ref (same forms as the validator). */
         public static final String ANCHOR_SCRIPT_THREAD_POLICY = "yano.app-chain.anchor.script.thread-policy";
@@ -559,14 +577,25 @@ public final class YanoPropertyKeys {
         public static final String POOL_MAX_MESSAGES = "yano.app-chain.pool.max-messages";
         /** Consensus-visible sender-seq enforcement (008.1 I1.2); default false. */
         public static final String MESSAGE_ENFORCE_SENDER_SEQ = "yano.app-chain.message.enforce-sender-seq";
-        /** Opt-in API-key authentication for the /app-chain REST surface. */
+        /** Opt-in API-key authentication for READ/SUBMIT; PRIVILEGED always requires a full key. */
         public static final String API_AUTH_ENABLED = "yano.app-chain.api.auth.enabled";
         /**
-         * Comma-separated API keys; an entry is either {@code key} (full access)
-         * or {@code key=topicA|topicB} (submissions restricted to those topics).
+         * Comma-separated API keys. An unscoped {@code key} enables privileged
+         * operations; {@code key=topicA|topicB} is submission-topic scoped when
+         * broad API authentication is enabled.
          */
         public static final String API_KEYS = "yano.app-chain.api.keys";
-
+        /** Comma-separated keys authorized only for authenticated-snapshot lifecycle administration. */
+        public static final String SNAPSHOT_ADMIN_API_KEYS =
+                "yano.app-chain.api.snapshot-admin-keys";
+        /** Reject unknown keys only inside runtime-owned namespaces with FULL metadata coverage. */
+        public static final String VALIDATION_STRICT = "yano.app-chain.validation.strict";
+        /** Project lock identity exposed only through the privileged diagnostics endpoint. */
+        public static final String DX_RESOLVED_CONFIG_DIGEST =
+                "yano.app-chain.dx.resolved-config-digest";
+        /** Release catalog identity exposed only through the privileged diagnostics endpoint. */
+        public static final String DX_RELEASE_CATALOG_DIGEST =
+                "yano.app-chain.dx.release-catalog-digest";
         private AppChain() {
         }
     }

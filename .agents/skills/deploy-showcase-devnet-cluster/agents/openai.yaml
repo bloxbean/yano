@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deploy Showcase Devnet Cluster"
+  short_description: "Build and deploy the anchored three-node devnet showcase"
+  default_prompt: "Use $deploy-showcase-devnet-cluster to rebuild, deploy, and validate the anchored three-node devnet showcase."

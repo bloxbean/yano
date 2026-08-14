@@ -201,6 +201,7 @@ class AppChainSenderSeqTest {
                 .blockIntervalMs(intervalMs)
                 .maxBlockMessages(100)
                 .enforceSenderSeq(enforce)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         AppChainSubsystem subsystem = new AppChainSubsystem(config, MAGIC, null, null,
                 tempDir.resolve("ledger-" + name).toString(), null, log);
@@ -234,6 +235,7 @@ class AppChainSenderSeqTest {
                 .threshold(1)
                 .blockIntervalMs(intervalMs)
                 .enforceSenderSeq(enforce)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
     }
 

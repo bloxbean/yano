@@ -16,7 +16,9 @@ public interface FinalizedStreamSink extends AutoCloseable {
     /**
      * Deliver one finalized block. Return {@code true} on success (cursor
      * advances) or {@code false}/throw to retry the same block next tick — a
-     * thrown exception's message is surfaced as the sink's {@code lastError}.
+     * thrown failure is surfaced by exception class only as the sink's
+     * {@code lastError}/{@code lastErrorType}; its message is not exposed
+     * because it may contain configuration or credentials.
      * Must be idempotent-friendly: the same block may be delivered again after
      * a crash between the write and the cursor commit.
      */

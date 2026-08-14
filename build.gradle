@@ -5,6 +5,17 @@ plugins {
     id 'org.unbroken-dome.test-sets' version("4.1.0")
     id 'org.ajoberstar.grgit' version '5.2.0'
     id 'io.github.gradle-nexus.publish-plugin' version '2.0.0'
+    id 'com.gradleup.shadow' version '9.4.1' apply false
+    id 'org.cyclonedx.bom' version '3.3.0'
+}
+
+abstract class CryptoTestLock implements
+        org.gradle.api.services.BuildService<org.gradle.api.services.BuildServiceParameters.None> {
+}
+
+def cryptoTestLock = gradle.sharedServices.registerIfAbsent(
+        'yanoCryptoTestLock', CryptoTestLock) {
+    maxParallelUsages = 1
 }
 
 repositories {
@@ -14,6 +25,25 @@ repositories {
         url "https://central.sonatype.com/repository/maven-snapshots/"
     }
 }
+
+def aggregateSbomJson = layout.buildDirectory.file(
+        "reports/cyclonedx/yano-${project.version}.cdx.json")
+allprojects { candidate ->
+    candidate.tasks.named('cyclonedxDirectBom') {
+        includeConfigs = ['runtimeClasspath']
+        includeBomSerialNumber = false
+        includeBuildSystem = false
+    }
+}
+tasks.named('cyclonedxBom') {
+    includeBomSerialNumber = false
+    includeBuildSystem = false
+    componentName = 'yano'
+    projectType = 'application'
+    jsonOutput = aggregateSbomJson
+    xmlOutput.convention((org.gradle.api.file.RegularFile) null)
+}
+ext.yanoAggregateSbomJson = aggregateSbomJson
 
 compileJava {
     sourceCompatibility = '25'
@@ -33,13 +63,422 @@ test {
     jvmArgs '--add-opens=java.base/java.lang=ALL-UNNAMED'
 }
 
-// Make all tests use JUnit 5
+// Run every test task on the JUnit Platform; individual modules select their
+// compatible Jupiter engine version.
 tasks.withType(Test) {
     useJUnitPlatform()
 }
 
+// Keep the Quarkus host's Jackson security override observable at build time:
+// a direct catalog upgrade is not enough because Quarkus imports its platform
+// as an enforced BOM. Yano X verifies its own extension runtime closures.
+def adr013ReleaseScopes = [
+        app: ':app'
+]
+
+tasks.register('verifyAdr013JacksonAlignment') {
+    group = 'verification'
+    description = 'Rejects vulnerable or mixed Jackson versions in ADR-013 runtime closures'
+
+    doLast {
+        def expectedPatchVersion = libs.versions.jackson.get()
+        def expectedAnnotationsVersion = expectedPatchVersion.replaceFirst(/\.\d+$/, '')
+        def expectedAppModules = [
+                'com.fasterxml.jackson:jackson-bom',
+                'com.fasterxml.jackson.core:jackson-annotations',
+                'com.fasterxml.jackson.core:jackson-core',
+                'com.fasterxml.jackson.core:jackson-databind',
+                'com.fasterxml.jackson.dataformat:jackson-dataformat-cbor',
+                'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml',
+                'com.fasterxml.jackson.datatype:jackson-datatype-jdk8',
+                'com.fasterxml.jackson.datatype:jackson-datatype-jsr310',
+                'com.fasterxml.jackson.jakarta.rs:jackson-jakarta-rs-base',
+                'com.fasterxml.jackson.jakarta.rs:jackson-jakarta-rs-json-provider',
+                'com.fasterxml.jackson.module:jackson-module-jakarta-xmlbind-annotations',
+                'com.fasterxml.jackson.module:jackson-module-parameter-names'
+        ] as Set
+        def reportLines = ['scope\tmodule\tversion']
+        def failures = []
+
+        adr013ReleaseScopes.each { scope, projectPath ->
+            def targetProject = project(projectPath)
+            def runtimeClasspath = targetProject.configurations
+                    .getByName('runtimeClasspath')
+            def modules = runtimeClasspath.incoming.resolutionResult.allComponents
+                    .findAll { component ->
+                        component.id instanceof
+                                org.gradle.api.artifacts.component.ModuleComponentIdentifier
+                                && (component.id.group == 'com.fasterxml.jackson'
+                                || component.id.group.startsWith('com.fasterxml.jackson.'))
+                    }.collectEntries { component ->
+                        def id = component.id as
+                                org.gradle.api.artifacts.component.ModuleComponentIdentifier
+                        [("${id.group}:${id.module}".toString()): id.version]
+                    }
+            modules.toSorted().each { module, version ->
+                reportLines.add("${scope}\t${module}\t${version}".toString())
+                def expected = module ==
+                        'com.fasterxml.jackson.core:jackson-annotations'
+                        ? expectedAnnotationsVersion : expectedPatchVersion
+                if (version != expected) {
+                    failures.add("${scope} resolves ${module}:${version}; expected ${expected}")
+                }
+            }
+            if (scope == 'app') {
+                def missing = expectedAppModules - modules.keySet()
+                if (!missing.isEmpty()) {
+                    failures.add("app Jackson module inventory is incomplete: ${missing.sort()}")
+                }
+            }
+        }
+
+        def report = layout.buildDirectory.file(
+                'reports/adr013/jackson-alignment.tsv').get().asFile
+        report.parentFile.mkdirs()
+        report.setText(reportLines.join(System.lineSeparator())
+                + System.lineSeparator(), 'UTF-8')
+        if (!failures.isEmpty()) {
+            throw new GradleException('ADR-013 Jackson alignment failed:\n - '
+                    + failures.join('\n - '))
+        }
+        logger.lifecycle('ADR-013 Jackson alignment passed for {} resolved modules; report={}',
+                reportLines.size() - 1, report)
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyAdr013JacksonAlignment')
+}
+
+tasks.register('verifyAdr013Slf4jAlignment') {
+    group = 'verification'
+    description = 'Rejects mixed SLF4J APIs or bundled providers in ADR-013 runtime closures'
+
+    doLast {
+        def expectedVersion = libs.slf4j.api.get().versionConstraint.requiredVersion
+        def expectedModules = ['org.slf4j:slf4j-api'] as Set
+        def reportLines = ['scope\tmodule\tversion']
+        def failures = []
+
+        adr013ReleaseScopes.each { scope, projectPath ->
+            def runtimeClasspath = project(projectPath).configurations
+                    .getByName('runtimeClasspath')
+            def modules = runtimeClasspath.incoming.resolutionResult.allComponents
+                    .findAll { component ->
+                        component.id instanceof
+                                org.gradle.api.artifacts.component.ModuleComponentIdentifier
+                                && component.id.group == 'org.slf4j'
+                    }.collectEntries { component ->
+                        def id = component.id as
+                                org.gradle.api.artifacts.component.ModuleComponentIdentifier
+                        [("${id.group}:${id.module}".toString()): id.version]
+                    }
+            modules.toSorted().each { module, version ->
+                reportLines.add("${scope}\t${module}\t${version}".toString())
+                if (version != expectedVersion) {
+                    failures.add("${scope} resolves ${module}:${version}; expected ${expectedVersion}")
+                }
+            }
+            if (modules.keySet() != expectedModules) {
+                failures.add("${scope} SLF4J runtime inventory is ${modules.keySet().sort()}; "
+                        + "expected host-provided API only ${expectedModules}")
+            }
+        }
+
+        def report = layout.buildDirectory.file(
+                'reports/adr013/slf4j-alignment.tsv').get().asFile
+        report.parentFile.mkdirs()
+        report.setText(reportLines.join(System.lineSeparator())
+                + System.lineSeparator(), 'UTF-8')
+        if (!failures.isEmpty()) {
+            throw new GradleException('ADR-013 SLF4J alignment failed:\n - '
+                    + failures.join('\n - '))
+        }
+        logger.lifecycle('ADR-013 SLF4J alignment passed for {} runtime closures; report={}',
+                adr013ReleaseScopes.size(), report)
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyAdr013Slf4jAlignment')
+}
+
+def repositorySplitAllocationFile = layout.projectDirectory.file(
+        'config/repository-split/allocation-v1.json')
+def repositorySplitAllocation = new groovy.json.JsonSlurper().parse(
+        repositorySplitAllocationFile.asFile)
+def repositoryModuleByPath = repositorySplitAllocation.modules.collectEntries { module ->
+    [(module.sourcePath.toString()): module]
+}
+tasks.register('verifyRepositorySplitAllocation') {
+    group = 'verification'
+    description = 'Validates the repository module, path, debt, and regression ownership manifest.'
+    inputs.file(repositorySplitAllocationFile)
+
+    doLast {
+        def manifest = new groovy.json.JsonSlurper().parse(
+                repositorySplitAllocationFile.asFile)
+        def failures = []
+        def allowedDispositions = [
+                'retain', 'move', 'split', 'temporary-retain'
+        ] as Set
+
+        if (manifest.schemaVersion != 1) {
+            failures.add("schemaVersion must be 1, found ${manifest.schemaVersion}")
+        }
+        if (manifest.sourceRepository != 'yano'
+                || manifest.downstreamRepository != 'yano-x') {
+            failures.add('repository identities must be yano -> yano-x')
+        }
+        if (!(manifest.sourceCommit ==~ /[0-9a-f]{40}/)) {
+            failures.add('sourceCommit must be a full lowercase Git commit id')
+        }
+
+        def owners = manifest.owners?.keySet() ?: [] as Set
+        def modules = manifest.modules ?: []
+        def duplicateValues = { values ->
+            values.groupBy { it }.findAll { value, occurrences ->
+                value != null && occurrences.size() > 1
+            }.keySet().sort()
+        }
+        duplicateValues(modules*.sourcePath).each {
+            failures.add("duplicate sourcePath ${it}")
+        }
+        duplicateValues(modules*.sourceDirectory).each {
+            failures.add("duplicate sourceDirectory ${it}")
+        }
+        duplicateValues(modules*.targetPath).each {
+            failures.add("duplicate targetPath ${it}")
+        }
+        duplicateValues(modules*.targetDirectory).each {
+            failures.add("duplicate targetDirectory ${it}")
+        }
+        duplicateValues(modules*.artifactId).each {
+            failures.add("duplicate artifactId ${it}")
+        }
+
+        def expectedModules = modules.findAll {
+            it.disposition in ['retain', 'temporary-retain']
+        }
+        def declaredProjects = expectedModules.collectEntries { module ->
+            [(module.sourcePath): module]
+        }
+        def actualProjects = rootProject.subprojects.collectEntries { candidate ->
+            def relativeDirectory = rootProject.projectDir.toPath()
+                    .relativize(candidate.projectDir.toPath()).toString()
+                    .replace(File.separatorChar, '/' as char)
+            [(candidate.path): relativeDirectory]
+        }
+        (actualProjects.keySet() - declaredProjects.keySet()).sort().each {
+            failures.add("unclassified Gradle project ${it} (${actualProjects[it]})")
+        }
+        (declaredProjects.keySet() - actualProjects.keySet()).sort().each {
+            failures.add("manifest project ${it} is not included by settings.gradle")
+        }
+
+        modules.each { module ->
+            def label = module.sourcePath ?: '<missing sourcePath>'
+            if (!(module.disposition in allowedDispositions)) {
+                failures.add("${label} has invalid disposition ${module.disposition}")
+            }
+            if (!(module.owner in owners)) {
+                failures.add("${label} has unknown owner ${module.owner}")
+            }
+            def sourceDirectory = module.sourceDirectory == null ? null
+                    : layout.projectDirectory.dir(module.sourceDirectory).asFile
+            if (!module.sourceDirectory) {
+                failures.add("${label} has no sourceDirectory")
+            } else if (module.disposition != 'move' && !sourceDirectory.isDirectory()) {
+                failures.add("${label} sourceDirectory does not exist: ${module.sourceDirectory}")
+            }
+            if (actualProjects[label]
+                    && actualProjects[label] != module.sourceDirectory) {
+                failures.add("${label} directory is ${actualProjects[label]}, manifest says "
+                        + module.sourceDirectory)
+            }
+            if (!module.targetPath || !module.targetDirectory
+                    || !module.publicationType) {
+                failures.add("${label} is missing target/publication metadata")
+            }
+            if (module.disposition == 'move') {
+                if (module.owner != 'yano-x') {
+                    failures.add("${label} moves downstream but owner is ${module.owner}")
+                }
+                if (!module.artifactId?.startsWith('yano-x-')) {
+                    failures.add("${label} downstream artifact must start with yano-x-")
+                }
+                if (!module.targetPath.startsWith(':')
+                        || !module.targetPath.substring(1).contains(':')) {
+                    failures.add("${label} must use a hierarchical Yano X targetPath")
+                }
+            }
+            if (module.publicationType == 'runtime-plugin'
+                    && !module.pluginBundleId) {
+                failures.add("${label} runtime plugin is missing pluginBundleId")
+            }
+            if (module.disposition == 'split'
+                    && (!module.splitTargets || module.splitTargets.size() < 2)) {
+                failures.add("${label} split allocation needs at least two explicit outcomes")
+            }
+        }
+
+        def pathAllocations = manifest.pathAllocations ?: []
+        duplicateValues(pathAllocations*.prefix).each {
+            failures.add("duplicate path allocation ${it}")
+        }
+        pathAllocations.each { allocation ->
+            if (!allocation.prefix || !(allocation.owner in owners)
+                    || !(allocation.disposition in allowedDispositions)
+                    || !allocation.reason) {
+                failures.add("invalid path allocation ${allocation}")
+            }
+        }
+
+        def moduleRoots = modules*.sourceDirectory
+        def allocationPrefixes = pathAllocations*.prefix
+        def trackedFiles = providers.exec {
+            workingDir rootProject.projectDir
+            commandLine 'git', 'ls-files'
+        }.standardOutput.asText.get().readLines().findAll { trackedPath ->
+            !trackedPath.isBlank() && rootProject.file(trackedPath).isFile()
+        }
+        modules.findAll { it.disposition == 'move' }.each { module ->
+            def movedPaths = trackedFiles.findAll { trackedPath ->
+                trackedPath == module.sourceDirectory
+                        || trackedPath.startsWith(module.sourceDirectory + '/')
+            }
+            if (!movedPaths.isEmpty()) {
+                failures.add("${module.sourcePath} still owns moved tracked paths: "
+                        + movedPaths.take(5))
+            }
+        }
+        trackedFiles.each { trackedPath ->
+            def ownedByModule = moduleRoots.any { moduleRoot ->
+                trackedPath == moduleRoot || trackedPath.startsWith(moduleRoot + '/')
+            }
+            def ownedByPathRule = allocationPrefixes.any { prefix ->
+                trackedPath == prefix || trackedPath.startsWith(prefix)
+            }
+            if (!ownedByModule && !ownedByPathRule) {
+                failures.add("tracked path has no repository allocation owner: ${trackedPath}")
+            }
+        }
+
+        def firstPartyManifestFiles = fileTree(rootProject.projectDir) {
+            include 'appchain/**/src/main/resources/META-INF/yano/plugins/*.json'
+        }.files.sort { left, right -> left.path <=> right.path }
+        firstPartyManifestFiles.each { manifestFile ->
+            def manifestTemplate = manifestFile.getText('UTF-8')
+            def pluginManifest = new groovy.json.JsonSlurper().parseText(manifestTemplate)
+            if (pluginManifest.version != '${pluginVersion}') {
+                failures.add("first-party plugin version must be generated: "
+                        + rootProject.projectDir.toPath().relativize(manifestFile.toPath()))
+            }
+            def templateKeys = (manifestTemplate =~ /\$\{([^}]+)\}/).collect {
+                it[1]
+            }.toSet()
+            if (templateKeys != ['pluginVersion'] as Set) {
+                failures.add("first-party plugin template keys must be [pluginVersion]: "
+                        + rootProject.projectDir.toPath().relativize(manifestFile.toPath())
+                        + " has ${templateKeys.sort()}")
+            }
+        }
+        def debt = manifest.technicalDebt ?: []
+        def expectedDebtIds = (1..23).collect { "P${it}" } as Set
+        if ((debt*.id as Set) != expectedDebtIds) {
+            failures.add("technicalDebt ids must be P1-P23, found ${(debt*.id).sort()}")
+        }
+        debt.each { item ->
+            if (!(item.owner in owners) || !(item.targetPhase ==~ /[A-F]/)
+                    || !item.action || !item.regressionGuard
+                    || item.status != 'resolved') {
+                failures.add("technical debt ${item.id} is not fully classified and resolved")
+            }
+        }
+
+        def cutoverSuiteIds = [
+                'yano-unit',
+                'yano-build',
+                'yano-jvm-package',
+                'yano-native',
+                'yano-x-unit',
+                'yano-x-distribution',
+                'yano-x-devtools',
+                'yano-x-studio'
+        ] as Set
+        def suites = manifest.regressionSuites ?: []
+        if ((suites*.id as Set) != cutoverSuiteIds) {
+            failures.add('regressionSuites must contain the final Yano/Yano X cutover gates')
+        }
+        suites.each { suite ->
+            if (!suite.id || !(suite.repository in ['yano', 'yano-x'])
+                    || !suite.command || !suite.protects) {
+                failures.add("invalid regression suite ${suite}")
+            }
+        }
+
+        if (!failures.isEmpty()) {
+            throw new GradleException('Repository allocation verification failed:\n - '
+                    + failures.join('\n - '))
+        }
+        logger.lifecycle(
+                'Repository allocation verified after cutover: {} configured projects, {} tracked paths, {} resolved debt items, {} suites',
+                expectedModules.size(), trackedFiles.size(), debt.size(), suites.size())
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyRepositorySplitAllocation')
+}
+
+tasks.register('verifyLeanHostDependencyBoundary') {
+    group = 'verification'
+    description = 'Rejects Yano X allocated projects from the Yano host runtime graph.'
+    inputs.file(repositorySplitAllocationFile)
+    dependsOn tasks.named('verifyRepositorySplitAllocation')
+
+    doLast {
+        def manifest = new groovy.json.JsonSlurper().parse(
+                repositorySplitAllocationFile.asFile)
+        def allocations = manifest.modules.collectEntries { module ->
+            [(module.sourcePath): module]
+        }
+        def allowed = ['retain', 'temporary-retain'] as Set
+        def resolvedProjects = project(':app').configurations
+                .getByName('runtimeClasspath')
+                .incoming.resolutionResult.allComponents
+                .findAll { component ->
+                    component.id instanceof
+                            org.gradle.api.artifacts.component.ProjectComponentIdentifier
+                }.collect { component ->
+                    (component.id as
+                            org.gradle.api.artifacts.component.ProjectComponentIdentifier)
+                            .projectPath
+                }.toSet()
+        def failures = resolvedProjects.findAll { projectPath ->
+            def allocation = allocations[projectPath]
+            allocation == null || !(allocation.disposition in allowed)
+        }.sort().collect { projectPath ->
+            def disposition = allocations[projectPath]?.disposition ?: 'unclassified'
+            "${projectPath} (${disposition})"
+        }
+        if (!failures.isEmpty()) {
+            throw new GradleException('Lean app runtime graph reaches Yano X projects:\n - '
+                    + failures.join('\n - '))
+        }
+        logger.lifecycle(
+                'Host dependency boundary passed: {} retained runtime projects',
+                resolvedProjects.size())
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyLeanHostDependencyBoundary')
+}
+
 ext.ossrhUsername = System.getenv('MAVEN_USERNAME')
 ext.ossrhPassword = System.getenv('MAVEN_PASSWORD')
+def stagingRepository = providers.gradleProperty('stagingRepository')
 
 publishing {
     publications {
@@ -108,7 +547,7 @@ if (commit_id && project.version.endsWith("-SNAPSHOT")) {
     version = "${project.version}".replace("-SNAPSHOT", "-${commit_id}-SNAPSHOT")
 }
 
-def nonLibraryModules = ['app'] as Set
+def nonLibraryModules = ['app', 'console-ui', 'yano-bom'] as Set
 
 subprojects {
     // Skip most configuration for application modules (Quarkus/Scala handle their own builds)
@@ -134,9 +573,10 @@ subprojects {
 
     // Only configure library-specific settings for non-application modules
     if (!(project.name in nonLibraryModules)) {
-        //Jars are with yano prefix
+        def allocatedArtifactId = repositoryModuleByPath[project.path]
+                ?.artifactId?.toString() ?: 'yano-' + project.name
         tasks.named('jar') {
-            archiveBaseName = 'yano-' + project.name
+            archiveBaseName = allocatedArtifactId
         }
         dependencies {
             api libs.slf4j.api
@@ -181,6 +621,15 @@ subprojects {
 
         testSets {
             integrationTest
+            cryptoTest
+            distributionTest
+        }
+
+        tasks.named('cryptoTest') {
+            // Groth16 setup/proving tasks use large heaps. Keep these suites
+            // serialized even when the rest of the build uses --parallel.
+            usesService cryptoTestLock
+            maxParallelForks = 1
         }
 
         publishing {
@@ -194,7 +643,7 @@ subprojects {
                         classifier = 'javadoc'
                     }
 
-                    artifactId 'yano-' + project.name
+                    artifactId allocatedArtifactId
                     pom {
                         url = 'https://github.com/bloxbean/yano'
                         licenses {
@@ -233,12 +682,69 @@ subprojects {
         useJUnitPlatform()
         jvmArgs '--add-opens=java.base/java.lang=ALL-UNNAMED'
         testLogging {
-            events "started", "passed", "skipped", "failed"
-            exceptionFormat "full"
-            showStandardStreams = true
+            def verbose = rootProject.providers.gradleProperty('verboseTests')
+                    .map { it.toBoolean() }
+                    .getOrElse(false)
+            events(*(verbose
+                    ? ['started', 'passed', 'skipped', 'failed']
+                    : ['skipped', 'failed']))
+            exceptionFormat verbose ? 'full' : 'short'
+            showStandardStreams = verbose
         }
 
     }
+
+    // First-party app-chain manifests are source templates. Their bundle and
+    // dependency versions must follow the owning Gradle publication rather
+    // than being copied into every JSON file at release time.
+    tasks.matching { it.name == 'processResources' }.configureEach {
+        def pluginManifestVersion = project.version.toString()
+        inputs.property('pluginManifestVersion', pluginManifestVersion)
+        filesMatching('META-INF/yano/plugins/*.json') {
+            filter { line ->
+                line.replace('${pluginVersion}', pluginManifestVersion)
+            }
+        }
+    }
+}
+
+// Phase/release rehearsals publish the same Maven publications to an isolated
+// repository without changing the normal Maven Local or Sonatype mechanisms.
+// A file repository is sufficient locally; CI may provide an HTTP staging URL.
+allprojects { candidate ->
+    candidate.pluginManager.withPlugin('maven-publish') {
+        if (stagingRepository.isPresent()) {
+            candidate.publishing.repositories {
+                maven {
+                    name = 'staging'
+                    url = candidate.uri(stagingRepository.get())
+                }
+            }
+        }
+    }
+}
+
+tasks.register('distributionCheck') {
+    group = 'verification'
+    description = 'Validates the core JVM distribution and directory-plugin contract.'
+    dependsOn ':app:verifyCoreJvmDistribution',
+            ':app:packagedJvmPluginCatalogSmoke'
+}
+
+tasks.register('extendedTest') {
+    group = 'verification'
+    description = 'Runs every retained repository integrationTest suite.'
+    dependsOn subprojects.findAll { candidate ->
+        !(candidate.name in nonLibraryModules) || candidate.name == 'app'
+    }.collect { candidate -> "${candidate.path}:integrationTest" }
+}
+
+tasks.register('fullBuild') {
+    group = 'build'
+    description = 'Runs the retained Yano build, integration tests, and JVM distribution checks.'
+    dependsOn ':build'
+    dependsOn subprojects.collect { candidate -> "${candidate.path}:build" }
+    dependsOn tasks.named('extendedTest'), tasks.named('distributionCheck')
 }
 
 def getCheckedOutGitCommitHash() {

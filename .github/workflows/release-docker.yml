@@ -178,6 +178,9 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      - name: Smoke test packaged JVM plugin catalog
+        run: ./gradlew :app:packagedJvmPluginCatalogSmoke -PskipSigning=true
+
       - name: Prepare JVM Docker context
         run: ./gradlew :app:prepareYanoDockerJvmContext -PskipSigning=true
 
@@ -267,6 +270,9 @@ jobs:
 
       - name: Prepare native Docker context
         run: ./gradlew :app:prepareYanoDockerNativeContext -Dquarkus.native.enabled=true -Dquarkus.package.jar.enabled=false -PskipSigning=true
+
+      - name: Smoke test native plugin catalog
+        run: ./gradlew :app:nativePluginCatalogSmoke -PskipSigning=true
 
       - name: Build local native smoke image
         run: docker build -t yano:native-smoke app/build/docker/native/context

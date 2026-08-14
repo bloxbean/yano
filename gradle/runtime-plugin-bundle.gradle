@@ -1,0 +1,100 @@
+apply plugin: 'com.gradleup.shadow'
+
+if (!project.hasProperty('runtimePluginBundleId')) {
+    throw new GradleException("${project.path} must define runtimePluginBundleId")
+}
+
+def ownedBundleId = project.property('runtimePluginBundleId').toString()
+def excludedBundleIds = project.findProperty('runtimePluginExcludedBundleIds') ?: []
+def excludedPluginProjectEntries = new HashSet<String>()
+def supportedServicePaths = [
+        'META-INF/services/com.bloxbean.cardano.yano.api.plugin.NodePlugin',
+        'META-INF/services/com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider',
+        'META-INF/services/com.bloxbean.cardano.yano.api.appchain.authmap.AuthenticatedMapValueValidatorFactory',
+        'META-INF/services/com.bloxbean.cardano.yano.api.appchain.sequencer.SequencerModeProvider',
+        'META-INF/services/com.bloxbean.cardano.yano.api.appchain.l1view.L1ObserverProvider',
+        'META-INF/services/com.bloxbean.cardano.yano.api.appchain.l1view.L1EpochObserverProvider',
+        'META-INF/services/com.bloxbean.cardano.yano.api.appchain.signer.SignerProviderFactory',
+        'META-INF/services/com.bloxbean.cardano.yano.api.appchain.effects.AppEffectExecutorFactory',
+        'META-INF/services/com.bloxbean.cardano.yano.api.appchain.sink.FinalizedStreamSinkFactory',
+        'META-INF/services/com.bloxbean.cardano.yano.api.plugin.domain.DomainApiProvider',
+        'META-INF/services/com.bloxbean.cardano.yano.api.plugin.domain.LocalReadModelProvider',
+        'META-INF/services/com.bloxbean.cardano.yano.api.plugin.operations.PluginHealthProvider',
+        'META-INF/services/com.bloxbean.cardano.yano.api.plugin.operations.PluginMetricsProvider'
+]
+
+tasks.named('shadowJar') {
+    archiveBaseName.set("yano-${project.name}")
+    archiveClassifier.set('bundle')
+    reproducibleFileOrder = true
+    preserveFileTimestamps = false
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    exclude 'com/bloxbean/cardano/yano/api/**'
+    excludedBundleIds.each { bundleId ->
+        exclude "META-INF/yano/plugins/${bundleId}.json"
+    }
+    supportedServicePaths.findAll { servicePath ->
+        !project.file("src/main/resources/${servicePath}").isFile()
+    }.each { servicePath -> exclude servicePath }
+    exclude { details ->
+        details.path.startsWith('META-INF/yano/plugins/')
+                && details.path.endsWith('.json')
+                && details.path != "META-INF/yano/plugins/${ownedBundleId}.json"
+    }
+    exclude 'META-INF/*.SF', 'META-INF/*.RSA', 'META-INF/*.DSA',
+            'module-info.class'
+    exclude { details -> excludedPluginProjectEntries.contains(details.path) }
+    doFirst {
+        project.configurations.runtimeClasspath.incoming.artifacts.artifacts.each { artifact ->
+            def componentId = artifact.id.componentIdentifier
+            if (componentId instanceof
+                    org.gradle.api.artifacts.component.ProjectComponentIdentifier) {
+                def dependencyProject = project.project(componentId.projectPath)
+                if (dependencyProject != project
+                        && dependencyProject.hasProperty('runtimePluginBundleId')
+                        && artifact.file.name.endsWith('.jar')) {
+                    new java.util.zip.ZipFile(artifact.file).withCloseable { zip ->
+                        zip.entries().each { entry ->
+                            if (!entry.directory
+                                    && entry.name != 'META-INF/MANIFEST.MF'
+                                    && !entry.name.startsWith('META-INF/services/')
+                                    && !entry.name.startsWith('META-INF/yano/plugins/')) {
+                                excludedPluginProjectEntries.add(entry.name)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+tasks.register('verifyRuntimePluginBundle') {
+    group = 'verification'
+    description = "Verifies ${project.path}'s isolated runtime plugin bundle"
+    dependsOn tasks.named('shadowJar')
+    inputs.file(tasks.named('shadowJar').flatMap { it.archiveFile })
+
+    doLast {
+        def archive = tasks.named('shadowJar').get().archiveFile.get().asFile
+        new java.util.zip.ZipFile(archive).withCloseable { zip ->
+            def entries = zip.entries().collect { it.name }.toSet()
+            def manifests = entries.findAll {
+                it.startsWith('META-INF/yano/plugins/') && it.endsWith('.json')
+            }
+            def expectedManifest = "META-INF/yano/plugins/${ownedBundleId}.json"
+            if (manifests != [expectedManifest] as Set) {
+                throw new GradleException(
+                        "${project.path} bundle manifests are not isolated: ${manifests}")
+            }
+            if (entries.any { it.startsWith('com/bloxbean/cardano/yano/api/') }) {
+                throw new GradleException(
+                        "${project.path} bundle duplicates host API classes")
+            }
+        }
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyRuntimePluginBundle')
+}

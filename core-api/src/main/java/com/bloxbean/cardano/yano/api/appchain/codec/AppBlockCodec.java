@@ -10,17 +10,26 @@ import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
 import com.bloxbean.cardano.yaci.core.protocol.appmsg.n2n.serializers.AppMsgSubmissionSerializers;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yano.api.appchain.AppBlock;
+import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.api.appchain.FinalityCert;
+import com.bloxbean.cardano.yano.api.appchain.codec.internal.CborStructurePreflight;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
- * Canonical CBOR codec for app blocks — one format for wire, storage and
- * hashing ("store what you gossip, hash what you store", ADR app-layer/005 D9).
+ * Canonical CBOR codec for app blocks on the wire and in storage (ADR
+ * app-layer/005 D9). Finality signs {@link #blockHash(AppBlock)}, which hashes
+ * only the canonical header. The header commits the ordered message ids through
+ * {@code messagesRoot}; it does not authenticate every serialized envelope
+ * field, the proposer field, or the certificate container itself.
  * See cddl/appchain/app-block.cddl.
  */
 public final class AppBlockCodec {
+    private static final int MAX_CANONICAL_CBOR_DEPTH = 8;
+    private static final int MAX_CANONICAL_BLOCK_ITEMS = 150_000;
+    private static final int MAX_CANONICAL_CERT_ITEMS = 128;
 
     private AppBlockCodec() {
     }
@@ -28,8 +37,8 @@ public final class AppBlockCodec {
     /**
      * blake2b-256 over the CBOR header
      * {@code [version, chain-id, height, prev-hash, l1-slot, l1-block-hash,
-     * timestamp, messages-root, state-root]}. The header binds the full
-     * message list via messages-root and the whole history via prev-hash.
+     * timestamp, messages-root, state-root]}. The header binds the ordered
+     * message ids via messages-root and the committed history via prev-hash.
      */
     public static byte[] blockHash(AppBlock block) {
         return Blake2bUtil.blake2bHash256(CborSerializationUtil.serialize(headerArray(block)));
@@ -77,6 +86,10 @@ public final class AppBlockCodec {
     }
 
     public static AppBlock deserialize(byte[] bytes) {
+        return deserializeCanonical(bytes, AppChainConfig.MAX_BLOCK_BYTES);
+    }
+
+    private static AppBlock deserializeUnchecked(byte[] bytes) {
         Array arr = (Array) CborSerializationUtil.deserializeOne(bytes);
         List<DataItem> items = arr.getDataItems();
 
@@ -101,12 +114,62 @@ public final class AppBlockCodec {
                 timestamp, messagesRoot, stateRoot, messages, proposer, cert);
     }
 
+    /**
+     * Decodes untrusted block bytes only after a non-recursive structural
+     * preflight and requires the exact canonical wire representation.
+     * Callers must still enforce their semantic chain/message profile.
+     */
+    public static AppBlock deserializeCanonical(byte[] bytes, long maximumBytes) {
+        int boundedMaximum = boundedMaximum(maximumBytes);
+        var limits = new CborStructurePreflight.Limits(
+                boundedMaximum, MAX_CANONICAL_CBOR_DEPTH,
+                MAX_CANONICAL_BLOCK_ITEMS, AppChainConfig.MAX_BLOCK_MESSAGES,
+                boundedMaximum);
+        if (!CborStructurePreflight.accepts(bytes, limits)) {
+            throw invalid("Invalid bounded canonical app block");
+        }
+        try {
+            AppBlock block = deserializeUnchecked(bytes);
+            if (!Arrays.equals(bytes, serialize(block))) {
+                throw invalid("Non-canonical app block");
+            }
+            return block;
+        } catch (RuntimeException malformed) {
+            throw invalid("Invalid bounded canonical app block");
+        }
+    }
+
     public static byte[] serializeCert(FinalityCert cert) {
         return CborSerializationUtil.serialize(certArray(cert));
     }
 
     public static FinalityCert deserializeCert(byte[] bytes) {
+        return deserializeCertCanonical(bytes);
+    }
+
+    private static FinalityCert deserializeCertUnchecked(byte[] bytes) {
         return parseCert((Array) CborSerializationUtil.deserializeOne(bytes));
+    }
+
+    /** Bounded canonical decoder for an untrusted v1 finality certificate. */
+    public static FinalityCert deserializeCertCanonical(byte[] bytes) {
+        int maximumBytes = AppChainConfig.MAX_FINALITY_CERT_HEADROOM_BYTES;
+        var limits = new CborStructurePreflight.Limits(
+                maximumBytes, MAX_CANONICAL_CBOR_DEPTH,
+                MAX_CANONICAL_CERT_ITEMS, AppChainConfig.MAX_MEMBERS + 1,
+                AppChainConfig.ED25519_SIGNATURE_BYTES);
+        if (!CborStructurePreflight.accepts(bytes, limits)) {
+            throw invalid("Invalid bounded canonical finality certificate");
+        }
+        try {
+            FinalityCert cert = deserializeCertUnchecked(bytes);
+            if (!Arrays.equals(bytes, serializeCert(cert))) {
+                throw invalid("Non-canonical finality certificate");
+            }
+            return cert;
+        } catch (RuntimeException malformed) {
+            throw invalid("Invalid bounded canonical finality certificate");
+        }
     }
 
     private static Array headerArray(AppBlock block) {
@@ -148,5 +211,16 @@ public final class AppBlockCodec {
                     ((ByteString) sigItems.get(1)).getBytes()));
         }
         return new FinalityCert(scheme, signatures);
+    }
+
+    private static int boundedMaximum(long maximumBytes) {
+        if (maximumBytes < 1 || maximumBytes > AppChainConfig.MAX_BLOCK_BYTES) {
+            throw new IllegalArgumentException("maximumBytes is outside the v1 block profile");
+        }
+        return Math.toIntExact(maximumBytes);
+    }
+
+    private static IllegalArgumentException invalid(String message) {
+        return new IllegalArgumentException(message);
     }
 }

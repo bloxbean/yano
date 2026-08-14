@@ -7,6 +7,15 @@ package com.bloxbean.cardano.yano.api.appchain;
  */
 public interface AppStateWriter extends AppStateReader {
 
+    /**
+     * Consensus-safe cross-cutting capabilities enabled for this writer's
+     * namespace. The immutable empty registry preserves legacy transitions
+     * byte-for-byte when no capability is configured.
+     */
+    default AppStateCapabilities capabilities() {
+        return AppStateCapabilities.empty();
+    }
+
     void put(byte[] key, byte[] value);
 
     void delete(byte[] key);

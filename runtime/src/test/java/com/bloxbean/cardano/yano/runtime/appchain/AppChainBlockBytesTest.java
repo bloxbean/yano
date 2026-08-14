@@ -51,7 +51,7 @@ class AppChainBlockBytesTest {
     @Test
     void largeBacklog_trimsAcrossBlocks_allFinalize_noStall() throws Exception {
         String pubA = HexUtil.encodeHexString(KeyGenUtil.getPublicKeyFromPrivateKey(KEY_A));
-        long blockMaxBytes = 4096;
+        long blockMaxBytes = 8192;
         AppChainConfig config = AppChainConfig.builder("bytes-chain")
                 .signingKeyHex(HexUtil.encodeHexString(KEY_A))
                 .memberKeysHex(Set.of(pubA))
@@ -62,13 +62,14 @@ class AppChainBlockBytesTest {
                 .blockMaxBytes(blockMaxBytes)  // ~a handful of messages per block
                 .maxBlockMessages(10_000)      // count is NOT the binding limit here
                 .poolMaxMessages(10_000)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
                 .build();
         node = new AppChainSubsystem(config, 42, null, null,
                 tempDir.resolve("ledger").toString(), null, log);
         node.start();
 
         // Submit far more than fits one block: 60 × ~300-byte bodies ≈ 31 KB of
-        // serialized messages against a 4 KB block cap → must split into several
+        // serialized messages against an 8 KB block cap → must split into several
         // blocks. Each body is distinct so nothing dedups.
         int count = 60;
         List<byte[]> ids = new ArrayList<>();

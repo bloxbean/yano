@@ -394,7 +394,7 @@ java -Dquarkus.profile=preview \
   -Dyano.rewards.enabled=false \
   -Dyano.governance.enabled=false \
   -Dyano.epoch-params.tracking-enabled=false \
-  -Dyaci.plugins.enabled=false \
+  -Dyano.plugins.enabled=false \
   -jar build/yano.jar
 ```
 

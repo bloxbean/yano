@@ -1,14 +1,11 @@
 package com.bloxbean.cardano.yano.app.api.accounts;
 
-import com.bloxbean.cardano.client.address.Address;
-import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.NodeLifecycle;
 import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
 import com.bloxbean.cardano.yano.api.account.AccountStateReadStore;
 import com.bloxbean.cardano.yano.api.account.AccountStateStore;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
-import com.bloxbean.cardano.yano.api.util.CardanoHex;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.api.util.CardanoBech32Ids;
 import com.bloxbean.cardano.yano.app.api.EpochUtil;
@@ -21,7 +18,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.math.BigInteger;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -391,26 +387,9 @@ public class AccountStateResource {
     }
 
     private static StakeCredentialRef parseStakeCredential(String value) {
-        if (value == null || value.isBlank()) return null;
-        try {
-            Address address;
-            if (CardanoHex.isHex(value)) {
-                address = new Address(HexUtil.decodeHexString(value));
-            } else {
-                address = new Address(value);
-            }
-
-            byte[] bytes = address.getBytes();
-            if (bytes.length < 29) return null;
-            int addressType = ((bytes[0] & 0xFF) >> 4) & 0x0F;
-            if (addressType != 0x0E && addressType != 0x0F) return null;
-
-            int credType = addressType == 0x0F ? 1 : 0;
-            String credHash = HexUtil.encodeHexString(Arrays.copyOfRange(bytes, 1, 29));
-            return new StakeCredentialRef(address.toBech32(), credType, credHash);
-        } catch (Exception e) {
-            return null;
-        }
+        CardanoBech32Ids.StakeCredential credential = CardanoBech32Ids.stakeCredential(value);
+        return credential == null ? null : new StakeCredentialRef(credential.stakeAddress(),
+                credential.credentialType(), credential.credentialHash());
     }
 
     private static String drepId(LedgerStateProvider.DRepDelegation drep) {

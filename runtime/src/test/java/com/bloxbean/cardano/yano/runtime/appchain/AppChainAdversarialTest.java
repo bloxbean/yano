@@ -83,6 +83,13 @@ class AppChainAdversarialTest {
         // C submits a message and (as self-proclaimed proposer) proposes blocks
         String idFromC = nodeC.submit("attack", "rogue payload".getBytes(StandardCharsets.UTF_8));
 
+        // Transport status becomes connected when the session is ready, just
+        // before the first application message is necessarily delivered. Wait
+        // for that independent precondition instead of making the security
+        // assertion depend on scheduler timing under a busy full-suite run.
+        awaitTrue("rogue member message reached B", () -> nodeB.recentMessages(10).stream()
+                .anyMatch(m -> m.messageIdHex().equals(idFromC)));
+
         // Give C several proposer ticks; B must never finalize anything
         Thread.sleep(8000);
 
@@ -104,20 +111,16 @@ class AppChainAdversarialTest {
     private AppChainSubsystem startNode(String name, byte[] signingKey, Set<String> members,
                                         String proposerHex, int serverPort,
                                         List<AppChainConfig.AppPeer> peers) throws Exception {
-        AppChainConfig config = new AppChainConfig(
-                CHAIN_ID,
-                HexUtil.encodeHexString(signingKey),
-                members,
-                peers,
-                65536, 3600, 600,
-                proposerHex,
-                2,
-                500,
-                100,
-                AppChainConfig.DEFAULT_STATE_MACHINE,
-                null,
-                null, 0, java.util.List.of(),
-                false, 0, java.util.Map.of());
+        AppChainConfig config = AppChainConfig.builder(CHAIN_ID)
+                .signingKeyHex(HexUtil.encodeHexString(signingKey))
+                .memberKeysHex(members)
+                .peers(peers)
+                .proposerKeyHex(proposerHex)
+                .threshold(2)
+                .blockIntervalMs(500)
+                .maxBlockMessages(100)
+                .stateCommitmentIdentity(TestStateCommitments.MPF)
+                .build();
         AppChainSubsystem subsystem = new AppChainSubsystem(config, MAGIC, null, null,
                 tempDir.resolve("ledger-" + name).toString(), log);
         subsystems.add(subsystem);

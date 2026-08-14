@@ -1,0 +1,68 @@
+description = 'Build-only ADR-011.2 native plugin SPI conformance fixture'
+
+dependencies {
+    compileOnly project(':core-api')
+
+    testImplementation project(':core-api')
+    testImplementation project(':plugin-catalog')
+    testImplementation project(':runtime')
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+def generatedVersionSources = layout.buildDirectory.dir('generated/sources/pluginVersion/java')
+tasks.register('generatePluginVersionSource') {
+    inputs.property('pluginVersion', project.version.toString())
+    outputs.dir(generatedVersionSources)
+    doLast {
+        def target = generatedVersionSources.get().file(
+                'com/bloxbean/cardano/yano/appchain/conformance/'
+                        + 'NativePluginConformanceVersion.java').asFile
+        target.parentFile.mkdirs()
+        target.setText("""package com.bloxbean.cardano.yano.appchain.conformance;
+
+final class NativePluginConformanceVersion {
+    static final String VERSION = \"${project.version}\";
+
+    private NativePluginConformanceVersion() {
+    }
+}
+""", 'UTF-8')
+    }
+}
+
+sourceSets.main.java.srcDir(generatedVersionSources)
+tasks.named('compileJava') {
+    dependsOn tasks.named('generatePluginVersionSource')
+}
+tasks.named('sourceJar') {
+    dependsOn tasks.named('generatePluginVersionSource')
+}
+
+// This artifact is an application build fixture, not a supported plugin
+// distribution. It enters the app only through the explicit
+// includeNativePluginConformanceFixture property.
+def fixturePublication = publishing.publications.findByName('mavenJava')
+if (fixturePublication != null) {
+    publishing.publications.remove(fixturePublication)
+}
+tasks.withType(PublishToMavenRepository).configureEach {
+    enabled = false
+}
+tasks.withType(PublishToMavenLocal).configureEach {
+    enabled = false
+}
+
+tasks.named('test') {
+    dependsOn tasks.named('jar')
+    def testWorkDir = layout.buildDirectory.dir('test-workdir')
+    workingDir testWorkDir
+    doFirst {
+        testWorkDir.get().asFile.mkdirs()
+        systemProperty 'yano.plugin.conformance.fixture.jar',
+                tasks.named('jar').get().archiveFile.get().asFile.absolutePath
+    }
+}

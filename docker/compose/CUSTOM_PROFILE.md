@@ -95,6 +95,8 @@ For a custom profile, Docker uses this default host chainstate path:
 
 ```text
 chainstate-mydevnet/
+appchain-chainstate-mydevnet/
+appchain-indexers-mydevnet/
 ```
 
 The launcher creates this directory on `start:mydevnet` or `restart:mydevnet`.
@@ -109,6 +111,12 @@ You can also set it permanently in `compose/.env`:
 
 ```text
 YANO_CHAINSTATE_PATH=/data/yano-mydevnet
+YANO_APPCHAIN_STATE_PATH=/data/yano-mydevnet-appchain
+YANO_APPCHAIN_INDEXER_PATH=/data/yano-mydevnet-indexers
 ```
+
+`YANO_APPCHAIN_STATE_PATH` controls the separate app-chain RocksDB root and
+`YANO_APPCHAIN_INDEXER_PATH` controls rebuildable indexes; set all three paths
+when relocating a multi-purpose node.
 
 If genesis values change after a chainstate already exists, stop Yano and reset that chainstate directory before starting again.

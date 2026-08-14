@@ -1,0 +1,906 @@
+<script lang="ts">
+  import { onMount } from 'svelte';
+  import type { AnchorCommitment, AppCapabilityManifest, AppChainStatus,
+    AuthenticatedSnapshotStatus, AuthenticatedSnapshotSummary, ProofVerificationResult,
+    ProofSubjectDescriptor, StateProofEnvelope } from '$lib/api/types';
+  import { YanoApi, apiFailureMessage } from '$lib/api/client';
+  import { discoverChainCapabilities } from '$lib/appchain/capabilities';
+  import { effectStatsView } from '$lib/appchain/effect-stats';
+  import { assessProofBinding, parseProofEnvelope } from '$lib/appchain/proof-verification';
+  import { asciiHex, boundedPretty, finalizedMessageStateKey, hexSha256, PRODUCT_ID, SHA256, STATE_KEY } from '$lib/appchain/verification';
+  import { verifyMessageInclusionProof, type BrowserMessageInclusionProof } from '$lib/appchain/message-proof';
+  import { verifyNormalizedMpf, type NormalizedMpfProof } from '$lib/appchain/normalized-mpf';
+  import { numberValue, objectList, objectValue, shortHash, stringValue } from '$lib/appchain/value';
+  import CopyValue from './CopyValue.svelte';
+  import MetricRow from './MetricRow.svelte';
+
+  type PanelSection = 'all' | 'overview' | 'verification' | 'effects';
+  type ProofSection = 'message' | 'state' | 'import' | 'advanced';
+
+  let { api, chainId, status, pluginBundleIds = [], section = 'all',
+    proofSection = 'message', initialMessageId = '' } = $props<{
+    api: YanoApi;
+    chainId: string;
+    status: AppChainStatus;
+    pluginBundleIds?: string[];
+    section?: PanelSection;
+    proofSection?: ProofSection;
+    initialMessageId?: string;
+  }>();
+  let effects = $state<Array<Record<string, unknown>>>([]);
+  let effectStats = $state<Record<string, unknown>>({});
+  let effectError = $state('');
+  let effectProof = $state('');
+  let proposalId = $state('');
+  let proposal = $state('');
+  let proposalError = $state('');
+  let documentEntityId = $state('');
+  let documentReviewState = $state('');
+  let messageId = $state('');
+  let stateKey = $state('');
+  let expectedPayloadHash = $state('');
+  let expectedProofValueHash = $state('');
+  let evidence = $state('');
+  let messageProof = $state('');
+  let messagePackage = $state('');
+  let messageInclusionValid = $state<boolean>();
+  let proof = $state('');
+  let proofEnvelope = $state<StateProofEnvelope>();
+  let expectedProofRoot = $state('');
+  let expectedProofHeight = $state<number>();
+  let rootProvenance = $state('');
+  let proofVerification = $state<ProofVerificationResult>();
+  let anchorCommitment = $state<AnchorCommitment>();
+  let payloadDigest = $state('');
+  let proofValueDigest = $state('');
+  let verificationError = $state('');
+  let busy = $state(false);
+  let capabilities = $derived(discoverChainCapabilities(status, pluginBundleIds));
+  let manifest: AppCapabilityManifest | undefined = $derived(status.capabilityManifest);
+  let effectView = $derived(effectStatsView(effectStats));
+  let showOverview = $derived(section === 'all' || section === 'overview');
+  let showVerification = $derived(section === 'all' || section === 'verification');
+  let showMessageProof = $derived(proofSection === 'message');
+  let showEffects = $derived(section === 'all' || section === 'effects');
+  let proofBinding = $derived(proofEnvelope
+    ? assessProofBinding(proofEnvelope, expectedProofRoot, expectedProofHeight) : undefined);
+  let rawEffectStats = $derived(boundedPretty(effectStats, 65_536));
+  let statsDialog = $state<HTMLDialogElement>();
+  let snapshotStatus = $state<AuthenticatedSnapshotStatus>();
+  let snapshots = $state<AuthenticatedSnapshotSummary[]>([]);
+  let snapshotDetail = $state('');
+  let snapshotError = $state('');
+  let proofSubjects = $state<ProofSubjectDescriptor[]>([]);
+  let selectedSubjectId = $state('');
+  let typedCoordinates = $state<Record<string, string>>({});
+  let selectedClaimId = $state('');
+  let typedClaimOperand = $state('');
+  let typedProofResult = $state('');
+  let typedPackage = $state('');
+  let typedError = $state('');
+  let typedBrowserVerification = $state<boolean>();
+  let selectedSubject = $derived(proofSubjects.find((item) => item.subjectId === selectedSubjectId));
+  let showTypedState = $derived(proofSection === 'state');
+  let showRawState = $derived(proofSection === 'import' || proofSection === 'advanced');
+
+  onMount(() => {
+    messageId = initialMessageId;
+    if (showEffects && capabilities.effects) void refreshEffects();
+    if (showOverview && capabilities.authenticatedSnapshots) void refreshSnapshots();
+    if (showVerification) void refreshProofSubjects();
+  });
+
+  async function refreshProofSubjects(): Promise<void> {
+    typedError = '';
+    try {
+      proofSubjects = (await api.chainProofSubjects(chainId)).subjects;
+      if (!proofSubjects.some((item) => item.subjectId === selectedSubjectId)) {
+        selectedSubjectId = proofSubjects[0]?.subjectId ?? '';
+        typedCoordinates = {};
+        selectedClaimId = '';
+      }
+    } catch (cause) {
+      typedError = apiFailureMessage(cause, 'Typed proof subjects unavailable');
+    }
+  }
+
+  function selectSubject(subjectId: string): void {
+    selectedSubjectId = subjectId;
+    typedCoordinates = {};
+    selectedClaimId = '';
+    typedClaimOperand = '';
+    typedProofResult = '';
+    typedPackage = '';
+    typedBrowserVerification = undefined;
+  }
+
+  function typedRequest(): Record<string, unknown> {
+    if (!selectedSubject) throw new Error('Select a proof subject.');
+    for (const coordinate of selectedSubject.coordinates) {
+      if (!(typedCoordinates[coordinate.id] ?? '').trim()) {
+        throw new Error(`Enter ${coordinate.label}.`);
+      }
+    }
+    const selectedClaim = selectedSubject.claims.find((item) => item.claimId === selectedClaimId);
+    const operands = selectedClaim?.operands.length
+      ? Object.fromEntries(selectedClaim.operands.map((operand) => [operand, typedClaimOperand])) : {};
+    return { coordinates: typedCoordinates, view: 'latest', includeEvidence: false,
+      ...(selectedClaim ? { claim: { claimId: selectedClaim.claimId, operands } } : {}) };
+  }
+
+  async function generateTypedProof(): Promise<void> {
+    typedError = ''; typedProofResult = ''; typedPackage = ''; typedBrowserVerification = undefined;
+    try {
+      const request = typedRequest();
+      const [result, portable] = await Promise.all([
+        api.chainTypedProof(chainId, selectedSubjectId, request),
+        api.chainTypedProofPackage(chainId, selectedSubjectId, request)
+      ]);
+      typedProofResult = boundedPretty(result, 128 * 1024);
+      typedPackage = boundedPretty(portable, 128 * 1024);
+    } catch (cause) { typedError = apiFailureMessage(cause, 'Typed proof unavailable'); }
+  }
+
+  async function exportTypedOnChain(): Promise<void> {
+    typedError = '';
+    try {
+      const exported = await api.chainOnChainProofExport(
+        chainId, selectedSubjectId, typedRequest());
+      typedBrowserVerification = verifyNormalizedMpf(
+        exported.normalizedMpfProof as NormalizedMpfProof);
+      typedPackage = boundedPretty(exported, 128 * 1024);
+    } catch (cause) { typedError = apiFailureMessage(cause, 'On-chain export unavailable'); }
+  }
+
+  async function refreshSnapshots(): Promise<void> {
+    snapshotError = '';
+    try {
+      const [statusResult, page] = await Promise.all([
+        api.chainSnapshotStatus(chainId), api.chainSnapshots(chainId)
+      ]);
+      snapshotStatus = statusResult;
+      snapshots = page.items;
+    } catch (cause) {
+      snapshotError = apiFailureMessage(cause, 'Authenticated snapshot status unavailable');
+    }
+  }
+
+  async function inspectSnapshot(item: AuthenticatedSnapshotSummary): Promise<void> {
+    snapshotError = '';
+    try {
+      snapshotDetail = boundedPretty(await api.chainSnapshot(
+        chainId, item.seriesId, item.sequence));
+    } catch (cause) {
+      snapshotError = apiFailureMessage(cause, 'Snapshot descriptor unavailable');
+    }
+  }
+
+  async function refreshEffects(): Promise<void> {
+    effectError = '';
+    try {
+      const [page, stats] = await Promise.all([api.chainEffects(chainId), api.chainEffectStats(chainId)]);
+      effects = objectList(page.effects);
+      effectStats = objectValue(stats.stats);
+    } catch (cause) { effectError = apiFailureMessage(cause, 'Effects unavailable'); }
+  }
+
+  async function operate(action: 'requeue' | 'cancel', effect: Record<string, unknown>): Promise<void> {
+    const height = numberValue(effect.height, -1);
+    const ordinal = numberValue(effect.ordinal, -1);
+    if (height < 0 || ordinal < 0 || !confirm(`${action} effect ${height}/${ordinal}?`)) return;
+    busy = true;
+    effectError = '';
+    try {
+      if (action === 'requeue') await api.requeueEffect(chainId, height, ordinal);
+      else await api.cancelEffect(chainId, height, ordinal);
+      await refreshEffects();
+    } catch (cause) { effectError = apiFailureMessage(cause, `Unable to ${action} effect`); }
+    finally { busy = false; }
+  }
+
+  async function inspectEffectProof(effect: Record<string, unknown>): Promise<void> {
+    effectError = '';
+    try {
+      effectProof = boundedPretty(await api.chainEffectProof(
+        chainId, numberValue(effect.height), numberValue(effect.ordinal)));
+    } catch (cause) { effectError = apiFailureMessage(cause, 'Effect proof unavailable'); }
+  }
+
+  async function queryProposal(): Promise<void> {
+    proposal = '';
+    proposalError = '';
+    if (!capabilities.roleDomainBundle || !PRODUCT_ID.test(proposalId)) {
+      proposalError = 'Enter a valid proposal id.';
+      return;
+    }
+    try {
+      const committedQuery = await api.chainQuery(
+        chainId, 'components/role-approvals/proposal', asciiHex(proposalId));
+      try {
+        const decodedProjection = await api.domain(capabilities.roleDomainBundle,
+          `proposals/${proposalId}`, { chain: chainId });
+        proposal = boundedPretty({ committedQuery, decodedProjection });
+      } catch (cause) {
+        proposal = boundedPretty({ committedQuery,
+          decodedProjectionUnavailable: apiFailureMessage(cause, 'Decoded projection unavailable') });
+      }
+    } catch (cause) { proposalError = apiFailureMessage(cause, 'Proposal unavailable'); }
+  }
+
+  async function queryDocumentReview(): Promise<void> {
+    documentReviewState = '';
+    proposalError = '';
+    if (!PRODUCT_ID.test(proposalId) || !PRODUCT_ID.test(documentEntityId)) {
+      proposalError = 'Enter canonical proposal and document entity ids.';
+      return;
+    }
+    try {
+      const [policy, proposalResult, head, receipt] = await Promise.all([
+        api.chainQuery(chainId, 'components/role-approvals/policy',
+          asciiHex('document-release')),
+        api.chainQuery(chainId, 'components/role-approvals/proposal', asciiHex(proposalId)),
+        api.chainQuery(chainId, 'components/documents/head', asciiHex(documentEntityId)),
+        api.chainQuery(chainId, 'components/document-review-receipts/receipt', asciiHex(proposalId))
+      ]);
+      documentReviewState = boundedPretty({ policy, proposal: proposalResult,
+        documentHead: head, approvalConsumptionReceipt: receipt });
+    } catch (cause) {
+      proposalError = apiFailureMessage(cause, 'Document-review state unavailable');
+    }
+  }
+
+  async function loadEvidence(): Promise<void> {
+    evidence = ''; messageProof = ''; messagePackage = ''; payloadDigest = '';
+    messageInclusionValid = undefined; verificationError = '';
+    if (!SHA256.test(messageId)) { verificationError = 'Message id must be 64 lowercase hex characters.'; return; }
+    try {
+      const [bundle, message, inclusion, portable] = await Promise.all([
+        api.chainEvidence(chainId, messageId), api.chainMessage(chainId, messageId),
+        api.chainMessageProof(chainId, messageId), api.chainMessageProofPackage(chainId, messageId)
+      ]);
+      evidence = boundedPretty(bundle);
+      messageProof = boundedPretty(inclusion);
+      messagePackage = boundedPretty(portable, 128 * 1024);
+      messageInclusionValid = verifyMessageInclusionProof(
+        inclusion as BrowserMessageInclusionProof);
+      if (typeof message.bodyHex === 'string') payloadDigest = await hexSha256(message.bodyHex);
+    } catch (cause) { verificationError = apiFailureMessage(cause, 'Evidence unavailable'); }
+  }
+
+  async function applyProofEnvelope(
+    result: StateProofEnvelope,
+    root: string,
+    provenance: string,
+    height?: number
+  ): Promise<void> {
+    proofEnvelope = result;
+    proof = JSON.stringify(result, null, 2);
+    stateKey = result.key;
+    expectedProofRoot = root;
+    expectedProofHeight = height;
+    rootProvenance = provenance;
+    proofVerification = undefined;
+    proofValueDigest = typeof result.valueHex === 'string'
+      ? await hexSha256(result.valueHex) : '';
+  }
+
+  async function loadProof(): Promise<void> {
+    proof = ''; proofEnvelope = undefined; proofValueDigest = ''; verificationError = '';
+    anchorCommitment = undefined;
+    if (!STATE_KEY.test(stateKey)) { verificationError = 'State key must be 1–256 bytes of canonical lowercase hex.'; return; }
+    try {
+      const result = await api.chainProof(chainId, stateKey);
+      await applyProofEnvelope(result, '',
+        'No trusted root selected — the proof-serving node root is not used as trust');
+    } catch (cause) { verificationError = apiFailureMessage(cause, 'State proof unavailable'); }
+  }
+
+  async function loadAnchoredProof(): Promise<void> {
+    proof = ''; proofEnvelope = undefined; proofValueDigest = ''; verificationError = '';
+    proofVerification = undefined;
+    if (!STATE_KEY.test(stateKey)) {
+      verificationError = 'State key must be 1–256 bytes of canonical lowercase hex.';
+      return;
+    }
+    try {
+      const anchor = await api.chainAnchorCommitment(chainId);
+      const result = await api.chainProof(chainId, stateKey, anchor.anchoredHeight);
+      anchorCommitment = anchor;
+      await applyProofEnvelope(
+        result, anchor.stateRoot,
+        'Node-reported L1 confirmation — verify the Cardano transaction independently',
+        anchor.anchoredHeight);
+    } catch (cause) {
+      verificationError = apiFailureMessage(
+        cause, 'A retained proof for the latest confirmed anchor is unavailable');
+    }
+  }
+
+  async function importProof(): Promise<void> {
+    verificationError = '';
+    try {
+      const result = parseProofEnvelope(proof);
+      const keepExternalRoot = SHA256.test(expectedProofRoot)
+        && rootProvenance === 'User-supplied external root';
+      await applyProofEnvelope(
+        result,
+        keepExternalRoot ? expectedProofRoot : '',
+        keepExternalRoot ? rootProvenance
+          : 'No trusted root selected — pasted proof roots are not trusted automatically');
+    } catch (cause) {
+      verificationError = cause instanceof Error ? cause.message : 'Invalid proof envelope';
+    }
+  }
+
+  async function verifyProof(): Promise<void> {
+    verificationError = '';
+    proofVerification = undefined;
+    if (!proofEnvelope) { verificationError = 'Load or import a proof first.'; return; }
+    if (!SHA256.test(expectedProofRoot)) {
+      verificationError = 'Expected root must be 64 lowercase hex characters.';
+      return;
+    }
+    try {
+      proofVerification = await api.verifyChainProof(chainId, {
+        mode: proofEnvelope.presence === 'ABSENT' || proofEnvelope.valueHex === undefined
+          ? 'exclusion' : 'inclusion',
+        profile: proofEnvelope.profile ?? 'mpf-blake2b256-v1',
+        presence: proofEnvelope.presence
+          ?? (proofEnvelope.valueHex === undefined ? 'ABSENT' : 'PRESENT'),
+        expectedRootHex: expectedProofRoot,
+        keyHex: proofEnvelope.key,
+        ...(proofEnvelope.valueHex === undefined ? {} : { valueHex: proofEnvelope.valueHex }),
+        proofWireHex: proofEnvelope.proofWireHex
+      });
+    } catch (cause) {
+      verificationError = apiFailureMessage(cause, 'Proof verification failed');
+    }
+  }
+
+  function markExternalRoot(): void {
+    expectedProofHeight = undefined;
+    anchorCommitment = undefined;
+    rootProvenance = 'User-supplied external root';
+    proofVerification = undefined;
+  }
+
+  async function useFinalizedMessageStateKey(): Promise<void> {
+    if (!SHA256.test(messageId)) {
+      verificationError = 'Message id must be 64 lowercase hex characters.';
+      return;
+    }
+    stateKey = await finalizedMessageStateKey(messageId);
+    verificationError = '';
+  }
+
+  const match = (digest: string, expected: string) => !expected ? 'computed locally'
+    : !SHA256.test(expected) ? 'invalid expected hash'
+      : digest === expected ? 'MATCH' : 'MISMATCH';
+</script>
+
+{#if showOverview}
+  <div class="section-title">Discovered capabilities</div>
+  <section class="card p-4">
+    <div class="flex flex-wrap gap-2">
+      <span class="badge badge-ok">EVIDENCE BUNDLES</span><span class="badge badge-ok">STATE PROOFS</span>
+      {#if capabilities.effects}<span class="badge badge-ok">EFFECTS</span>{/if}
+      {#if capabilities.roleApprovals}<span class="badge badge-ok">ROLE APPROVALS</span>{/if}
+      {#if capabilities.finalizedMessageIndex}<span class="badge badge-ok">MESSAGE STATE INDEX</span>{/if}
+      {#if capabilities.authenticatedSnapshots}<span class="badge badge-ok">AUTHENTICATED SNAPSHOTS</span>{/if}
+      <span class="badge">{capabilities.commitmentTarget.toUpperCase()}</span>
+    </div>
+    <p class="mb-0 mt-3 text-xs text-slate-500">Source: {capabilities.sources.join(' · ')}</p>
+  </section>
+
+  {#if manifest}
+    <div class="section-title">Application composition</div>
+    <section class="card p-5">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div><strong>{manifest.applicationId}</strong>
+          <span class="ml-2 text-xs text-slate-500">v{manifest.applicationVersion}</span></div>
+        <CopyValue value={manifest.manifestDigest} width={22} label="capability manifest digest" />
+      </div>
+      <div class="mt-4 grid gap-4 lg:grid-cols-3">
+        <div><h3 class="mt-0 text-xs uppercase tracking-wide text-slate-500">Components</h3>
+          {#each manifest.components as component}
+            <div class="mb-2 rounded-lg border border-slate-800 p-2 text-xs">
+              <strong>{component.id}</strong><div class="text-slate-500">{component.origin} · {component.stateNamespace}</div>
+            </div>
+          {:else}<p class="text-xs text-slate-500">Standalone application state.</p>{/each}
+        </div>
+        <div><h3 class="mt-0 text-xs uppercase tracking-wide text-slate-500">Workflows</h3>
+          {#each manifest.workflows as workflow}
+            <div class="mb-2 rounded-lg border border-slate-800 p-2 text-xs">
+              <strong>{workflow.id}</strong><div class="text-slate-500">{workflow.participantComponentIds.join(' → ')}</div>
+            </div>
+          {:else}<p class="text-xs text-slate-500">No cross-component workflow.</p>{/each}
+        </div>
+        <div><h3 class="mt-0 text-xs uppercase tracking-wide text-slate-500">Cross-cutting</h3>
+          {#each manifest.crossCutting.filter((item) => item.enabled) as capability}
+            <div class="mb-2 rounded-lg border border-slate-800 p-2 text-xs">
+              <strong>{capability.capabilityId}</strong><div class="text-slate-500">{capability.origin}</div>
+            </div>
+          {/each}
+        </div>
+      </div>
+      {#if manifest.workflows.length}
+        <div class="mt-4 rounded-lg border border-violet-500/25 bg-violet-500/5 p-3 text-xs">
+          <span class="text-slate-400">Committed transition trace:</span>
+          <strong class="ml-2">command → authorization / approval → application mutation → consumption / effect receipt</strong>
+        </div>
+      {/if}
+    </section>
+  {/if}
+
+  {#if capabilities.authenticatedSnapshots}
+    <div class="section-title">Authenticated snapshots</div>
+    <section class="card p-5">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 class="m-0 text-sm font-semibold">Logical snapshot series</h2>
+          <p class="mb-0 mt-1 text-xs text-slate-500">
+            Immutable roots remain committed in primary app-chain state; online/archive lifecycle is node-local.
+          </p>
+        </div>
+        <button type="button" class="rounded-lg border border-slate-700 px-3 py-2 text-xs"
+                onclick={refreshSnapshots}>Refresh</button>
+      </div>
+      {#if snapshotStatus}
+        {#if snapshotStatus.disputed}
+          <div class="mt-4 rounded-lg border border-rose-700 bg-rose-950/40 p-3 text-sm text-rose-200">
+            Snapshot lineage is DISPUTED. Proof and lifecycle operations are fail-closed.
+            {#if snapshotStatus.disputeReason}
+              <div class="mt-1 font-mono text-xs">{snapshotStatus.disputeReason}</div>
+            {/if}
+          </div>
+        {/if}
+        <div class="mt-4 grid gap-2 sm:grid-cols-3">
+          {#each [
+            ['Runtime', snapshotStatus.enabled ? 'enabled' : 'disabled'],
+            ['Tip height', snapshotStatus.tipHeight ?? '—'],
+            ['Online storage', snapshotStatus.storage ?? '—']
+          ] as metric}
+            <div class="rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+              <div class="text-[.68rem] uppercase tracking-wide text-slate-500">{metric[0]}</div>
+              <div class="mt-1 font-mono text-sm text-slate-100">{metric[1]}</div>
+            </div>
+          {/each}
+        </div>
+        <p class="mb-0 mt-3 text-xs text-slate-500">
+          Series: {snapshotStatus.series?.join(', ') || 'none'}
+        </p>
+      {/if}
+      {#if snapshotError}<p class="text-sm text-rose-300">{snapshotError}</p>{/if}
+      <div class="mt-4 overflow-x-auto rounded-lg border border-slate-800">
+        <table class="w-full text-left text-xs">
+          <thead class="bg-slate-950/70 text-slate-500"><tr>
+            <th class="p-3">Series / sequence</th><th class="p-3">Profile</th>
+            <th class="p-3">Entries</th><th class="p-3">Completed height</th>
+            <th class="p-3">Lifecycle</th><th class="p-3"></th>
+          </tr></thead>
+          <tbody>
+            {#each snapshots as item}
+              <tr class="border-t border-slate-800">
+                <td class="p-3"><strong>{item.seriesId}</strong><div class="text-slate-500">#{item.sequence}</div></td>
+                <td class="p-3 font-mono">{item.profile}</td>
+                <td class="p-3">{item.entryCount}</td><td class="p-3">{item.completedAppChainHeight}</td>
+                <td class="p-3"><span class="badge {item.lifecycle === 'ONLINE' ? 'badge-ok' : 'badge-warn'}">{item.lifecycle}</span></td>
+                <td class="p-3"><button type="button" class="rounded border border-slate-700 px-2 py-1"
+                  onclick={() => inspectSnapshot(item)}>Descriptor</button></td>
+              </tr>
+            {:else}<tr><td colspan="6" class="p-4 text-slate-500">No completed snapshots yet.</td></tr>{/each}
+          </tbody>
+        </table>
+      </div>
+      {#if snapshotDetail}
+        <pre class="mt-4 max-h-80 overflow-auto rounded-lg bg-slate-950 p-3 text-xs">{snapshotDetail}</pre>
+      {/if}
+    </section>
+  {/if}
+
+  {#if capabilities.roleApprovals}
+    <div class="section-title">Committed proposal</div>
+    <section class="card p-5">
+      <p class="mt-0 text-sm text-slate-400">Runs the stock role-aware committed query, then adds the decoded domain projection when available. The root-fixed result includes its committed height and state root.</p>
+      <div class="flex flex-wrap gap-2"><input class="min-w-64 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2" bind:value={proposalId} placeholder="proposal id" />
+        <button class="rounded-lg bg-violet-500 px-4 py-2 text-sm font-semibold" onclick={queryProposal}>Query</button></div>
+      {#if proposalError}<p class="text-sm text-rose-300">{proposalError}</p>{/if}
+      {#if proposal}<pre class="mt-4 max-h-96 overflow-auto rounded-lg bg-slate-950 p-3 text-xs">{proposal}</pre>{/if}
+    </section>
+  {/if}
+
+  {#if manifest?.applicationId === 'document-review'}
+    <div class="section-title">Document-review transition trace</div>
+    <section class="card p-5">
+      <p class="mt-0 text-sm text-slate-400">Reads the committed stock role policy and proposal, reused document head, and application-owned approval-consumption receipt at root-fixed heights.</p>
+      <div class="grid gap-2 md:grid-cols-[1fr_1fr_auto]">
+        <input class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+               bind:value={proposalId} placeholder="proposal id" />
+        <input class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+               bind:value={documentEntityId} placeholder="document entity id" />
+        <button class="rounded-lg bg-violet-500 px-4 py-2 text-sm font-semibold"
+                onclick={queryDocumentReview}>Read trace</button>
+      </div>
+      {#if proposalError}<p class="text-sm text-rose-300">{proposalError}</p>{/if}
+      {#if documentReviewState}<pre class="mt-4 max-h-96 overflow-auto rounded-lg bg-slate-950 p-3 text-xs">{documentReviewState}</pre>{/if}
+    </section>
+  {/if}
+{/if}
+
+{#if showEffects && capabilities.effects}
+  <div class="section-title">Effect lifecycle</div>
+  {#if effectError}<div class="mb-3 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-300">{effectError}</div>{/if}
+  <div class="grid items-stretch gap-4 xl:grid-cols-2">
+    <section class="card flex flex-col overflow-hidden xl:h-[42rem]">
+      <div class="flex items-start justify-between gap-3 border-b border-slate-800 px-4 py-3">
+        <div><h2 class="m-0 text-sm font-semibold">Effect statistics</h2>
+          <p class="m-0 mt-1 text-xs text-slate-500">Consensus and node-local execution</p></div>
+        <span class="badge {effectView.enabled ? 'badge-ok' : 'badge-warn'}">
+          {effectView.enabled ? 'ENABLED' : 'DISABLED'}
+        </span>
+      </div>
+      <div class="min-h-0 flex-1 overflow-auto p-4">
+        <div class="grid grid-cols-2 gap-2 sm:grid-cols-3">
+          {#each [
+            ['Queue', effectView.queueDepth],
+            ['In flight', effectView.inFlight],
+            ['Open on chain', effectView.openOnChain],
+            ['Result backlog', effectView.resultBacklog],
+            ['Executed', effectView.executed],
+            ['Parked / expired', `${effectView.parked} / ${effectView.expired}`]
+          ] as item}
+            <div class="rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+              <div class="text-[.68rem] uppercase tracking-wide text-slate-500">{item[0]}</div>
+              <div class="mt-1 font-mono text-base text-slate-100">{item[1]}</div>
+            </div>
+          {/each}
+        </div>
+
+        <h3 class="mb-2 mt-5 text-xs font-semibold uppercase tracking-wide text-slate-400">
+          Lifecycle status
+        </h3>
+        <div class="flex flex-wrap gap-2">
+          {#each effectView.statuses as statusCount}
+            <span class="badge {statusCount.count > 0 ? 'badge-ok' : ''}">
+              {statusCount.name} {statusCount.count}
+            </span>
+          {:else}<span class="text-xs text-slate-500">No status counters reported.</span>{/each}
+        </div>
+
+        <div class="mt-5 grid gap-4 sm:grid-cols-2">
+          <div>
+            <h3 class="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Result backlog
+            </h3>
+            {#each effectView.backlogByType as item}
+              <MetricRow label={item.name} value={item.count} />
+            {:else}<p class="text-xs text-slate-500">No per-type backlog reported.</p>{/each}
+          </div>
+          <div>
+            <h3 class="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Execution outcomes
+            </h3>
+            {#each effectView.executionTotals as item}
+              <MetricRow label={item.name} value={item.count} />
+            {:else}<p class="text-xs text-slate-500">No execution outcomes reported.</p>{/each}
+          </div>
+        </div>
+
+        <h3 class="mb-1 mt-5 text-xs font-semibold uppercase tracking-wide text-slate-400">
+          Pending age
+        </h3>
+        <MetricRow label="Oldest" value={`${effectView.oldestPendingAgeSeconds.toFixed(1)}s / ${effectView.oldestPendingAgeBlocks} blocks`} />
+
+        <h3 class="mb-1 mt-5 text-xs font-semibold uppercase tracking-wide text-slate-400">
+          Latency by operation
+        </h3>
+        {#each effectView.latency as latency}
+          <MetricRow label={latency.type} value={latency.count
+            ? `${latency.averageMillis?.toFixed(1)} ms avg / ${latency.count} runs`
+            : 'no samples'} />
+        {:else}<p class="text-xs text-slate-500">No latency series reported.</p>{/each}
+
+        <h3 class="mb-2 mt-5 text-xs font-semibold uppercase tracking-wide text-slate-400">
+          Executors
+        </h3>
+        <div class="space-y-2">
+          {#each effectView.executors as executor}
+            <article class="rounded-lg border border-slate-800 bg-slate-950/45 p-3 text-xs">
+              <div class="flex flex-wrap items-start justify-between gap-2">
+                <div><strong class="font-mono text-slate-100">{executor.id}</strong>
+                  <div class="mt-1 text-slate-500">{executor.types.join(', ') || 'no declared types'}</div></div>
+                <span class="badge {executor.readiness === 'READY' ? 'badge-ok'
+                  : executor.readiness === 'UNKNOWN' ? 'badge-warn' : 'badge-bad'}">
+                  {executor.readiness}
+                </span>
+              </div>
+              <div class="mt-2 grid grid-cols-2 gap-1 text-slate-400 sm:grid-cols-4">
+                <span>{executor.successes}/{executor.attempts} succeeded</span>
+                <span>{executor.failures} failed</span>
+                <span>{executor.inFlight} in flight</span>
+                <span>{executor.lastActivity}</span>
+              </div>
+              {#if executor.failureCode !== 'NONE'}
+                <div class="mt-2 text-rose-300">{executor.failureCode}</div>
+              {/if}
+            </article>
+          {:else}<p class="text-xs text-slate-500">No in-process executors configured.</p>{/each}
+        </div>
+      </div>
+      <div class="flex items-center justify-between gap-2 border-t border-slate-800 px-4 py-3">
+        <button class="rounded-lg border border-slate-700 px-3 py-2 text-xs"
+                onclick={refreshEffects}>Refresh</button>
+        <button class="rounded-lg border border-slate-700 px-3 py-2 text-xs"
+                onclick={() => statsDialog?.showModal()}>View raw statistics</button>
+      </div>
+    </section>
+    <section class="card flex flex-col overflow-hidden xl:h-[42rem]">
+      <div class="border-b border-slate-800 px-4 py-3"><h2 class="m-0 text-sm font-semibold">Emitted effects</h2><p class="m-0 text-xs text-slate-500">First 100 retained records · privileged actions require an operator API key</p></div>
+      <div class="min-h-0 flex-1 overflow-auto">
+        {#each effects as effect}
+          <div class="grid gap-2 border-b border-slate-800/60 p-4 text-xs md:grid-cols-[90px_1fr_100px_auto]">
+            <span class="font-mono text-violet-300">{numberValue(effect.height)}/{numberValue(effect.ordinal)}</span>
+            <div><strong>{stringValue(effect.type)}</strong><div class="mt-1 text-slate-500">{stringValue(effect.scope)} · {stringValue(effect.gate)} · expires {stringValue(effect.expiryHeight)}</div></div>
+            <span>{stringValue(effect.resultPolicy)}</span>
+            <div class="flex flex-wrap gap-1">
+              <button class="rounded border border-slate-700 px-2 py-1" onclick={() => inspectEffectProof(effect)}>Proof</button>
+              <button disabled={busy} class="rounded border border-amber-700 px-2 py-1 text-amber-300" onclick={() => operate('requeue', effect)}>Requeue</button>
+              <button disabled={busy} class="rounded border border-rose-700 px-2 py-1 text-rose-300" onclick={() => operate('cancel', effect)}>Cancel</button>
+            </div>
+          </div>
+        {:else}<p class="p-5 text-sm text-slate-500">No effects emitted yet.</p>{/each}
+      </div>
+      {#if effectProof}<pre class="m-4 max-h-64 overflow-auto rounded-lg bg-slate-950 p-3 text-xs">{effectProof}</pre>{/if}
+    </section>
+  </div>
+
+  <dialog bind:this={statsDialog}
+          class="m-auto w-[min(900px,calc(100%-2rem))] rounded-2xl border border-slate-700
+                 bg-slate-900 p-0 text-slate-100 backdrop:bg-slate-950/80">
+    <div class="flex items-center justify-between border-b border-slate-700 p-4">
+      <div><h2 class="m-0 text-lg font-semibold">Raw effect statistics</h2>
+        <p class="m-0 mt-1 text-xs text-slate-500">Bounded API response for diagnostics</p></div>
+      <div class="flex items-center gap-2">
+        <CopyValue value={rawEffectStats} display="JSON" label="effect statistics JSON" mono={false} />
+        <button type="button" class="rounded-lg border border-slate-700 px-3 py-2 text-sm"
+                onclick={() => statsDialog?.close()}>Close</button>
+      </div>
+    </div>
+    <pre class="m-4 max-h-[70vh] overflow-auto whitespace-pre-wrap break-all rounded-lg
+                bg-slate-950 p-4 text-xs">{rawEffectStats}</pre>
+  </dialog>
+{/if}
+
+{#if showVerification}
+  <div class="section-title">{proofSection === 'message' ? 'Message proof'
+    : proofSection === 'state' ? 'Typed state proof'
+    : proofSection === 'import' ? 'Import and verify'
+    : 'Advanced state proof'}</div>
+  <div class="grid gap-4 {showMessageProof ? '' : 'xl:grid-cols-1'}">
+  {#if showMessageProof}
+  <section class="card p-5">
+    <h2 class="mt-0 text-sm font-semibold">Evidence bundle</h2>
+    <p class="text-xs text-slate-500">Fetch the finalized bundle and message, then SHA-256 the exact payload bytes in this browser.</p>
+    <div class="flex gap-2"><input class="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs" bind:value={messageId} placeholder="64-character message id" />
+      <button type="button" class="rounded-lg bg-blue-500 px-3 py-2 text-sm font-semibold" onclick={loadEvidence}>Load</button></div>
+    <p class="mb-0 mt-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-2 text-xs text-amber-100">
+      Finality and state inclusion prove identity and position, not continued message-body availability.
+    </p>
+    <label class="mt-3 block text-xs text-slate-400">Expected payload SHA-256 (optional)
+      <input class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono"
+             bind:value={expectedPayloadHash} placeholder="64 lowercase hex characters" />
+    </label>
+    {#if expectedPayloadHash && !SHA256.test(expectedPayloadHash)}
+      <p class="text-xs text-amber-300">Expected payload hash must be 64 lowercase hex characters.</p>
+    {/if}
+    {#if payloadDigest}
+      <div class="mt-3 text-xs">
+        <span class="text-slate-500">Payload SHA-256 · {match(payloadDigest, expectedPayloadHash)}</span>
+        <div class="mt-1 flex justify-start"><CopyValue value={payloadDigest} width={64} label="payload SHA-256" /></div>
+      </div>
+    {/if}
+    {#if messageProof}
+      <h3 class="mb-1 mt-4 text-xs uppercase tracking-wide text-slate-500">Message → messagesRoot path</h3>
+      <p class="rounded-lg border p-2 text-xs {messageInclusionValid
+        ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
+        : 'border-rose-500/30 bg-rose-500/10 text-rose-200'}">
+        Browser path verification: {messageInclusionValid ? 'VALID' : 'INVALID'}
+      </p>
+      <pre class="max-h-64 overflow-auto rounded-lg bg-slate-950 p-3 text-xs">{messageProof}</pre>
+    {/if}
+    {#if evidence}
+      <h3 class="mb-1 mt-4 text-xs uppercase tracking-wide text-slate-500">Signed block / finality evidence</h3>
+      <pre class="max-h-96 overflow-auto rounded-lg bg-slate-950 p-3 text-xs">{evidence}</pre>
+    {/if}
+    {#if messagePackage}
+      <h3 class="mb-1 mt-4 text-xs uppercase tracking-wide text-slate-500">Portable message package</h3>
+      <p class="text-xs text-slate-500">Imported verdict fields are explanatory; verifiers recompute them.</p>
+      <pre class="max-h-96 overflow-auto rounded-lg bg-slate-950 p-3 text-xs">{messagePackage}</pre>
+    {/if}
+  </section>
+  {/if}
+  {#if showTypedState}
+  <section class="card p-5">
+    <div class="flex flex-wrap items-start justify-between gap-3">
+      <div><h2 class="m-0 text-sm font-semibold">Typed application fact</h2>
+        <p class="mb-0 mt-1 text-xs text-slate-500">The application contract derives the key,
+          decodes proof-carried bytes, and evaluates only a declared bounded claim.</p></div>
+      <button type="button" class="rounded-lg border border-slate-700 px-3 py-2 text-xs"
+              onclick={refreshProofSubjects}>Refresh subjects</button>
+    </div>
+    <label class="mt-4 block text-xs text-slate-400">Proof subject
+      <select class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+              value={selectedSubjectId} onchange={(event) => selectSubject(event.currentTarget.value)}>
+        {#each proofSubjects as subject}
+          <option value={subject.subjectId}>{subject.label}</option>
+        {/each}
+      </select>
+    </label>
+    {#if selectedSubject}
+      <p class="mb-2 mt-3 text-sm">{selectedSubject.description}</p>
+      <div class="flex flex-wrap gap-2 text-xs">
+        {#each selectedSubject.verificationTargets as target}<span class="badge">{target}</span>{/each}
+        <span class="badge">{selectedSubject.completeness === 'NONE'
+          ? 'NO SEMANTIC ABSENCE' : `COMPLETENESS: ${selectedSubject.completeness}`}</span>
+      </div>
+      <div class="mt-4 grid gap-3 md:grid-cols-2">
+        {#each selectedSubject.coordinates as coordinate}
+          <label class="block text-xs text-slate-400">{coordinate.label}
+            <input class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono"
+                   value={typedCoordinates[coordinate.id] ?? ''}
+                   oninput={(event) => typedCoordinates = {
+                     ...typedCoordinates, [coordinate.id]: event.currentTarget.value }}
+                   placeholder={coordinate.encoding} />
+          </label>
+        {/each}
+      </div>
+      <label class="mt-4 block text-xs text-slate-400">Semantic claim (optional)
+        <select class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2"
+                bind:value={selectedClaimId}>
+          <option value="">Decode fact only</option>
+          {#each selectedSubject.claims as claim}<option value={claim.claimId}>{claim.claimId}</option>{/each}
+        </select>
+      </label>
+      {#if selectedSubject.claims.find((item) => item.claimId === selectedClaimId)?.operands.length}
+        <label class="mt-3 block text-xs text-slate-400">Expected value
+          <input class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono"
+                 bind:value={typedClaimOperand} />
+        </label>
+      {/if}
+      <div class="mt-4 flex flex-wrap gap-2">
+        <button type="button" class="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950"
+                onclick={generateTypedProof}>Generate and evaluate</button>
+        {#if selectedSubject.verificationTargets.includes('ONCHAIN_MPF')}
+          <button type="button" class="rounded-lg border border-violet-500/50 px-4 py-2 text-sm text-violet-200"
+                  onclick={exportTypedOnChain}>Export MPF redeemer</button>
+        {/if}
+      </div>
+      {#if typedProofResult}
+        <h3 class="mb-1 mt-4 text-xs uppercase tracking-wide text-slate-500">Authenticated fact and claim</h3>
+        <pre class="max-h-96 overflow-auto rounded-lg bg-slate-950 p-3 text-xs">{typedProofResult}</pre>
+      {/if}
+      {#if typedPackage}
+        <h3 class="mb-1 mt-4 text-xs uppercase tracking-wide text-slate-500">Portable or on-chain package</h3>
+        {#if typedBrowserVerification !== undefined}
+          <p class="rounded-lg border p-2 text-xs {typedBrowserVerification
+            ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
+            : 'border-rose-500/30 bg-rose-500/10 text-rose-200'}">
+            Independent browser MPF verification: {typedBrowserVerification ? 'VALID' : 'INVALID'}
+          </p>
+        {/if}
+        <pre class="max-h-96 overflow-auto rounded-lg bg-slate-950 p-3 text-xs">{typedPackage}</pre>
+      {/if}
+    {:else}
+      <p class="mt-4 text-xs text-slate-500">This application exposes no typed proof subjects.
+        Advanced raw-key verification remains available.</p>
+    {/if}
+    {#if typedError}<p class="mt-3 text-sm text-rose-300">{typedError}</p>{/if}
+  </section>
+  {/if}
+  {#if showRawState}
+  <section class="card p-5">
+    <h2 class="mt-0 text-sm font-semibold">{proofSection === 'state'
+      ? 'Profile-aware state proof' : proofSection === 'import'
+      ? 'Import a proof envelope' : 'Raw physical-key proof'}</h2>
+    <p class="text-xs text-slate-500">Dispatches to this release's bounded MPF or classic-JMT verifier. Mathematical validity is reported separately from chain/profile/root/height trust.</p>
+    <input class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs"
+           bind:value={stateKey} placeholder="state key hex" />
+    <div class="mt-2 flex flex-wrap gap-2">
+      {#if capabilities.finalizedMessageIndex}
+        <button type="button" class="rounded-lg border border-violet-500/50 px-3 py-2 text-sm text-violet-200"
+                onclick={useFinalizedMessageStateKey}>Use message state key</button>
+      {/if}
+      <button type="button" class="rounded-lg bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950"
+              onclick={loadProof}>Load current proof</button>
+      <button type="button" class="rounded-lg border border-cyan-500/50 px-3 py-2 text-sm text-cyan-200"
+              onclick={loadAnchoredProof}>Load latest anchored proof</button>
+    </div>
+
+    <label class="mt-4 block text-xs text-slate-400">Proof envelope JSON
+      <textarea class="mt-1 h-44 w-full resize-y rounded-lg border border-slate-700 bg-slate-950 p-3 font-mono text-xs"
+                bind:value={proof} spellcheck="false"
+                placeholder="Paste a proof envelope returned by the proof endpoint"></textarea>
+    </label>
+    <button type="button" class="mt-2 rounded-lg border border-slate-700 px-3 py-2 text-xs"
+            onclick={importProof}>Import pasted envelope</button>
+
+    <label class="mt-4 block text-xs text-slate-400">Expected state root
+      <input class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono"
+             bind:value={expectedProofRoot} oninput={markExternalRoot}
+             placeholder="64 lowercase hex characters" />
+    </label>
+    <p class="mb-0 mt-1 text-xs text-slate-500">
+      Root source: {rootProvenance || 'not selected'}
+    </p>
+    {#if !SHA256.test(expectedProofRoot)}
+      <p class="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-200">Supply a root from a locally verified block, a threshold certificate under pinned membership, or an independently verified Cardano anchor. A root copied from this proof does not authenticate it.</p>
+    {/if}
+    {#if anchorCommitment}
+      <div class="mt-2 rounded-lg border border-slate-800 bg-slate-950/60 p-3 text-xs">
+        <div class="flex justify-between gap-3"><span class="text-slate-500">Anchored height</span><span>{anchorCommitment.anchoredHeight}</span></div>
+        <div class="mt-1 flex justify-between gap-3"><span class="text-slate-500">L1 transaction</span>
+          <CopyValue value={anchorCommitment.transactionHash} label="anchor transaction hash" /></div>
+        <div class="mt-1 flex justify-between gap-3"><span class="text-slate-500">App block hash</span>
+          <CopyValue value={anchorCommitment.blockHash} label="anchored app block hash" /></div>
+      </div>
+    {/if}
+
+    <label class="mt-3 block text-xs text-slate-400">Expected proof-value SHA-256 (optional)
+      <input class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono"
+             bind:value={expectedProofValueHash} placeholder="64 lowercase hex characters" />
+    </label>
+    {#if expectedProofValueHash && !SHA256.test(expectedProofValueHash)}
+      <p class="text-xs text-amber-300">Expected proof-value hash must be 64 lowercase hex characters.</p>
+    {/if}
+    {#if proofValueDigest}
+      <div class="mt-3 text-xs">
+        <span class="text-slate-500">Proof value SHA-256 · {match(proofValueDigest, expectedProofValueHash)}</span>
+        <div class="mt-1 flex justify-start"><CopyValue value={proofValueDigest} width={64} label="proof value SHA-256" /></div>
+      </div>
+    {/if}
+
+    <button type="button" class="mt-4 rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950"
+            onclick={verifyProof}>Verify proof</button>
+    {#if proofEnvelope && proofBinding}
+      <div class="mt-4 grid gap-2 sm:grid-cols-3" aria-live="polite">
+        <div class="rounded-lg border border-slate-800 p-3">
+          <div class="text-xs text-slate-500">{proofEnvelope.profile ?? 'legacy MPF'} path</div>
+          <div class="mt-1 font-semibold {proofVerification?.valid ? 'text-emerald-300' : proofVerification ? 'text-rose-300' : 'text-slate-400'}">
+            {proofVerification ? (proofVerification.valid ? 'VALID' : 'INVALID') : 'NOT CHECKED'}
+          </div>
+        </div>
+        <div class="rounded-lg border border-slate-800 p-3">
+          <div class="text-xs text-slate-500">Root binding</div>
+          <div class="mt-1 font-semibold {proofBinding.rootMatches ? 'text-emerald-300' : 'text-rose-300'}">
+            {proofBinding.rootMatches ? 'MATCH' : 'MISMATCH'}
+          </div>
+        </div>
+        <div class="rounded-lg border border-slate-800 p-3">
+          <div class="text-xs text-slate-500">Height binding</div>
+          <div class="mt-1 font-semibold {proofBinding.heightMatches === false ? 'text-rose-300' : proofBinding.heightMatches ? 'text-emerald-300' : 'text-slate-400'}">
+            {proofBinding.heightMatches === undefined ? 'NOT PINNED' : proofBinding.heightMatches ? 'MATCH' : 'MISMATCH'}
+          </div>
+        </div>
+      </div>
+    {/if}
+    {#if proofEnvelope}
+      <div class="mt-3 space-y-1 text-xs">
+        <div class="flex justify-between gap-3"><span class="text-slate-500">Proof root</span>
+          <CopyValue value={proofEnvelope.stateRoot} label="proof state root" /></div>
+        <div class="flex justify-between gap-3"><span class="text-slate-500">Proof key</span>
+          <CopyValue value={proofEnvelope.key} label="proof key" /></div>
+        <div class="flex justify-between gap-3"><span class="text-slate-500">Profile</span>
+          <span class="font-mono">{proofEnvelope.profile ?? 'mpf-blake2b256-v1 (legacy)'}</span></div>
+        <div class="flex justify-between gap-3"><span class="text-slate-500">Presence</span>
+          <span>{proofEnvelope.presence ?? (proofEnvelope.valueHex === undefined ? 'ABSENT' : 'PRESENT')}</span></div>
+        {#if proofEnvelope.genesisId}
+          <div class="flex justify-between gap-3"><span class="text-slate-500">Genesis</span>
+            <CopyValue value={proofEnvelope.genesisId} label="state genesis identity" /></div>
+        {/if}
+      </div>
+    {/if}
+  </section>
+  {/if}
+  </div>
+  {#if verificationError}<p class="text-sm text-rose-300">{verificationError}</p>{/if}
+{/if}

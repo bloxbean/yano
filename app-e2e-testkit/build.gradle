@@ -1,0 +1,37 @@
+dependencies {
+    api platform(
+            "${quarkusPlatformGroupId}:${quarkusPlatformArtifactId}:${quarkusPlatformVersion}")
+    api 'io.quarkus:quarkus-junit'
+    api libs.junit.jupiter.api
+    api libs.cardano.client.lib
+    api libs.cardano.client.backend.blockfrost
+    api libs.cardano.client.quicktx
+    implementation libs.jackson.databind
+}
+
+java {
+    sourceCompatibility = 25
+    targetCompatibility = 25
+}
+
+tasks.named('compileJava') {
+    options.compilerArgs.removeAll { it.startsWith('-Aproject=') }
+}
+
+tasks.named('processResources') {
+    from(rootProject.file('app/config/network/devnet/shelley-genesis.json')) {
+        into 'META-INF/yano/testkit/devnet'
+    }
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            artifactId = 'yano-app-e2e-testkit'
+            pom {
+                name = 'Yano Application E2E Testkit'
+                description = 'Reusable external-process and Quarkus E2E support for Yano distributions'
+            }
+        }
+    }
+}

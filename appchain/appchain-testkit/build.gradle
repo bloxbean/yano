@@ -11,12 +11,19 @@ java {
     targetCompatibility = 25
 }
 
+tasks.named('compileJava') {
+    // This module has no annotation processor that consumes the repository-wide
+    // project identity option, so do not emit an irrelevant javac processing warning.
+    options.compilerArgs.removeAll { it.startsWith('-Aproject=') }
+}
+
 publishing {
     publications {
         mavenJava(MavenPublication) {
+            artifactId = 'yano-appchain-core-testkit'
             pom {
-                name = 'Yano App-Chain Testkit'
-                description = 'JUnit 5 extension for embedded multi-node app-chain clusters in application tests'
+                name = 'Yano App-Chain Core Testkit'
+                description = 'OrderedLog, host SPI, and plugin conformance support for Yano'
             }
         }
     }

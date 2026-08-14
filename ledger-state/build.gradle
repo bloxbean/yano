@@ -8,6 +8,12 @@ dependencies {
     api(libs.cf.rewards.calculation) {
         // Exclude transitive google-collections which conflicts with guava in Quarkus
         exclude group: 'com.google.collections', module: 'google-collections'
+        // The upstream 1.0.2 POM accidentally exposes build-only Maven
+        // plugins as runtime dependencies. Ledger code never executes Maven;
+        // retaining these plugins adds Guice/Plexus and their classifiers to
+        // every node image without a runtime path.
+        exclude group: 'org.apache.maven.plugins', module: 'maven-gpg-plugin'
+        exclude group: 'org.apache.maven.plugins', module: 'maven-javadoc-plugin'
     }
 
     // Generate @DomainEventListener bindings at build time

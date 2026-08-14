@@ -1,16 +1,16 @@
 # Yano App Chain — Consensus & Internals Guide
 
 How the app chain works end to end, at the level a developer needs to extend
-it, debug it, or audit it. Companion docs: the
-[user guide](APP_CHAIN_USER_GUIDE.md) (configuration, REST, operations), the
-[tutorial](APP_CHAIN_TUTORIAL.md) (hands-on walkthrough), and the ADRs under
-`adr/app-layer/` (design history: 005 framework, 006 extensions,
-008.x consensus/anchoring iterations).
+it, debug it, or audit it. Companion docs are the
+[core app-chain guide](appchain/README.md), the
+[plugin query/domain API contract](APP_CHAIN_PLUGIN_QUERY_AND_DOMAIN_API.md),
+and the core ADRs under `adr/app-layer/`. Extension tutorials and product ADRs
+live in [Yano X](https://github.com/bloxbean/yano-x).
 
 Code pointers use class names — start at
 `runtime/.../appchain/AppChainEngine.java` (consensus core),
-`core-api/.../appchain/` (SPI + codecs), and
-`appchain/appchain-stdlib/` (standard-library state machines).
+`core-api/.../appchain/` (SPI + codecs), and `runtime/.../OrderedLog.java`
+(the one built-in state machine).
 
 ---
 
@@ -278,7 +278,7 @@ with the block that finalizes them.
 ## 7. State, the MPF trie, and proofs
 
 Each chain's ledger is one RocksDB instance
-(`<yano.storage.path>/app-chain/<chain-id>/`) holding column families for
+(`<resolved yano.app-chain.storage.path>/<chain-id>/`) holding column families for
 blocks, framework metadata, the message index, query indexes, and the **MPF
 trie nodes** (Merkle Patricia Forestry — the same construction as Aiken's
 `merkle-patricia-forestry`, so proofs are on-chain-verifiable).
@@ -299,7 +299,7 @@ The split of responsibilities:
 `stateRoot` is therefore a pure, reproducible commitment to the state
 machine's data — recomputed and byte-compared by every member on every
 block (§4.2 check 13), committed on-chain by anchoring (user guide §5), and
-queryable per key: `GET .../proof/{keyHex}` returns the value and an MPF
+queryable per key: `GET .../state/proof/{keyHex}` returns the value and an MPF
 inclusion proof any independent implementation can verify against an
 anchored root.
 
@@ -365,7 +365,7 @@ catch up the delta (user guide §14.3).
 | `init(reader, info)` | once at start | read-only warm-up; `info` = (chainId, own member key, member count) |
 | `validate(msg)` | admission (pool + block selection) | fast, side-effect-free, MAY run concurrently; envelope auth already done; reject keeps the message out of blocks. `~` system topics bypass it |
 | `apply(block, writer)` | exactly once per finalized block, in height order, on EVERY member | the deterministic transition; all writes via `writer.put/delete` (= MPF entries) |
-| `query(path, params)` | — | **reserved/deferred**: the hook exists but the runtime does not invoke it and no REST `/query` route exists yet. Read state via `stateValue`/`proof/{keyHex}` + the machine's static decode helpers |
+| `query(path, params)` | committed reads | invoked through the chain-scoped REST `/query/{path}` route; state proofs remain available through `state/proof/{keyHex}` |
 
 **Determinism is the contract.** Inside `apply()`: no wall clock (use
 `block.timestamp()`), no randomness, no I/O, no environment reads, no
@@ -379,93 +379,34 @@ byte-identical roots at every height.
 **The two-tier rule** (worth internalizing): `validate` rejects; `apply`
 never does. Anything that reaches `apply` is already consensus-final, so a
 business-rule violation there must be a silent, deterministic no-op —
-re-check every rule you checked at admission. Every stdlib machine follows
-this pattern.
+re-check every rule you checked at admission. Every conforming state machine
+must follow this pattern.
 
 Convenience: `TypedAppStateMachine<T>` + `MessageCodec<T>` decode bodies at
 the edge (undecodable → reject at admission / skip at apply);
 `JacksonCborCodec.of(Class)` is the batteries-included codec.
 
-## 10. Out-of-the-box state machines
+## 10. Built-in state machine
 
 | id | Module | One-liner |
 |---|---|---|
 | `ordered-log` | runtime (built-in) | append-only log of opaque messages; per-message inclusion proofs |
-| `kv-registry` | stdlib | owner-guarded key/value registry |
-| `approvals` | stdlib | k-of-n approval workflow with deadlines |
-| `balances` | stdlib | minimal token/points ledger (mint + transfer) |
-| `doc-trail` | stdlib | per-entity chained document/audit trail |
-
-Stdlib machines register via `ServiceLoader`
-(`StdlibStateMachineProviders`); select with `state-machine: <id>` —
-per-machine settings live under `machines.<id>.*`. (The ZK extension module
-ships additional machines — `zk-gate`, credential registry, ZK membership —
-behind the same SPI; see user guide §17.)
 
 ### 10.1 `ordered-log`
 
 The default. Bodies are fully opaque — nothing is validated, everything
-finalizes. Per message it writes `messageId → cbor([height, index, topic,
-sender])` and maintains `~tip → cbor(height)`. The MPF key **is the
-message id**, which is why `proof/{messageIdHex}` proves a message's
-finalization at `(height, index)` against an anchored root. The record
-format is shared (`OrderedLog` in core-api) with the ZK gate so proofs never
-diverge.
+finalizes. Per message it writes
+`sha256("~yano/finalized-message/v1/" || messageId) →
+cbor([schemaVersion, height, index, topic, sender])` and maintains a namespaced
+tip record. Resolve the public message ID through the `finalized-message-v1`
+typed proof subject; `state/proof/{keyHex}` is the lower-level route for the
+resolved physical key. The record format is shared (`FinalizedMessageIndex` in
+core-api) with opt-in indexes so proofs never diverge.
 
-### 10.2 `kv-registry`
-
-Command (CBOR): `[op(uint), key(bstr), value(bstr)]` — op `0` PUT
-(value required), `1` DELETE. State entry:
-`key → cbor([owner(bstr32), value(bstr)])`.
-
-- **Ownership**: first writer of a key becomes its owner; only the owner
-  may update or delete. Non-owner writes are deterministic no-ops.
-- **Admission rejects**: non-CBOR bodies, PUT without value, PUT whose value
-  violates `machines.kv-registry.value-format` (`raw` default | `cbor` —
-  one well-formed CBOR item | `utf8`). All re-checked as no-ops at apply.
-
-### 10.3 `approvals`
-
-Commands (CBOR): PROPOSE `[0, itemId(tstr), payload(bstr), required(uint>0),
-deadlineMillis(uint; 0 = none)]`, APPROVE `[1, itemId]`, REJECT
-`[2, itemId]`. State entry `"i/"+itemId → cbor([status, proposer,
-payloadHash(blake2b-256), required, deadline, approvers[], rejecter])`,
-status ∈ {0 PENDING, 1 APPROVED, 2 REJECTED, 3 EXPIRED}.
-
-- PROPOSE is idempotent per item id. APPROVE dedups approvers; `required`
-  distinct approvals → APPROVED. Any member's REJECT → REJECTED. A command
-  touching a PENDING item past its deadline (vs `block.timestamp()`) →
-  EXPIRED. Terminal states are immutable.
-
-### 10.4 `balances`
-
-Command (CBOR): `[op(uint), to(tstr), amount(uint>0)]` — op `0` MINT, `1`
-TRANSFER. State entry `"b/"+account → unsigned big-endian amount`; a zero
-balance deletes the key. The sender's own account id is its member pubkey
-hex — members spend only their own balance; overspend is a no-op (balances
-never go negative). `machines.balances.minter` (32-byte hex key) restricts
-minting to one member; unset = any member may mint (set it for production).
-
-### 10.5 `doc-trail`
-
-Command (CBOR): `[entityId(tstr), entryHash(bstr), ref(tstr)]` — `ref` (URL/
-IPFS CID) stays in the message, not in state. State entry
-`"e/"+entityId → cbor([count, headHash])` where
-`head_n = blake2b256(head_{n-1} ‖ entryHash_n ‖ sender)` from a 32-zero-byte
-genesis head — an append-only per-entity hash chain a verifier can recompute
-independently from the ordered trail (`DocTrailStateMachine.computeHead`).
-
-### 10.6 Reading state (all machines)
-
-There is no typed query API yet (§9). The pattern:
-
-1. derive the key with the machine's helper (`accountKey("alice")`,
-   `itemKey("release-42")`, `entityKey("product-42")`, kv key bytes,
-   message id);
-2. `GET .../proof/{keyHex}` (REST) or `stateValue/stateProof` (Java) —
-   returns value + MPF proof;
-3. decode with the machine's static helpers (`decodeBalance`, `decodeItem`,
-   `decodeOwner`/`decodeValue`, `decodeEntry`).
+Additional state machines are ServiceLoader plugins maintained in
+[Yano X](https://github.com/bloxbean/yano-x/tree/main/state-machines). Their
+wire formats, typed clients, proofs, and operational guidance live with those
+plugins so Yano's core documentation does not imply that they are built in.
 
 ## 11. Writing your own state machine
 
@@ -477,15 +418,37 @@ There is no typed query API yet (§9). The pattern:
    stem stripped, e.g. `machines.my-machine.foo`).
 3. **Plugin mode** (default distribution, no rebuild): register the provider
    in `META-INF/services/com.bloxbean.cardano.yano.api.appchain.AppStateMachineProvider`,
-   drop the jar into the node's `plugins/` directory, set
-   `state-machine: <your-id>`. Resolution runs ServiceLoader over the plugin
-   classloader; an unknown id fails fast listing available ids. (Native
-   image caveat: Substrate VM cannot load jars dynamically — plugins must be
-   on the classpath at native build time.)
+   and add `META-INF/yano/plugins/<bundle-id>.json`. The manifest declares an
+   `app-state-machine` contribution whose `name` equals the provider `id()`
+   and whose `provider` is the same fully-qualified class as the ServiceLoader
+   entry. For example:
+
+   ```json
+   {
+     "schemaVersion": 1,
+     "id": "com.example.my-machine",
+     "version": "1.0.0",
+     "yanoApi": { "min": 1, "max": 1, "minLevel": 1 },
+     "dependencies": [],
+     "contributions": [
+       {
+         "kind": "app-state-machine",
+         "name": "my-machine",
+         "provider": "com.example.MyMachineProvider"
+       }
+     ]
+   }
+   ```
+
+   Package one self-contained bundle JAR, drop it into the JVM node's
+   `plugins/` directory, and set `state-machine: my-machine`. An unknown id
+   fails fast listing available ids. Native images cannot load directory JARs;
+   include and map the manifested bundle at application build time so catalog
+   and reflection metadata are generated before the native executable.
 4. **Library mode**: pass the machine instance straight to the
    `AppChainSubsystem` constructor — no provider or services file needed.
 5. Start from `scaffolds/plugin-template/` (a complete counter machine +
-   provider + services file), and gate your machine with
+   provider + ServiceLoader entry + bundle manifest), and gate your machine with
    `StateMachineConformance` before trusting it with a multi-node chain.
    The full walkthrough is user guide §6 / tutorial Part 2.
 
