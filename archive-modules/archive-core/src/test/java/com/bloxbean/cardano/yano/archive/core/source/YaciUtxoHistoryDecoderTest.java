@@ -136,4 +136,23 @@ class YaciUtxoHistoryDecoderTest {
         assertThat(facts.newAddresses()).hasSize(1);
         assertThat(facts.pointerRegistrations()).isEmpty();
     }
+
+    @Test
+    void injectsGenesisAtConfiguredFirstCanonicalBlockForByronNetworks() {
+        String address = "60" + "44".repeat(28);
+        var decoder = new YaciUtxoHistoryDecoder(slot -> 0, slot -> 0, ignored -> Era.Shelley,
+                List.of(new YaciUtxoHistoryDecoder.GenesisOutput(
+                        address, BigInteger.valueOf(84), "genesis_byron")), 1);
+        Block block = Block.builder().era(Era.Shelley).transactionBodies(List.of())
+                .invalidTransactions(List.of()).build();
+
+        assertThat(decoder.includesGenesis(0)).isFalse();
+        assertThat(decoder.includesGenesis(1)).isTrue();
+        assertThat(decoder.derive(block, 0, false).outputs()).isEmpty();
+        assertThat(decoder.derive(block, 0, true).outputs()).singleElement()
+                .satisfies(output -> {
+                    assertThat(output.originType()).isEqualTo("genesis_byron");
+                    assertThat(output.lovelace()).isEqualTo(84);
+                });
+    }
 }

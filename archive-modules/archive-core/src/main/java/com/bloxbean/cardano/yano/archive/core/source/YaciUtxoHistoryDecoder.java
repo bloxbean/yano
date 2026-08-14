@@ -28,10 +28,12 @@ public final class YaciUtxoHistoryDecoder implements CanonicalBlockDecoder<UtxoH
     private final YaciBlockDecoder blockDecoder;
     private final AddressKeyCodec addressKeys = new AddressKeyCodec();
     private final List<GenesisOutput> genesisOutputs;
+    private final long genesisBlockNumber;
 
     public YaciUtxoHistoryDecoder(LongUnaryOperator slotToEpoch, LongUnaryOperator slotToUnixTime) {
         this.blockDecoder = new YaciBlockDecoder(slotToEpoch, slotToUnixTime);
         this.genesisOutputs = List.of();
+        this.genesisBlockNumber = 0;
     }
 
     public YaciUtxoHistoryDecoder(LongUnaryOperator slotToEpoch, LongUnaryOperator slotToUnixTime,
@@ -41,8 +43,16 @@ public final class YaciUtxoHistoryDecoder implements CanonicalBlockDecoder<UtxoH
 
     public YaciUtxoHistoryDecoder(LongUnaryOperator slotToEpoch, LongUnaryOperator slotToUnixTime,
                                   LongFunction<Era> storedEra, List<GenesisOutput> genesisOutputs) {
+        this(slotToEpoch, slotToUnixTime, storedEra, genesisOutputs, 0);
+    }
+
+    public YaciUtxoHistoryDecoder(LongUnaryOperator slotToEpoch, LongUnaryOperator slotToUnixTime,
+                                  LongFunction<Era> storedEra, List<GenesisOutput> genesisOutputs,
+                                  long genesisBlockNumber) {
         this.blockDecoder = new YaciBlockDecoder(slotToEpoch, slotToUnixTime, storedEra);
         this.genesisOutputs = List.copyOf(genesisOutputs);
+        if (genesisBlockNumber < 0) throw new IllegalArgumentException("genesis block number must be non-negative");
+        this.genesisBlockNumber = genesisBlockNumber;
     }
 
     @Override
@@ -50,7 +60,11 @@ public final class YaciUtxoHistoryDecoder implements CanonicalBlockDecoder<UtxoH
         BlockSourceContext<Block> decoded = blockDecoder.decode(blockNumber, reference, body);
         return new BlockSourceContext<>(decoded.blockNumber(), decoded.slot(), decoded.epoch(), decoded.blockTime(),
                 decoded.blockHash(), decoded.parentHash(),
-                derive(decoded.block(), decoded.slot(), blockNumber == 0));
+                derive(decoded.block(), decoded.slot(), includesGenesis(blockNumber)));
+    }
+
+    boolean includesGenesis(long blockNumber) {
+        return blockNumber == genesisBlockNumber;
     }
 
     UtxoHistoryFact derive(Block block) {

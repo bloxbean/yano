@@ -72,6 +72,7 @@ public class HistoryArchiveService implements AutoCloseable {
     private volatile AddressTransactionDataset liveAddressDataset;
     private volatile AddressTransactionDataset backfillAddressDataset;
     private volatile List<SequentialOutpointResolver.Entry> backfillGenesisEntries = List.of();
+    private volatile long firstCanonicalBlockNumber;
     private final AccountHistoryProvider archiveAccountHistory = new ArchiveAccountHistoryProvider(this);
     private final EnumMap<ArchiveDatasetId, DatasetRunner> blockWorkers = new EnumMap<>(ArchiveDatasetId.class);
     private final EnumMap<ArchiveDatasetId, DatasetRunner> liveWorkers = new EnumMap<>(ArchiveDatasetId.class);
@@ -110,6 +111,7 @@ public class HistoryArchiveService implements AutoCloseable {
             NetworkGenesisConfig genesis = NetworkGenesisConfig.load(nodeConfig.getShelleyGenesisFile(),
                     nodeConfig.getByronGenesisFile(), nodeConfig.getAlonzoGenesisFile(),
                     nodeConfig.getConwayGenesisFile());
+            firstCanonicalBlockNumber = firstCanonicalBlockNumber(genesis.hasByronGenesis());
             String genesisHash = genesisHash(nodeConfig);
             int magic = Math.toIntExact(genesis.getNetworkMagic());
             ArchiveSafetyWindows safety = ArchiveSafetyWindows.resolve(genesis.getSecurityParam(),
@@ -200,7 +202,8 @@ public class HistoryArchiveService implements AutoCloseable {
                     new UtxoHistoryDataset(controlStore, "backfill", ArchiveTrack.BACKFILL),
                     new ChainBlockArchiveSource<>(chain,
                             new YaciUtxoHistoryDecoder(ledger::slotToEpoch, ledger::slotToUnixTime,
-                                    chain::getBlockEra, genesisHistoryOutputs), controlStore),
+                                    chain::getBlockEra, genesisHistoryOutputs,
+                                    firstCanonicalBlockNumber), controlStore),
                     identity.networkIdentity(), workerConfig, syncView);
             if (archiveConfig.liveEnabled()) {
                 registerLiveWorker(ArchiveDatasetId.TRANSACTION, StandardBlockDatasets.transactions(), source,
@@ -211,14 +214,15 @@ public class HistoryArchiveService implements AutoCloseable {
                         new UtxoHistoryDataset(controlStore, "live", ArchiveTrack.LIVE),
                         new ChainBlockArchiveSource<>(chain,
                                 new YaciUtxoHistoryDecoder(ledger::slotToEpoch, ledger::slotToUnixTime,
-                                        chain::getBlockEra, genesisHistoryOutputs), controlStore),
+                                        chain::getBlockEra, genesisHistoryOutputs,
+                                        firstCanonicalBlockNumber), controlStore),
                         identity.networkIdentity(), workerConfig);
                 if (datasetEnabled(ArchiveDatasetId.ADDRESS_TRANSACTION)
                         && ledger.getUtxoState() != null && ledger.getUtxoState().isEnabled()) {
                     var liveAddress = new AddressTransactionDataset(controlStore, new AddressKeyCodec(),
                             "live", ArchiveTrack.LIVE);
                     liveAddressDataset = liveAddress;
-                    initializeAddressLiveResolver(liveAddress);
+                    initializeAddressLiveResolver(liveAddress, genesis);
                     registerLiveWorker(ArchiveDatasetId.ADDRESS_TRANSACTION, liveAddress,
                             new ChainBlockArchiveSource<>(chain,
                                     new YaciBlockDecoder(ledger::slotToEpoch, ledger::slotToUnixTime,
@@ -227,7 +231,8 @@ public class HistoryArchiveService implements AutoCloseable {
                 } else if (datasetEnabled(ArchiveDatasetId.ADDRESS_TRANSACTION)) {
                     log.warn("Address live history disabled because a complete core UTXO snapshot is unavailable");
                 }
-                long liveStart = (chain.getLocalTip() == null ? -1 : chain.getLocalTip().getBlockNumber()) + 1;
+                long liveStart = chain.getLocalTip() == null
+                        ? firstCanonicalBlockNumber : chain.getLocalTip().getBlockNumber() + 1;
                 for (ArchiveDatasetId id : liveWorkers.keySet()) {
                     activations.putIfAbsent(id, ArchiveTrack.LIVE, liveStart);
                 }
@@ -250,7 +255,12 @@ public class HistoryArchiveService implements AutoCloseable {
                 }
             }
             for (ArchiveDatasetId dataset : blockWorkers.keySet()) {
-                long start = activations.start(dataset).orElseGet(() -> activationStart(dataset, persistedTip));
+                OptionalLong persistedStart = activations.start(dataset);
+                long start = persistedStart.orElseGet(() -> activationStart(dataset, persistedTip));
+                if (start < firstCanonicalBlockNumber) {
+                    start = firstCanonicalBlockNumber;
+                    activations.replace(dataset, ArchiveTrack.BACKFILL, start);
+                }
                 if (start >= 0) controlStore.requireBlockBodiesFrom(dataset, start);
             }
             subsystem = new ArchiveSubsystem(true, workerConfig.pollInterval(), this::runBoundedWork);
@@ -936,19 +946,38 @@ public class HistoryArchiveService implements AutoCloseable {
 
     private long activationStart(ArchiveDatasetId dataset, long tip) {
         ArchiveStartMode mode = archiveConfig.datasets().get(dataset).startMode();
-        long earliest = chain.getEarliestRetainedBodyBlockNumber().orElse(Long.MAX_VALUE);
-        long start = switch (mode) {
-            case FULL_REQUIRED -> {
-                if (tip < 0 && earliest == Long.MAX_VALUE) yield 0;
-                if (earliest > 0) throw new ArchiveStoreException(
-                        "full-required history cannot start: earliest retained body is " + earliest);
-                yield 0;
-            }
-            case EARLIEST_AVAILABLE -> earliest == Long.MAX_VALUE ? (tip < 0 ? 0 : -1) : earliest;
-            case TIP -> Math.addExact(tip, 1);
-        };
+        long start = resolveBlockActivationStart(mode, firstCanonicalBlockNumber, tip,
+                chain.getEarliestRetainedBodyBlockNumber());
         if (start >= 0) activations.putIfAbsent(dataset, start);
         return start;
+    }
+
+    static long resolveBlockActivationStart(ArchiveStartMode mode, long firstCanonicalBlock,
+                                            long tip, OptionalLong earliestRetainedBody) {
+        if (firstCanonicalBlock < 0) throw new IllegalArgumentException("first canonical block must be non-negative");
+        long earliest = earliestRetainedBody.orElse(Long.MAX_VALUE);
+        return switch (mode) {
+            case FULL_REQUIRED -> {
+                if (earliest == Long.MAX_VALUE && tip >= firstCanonicalBlock) {
+                    throw new ArchiveStoreException("full-required history cannot start: no retained block bodies "
+                            + "at persisted tip " + tip);
+                }
+                if (earliest != Long.MAX_VALUE && earliest > firstCanonicalBlock) {
+                    throw new ArchiveStoreException("full-required history cannot start: earliest retained body is "
+                            + earliest + ", expected first canonical block " + firstCanonicalBlock);
+                }
+                yield firstCanonicalBlock;
+            }
+            case EARLIEST_AVAILABLE -> earliest == Long.MAX_VALUE
+                    ? (tip < 0 ? firstCanonicalBlock : -1) : earliest;
+            case TIP -> Math.addExact(tip, 1);
+        };
+    }
+
+    static long firstCanonicalBlockNumber(boolean hasByronGenesis) {
+        // Cardano Byron networks number the first canonical chain block as 1;
+        // Shelley-only/devnet chains produced by Yano begin at block 0.
+        return hasByronGenesis ? 1 : 0;
     }
 
     private <B> void registerBlockWorker(ArchiveDatasetId id, BlockArchiveDataset<B> dataset,
@@ -998,6 +1027,7 @@ public class HistoryArchiveService implements AutoCloseable {
                 ArchiveTrack.BACKFILL);
         if (existingActivation.isPresent() && dataset.resolverSeeded()
                 && dataset.resolverBaseBlock().isPresent()
+                && existingActivation.getAsLong() >= firstCanonicalBlockNumber
                 && existingActivation.getAsLong() == dataset.resolverBaseBlock().getAsLong() + 1) return;
 
         dataset.resetResolver();
@@ -1010,13 +1040,13 @@ public class HistoryArchiveService implements AutoCloseable {
             activation = Math.addExact(seedResolverSnapshot(ledger.getUtxoState(), dataset), 1);
         } else {
             long earliest = chain.getEarliestRetainedBodyBlockNumber().orElse(0);
-            if (mode == ArchiveStartMode.EARLIEST_AVAILABLE && earliest > 0) {
+            if (mode == ArchiveStartMode.EARLIEST_AVAILABLE && earliest > firstCanonicalBlockNumber) {
                 throw new ArchiveStoreException("address history earliest-available requires retained bodies "
                         + "from genesis; earliest retained block is " + earliest
                         + ". Use start-mode=tip for an activation-point UTXO snapshot");
             }
-            dataset.seedGenesis(backfillGenesisEntries);
-            activation = 0;
+            seedGenesisResolver(dataset, backfillGenesisEntries);
+            activation = firstCanonicalBlockNumber;
         }
         if (existingActivation.isPresent()) {
             activations.replace(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.BACKFILL, activation);
@@ -1025,20 +1055,33 @@ public class HistoryArchiveService implements AutoCloseable {
         }
     }
 
-    private void initializeAddressLiveResolver(AddressTransactionDataset dataset) {
+    void initializeAddressLiveResolver(AddressTransactionDataset dataset, NetworkGenesisConfig genesis) {
         OptionalLong existingActivation = activations.start(ArchiveDatasetId.ADDRESS_TRANSACTION,
                 ArchiveTrack.LIVE);
         if (existingActivation.isPresent() && dataset.resolverSeeded()
                 && dataset.resolverBaseBlock().isPresent()
+                && existingActivation.getAsLong() >= firstCanonicalBlockNumber
                 && existingActivation.getAsLong() == dataset.resolverBaseBlock().getAsLong() + 1) return;
 
         dataset.resetResolver();
-        long activation = Math.addExact(seedResolverSnapshot(ledger.getUtxoState(), dataset), 1);
+        long activation;
+        if (chain.getLocalTip() == null) {
+            seedGenesisResolver(dataset, genesisOutpoints(genesis, dataset));
+            activation = firstCanonicalBlockNumber;
+        } else {
+            activation = Math.addExact(seedResolverSnapshot(ledger.getUtxoState(), dataset), 1);
+        }
         if (existingActivation.isPresent()) {
             activations.replace(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.LIVE, activation);
         } else {
             activations.putIfAbsent(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.LIVE, activation);
         }
+    }
+
+    private void seedGenesisResolver(AddressTransactionDataset dataset,
+                                     List<SequentialOutpointResolver.Entry> entries) {
+        dataset.seedResolver(entries, false);
+        dataset.completeResolverSeed(firstCanonicalBlockNumber - 1);
     }
 
     private long seedResolverSnapshot(com.bloxbean.cardano.yano.api.utxo.UtxoState utxos,
