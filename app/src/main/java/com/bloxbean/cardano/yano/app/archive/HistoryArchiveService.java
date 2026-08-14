@@ -882,6 +882,18 @@ public class HistoryArchiveService implements AutoCloseable {
             cleanupPromotedRows(dataset, tables, coverage, promotableEnd);
             return;
         }
+        // Once canonical backfill reaches the cold frontier, let it keep owning
+        // that frontier. Promoting another small live range here would make the
+        // next backfill cycle spend its entire batch advancing through coverage,
+        // after which promotion would move the frontier again. That lockstep
+        // limits cold catch-up to the (deliberately small) promotion batch size.
+        // Existing cold rows are still removed from hot storage below; live rows
+        // beyond the frontier remain queryable until backfill commits them.
+        ArchiveProgress backfill = controlStore.load(dataset, ArchiveTrack.BACKFILL).orElse(null);
+        if (backfill != null && backfill.coordinate() >= candidateStart - 1) {
+            cleanupPromotedRows(dataset, tables, coverage, promotableEnd);
+            return;
+        }
         long promotionStart = candidateStart;
         long nextCovered = coverage.stream().filter(range -> range.startInclusive() > promotionStart)
                 .mapToLong(ArchiveRange::startInclusive).min().orElse(Long.MAX_VALUE);

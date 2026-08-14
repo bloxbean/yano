@@ -27,6 +27,52 @@ class HistoryArchivePromotionTest {
     @TempDir Path temp;
 
     @Test
+    void yieldsColdFrontierToCaughtUpBackfillInsteadOfExtendingItInPromotionSizedSteps() throws Exception {
+        byte[] txHash = java.util.HexFormat.of().parseHex("01".repeat(32));
+        byte[] liveBlockHash = java.util.HexFormat.of().parseHex("02".repeat(32));
+        byte[] previousBlockHash = java.util.HexFormat.of().parseHex("03".repeat(32));
+        ArchiveIdentity identity = new ArchiveIdentity(UUID.randomUUID(), "sqlite", 1, 1, "fixture");
+        ArchiveBackend backend = new SqliteArchiveBackendProvider().open(identity, temp,
+                Map.of("database.path", temp.resolve("frontier.sqlite").toString()));
+        RocksDbHotHistoryStore hot = new RocksDbHotHistoryStore(temp.resolve("frontier-hot"));
+        ArchiveRow row = new ArchiveRow("chain_transaction", List.of(txHash, liveBlockHash, 10L, 100L, 0L,
+                1_700_000_000L, 0, true, 5L, UUID.randomUUID()));
+        hot.applyBlock(ArchiveDatasetId.TRANSACTION,
+                new HotBlockCheckpoint(10, 100, liveBlockHash, previousBlockHash),
+                List.of(HotArchiveRows.put(ArchiveDatasetId.TRANSACTION, row)),
+                new ArchiveProgress(ArchiveDatasetId.TRANSACTION, ArchiveTrack.LIVE,
+                        10, 100, liveBlockHash, 0));
+        hot.applyBlock(ArchiveDatasetId.TRANSACTION,
+                new HotBlockCheckpoint(9, 99, previousBlockHash, new byte[32]), List.of(),
+                new ArchiveProgress(ArchiveDatasetId.TRANSACTION, ArchiveTrack.BACKFILL,
+                        9, 99, previousBlockHash, 0));
+
+        var activations = new ActivationStore(temp.resolve("frontier-activation.properties"));
+        activations.putIfAbsent(ArchiveDatasetId.TRANSACTION, ArchiveTrack.LIVE, 10);
+        var configuration = new ArchiveConfiguration(true, temp, ArchiveEngine.SQLITE,
+                ArchiveStartMode.TIP, true, ArchiveWorkerConfig.defaults(),
+                ArchiveSafetyWindows.resolve(1, 1L, 1L),
+                Map.of(ArchiveDatasetId.TRANSACTION,
+                        new DatasetArchiveConfig(true, ArchiveStartMode.TIP, 0)));
+        var service = new HistoryArchiveService(mock(Config.class));
+        set(service, "backend", backend);
+        set(service, "controlStore", hot);
+        set(service, "archiveConfig", configuration);
+        set(service, "activations", activations);
+
+        service.promoteLiveRows(ArchiveDatasetId.TRANSACTION, 10);
+
+        assertThat(backend.coverage(ArchiveDatasetId.TRANSACTION).covers(10)).isFalse();
+        try (var current = hot.snapshot()) {
+            assertThat(HotArchiveRows.read(current, ArchiveDatasetId.TRANSACTION,
+                    "chain_transaction", Map.of())).hasSize(1);
+        }
+
+        backend.close();
+        hot.close();
+    }
+
+    @Test
     void commitsPinnedLiveRowsBeforeDeletingThemAndLeavesOldReadersGapFree() throws Exception {
         byte[] txHash = java.util.HexFormat.of().parseHex("11".repeat(32));
         byte[] blockHash = java.util.HexFormat.of().parseHex("22".repeat(32));
