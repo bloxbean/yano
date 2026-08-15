@@ -131,7 +131,12 @@ final class ArchiveAccountHistoryProvider implements AccountHistoryProvider {
                 case REWARD -> "rewards";
                 default -> throw new IllegalArgumentException("unsupported compatibility dataset");
             };
-            var hotSnapshot = service.openHotSnapshot();
+            // Epoch datasets are committed directly to the durable backend and never have a
+            // near-tip hot table. Opening the hot snapshot for rewards would incorrectly try to
+            // query a non-existent hot_rewards table in the SQLite hot store.
+            var hotSnapshot = dataset.sourceKind() == SourceKind.BLOCK
+                    ? service.openHotSnapshot()
+                    : null;
             try (ArchiveReadSession read = backend.openReadSession()) {
                 List<ArchiveRecord> hot = hotSnapshot == null ? List.of()
                         : com.bloxbean.cardano.yano.archive.core.hot.HotArchiveRows.read(
