@@ -80,8 +80,8 @@ class YaciUtxoHistoryDecoderTest {
             dataset.derive(job, context, rows::add);
             assertThat(rows).filteredOn(row -> row.table().equals("addresses")).singleElement()
                     .satisfies(row -> {
-                        assertThat(row.values().get(7)).isEqualTo("pointer_resolved");
-                        assertThat((byte[]) row.values().get(9)).containsOnly((byte) 0x77);
+                        assertThat(row.values().get(7)).isEqualTo("pointer");
+                        assertThat(row.values().get(9)).isNull();
                     });
             assertThat(rows).filteredOn(row -> row.table().equals("transaction_outputs")).singleElement()
                     .satisfies(row -> assertThat((byte[]) row.values().get(6)).containsOnly((byte) 0x77));
@@ -112,9 +112,11 @@ class YaciUtxoHistoryDecoderTest {
         dataset.derive(job, context, rows::add);
         assertThat(rows).filteredOn(row -> row.table().equals("addresses")).singleElement()
                 .satisfies(row -> {
-                    assertThat(row.values().get(7)).isEqualTo("pointer_not_effective");
+                    assertThat(row.values().get(7)).isEqualTo("pointer");
                     assertThat(row.values().get(9)).isNull();
                 });
+        assertThat(rows).filteredOn(row -> row.table().equals("transaction_outputs")).singleElement()
+                .satisfies(row -> assertThat(row.values().get(6)).isNull());
     }
 
     @Test

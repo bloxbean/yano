@@ -41,7 +41,7 @@ class UtxoHistoryDatasetTest {
         var registration = new UtxoHistoryFact.PointerRegistration(10, 0, 0, "key", credential);
         var deregistration = new UtxoHistoryFact.PointerDeregistration(0, 0, "key", credential);
         var firstAddress = pointerAddress(new byte[] {11});
-        var secondAddress = pointerAddress(new byte[] {12});
+        var secondAddress = pointerAddress(new byte[] {11});
         var first = new UtxoHistoryFact(com.bloxbean.cardano.yaci.core.model.Era.Babbage.getValue(),
                 List.of(registration), List.of(), List.of(firstAddress),
                 List.of(output(firstHash, firstAddress.addressKey())), List.of(), List.of(), List.of(), List.of());
@@ -66,7 +66,12 @@ class UtxoHistoryDatasetTest {
 
             assertThat(rows).filteredOn(row -> row.table().equals("addresses"))
                     .extracting(row -> row.values().get(7))
-                    .containsExactly("pointer_resolved", "pointer_unresolved");
+                    .containsExactly("pointer", "pointer");
+            List<ArchiveRow> addressRows = rows.stream()
+                    .filter(row -> row.table().equals("addresses"))
+                    .toList();
+            assertThat(addressRows.get(0).values().subList(0, 13))
+                    .containsExactlyElementsOf(addressRows.get(1).values().subList(0, 13));
             assertThat(rows).filteredOn(row -> row.table().equals("transaction_outputs"))
                     .extracting(row -> row.values().get(6))
                     .containsExactly(credential, null);

@@ -210,7 +210,7 @@ public abstract class AbstractArchiveBackendConformanceTest {
         Arrays.fill(txHash, txMarker);
         try (var write = backend.begin(job)) {
             write.append(new ArchiveRow("addresses", Arrays.asList(addressKey, new byte[] {9}, "addr_pointer",
-                    0, "ptr", "key", new byte[] {3}, "pointer_resolved", "key", new byte[28],
+                    0, "ptr", "key", new byte[] {3}, "pointer", null, null,
                     42L, 1, 2, job.range().startInclusive(), job.anchorSlot(), 0L)));
             write.append(new ArchiveRow("transaction_outputs", Arrays.asList(txHash, 0, 0, "ordinary",
                     addressKey, new byte[] {3}, new byte[28], 10L, "none", null, null, null, null, null, false,

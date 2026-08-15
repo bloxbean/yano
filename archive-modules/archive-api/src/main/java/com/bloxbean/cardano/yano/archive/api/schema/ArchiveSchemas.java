@@ -46,7 +46,7 @@ public final class ArchiveSchemas {
                         i("input_count"), i("output_count"), i("collateral_input_count"),
                         i("collateral_return_count"), uuid("archive_job_id")),
                 order("block_number", "tx_index", "tx_hash")));
-        schemas.put(ArchiveDatasetId.UTXO_HISTORY, dataset(ArchiveDatasetId.UTXO_HISTORY, 3,
+        schemas.put(ArchiveDatasetId.UTXO_HISTORY, dataset(ArchiveDatasetId.UTXO_HISTORY, 4,
                 table("addresses", pk("address_key"), b("address_key"), b("raw_address"), sn("display_address"),
                         in("network_id"), s("address_type"), sn("payment_credential_type"), bn("payment_credential"),
                         s("stake_reference_type"), sn("stake_credential_type"), bn("stake_credential"),

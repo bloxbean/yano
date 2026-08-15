@@ -665,9 +665,14 @@ credential lookup, especially `address_transaction` and `transaction_output`,
 also carry binary payment/stake credentials. Stake-credential lookup is a
 first-class correctness and performance requirement, not a best-effort join.
 Base addresses expose their stake credential directly. Pointer addresses always
-retain their raw pointer coordinates. Whether an era treats the pointer as an
-effective stake reference, and which canonical certificate can resolve it, is
-implemented only after fixtures are verified against the pinned Haskell
+retain `stake_reference_type='pointer'` and their raw pointer coordinates in
+the address dimension; their dimension-level `stake_credential_type` and
+`stake_credential` remain null because resolution is not an immutable property
+of the address bytes. The resolved credential, when effective at the output's
+ledger coordinate, is stored on `transaction_output` and other temporal fact
+rows. Whether an era treats the pointer as an effective stake reference, and
+which canonical certificate can resolve it, is implemented only after fixtures
+are verified against the pinned Haskell
 `cardano-ledger` implementation for that era, including Conway and later
 changes. The worker maintains a registration projection only for semantics the
 ledger actually honors; it does not assume that decoding a pointer makes it

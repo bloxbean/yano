@@ -317,10 +317,19 @@ public final class YaciUtxoHistoryDecoder implements CanonicalBlockDecoder<UtxoH
             byte[] stake = parsed.getDelegationCredentialHash().orElse(null);
             String paymentType = parsed.getPaymentCredential().map(c -> c.getType().name().toLowerCase(Locale.ROOT)).orElse(null);
             String stakeType = parsed.getDelegationCredential().map(c -> c.getType().name().toLowerCase(Locale.ROOT)).orElse(null);
-            String stakeReference = parsed.getAddressType().name().equalsIgnoreCase("ptr") ? "pointer"
+            boolean pointerAddress = parsed.getAddressType().name().equalsIgnoreCase("ptr");
+            if (pointerAddress) {
+                // Some generic address decoders expose the encoded pointer
+                // bytes through the delegation-credential accessor. A pointer
+                // is not a credential; resolution belongs to the sequential
+                // ledger projection below.
+                stake = null;
+                stakeType = null;
+            }
+            String stakeReference = pointerAddress ? "pointer"
                     : stake == null ? "none" : "credential";
             Long pointerSlot = null; Integer pointerTx = null; Integer pointerCert = null;
-            if (parsed.getAddressType().name().equalsIgnoreCase("ptr")) {
+            if (pointerAddress) {
                 var pointer = new PointerAddress(raw).getPointer();
                 pointerSlot = pointer.getSlot(); pointerTx = pointer.getTxIndex(); pointerCert = pointer.getCertIndex();
             }

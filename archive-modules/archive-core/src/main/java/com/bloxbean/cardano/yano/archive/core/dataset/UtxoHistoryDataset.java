@@ -102,7 +102,13 @@ public final class UtxoHistoryDataset implements LiveStatefulBlockArchiveDataset
         for (var address : facts.newAddresses()) {
             ResolvedAddress resolved = resolveAddress(facts.era(), address);
             resolvedAddresses.put(HexUtil.encodeHexString(address.addressKey()), resolved);
-            var value = resolved.address();
+            // The address dimension describes only structure encoded in the
+            // address bytes. Pointer resolution is ledger-time dependent: the
+            // same raw pointer address can resolve before deregistration and
+            // be unresolved afterwards. Keep that temporal result on each
+            // transaction output instead of turning it into a false dimension
+            // conflict.
+            var value = address;
             sink.accept(new ArchiveRow("addresses", Arrays.asList(
                     value.addressKey(), value.rawAddress(), value.displayAddress(), value.networkId(),
                     value.addressType(), value.paymentCredentialType(), value.paymentCredential(),

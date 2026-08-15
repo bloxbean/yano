@@ -18,6 +18,10 @@ script bytes remain output-local, while transaction datums and redeemers are
 streamed as transaction-scoped rows. No global content index or historical
 archive lookup participates in projection.
 
+Pointer resolution is temporal. The address dimension retains only the raw
+pointer structure, while each output carries the stake credential effective at
+its own ledger coordinate.
+
 The workers read durable canonical block or epoch sources. They do not read
 mutable core UTXO/account state as the source of historical truth and they do
 not participate in authoritative block commits. Dataset or backend failure

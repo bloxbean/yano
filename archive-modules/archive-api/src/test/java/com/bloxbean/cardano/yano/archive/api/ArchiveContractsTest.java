@@ -22,7 +22,7 @@ class ArchiveContractsTest {
         assertThat(ArchiveSchemas.schema(ArchiveDatasetId.TRANSACTION).projectionVersion()).isEqualTo(2);
         assertThat(ArchiveSchemas.schema(ArchiveDatasetId.ACCOUNT_EVENT).projectionVersion()).isEqualTo(2);
         assertThat(ArchiveSchemas.schema(ArchiveDatasetId.ADDRESS_TRANSACTION).projectionVersion()).isEqualTo(2);
-        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.UTXO_HISTORY).projectionVersion()).isEqualTo(3);
+        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.UTXO_HISTORY).projectionVersion()).isEqualTo(4);
         assertThat(ArchiveSchemas.schema(ArchiveDatasetId.REWARD).projectionVersion()).isEqualTo(3);
         assertThat(ArchiveSchemas.schema(ArchiveDatasetId.DREP_DISTRIBUTION).projectionVersion()).isEqualTo(2);
     }
