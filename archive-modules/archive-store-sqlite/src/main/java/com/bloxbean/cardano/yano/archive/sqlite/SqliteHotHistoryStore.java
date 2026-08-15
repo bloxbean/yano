@@ -716,7 +716,12 @@ public final class SqliteHotHistoryStore implements HotHistoryStore {
         }
     }
 
-    private void transaction(SqlWork work, String message) {
+    /**
+     * Serialize every use of the single writer connection. Most public store methods already
+     * synchronize on the store, but source-lease renew/release operations are invoked through a
+     * separate Lease object and therefore do not share those method monitors.
+     */
+    private synchronized void transaction(SqlWork work, String message) {
         try {
             writer.setAutoCommit(false);
             try { work.run(writer); writer.commit(); }
