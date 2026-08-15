@@ -14,18 +14,11 @@ import java.util.Optional;
 /** Private sequential resolver; genesis outputs must be seeded before replay. */
 public final class SequentialOutpointResolver {
     private final HotHistoryStore store;
-    private final String namespace;
     private boolean genesisSeeded;
 
     public SequentialOutpointResolver(HotHistoryStore store) {
-        this(store, "backfill");
-    }
-
-    public SequentialOutpointResolver(HotHistoryStore store, String namespace) {
         this.store = store;
-        if (namespace == null || !namespace.matches("[a-z0-9_-]+")) throw new IllegalArgumentException("resolver namespace");
-        this.namespace = namespace;
-        this.genesisSeeded = store.resolverSeeded(namespace);
+        this.genesisSeeded = store.resolverSeeded();
     }
 
     public void seedGenesis(Iterable<Entry> outputs) {
@@ -38,36 +31,36 @@ public final class SequentialOutpointResolver {
     }
 
     public java.util.OptionalLong seedBaseBlock() {
-        return store.resolverBaseBlock(namespace);
+        return store.resolverBaseBlock();
     }
 
     public void seedEntries(Iterable<Entry> outputs, boolean complete) {
-        store.seedResolver(namespace, outputs, complete, complete ? -1 : Long.MIN_VALUE);
+        store.seedResolver(outputs, complete, complete ? -1 : Long.MIN_VALUE);
         if (complete) genesisSeeded = true;
     }
 
     public void completeSeed(long baseBlock) {
-        store.seedResolver(namespace, java.util.List.of(), true, baseBlock);
+        store.seedResolver(java.util.List.of(), true, baseBlock);
         genesisSeeded = true;
     }
 
     public Optional<ResolvedOutput> resolve(Outpoint outpoint) {
         if (!genesisSeeded) throw new ArchiveStoreException("outpoint resolver is not genesis-seeded");
-        return store.resolveOutput(namespace, outpoint);
+        return store.resolveOutput(outpoint);
     }
 
     public void put(Outpoint outpoint, ResolvedOutput output) {
-        store.seedResolver(namespace, java.util.List.of(new Entry(outpoint, output)), false, Long.MIN_VALUE);
+        store.seedResolver(java.util.List.of(new Entry(outpoint, output)), false, Long.MIN_VALUE);
     }
 
     public HotHistoryOperation.OutputCreated putOperation(
             Outpoint outpoint, ResolvedOutput output) {
-        return new HotHistoryOperation.OutputCreated(namespace, outpoint, output);
+        return new HotHistoryOperation.OutputCreated(outpoint, output);
     }
 
     public HotHistoryOperation.OutputConsumed consumeOperation(Outpoint outpoint, byte[] spendingTxHash,
                                                                String inputRole) {
-        return new HotHistoryOperation.OutputConsumed(namespace, outpoint, spendingTxHash, inputRole);
+        return new HotHistoryOperation.OutputConsumed(outpoint, spendingTxHash, inputRole);
     }
     public record Entry(Outpoint outpoint, ResolvedOutput output) { }
 }

@@ -32,29 +32,33 @@ public interface HotHistoryStore extends ArchiveProgressStore, BlockBodyRetentio
     void applyBlocks(ArchiveDatasetId dataset, List<HotBlockUpdate> blocks,
                      ArchiveProgress progress, ArchiveReceipt receipt);
 
-    void seedResolver(String namespace, Iterable<SequentialOutpointResolver.Entry> outputs,
-                      boolean complete, long baseBlock);
+    void seedResolver(Iterable<SequentialOutpointResolver.Entry> outputs, boolean complete, long baseBlock);
 
-    boolean resolverSeeded(String namespace);
+    boolean resolverSeeded();
 
-    OptionalLong resolverBaseBlock(String namespace);
+    OptionalLong resolverBaseBlock();
 
-    Optional<ResolvedOutput> resolveOutput(String namespace, Outpoint outpoint);
+    Optional<ResolvedOutput> resolveOutput(Outpoint outpoint);
 
     Optional<SequentialPointerResolver.ResolvedStakeCredential> resolvePointer(
-            ArchiveDatasetId dataset, String namespace, SequentialPointerResolver.PointerCoordinate pointer);
+            ArchiveDatasetId dataset, SequentialPointerResolver.PointerCoordinate pointer);
 
     List<SequentialPointerResolver.PointerCoordinate> pointersForCredential(
-            ArchiveDatasetId dataset, String namespace,
-            SequentialPointerResolver.ResolvedStakeCredential credential);
+            ArchiveDatasetId dataset, SequentialPointerResolver.ResolvedStakeCredential credential);
 
-    void resetResolver(ArchiveDatasetId dataset, String namespace);
+    void resetResolver(ArchiveDatasetId dataset);
 
     void rollbackTo(ArchiveDatasetId dataset, ArchiveTrack track, long commonBlock);
 
     void resetTrackFrom(ArchiveDatasetId dataset, ArchiveTrack track, long firstBlock);
 
     void pruneUndoThrough(ArchiveDatasetId dataset, ArchiveTrack track, long blockInclusive);
+
+    /**
+     * Removes resolver output/spend pairs whose consuming block is outside the
+     * retained rollback window. Currently-unspent outputs are never removed.
+     */
+    void pruneResolverThrough(ArchiveDatasetId dataset, long blockInclusive);
 
     Optional<HotBlockCheckpoint> checkpoint(ArchiveDatasetId dataset, ArchiveTrack track, long block);
 

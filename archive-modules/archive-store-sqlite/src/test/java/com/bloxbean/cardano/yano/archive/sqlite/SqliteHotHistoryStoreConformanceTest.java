@@ -28,13 +28,21 @@ class SqliteHotHistoryStoreConformanceTest extends AbstractHotHistoryStoreConfor
                     "SELECT sql FROM sqlite_schema WHERE name='resolver_outputs'");
                  var result = statement.executeQuery()) {
                 assertThat(result.next()).isTrue();
-                assertThat(result.getString(1)).containsIgnoringCase("WITHOUT ROWID");
+                assertThat(result.getString(1))
+                        .containsIgnoringCase("WITHOUT ROWID")
+                        .doesNotContainIgnoringCase("namespace");
             }
             try (var statement = connection.prepareStatement(
                     "SELECT sql FROM sqlite_schema WHERE name='resolver_outputs_created'");
                  var result = statement.executeQuery()) {
                 assertThat(result.next()).isTrue();
                 assertThat(result.getString(1)).containsIgnoringCase("WHERE source_kind = 'BLOCK'");
+            }
+            try (var statement = connection.prepareStatement(
+                    "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='hot_track'");
+                 var result = statement.executeQuery()) {
+                assertThat(result.next()).isTrue();
+                assertThat(result.getInt(1)).isZero();
             }
         }
     }

@@ -121,6 +121,7 @@ final class ArchiveAccountHistoryProvider implements AccountHistoryProvider {
         if (target > 100_000) {
             throw new IllegalArgumentException("history page exceeds the bounded lookup window");
         }
+        service.requireDatasetReady(dataset);
         try (var ignored = service.openQueryLease()) {
             ArchiveBackend backend = service.backend()
                     .orElseThrow(() -> new IllegalStateException("history unavailable"));

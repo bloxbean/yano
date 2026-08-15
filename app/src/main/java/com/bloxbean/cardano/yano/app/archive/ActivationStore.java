@@ -69,6 +69,22 @@ final class ActivationStore {
         }
     }
 
+    synchronized OptionalLong hotStart(ArchiveDatasetId dataset) {
+        String value = values.getProperty(dataset.name() + ".HOT_START");
+        return value == null ? OptionalLong.empty() : OptionalLong.of(Long.parseLong(value));
+    }
+
+    synchronized void setHotStart(ArchiveDatasetId dataset, long start) {
+        if (start < 0) throw new IllegalArgumentException("hot start must be non-negative");
+        String key = dataset.name() + ".HOT_START";
+        String previous = (String) values.setProperty(key, Long.toString(start));
+        try { persist(); }
+        catch (RuntimeException e) {
+            if (previous == null) values.remove(key); else values.setProperty(key, previous);
+            throw e;
+        }
+    }
+
     /**
      * Resolve a table projection cutoff without ever backfilling a table that
      * was enabled after its parent dataset. Disabled tables retain old rows;
@@ -132,8 +148,9 @@ final class ActivationStore {
     }
 
     private static String key(ArchiveDatasetId dataset, ArchiveTrack track) {
-        // Preserve the original backfill key format for phase-10 development
-        // archives while adding an independent live anchor.
+        // Track-specific keys remain readable for unreleased development
+        // archives. New block-history composition uses the unqualified
+        // activation plus the explicit HOT_START phase boundary.
         return track == ArchiveTrack.BACKFILL ? dataset.name() : dataset.name() + ".LIVE";
     }
 

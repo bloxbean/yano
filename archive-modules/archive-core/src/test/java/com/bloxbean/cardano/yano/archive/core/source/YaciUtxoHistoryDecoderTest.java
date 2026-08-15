@@ -74,7 +74,7 @@ class YaciUtxoHistoryDecoderTest {
                 new ArchiveRangeAnchor(10, new byte[]{1}, 10, new byte[]{1}), "v1");
 
         try (var state = new RocksDbHotHistoryStore(temp.resolve("pointer"))) {
-            var dataset = new UtxoHistoryDataset(state, "backfill", ArchiveTrack.BACKFILL);
+            var dataset = new UtxoHistoryDataset(state, ArchiveTrack.BACKFILL);
             dataset.beginBatch(job, List.of(context));
             List<ArchiveRow> rows = new ArrayList<>();
             dataset.derive(job, context, rows::add);

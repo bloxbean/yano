@@ -53,10 +53,10 @@ class HistoryHotColdMatrixTest {
             when(chain.getCanonicalBlockReference(10)).thenReturn(Optional.of(
                     new CanonicalBlockReference(10, 100, blockHash)));
             ActivationStore activations = new ActivationStore(root.resolve("activation.properties"));
-            activations.putIfAbsent(ArchiveDatasetId.TRANSACTION, ArchiveTrack.LIVE, 10);
+            activations.putIfAbsent(ArchiveDatasetId.TRANSACTION, 10);
             ArchiveConfiguration configuration = new ArchiveConfiguration(true, root,
                     archiveEngine.equals("sqlite") ? ArchiveEngine.SQLITE : ArchiveEngine.DUCKLAKE,
-                    ArchiveStartMode.TIP, true, ArchiveWorkerConfig.defaults(),
+                    ArchiveStartMode.TIP, ArchiveWorkerConfig.defaults(),
                     ArchiveSafetyWindows.resolve(1, 1L, 1L),
                     Map.of(ArchiveDatasetId.TRANSACTION,
                             new DatasetArchiveConfig(true, ArchiveStartMode.TIP, 0)));

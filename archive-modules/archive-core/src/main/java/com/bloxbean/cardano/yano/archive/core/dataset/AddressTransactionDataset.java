@@ -25,7 +25,6 @@ public final class AddressTransactionDataset implements LiveStatefulBlockArchive
     private final HotHistoryStore state;
     private SequentialOutpointResolver durableResolver;
     private SequentialPointerResolver pointerResolver;
-    private final String resolverNamespace;
     private final AddressKeyCodec addressKeys;
     private final ArchiveTrack track;
     private List<BlockSourceContext<Block>> blocks = List.of();
@@ -38,16 +37,14 @@ public final class AddressTransactionDataset implements LiveStatefulBlockArchive
     private int blockIndex;
 
     public AddressTransactionDataset(HotHistoryStore state, AddressKeyCodec addressKeys) {
-        this(state, addressKeys, "backfill", ArchiveTrack.BACKFILL);
+        this(state, addressKeys, ArchiveTrack.BACKFILL);
     }
 
     public AddressTransactionDataset(HotHistoryStore state, AddressKeyCodec addressKeys,
-                                     String resolverNamespace, ArchiveTrack track) {
+                                     ArchiveTrack track) {
         this.state = Objects.requireNonNull(state, "state");
-        this.resolverNamespace = resolverNamespace;
-        this.durableResolver = new SequentialOutpointResolver(state, resolverNamespace);
-        this.pointerResolver = new SequentialPointerResolver(state, ArchiveDatasetId.ADDRESS_TRANSACTION,
-                resolverNamespace);
+        this.durableResolver = new SequentialOutpointResolver(state);
+        this.pointerResolver = new SequentialPointerResolver(state, ArchiveDatasetId.ADDRESS_TRANSACTION);
         this.addressKeys = Objects.requireNonNull(addressKeys, "addressKeys");
         this.track = Objects.requireNonNull(track, "track");
     }
@@ -74,10 +71,9 @@ public final class AddressTransactionDataset implements LiveStatefulBlockArchive
 
     /** Clears an invalid UTXO base before reseeding from an authoritative source. */
     public void resetResolver() {
-        state.resetResolver(dataset(), resolverNamespace);
-        durableResolver = new SequentialOutpointResolver(state, resolverNamespace);
-        pointerResolver = new SequentialPointerResolver(state, ArchiveDatasetId.ADDRESS_TRANSACTION,
-                resolverNamespace);
+        state.resetResolver(dataset());
+        durableResolver = new SequentialOutpointResolver(state);
+        pointerResolver = new SequentialPointerResolver(state, ArchiveDatasetId.ADDRESS_TRANSACTION);
         clear();
     }
 

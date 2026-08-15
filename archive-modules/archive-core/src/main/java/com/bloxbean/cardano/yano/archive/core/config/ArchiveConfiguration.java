@@ -15,7 +15,6 @@ public record ArchiveConfiguration(
         Path historyDirectory,
         ArchiveEngine engine,
         ArchiveStartMode defaultStartMode,
-        boolean liveEnabled,
         ArchiveWorkerConfig worker,
         ArchiveSafetyWindows safetyWindows,
         Map<ArchiveDatasetId, DatasetArchiveConfig> datasets) {

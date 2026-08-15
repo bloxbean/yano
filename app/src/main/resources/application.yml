@@ -240,7 +240,6 @@ yano:
     enabled: false
     dir: ./history
     start-mode: full-required
-    live-enabled: true
     hot-store:
       engine: rocksdb
       sqlite:

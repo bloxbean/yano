@@ -52,18 +52,45 @@ public abstract class AbstractHotHistoryStoreConformanceTest {
             Outpoint outpoint = new Outpoint(hash(9), 0);
             ResolvedOutput output = output(7);
             store.applyBlock(ArchiveDatasetId.ADDRESS_TRANSACTION, checkpoint(1, 10, 1, 0),
-                    List.of(new HotHistoryOperation.OutputCreated("live", outpoint, output)),
+                    List.of(new HotHistoryOperation.OutputCreated(outpoint, output)),
                     progress(ArchiveDatasetId.ADDRESS_TRANSACTION, 1, 10, 1));
             store.applyBlock(ArchiveDatasetId.ADDRESS_TRANSACTION, checkpoint(2, 20, 2, 1),
-                    List.of(new HotHistoryOperation.OutputConsumed("live", outpoint, hash(10), "ordinary")),
+                    List.of(new HotHistoryOperation.OutputConsumed(outpoint, hash(10), "ordinary")),
                     progress(ArchiveDatasetId.ADDRESS_TRANSACTION, 2, 20, 2));
-            assertThat(store.resolveOutput("live", outpoint)).isEmpty();
+            assertThat(store.resolveOutput(outpoint)).isEmpty();
             store.rollbackTo(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.LIVE, 1);
-            ResolvedOutput restored = store.resolveOutput("live", outpoint).orElseThrow();
+            ResolvedOutput restored = store.resolveOutput(outpoint).orElseThrow();
             assertThat(restored.address()).isEqualTo(output.address());
             assertThat(restored.addressKey()).containsExactly(output.addressKey());
             assertThat(restored.paymentCredential()).containsExactly(output.paymentCredential());
             assertThat(restored.stakeCredential()).containsExactly(output.stakeCredential());
+        }
+    }
+
+    @Test void catchupToLiveHandoffPreservesTheSingleResolver() {
+        try (HotHistoryStore store = open(temp.resolve("single-track-handoff"))) {
+            Outpoint outpoint = new Outpoint(hash(40), 0);
+            ResolvedOutput output = output(40);
+            store.applyBlock(ArchiveDatasetId.ADDRESS_TRANSACTION, checkpoint(1, 10, 1, 0),
+                    List.of(new HotHistoryOperation.OutputCreated(outpoint, output)),
+                    new ArchiveProgress(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.BACKFILL,
+                            1, 10, hash(1), 1));
+
+            // Persist the live boundary first, then retire only catch-up
+            // metadata. Resolver rows are neither copied nor re-seeded.
+            store.applyBlock(ArchiveDatasetId.ADDRESS_TRANSACTION, checkpoint(1, 10, 1, 0), List.of(),
+                    progress(ArchiveDatasetId.ADDRESS_TRANSACTION, 1, 10, 1));
+            store.clearTrack(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.BACKFILL);
+            assertThat(store.load(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.BACKFILL)).isEmpty();
+            assertThat(store.resolveOutput(outpoint)).get()
+                    .extracting(ResolvedOutput::address).isEqualTo(output.address());
+
+            store.applyBlock(ArchiveDatasetId.ADDRESS_TRANSACTION, checkpoint(2, 20, 2, 1),
+                    List.of(new HotHistoryOperation.OutputConsumed(outpoint, hash(41), "ordinary")),
+                    progress(ArchiveDatasetId.ADDRESS_TRANSACTION, 2, 20, 2));
+            store.rollbackTo(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.LIVE, 1);
+            assertThat(store.resolveOutput(outpoint)).get()
+                    .extracting(ResolvedOutput::address).isEqualTo(output.address());
         }
     }
 
@@ -73,11 +100,11 @@ public abstract class AbstractHotHistoryStoreConformanceTest {
                     progress(ArchiveDatasetId.ADDRESS_TRANSACTION, 0, 0, 0));
             Outpoint outpoint = new Outpoint(hash(11), 1);
             store.applyBlock(ArchiveDatasetId.ADDRESS_TRANSACTION, checkpoint(1, 10, 1, 0), List.of(
-                    new HotHistoryOperation.OutputCreated("live", outpoint, output(1)),
-                    new HotHistoryOperation.OutputConsumed("live", outpoint, hash(12), "ordinary")),
+                    new HotHistoryOperation.OutputCreated(outpoint, output(1)),
+                    new HotHistoryOperation.OutputConsumed(outpoint, hash(12), "ordinary")),
                     progress(ArchiveDatasetId.ADDRESS_TRANSACTION, 1, 10, 1));
             store.rollbackTo(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.LIVE, 0);
-            assertThat(store.resolveOutput("live", outpoint)).isEmpty();
+            assertThat(store.resolveOutput(outpoint)).isEmpty();
         }
     }
 
@@ -86,15 +113,42 @@ public abstract class AbstractHotHistoryStoreConformanceTest {
             Outpoint outpoint = new Outpoint(hash(13), 1);
             HotBlockCheckpoint block = checkpoint(1, 10, 1, 0);
             List<HotHistoryOperation> operations = List.of(
-                    new HotHistoryOperation.OutputCreated("live", outpoint, output(13)),
-                    new HotHistoryOperation.OutputConsumed("live", outpoint, hash(14), "ordinary"));
+                    new HotHistoryOperation.OutputCreated(outpoint, output(13)),
+                    new HotHistoryOperation.OutputConsumed(outpoint, hash(14), "ordinary"));
             ArchiveProgress progress = progress(ArchiveDatasetId.ADDRESS_TRANSACTION, 1, 10, 1);
 
             store.applyBlock(ArchiveDatasetId.ADDRESS_TRANSACTION, block, operations, progress);
             store.applyBlock(ArchiveDatasetId.ADDRESS_TRANSACTION, block, operations, progress);
 
-            assertThat(store.resolveOutput("live", outpoint)).isEmpty();
+            assertThat(store.resolveOutput(outpoint)).isEmpty();
             assertThat(store.checkpoint(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.LIVE, 1)).isPresent();
+        }
+    }
+
+    @Test void finalizedResolverCleanupKeepsRollbackWindowAndRemovesConsumedPair() {
+        try (HotHistoryStore store = open(temp.resolve("resolver-cleanup"))) {
+            Outpoint outpoint = new Outpoint(hash(15), 0);
+            store.applyBlock(ArchiveDatasetId.ADDRESS_TRANSACTION, checkpoint(1, 10, 1, 0),
+                    List.of(new HotHistoryOperation.OutputCreated(outpoint, output(15))),
+                    progress(ArchiveDatasetId.ADDRESS_TRANSACTION, 1, 10, 1));
+            store.applyBlock(ArchiveDatasetId.ADDRESS_TRANSACTION, checkpoint(2, 20, 2, 1),
+                    List.of(new HotHistoryOperation.OutputConsumed(outpoint, hash(16), "ordinary")),
+                    progress(ArchiveDatasetId.ADDRESS_TRANSACTION, 2, 20, 2));
+
+            store.pruneResolverThrough(ArchiveDatasetId.ADDRESS_TRANSACTION, 1);
+            store.rollbackTo(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.LIVE, 1);
+            assertThat(store.resolveOutput(outpoint)).isPresent();
+
+            store.applyBlock(ArchiveDatasetId.ADDRESS_TRANSACTION, checkpoint(2, 20, 2, 1),
+                    List.of(new HotHistoryOperation.OutputConsumed(outpoint, hash(16), "ordinary")),
+                    progress(ArchiveDatasetId.ADDRESS_TRANSACTION, 2, 20, 2));
+            store.pruneResolverThrough(ArchiveDatasetId.ADDRESS_TRANSACTION, 2);
+
+            ResolvedOutput replacement = output(17);
+            store.seedResolver(List.of(new SequentialOutpointResolver.Entry(outpoint, replacement)),
+                    false, 0);
+            assertThat(store.resolveOutput(outpoint)).get()
+                    .extracting(ResolvedOutput::address).isEqualTo(replacement.address());
         }
     }
 
@@ -103,7 +157,7 @@ public abstract class AbstractHotHistoryStoreConformanceTest {
             Outpoint missing = new Outpoint(hash(32), 0);
             assertThatThrownBy(() -> store.applyBlock(ArchiveDatasetId.ADDRESS_TRANSACTION,
                     checkpoint(1, 10, 1, 0), List.of(new HotHistoryOperation.OutputConsumed(
-                            "live", missing, hash(33), "ordinary")),
+                            missing, hash(33), "ordinary")),
                     progress(ArchiveDatasetId.ADDRESS_TRANSACTION, 1, 10, 1))).isInstanceOf(RuntimeException.class);
             assertThat(store.checkpoint(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.LIVE, 1)).isEmpty();
             assertThat(store.load(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.LIVE)).isEmpty();
@@ -115,15 +169,15 @@ public abstract class AbstractHotHistoryStoreConformanceTest {
             byte[] credential = Arrays.copyOf(hash(22), 28);
             var pointer = new SequentialPointerResolver.PointerCoordinate(100, 0, 0);
             store.applyBlock(ArchiveDatasetId.ADDRESS_TRANSACTION, checkpoint(1, 100, 1, 0),
-                    List.of(new HotHistoryOperation.PointerRegistered("live", 100, 0, 0, "key", credential)),
+                    List.of(new HotHistoryOperation.PointerRegistered(100, 0, 0, "key", credential)),
                     progress(ArchiveDatasetId.ADDRESS_TRANSACTION, 1, 100, 1));
-            assertThat(store.resolvePointer(ArchiveDatasetId.ADDRESS_TRANSACTION, "live", pointer)).isPresent();
+            assertThat(store.resolvePointer(ArchiveDatasetId.ADDRESS_TRANSACTION, pointer)).isPresent();
             store.applyBlock(ArchiveDatasetId.ADDRESS_TRANSACTION, checkpoint(2, 200, 2, 1),
-                    List.of(new HotHistoryOperation.PointerDeregistered("live", 200, 0, 0, "key", credential)),
+                    List.of(new HotHistoryOperation.PointerDeregistered(200, 0, 0, "key", credential)),
                     progress(ArchiveDatasetId.ADDRESS_TRANSACTION, 2, 200, 2));
-            assertThat(store.resolvePointer(ArchiveDatasetId.ADDRESS_TRANSACTION, "live", pointer)).isEmpty();
+            assertThat(store.resolvePointer(ArchiveDatasetId.ADDRESS_TRANSACTION, pointer)).isEmpty();
             store.rollbackTo(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.LIVE, 1);
-            assertThat(store.resolvePointer(ArchiveDatasetId.ADDRESS_TRANSACTION, "live", pointer)).isPresent();
+            assertThat(store.resolvePointer(ArchiveDatasetId.ADDRESS_TRANSACTION, pointer)).isPresent();
         }
     }
 
@@ -132,10 +186,10 @@ public abstract class AbstractHotHistoryStoreConformanceTest {
             byte[] credential = Arrays.copyOf(hash(23), 28);
             var pointer = new SequentialPointerResolver.PointerCoordinate(100, 0, 0);
             store.applyBlock(ArchiveDatasetId.ADDRESS_TRANSACTION, checkpoint(1, 100, 1, 0), List.of(
-                    new HotHistoryOperation.PointerRegistered("live", 100, 0, 0, "key", credential),
-                    new HotHistoryOperation.PointerDeregistered("live", 100, 0, 1, "key", credential)),
+                    new HotHistoryOperation.PointerRegistered(100, 0, 0, "key", credential),
+                    new HotHistoryOperation.PointerDeregistered(100, 0, 1, "key", credential)),
                     progress(ArchiveDatasetId.ADDRESS_TRANSACTION, 1, 100, 1));
-            assertThat(store.resolvePointer(ArchiveDatasetId.ADDRESS_TRANSACTION, "live", pointer)).isEmpty();
+            assertThat(store.resolvePointer(ArchiveDatasetId.ADDRESS_TRANSACTION, pointer)).isEmpty();
         }
     }
 
@@ -164,8 +218,8 @@ public abstract class AbstractHotHistoryStoreConformanceTest {
                     List.of(new HotHistoryOperation.Fact(row)),
                     progress(ArchiveDatasetId.TRANSACTION, 1, 10, 1));
             store.applyBlock(ArchiveDatasetId.ADDRESS_TRANSACTION, checkpoint(1, 10, 1, 0), List.of(
-                    new HotHistoryOperation.OutputCreated("live", outpoint, output(42)),
-                    new HotHistoryOperation.PointerRegistered("live", 10, 0, 0, "key", credential)),
+                    new HotHistoryOperation.OutputCreated(outpoint, output(42)),
+                    new HotHistoryOperation.PointerRegistered(10, 0, 0, "key", credential)),
                     progress(ArchiveDatasetId.ADDRESS_TRANSACTION, 1, 10, 1));
         }
 
@@ -173,9 +227,9 @@ public abstract class AbstractHotHistoryStoreConformanceTest {
             assertThat(reopened.findFact(ArchiveDatasetId.TRANSACTION, rowKey)).isPresent();
             assertThat(reopened.load(ArchiveDatasetId.TRANSACTION, ArchiveTrack.LIVE))
                     .get().extracting(ArchiveProgress::coordinate).isEqualTo(1L);
-            assertThat(reopened.resolveOutput("live", outpoint)).isPresent();
+            assertThat(reopened.resolveOutput(outpoint)).isPresent();
             assertThat(reopened.resolvePointer(
-                    ArchiveDatasetId.ADDRESS_TRANSACTION, "live", pointer)).isPresent();
+                    ArchiveDatasetId.ADDRESS_TRANSACTION, pointer)).isPresent();
         }
     }
 

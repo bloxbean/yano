@@ -59,7 +59,7 @@ class UtxoHistoryDatasetTest {
                 new ArchiveRangeAnchor(10, firstHash, 20, secondHash), "v1");
 
         try (var state = new com.bloxbean.cardano.yano.archive.core.hot.RocksDbHotHistoryStore(temp.resolve("pointer"))) {
-            var dataset = new UtxoHistoryDataset(state, "backfill",
+            var dataset = new UtxoHistoryDataset(state,
                     com.bloxbean.cardano.yano.archive.core.worker.ArchiveTrack.BACKFILL);
             dataset.beginBatch(job, List.of(firstContext, secondContext));
             List<ArchiveRow> rows = new ArrayList<>();

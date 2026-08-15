@@ -28,7 +28,7 @@ class HistoryArchivePromotionTest {
     @TempDir Path temp;
 
     @Test
-    void yieldsColdFrontierToCaughtUpBackfillInsteadOfExtendingItInPromotionSizedSteps() throws Exception {
+    void obsoleteCatchupCursorCannotBlockSingleTrackPromotion() throws Exception {
         byte[] txHash = java.util.HexFormat.of().parseHex("01".repeat(32));
         byte[] liveBlockHash = java.util.HexFormat.of().parseHex("02".repeat(32));
         byte[] previousBlockHash = java.util.HexFormat.of().parseHex("03".repeat(32));
@@ -49,24 +49,28 @@ class HistoryArchivePromotionTest {
                         9, 99, previousBlockHash, 0));
 
         var activations = new ActivationStore(temp.resolve("frontier-activation.properties"));
-        activations.putIfAbsent(ArchiveDatasetId.TRANSACTION, ArchiveTrack.LIVE, 10);
+        activations.putIfAbsent(ArchiveDatasetId.TRANSACTION, 10);
         var configuration = new ArchiveConfiguration(true, temp, ArchiveEngine.SQLITE,
-                ArchiveStartMode.TIP, true, ArchiveWorkerConfig.defaults(),
+                ArchiveStartMode.TIP, ArchiveWorkerConfig.defaults(),
                 ArchiveSafetyWindows.resolve(1, 1L, 1L),
                 Map.of(ArchiveDatasetId.TRANSACTION,
                         new DatasetArchiveConfig(true, ArchiveStartMode.TIP, 0)));
         var service = new HistoryArchiveService(mock(Config.class));
+        ChainQuery chain = mock(ChainQuery.class);
+        when(chain.getCanonicalBlockReference(10)).thenReturn(Optional.of(
+                new CanonicalBlockReference(10, 100, liveBlockHash)));
         set(service, "backend", backend);
         set(service, "controlStore", hot);
+        set(service, "chain", chain);
         set(service, "archiveConfig", configuration);
         set(service, "activations", activations);
 
         service.promoteLiveRows(ArchiveDatasetId.TRANSACTION, 10);
 
-        assertThat(backend.coverage(ArchiveDatasetId.TRANSACTION).covers(10)).isFalse();
+        assertThat(backend.coverage(ArchiveDatasetId.TRANSACTION).covers(10)).isTrue();
         try (var current = hot.snapshot()) {
             assertThat(HotArchiveRows.read(current, ArchiveDatasetId.TRANSACTION,
-                    "chain_transaction", Map.of())).hasSize(1);
+                    "chain_transaction", Map.of())).isEmpty();
         }
 
         backend.close();
@@ -94,11 +98,11 @@ class HistoryArchivePromotionTest {
         when(chain.getCanonicalBlockReference(10)).thenReturn(Optional.of(
                 new CanonicalBlockReference(10, 100, blockHash)));
         var activations = new ActivationStore(temp.resolve("activation.properties"));
-        activations.putIfAbsent(ArchiveDatasetId.TRANSACTION, ArchiveTrack.LIVE, 10);
+        activations.putIfAbsent(ArchiveDatasetId.TRANSACTION, 10);
         var datasets = Map.of(ArchiveDatasetId.TRANSACTION,
                 new DatasetArchiveConfig(true, ArchiveStartMode.TIP, 0));
         var configuration = new ArchiveConfiguration(true, temp, ArchiveEngine.SQLITE,
-                ArchiveStartMode.TIP, true, ArchiveWorkerConfig.defaults(),
+                ArchiveStartMode.TIP, ArchiveWorkerConfig.defaults(),
                 ArchiveSafetyWindows.resolve(1, 1L, 1L), datasets);
         var service = new HistoryArchiveService(mock(Config.class));
         set(service, "backend", backend);
@@ -157,9 +161,9 @@ class HistoryArchivePromotionTest {
         when(chain.getCanonicalBlockReference(10)).thenReturn(Optional.of(
                 new CanonicalBlockReference(10, 100, blockHash)));
         var activations = new ActivationStore(temp.resolve("utxo-content-activation.properties"));
-        activations.putIfAbsent(ArchiveDatasetId.UTXO_HISTORY, ArchiveTrack.LIVE, 10);
+        activations.putIfAbsent(ArchiveDatasetId.UTXO_HISTORY, 10);
         var configuration = new ArchiveConfiguration(true, temp, ArchiveEngine.SQLITE,
-                ArchiveStartMode.TIP, true, ArchiveWorkerConfig.defaults(),
+                ArchiveStartMode.TIP, ArchiveWorkerConfig.defaults(),
                 ArchiveSafetyWindows.resolve(1, 1L, 1L),
                 Map.of(ArchiveDatasetId.TRANSACTION,
                                 new DatasetArchiveConfig(true, ArchiveStartMode.TIP, 0),
@@ -249,9 +253,9 @@ class HistoryArchivePromotionTest {
                 new ArchiveProgress(ArchiveDatasetId.ACCOUNT_EVENT, ArchiveTrack.LIVE,
                         10, 100, liveHash, 0));
         var activations = new ActivationStore(temp.resolve("gap-activation.properties"));
-        activations.putIfAbsent(ArchiveDatasetId.ACCOUNT_EVENT, ArchiveTrack.LIVE, 10);
+        activations.putIfAbsent(ArchiveDatasetId.ACCOUNT_EVENT, 10);
         var configuration = new ArchiveConfiguration(true, temp, ArchiveEngine.SQLITE,
-                ArchiveStartMode.TIP, true, ArchiveWorkerConfig.defaults(),
+                ArchiveStartMode.TIP, ArchiveWorkerConfig.defaults(),
                 ArchiveSafetyWindows.resolve(1, 1L, 1L),
                 Map.of(ArchiveDatasetId.ACCOUNT_EVENT,
                         new DatasetArchiveConfig(true, ArchiveStartMode.TIP, 0)));
@@ -295,7 +299,7 @@ class HistoryArchivePromotionTest {
         set(service, "backend", backend);
         set(service, "controlStore", hot);
         set(service, "chain", chain);
-        Map workers = (Map) get(service, "blockWorkers");
+        Map workers = (Map) get(service, "catchupWorkers");
         workers.put(ArchiveDatasetId.TRANSACTION, null);
         AtomicLong pending = (AtomicLong) get(service, "pendingRollbackSlot");
         pending.set(5);

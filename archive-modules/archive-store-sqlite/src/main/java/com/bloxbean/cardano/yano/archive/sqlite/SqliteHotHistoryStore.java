@@ -60,7 +60,7 @@ public final class SqliteHotHistoryStore implements HotHistoryStore {
                 for (ArchiveTableSchema table : entry.getValue().tables()) {
                     StringBuilder ddl = new StringBuilder("CREATE TABLE IF NOT EXISTS ")
                             .append(hotTable(table.physicalName()))
-                            .append(" (hot_key BLOB PRIMARY KEY, hot_track TEXT NOT NULL");
+                            .append(" (hot_key BLOB PRIMARY KEY");
                     for (ArchiveColumn column : table.columns()) {
                         ddl.append(',').append(identifier(column.name())).append(' ')
                                 .append(sqlType(column.type()));
@@ -82,7 +82,7 @@ public final class SqliteHotHistoryStore implements HotHistoryStore {
                     if (coordinate != null) {
                         try (Statement statement = connection.createStatement()) {
                             statement.execute("CREATE INDEX IF NOT EXISTS " + identifier("idx_hot_" + table.physicalName() + "_block")
-                                    + " ON " + hotTable(table.physicalName()) + "(hot_track," + identifier(coordinate) + ")");
+                                    + " ON " + hotTable(table.physicalName()) + "(" + identifier(coordinate) + ")");
                         }
                     }
                     try (PreparedStatement insert = connection.prepareStatement(
@@ -118,7 +118,7 @@ public final class SqliteHotHistoryStore implements HotHistoryStore {
         transaction(connection -> {
             for (HotBlockUpdate update : blocks) {
                 for (HotHistoryOperation operation : update.operations()) {
-                    applyOperation(connection, dataset, progress.track(), update.checkpoint(), operation);
+                    applyOperation(connection, dataset, update.checkpoint(), operation);
                 }
                 putCheckpoint(connection, dataset, progress.track(), update.checkpoint());
             }
@@ -128,10 +128,10 @@ public final class SqliteHotHistoryStore implements HotHistoryStore {
         }, "SQLite hot-history block apply failed");
     }
 
-    private void applyOperation(Connection connection, ArchiveDatasetId dataset, ArchiveTrack track,
+    private void applyOperation(Connection connection, ArchiveDatasetId dataset,
                                 HotBlockCheckpoint block, HotHistoryOperation operation) throws SQLException {
         if (operation instanceof HotHistoryOperation.Fact fact) {
-            insertFact(connection, dataset, track, fact.row());
+            insertFact(connection, dataset, fact.row());
         } else if (operation instanceof HotHistoryOperation.OutputCreated created) {
             insertResolverOutput(connection, created, block);
         } else if (operation instanceof HotHistoryOperation.OutputConsumed consumed) {
@@ -143,20 +143,18 @@ public final class SqliteHotHistoryStore implements HotHistoryStore {
         }
     }
 
-    private void insertFact(Connection connection, ArchiveDatasetId dataset, ArchiveTrack track,
-                            ArchiveRow row) throws SQLException {
+    private void insertFact(Connection connection, ArchiveDatasetId dataset, ArchiveRow row) throws SQLException {
         ArchiveTableSchema table = table(dataset, row.table());
         if (row.values().size() != table.columns().size()) throw new ArchiveStoreException("hot fact shape mismatch");
         byte[] key = HotArchiveRows.key(dataset, row);
         String columns = table.columns().stream().map(c -> identifier(c.name()))
                 .collect(java.util.stream.Collectors.joining(","));
-        String marks = String.join(",", Collections.nCopies(table.columns().size() + 2, "?"));
+        String marks = String.join(",", Collections.nCopies(table.columns().size() + 1, "?"));
         String sql = "INSERT OR IGNORE INTO " + hotTable(table.physicalName())
-                + "(hot_key,hot_track," + columns + ") VALUES(" + marks + ")";
+                + "(hot_key," + columns + ") VALUES(" + marks + ")";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setBytes(1, key);
-            statement.setString(2, track.name());
-            for (int i = 0; i < table.columns().size(); i++) bind(statement, i + 3,
+            for (int i = 0; i < table.columns().size(); i++) bind(statement, i + 2,
                     table.columns().get(i), row.values().get(i));
             if (statement.executeUpdate() == 1) return;
         }
@@ -170,37 +168,37 @@ public final class SqliteHotHistoryStore implements HotHistoryStore {
 
     private void insertResolverOutput(Connection connection, HotHistoryOperation.OutputCreated created,
                                       HotBlockCheckpoint block) throws SQLException {
-        String sql = "INSERT OR IGNORE INTO resolver_outputs VALUES(?,?,?,?,?,?,?,?,?,?,?,?)";
+        String sql = "INSERT OR IGNORE INTO resolver_outputs VALUES(?,?,?,?,?,?,?,?,?,?,?)";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            bindResolverOutput(statement, created.namespace(), created.outpoint(), created.output(),
+            bindResolverOutput(statement, created.outpoint(), created.output(),
                     block.blockNumber(), block.slot(), block.blockHash(), "BLOCK");
             if (statement.executeUpdate() == 1) return;
         }
         // An already-consumed output can still be encountered during an
         // identical deterministic replay. Compare the immutable creation
         // fact; consumption is validated independently below.
-        ResolvedOutput existing = resolveOutput(connection, created.namespace(), created.outpoint(), true)
+        ResolvedOutput existing = resolveOutput(connection, created.outpoint(), true)
                 .orElseThrow(() -> new ArchiveStoreException("resolver outpoint is missing"));
         if (!sameOutput(existing, created.output())) throw new ArchiveStoreException("conflicting resolver outpoint");
     }
 
     private void insertResolverSpend(Connection connection, HotHistoryOperation.OutputConsumed consumed,
                                      HotBlockCheckpoint block) throws SQLException {
-        if (resolveOutput(connection, consumed.namespace(), consumed.outpoint(), true).isEmpty()) {
+        if (resolveOutput(connection, consumed.outpoint(), true).isEmpty()) {
             throw new ArchiveStoreException("cannot consume missing resolver outpoint");
         }
-        String sql = "INSERT OR IGNORE INTO resolver_spends VALUES(?,?,?,?,?,?,?,?)";
+        String sql = "INSERT OR IGNORE INTO resolver_spends VALUES(?,?,?,?,?,?,?)";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setString(1, consumed.namespace()); statement.setBytes(2, consumed.outpoint().txHash());
-            statement.setInt(3, consumed.outpoint().outputIndex()); statement.setBytes(4, consumed.spendingTxHash());
-            statement.setLong(5, block.blockNumber()); statement.setLong(6, block.slot());
-            statement.setBytes(7, block.blockHash()); statement.setString(8, consumed.inputRole());
+            statement.setBytes(1, consumed.outpoint().txHash());
+            statement.setInt(2, consumed.outpoint().outputIndex()); statement.setBytes(3, consumed.spendingTxHash());
+            statement.setLong(4, block.blockNumber()); statement.setLong(5, block.slot());
+            statement.setBytes(6, block.blockHash()); statement.setString(7, consumed.inputRole());
             if (statement.executeUpdate() == 1) return;
         }
         try (PreparedStatement query = connection.prepareStatement("SELECT spending_tx_hash,input_role FROM resolver_spends "
-                + "WHERE namespace=? AND referenced_tx_hash=? AND referenced_output_index=?")) {
-            query.setString(1, consumed.namespace()); query.setBytes(2, consumed.outpoint().txHash());
-            query.setInt(3, consumed.outpoint().outputIndex());
+                + "WHERE referenced_tx_hash=? AND referenced_output_index=?")) {
+            query.setBytes(1, consumed.outpoint().txHash());
+            query.setInt(2, consumed.outpoint().outputIndex());
             try (ResultSet result = query.executeQuery()) {
                 if (!result.next() || !Arrays.equals(result.getBytes(1), consumed.spendingTxHash())
                         || !Objects.equals(result.getString(2), consumed.inputRole())) {
@@ -214,16 +212,16 @@ public final class SqliteHotHistoryStore implements HotHistoryStore {
                                            HotHistoryOperation.PointerRegistered value,
                                            HotBlockCheckpoint block) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(
-                "INSERT OR IGNORE INTO pointer_registrations VALUES(?,?,?,?,?,?,?,?,?)")) {
-            statement.setString(1, dataset.name()); statement.setString(2, value.namespace());
-            statement.setLong(3, value.slot()); statement.setInt(4, value.txIndex());
-            statement.setInt(5, value.certIndex()); statement.setString(6, value.credentialType());
-            statement.setBytes(7, value.credential()); statement.setLong(8, block.blockNumber());
-            statement.setBytes(9, block.blockHash());
+                "INSERT OR IGNORE INTO pointer_registrations VALUES(?,?,?,?,?,?,?,?)")) {
+            statement.setString(1, dataset.name());
+            statement.setLong(2, value.slot()); statement.setInt(3, value.txIndex());
+            statement.setInt(4, value.certIndex()); statement.setString(5, value.credentialType());
+            statement.setBytes(6, value.credential()); statement.setLong(7, block.blockNumber());
+            statement.setBytes(8, block.blockHash());
             if (statement.executeUpdate() == 1) return;
         }
         var pointer = new SequentialPointerResolver.PointerCoordinate(value.slot(), value.txIndex(), value.certIndex());
-        var existing = resolvePointer(connection, dataset, value.namespace(), pointer, false).orElse(null);
+        var existing = resolvePointer(connection, dataset, pointer, false).orElse(null);
         if (existing == null || !existing.type().equals(value.credentialType())
                 || !Arrays.equals(existing.hash(), value.credential())) {
             throw new ArchiveStoreException("conflicting pointer registration");
@@ -234,81 +232,80 @@ public final class SqliteHotHistoryStore implements HotHistoryStore {
                                              HotHistoryOperation.PointerDeregistered value,
                                              HotBlockCheckpoint block) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(
-                "INSERT OR IGNORE INTO pointer_deregistrations VALUES(?,?,?,?,?,?,?,?,?)")) {
-            statement.setString(1, dataset.name()); statement.setString(2, value.namespace());
-            statement.setString(3, value.credentialType()); statement.setBytes(4, value.credential());
-            statement.setLong(5, block.blockNumber()); statement.setBytes(6, block.blockHash());
-            statement.setLong(7, value.slot()); statement.setInt(8, value.txIndex());
-            statement.setInt(9, value.certIndex()); statement.executeUpdate();
+                "INSERT OR IGNORE INTO pointer_deregistrations VALUES(?,?,?,?,?,?,?,?)")) {
+            statement.setString(1, dataset.name());
+            statement.setString(2, value.credentialType()); statement.setBytes(3, value.credential());
+            statement.setLong(4, block.blockNumber()); statement.setBytes(5, block.blockHash());
+            statement.setLong(6, value.slot()); statement.setInt(7, value.txIndex());
+            statement.setInt(8, value.certIndex()); statement.executeUpdate();
         }
     }
 
-    @Override public synchronized void seedResolver(String namespace,
+    @Override public synchronized void seedResolver(
             Iterable<SequentialOutpointResolver.Entry> outputs, boolean complete, long baseBlock) {
         requireOpen();
         transaction(connection -> {
             for (var entry : outputs) {
                 try (PreparedStatement statement = connection.prepareStatement(
-                        "INSERT OR IGNORE INTO resolver_outputs VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")) {
-                    bindResolverOutput(statement, namespace, entry.outpoint(), entry.output(),
+                        "INSERT OR IGNORE INTO resolver_outputs VALUES(?,?,?,?,?,?,?,?,?,?,?)")) {
+                    bindResolverOutput(statement, entry.outpoint(), entry.output(),
                             null, null, null, "SEED");
                     int inserted = statement.executeUpdate();
                     if (inserted == 0) {
-                        var existing = resolveOutput(connection, namespace, entry.outpoint(), true).orElseThrow();
+                        var existing = resolveOutput(connection, entry.outpoint(), true).orElseThrow();
                         if (!sameOutput(existing, entry.output())) throw new ArchiveStoreException("resolver seed conflict");
                     }
                 }
             }
             if (complete) try (PreparedStatement statement = connection.prepareStatement(
-                    "INSERT INTO resolver_seeds(namespace,base_block) VALUES(?,?) "
-                            + "ON CONFLICT(namespace) DO UPDATE SET base_block=excluded.base_block")) {
-                statement.setString(1, namespace); statement.setLong(2, baseBlock); statement.executeUpdate();
+                    "INSERT INTO resolver_seeds(singleton,base_block) VALUES(1,?) "
+                            + "ON CONFLICT(singleton) DO UPDATE SET base_block=excluded.base_block")) {
+                statement.setLong(1, baseBlock); statement.executeUpdate();
             }
         }, "SQLite resolver seed failed");
     }
 
-    private void bindResolverOutput(PreparedStatement statement, String namespace, Outpoint outpoint,
+    private void bindResolverOutput(PreparedStatement statement, Outpoint outpoint,
                                     ResolvedOutput output, Long block, Long slot, byte[] hash,
                                     String source) throws SQLException {
-        statement.setString(1, namespace); statement.setBytes(2, outpoint.txHash());
-        statement.setInt(3, outpoint.outputIndex()); statement.setBytes(4, output.addressKey());
-        statement.setString(5, output.address()); statement.setBytes(6, output.paymentCredential());
-        statement.setString(7, output.stakeCredentialType()); statement.setBytes(8, output.stakeCredential());
-        nullableLong(statement, 9, block); nullableLong(statement, 10, slot); statement.setBytes(11, hash);
-        statement.setString(12, source);
+        statement.setBytes(1, outpoint.txHash());
+        statement.setInt(2, outpoint.outputIndex()); statement.setBytes(3, output.addressKey());
+        statement.setString(4, output.address()); statement.setBytes(5, output.paymentCredential());
+        statement.setString(6, output.stakeCredentialType()); statement.setBytes(7, output.stakeCredential());
+        nullableLong(statement, 8, block); nullableLong(statement, 9, slot); statement.setBytes(10, hash);
+        statement.setString(11, source);
     }
 
-    @Override public synchronized boolean resolverSeeded(String namespace) {
+    @Override public synchronized boolean resolverSeeded() {
         requireOpen();
-        return resolverBaseBlock(namespace).isPresent();
+        return resolverBaseBlock().isPresent();
     }
 
-    @Override public synchronized OptionalLong resolverBaseBlock(String namespace) {
+    @Override public synchronized OptionalLong resolverBaseBlock() {
         requireOpen();
         try (PreparedStatement statement = writer.prepareStatement(
-                "SELECT base_block FROM resolver_seeds WHERE namespace=?")) {
-            statement.setString(1, namespace);
+                "SELECT base_block FROM resolver_seeds WHERE singleton=1")) {
             try (ResultSet result = statement.executeQuery()) {
                 return result.next() ? OptionalLong.of(result.getLong(1)) : OptionalLong.empty();
             }
         } catch (SQLException e) { throw failure("resolver seed read failed", e); }
     }
 
-    @Override public synchronized Optional<ResolvedOutput> resolveOutput(String namespace, Outpoint outpoint) {
+    @Override public synchronized Optional<ResolvedOutput> resolveOutput(Outpoint outpoint) {
         requireOpen();
-        try { return resolveOutput(writer, namespace, outpoint, false); }
+        try { return resolveOutput(writer, outpoint, false); }
         catch (SQLException e) { throw failure("resolver read failed", e); }
     }
 
-    private Optional<ResolvedOutput> resolveOutput(Connection connection, String namespace, Outpoint outpoint,
+    private Optional<ResolvedOutput> resolveOutput(Connection connection, Outpoint outpoint,
                                                    boolean includeSpent) throws SQLException {
         String sql = "SELECT o.address_key,o.address,o.payment_credential,o.stake_credential_type,o.stake_credential "
-                + "FROM resolver_outputs o WHERE o.namespace=? AND o.tx_hash=? AND o.output_index=?"
-                + (includeSpent ? "" : " AND NOT EXISTS (SELECT 1 FROM resolver_spends s WHERE s.namespace=o.namespace "
-                + "AND s.referenced_tx_hash=o.tx_hash AND s.referenced_output_index=o.output_index)");
+                + "FROM resolver_outputs o WHERE o.tx_hash=? AND o.output_index=?"
+                + (includeSpent ? "" : " AND NOT EXISTS (SELECT 1 FROM resolver_spends s WHERE "
+                + "s.referenced_tx_hash=o.tx_hash AND s.referenced_output_index=o.output_index)");
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setString(1, namespace); statement.setBytes(2, outpoint.txHash());
-            statement.setInt(3, outpoint.outputIndex());
+            statement.setBytes(1, outpoint.txHash());
+            statement.setInt(2, outpoint.outputIndex());
             try (ResultSet result = statement.executeQuery()) {
                 return result.next() ? Optional.of(new ResolvedOutput(result.getBytes(1), result.getString(2),
                         result.getBytes(3), result.getString(4), result.getBytes(5))) : Optional.empty();
@@ -317,23 +314,23 @@ public final class SqliteHotHistoryStore implements HotHistoryStore {
     }
 
     @Override public synchronized Optional<SequentialPointerResolver.ResolvedStakeCredential> resolvePointer(
-            ArchiveDatasetId dataset, String namespace, SequentialPointerResolver.PointerCoordinate pointer) {
+            ArchiveDatasetId dataset, SequentialPointerResolver.PointerCoordinate pointer) {
         requireOpen();
-        try { return resolvePointer(writer, dataset, namespace, pointer, true); }
+        try { return resolvePointer(writer, dataset, pointer, true); }
         catch (SQLException e) { throw failure("pointer read failed", e); }
     }
 
     private Optional<SequentialPointerResolver.ResolvedStakeCredential> resolvePointer(Connection connection,
-            ArchiveDatasetId dataset, String namespace, SequentialPointerResolver.PointerCoordinate pointer,
+            ArchiveDatasetId dataset, SequentialPointerResolver.PointerCoordinate pointer,
             boolean honorDeregistration) throws SQLException {
         String sql = "SELECT r.credential_type,r.credential FROM pointer_registrations r WHERE r.dataset=? "
-                + "AND r.namespace=? AND r.pointer_slot=? AND r.pointer_tx_index=? AND r.pointer_cert_index=?"
+                + "AND r.pointer_slot=? AND r.pointer_tx_index=? AND r.pointer_cert_index=?"
                 + (honorDeregistration ? " AND NOT EXISTS (SELECT 1 FROM pointer_deregistrations d WHERE d.dataset=r.dataset "
-                + "AND d.namespace=r.namespace AND d.credential_type=r.credential_type AND d.credential=r.credential)" : "");
+                + "AND d.credential_type=r.credential_type AND d.credential=r.credential)" : "");
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setString(1, dataset.name()); statement.setString(2, namespace);
-            statement.setLong(3, pointer.slot()); statement.setInt(4, pointer.txIndex());
-            statement.setInt(5, pointer.certIndex());
+            statement.setString(1, dataset.name());
+            statement.setLong(2, pointer.slot()); statement.setInt(3, pointer.txIndex());
+            statement.setInt(4, pointer.certIndex());
             try (ResultSet result = statement.executeQuery()) {
                 return result.next() ? Optional.of(new SequentialPointerResolver.ResolvedStakeCredential(
                         result.getString(1), result.getBytes(2))) : Optional.empty();
@@ -342,16 +339,15 @@ public final class SqliteHotHistoryStore implements HotHistoryStore {
     }
 
     @Override public synchronized List<SequentialPointerResolver.PointerCoordinate> pointersForCredential(
-            ArchiveDatasetId dataset, String namespace,
-            SequentialPointerResolver.ResolvedStakeCredential credential) {
+            ArchiveDatasetId dataset, SequentialPointerResolver.ResolvedStakeCredential credential) {
         requireOpen();
         String sql = "SELECT pointer_slot,pointer_tx_index,pointer_cert_index FROM pointer_registrations r "
-                + "WHERE dataset=? AND namespace=? AND credential_type=? AND credential=? AND NOT EXISTS "
-                + "(SELECT 1 FROM pointer_deregistrations d WHERE d.dataset=r.dataset AND d.namespace=r.namespace "
+                + "WHERE dataset=? AND credential_type=? AND credential=? AND NOT EXISTS "
+                + "(SELECT 1 FROM pointer_deregistrations d WHERE d.dataset=r.dataset "
                 + "AND d.credential_type=r.credential_type AND d.credential=r.credential)";
         try (PreparedStatement statement = writer.prepareStatement(sql)) {
-            statement.setString(1, dataset.name()); statement.setString(2, namespace);
-            statement.setString(3, credential.type()); statement.setBytes(4, credential.hash());
+            statement.setString(1, dataset.name());
+            statement.setString(2, credential.type()); statement.setBytes(3, credential.hash());
             List<SequentialPointerResolver.PointerCoordinate> result = new ArrayList<>();
             try (ResultSet rows = statement.executeQuery()) {
                 while (rows.next()) result.add(new SequentialPointerResolver.PointerCoordinate(
@@ -361,15 +357,15 @@ public final class SqliteHotHistoryStore implements HotHistoryStore {
         } catch (SQLException e) { throw failure("pointer credential read failed", e); }
     }
 
-    @Override public synchronized void resetResolver(ArchiveDatasetId dataset, String namespace) {
+    @Override public synchronized void resetResolver(ArchiveDatasetId dataset) {
         requireOpen();
         transaction(connection -> {
-            execute(connection, "DELETE FROM resolver_seeds WHERE namespace=?", namespace);
-            execute(connection, "DELETE FROM resolver_outputs WHERE namespace=?", namespace);
-            execute(connection, "DELETE FROM pointer_deregistrations WHERE dataset=? AND namespace=?",
-                    dataset.name(), namespace);
-            execute(connection, "DELETE FROM pointer_registrations WHERE dataset=? AND namespace=?",
-                    dataset.name(), namespace);
+            if (dataset == ArchiveDatasetId.ADDRESS_TRANSACTION) {
+                execute(connection, "DELETE FROM resolver_seeds");
+                execute(connection, "DELETE FROM resolver_outputs");
+            }
+            execute(connection, "DELETE FROM pointer_deregistrations WHERE dataset=?", dataset.name());
+            execute(connection, "DELETE FROM pointer_registrations WHERE dataset=?", dataset.name());
         }, "SQLite resolver reset failed");
     }
 
@@ -390,20 +386,18 @@ public final class SqliteHotHistoryStore implements HotHistoryStore {
                           long commonBlock) throws SQLException {
         for (ArchiveTableSchema table : ArchiveSchemas.schema(dataset).tables()) {
             if (hasColumn(table, "block_number")) execute(connection, "DELETE FROM " + hotTable(table.physicalName())
-                    + " WHERE hot_track=? AND block_number>?", track.name(), commonBlock);
+                    + " WHERE block_number>?", commonBlock);
         }
-        String namespace = track.name().toLowerCase(Locale.ROOT);
         if (dataset == ArchiveDatasetId.ADDRESS_TRANSACTION) {
-            execute(connection, "DELETE FROM resolver_spends WHERE namespace=? AND spending_block_number>?",
-                    namespace, commonBlock);
-            execute(connection, "DELETE FROM resolver_outputs WHERE namespace=? AND source_kind='BLOCK' "
-                    + "AND created_block_number>?", namespace, commonBlock);
+            execute(connection, "DELETE FROM resolver_spends WHERE spending_block_number>?", commonBlock);
+            execute(connection, "DELETE FROM resolver_outputs WHERE source_kind='BLOCK' "
+                    + "AND created_block_number>?", commonBlock);
         }
         if (dataset == ArchiveDatasetId.ADDRESS_TRANSACTION || dataset == ArchiveDatasetId.UTXO_HISTORY) {
-            execute(connection, "DELETE FROM pointer_deregistrations WHERE dataset=? AND namespace=? AND block_number>?",
-                    dataset.name(), namespace, commonBlock);
-            execute(connection, "DELETE FROM pointer_registrations WHERE dataset=? AND namespace=? "
-                    + "AND registered_block_number>?", dataset.name(), namespace, commonBlock);
+            execute(connection, "DELETE FROM pointer_deregistrations WHERE dataset=? AND block_number>?",
+                    dataset.name(), commonBlock);
+            execute(connection, "DELETE FROM pointer_registrations WHERE dataset=? "
+                    + "AND registered_block_number>?", dataset.name(), commonBlock);
         }
         execute(connection, "DELETE FROM block_checkpoints WHERE dataset=? AND track=? AND block_number>?",
                 dataset.name(), track.name(), commonBlock);
@@ -416,7 +410,7 @@ public final class SqliteHotHistoryStore implements HotHistoryStore {
             putProgress(connection, new ArchiveProgress(dataset, track, commonBlock, point.slot(),
                     point.blockHash(), prior.backendGeneration()));
         }
-        if (track == ArchiveTrack.BACKFILL && dataset.sourceKind() == SourceKind.BLOCK) {
+        if (dataset.sourceKind() == SourceKind.BLOCK) {
             putRequirement(connection, dataset, Math.addExact(commonBlock, 1));
         }
     }
@@ -427,6 +421,17 @@ public final class SqliteHotHistoryStore implements HotHistoryStore {
         transaction(connection -> execute(connection, "DELETE FROM block_checkpoints WHERE dataset=? AND track=? "
                 + "AND block_number<=?", dataset.name(), track.name(), blockInclusive),
                 "SQLite checkpoint prune failed");
+    }
+
+    @Override public synchronized void pruneResolverThrough(ArchiveDatasetId dataset, long blockInclusive) {
+        requireOpen();
+        if (dataset != ArchiveDatasetId.ADDRESS_TRANSACTION) return;
+        transaction(connection -> execute(connection,
+                        "DELETE FROM resolver_outputs WHERE (tx_hash,output_index) IN ("
+                                + "SELECT referenced_tx_hash,referenced_output_index "
+                                + "FROM resolver_spends WHERE spending_block_number<=?)",
+                        blockInclusive),
+                "SQLite finalized resolver cleanup failed");
     }
 
     @Override public synchronized Optional<HotBlockCheckpoint> checkpoint(ArchiveDatasetId dataset,
@@ -479,20 +484,11 @@ public final class SqliteHotHistoryStore implements HotHistoryStore {
     @Override public synchronized void clearTrack(ArchiveDatasetId dataset, ArchiveTrack track) {
         requireOpen();
         transaction(connection -> {
-            for (ArchiveTableSchema table : ArchiveSchemas.schema(dataset).tables()) {
-                execute(connection, "DELETE FROM " + hotTable(table.physicalName()) + " WHERE hot_track=?", track.name());
+            if (track == ArchiveTrack.LIVE) for (ArchiveTableSchema table : ArchiveSchemas.schema(dataset).tables()) {
+                execute(connection, "DELETE FROM " + hotTable(table.physicalName()));
             }
-            String namespace = track.name().toLowerCase(Locale.ROOT);
-            if (dataset == ArchiveDatasetId.ADDRESS_TRANSACTION) {
-                execute(connection, "DELETE FROM resolver_seeds WHERE namespace=?", namespace);
-                execute(connection, "DELETE FROM resolver_outputs WHERE namespace=?", namespace);
-            }
-            if (dataset == ArchiveDatasetId.ADDRESS_TRANSACTION || dataset == ArchiveDatasetId.UTXO_HISTORY) {
-                execute(connection, "DELETE FROM pointer_deregistrations WHERE dataset=? AND namespace=?",
-                        dataset.name(), namespace);
-                execute(connection, "DELETE FROM pointer_registrations WHERE dataset=? AND namespace=?",
-                        dataset.name(), namespace);
-            }
+            // Resolver state has one lifecycle and is reset only through
+            // resetResolver(). Cursor cleanup must preserve the handoff state.
             execute(connection, "DELETE FROM block_checkpoints WHERE dataset=? AND track=?", dataset.name(), track.name());
             execute(connection, "DELETE FROM projection_progress WHERE dataset=? AND track=?", dataset.name(), track.name());
         }, "SQLite hot track clear failed");
@@ -612,7 +608,7 @@ public final class SqliteHotHistoryStore implements HotHistoryStore {
     }
 
     private void advanceRequirement(Connection connection, ArchiveProgress progress) throws SQLException {
-        if (progress.track() == ArchiveTrack.BACKFILL && progress.dataset().sourceKind() == SourceKind.BLOCK) {
+        if (progress.dataset().sourceKind() == SourceKind.BLOCK) {
             putRequirement(connection, progress.dataset(), Math.addExact(progress.coordinate(), 1));
         }
     }

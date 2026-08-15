@@ -8,6 +8,15 @@ Accepted
 
 2026-08-14
 
+## ADR-036 Amendment
+
+[ADR-036](036-pluggable-hot-history-store.md) replaces the concurrent live and
+backfill design in this ADR with one sequential `CATCHING_UP -> LIVE` lifecycle
+per block-derived dataset. Where this document still uses the historical terms
+"dual track", "live resolver", `live-enabled`, or live/backfill merge,
+ADR-036 is authoritative. History APIs remain explicitly unavailable while
+their required datasets catch up; deployment HA provides service continuity.
+
 ## Context
 
 Yano is primarily a node and current-ledger-state implementation. Its core sync
@@ -347,9 +356,9 @@ individually rather than turning on address and reward history together.
 
 ## Worker Modes
 
-Each enabled dataset can have two independently checkpointed processing tracks.
-The scheduler shares block decoding and I/O where useful, but one dataset's
-backfill or failure does not move another dataset's cursor.
+Each enabled dataset has one sequential processing lifecycle. The scheduler
+shares block decoding and I/O where useful, but one dataset's catch-up or
+failure does not move another dataset's cursor.
 
 ### Bulk catch-up
 
@@ -380,24 +389,12 @@ cursor, in one RocksDB batch. Once a range crosses the archive-finality boundary
 and is committed to the selected archive backend, the corresponding hot rows
 and undo entries may be deleted.
 
-Except for archive-only datasets such as rewards and epoch snapshots, or a
-dataset explicitly configured with `live-enabled=false`, near-tip projection
-starts immediately at an activation anchor while historical backfill proceeds
-from the configured start in parallel. This prevents newly enabled wallet
-endpoints from waiting weeks for mainnet backfill. The live and backfill tracks
-publish explicit,
-non-overlapping coverage ranges; the gap between them is incomplete, not
-silently empty. When backfill reaches the activation anchor, the worker
-validates the common block/projection version and merges coverage.
-
-`transaction` and `account_event` need no outpoint resolver and can
-always use this dual-track mode. `utxo_history` is also resolver-independent and
-can dual-track: outputs are self-contained, and inputs record declared
-references plus validity-derived consumption without resolving the referenced
-output during projection. A query joining across an uncovered track gap remains
-explicitly incomplete. `address_transaction` uses a separately seeded live
-resolver as described below. A block is classified using the canonical tip and
-archive boundary at commit time, not only when the batch started.
+Near-tip projection begins only after sequential catch-up reaches the finalized
+archive frontier. The catch-up cursor is handed to live processing and removed;
+the same resolver continues without a core UTXO re-seed or merge. Wallet
+endpoints requiring a dataset report building/incomplete until this handoff.
+`transaction`, `account_event`, `utxo_history`, and `address_transaction` all
+follow the same lifecycle, although their derivation work remains independent.
 
 ## Canonical and Archive Boundaries
 
@@ -478,8 +475,8 @@ source epoch, including one that emits no rows, only after its archive
 transaction and receipt are durable. For a bulk block range, the backfill
 cursor likewise advances only after the dataset's archive transaction and
 commit receipt are durable. Dataset coverage is represented as explicit
-complete block or epoch ranges, so separate live/backfill ranges and any gap
-are visible to queries.
+complete block or epoch ranges; during catch-up the dataset remains explicitly
+unavailable rather than exposing a near-tip suffix.
 
 Periodic checkpoints contain the worker's independent input-resolution state
 and the last canonical anchor. They accelerate restart/rebuild but are derived
@@ -515,18 +512,12 @@ genesis identity are checkpointed and tested before cursor advancement;
 otherwise the first spend of a genesis output would trigger the required fatal
 unresolved-input behavior.
 
-For dual-track enable-later operation, the live resolver is seeded from a
-consistent, detached snapshot of the canonical current UTXO set at the
-activation anchor, then observes blocks strictly after that anchor. Creating
-that source snapshot must hold the core lifecycle gate only long enough to bind
-the anchor and create an immutable RocksDB checkpoint/export; loading millions
-of UTXOs into the history resolver proceeds from the detached copy without a
-live core handle. The activation block hash and resulting resolver checkpoint
-are committed together before live projection begins. Backfill uses its
-separate genesis-seeded resolver. When it reaches the activation anchor,
-resolver state hashes are compared before the tracks merge; a mismatch makes
-address history unhealthy and requires rebuild rather than silently joining
-inconsistent state.
+There is one resolver. Full/earliest replay seeds it from genesis and advances
+it sequentially into live processing without copying or merging. Only
+`start-mode: tip` seeds the same resolver from a consistent detached snapshot
+of canonical core UTXO state and begins at the following block. Creating that
+snapshot binds an exact anchor and does not leave a live core handle in the
+history worker.
 
 The resolver must implement era and validity semantics explicitly:
 
@@ -1466,20 +1457,16 @@ When history is enabled after deployment:
   lower coverage bound;
 - `tip` creates only the live activation anchor and makes no claim about earlier
   history;
-- unless `live-enabled=false`, live projection starts at activation concurrently
-  with `full-required` or `earliest-available` backfill, as allowed by each
-  dataset;
+- `full-required` and `earliest-available` finish sequential catch-up before
+  entering live processing;
 - if all required bodies remain (the current default block-body prune depth is
   disabled), a full backfill can replay from genesis;
 - if earlier bodies were pruned, `full-required` mode fails clearly with the
   earliest missing block;
 - restoring blocks or resynchronizing is required to obtain complete history.
 
-A failed backfill track does not discard an independently verified live range.
-Queries wholly inside that range may be served with its explicit coverage
-metadata; queries crossing the gap are incomplete/unavailable according to the
-API contract. This preserves new wallet activity without falsely claiming full
-history.
+A failed catch-up leaves the affected dataset explicitly unavailable. It does
+not create or preserve a separately seeded near-tip suffix.
 
 The worker must never advance across a missing body and claim complete
 coverage.
@@ -1768,7 +1755,6 @@ yano:
     enabled: false
     dir: ./history
     start-mode: full-required       # full-required | earliest-available | tip
-    live-enabled: true              # run near-tip track during backfill
 
     worker:
       poll-interval-millis: 1000
@@ -1877,10 +1863,9 @@ yano:
         max-concurrent-jobs: 1
 ```
 
-Top-level `start-mode` and `live-enabled` are dataset defaults. Any
-block-derived dataset may override them; `reward` ignores `live-enabled`
-because it is archive-only. The four epoch snapshot datasets are also
-archive-only and do not create a live activation track. For an epoch-derived
+Top-level `start-mode` is the dataset default. Any block-derived dataset may
+override it. Reward and the four epoch snapshot datasets are archive-only and
+do not create a live hot range. For an epoch-derived
 dataset, `full-required` requires a complete durable source from its first
 ledger-applicable epoch, `earliest-available` publishes the earliest retained
 source epoch as its lower coverage bound, and `tip` begins with the next
@@ -2402,11 +2387,10 @@ archive engines where applicable:
   per-dataset coverage ranges;
 - archive-only epoch start modes use eligible epoch-source bounds rather than
   block live anchors and never represent unavailable earlier sources as empty;
-- live projection serves post-activation transactions while an independent
-  historical backfill is still running;
-- `utxo_history` dual-tracks without a seeded UTXO resolver, while joins across
-  its uncovered live/backfill gap report incomplete rather than fabricating
-  output details;
+- history APIs report building/incomplete until the single catch-up cursor is
+  handed to live processing;
+- `utxo_history` follows the same single lifecycle and cross-dataset joins use
+  the common complete watermark;
 - bulk finalized rows never transit the history RocksDB query CF;
 - hot history, undo, resolver, and pinned query snapshots use the dedicated
   history RocksDB and create no core RocksDB writes/compaction stalls;
@@ -2414,14 +2398,10 @@ archive engines where applicable:
   re-derivation;
 - receiver and sender history match after core spent-output pruning;
 - genesis/AVVM and Shelley `initialFunds` spends resolve after resolver seeding;
-- live resolver activation from a current-UTXO snapshot merges with the
-  genesis backfill only when resolver state hashes agree;
-- live resolver seeding loads from a detached checkpoint and does not hold a
-  core DB handle throughout the UTXO scan or block core snapshot restore;
-- rollback below a resolver-dependent live activation anchor discards the
-  orphaned base/checkpoint and old live coverage, creates and verifies a new
-  canonical anchor, and leaves the affected range explicitly unavailable until
-  re-activation completes;
+- tip-mode resolver seeding loads from a detached checkpoint and does not hold
+  a core DB handle throughout the UTXO scan or block core snapshot restore;
+- rollback below the retained hot boundary returns the dataset to catch-up from
+  its valid configured source and leaves it unavailable until handoff;
 - phase-2-invalid collateral input/return and tx validity are indexed;
 - both backends physically store the logical `transaction` dataset in
   `chain_transaction` and expose the same `transactions` view;

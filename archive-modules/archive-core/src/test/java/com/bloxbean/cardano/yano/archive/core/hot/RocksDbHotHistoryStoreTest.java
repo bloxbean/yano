@@ -26,13 +26,13 @@ class RocksDbHotHistoryStoreTest {
             var output = new com.bloxbean.cardano.yano.archive.core.address.ResolvedOutput(hash(2), "addr",
                     Arrays.copyOf(hash(3), 28), "key", Arrays.copyOf(hash(4), 28));
             store.applyBlock(ArchiveDatasetId.ADDRESS_TRANSACTION, checkpoint(1, 10, 1, 0),
-                    List.of(new HotHistoryOperation.OutputCreated("live", outpoint, output)),
+                    List.of(new HotHistoryOperation.OutputCreated(outpoint, output)),
                     progress(ArchiveDatasetId.ADDRESS_TRANSACTION, 1, 10, 1));
             store.applyBlock(ArchiveDatasetId.ADDRESS_TRANSACTION, checkpoint(2, 20, 2, 1),
-                    List.of(new HotHistoryOperation.OutputConsumed("live", outpoint, hash(5), "ordinary")),
+                    List.of(new HotHistoryOperation.OutputConsumed(outpoint, hash(5), "ordinary")),
                     progress(ArchiveDatasetId.ADDRESS_TRANSACTION, 2, 20, 2));
             store.rollbackTo(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.LIVE, 1);
-            assertThat(store.resolveOutput("live", outpoint)).isPresent();
+            assertThat(store.resolveOutput(outpoint)).isPresent();
             assertThat(store.load(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.LIVE).orElseThrow().coordinate())
                     .isEqualTo(1);
         }
@@ -47,11 +47,11 @@ class RocksDbHotHistoryStoreTest {
             store.applyBlock(ArchiveDatasetId.ADDRESS_TRANSACTION, checkpoint(0, 0, 0, -1),
                     List.of(), progress(ArchiveDatasetId.ADDRESS_TRANSACTION, 0, 0, 0));
             store.applyBlock(ArchiveDatasetId.ADDRESS_TRANSACTION, checkpoint(1, 10, 1, 0),
-                    List.of(new HotHistoryOperation.OutputCreated("live", outpoint, output),
-                            new HotHistoryOperation.OutputConsumed("live", outpoint, hash(10), "ordinary")),
+                    List.of(new HotHistoryOperation.OutputCreated(outpoint, output),
+                            new HotHistoryOperation.OutputConsumed(outpoint, hash(10), "ordinary")),
                     progress(ArchiveDatasetId.ADDRESS_TRANSACTION, 1, 10, 1));
             store.rollbackTo(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.LIVE, 0);
-            assertThat(store.resolveOutput("live", outpoint)).isEmpty();
+            assertThat(store.resolveOutput(outpoint)).isEmpty();
         }
     }
 

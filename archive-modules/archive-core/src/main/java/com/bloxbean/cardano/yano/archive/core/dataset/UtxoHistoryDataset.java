@@ -33,9 +33,9 @@ public final class UtxoHistoryDataset implements LiveStatefulBlockArchiveDataset
         this.track = ArchiveTrack.BACKFILL;
     }
 
-    public UtxoHistoryDataset(HotHistoryStore state, String namespace, ArchiveTrack track) {
+    public UtxoHistoryDataset(HotHistoryStore state, ArchiveTrack track) {
         this.state = Objects.requireNonNull(state, "state");
-        this.pointers = new SequentialPointerResolver(state, ArchiveDatasetId.UTXO_HISTORY, namespace);
+        this.pointers = new SequentialPointerResolver(state, ArchiveDatasetId.UTXO_HISTORY);
         this.track = Objects.requireNonNull(track, "track");
     }
 

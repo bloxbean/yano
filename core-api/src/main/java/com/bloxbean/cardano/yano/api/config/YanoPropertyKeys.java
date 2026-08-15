@@ -290,7 +290,6 @@ public final class YanoPropertyKeys {
         public static final String ENABLED = PREFIX + "enabled";
         public static final String DIR = PREFIX + "dir";
         public static final String START_MODE = PREFIX + "start-mode";
-        public static final String LIVE_ENABLED = PREFIX + "live-enabled";
         public static final String HOT_STORE_ENGINE = PREFIX + "hot-store.engine";
         public static final String HOT_STORE_SQLITE_PATH = PREFIX + "hot-store.sqlite.path";
         public static final String ENGINE = PREFIX + "archive.engine";

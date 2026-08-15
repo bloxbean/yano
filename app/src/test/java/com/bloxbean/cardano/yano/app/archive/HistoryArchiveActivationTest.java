@@ -1,26 +1,20 @@
 package com.bloxbean.cardano.yano.app.archive;
 
-import com.bloxbean.cardano.yano.api.ChainQuery;
 import com.bloxbean.cardano.yano.archive.api.ArchiveStoreException;
-import com.bloxbean.cardano.yano.archive.core.address.AddressKeyCodec;
+import com.bloxbean.cardano.yano.archive.api.ArchiveCoverage;
+import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
+import com.bloxbean.cardano.yano.archive.api.BlockRange;
 import com.bloxbean.cardano.yano.archive.core.config.ArchiveStartMode;
-import com.bloxbean.cardano.yano.archive.core.dataset.AddressTransactionDataset;
-import com.bloxbean.cardano.yano.archive.core.hot.RocksDbHotHistoryStore;
+import com.bloxbean.cardano.yano.archive.core.worker.ArchiveProgress;
 import com.bloxbean.cardano.yano.archive.core.worker.ArchiveTrack;
-import com.bloxbean.cardano.yano.runtime.config.NetworkGenesisConfig;
-import org.eclipse.microprofile.config.Config;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.lang.reflect.Field;
 import java.nio.file.Path;
-import java.util.Map;
 import java.util.OptionalLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 class HistoryArchiveActivationTest {
     @TempDir Path temp;
@@ -111,33 +105,33 @@ class HistoryArchiveActivationTest {
     }
 
     @Test
-    void emptyByronChainSeedsLiveAddressResolverFromGenesisAtBlockOne() throws Exception {
-        var service = new HistoryArchiveService(mock(Config.class));
-        var chain = mock(ChainQuery.class);
-        when(chain.getLocalTip()).thenReturn(null);
-        var genesis = mock(NetworkGenesisConfig.class);
-        when(genesis.getInitialFunds()).thenReturn(Map.of());
-        when(genesis.getAllByronBalances()).thenReturn(Map.of());
-        var activations = new ActivationStore(temp.resolve("activation.properties"));
-        try (var hot = new RocksDbHotHistoryStore(temp.resolve("hot"))) {
-            var dataset = new AddressTransactionDataset(hot, new AddressKeyCodec(),
-                    "live", ArchiveTrack.LIVE);
-            set(service, "chain", chain);
-            set(service, "activations", activations);
-            set(service, "firstCanonicalBlockNumber", 1L);
+    void handoffRequiresCompleteFinalizedCoverageAndUsesOneCursor() {
+        byte[] hash = new byte[32];
+        ArchiveProgress behind = new ArchiveProgress(ArchiveDatasetId.TRANSACTION,
+                ArchiveTrack.BACKFILL, 9, 90, hash, 1);
+        ArchiveProgress caught = new ArchiveProgress(ArchiveDatasetId.TRANSACTION,
+                ArchiveTrack.BACKFILL, 10, 100, hash, 1);
+        ArchiveCoverage complete = new ArchiveCoverage(ArchiveDatasetId.TRANSACTION, 1, 1,
+                java.util.List.of(new BlockRange(1, 10)));
+        ArchiveCoverage gap = new ArchiveCoverage(ArchiveDatasetId.TRANSACTION, 1, 1,
+                java.util.List.of(new BlockRange(1, 4), new BlockRange(6, 10)));
 
-            service.initializeAddressLiveResolver(dataset, genesis);
-
-            assertThat(activations.start(com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.ADDRESS_TRANSACTION,
-                    ArchiveTrack.LIVE)).hasValue(1);
-            assertThat(dataset.resolverSeeded()).isTrue();
-            assertThat(dataset.resolverBaseBlock()).hasValue(0);
-        }
+        assertThat(HistoryArchiveService.handoffBaseline(1, 10, behind, complete)).isEmpty();
+        assertThat(HistoryArchiveService.handoffBaseline(1, 10, caught, gap)).isEmpty();
+        assertThat(HistoryArchiveService.handoffBaseline(1, 10, caught, complete)).hasValue(10);
+        assertThat(HistoryArchiveService.handoffBaseline(101, 90, null, complete)).hasValue(100);
     }
 
-    private static void set(Object target, String name, Object value) throws Exception {
-        Field field = target.getClass().getDeclaredField(name);
-        field.setAccessible(true);
-        field.set(target, value);
+    @Test
+    void hotStartIsPhaseMetadataNotASecondHistoryActivation() {
+        Path path = temp.resolve("single-track.properties");
+        var activations = new ActivationStore(path);
+        activations.putIfAbsent(ArchiveDatasetId.TRANSACTION, 1);
+        activations.setHotStart(ArchiveDatasetId.TRANSACTION, 101);
+
+        var reopened = new ActivationStore(path);
+        assertThat(reopened.start(ArchiveDatasetId.TRANSACTION)).hasValue(1);
+        assertThat(reopened.hotStart(ArchiveDatasetId.TRANSACTION)).hasValue(101);
     }
+
 }

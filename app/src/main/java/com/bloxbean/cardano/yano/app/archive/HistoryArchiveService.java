@@ -68,6 +68,7 @@ public class HistoryArchiveService implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(HistoryArchiveService.class);
     private static final String SNAPSHOT_PREFIX = "yano.snapshot-export.";
     private static final String LEGACY_HISTORY_ENABLED = "yano.account-history.enabled";
+    private static final String REMOVED_LIVE_ENABLED = "yano.history.live-enabled";
 
     private final Config config;
     private volatile boolean configuredEnabled;
@@ -88,12 +89,11 @@ public class HistoryArchiveService implements AutoCloseable {
     private volatile ActivationStore activations;
     private volatile EpochArchiveStagingService epochStaging;
     private volatile LedgerQuery ledger;
-    private volatile AddressTransactionDataset liveAddressDataset;
-    private volatile AddressTransactionDataset backfillAddressDataset;
-    private volatile List<SequentialOutpointResolver.Entry> backfillGenesisEntries = List.of();
+    private volatile AddressTransactionDataset catchupAddressDataset;
+    private volatile List<SequentialOutpointResolver.Entry> genesisResolverEntries = List.of();
     private volatile long firstCanonicalBlockNumber;
     private final AccountHistoryProvider archiveAccountHistory = new ArchiveAccountHistoryProvider(this);
-    private final EnumMap<ArchiveDatasetId, DatasetRunner> blockWorkers = new EnumMap<>(ArchiveDatasetId.class);
+    private final EnumMap<ArchiveDatasetId, DatasetRunner> catchupWorkers = new EnumMap<>(ArchiveDatasetId.class);
     private final EnumMap<ArchiveDatasetId, DatasetRunner> liveWorkers = new EnumMap<>(ArchiveDatasetId.class);
     private final EnumMap<ArchiveDatasetId, Long> appliedRetention = new EnumMap<>(ArchiveDatasetId.class);
     private final EnumMap<ArchiveDatasetId, Integer> promotionBatchBlocks = new EnumMap<>(ArchiveDatasetId.class);
@@ -170,7 +170,7 @@ public class HistoryArchiveService implements AutoCloseable {
                     YanoPropertyKeys.History.MAINTENANCE_MAX_REWRITE, "512MB")));
             nextMaintenanceNanos.set(nextMaintenanceDeadline(System.nanoTime(), maintenanceInterval));
             archiveConfig = new ArchiveConfiguration(true, directory, engine, defaultStart,
-                    bool(YanoPropertyKeys.History.LIVE_ENABLED, true), workerConfig, safety, datasets);
+                    workerConfig, safety, datasets);
 
             hotStoreEngine = string(YanoPropertyKeys.History.HOT_STORE_ENGINE, "rocksdb")
                     .trim().toLowerCase(Locale.ROOT);
@@ -260,50 +260,38 @@ public class HistoryArchiveService implements AutoCloseable {
             var utxoDecoder = new YaciUtxoHistoryDecoder(ledger::slotToEpoch, ledger::slotToUnixTime,
                     chain::getBlockEra, genesisHistoryOutputs, firstCanonicalBlockNumber, utxoProjection);
             registerBlockWorker(ArchiveDatasetId.UTXO_HISTORY,
-                    new UtxoHistoryDataset(controlStore, "backfill", ArchiveTrack.BACKFILL),
+                    new UtxoHistoryDataset(controlStore, ArchiveTrack.BACKFILL),
                     new MappingBlockArchiveSource<>(sharedBlockSource, utxoDecoder::project),
                     identity.networkIdentity(), workerConfig, syncView);
-            if (archiveConfig.liveEnabled()) {
-                registerLiveWorker(ArchiveDatasetId.TRANSACTION, StandardBlockDatasets.transactions(), sharedFactSource,
-                        identity.networkIdentity(), workerConfig);
-                registerLiveWorker(ArchiveDatasetId.ACCOUNT_EVENT, StandardBlockDatasets.accountEvents(), sharedFactSource,
-                        identity.networkIdentity(), workerConfig);
-                registerLiveWorker(ArchiveDatasetId.UTXO_HISTORY,
-                        new UtxoHistoryDataset(controlStore, "live", ArchiveTrack.LIVE),
-                        new MappingBlockArchiveSource<>(sharedBlockSource, utxoDecoder::project),
-                        identity.networkIdentity(), workerConfig);
-                if (datasetEnabled(ArchiveDatasetId.ADDRESS_TRANSACTION)
-                        && ledger.getUtxoState() != null && ledger.getUtxoState().isEnabled()) {
-                    var liveAddress = new AddressTransactionDataset(controlStore, new AddressKeyCodec(),
-                            "live", ArchiveTrack.LIVE);
-                    liveAddressDataset = liveAddress;
-                    initializeAddressLiveResolver(liveAddress, genesis);
-                    registerLiveWorker(ArchiveDatasetId.ADDRESS_TRANSACTION, liveAddress,
-                            sharedBlockSource,
-                            identity.networkIdentity(), workerConfig);
-                } else if (datasetEnabled(ArchiveDatasetId.ADDRESS_TRANSACTION)) {
-                    log.warn("Address live history disabled because a complete core UTXO snapshot is unavailable");
-                }
-                long liveStart = chain.getLocalTip() == null
-                        ? firstCanonicalBlockNumber : chain.getLocalTip().getBlockNumber() + 1;
-                for (ArchiveDatasetId id : liveWorkers.keySet()) {
-                    activations.putIfAbsent(id, ArchiveTrack.LIVE, liveStart);
-                }
+            registerLiveWorker(ArchiveDatasetId.TRANSACTION, StandardBlockDatasets.transactions(), sharedFactSource,
+                    identity.networkIdentity(), workerConfig);
+            registerLiveWorker(ArchiveDatasetId.ACCOUNT_EVENT, StandardBlockDatasets.accountEvents(), sharedFactSource,
+                    identity.networkIdentity(), workerConfig);
+            registerLiveWorker(ArchiveDatasetId.UTXO_HISTORY,
+                    new UtxoHistoryDataset(controlStore, ArchiveTrack.LIVE),
+                    new MappingBlockArchiveSource<>(sharedBlockSource, utxoDecoder::project),
+                    identity.networkIdentity(), workerConfig);
+            if (datasetEnabled(ArchiveDatasetId.ADDRESS_TRANSACTION)) {
+                var liveAddress = new AddressTransactionDataset(controlStore, new AddressKeyCodec(),
+                        ArchiveTrack.LIVE);
+                registerLiveWorker(ArchiveDatasetId.ADDRESS_TRANSACTION, liveAddress,
+                        sharedBlockSource, identity.networkIdentity(), workerConfig);
             }
             if (datasetEnabled(ArchiveDatasetId.ADDRESS_TRANSACTION)) {
-                var addressDataset = new AddressTransactionDataset(controlStore, new AddressKeyCodec());
-                backfillAddressDataset = addressDataset;
-                backfillGenesisEntries = genesisOutpoints(genesis, addressDataset);
-                initializeAddressBackfillResolver(addressDataset);
+                var addressDataset = new AddressTransactionDataset(controlStore, new AddressKeyCodec(),
+                        ArchiveTrack.BACKFILL);
+                catchupAddressDataset = addressDataset;
+                genesisResolverEntries = genesisOutpoints(genesis, addressDataset);
+                initializeAddressResolver(addressDataset);
                 registerBlockWorker(ArchiveDatasetId.ADDRESS_TRANSACTION, addressDataset, sharedBlockSource,
                         identity.networkIdentity(), workerConfig, syncView);
             }
             for (ArchiveDatasetId dataset : ArchiveDatasetId.values()) {
-                if (dataset.sourceKind() == SourceKind.BLOCK && !blockWorkers.containsKey(dataset)) {
+                if (dataset.sourceKind() == SourceKind.BLOCK && !catchupWorkers.containsKey(dataset)) {
                     controlStore.releaseBlockBodyRequirement(dataset);
                 }
             }
-            for (ArchiveDatasetId dataset : blockWorkers.keySet()) {
+            for (ArchiveDatasetId dataset : catchupWorkers.keySet()) {
                 OptionalLong persistedStart = activations.start(dataset);
                 long start = persistedStart.orElseGet(() -> activationStart(dataset, persistedTip));
                 if (start < firstCanonicalBlockNumber) {
@@ -313,7 +301,7 @@ public class HistoryArchiveService implements AutoCloseable {
                 if (start >= 0) controlStore.requireBlockBodiesFrom(dataset, start);
             }
             int effectiveParallelism = Math.min(workerConfig.projectionParallelism(),
-                    Math.max(1, blockWorkers.size()));
+                    Math.max(1, catchupWorkers.size()));
             projectionExecutor = Executors.newFixedThreadPool(effectiveParallelism,
                     Thread.ofPlatform().name("yano-archive-projection-", 0).factory());
             subsystem = new ArchiveSubsystem(true, workerConfig.pollInterval(), this::runBoundedWork);
@@ -349,13 +337,19 @@ public class HistoryArchiveService implements AutoCloseable {
         return Optional.ofNullable(backend);
     }
 
+    void requireDatasetReady(ArchiveDatasetId dataset) {
+        if (!datasetAvailable(dataset)) {
+            throw new IllegalStateException("history dataset is still building: " + dataset.logicalName());
+        }
+    }
+
     public AccountHistoryProvider accountHistoryProvider() { return archiveAccountHistory; }
 
     boolean datasetAvailable(ArchiveDatasetId dataset) {
         lifecycleLock.readLock().lock();
         try {
-            return available() && datasetEnabled(dataset) && (!backend.coverage(dataset).completeRanges().isEmpty()
-                    || (controlStore != null && controlStore.load(dataset, ArchiveTrack.LIVE).isPresent()));
+            return available() && datasetEnabled(dataset)
+                    && (dataset.sourceKind() == SourceKind.EPOCH || isLivePhase(dataset));
         } finally {
             lifecycleLock.readLock().unlock();
         }
@@ -396,6 +390,10 @@ public class HistoryArchiveService implements AutoCloseable {
                 if (!datasetEnabled(dataset)) {
                     throw new IllegalArgumentException("history dataset is disabled: " + dataset.logicalName());
                 }
+                if (dataset.sourceKind() == SourceKind.BLOCK && !isLivePhase(dataset)) {
+                    throw new ArchiveStoreException("history dataset is still building: "
+                            + dataset.logicalName());
+                }
             }
             session = current.openReadSession();
             ArchiveConsistencyPoint point = ArchiveConsistencyPlanner.plan(current, session, datasets,
@@ -418,26 +416,28 @@ public class HistoryArchiveService implements AutoCloseable {
     }
 
     List<ArchiveRecord> hotRecords(ArchiveDatasetId dataset, String table, Map<String, Object> filters) {
-        if (controlStore == null || !archiveConfig.liveEnabled()) return List.of();
+        if (controlStore == null || !isLivePhase(dataset)) return List.of();
         try (var snapshot = controlStore.snapshot()) {
             return HotArchiveRows.read(snapshot, dataset, table, filters);
         }
     }
 
     com.bloxbean.cardano.yano.archive.core.hot.HotHistorySnapshot openHotSnapshot() {
-        return controlStore == null || !archiveConfig.liveEnabled() ? null : controlStore.snapshot();
+        return controlStore == null ? null : controlStore.snapshot();
     }
 
     Optional<BlockRange> liveCoverage(ArchiveDatasetId dataset) {
-        if (dataset.sourceKind() != SourceKind.BLOCK || controlStore == null || !archiveConfig.liveEnabled()) {
+        if (dataset.sourceKind() != SourceKind.BLOCK || controlStore == null) {
             return Optional.empty();
         }
         ArchiveProgress progress = controlStore.load(dataset, ArchiveTrack.LIVE).orElse(null);
-        OptionalLong start = activations.start(dataset, ArchiveTrack.LIVE);
-        if (progress == null || start.isEmpty() || progress.coordinate() < start.getAsLong()) {
+        if (progress == null) {
             return Optional.empty();
         }
-        return Optional.of(new BlockRange(start.getAsLong(), progress.coordinate()));
+        long start = activations.hotStart(dataset).orElseGet(() ->
+                activations.start(dataset).orElse(progress.coordinate() + 1));
+        if (start > progress.coordinate()) return Optional.empty();
+        return Optional.of(new BlockRange(start, progress.coordinate()));
     }
 
     public TransactionLookup findTransaction(byte[] txHash) {
@@ -446,6 +446,9 @@ public class HistoryArchiveService implements AutoCloseable {
             ArchiveBackend current = backend;
             if (current == null || !datasetEnabled(ArchiveDatasetId.TRANSACTION)) {
                 return TransactionLookup.unavailable("transaction history is disabled or unavailable");
+            }
+            if (!isLivePhase(ArchiveDatasetId.TRANSACTION)) {
+                return TransactionLookup.incomplete("transaction history is still building");
             }
             if (controlStore != null) {
                 try (var snapshot = controlStore.snapshot()) {
@@ -475,8 +478,15 @@ public class HistoryArchiveService implements AutoCloseable {
         if (controlStore == null) return false;
         ArchiveProgress live = controlStore.load(dataset, ArchiveTrack.LIVE).orElse(null);
         if (live == null || live.coordinate() < tip) return false;
-        long activation = activations.start(dataset, ArchiveTrack.LIVE).orElse(Long.MAX_VALUE);
-        return activation == 0 || cold.covers(activation - 1);
+        Optional<BlockRange> hot = liveCoverage(dataset);
+        if (hot.isEmpty()) return cold.covers(tip);
+        long hotStart = hot.orElseThrow().startInclusive();
+        long activation = activations.start(dataset).orElse(hotStart);
+        return hotStart <= activation || cold.covers(hotStart - 1);
+    }
+
+    private boolean isLivePhase(ArchiveDatasetId dataset) {
+        return controlStore != null && controlStore.load(dataset, ArchiveTrack.LIVE).isPresent();
     }
 
     public Map<String, Object> status() {
@@ -520,6 +530,10 @@ public class HistoryArchiveService implements AutoCloseable {
                     dataset.put("startMode", selected.startMode().name().toLowerCase(Locale.ROOT));
                     dataset.put("retentionEpochs", selected.retentionEpochs());
                     if (selected.enabled()) {
+                        if (id.sourceKind() == SourceKind.BLOCK) {
+                            dataset.put("phase", isLivePhase(id) ? "live" : "catching_up");
+                            dataset.put("ready", isLivePhase(id));
+                        }
                         dataset.put("coverage", backend.coverage(read, id));
                         dataset.put("workers", metrics.dataset(id));
                         if (id.sourceKind() == SourceKind.BLOCK) enabledBlocks.add(id);
@@ -576,42 +590,42 @@ public class HistoryArchiveService implements AutoCloseable {
         long finalized = tip.getBlockNumber() - archiveConfig.safetyWindows().archiveFinalityBlocks();
         if (finalized < 0) return;
         runBlockProjectionCycle(tip.getBlockNumber(), finalized);
-        if (archiveConfig.liveEnabled()) {
-            beginSharedSourceCycle();
-            try {
-                for (var entry : liveWorkers.entrySet()) {
-                    ArchiveDatasetId dataset = entry.getKey();
-                    try {
-                        reanchorStaleLiveTrack(dataset, tip.getBlockNumber());
-                        long activation = activations.start(dataset, ArchiveTrack.LIVE).orElseGet(() -> {
-                            long value = tip.getBlockNumber() + 1;
-                            activations.putIfAbsent(dataset, ArchiveTrack.LIVE, value);
-                            return value;
-                        });
-                        entry.getValue().run(activation, tip.getBlockNumber());
-                        long undoCutoff = tip.getBlockNumber()
-                                - archiveConfig.safetyWindows().rollbackRetentionBlocks();
-                        if (undoCutoff >= activation) {
-                            controlStore.pruneUndoThrough(dataset, ArchiveTrack.LIVE, undoCutoff);
-                        }
-                    } catch (LiveActivationInvalidatedException e) {
-                        try {
-                            recoverLiveCanonicalMismatch(dataset, e.activation(), tip.getBlockNumber());
-                        } catch (Exception recoveryFailure) {
-                            metrics.update(dataset, ArchiveTrack.LIVE, ArchiveWorkerStatus.State.DEGRADED,
-                                    -1, 0, recoveryFailure.getMessage());
-                            log.warn("Live history worker {} reactivation paused: {}",
-                                    dataset.logicalName(), recoveryFailure.toString());
-                        }
-                    } catch (Exception e) {
-                        metrics.update(dataset, ArchiveTrack.LIVE, ArchiveWorkerStatus.State.DEGRADED,
-                                -1, 0, failureDetail(e));
-                        log.warn("Live history worker {} paused", dataset.logicalName(), e);
+        transitionCaughtUpDatasets(finalized);
+        beginSharedSourceCycle();
+        try {
+            for (var entry : liveWorkers.entrySet()) {
+                ArchiveDatasetId dataset = entry.getKey();
+                if (!isLivePhase(dataset)) continue;
+                try {
+                    promoteLiveRows(dataset, finalized);
+                    reanchorStaleLiveTrack(dataset, tip.getBlockNumber());
+                    long activation = activations.start(dataset).orElseThrow(() ->
+                            new ArchiveStoreException("missing history activation for "
+                                    + dataset.logicalName()));
+                    entry.getValue().run(activation, tip.getBlockNumber());
+                    long undoCutoff = tip.getBlockNumber()
+                            - archiveConfig.safetyWindows().rollbackRetentionBlocks();
+                    if (undoCutoff >= activation) {
+                        controlStore.pruneResolverThrough(dataset, undoCutoff);
+                        controlStore.pruneUndoThrough(dataset, ArchiveTrack.LIVE, undoCutoff);
                     }
+                } catch (LiveActivationInvalidatedException e) {
+                    try {
+                        recoverLiveCanonicalMismatch(dataset, e.activation(), tip.getBlockNumber());
+                    } catch (Exception recoveryFailure) {
+                        metrics.update(dataset, ArchiveTrack.LIVE, ArchiveWorkerStatus.State.DEGRADED,
+                                -1, 0, recoveryFailure.getMessage());
+                        log.warn("Live history worker {} reactivation paused: {}",
+                                dataset.logicalName(), recoveryFailure.toString());
+                    }
+                } catch (Exception e) {
+                    metrics.update(dataset, ArchiveTrack.LIVE, ArchiveWorkerStatus.State.DEGRADED,
+                            -1, 0, failureDetail(e));
+                    log.warn("Live history worker {} paused", dataset.logicalName(), e);
                 }
-            } finally {
-                endSharedSourceCycle();
             }
+        } finally {
+            endSharedSourceCycle();
         }
         runEpochWork(finalized);
         applyRetention(tip.getBlockNumber(), tip.getSlot());
@@ -619,12 +633,13 @@ public class HistoryArchiveService implements AutoCloseable {
     }
 
     private void runBlockProjectionCycle(long tip, long finalized) {
-        if (blockWorkers.isEmpty()) return;
+        if (catchupWorkers.isEmpty()) return;
         beginSharedSourceCycle();
         try {
-            List<Future<?>> futures = new ArrayList<>(blockWorkers.size());
-            for (var entry : blockWorkers.entrySet()) {
-                futures.add(projectionExecutor.submit(() -> runBackfillDataset(entry.getKey(), entry.getValue(),
+            List<Future<?>> futures = new ArrayList<>(catchupWorkers.size());
+            for (var entry : catchupWorkers.entrySet()) {
+                if (isLivePhase(entry.getKey())) continue;
+                futures.add(projectionExecutor.submit(() -> runCatchupDataset(entry.getKey(), entry.getValue(),
                         tip, finalized)));
             }
             boolean interrupted = false;
@@ -652,20 +667,20 @@ public class HistoryArchiveService implements AutoCloseable {
         }
     }
 
-    private void runBackfillDataset(ArchiveDatasetId dataset, DatasetRunner runner, long tip, long finalized) {
+    private void runCatchupDataset(ArchiveDatasetId dataset, DatasetRunner runner, long tip, long finalized) {
         try {
             long start = activations.start(dataset).orElseGet(() -> activationStart(dataset, tip));
             if (start >= 0) {
                 runner.run(start, finalized);
                 long undoCutoff = tip - archiveConfig.safetyWindows().rollbackRetentionBlocks();
                 if (undoCutoff >= start) {
+                    controlStore.pruneResolverThrough(dataset, undoCutoff);
                     controlStore.pruneUndoThrough(dataset, ArchiveTrack.BACKFILL, undoCutoff);
                 }
-                promoteLiveRows(dataset, finalized);
             }
         } catch (BackfillActivationInvalidatedException e) {
             try {
-                reactivateBackfillDataset(dataset, e.activation());
+                reactivateCatchupDataset(dataset, e.activation());
             } catch (Exception recoveryFailure) {
                 metrics.update(dataset, ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.DEGRADED,
                         -1, 0, recoveryFailure.getMessage());
@@ -677,6 +692,65 @@ public class HistoryArchiveService implements AutoCloseable {
                     -1, 0, failureDetail(e));
             log.warn("History worker {} paused", dataset.logicalName(), e);
         }
+    }
+
+    /**
+     * Crash-safe, one-way handoff. The live cursor is persisted first; its
+     * presence is the durable phase marker. Catch-up state is then discarded.
+     * Resolver rows have one identity and are not copied.
+     */
+    private void transitionCaughtUpDatasets(long finalized) {
+        if (finalized < firstCanonicalBlockNumber - 1) return;
+        for (ArchiveDatasetId dataset : catchupWorkers.keySet()) {
+            if (isLivePhase(dataset) || !liveWorkers.containsKey(dataset)) continue;
+            long activation = activations.start(dataset).orElse(-1);
+            if (activation < 0) continue;
+            ArchiveProgress catchup = controlStore.load(dataset, ArchiveTrack.BACKFILL).orElse(null);
+            OptionalLong selectedBaseline = handoffBaseline(
+                    activation, finalized, catchup, backend.coverage(dataset));
+            if (selectedBaseline.isEmpty()) continue;
+            long baseline = selectedBaseline.getAsLong();
+            var canonical = chain.getCanonicalBlockReference(baseline).orElse(null);
+            if (canonical == null) continue;
+            long generation;
+            try (ArchiveReadSession read = backend.openReadSession()) { generation = read.generation(); }
+            ArchiveProgress liveProgress = new ArchiveProgress(dataset, ArchiveTrack.LIVE, baseline,
+                    canonical.slot(), canonical.blockHash(), generation);
+            controlStore.applyBlock(dataset, new HotBlockCheckpoint(baseline, canonical.slot(),
+                    canonical.blockHash(), new byte[0]), List.of(), liveProgress);
+            // Development archives may contain the removed dual-track anchor.
+            activations.setHotStart(dataset, Math.addExact(baseline, 1));
+            controlStore.clearTrack(dataset, ArchiveTrack.BACKFILL);
+            metrics.update(dataset, ArchiveTrack.LIVE, ArchiveWorkerStatus.State.IDLE,
+                    baseline, 0, "catch-up complete; single resolver handed to live processing");
+            log.info("History dataset {} completed catch-up at block {} and entered live mode",
+                    dataset.logicalName(), baseline);
+        }
+    }
+
+    private static boolean coversRange(ArchiveCoverage coverage, long start, long end) {
+        long next = start;
+        for (ArchiveRange range : coverage.completeRanges()) {
+            if (range.endInclusive() < next) continue;
+            if (range.startInclusive() > next) return false;
+            next = Math.addExact(range.endInclusive(), 1);
+            if (next > end) return true;
+        }
+        return next > end;
+    }
+
+    static OptionalLong handoffBaseline(long activation, long finalized,
+                                        ArchiveProgress catchup, ArchiveCoverage coverage) {
+        if (activation < 0) throw new IllegalArgumentException("activation must not be negative");
+        if (catchup == null) {
+            // tip mode intentionally starts after the persisted core tip.
+            return activation > finalized ? OptionalLong.of(activation - 1) : OptionalLong.empty();
+        }
+        if (catchup.coordinate() < finalized) return OptionalLong.empty();
+        if (activation <= finalized && !coversRange(coverage, activation, finalized)) {
+            return OptionalLong.empty();
+        }
+        return OptionalLong.of(catchup.coordinate());
     }
 
     private void beginSharedSourceCycle() {
@@ -701,7 +775,8 @@ public class HistoryArchiveService implements AutoCloseable {
     private void reanchorStaleLiveTrack(ArchiveDatasetId dataset, long currentTip) {
         OptionalLong target = chain.getSyncTargetBlockNumber();
         if (target.isEmpty()) return;
-        long activation = activations.start(dataset, ArchiveTrack.LIVE).orElse(-1);
+        long activation = activations.hotStart(dataset)
+                .orElseGet(() -> activations.start(dataset).orElse(-1));
         if (activation < 0) return;
         long liveCoordinate = controlStore.load(dataset, ArchiveTrack.LIVE)
                 .map(ArchiveProgress::coordinate).orElse(activation - 1);
@@ -769,13 +844,14 @@ public class HistoryArchiveService implements AutoCloseable {
         boolean retry = false;
         try {
             long targetBlock = blockAtOrBeforeSlot(targetSlot, currentTip);
-            invalidateBlockArchivesAfterRollback(targetBlock);
+            Set<ArchiveDatasetId> finalizedInvalidated = invalidateBlockArchivesAfterRollback(targetBlock);
             for (ArchiveDatasetId dataset : liveWorkers.keySet()) {
                 ArchiveProgress progress = controlStore.load(dataset, ArchiveTrack.LIVE).orElse(null);
                 if (progress == null || progress.coordinate() <= targetBlock) continue;
-                long activation = activations.start(dataset, ArchiveTrack.LIVE).orElse(targetBlock + 1);
+                long activation = activations.hotStart(dataset)
+                        .orElseGet(() -> activations.start(dataset).orElse(targetBlock + 1));
                 try {
-                    if (targetBlock < activation - 1) {
+                    if (finalizedInvalidated.contains(dataset) || targetBlock < activation - 1) {
                         reactivateLiveDataset(dataset, activation, currentTip, targetBlock);
                     } else if (targetBlock == activation - 1) {
                         controlStore.resetTrackFrom(dataset, ArchiveTrack.LIVE, activation);
@@ -805,21 +881,23 @@ public class HistoryArchiveService implements AutoCloseable {
         }
     }
 
-    private void invalidateBlockArchivesAfterRollback(long targetBlock) {
-        for (ArchiveDatasetId dataset : blockWorkers.keySet()) {
-            invalidateFinalizedBlockDataset(dataset, targetBlock);
+    private Set<ArchiveDatasetId> invalidateBlockArchivesAfterRollback(long targetBlock) {
+        EnumSet<ArchiveDatasetId> invalidated = EnumSet.noneOf(ArchiveDatasetId.class);
+        for (ArchiveDatasetId dataset : catchupWorkers.keySet()) {
+            if (invalidateFinalizedBlockDataset(dataset, targetBlock)) invalidated.add(dataset);
         }
+        return Set.copyOf(invalidated);
     }
 
-    private void invalidateFinalizedBlockDataset(ArchiveDatasetId dataset, long commonBlock) {
+    private boolean invalidateFinalizedBlockDataset(ArchiveDatasetId dataset, long commonBlock) {
         ArchiveCoverage coverage = backend.coverage(dataset);
         long last = coverage.completeRanges().stream().mapToLong(ArchiveRange::endInclusive)
                 .max().orElse(commonBlock);
-        if (last <= commonBlock) return;
+        if (last <= commonBlock) return false;
         backend.invalidate(dataset, new BlockRange(Math.addExact(commonBlock, 1), last));
-        reactivateBackfillDataset(dataset, activations.start(dataset).orElse(0));
         log.warn("Invalidated finalized {} archive after canonical rollback to block {}",
                 dataset.logicalName(), commonBlock);
+        return true;
     }
 
     private void recoverLiveCanonicalMismatch(ArchiveDatasetId dataset, long activation, long currentTip) {
@@ -919,40 +997,37 @@ public class HistoryArchiveService implements AutoCloseable {
     private void reactivateLiveDataset(ArchiveDatasetId dataset, long oldActivation, long currentTip,
                                        long replayAfterBlock, String reason) {
         controlStore.clearTrack(dataset, ArchiveTrack.LIVE);
-        long replacement = Math.addExact(replayAfterBlock, 1);
-        if (dataset == ArchiveDatasetId.ADDRESS_TRANSACTION && liveAddressDataset != null
-                && ledger != null && ledger.getUtxoState() != null && ledger.getUtxoState().isEnabled()) {
-            liveAddressDataset.resetResolver();
-            replacement = Math.addExact(seedResolverSnapshot(ledger.getUtxoState(), liveAddressDataset), 1);
-        }
-        activations.replace(dataset, ArchiveTrack.LIVE, replacement);
-        metrics.update(dataset, ArchiveTrack.LIVE, ArchiveWorkerStatus.State.IDLE,
-                currentTip, 0, "reactivated: " + reason);
-        log.warn("Reactivated {} live history at block {}; previous anchor {} ({})",
-                dataset.logicalName(), replacement, oldActivation, reason);
+        long historyActivation = activations.start(dataset).orElse(oldActivation);
+        reactivateCatchupDataset(dataset, historyActivation);
+        metrics.update(dataset, ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.IDLE,
+                historyActivation - 1, currentTip - replayAfterBlock, "catch-up restarted: " + reason);
+        log.warn("Returned {} history to catch-up at block {}; previous live anchor {} ({})",
+                dataset.logicalName(), historyActivation, oldActivation, reason);
     }
 
-    private void reactivateBackfillDataset(ArchiveDatasetId dataset, long activation) {
+    private void reactivateCatchupDataset(ArchiveDatasetId dataset, long activation) {
         controlStore.clearTrack(dataset, ArchiveTrack.BACKFILL);
         long replacement = activation;
-        if (dataset == ArchiveDatasetId.ADDRESS_TRANSACTION && backfillAddressDataset != null) {
-            backfillAddressDataset.resetResolver();
+        if (dataset == ArchiveDatasetId.ADDRESS_TRANSACTION && catchupAddressDataset != null) {
+            catchupAddressDataset.resetResolver();
             ArchiveStartMode mode = archiveConfig.datasets().get(dataset).startMode();
             if (mode == ArchiveStartMode.TIP) {
                 if (ledger == null || ledger.getUtxoState() == null || !ledger.getUtxoState().isEnabled()) {
                     throw new ArchiveStoreException("address history tip reactivation requires core UTXO state");
                 }
                 replacement = Math.addExact(
-                        seedResolverSnapshot(ledger.getUtxoState(), backfillAddressDataset), 1);
+                        seedResolverSnapshot(ledger.getUtxoState(), catchupAddressDataset), 1);
                 activations.replace(dataset, ArchiveTrack.BACKFILL, replacement);
             } else {
-                backfillAddressDataset.seedGenesis(backfillGenesisEntries);
+                catchupAddressDataset.seedGenesis(genesisResolverEntries);
             }
+        } else if (dataset == ArchiveDatasetId.UTXO_HISTORY) {
+            controlStore.resetResolver(dataset);
         }
         controlStore.requireBlockBodiesFrom(dataset, replacement);
         metrics.update(dataset, ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.IDLE,
                 replacement - 1, 0, "rebuilding after rollback crossed retained undo");
-        log.warn("Reset {} backfill to activation {} after rollback crossed retained undo",
+        log.warn("Reset {} catch-up to activation {} after rollback crossed retained undo",
                 dataset.logicalName(), replacement);
     }
 
@@ -1070,7 +1145,8 @@ public class HistoryArchiveService implements AutoCloseable {
         if (tables.isEmpty()) return;
         ArchiveProgress live = controlStore.load(dataset, ArchiveTrack.LIVE).orElse(null);
         if (live == null) return;
-        long activation = activations.start(dataset, ArchiveTrack.LIVE).orElse(live.coordinate() + 1);
+        long activation = activations.hotStart(dataset)
+                .orElseGet(() -> activations.start(dataset).orElse(live.coordinate() + 1));
         long promotableEnd = Math.min(finalized, live.coordinate());
         if (promotableEnd < activation) return;
         long candidateStart = activation;
@@ -1081,18 +1157,6 @@ public class HistoryArchiveService implements AutoCloseable {
             candidateStart = Math.addExact(range.endInclusive(), 1);
         }
         if (candidateStart > promotableEnd) {
-            cleanupPromotedRows(dataset, tables, coverage, promotableEnd);
-            return;
-        }
-        // Once canonical backfill reaches the cold frontier, let it keep owning
-        // that frontier. Promoting another small live range here would make the
-        // next backfill cycle spend its entire batch advancing through coverage,
-        // after which promotion would move the frontier again. That lockstep
-        // limits cold catch-up to the (deliberately small) promotion batch size.
-        // Existing cold rows are still removed from hot storage below; live rows
-        // beyond the frontier remain queryable until backfill commits them.
-        ArchiveProgress backfill = controlStore.load(dataset, ArchiveTrack.BACKFILL).orElse(null);
-        if (backfill != null && backfill.coordinate() >= candidateStart - 1) {
             cleanupPromotedRows(dataset, tables, coverage, promotableEnd);
             return;
         }
@@ -1205,7 +1269,7 @@ public class HistoryArchiveService implements AutoCloseable {
         if (!datasetEnabled(id)) return;
         var worker = new BlockArchiveWorker<>(network, source, backend, controlStore,
                 workerConfig, syncView, metrics, Duration.ofMinutes(5));
-        blockWorkers.put(id, (start, end) -> worker.runBatch(dataset, start, end));
+        catchupWorkers.put(id, (start, end) -> worker.runBatch(dataset, start, end));
     }
 
     private <B> void registerLiveWorker(ArchiveDatasetId id, BlockArchiveDataset<B> dataset,
@@ -1242,7 +1306,7 @@ public class HistoryArchiveService implements AutoCloseable {
         return List.copyOf(result);
     }
 
-    private void initializeAddressBackfillResolver(AddressTransactionDataset dataset) {
+    private void initializeAddressResolver(AddressTransactionDataset dataset) {
         OptionalLong existingActivation = activations.start(ArchiveDatasetId.ADDRESS_TRANSACTION,
                 ArchiveTrack.BACKFILL);
         if (existingActivation.isPresent() && dataset.resolverSeeded()
@@ -1265,36 +1329,13 @@ public class HistoryArchiveService implements AutoCloseable {
                         + "from genesis; earliest retained block is " + earliest
                         + ". Use start-mode=tip for an activation-point UTXO snapshot");
             }
-            seedGenesisResolver(dataset, backfillGenesisEntries);
+            seedGenesisResolver(dataset, genesisResolverEntries);
             activation = firstCanonicalBlockNumber;
         }
         if (existingActivation.isPresent()) {
             activations.replace(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.BACKFILL, activation);
         } else {
             activations.putIfAbsent(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.BACKFILL, activation);
-        }
-    }
-
-    void initializeAddressLiveResolver(AddressTransactionDataset dataset, NetworkGenesisConfig genesis) {
-        OptionalLong existingActivation = activations.start(ArchiveDatasetId.ADDRESS_TRANSACTION,
-                ArchiveTrack.LIVE);
-        if (existingActivation.isPresent() && dataset.resolverSeeded()
-                && dataset.resolverBaseBlock().isPresent()
-                && existingActivation.getAsLong() >= firstCanonicalBlockNumber
-                && existingActivation.getAsLong() == dataset.resolverBaseBlock().getAsLong() + 1) return;
-
-        dataset.resetResolver();
-        long activation;
-        if (chain.getLocalTip() == null) {
-            seedGenesisResolver(dataset, genesisOutpoints(genesis, dataset));
-            activation = firstCanonicalBlockNumber;
-        } else {
-            activation = Math.addExact(seedResolverSnapshot(ledger.getUtxoState(), dataset), 1);
-        }
-        if (existingActivation.isPresent()) {
-            activations.replace(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.LIVE, activation);
-        } else {
-            activations.putIfAbsent(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.LIVE, activation);
         }
     }
 
@@ -1502,6 +1543,10 @@ public class HistoryArchiveService implements AutoCloseable {
             throw new IllegalArgumentException("yano.snapshot-export.* was removed; enable the equivalent "
                     + "yano.history.datasets.* dataset instead");
         }
+        if (config.getOptionalValue(REMOVED_LIVE_ENABLED, String.class).isPresent()) {
+            throw new IllegalArgumentException("yano.history.live-enabled was removed; history now has one "
+                    + "sequential catching_up-to-live lifecycle");
+        }
         if (configuredEnabled && bool(LEGACY_HISTORY_ENABLED, false)) {
             throw new IllegalArgumentException("yano.account-history.enabled was removed; use yano.history.enabled "
                     + "and per-dataset yano.history.datasets.* settings");
@@ -1627,9 +1672,8 @@ public class HistoryArchiveService implements AutoCloseable {
         if (ledger != null) try { ledger.setEpochArchiveStagingSink(
                 com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.NOOP); } catch (Exception ignored) { }
         epochStaging = null;
-        liveAddressDataset = null;
-        backfillAddressDataset = null;
-        backfillGenesisEntries = List.of();
+        catchupAddressDataset = null;
+        genesisResolverEntries = List.of();
         sharedFactSource = null;
         sharedBlockSource = null;
         if (chain != null) try { chain.setBlockBodyRetentionBoundary(
@@ -1638,7 +1682,7 @@ public class HistoryArchiveService implements AutoCloseable {
         backend = null;
         if (controlStore != null) try { controlStore.close(); } catch (Exception ignored) { }
         controlStore = null;
-        blockWorkers.clear();
+        catchupWorkers.clear();
         liveWorkers.clear();
         appliedRetention.clear();
         nextMaintenanceNanos.set(Long.MAX_VALUE);

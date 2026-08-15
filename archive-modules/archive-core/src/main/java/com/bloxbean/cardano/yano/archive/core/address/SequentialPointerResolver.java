@@ -20,37 +20,32 @@ import java.util.ArrayList;
 public final class SequentialPointerResolver {
     private final HotHistoryStore store;
     private final ArchiveDatasetId dataset;
-    private final String namespace;
 
-    public SequentialPointerResolver(HotHistoryStore store, ArchiveDatasetId dataset, String namespace) {
+    public SequentialPointerResolver(HotHistoryStore store, ArchiveDatasetId dataset) {
         this.store = Objects.requireNonNull(store, "store");
         this.dataset = Objects.requireNonNull(dataset, "dataset");
-        if (namespace == null || !namespace.matches("[a-z0-9_-]+")) {
-            throw new IllegalArgumentException("pointer resolver namespace");
-        }
-        this.namespace = namespace;
     }
 
     public Optional<ResolvedStakeCredential> resolve(PointerCoordinate pointer) {
-        return store.resolvePointer(dataset, namespace, pointer);
+        return store.resolvePointer(dataset, pointer);
     }
 
     public List<HotHistoryOperation> putOperations(PointerCoordinate pointer, ResolvedStakeCredential credential) {
-        return List.of(new HotHistoryOperation.PointerRegistered(namespace, pointer.slot(), pointer.txIndex(),
+        return List.of(new HotHistoryOperation.PointerRegistered(pointer.slot(), pointer.txIndex(),
                 pointer.certIndex(), credential.type(), credential.hash()));
     }
 
     public CredentialDeletion deleteCredential(ResolvedStakeCredential credential,
                                                PointerCoordinate deregistration) {
-        List<PointerCoordinate> coordinates = store.pointersForCredential(dataset, namespace, credential);
+        List<PointerCoordinate> coordinates = store.pointersForCredential(dataset, credential);
         return new CredentialDeletion(coordinates, List.of(new HotHistoryOperation.PointerDeregistered(
-                namespace, deregistration.slot(), deregistration.txIndex(), deregistration.certIndex(),
+                deregistration.slot(), deregistration.txIndex(), deregistration.certIndex(),
                 credential.type(), credential.hash())));
     }
 
     public List<HotHistoryOperation> deleteOperations(PointerCoordinate pointer,
                                                       ResolvedStakeCredential credential) {
-        return List.of(new HotHistoryOperation.PointerDeregistered(namespace,
+        return List.of(new HotHistoryOperation.PointerDeregistered(
                 pointer.slot(), pointer.txIndex(), pointer.certIndex(), credential.type(), credential.hash()));
     }
 

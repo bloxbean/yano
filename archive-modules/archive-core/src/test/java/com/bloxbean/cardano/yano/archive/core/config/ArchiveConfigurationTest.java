@@ -17,7 +17,7 @@ class ArchiveConfigurationTest {
     @Test
     void defaultsEveryDatasetWithoutSharingLegacyRetention() {
         var config = new ArchiveConfiguration(true, temp, ArchiveEngine.DUCKLAKE,
-                ArchiveStartMode.FULL_REQUIRED, true, ArchiveWorkerConfig.defaults(),
+                ArchiveStartMode.FULL_REQUIRED, ArchiveWorkerConfig.defaults(),
                 ArchiveSafetyWindows.resolve(100, null, null), Map.of());
 
         assertThat(config.datasets()).hasSize(ArchiveDatasetId.values().length);
@@ -81,7 +81,7 @@ class ArchiveConfigurationTest {
 
     private ArchiveConfiguration configuration(Map<ArchiveDatasetId, DatasetArchiveConfig> datasets) {
         return new ArchiveConfiguration(true, temp, ArchiveEngine.DUCKLAKE,
-                ArchiveStartMode.TIP, true, ArchiveWorkerConfig.defaults(),
+                ArchiveStartMode.TIP, ArchiveWorkerConfig.defaults(),
                 ArchiveSafetyWindows.resolve(100, null, null), datasets);
     }
 }

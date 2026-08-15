@@ -16,19 +16,17 @@ public sealed interface HotHistoryOperation permits HotHistoryOperation.Fact,
         public Fact { Objects.requireNonNull(row, "row"); }
     }
 
-    record OutputCreated(String namespace, Outpoint outpoint, ResolvedOutput output)
+    record OutputCreated(Outpoint outpoint, ResolvedOutput output)
             implements HotHistoryOperation {
         public OutputCreated {
-            requireNamespace(namespace);
             Objects.requireNonNull(outpoint, "outpoint");
             Objects.requireNonNull(output, "output");
         }
     }
 
-    record OutputConsumed(String namespace, Outpoint outpoint, byte[] spendingTxHash,
+    record OutputConsumed(Outpoint outpoint, byte[] spendingTxHash,
                           String inputRole) implements HotHistoryOperation {
         public OutputConsumed {
-            requireNamespace(namespace);
             Objects.requireNonNull(outpoint, "outpoint");
             spendingTxHash = Objects.requireNonNull(spendingTxHash, "spendingTxHash").clone();
             if (spendingTxHash.length != 32) throw new IllegalArgumentException("spending tx hash must be 32 bytes");
@@ -40,10 +38,9 @@ public sealed interface HotHistoryOperation permits HotHistoryOperation.Fact,
         @Override public byte[] spendingTxHash() { return spendingTxHash.clone(); }
     }
 
-    record PointerRegistered(String namespace, long slot, int txIndex, int certIndex,
+    record PointerRegistered(long slot, int txIndex, int certIndex,
                              String credentialType, byte[] credential) implements HotHistoryOperation {
         public PointerRegistered {
-            requireNamespace(namespace);
             requirePointer(slot, txIndex, certIndex);
             requireCredential(credentialType, credential);
             credential = credential.clone();
@@ -52,23 +49,16 @@ public sealed interface HotHistoryOperation permits HotHistoryOperation.Fact,
         @Override public byte[] credential() { return credential.clone(); }
     }
 
-    record PointerDeregistered(String namespace, long slot, int txIndex, int certIndex,
+    record PointerDeregistered(long slot, int txIndex, int certIndex,
                                String credentialType, byte[] credential)
             implements HotHistoryOperation {
         public PointerDeregistered {
-            requireNamespace(namespace);
             requirePointer(slot, txIndex, certIndex);
             requireCredential(credentialType, credential);
             credential = credential.clone();
         }
 
         @Override public byte[] credential() { return credential.clone(); }
-    }
-
-    private static void requireNamespace(String namespace) {
-        if (namespace == null || !namespace.matches("[a-z0-9_-]+")) {
-            throw new IllegalArgumentException("resolver namespace");
-        }
     }
 
     private static void requirePointer(long slot, int txIndex, int certIndex) {
