@@ -125,6 +125,7 @@ yano:
     mempool:
       max-txs: 10000
       max-bytes: 134217728
+      max-utxo-index-entries: 250000
       ttl-seconds: 10800
     diffusion:
       # Simple relay MVP switch. true maps to all-hot transaction diffusion.

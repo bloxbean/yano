@@ -8,6 +8,10 @@ import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
 import com.bloxbean.cardano.yaci.events.api.support.AnnotationListenerRegistrar;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
+import com.bloxbean.cardano.yano.api.events.UtxoStateAppliedEvent;
+import com.bloxbean.cardano.yano.api.events.UtxoStateRolledBackEvent;
+import com.bloxbean.cardano.yaci.events.api.EventMetadata;
+import com.bloxbean.cardano.yaci.events.api.PublishOptions;
 import com.bloxbean.cardano.yano.runtime.events.PropagatingEventBus;
 
 import java.util.List;
@@ -20,6 +24,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static com.bloxbean.cardano.yano.runtime.util.LifecycleFailures.rethrowIfProcessFatalReachable;
+
 /**
  * Optional async UTXO event handler that preserves ordering using a single-thread executor.
  * Apply/rollback are offloaded off the publisher thread but executed sequentially.
@@ -28,12 +34,14 @@ public final class UtxoEventHandlerAsync implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(UtxoEventHandlerAsync.class);
 
     private final UtxoStoreWriter writer;
+    private final EventBus bus;
     private final PropagatingEventBus propagatingEventBus;
     private final ExecutorService single;
     private final List<SubscriptionHandle> handles;
     private final AtomicReference<RuntimeException> failure = new AtomicReference<>();
 
     public UtxoEventHandlerAsync(EventBus bus, UtxoStoreWriter writer) {
+        this.bus = bus;
         this.writer = writer;
         this.propagatingEventBus = bus instanceof PropagatingEventBus propagating ? propagating : null;
         this.single = Executors.newSingleThreadExecutor(r -> {
@@ -50,7 +58,10 @@ public final class UtxoEventHandlerAsync implements AutoCloseable {
         throwIfFailed();
         if (writer == null || !writer.isEnabled()) return;
         try {
-            single.execute(() -> runAsync(BlockAppliedEvent.class, "BlockAppliedEvent", () -> writer.applyBlock(e)));
+            single.execute(() -> runAsync(BlockAppliedEvent.class, "BlockAppliedEvent", () -> {
+                writer.applyBlock(e);
+                publishAcknowledgement(new UtxoStateAppliedEvent(e), "UTXO apply");
+            }));
         } catch (RejectedExecutionException ex) {
             throw recordFailure(BlockAppliedEvent.class, "BlockAppliedEvent enqueue", ex);
         }
@@ -61,7 +72,10 @@ public final class UtxoEventHandlerAsync implements AutoCloseable {
         throwIfFailed();
         if (writer == null || !writer.isEnabled()) return;
         try {
-            single.execute(() -> runAsync(RollbackEvent.class, "RollbackEvent", () -> writer.rollbackTo(e)));
+            single.execute(() -> runAsync(RollbackEvent.class, "RollbackEvent", () -> {
+                writer.rollbackTo(e);
+                publishAcknowledgement(new UtxoStateRolledBackEvent(e), "UTXO rollback");
+            }));
         } catch (RejectedExecutionException ex) {
             throw recordFailure(RollbackEvent.class, "RollbackEvent enqueue", ex);
         }
@@ -86,6 +100,19 @@ public final class UtxoEventHandlerAsync implements AutoCloseable {
             work.run();
         } catch (Throwable t) {
             recordFailure(eventType, description, t);
+        }
+    }
+
+    private void publishAcknowledgement(Event acknowledgement, String operation) {
+        try {
+            bus.publish(acknowledgement, EventMetadata.builder().build(),
+                    PublishOptions.builder().build());
+        } catch (Throwable e) {
+            rethrowIfProcessFatalReachable(e);
+            // Keep acknowledgement listeners outside the writer failure domain.
+            // The canonical mutation succeeded and must remain authoritative.
+            log.error("Listener failed after {}; canonical state remains applied: {}",
+                    operation, e.toString(), e);
         }
     }
 

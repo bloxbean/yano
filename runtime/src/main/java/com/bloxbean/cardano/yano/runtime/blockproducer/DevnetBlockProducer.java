@@ -292,19 +292,24 @@ public class DevnetBlockProducer implements BlockProducerService {
         if (lazy && txList.isEmpty()) {
             return;
         }
+        try {
+            var result = blockBuilder.buildBlock(nextBlockNumber, slot, prevBlockHash, txList);
+            storeBlock(result);
 
-        var result = blockBuilder.buildBlock(nextBlockNumber, slot, prevBlockHash, txList);
-        storeBlock(result);
+            long producedBlockNumber = nextBlockNumber;
+            nextBlockNumber++;
+            prevBlockHash = result.blockHash();
 
-        long producedBlockNumber = nextBlockNumber;
-        nextBlockNumber++;
-        prevBlockHash = result.blockHash();
+            log.info("Block #{} produced: slot={}, txs={}",
+                    producedBlockNumber, slot, txList.size());
 
-        log.info("Block #{} produced: slot={}, txs={}",
-                producedBlockNumber, slot, txList.size());
-
-        publishEvent(result, txList.size());
-        notifyServer();
+            publishEvent(result, txList.size());
+            transactions.blockCandidatePublished();
+            notifyServer();
+        } catch (RuntimeException | Error e) {
+            transactions.blockSelectionFailed();
+            throw e;
+        }
     }
 
     private List<byte[]> drainMempool() {

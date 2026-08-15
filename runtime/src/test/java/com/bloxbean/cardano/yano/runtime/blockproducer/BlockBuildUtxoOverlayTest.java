@@ -11,6 +11,7 @@ import java.util.*;
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
 
 class BlockBuildUtxoOverlayTest {
 
@@ -82,6 +83,24 @@ class BlockBuildUtxoOverlayTest {
 
         overlay.reset();
         assertThat(resolver.apply(op)).isNotNull();
+    }
+
+    @Test
+    void applyTransactionMakesNormalOutputsVisibleToLaterCandidates() {
+        String seedHash = "ab".repeat(32);
+        Outpoint seed = new Outpoint(seedHash, 0);
+        utxoState.put(seed, new Utxo(
+                seed, "addr_test1...", BigInteger.valueOf(5_000_000),
+                List.of(), null, null, null, null, false, 10, 1, "bh"));
+        byte[] parent = buildTxSpending(seedHash, 0);
+        Outpoint parentOutput = new Outpoint(TransactionUtil.getTxHash(parent), 0);
+
+        overlay.applyTransaction(parent);
+
+        assertThat(overlay.resolver().apply(seed)).isNull();
+        assertThat(overlay.resolver().apply(parentOutput)).isNotNull();
+        assertThat(overlay.resolver().apply(parentOutput).lovelace())
+                .isEqualTo(BigInteger.valueOf(1_000_000));
     }
 
     /**
