@@ -4,6 +4,8 @@ import com.bloxbean.cardano.client.address.Address;
 import com.bloxbean.cardano.client.address.AddressProvider;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.app.test.TestNodeRoles;
+import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
+import com.bloxbean.cardano.yano.app.archive.HistoryArchiveService;
 import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
 import com.bloxbean.cardano.yano.api.account.AccountStateReadStore;
 import com.bloxbean.cardano.yano.api.account.AccountStateStore;
@@ -22,11 +24,34 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class AccountStateResourceBalanceTest {
     private static final String BASE_ADDR =
             "addr_test1qz2fxv2umyhttkxyxp8x0dlpdt3k6cwng5pxj3jhsydzer3jcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwq2ytjqp";
     private static final String STAKE_ADDRESS = AddressProvider.getStakeAddress(new Address(BASE_ADDR)).toBech32();
+
+    @Test
+    void accountHistoryCatchupIsReportedAsBuildingRatherThanDisabled() {
+        AccountHistoryProvider provider = mock(AccountHistoryProvider.class);
+        when(provider.isEnabled()).thenReturn(true);
+        when(provider.isHealthy()).thenReturn(true);
+        HistoryArchiveService archive = mock(HistoryArchiveService.class);
+        when(archive.enabled()).thenReturn(true);
+        when(archive.accountHistoryProvider()).thenReturn(provider);
+        when(archive.datasetBuilding(ArchiveDatasetId.ACCOUNT_EVENT)).thenReturn(true);
+
+        AccountStateResource resource = resourceWith(
+                ledgerState(true, BigInteger.ZERO, BigInteger.ZERO, null, null),
+                utxoState(true, true, BigInteger.ZERO));
+        resource.historyArchive = archive;
+
+        Response response = resource.getWithdrawals(STAKE_ADDRESS, 1, 20, "desc");
+
+        assertEquals(503, response.getStatus());
+        assertEquals(Map.of("error", "Account tx/cert history is still building"), response.getEntity());
+    }
 
     @Test
     void getAccountShouldCombineUtxoAndRewards() {

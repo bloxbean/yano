@@ -355,6 +355,17 @@ public class HistoryArchiveService implements AutoCloseable {
         }
     }
 
+    /** True while a configured block dataset is intentionally unavailable during catch-up. */
+    public boolean datasetBuilding(ArchiveDatasetId dataset) {
+        lifecycleLock.readLock().lock();
+        try {
+            return available() && datasetEnabled(dataset)
+                    && dataset.sourceKind() == SourceKind.BLOCK && !isLivePhase(dataset);
+        } finally {
+            lifecycleLock.readLock().unlock();
+        }
+    }
+
     QueryLease openQueryLease() {
         lifecycleLock.readLock().lock();
         return lifecycleLock.readLock()::unlock;

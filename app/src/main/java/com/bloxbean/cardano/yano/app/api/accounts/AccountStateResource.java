@@ -376,6 +376,11 @@ public class AccountStateResource {
         Response unavailable = historyUnavailable(history, true);
         if (unavailable != null) return unavailable;
         if (!history.isAddressTxEnabled()) {
+            if (historyArchive != null
+                    && historyArchive.datasetBuilding(
+                    com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.ADDRESS_TRANSACTION)) {
+                return featureUnavailable("Address transaction history is still building");
+            }
             return featureUnavailable("Address transaction history disabled "
                     + "(enable yano.history.datasets.address-transactions.enabled)");
         }
@@ -527,6 +532,11 @@ public class AccountStateResource {
             return featureUnavailable("Account history index is not healthy");
         }
         if (requireTxEvents && !history.isTxEventsEnabled()) {
+            if (historyArchive != null
+                    && historyArchive.datasetBuilding(
+                    com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.ACCOUNT_EVENT)) {
+                return featureUnavailable("Account tx/cert history is still building");
+            }
             return featureUnavailable("Account tx/cert history index is disabled");
         }
         return null;

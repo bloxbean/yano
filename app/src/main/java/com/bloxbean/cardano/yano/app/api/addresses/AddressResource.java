@@ -8,6 +8,7 @@ import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
+import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import com.bloxbean.cardano.yano.app.api.addresses.dto.AddressSummaryDto;
 import com.bloxbean.cardano.yano.app.api.addresses.dto.AddressTxDto;
 import com.bloxbean.cardano.yano.app.api.utxos.dto.AmountDto;
@@ -67,9 +68,13 @@ public class AddressResource {
                                            boolean usePaymentCredential) {
         AccountHistoryProvider history = historyProvider();
         if (history == null || !history.isEnabled() || !history.isAddressTxEnabled()) {
+            String error = historyArchive != null
+                    && historyArchive.datasetBuilding(ArchiveDatasetId.ADDRESS_TRANSACTION)
+                    ? "Address transaction history is still building"
+                    : "Address transaction history disabled "
+                    + "(enable yano.history and address-transactions dataset)";
             return Response.status(Response.Status.SERVICE_UNAVAILABLE)
-                    .entity(Map.of("error", "Address transaction history disabled "
-                            + "(enable yano.history and address-transactions dataset)"))
+                    .entity(Map.of("error", error))
                     .build();
         }
         String resolvedOrder = "desc".equalsIgnoreCase(order) ? "desc"

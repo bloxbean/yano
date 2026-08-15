@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.app.api.addresses;
 
 import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
+import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import com.bloxbean.cardano.yano.app.archive.HistoryArchiveService;
 import org.junit.jupiter.api.Test;
 
@@ -11,6 +12,25 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 class AddressResourceTest {
+    @Test
+    void catchupIsReportedAsBuildingRatherThanDisabled() {
+        AccountHistoryProvider provider = mock(AccountHistoryProvider.class);
+        when(provider.isEnabled()).thenReturn(true);
+        HistoryArchiveService history = mock(HistoryArchiveService.class);
+        when(history.enabled()).thenReturn(true);
+        when(history.accountHistoryProvider()).thenReturn(provider);
+        when(history.datasetBuilding(ArchiveDatasetId.ADDRESS_TRANSACTION)).thenReturn(true);
+
+        var resource = new AddressResource();
+        resource.historyArchive = history;
+
+        var response = resource.getAddressTransactions("addr_test1fixture", 1, 20, "desc", false);
+
+        assertThat(response.getStatus()).isEqualTo(503);
+        assertThat(response.getEntity()).isEqualTo(
+                Map.of("error", "Address transaction history is still building"));
+    }
+
     @Test
     void incompleteColdLiveCoverageReturnsServiceUnavailableInsteadOfInternalError() {
         AccountHistoryProvider provider = mock(AccountHistoryProvider.class);
