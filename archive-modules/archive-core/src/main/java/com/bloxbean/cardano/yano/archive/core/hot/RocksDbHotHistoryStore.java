@@ -2,11 +2,17 @@ package com.bloxbean.cardano.yano.archive.core.hot;
 
 import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import com.bloxbean.cardano.yano.archive.api.ArchiveReceipt;
+import com.bloxbean.cardano.yano.archive.api.ArchiveRecord;
+import com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas;
 import com.bloxbean.cardano.yano.api.BlockBodyRetentionBoundary;
 import com.bloxbean.cardano.yano.archive.core.source.ArchiveSourceLease;
 import com.bloxbean.cardano.yano.archive.core.worker.ArchiveProgress;
 import com.bloxbean.cardano.yano.archive.core.worker.ArchiveProgressStore;
 import com.bloxbean.cardano.yano.archive.core.worker.ArchiveTrack;
+import com.bloxbean.cardano.yano.archive.core.address.Outpoint;
+import com.bloxbean.cardano.yano.archive.core.address.ResolvedOutput;
+import com.bloxbean.cardano.yano.archive.core.address.SequentialOutpointResolver;
+import com.bloxbean.cardano.yano.archive.core.address.SequentialPointerResolver;
 import org.rocksdb.Options;
 import org.rocksdb.RocksDB;
 import org.rocksdb.RocksDBException;
@@ -59,8 +65,8 @@ public final class RocksDbHotHistoryStore implements HotHistoryStore {
     }
 
     public synchronized void applyBlock(ArchiveDatasetId dataset, HotBlockCheckpoint block,
-                                        List<HotHistoryMutation> mutations, ArchiveProgress progress) {
-        applyBlocks(dataset, List.of(new HotBlockUpdate(block, mutations)), progress, null);
+                                        List<HotHistoryOperation> operations, ArchiveProgress progress) {
+        applyBlocks(dataset, List.of(new HotBlockUpdate(block, operations)), progress, null);
     }
 
     /** Applies a complete derived range, resolver state, receipt and cursor atomically. */
@@ -79,20 +85,17 @@ public final class RocksDbHotHistoryStore implements HotHistoryStore {
             java.util.Map<Key, byte[]> pending = new java.util.HashMap<>();
             for (HotBlockUpdate block : blocks) {
                 List<Undo> undo = new ArrayList<>();
-                for (HotHistoryMutation mutation : block.mutations()) {
-                    byte[] physicalKey = dataKey(dataset, mutation.key());
-                    Key key = new Key(physicalKey);
-                    byte[] previous = pending.containsKey(key) ? pending.get(key) : database.get(physicalKey);
-                    byte[] selected = mutation.value();
-                    if (dataset == ArchiveDatasetId.UTXO_HISTORY
-                            && HotArchiveRows.isAddressDimensionKey(mutation.key())) {
-                        selected = HotArchiveRows.mergeAddressDimensionValue(previous, selected);
-                        if (Arrays.equals(previous, selected)) continue;
+                for (HotHistoryOperation operation : block.operations()) {
+                    for (HotHistoryMutation mutation : toMutations(dataset, operation, pending)) {
+                        byte[] physicalKey = dataKey(dataset, mutation.key());
+                        Key key = new Key(physicalKey);
+                        byte[] previous = pending.containsKey(key) ? pending.get(key) : database.get(physicalKey);
+                        byte[] selected = mutation.value();
+                        undo.add(new Undo(physicalKey, previous));
+                        pending.put(key, selected);
+                        if (selected == null) batch.delete(physicalKey);
+                        else batch.put(physicalKey, selected);
                     }
-                    undo.add(new Undo(physicalKey, previous));
-                    pending.put(key, selected);
-                    if (selected == null) batch.delete(physicalKey);
-                    else batch.put(physicalKey, selected);
                 }
                 batch.put(undoKey(dataset, progress.track(), block.checkpoint().blockNumber()), encodeUndo(undo));
                 batch.put(checkpointKey(dataset, progress.track(), block.checkpoint().blockNumber()),
@@ -109,7 +112,7 @@ public final class RocksDbHotHistoryStore implements HotHistoryStore {
     }
 
     /** Seeds immutable resolver/dictionary values before canonical replay. */
-    public synchronized void seed(ArchiveDatasetId dataset, List<HotHistoryMutation> mutations) {
+    private synchronized void seedMutations(ArchiveDatasetId dataset, List<HotHistoryMutation> mutations) {
         requireOpen();
         try (WriteBatch batch = new WriteBatch()) {
             for (HotHistoryMutation mutation : mutations) {
@@ -125,6 +128,53 @@ public final class RocksDbHotHistoryStore implements HotHistoryStore {
         } catch (RocksDBException e) {
             throw new IllegalStateException("hot-history seed failed", e);
         }
+    }
+
+    @Override
+    public synchronized void seedResolver(String namespace, Iterable<SequentialOutpointResolver.Entry> outputs,
+                                          boolean complete, long baseBlock) {
+        List<HotHistoryMutation> batch = new ArrayList<>(10_000);
+        for (SequentialOutpointResolver.Entry entry : outputs) {
+            batch.add(new HotHistoryMutation(resolverKey(namespace, entry.outpoint()),
+                    encodeResolvedOutput(entry.output())));
+            if (batch.size() == 10_000) { seedMutations(ArchiveDatasetId.ADDRESS_TRANSACTION, batch); batch.clear(); }
+        }
+        if (!batch.isEmpty()) seedMutations(ArchiveDatasetId.ADDRESS_TRANSACTION, batch);
+        if (complete) seedMutations(ArchiveDatasetId.ADDRESS_TRANSACTION, List.of(new HotHistoryMutation(
+                resolverSeededKey(namespace), longBytes(baseBlock))));
+    }
+
+    @Override public boolean resolverSeeded(String namespace) {
+        return getData(ArchiveDatasetId.ADDRESS_TRANSACTION, resolverSeededKey(namespace)).isPresent();
+    }
+
+    @Override public OptionalLong resolverBaseBlock(String namespace) {
+        byte[] value = getData(ArchiveDatasetId.ADDRESS_TRANSACTION, resolverSeededKey(namespace)).orElse(null);
+        return value == null ? OptionalLong.empty() : OptionalLong.of(ByteBuffer.wrap(value).getLong());
+    }
+
+    @Override public Optional<ResolvedOutput> resolveOutput(String namespace, Outpoint outpoint) {
+        return getData(ArchiveDatasetId.ADDRESS_TRANSACTION, resolverKey(namespace, outpoint))
+                .map(this::decodeResolvedOutput);
+    }
+
+    @Override public Optional<SequentialPointerResolver.ResolvedStakeCredential> resolvePointer(
+            ArchiveDatasetId dataset, String namespace, SequentialPointerResolver.PointerCoordinate pointer) {
+        return getData(dataset, pointerKey(namespace, pointer)).map(this::decodeCredential);
+    }
+
+    @Override public List<SequentialPointerResolver.PointerCoordinate> pointersForCredential(
+            ArchiveDatasetId dataset, String namespace,
+            SequentialPointerResolver.ResolvedStakeCredential credential) {
+        byte[] selected = pointerReversePrefix(namespace, credential.type(), credential.hash());
+        return scanDataPrefix(dataset, selected).stream()
+                .map(entry -> decodePointerKey(namespace, entry.value())).toList();
+    }
+
+    @Override public synchronized void resetResolver(ArchiveDatasetId dataset, String namespace) {
+        deleteDataPrefixInternal(dataset, ("resolver/" + namespace + "/").getBytes(StandardCharsets.UTF_8));
+        deleteDataPrefixInternal(dataset, ("pointer/" + namespace + "/").getBytes(StandardCharsets.UTF_8));
+        deleteDataPrefixInternal(dataset, ("pointer-reverse/" + namespace + "/").getBytes(StandardCharsets.UTF_8));
     }
 
     public synchronized void rollbackTo(ArchiveDatasetId dataset, ArchiveTrack track, long commonBlock) {
@@ -222,21 +272,21 @@ public final class RocksDbHotHistoryStore implements HotHistoryStore {
         catch (RocksDBException e) { throw new IllegalStateException("hot-history checkpoint read failed", e); }
     }
 
-    public Optional<byte[]> get(ArchiveDatasetId dataset, byte[] logicalKey) {
+    private Optional<byte[]> getData(ArchiveDatasetId dataset, byte[] logicalKey) {
         requireOpen();
         try { return Optional.ofNullable(database.get(dataKey(dataset, logicalKey))); }
         catch (RocksDBException e) { throw new IllegalStateException("hot-history read failed", e); }
     }
 
-    public List<HotHistorySnapshot.Entry> scanDataPrefix(ArchiveDatasetId dataset, byte[] logicalPrefix) {
+    private List<DataEntry> scanDataPrefix(ArchiveDatasetId dataset, byte[] logicalPrefix) {
         requireOpen();
         byte[] physicalPrefix = dataKey(dataset, logicalPrefix);
         byte[] datasetPrefix = dataKey(dataset, new byte[0]);
-        List<HotHistorySnapshot.Entry> result = new ArrayList<>();
+        List<DataEntry> result = new ArrayList<>();
         try (var iterator = database.newIterator()) {
             for (iterator.seek(physicalPrefix); iterator.isValid() && startsWith(iterator.key(), physicalPrefix);
                  iterator.next()) {
-                result.add(new HotHistorySnapshot.Entry(
+                result.add(new DataEntry(
                         Arrays.copyOfRange(iterator.key(), datasetPrefix.length, iterator.key().length),
                         iterator.value()));
             }
@@ -245,7 +295,7 @@ public final class RocksDbHotHistoryStore implements HotHistoryStore {
     }
 
     /** Deletes already-promoted live rows; active RocksDB snapshots retain their old view. */
-    public synchronized void deleteData(ArchiveDatasetId dataset, Collection<byte[]> logicalKeys) {
+    public synchronized void deleteFacts(ArchiveDatasetId dataset, Collection<byte[]> logicalKeys) {
         requireOpen();
         try (WriteBatch batch = new WriteBatch()) {
             for (byte[] key : logicalKeys) batch.delete(dataKey(dataset, key));
@@ -254,7 +304,7 @@ public final class RocksDbHotHistoryStore implements HotHistoryStore {
     }
 
     /** Deletes one private logical namespace without touching other dataset state. */
-    public synchronized void deleteDataPrefix(ArchiveDatasetId dataset, byte[] logicalPrefix) {
+    private synchronized void deleteDataPrefixInternal(ArchiveDatasetId dataset, byte[] logicalPrefix) {
         requireOpen();
         byte[] physicalPrefix = dataKey(dataset, logicalPrefix);
         try (WriteBatch batch = new WriteBatch(); var iterator = database.newIterator()) {
@@ -265,10 +315,19 @@ public final class RocksDbHotHistoryStore implements HotHistoryStore {
     }
 
     /** Fail-safe live reactivation that does not depend on already-pruned undo entries. */
-    public synchronized void clearTrack(ArchiveDatasetId dataset, ArchiveTrack track,
-                                        Collection<byte[]> logicalDataPrefixes) {
+    public synchronized void clearTrack(ArchiveDatasetId dataset, ArchiveTrack track) {
         requireOpen();
         try (WriteBatch batch = new WriteBatch(); var iterator = database.newIterator()) {
+            List<byte[]> logicalDataPrefixes = new ArrayList<>();
+            for (var table : ArchiveSchemas.schema(dataset).tables()) logicalDataPrefixes.add(
+                    ("archive-row/" + table.physicalName() + "/").getBytes(StandardCharsets.UTF_8));
+            String namespace = track.name().toLowerCase(java.util.Locale.ROOT);
+            if (dataset == ArchiveDatasetId.ADDRESS_TRANSACTION) logicalDataPrefixes.add(
+                    ("resolver/" + namespace + "/").getBytes(StandardCharsets.UTF_8));
+            if (dataset == ArchiveDatasetId.ADDRESS_TRANSACTION || dataset == ArchiveDatasetId.UTXO_HISTORY) {
+                logicalDataPrefixes.add(("pointer/" + namespace + "/").getBytes(StandardCharsets.UTF_8));
+                logicalDataPrefixes.add(("pointer-reverse/" + namespace + "/").getBytes(StandardCharsets.UTF_8));
+            }
             for (byte[] logical : logicalDataPrefixes) {
                 byte[] selected = dataKey(dataset, logical);
                 for (iterator.seek(selected); iterator.isValid() && startsWith(iterator.key(), selected);
@@ -287,6 +346,10 @@ public final class RocksDbHotHistoryStore implements HotHistoryStore {
     public HotHistorySnapshot snapshot() {
         requireOpen();
         return new RocksDbHotHistorySnapshot(database);
+    }
+
+    @Override public Optional<ArchiveRecord> findFact(ArchiveDatasetId dataset, byte[] logicalKey) {
+        return getData(dataset, logicalKey).map(HotArchiveRows::decode);
     }
 
     public ArchiveSourceLease acquireBlockBodyLease(long startBlock, long endBlock, Instant expiresAt) {
@@ -394,6 +457,154 @@ public final class RocksDbHotHistoryStore implements HotHistoryStore {
         }
     }
 
+    private List<HotHistoryMutation> toMutations(ArchiveDatasetId dataset, HotHistoryOperation operation,
+                                                  java.util.Map<Key, byte[]> pending) throws RocksDBException {
+        if (operation instanceof HotHistoryOperation.Fact fact) {
+            HotHistoryMutation mutation = HotArchiveRows.put(dataset, fact.row());
+            requireCompatibleValue(dataset, mutation, pending, "hot fact");
+            return List.of(mutation);
+        }
+        if (operation instanceof HotHistoryOperation.OutputCreated created) {
+            HotHistoryMutation mutation = new HotHistoryMutation(resolverKey(created.namespace(), created.outpoint()),
+                    encodeResolvedOutput(created.output()));
+            requireCompatibleValue(dataset, mutation, pending, "resolver outpoint");
+            return List.of(mutation);
+        }
+        if (operation instanceof HotHistoryOperation.OutputConsumed consumed) {
+            HotHistoryMutation mutation = new HotHistoryMutation(
+                    resolverKey(consumed.namespace(), consumed.outpoint()), null);
+            byte[] physical = dataKey(dataset, mutation.key());
+            Key key = new Key(physical);
+            byte[] current = pending.containsKey(key) ? pending.get(key) : database.get(physical);
+            if (current == null) throw new IllegalStateException("cannot consume missing resolver outpoint");
+            return List.of(mutation);
+        }
+        if (operation instanceof HotHistoryOperation.PointerRegistered registered) {
+            var pointer = new SequentialPointerResolver.PointerCoordinate(registered.slot(),
+                    registered.txIndex(), registered.certIndex());
+            var credential = new SequentialPointerResolver.ResolvedStakeCredential(
+                    registered.credentialType(), registered.credential());
+            byte[] key = pointerKey(registered.namespace(), pointer);
+            return List.of(new HotHistoryMutation(key, encodeCredential(credential)),
+                    new HotHistoryMutation(pointerReverseKey(registered.namespace(), credential, pointer), key));
+        }
+        HotHistoryOperation.PointerDeregistered deregistered =
+                (HotHistoryOperation.PointerDeregistered) operation;
+        byte[] logicalPrefix = pointerReversePrefix(deregistered.namespace(),
+                deregistered.credentialType(), deregistered.credential());
+        byte[] physicalPrefix = dataKey(dataset, logicalPrefix);
+        byte[] datasetPrefix = dataKey(dataset, new byte[0]);
+        List<HotHistoryMutation> result = new ArrayList<>();
+        try (var iterator = database.newIterator()) {
+            for (iterator.seek(physicalPrefix); iterator.isValid() && startsWith(iterator.key(), physicalPrefix);
+                 iterator.next()) {
+                Key physical = new Key(iterator.key());
+                byte[] pointer = pending.containsKey(physical) ? pending.get(physical) : iterator.value();
+                if (pointer != null) {
+                    result.add(new HotHistoryMutation(pointer, null));
+                    result.add(new HotHistoryMutation(Arrays.copyOfRange(iterator.key(), datasetPrefix.length,
+                            iterator.key().length), null));
+                }
+            }
+        }
+        for (var entry : pending.entrySet()) {
+            byte[] physical = entry.getKey().bytes();
+            if (entry.getValue() != null && startsWith(physical, physicalPrefix)) {
+                result.add(new HotHistoryMutation(entry.getValue(), null));
+                result.add(new HotHistoryMutation(Arrays.copyOfRange(physical, datasetPrefix.length,
+                        physical.length), null));
+            }
+        }
+        return result;
+    }
+
+    private void requireCompatibleValue(ArchiveDatasetId dataset, HotHistoryMutation mutation,
+                                        java.util.Map<Key, byte[]> pending, String kind) throws RocksDBException {
+        byte[] physical = dataKey(dataset, mutation.key());
+        Key key = new Key(physical);
+        byte[] current = pending.containsKey(key) ? pending.get(key) : database.get(physical);
+        if (current != null && !Arrays.equals(current, mutation.value())) {
+            throw new IllegalStateException("conflicting " + kind);
+        }
+    }
+
+    private byte[] resolverSeededKey(String namespace) {
+        return ("resolver/" + namespace + "/seeded").getBytes(StandardCharsets.UTF_8);
+    }
+
+    private byte[] resolverKey(String namespace, Outpoint outpoint) {
+        byte[] prefix = ("resolver/" + namespace + "/").getBytes(StandardCharsets.UTF_8);
+        return ByteBuffer.allocate(prefix.length + outpoint.txHash().length + Integer.BYTES)
+                .put(prefix).put(outpoint.txHash()).putInt(outpoint.outputIndex()).array();
+    }
+
+    private byte[] encodeResolvedOutput(ResolvedOutput output) {
+        try (var bytes = new ByteArrayOutputStream(); var out = new DataOutputStream(bytes)) {
+            writeBytes(out, output.addressKey()); writeString(out, output.address());
+            writeBytes(out, output.paymentCredential()); writeString(out, output.stakeCredentialType());
+            writeBytes(out, output.stakeCredential());
+            return bytes.toByteArray();
+        } catch (Exception e) { throw new IllegalStateException("cannot encode resolver output", e); }
+    }
+
+    private ResolvedOutput decodeResolvedOutput(byte[] value) {
+        try (var in = new DataInputStream(new ByteArrayInputStream(value))) {
+            return new ResolvedOutput(readBytes(in, true), readString(in), readBytes(in, true),
+                    readString(in), readBytes(in, true));
+        } catch (Exception e) { throw new IllegalStateException("invalid resolver output", e); }
+    }
+
+    private void writeString(DataOutputStream out, String value) throws java.io.IOException {
+        writeBytes(out, value == null ? null : value.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private String readString(DataInputStream in) throws java.io.IOException {
+        byte[] value = readBytes(in, true);
+        return value == null ? null : new String(value, StandardCharsets.UTF_8);
+    }
+
+    private byte[] pointerKey(String namespace, SequentialPointerResolver.PointerCoordinate pointer) {
+        byte[] prefix = ("pointer/" + namespace + "/").getBytes(StandardCharsets.UTF_8);
+        return ByteBuffer.allocate(prefix.length + Long.BYTES + Integer.BYTES * 2)
+                .put(prefix).putLong(pointer.slot()).putInt(pointer.txIndex()).putInt(pointer.certIndex()).array();
+    }
+
+    private SequentialPointerResolver.PointerCoordinate decodePointerKey(String namespace, byte[] key) {
+        byte[] prefix = ("pointer/" + namespace + "/").getBytes(StandardCharsets.UTF_8);
+        if (key.length != prefix.length + Long.BYTES + Integer.BYTES * 2 || !startsWith(key, prefix)) {
+            throw new IllegalStateException("invalid pointer resolver key");
+        }
+        ByteBuffer value = ByteBuffer.wrap(key, prefix.length, key.length - prefix.length);
+        return new SequentialPointerResolver.PointerCoordinate(value.getLong(), value.getInt(), value.getInt());
+    }
+
+    private byte[] pointerReversePrefix(String namespace, String credentialType, byte[] credential) {
+        byte[] prefix = ("pointer-reverse/" + namespace + "/").getBytes(StandardCharsets.UTF_8);
+        return ByteBuffer.allocate(prefix.length + 1 + credential.length).put(prefix)
+                .put(credentialType.equals("key") ? (byte) 0 : (byte) 1).put(credential).array();
+    }
+
+    private byte[] pointerReverseKey(String namespace,
+                                     SequentialPointerResolver.ResolvedStakeCredential credential,
+                                     SequentialPointerResolver.PointerCoordinate pointer) {
+        byte[] prefix = pointerReversePrefix(namespace, credential.type(), credential.hash());
+        return ByteBuffer.allocate(prefix.length + Long.BYTES + Integer.BYTES * 2).put(prefix)
+                .putLong(pointer.slot()).putInt(pointer.txIndex()).putInt(pointer.certIndex()).array();
+    }
+
+    private byte[] encodeCredential(SequentialPointerResolver.ResolvedStakeCredential credential) {
+        return ByteBuffer.allocate(29).put(credential.type().equals("key") ? (byte) 0 : (byte) 1)
+                .put(credential.hash()).array();
+    }
+
+    private SequentialPointerResolver.ResolvedStakeCredential decodeCredential(byte[] value) {
+        if (value.length != 29 || (value[0] != 0 && value[0] != 1)) {
+            throw new IllegalStateException("invalid pointer resolver value");
+        }
+        return new SequentialPointerResolver.ResolvedStakeCredential(value[0] == 0 ? "key" : "script",
+                Arrays.copyOfRange(value, 1, value.length));
+    }
+
     private Optional<HotBlockCheckpoint> readCheckpoint(ArchiveDatasetId dataset, ArchiveTrack track, long block) throws RocksDBException {
         byte[] value = database.get(checkpointKey(dataset, track, block));
         return value == null ? Optional.empty() : Optional.of(decodeCheckpoint(value));
@@ -496,6 +707,7 @@ public final class RocksDbHotHistoryStore implements HotHistoryStore {
     }
 
     private record Undo(byte[] key, byte[] previous) { }
+    private record DataEntry(byte[] logicalKey, byte[] value) { }
 
     private record Key(byte[] bytes) {
         private Key { bytes = bytes.clone(); }

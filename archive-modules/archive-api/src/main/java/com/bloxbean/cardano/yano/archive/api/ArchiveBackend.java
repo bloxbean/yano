@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.archive.api;
 
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.UUID;
 
 /** Backend-neutral atomic archive storage contract. */
@@ -19,6 +20,17 @@ public interface ArchiveBackend extends AutoCloseable {
     Optional<ArchiveReceipt> findReceipt(UUID jobId);
 
     ArchiveCoverage coverage(ArchiveDatasetId dataset);
+
+    /** Coverage read from the same immutable generation as the supplied session. */
+    ArchiveCoverage coverage(ArchiveReadSession session, ArchiveDatasetId dataset);
+
+    /**
+     * Latest valid committed block boundary inside {@code range}. The optional
+     * slot cap supports an unambiguous at-or-before-slot read point.
+     */
+    Optional<ArchiveCommitBoundary> latestBlockBoundary(
+            ArchiveReadSession session, ArchiveDatasetId dataset,
+            BlockRange range, OptionalLong atOrBeforeSlot);
 
     ArchiveReadSession openReadSession();
 

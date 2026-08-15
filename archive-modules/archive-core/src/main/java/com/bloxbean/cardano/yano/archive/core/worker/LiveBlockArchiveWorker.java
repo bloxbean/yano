@@ -37,7 +37,7 @@ public final class LiveBlockArchiveWorker<B> {
         long end = Math.min(tip, start + config.maxBlocksPerBatch() - 1L);
         List<HotBlockUpdate> updates = new ArrayList<>();
         List<BlockSourceContext<B>> blocks = new ArrayList<>();
-        List<List<HotHistoryMutation>> rowsByBlock = new ArrayList<>();
+        List<List<HotHistoryOperation>> rowsByBlock = new ArrayList<>();
         BlockSourceContext<B> last = null;
         ArchiveJob batchJob = null;
         for (long number = start; number <= end; number++) {
@@ -64,17 +64,17 @@ public final class LiveBlockArchiveWorker<B> {
             ArchiveJob job = batchJob != null ? batchJob : ArchiveJob.deterministic(network, dataset.dataset(), dataset.projectionVersion(),
                     new BlockRange(number, number), new ArchiveRangeAnchor(block.slot(), block.blockHash(),
                             block.slot(), block.blockHash()), "live-canonical-v1");
-            List<HotHistoryMutation> mutations = new ArrayList<>();
+            List<HotHistoryOperation> operations = new ArrayList<>();
             dataset.derive(job, block, row -> {
                 // Content-addressed rows are bounded by the live window and
                 // may be promoted early; orphan payloads are harmless and
                 // idempotent by hash.
-                if (mutations.size() >= config.maxRowsPerBatch()) throw new ArchiveStoreException("live row bound exceeded");
-                mutations.add(HotArchiveRows.put(dataset.dataset(), row));
+                if (operations.size() >= config.maxRowsPerBatch()) throw new ArchiveStoreException("live row bound exceeded");
+                operations.add(new HotHistoryOperation.Fact(row));
             });
             updates.add(new HotBlockUpdate(new HotBlockCheckpoint(number, block.slot(), block.blockHash(),
-                    block.parentHash()), mutations));
-            rowsByBlock.add(List.copyOf(mutations));
+                    block.parentHash()), operations));
+            rowsByBlock.add(List.copyOf(operations));
             last = block;
         }
         if (dataset instanceof LiveStatefulBlockArchiveDataset<B> stateful) {

@@ -4,10 +4,12 @@ plugins {
 
 dependencies {
     api project(':archive-modules:archive-api')
+    implementation project(':archive-modules:archive-core')
     implementation libs.sqlite.jdbc
     implementation libs.flyway.core
 
     testImplementation testFixtures(project(':archive-modules:archive-api'))
+    testImplementation testFixtures(project(':archive-modules:archive-core'))
 }
 
 publishing {

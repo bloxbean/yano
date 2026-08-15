@@ -575,7 +575,7 @@ context for an epoch calculation.
 Implementations share worker orchestration and resource management but own
 their row schema and query adapter. One logical dataset may emit multiple
 physical tables in the same archive transaction; `utxo_history` uses this to
-keep outputs, assets, inputs, address dictionary entries, datums, and redeemers
+keep outputs, assets, inputs, datums, and redeemers
 at one consistent coverage watermark.
 
 ### Relational and columnar schema principles
@@ -603,22 +603,20 @@ Root facts such as `transaction`, `account_event`, `reward`, and
 `transaction_output` also store `block_hash`. Narrow child facts such as
 `transaction_output_asset` repeat the inexpensive `block_number`, `slot`, and
 `epoch` columns for Parquet pruning and self-contained time filtering, but do
-not repeat wide address or block-hash values. The address
-dimension records first-seen coordinates under the merge rules below rather
-than pretending to be an event.
+not repeat wide address or block-hash values.
 
 Physical types avoid presentation-driven duplication:
 
 - transaction/block/datum/script hashes, credentials, policy IDs, asset names,
-  raw addresses, and subject keys are binary, not hex text;
+  and subject keys are binary, not hex text;
 - `block_time` is stored as an unambiguous epoch value and exposed as a timestamp
   by stable views;
 - lovelace is a lossless signed 64-bit integral value;
 - native-asset quantities use `DECIMAL(38,0)` in DuckLake and a canonical exact
   decimal representation in SQLite, never floating point; repositories return
   `BigInteger` and REST returns strings;
-- derived display values such as asset `unit`, address bech32/base58 text, and
-  hex hashes may be exposed by views but are not repeated in every fact row.
+- canonical payment and stake addresses are stored as text on DuckLake facts
+  expected to be queried independently; hex hashes remain derived values.
 
 This is deliberately inspired by Yaci Store's block/slot/epoch conventions and
 flattened Parquet analytics, but does not copy its JSON transaction arrays,
@@ -633,69 +631,42 @@ a fixed size guarantee.
 
 ### Address identity and credential queries
 
-`address` stores one row per canonical raw address:
+The logical query schema is deliberately denormalized. DuckLake has no
+physical `addresses` table and no address locator. Each independently useful
+fact carries the canonical address text and/or stake-address text required to
+query that file without a global dimension lookup. Shelley addresses use
+canonical lower-case bech32; Byron addresses use canonical Base58 and are not
+length-limited. Credential hashes remain fixed-width binary values.
 
-```text
-address_key, raw_address, display_address, network_id, address_type,
-payment_credential_type, payment_credential,
-stake_reference_type, stake_credential_type, stake_credential,
-pointer_slot, pointer_tx_index, pointer_cert_index,
-first_seen_block_number, first_seen_slot, first_seen_epoch
-```
+`transaction_output` carries `address`, `address_type`, `network_id`, payment
+credential type/hash, nullable `stake_address`, and nullable stake credential
+type/hash. `account_event`, `reward`, and `epoch_stake` carry both the stake
+credential and canonical stake address. `address_transaction` retains compact
+binary `subject_key` for API predicates and additionally carries nullable
+`address`/`stake_address` presentation columns appropriate to its subject.
+`subject_key` is not a DuckLake locator and is never used to populate another
+table during the write path.
 
-`address_key` is a versioned deterministic fixed-width digest of canonical raw
-address bytes (initially BLAKE2b-256). An API decodes the supplied bech32/base58
-address, computes the same key, and binds it as a binary equality predicate.
-Archive initialization records the key algorithm/version. Any observed digest
-collision with different raw bytes is a fatal history-integrity error rather
-than an alias.
-
-`address` is a derived, serialized-upsert dimension even though the fact files
-it serves are immutable. Its canonical `first_seen_*` value is the minimum
-coordinate across currently valid complete coverage, not whichever of live or
-backfill discovered the address first. When backfill later supplies an earlier
-coordinate, the track-merge transaction updates/supersedes the dimension row.
-If invalidation removes the range containing the recorded minimum, the same
-backend transaction recomputes the minimum from surviving referencing facts or
-removes the dimension row when none remain. Readers never use first-seen from
-an incomplete track as a claim about uncovered history.
-
-Address-facing fact tables carry `address_key`; tables that must support direct
-credential lookup, especially `address_transaction` and `transaction_output`,
-also carry binary payment/stake credentials. Stake-credential lookup is a
-first-class correctness and performance requirement, not a best-effort join.
-Base addresses expose their stake credential directly. Pointer addresses always
-retain `stake_reference_type='pointer'` and their raw pointer coordinates in
-the address dimension; their dimension-level `stake_credential_type` and
-`stake_credential` remain null because resolution is not an immutable property
-of the address bytes. The resolved credential, when effective at the output's
-ledger coordinate, is stored on `transaction_output` and other temporal fact
-rows. Whether an era treats the pointer as an effective stake reference, and
-which canonical certificate can resolve it, is implemented only after fixtures
-are verified against the pinned Haskell
-`cardano-ledger` implementation for that era, including Conway and later
-changes. The worker maintains a registration projection only for semantics the
-ledger actually honors; it does not assume that decoding a pointer makes it
-stake-active. Enterprise and Byron addresses legitimately have no stake
-credential. Query semantics distinguish “no stake reference,” “pointer not
-effective in this era,” and “effective pointer present but unresolved,” and
-never manufacture a credential. Any required pointer mapping/checkpoint
+Pointer resolution is temporal. The resolved credential and derived stake
+address, when effective at the output's ledger coordinate, are stored on that
+output and address-transaction fact. Conway-and-later ineffective pointers and
+legal unresolved pre-Conway pointers have null stake fields. Enterprise and
+Byron addresses also legitimately have no stake fields. Resolver/checkpoint
 mutations use the same exact near-tip undo rules as input resolution.
-SQLite creates query-driven composite indexes such as:
 
-```text
-(address_key, block_number, tx_hash, output_index)
-(stake_credential, block_number, tx_hash, output_index)
-```
+The standalone SQLite backend normalizes this logical contract behind private
+integer-keyed `addresses` and `stake_addresses` dimensions and private fact
+tables. Stable views expose exactly the same denormalized columns as DuckLake.
+Dimension insertion and fact insertion occur in the same SQLite transaction.
+`address` and `stake_address` are unrestricted `TEXT`; credential hashes are
+`BLOB`. Backend-private IDs never cross the archive API. Dimension conflicts
+fail the job. Orphan dimension rows after invalidation are harmless and may be
+removed only by bounded maintenance.
 
-DuckLake uses fixed-width binary predicates, sorted row groups, and zone-map
-statistics. If benchmarked address/stake point-range queries still fan out too
-broadly, the implementation adds a narrow rebuildable
-`output_subject` accelerator containing only subject type/key, outpoint, and
-block/slot coordinates. Parquet Bloom filters are a benchmark-gated bonus only
-when file metadata proves that the selected encoding emitted them and measured
-size/latency improves; sorted columns do not require them. The accelerator does
-not duplicate full output or asset payloads.
+DuckLake relies on Parquet predicate pushdown, sorted row groups, and zone-map
+statistics. No address/stake locator or write-time historical lookup is added.
+An accelerator may be proposed later only from measured API evidence and must
+remain rebuildable and read-only with respect to source-of-truth facts.
 
 ### Account events
 
@@ -713,8 +684,10 @@ fixed-width sequence that can wrap within an epoch.
 the supported payment/stake credential scopes. A row is keyed by
 `subject_type`, binary `subject_key`, and transaction hash, with canonical block
 coordinates and transaction index. `subject_type` distinguishes exact address,
-payment credential, and stake credential; exact-address keys use `address_key`
-and credential keys use the raw 28-byte credential.
+payment credential, and stake credential; exact-address subjects use the
+internal canonical-address digest and credential subjects use the raw 28-byte
+credential. Exact-address and stake subjects also expose canonical text where
+meaningful.
 
 Roles distinguish ordinary input, ordinary output, collateral input, and
 collateral return. Multiple occurrences for the same subject and transaction
@@ -775,8 +748,8 @@ the physical query plans differ.
 
 ### Optional UTXO history
 
-`utxo_history` is one logical worker with normalized physical tables. Its
-enabled output, asset, input, address, datum, and redeemer rows for a canonical
+`utxo_history` is one logical worker with output-plus-child tables. Its
+enabled output, asset, input, datum, and redeemer rows for a canonical
 range commit atomically. Each row family is independently selectable without
 creating another worker or cursor.
 
@@ -785,7 +758,9 @@ creating another worker or cursor.
 ```text
 tx_hash, output_index, tx_index,
 origin_type,
-address_key, payment_credential, stake_credential,
+address, network_id, address_type,
+payment_credential_type, payment_credential,
+stake_address, stake_credential_type, stake_credential,
 lovelace,
 datum_kind, datum_hash, inline_datum_cbor,
 reference_script_hash, reference_script_type, reference_script_cbor,
@@ -876,7 +851,7 @@ already activated records `current canonical core tip + 1` as its table
 activation cutoff. Both backfill and live decoders skip rows before that
 cutoff, so enable-later never starts a table backfill. Disabling preserves
 existing rows; re-enabling starts another forward-only interval. The output
-asset table requires outputs, and outputs require the address dimension.
+asset table requires outputs. No table requires an address dimension.
 
 Backend-neutral stable views provide the convenient merged shapes:
 
@@ -888,8 +863,8 @@ Backend-neutral stable views provide the convenient merged shapes:
   created/spent coordinates and `is_unspent_at_archive_watermark`;
 - `unspent_outputs` filters the lifecycle view at the finalized archive
   watermark; Yano's live API additionally merges near-tip RocksDB changes;
-- `address_utxo_amounts` joins the address dimension and flattened amount view
-  for Yaci Store-style analytics;
+- `address_utxo_amounts` exposes the output's denormalized address/stake fields
+  with the flattened amount view for Yaci Store-style analytics;
 - `address_asset_flow` can join applied inputs and outputs to derive per-address
   or per-stake-credential asset flows.
 
@@ -902,8 +877,8 @@ The principal SQLite keys/indexes are limited to documented query paths:
 
 ```text
 transaction_output:       PK(tx_hash, output_index)
-                          INDEX(address_key, block_number, tx_hash, output_index)
-                          INDEX(stake_credential, block_number, tx_hash, output_index)
+                          INDEX(address_id, block_number, tx_hash, output_index)
+                          INDEX(stake_address_id, block_number, tx_hash, output_index)
 transaction_output_asset: PK(tx_hash, output_index, policy_id, asset_name)
                           INDEX(policy_id, asset_name, block_number)
 transaction_input:        PK(spending_tx_hash, input_role, input_index)
@@ -955,9 +930,10 @@ boundary_block_hash, boundary_block_number, boundary_slot, boundary_block_time,
 source_state_version, archive_job_id
 ```
 
-Stake/reward addresses and pool IDs are derived presentation values in stable
-views. The row is sourced from the committed epoch snapshot, not reconstructed
-later from mutable current delegations or current UTXOs.
+Canonical stake/reward address text is stored beside the binary credential so
+DuckLake files are independently queryable; pool IDs remain derived
+presentation values. The row is sourced from the committed epoch snapshot, not
+reconstructed later from mutable current delegations or current UTXOs.
 
 ### DRep distribution
 
@@ -1162,7 +1138,6 @@ epoch_stake               -> epoch_stakes
 drep_distribution         -> drep_distributions
 ada_pot                   -> ada_pots
 governance_proposal_status -> governance_proposal_statuses
-address                   -> addresses
 transaction_output        -> transaction_outputs
 transaction_output_asset  -> transaction_output_assets
 transaction_input         -> transaction_inputs
@@ -1254,7 +1229,8 @@ Flyway rules are strict:
   triggers, and views are backed up together.
 
 The initial schema uses `chain_transaction` for the logical transaction
-dataset, matching DuckLake. It also includes stable unversioned address, output,
+dataset, matching DuckLake. It also includes private `addresses` and
+`stake_addresses` dimensions plus stable logical output,
 asset, input, transaction-datum, transaction-redeemer, account-event, address-transaction,
 reward, epoch-stake, DRep-distribution, Ada-pot, governance-proposal-status,
 `archive_commit`, and `archive_coverage` tables, plus convenience views
@@ -1543,6 +1519,48 @@ snapshot ID. A request-scoped active-snapshot lease prevents Yano maintenance
 from expiring that snapshot. A pool must never route subqueries across
 independently advancing snapshot versions.
 
+### Common finalized read point
+
+Independent dataset commits are intentional and their worker coordinates are
+operational progress, not a cross-table consistency boundary. A generation-
+pinned snapshot alone is insufficient because that snapshot may contain
+`transaction` through block N while `address_transaction` is complete only
+through N-1.
+
+For a query spanning multiple block datasets, Yano opens one backend read
+session and reads every selected dataset's coverage through that same session.
+It intersects the explicit complete ranges rather than taking the minimum
+worker coordinate, because live/backfill gaps and retention can produce more
+than one coverage island. The read point is a real committed batch endpoint
+inside the selected common range, so its block number, slot, and hash come from
+`archive_commits`; they are never inferred from a fact row or invented for an
+empty slot.
+
+The resulting finalized consistency point contains:
+
+```text
+backend snapshot/generation
+common complete block range
+as-of block number, slot, and hash
+selected datasets and projection versions
+```
+
+All repositories in that operation receive the same `ArchiveReadSession` and
+must restrict their range to the returned common boundary. Session-scoped
+coverage is part of the backend contract; calling independent
+`coverage(dataset)` methods and combining their results is not sufficient.
+The status API exposes this common finalized point separately from individual
+worker positions, and `/history/watermark` allows callers to select block
+datasets plus optional at-or-before block/slot caps.
+
+The first implementation deliberately covers finalized archive data only. It
+does not coordinate projection workers or add a core-apply barrier. A future
+near-tip multi-dataset mode would additionally need one hot RocksDB snapshot
+and a validated cold/hot revision handshake; until that exists it must not be
+presented as cross-table consistent. Epoch datasets retain their own boundary-
+epoch semantics and are reported separately rather than being folded into a
+block watermark.
+
 It queries each non-overlapping range and merges by a stable dataset key. A
 promotion concurrent with a request cannot cause duplicates or omissions
 because the request continues using its captured archive snapshot/boundary and
@@ -1813,8 +1831,6 @@ yano:
         start-mode: full-required
         retention-epochs: 0
         tables:
-          addresses:
-            enabled: true
           transaction-outputs:
             enabled: true
           transaction-output-assets:
@@ -1894,8 +1910,7 @@ Additional validation includes:
   epoch and a source lease that outlives their pending job;
 - `utxo-history.enabled=true` requires `transactions.enabled=true`, and
   transaction retention/coverage must be a superset of retained UTXO history;
-- UTXO table switches require UTXO history; output assets require outputs and
-  outputs require the address dimension;
+- UTXO table switches require UTXO history and output assets require outputs;
 - enabling a UTXO table after dataset activation always starts at the next
   canonical core block and never schedules table backfill;
 - archive identity matches configured genesis;
@@ -2318,8 +2333,8 @@ clean implementation branch before code changes begin.
 
 ### Phase 7: Address transaction history
 
-1. Add the canonical address dictionary/key codec and collision checks before
-   any `address_transaction` row can use `address_key`.
+1. Add the internal canonical-address subject-key codec and collision checks
+   before any `address_transaction` row can use an exact-address subject key.
 2. Add private sequential outpoint resolver and checkpoints.
 3. Cover ordinary input/output and phase-2 collateral semantics.
 4. Add exact-address and credential-scope query plans for both archive backends.
@@ -2327,7 +2342,8 @@ clean implementation branch before code changes begin.
 
 ### Phase 8: Optional normalized UTXO history
 
-1. Reuse the canonical address dictionary/key codec established in Phase 7.
+1. Reuse the internal exact-address subject-key codec established in Phase 7;
+   do not add a DuckLake address dimension or locator.
 2. Add `transaction_output`, `transaction_output_asset`, and
    `transaction_input` with atomic group coverage and phase-2 validity,
    collateral, reference-input, and spend semantics.
@@ -2430,10 +2446,9 @@ archive engines where applicable:
   duplicated into native-asset physical rows;
 - address, payment-credential, and stake-credential output/history queries are
   complete across hot/cold promotion, use the expected SQLite composite indexes,
-  and meet the benchmarked DuckLake row-group/accelerator scan bound;
-- live-first then backfill-earlier address discovery converges to the minimum
-  canonical `first_seen_*`; invalidating that minimum recomputes or removes the
-  dimension row;
+  and meet the benchmarked DuckLake row-group scan bound without a locator;
+- long Byron address text (including values over 500 characters) round-trips
+  through DuckLake facts and SQLite logical views without truncation;
 - transaction inputs distinguish ordinary, collateral, and reference roles;
   `consumes_output` matches valid and phase-2-invalid ledger application and at
   most one canonical consuming input exists per outpoint;
@@ -2441,8 +2456,8 @@ archive engines where applicable:
   UTXO fixtures before, at, and after a spend, including collateral return;
 - disabling transaction datum/redeemer tables writes no such rows; enabling
   them later begins at the next core block without historical backfill;
-- one UTXO archive job promotes or invalidates output, asset, input, address,
-  and enabled datum/redeemer rows at a single coverage boundary in either backend;
+- one UTXO archive job promotes or invalidates output, asset, input, and enabled
+  datum/redeemer rows at a single coverage boundary in either backend;
 - retaining/pruning UTXO history never leaves a view claiming complete coverage
   over missing parent/child ranges, and transaction coverage remains a superset;
 - unresolved inputs stop cursor advancement;
@@ -2640,7 +2655,6 @@ treated as stable defaults:
 - optimal Parquet target size and row-group size for wallet point/range queries;
 - optimal physical representation, size, and rebuild/checkpoint strategy for
   the required DuckLake transaction locator;
-- whether address/stake queries need the narrow `output_subject` accelerator;
 - optimal DuckLake sorting/zone-map layout and whether optional Bloom filters
   on any measured low/moderate-cardinality predicate justify their size without
   forced dictionary encoding;

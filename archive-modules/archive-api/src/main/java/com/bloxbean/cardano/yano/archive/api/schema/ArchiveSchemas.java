@@ -9,8 +9,8 @@ import java.util.Map;
 import static com.bloxbean.cardano.yano.archive.api.schema.ArchiveValueType.*;
 
 /**
- * Stable physical schema contract shared by both archive engines.
- * Backend migrations map these logical types to DuckLake and SQLite types.
+ * Stable logical schema contract shared by both archive engines.
+ * DuckLake stores it directly; SQLite may normalize behind writable views.
  */
 public final class ArchiveSchemas {
     private static final Map<ArchiveDatasetId, ArchiveDatasetSchema> SCHEMAS = build();
@@ -32,29 +32,28 @@ public final class ArchiveSchemas {
                         b("tx_hash"), b("block_hash"), l("block_number"), l("slot"), l("epoch"),
                         l("block_time"), i("tx_index"), bool("valid"), ln("fee"), uuid("archive_job_id")),
                 order("block_number", "tx_index", "tx_hash")));
-        schemas.put(ArchiveDatasetId.ACCOUNT_EVENT, dataset(ArchiveDatasetId.ACCOUNT_EVENT, 2,
+        schemas.put(ArchiveDatasetId.ACCOUNT_EVENT, dataset(ArchiveDatasetId.ACCOUNT_EVENT, 3,
                 table("account_events", pk("stake_credential", "slot", "tx_index", "event_index", "event_type", "tx_hash"),
-                        b("stake_credential"), s("stake_credential_type"), s("event_type"), b("tx_hash"),
+                        b("stake_credential"), s("stake_credential_type"), s("stake_address"),
+                        s("event_type"), b("tx_hash"),
                         b("block_hash"), l("block_number"), l("slot"), l("epoch"), l("block_time"),
                         i("tx_index"), l("event_index"), bn("pool_hash"), sn("drep_type"), bn("drep_credential"),
                         ln("amount"), uuid("archive_job_id")),
                 order("slot", "tx_index", "event_index", "event_type", "tx_hash")));
-        schemas.put(ArchiveDatasetId.ADDRESS_TRANSACTION, dataset(ArchiveDatasetId.ADDRESS_TRANSACTION, 2,
+        schemas.put(ArchiveDatasetId.ADDRESS_TRANSACTION, dataset(ArchiveDatasetId.ADDRESS_TRANSACTION, 3,
                 table("address_transactions", pk("subject_type", "subject_key", "tx_hash"),
-                        s("subject_type"), b("subject_key"), b("tx_hash"), b("block_hash"),
+                        s("subject_type"), b("subject_key"), sn("address"), sn("stake_address"),
+                        b("tx_hash"), b("block_hash"),
                         l("block_number"), l("slot"), l("epoch"), l("block_time"), i("tx_index"),
                         i("input_count"), i("output_count"), i("collateral_input_count"),
                         i("collateral_return_count"), uuid("archive_job_id")),
                 order("block_number", "tx_index", "tx_hash")));
-        schemas.put(ArchiveDatasetId.UTXO_HISTORY, dataset(ArchiveDatasetId.UTXO_HISTORY, 4,
-                table("addresses", pk("address_key"), b("address_key"), b("raw_address"), sn("display_address"),
-                        in("network_id"), s("address_type"), sn("payment_credential_type"), bn("payment_credential"),
-                        s("stake_reference_type"), sn("stake_credential_type"), bn("stake_credential"),
-                        ln("pointer_slot"), in("pointer_tx_index"), in("pointer_cert_index"),
-                        ln("first_seen_block_number"), ln("first_seen_slot"), ln("first_seen_epoch")),
+        schemas.put(ArchiveDatasetId.UTXO_HISTORY, dataset(ArchiveDatasetId.UTXO_HISTORY, 5,
                 table("transaction_outputs", pk("tx_hash", "output_index"), b("tx_hash"), i("output_index"),
-                        i("tx_index"), s("origin_type"), b("address_key"), bn("payment_credential"),
-                        bn("stake_credential"), l("lovelace"), s("datum_kind"), bn("datum_hash"),
+                        i("tx_index"), s("origin_type"), s("address"), in("network_id"), s("address_type"),
+                        sn("payment_credential_type"), bn("payment_credential"), sn("stake_address"),
+                        sn("stake_credential_type"), bn("stake_credential"), l("lovelace"),
+                        s("datum_kind"), bn("datum_hash"),
                         bn("inline_datum_cbor"), bn("reference_script_hash"), sn("reference_script_type"),
                         bn("reference_script_cbor"), bool("is_collateral_return"), bn("block_hash"),
                         ln("block_number"), ln("slot"), ln("epoch"), ln("block_time"), uuid("archive_job_id")),
@@ -75,16 +74,17 @@ public final class ArchiveSchemas {
                         d("execution_steps"), b("block_hash"), l("block_number"), l("slot"),
                         l("epoch"), l("block_time"), uuid("archive_job_id")),
                 order("block_number", "tx_index", "output_index", "tx_hash")));
-        schemas.put(ArchiveDatasetId.REWARD, dataset(ArchiveDatasetId.REWARD, 3,
+        schemas.put(ArchiveDatasetId.REWARD, dataset(ArchiveDatasetId.REWARD, 4,
                 table("rewards", pk("stake_credential", "earned_epoch", "reward_type", "source_id"),
-                        b("stake_credential"), s("stake_credential_type"), bn("pool_hash"), s("reward_type"),
+                        b("stake_credential"), s("stake_credential_type"), s("stake_address"),
+                        bn("pool_hash"), s("reward_type"),
                         l("earned_epoch"), l("spendable_epoch"), l("amount"), s("source_id"),
                         b("boundary_block_hash"), l("boundary_block_number"), l("boundary_slot"),
                         l("boundary_block_time"), uuid("archive_job_id")),
                 order("earned_epoch", "stake_credential", "reward_type", "source_id")));
-        schemas.put(ArchiveDatasetId.EPOCH_STAKE, dataset(ArchiveDatasetId.EPOCH_STAKE,
+        schemas.put(ArchiveDatasetId.EPOCH_STAKE, dataset(ArchiveDatasetId.EPOCH_STAKE, 2,
                 table("epoch_stakes", pk("epoch", "stake_credential"), l("epoch"), s("stake_credential_type"),
-                        b("stake_credential"), bn("pool_hash"), l("amount"), b("boundary_block_hash"),
+                        b("stake_credential"), s("stake_address"), bn("pool_hash"), l("amount"), b("boundary_block_hash"),
                         l("boundary_block_number"), l("boundary_slot"), l("boundary_block_time"),
                         s("source_state_version"), uuid("archive_job_id")),
                 order("epoch", "stake_credential")));
@@ -120,6 +120,13 @@ public final class ArchiveSchemas {
     private static ArchiveDatasetSchema dataset(ArchiveDatasetId id, int projectionVersion,
                                                 ArchiveTableSchema table, List<String> order) {
         return new ArchiveDatasetSchema(id, projectionVersion, List.of(table), order);
+    }
+
+    private static ArchiveDatasetSchema dataset(ArchiveDatasetId id, int projectionVersion,
+                                                ArchiveTableSchema t1, ArchiveTableSchema t2,
+                                                ArchiveTableSchema t3, ArchiveTableSchema t4,
+                                                ArchiveTableSchema t5, List<String> order) {
+        return new ArchiveDatasetSchema(id, projectionVersion, List.of(t1, t2, t3, t4, t5), order);
     }
 
     private static ArchiveDatasetSchema dataset(ArchiveDatasetId id, ArchiveTableSchema t1,

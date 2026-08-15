@@ -12,25 +12,43 @@ import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalLong;
+import com.bloxbean.cardano.yano.archive.core.address.Outpoint;
+import com.bloxbean.cardano.yano.archive.core.address.ResolvedOutput;
+import com.bloxbean.cardano.yano.archive.core.address.SequentialOutpointResolver;
+import com.bloxbean.cardano.yano.archive.core.address.SequentialPointerResolver;
 
 /**
  * Backend-neutral ownership boundary for the complete archive hot layer.
  *
- * <p>The byte-oriented mutation methods preserve the current RocksDB contract
- * during ADR-036 phase 1. They are deliberately contained here so workers,
- * resolvers, promotion, and runtime integration no longer depend on the
- * concrete RocksDB implementation. ADR-036 phase 2 replaces this transitional
- * mutation boundary with semantic fact and resolver lifecycle operations
- * before a relational SQLite implementation is considered conformant.</p>
+ * <p>Canonical writes cross this seam as logical fact and typed resolver/
+ * pointer lifecycle operations. Physical RocksDB keys and SQLite rows remain
+ * private to their implementations.</p>
  */
 public interface HotHistoryStore extends ArchiveProgressStore, BlockBodyRetentionBoundary, AutoCloseable {
     void applyBlock(ArchiveDatasetId dataset, HotBlockCheckpoint block,
-                    List<HotHistoryMutation> mutations, ArchiveProgress progress);
+                    List<HotHistoryOperation> operations, ArchiveProgress progress);
 
     void applyBlocks(ArchiveDatasetId dataset, List<HotBlockUpdate> blocks,
                      ArchiveProgress progress, ArchiveReceipt receipt);
 
-    void seed(ArchiveDatasetId dataset, List<HotHistoryMutation> mutations);
+    void seedResolver(String namespace, Iterable<SequentialOutpointResolver.Entry> outputs,
+                      boolean complete, long baseBlock);
+
+    boolean resolverSeeded(String namespace);
+
+    OptionalLong resolverBaseBlock(String namespace);
+
+    Optional<ResolvedOutput> resolveOutput(String namespace, Outpoint outpoint);
+
+    Optional<SequentialPointerResolver.ResolvedStakeCredential> resolvePointer(
+            ArchiveDatasetId dataset, String namespace, SequentialPointerResolver.PointerCoordinate pointer);
+
+    List<SequentialPointerResolver.PointerCoordinate> pointersForCredential(
+            ArchiveDatasetId dataset, String namespace,
+            SequentialPointerResolver.ResolvedStakeCredential credential);
+
+    void resetResolver(ArchiveDatasetId dataset, String namespace);
 
     void rollbackTo(ArchiveDatasetId dataset, ArchiveTrack track, long commonBlock);
 
@@ -40,15 +58,12 @@ public interface HotHistoryStore extends ArchiveProgressStore, BlockBodyRetentio
 
     Optional<HotBlockCheckpoint> checkpoint(ArchiveDatasetId dataset, ArchiveTrack track, long block);
 
-    Optional<byte[]> get(ArchiveDatasetId dataset, byte[] logicalKey);
+    Optional<com.bloxbean.cardano.yano.archive.api.ArchiveRecord> findFact(
+            ArchiveDatasetId dataset, byte[] logicalKey);
 
-    List<HotHistorySnapshot.Entry> scanDataPrefix(ArchiveDatasetId dataset, byte[] logicalPrefix);
+    void deleteFacts(ArchiveDatasetId dataset, Collection<byte[]> logicalKeys);
 
-    void deleteData(ArchiveDatasetId dataset, Collection<byte[]> logicalKeys);
-
-    void deleteDataPrefix(ArchiveDatasetId dataset, byte[] logicalPrefix);
-
-    void clearTrack(ArchiveDatasetId dataset, ArchiveTrack track, Collection<byte[]> logicalDataPrefixes);
+    void clearTrack(ArchiveDatasetId dataset, ArchiveTrack track);
 
     HotHistorySnapshot snapshot();
 

@@ -10,9 +10,9 @@ support two interchangeable durable backends.
 | Gradle project | Purpose |
 |---|---|
 | `:archive-modules:archive-api` | Backend-neutral schemas, storage contracts, query sessions, and typed repositories. |
-| `:archive-modules:archive-core` | Block and epoch projection, independent resolvers, hot rollback-aware RocksDB, progress tracking, and workers. |
+| `:archive-modules:archive-core` | Block and epoch projection, independent resolvers, the pluggable hot-store contract, progress tracking, and workers. |
 | `:archive-modules:archive-store-ducklake` | DuckLake tables over Parquet, using DuckDB for access and SQLite as the default catalog database. |
-| `:archive-modules:archive-store-sqlite` | Standalone relational SQLite backend with a Yano-owned Flyway schema. |
+| `:archive-modules:archive-store-sqlite` | Standalone relational SQLite archive plus the optional relational SQLite hot-store engine, each with an isolated Flyway schema. |
 
 Dependencies flow inward: stores and core depend on `archive-api`; application
 composition lives in the top-level `app` module. The archive modules do not
@@ -38,6 +38,12 @@ The `sqlite` engine instead stores catalog metadata and historical rows in the
 single default file `<history-dir>/history.sqlite`. Yano owns that schema and
 migrates it with Flyway.
 
+The bounded rollback-sensitive layer is selected independently with
+`yano.history.hot-store.engine=rocksdb|sqlite`. RocksDB remains the compatibility
+default. SQLite stores the entire hot layer—including recent facts, resolver
+lifecycle, checkpoints, progress, receipts, leases, and requirements—in
+`<history-dir>/hot-history.sqlite`; it is not the standalone archive database.
+
 ## Datasets
 
 The shared schemas cover account events, address transactions, transactions,
@@ -50,6 +56,11 @@ datum and reference-script CBOR directly; witness datums and redeemers use
 transaction-scoped tables. All row families default to enabled when UTXO
 history is selected. A row family enabled later starts with the next canonical
 core block and is never backfilled implicitly.
+
+DuckLake facts are flat and self-contained for address/stake queries; it has no
+address dimension or address locator. The standalone SQLite engine normalizes
+addresses and stake addresses privately and exposes the same flat logical
+contract through views.
 
 ## Runtime use
 

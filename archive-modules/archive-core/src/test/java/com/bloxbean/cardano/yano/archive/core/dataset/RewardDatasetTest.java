@@ -23,9 +23,9 @@ class RewardDatasetTest {
                 new RewardFact(new byte[] {3}, "key", null, "treasury_withdrawal", 20, 21, 20,
                         "treasury:abc#1")), 10, Optional.empty()), rows::add);
         assertThat(rows).hasSize(2);
-        assertThat(rows).extracting(row -> row.values().get(3))
+        assertThat(rows).extracting(row -> row.values().get(4))
                 .containsExactly("proposal_deposit_refund", "treasury_withdrawal");
-        assertThat(rows).extracting(row -> row.values().get(7))
+        assertThat(rows).extracting(row -> row.values().get(8))
                 .containsExactly("proposal:abc#0", "treasury:abc#1");
     }
 }

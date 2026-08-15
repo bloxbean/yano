@@ -131,11 +131,11 @@ final class ArchiveAccountHistoryProvider implements AccountHistoryProvider {
                 default -> throw new IllegalArgumentException("unsupported compatibility dataset");
             };
             var hotSnapshot = service.openHotSnapshot();
-            try {
+            try (ArchiveReadSession read = backend.openReadSession()) {
                 List<ArchiveRecord> hot = hotSnapshot == null ? List.of()
                         : com.bloxbean.cardano.yano.archive.core.hot.HotArchiveRows.read(
                                 hotSnapshot, dataset, table, filters);
-                ArchiveCoverage coverage = backend.coverage(dataset);
+                ArchiveCoverage coverage = backend.coverage(read, dataset);
                 Optional<BlockRange> liveCoverage = service.liveCoverage(dataset);
                 if (coverage.completeRanges().isEmpty()) {
                     if (liveCoverage.isEmpty()) throw new IllegalStateException("history coverage is incomplete");
@@ -153,29 +153,27 @@ final class ArchiveAccountHistoryProvider implements AccountHistoryProvider {
                 }
                 ArchiveRange range = newRange(dataset, coverage.completeRanges().getFirst().startInclusive(),
                         coverage.completeRanges().getLast().endInclusive());
-                try (ArchiveReadSession read = backend.openReadSession()) {
-                    Comparator<ArchiveRecord> comparator = comparator(dataset);
-                    if (!"asc".equalsIgnoreCase(order)) comparator = comparator.reversed();
-                    ArchivePageCursor.Order selectedOrder = "asc".equalsIgnoreCase(order)
-                            ? ArchivePageCursor.Order.ASC : ArchivePageCursor.Order.DESC;
-                    int coldTarget = Math.toIntExact(Math.min(Integer.MAX_VALUE, target + hot.size()));
-                    List<ArchiveRecord> merged = new ArrayList<>();
-                    Optional<ArchivePageCursor> cursor = Optional.empty();
-                    do {
-                        int remaining = coldTarget - merged.size();
-                        if (remaining <= 0) break;
-                        ArchiveQueryResult<ArchiveRecord> result = backend.repositories().records(dataset).query(read,
-                                new ArchiveQuery(range, filters, selectedOrder, Math.min(remaining, 100), cursor));
-                        if (!result.complete()) throw new IllegalStateException("history coverage is incomplete");
-                        merged.addAll(result.rows());
-                        cursor = result.nextCursor();
-                    } while (cursor.isPresent());
-                    merged.addAll(hot);
-                    merged.sort(comparator);
-                    LinkedHashMap<String, ArchiveRecord> unique = new LinkedHashMap<>();
-                    for (ArchiveRecord row : merged) unique.putIfAbsent(identity(dataset, row), row);
-                    return unique.values().stream().skip(offset).limit(count).toList();
-                }
+                Comparator<ArchiveRecord> comparator = comparator(dataset);
+                if (!"asc".equalsIgnoreCase(order)) comparator = comparator.reversed();
+                ArchivePageCursor.Order selectedOrder = "asc".equalsIgnoreCase(order)
+                        ? ArchivePageCursor.Order.ASC : ArchivePageCursor.Order.DESC;
+                int coldTarget = Math.toIntExact(Math.min(Integer.MAX_VALUE, target + hot.size()));
+                List<ArchiveRecord> merged = new ArrayList<>();
+                Optional<ArchivePageCursor> cursor = Optional.empty();
+                do {
+                    int remaining = coldTarget - merged.size();
+                    if (remaining <= 0) break;
+                    ArchiveQueryResult<ArchiveRecord> result = backend.repositories().records(dataset).query(read,
+                            new ArchiveQuery(range, filters, selectedOrder, Math.min(remaining, 100), cursor));
+                    if (!result.complete()) throw new IllegalStateException("history coverage is incomplete");
+                    merged.addAll(result.rows());
+                    cursor = result.nextCursor();
+                } while (cursor.isPresent());
+                merged.addAll(hot);
+                merged.sort(comparator);
+                LinkedHashMap<String, ArchiveRecord> unique = new LinkedHashMap<>();
+                for (ArchiveRecord row : merged) unique.putIfAbsent(identity(dataset, row), row);
+                return unique.values().stream().skip(offset).limit(count).toList();
             } finally {
                 if (hotSnapshot != null) hotSnapshot.close();
             }

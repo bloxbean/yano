@@ -57,8 +57,8 @@ class AddressHistoryTest {
         var context = new BlockSourceContext<>(1, 10, 0, Instant.EPOCH,
                 new byte[]{1}, new byte[0], block);
         ArchiveJob job = ArchiveJob.deterministic(new ArchiveNetworkIdentity(1, "g"),
-                ArchiveDatasetId.ADDRESS_TRANSACTION, 2, new BlockRange(1, 1),
-                new ArchiveRangeAnchor(10, new byte[]{1}, 10, new byte[]{1}), "v2");
+                ArchiveDatasetId.ADDRESS_TRANSACTION, 3, new BlockRange(1, 1),
+                new ArchiveRangeAnchor(10, new byte[]{1}, 10, new byte[]{1}), "v3");
 
         try (var state = new RocksDbHotHistoryStore(temp.resolve("subject-counts"))) {
             var dataset = new AddressTransactionDataset(state, new AddressKeyCodec());
@@ -68,10 +68,10 @@ class AddressHistoryTest {
             dataset.derive(job, context, rows::add);
 
             assertThat(rows).allSatisfy(row -> {
-                assertThat(row.values().get(9)).isEqualTo(0);
-                assertThat(row.values().get(10)).isEqualTo(1);
                 assertThat(row.values().get(11)).isEqualTo(0);
-                assertThat(row.values().get(12)).isEqualTo(0);
+                assertThat(row.values().get(12)).isEqualTo(1);
+                assertThat(row.values().get(13)).isEqualTo(0);
+                assertThat(row.values().get(14)).isEqualTo(0);
             });
             dataset.abortBatch();
         }
@@ -99,8 +99,14 @@ class AddressHistoryTest {
         try (var hot = new RocksDbHotHistoryStore(temp.resolve("idempotent-genesis"))) {
             var resolver = new SequentialOutpointResolver(hot);
             resolver.seedGenesis(List.of(entry));
-            hot.deleteData(ArchiveDatasetId.ADDRESS_TRANSACTION,
-                    List.of(resolver.logicalKey(genesis)));
+            hot.applyBlock(ArchiveDatasetId.ADDRESS_TRANSACTION,
+                    new com.bloxbean.cardano.yano.archive.core.hot.HotBlockCheckpoint(
+                            1, 1, new byte[] {1}, new byte[] {0}),
+                    List.of(resolver.consumeOperation(genesis, new byte[32], "ordinary")),
+                    new com.bloxbean.cardano.yano.archive.core.worker.ArchiveProgress(
+                            ArchiveDatasetId.ADDRESS_TRANSACTION,
+                            com.bloxbean.cardano.yano.archive.core.worker.ArchiveTrack.BACKFILL,
+                            1, 1, new byte[] {1}, 0));
 
             new SequentialOutpointResolver(hot).seedGenesis(List.of(entry));
 
@@ -207,7 +213,7 @@ class AddressHistoryTest {
         List<ArchiveRow> rows = new ArrayList<>();
         StandardBlockDatasets.addressTransactions().derive(job, block, rows::add);
         assertThat(rows).hasSize(2);
-        assertThat(rows.getFirst().values().subList(9, 13)).containsExactly(2, 1, 1, 1);
+        assertThat(rows.getFirst().values().subList(11, 15)).containsExactly(2, 1, 1, 1);
     }
 
     @Test

@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import com.bloxbean.cardano.yano.archive.api.ArchiveJob;
 import com.bloxbean.cardano.yano.archive.api.ArchiveRow;
 import com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas;
+import com.bloxbean.cardano.yano.archive.core.address.StakeAddressCodec;
 
 import java.util.List;
 
@@ -33,7 +34,9 @@ public final class StandardBlockDatasets {
                                java.util.function.Consumer<ArchiveRow> sink) {
                 for (AccountEventFact event : block.block().accountEvents()) {
                     sink.accept(new ArchiveRow("account_events", java.util.Arrays.asList(event.stakeCredential(),
-                            event.credentialType(), event.eventType(), event.txHash(), block.blockHash(),
+                            event.credentialType(), StakeAddressCodec.encode(job.networkIdentity().networkMagic(),
+                                    event.credentialType(), event.stakeCredential()),
+                            event.eventType(), event.txHash(), block.blockHash(),
                             block.blockNumber(), block.slot(), block.epoch(), block.blockTime().getEpochSecond(),
                             event.txIndex(), event.eventIndex(), event.poolHash(), event.drepType(), event.drepCredential(),
                             event.amount(), job.jobId())));
@@ -50,8 +53,8 @@ public final class StandardBlockDatasets {
                                java.util.function.Consumer<ArchiveRow> sink) {
                 for (AddressTransactionFact tx : block.block().addressTransactions()) {
                     for (AddressSubject subject : tx.subjects()) {
-                        sink.accept(new ArchiveRow("address_transactions", List.of(subject.subjectType(),
-                                subject.subjectKey(), tx.txHash(), block.blockHash(), block.blockNumber(),
+                        sink.accept(new ArchiveRow("address_transactions", java.util.Arrays.asList(subject.subjectType(),
+                                subject.subjectKey(), null, null, tx.txHash(), block.blockHash(), block.blockNumber(),
                                 block.slot(), block.epoch(), block.blockTime().getEpochSecond(), tx.txIndex(),
                                 tx.inputCount(), tx.outputCount(), tx.collateralInputCount(),
                                 tx.collateralReturnCount(), job.jobId())));

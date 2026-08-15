@@ -112,14 +112,13 @@ public final class YaciUtxoHistoryDecoder implements CanonicalBlockDecoder<UtxoH
         Set<Integer> invalid = block.getInvalidTransactions() == null ? Set.of() : Set.copyOf(block.getInvalidTransactions());
         List<TransactionBody> bodies = block.getTransactionBodies() == null ? List.of() : block.getTransactionBodies();
 
-        boolean includeAddresses = projection.includes(UtxoHistoryProjection.Table.ADDRESSES, blockNumber);
         boolean includeOutputs = projection.includes(UtxoHistoryProjection.Table.TRANSACTION_OUTPUTS, blockNumber);
         boolean includeAssets = projection.includes(UtxoHistoryProjection.Table.TRANSACTION_OUTPUT_ASSETS, blockNumber);
         boolean includeInputs = projection.includes(UtxoHistoryProjection.Table.TRANSACTION_INPUTS, blockNumber);
         boolean includeDatums = projection.includes(UtxoHistoryProjection.Table.TRANSACTION_DATUMS, blockNumber);
         boolean includeRedeemers = projection.includes(UtxoHistoryProjection.Table.TRANSACTION_REDEEMERS, blockNumber);
 
-        if (includeGenesis && (includeAddresses || includeOutputs)) {
+        if (includeGenesis && includeOutputs) {
             LinkedHashMap<String, GenesisOutput> unique = new LinkedHashMap<>();
             for (GenesisOutput genesis : genesisOutputs) {
                 AddressInfo address = address(genesis.address());
@@ -134,7 +133,7 @@ public final class YaciUtxoHistoryDecoder implements CanonicalBlockDecoder<UtxoH
             for (GenesisOutput genesis : unique.values()) {
                 AddressInfo address = address(genesis.address());
                 String addressId = HexUtil.encodeHexString(address.key());
-                if (includeAddresses && seenAddresses.add(addressId)) addresses.add(address.fact());
+                if (seenAddresses.add(addressId)) addresses.add(address.fact());
                 if (includeOutputs) outputs.add(new UtxoHistoryFact.Output(
                         Blake2bUtil.blake2bHash256(address.fact().rawAddress()), 0, -1,
                         genesis.originType(), address.key(), address.paymentCredential(), address.stakeCredential(),
@@ -177,18 +176,18 @@ public final class YaciUtxoHistoryDecoder implements CanonicalBlockDecoder<UtxoH
                 addInputs(inputs, txHash, txIndex, "collateral", tx.getCollateralInputs(), !valid);
                 addInputs(inputs, txHash, txIndex, "reference", tx.getReferenceInputs(), false);
             }
-            if ((includeAddresses || includeOutputs) && valid && tx.getOutputs() != null) {
+            if (includeOutputs && valid && tx.getOutputs() != null) {
                 for (int outputIndex = 0; outputIndex < tx.getOutputs().size(); outputIndex++) {
                     addOutput(addresses, outputs, assets, seenAddresses, txHash, txIndex,
                             outputIndex, "regular", false, tx.getOutputs().get(outputIndex),
-                            includeAddresses, includeOutputs, includeAssets);
+                            includeOutputs, includeAssets);
                 }
             }
-            if ((includeAddresses || includeOutputs) && !valid && tx.getCollateralReturn() != null) {
+            if (includeOutputs && !valid && tx.getCollateralReturn() != null) {
                 int outputIndex = tx.getOutputs() == null ? 0 : tx.getOutputs().size();
                 addOutput(addresses, outputs, assets, seenAddresses, txHash, txIndex,
                         outputIndex, "collateral_return", true, tx.getCollateralReturn(),
-                        includeAddresses, includeOutputs, includeAssets);
+                        includeOutputs, includeAssets);
             }
             if (includeDatums || includeRedeemers) {
                 addWitnessData(block, txHash, txIndex, transactionDatums, transactionRedeemers,
@@ -204,10 +203,10 @@ public final class YaciUtxoHistoryDecoder implements CanonicalBlockDecoder<UtxoH
                            List<UtxoHistoryFact.Asset> assets, Set<String> seenAddresses,
                            byte[] txHash, int txIndex, int outputIndex, String originType,
                            boolean collateralReturn, TransactionOutput output,
-                           boolean includeAddresses, boolean includeOutputs, boolean includeAssets) {
+                           boolean includeOutputs, boolean includeAssets) {
         AddressInfo address = address(output.getAddress());
         String addressId = HexUtil.encodeHexString(address.key());
-        if (includeAddresses && seenAddresses.add(addressId)) addresses.add(address.fact());
+        if (includeOutputs && seenAddresses.add(addressId)) addresses.add(address.fact());
         BigInteger lovelace = BigInteger.ZERO;
         if ((includeOutputs || includeAssets) && output.getAmounts() != null) {
             for (Amount amount : output.getAmounts()) {

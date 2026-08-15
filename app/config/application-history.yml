@@ -22,6 +22,12 @@ yano:
     dir: ${YANO_HISTORY_DIR:./history}
     start-mode: ${YANO_HISTORY_START_MODE:full-required}
     live-enabled: true
+    hot-store:
+      # RocksDB remains the compatibility default until the ADR-036 matrix is complete.
+      # Set YANO_HISTORY_HOT_STORE_ENGINE=sqlite to use the relational hot layer.
+      engine: ${YANO_HISTORY_HOT_STORE_ENGINE:rocksdb}
+      sqlite:
+        path: ${YANO_HISTORY_HOT_STORE_SQLITE_PATH:${YANO_HISTORY_DIR:./history}/hot-history.sqlite}
     archive:
       engine: ducklake
       finality-blocks: auto
@@ -69,8 +75,6 @@ yano:
         # history is enabled. Enabling one later starts at the next core block;
         # it never triggers historical backfill.
         tables:
-          addresses:
-            enabled: true
           transaction-outputs:
             enabled: true
           transaction-output-assets:

@@ -7,6 +7,7 @@ import com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas;
 import com.bloxbean.cardano.yano.archive.core.address.SequentialPointerResolver;
 import com.bloxbean.cardano.yano.archive.core.address.SequentialPointerResolver.PointerCoordinate;
 import com.bloxbean.cardano.yano.archive.core.address.SequentialPointerResolver.ResolvedStakeCredential;
+import com.bloxbean.cardano.yano.archive.core.address.StakeAddressCodec;
 import com.bloxbean.cardano.yano.archive.core.hot.*;
 import com.bloxbean.cardano.yano.archive.core.worker.ArchiveProgress;
 import com.bloxbean.cardano.yano.archive.core.worker.ArchiveTrack;
@@ -14,7 +15,7 @@ import com.bloxbean.cardano.yano.archive.core.worker.ArchiveTrack;
 import java.util.*;
 import java.util.function.Consumer;
 
-/** Normalized UTXO history with an archive-private, rollback-aware pointer resolver. */
+/** Flat UTXO facts with an archive-private, rollback-aware pointer resolver. */
 public final class UtxoHistoryDataset implements LiveStatefulBlockArchiveDataset<UtxoHistoryFact> {
     private final HotHistoryStore state;
     private final SequentialPointerResolver pointers;
@@ -57,7 +58,7 @@ public final class UtxoHistoryDataset implements LiveStatefulBlockArchiveDataset
             throw new IllegalStateException("UTXO history dataset batch order changed");
         }
         var facts = block.block();
-        List<HotHistoryMutation> pointerMutations = new ArrayList<>();
+        List<HotHistoryOperation> pointerOperations = new ArrayList<>();
         if (state != null) {
             List<PointerLifecycle> lifecycle = new ArrayList<>();
             facts.pointerRegistrations().forEach(value -> lifecycle.add(new PointerLifecycle(
@@ -79,7 +80,7 @@ public final class UtxoHistoryDataset implements LiveStatefulBlockArchiveDataset
                         throw new ArchiveStoreException("conflicting pointer registration at " + coordinate);
                     }
                     pendingDeletedPointers.remove(coordinate);
-                    pointerMutations.addAll(pointers.putMutations(coordinate, credential));
+                    pointerOperations.addAll(pointers.putOperations(coordinate, credential));
                 } else {
                     var deregistration = event.deregistration();
                     var credential = new ResolvedStakeCredential(
@@ -87,13 +88,13 @@ public final class UtxoHistoryDataset implements LiveStatefulBlockArchiveDataset
                     for (var pending : new ArrayList<>(pendingPointers.entrySet())) {
                         if (sameCredential(pending.getValue(), credential)) {
                             pendingDeletedPointers.add(pending.getKey());
-                            pointerMutations.addAll(pointers.deleteMutations(pending.getKey(), pending.getValue()));
                             pendingPointers.remove(pending.getKey());
                         }
                     }
-                    var deletion = pointers.deleteCredential(credential);
+                    var deletion = pointers.deleteCredential(credential, new PointerCoordinate(
+                            block.slot(), deregistration.txIndex(), deregistration.certIndex()));
                     pendingDeletedPointers.addAll(deletion.coordinates());
-                    pointerMutations.addAll(deletion.mutations());
+                    pointerOperations.addAll(deletion.operations());
                 }
             }
         }
@@ -102,26 +103,20 @@ public final class UtxoHistoryDataset implements LiveStatefulBlockArchiveDataset
         for (var address : facts.newAddresses()) {
             ResolvedAddress resolved = resolveAddress(facts.era(), address);
             resolvedAddresses.put(HexUtil.encodeHexString(address.addressKey()), resolved);
-            // The address dimension describes only structure encoded in the
-            // address bytes. Pointer resolution is ledger-time dependent: the
-            // same raw pointer address can resolve before deregistration and
-            // be unresolved afterwards. Keep that temporal result on each
-            // transaction output instead of turning it into a false dimension
-            // conflict.
-            var value = address;
-            sink.accept(new ArchiveRow("addresses", Arrays.asList(
-                    value.addressKey(), value.rawAddress(), value.displayAddress(), value.networkId(),
-                    value.addressType(), value.paymentCredentialType(), value.paymentCredential(),
-                    value.stakeReferenceType(), value.stakeCredentialType(), value.stakeCredential(),
-                    value.pointerSlot(), value.pointerTxIndex(), value.pointerCertIndex(),
-                    block.blockNumber(), block.slot(), block.epoch())));
         }
         for (var output : facts.outputs()) {
             ResolvedAddress address = resolvedAddresses.get(HexUtil.encodeHexString(output.addressKey()));
+            UtxoHistoryFact.Address value = address == null ? null : address.address();
             byte[] stakeCredential = address == null ? output.stakeCredential() : address.stakeCredential();
+            String stakeType = value == null ? null : value.stakeCredentialType();
+            String stakeAddress = StakeAddressCodec.encode(job.networkIdentity().networkMagic(),
+                    stakeType, stakeCredential);
+            if (value == null) throw new ArchiveStoreException("missing decoded address for UTXO output");
             sink.accept(new ArchiveRow("transaction_outputs", Arrays.asList(
-                    output.txHash(), output.outputIndex(), output.txIndex(), output.originType(), output.addressKey(),
-                    output.paymentCredential(), stakeCredential, output.lovelace(), output.datumKind(),
+                    output.txHash(), output.outputIndex(), output.txIndex(), output.originType(),
+                    value.displayAddress(), value.networkId(), value.addressType(),
+                    value.paymentCredentialType(), output.paymentCredential(), stakeAddress, stakeType,
+                    stakeCredential, output.lovelace(), output.datumKind(),
                     output.datumHash(), output.inlineDatumCbor(), output.referenceScriptHash(),
                     output.referenceScriptType(), output.referenceScriptCbor(), output.collateralReturn(),
                     block.blockHash(), block.blockNumber(), block.slot(), block.epoch(),
@@ -145,7 +140,7 @@ public final class UtxoHistoryDataset implements LiveStatefulBlockArchiveDataset
 
         if (state != null) {
             updates.add(new HotBlockUpdate(new HotBlockCheckpoint(block.blockNumber(), block.slot(),
-                    block.blockHash(), block.parentHash()), pointerMutations));
+                    block.blockHash(), block.parentHash()), pointerOperations));
             blockIndex++;
         }
     }
@@ -199,15 +194,15 @@ public final class UtxoHistoryDataset implements LiveStatefulBlockArchiveDataset
     }
 
     @Override
-    public void commitLiveBatch(List<List<HotHistoryMutation>> rowMutations) {
-        if (state == null || track != ArchiveTrack.LIVE || rowMutations.size() != updates.size()) {
+    public void commitLiveBatch(List<List<HotHistoryOperation>> rowOperations) {
+        if (state == null || track != ArchiveTrack.LIVE || rowOperations.size() != updates.size()) {
             throw new IllegalStateException("invalid UTXO history live batch");
         }
         List<HotBlockUpdate> combined = new ArrayList<>(updates.size());
         for (int i = 0; i < updates.size(); i++) {
-            List<HotHistoryMutation> mutations = new ArrayList<>(updates.get(i).mutations());
-            mutations.addAll(rowMutations.get(i));
-            combined.add(new HotBlockUpdate(updates.get(i).checkpoint(), mutations));
+            List<HotHistoryOperation> operations = new ArrayList<>(updates.get(i).operations());
+            operations.addAll(rowOperations.get(i));
+            combined.add(new HotBlockUpdate(updates.get(i).checkpoint(), operations));
         }
         BlockSourceContext<UtxoHistoryFact> last = blocks.getLast();
         state.applyBlocks(dataset(), combined, new ArchiveProgress(dataset(), ArchiveTrack.LIVE,

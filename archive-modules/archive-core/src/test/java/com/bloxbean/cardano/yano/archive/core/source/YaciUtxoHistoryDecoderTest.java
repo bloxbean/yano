@@ -78,13 +78,8 @@ class YaciUtxoHistoryDecoderTest {
             dataset.beginBatch(job, List.of(context));
             List<ArchiveRow> rows = new ArrayList<>();
             dataset.derive(job, context, rows::add);
-            assertThat(rows).filteredOn(row -> row.table().equals("addresses")).singleElement()
-                    .satisfies(row -> {
-                        assertThat(row.values().get(7)).isEqualTo("pointer");
-                        assertThat(row.values().get(9)).isNull();
-                    });
             assertThat(rows).filteredOn(row -> row.table().equals("transaction_outputs")).singleElement()
-                    .satisfies(row -> assertThat((byte[]) row.values().get(6)).containsOnly((byte) 0x77));
+                    .satisfies(row -> assertThat((byte[]) row.values().get(11)).containsOnly((byte) 0x77));
             dataset.abortBatch();
         }
     }
@@ -110,13 +105,11 @@ class YaciUtxoHistoryDecoderTest {
         var dataset = new UtxoHistoryDataset();
         List<ArchiveRow> rows = new ArrayList<>();
         dataset.derive(job, context, rows::add);
-        assertThat(rows).filteredOn(row -> row.table().equals("addresses")).singleElement()
-                .satisfies(row -> {
-                    assertThat(row.values().get(7)).isEqualTo("pointer");
-                    assertThat(row.values().get(9)).isNull();
-                });
         assertThat(rows).filteredOn(row -> row.table().equals("transaction_outputs")).singleElement()
-                .satisfies(row -> assertThat(row.values().get(6)).isNull());
+                .satisfies(row -> {
+                    assertThat(row.values().get(6)).isEqualTo("ptr");
+                    assertThat(row.values().get(11)).isNull();
+                });
     }
 
     @Test

@@ -36,7 +36,6 @@ public record UtxoHistoryProjection(Map<Table, Long> activationBlocks) {
     }
 
     public enum Table {
-        ADDRESSES("addresses"),
         TRANSACTION_OUTPUTS("transaction_outputs"),
         TRANSACTION_OUTPUT_ASSETS("transaction_output_assets"),
         TRANSACTION_INPUTS("transaction_inputs"),

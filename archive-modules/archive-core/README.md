@@ -10,8 +10,8 @@ the optional history subsystem.
   address-transaction, and UTXO-history facts;
 - durable epoch-source decoding for rewards and epoch datasets;
 - independent sequential outpoint and pointer resolution;
-- the backend-neutral `HotHistoryStore` contract and current RocksDB hot-zone
-  implementation with exact undo information;
+- the semantic, backend-neutral `HotHistoryStore` contract and RocksDB adapter
+  with exact undo information;
 - backfill, live, promotion, rollback, retention, progress, and health workers.
 
 The UTXO decoder emits only configured row families. Inline datum/reference
@@ -19,9 +19,9 @@ script bytes remain output-local, while transaction datums and redeemers are
 streamed as transaction-scoped rows. No global content index or historical
 archive lookup participates in projection.
 
-Pointer resolution is temporal. The address dimension retains only the raw
-pointer structure, while each output carries the stake credential effective at
-its own ledger coordinate.
+Pointer resolution is temporal. Each output carries its canonical address and
+the stake credential/address effective at its own ledger coordinate; no
+DuckLake address dimension or address locator participates in projection.
 
 The workers read durable canonical block or epoch sources. They do not read
 mutable core UTXO/account state as the source of historical truth and they do
@@ -53,9 +53,8 @@ application wiring.
 
 `HotHistoryStore` and `HotHistorySnapshot` keep workers, resolvers, promotion,
 and query code independent of the physical hot engine. RocksDB remains the
-runtime implementation while ADR-036 develops and measures an append-only
-SQLite alternative. The shared hot-store conformance fixture is available to
-both implementations.
+compatibility default; `archive-store-sqlite` supplies the complete relational
+alternative. Both run the same semantic conformance fixture.
 
 ## Testing
 

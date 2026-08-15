@@ -54,9 +54,6 @@ public record ArchiveConfiguration(
             if (known.stream().noneMatch(utxo::tableEnabled)) {
                 throw new IllegalArgumentException("enabled UTXO history must select at least one table");
             }
-            if (utxo.tableEnabled("transaction_outputs") && !utxo.tableEnabled("addresses")) {
-                throw new IllegalArgumentException("transaction_outputs requires addresses");
-            }
             if (utxo.tableEnabled("transaction_output_assets")
                     && !utxo.tableEnabled("transaction_outputs")) {
                 throw new IllegalArgumentException("transaction_output_assets requires transaction_outputs");

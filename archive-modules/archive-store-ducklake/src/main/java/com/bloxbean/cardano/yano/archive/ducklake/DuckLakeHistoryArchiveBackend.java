@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.archive.ducklake;
 import com.bloxbean.cardano.yano.archive.api.ArchiveBackend;
 import com.bloxbean.cardano.yano.archive.api.ArchiveBatchCapacityException;
 import com.bloxbean.cardano.yano.archive.api.ArchiveCapabilities;
+import com.bloxbean.cardano.yano.archive.api.ArchiveCommitBoundary;
 import com.bloxbean.cardano.yano.archive.api.ArchiveCoverage;
 import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import com.bloxbean.cardano.yano.archive.api.ArchiveHealth;
@@ -41,6 +42,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
@@ -81,7 +83,6 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
     // busy table from starving the rest of the catalog during bounded upkeep.
     private int nextCompactionTable;
     private DuckLakeTransactionLocator transactionLocator;
-    private DuckLakeAddressLocator addressLocator;
     private final ArchiveRepositorySet repositories = new JdbcArchiveRepositorySet(
             session -> {
                 if (!(session instanceof DuckLakeReadSession duckLake)) {
@@ -125,8 +126,6 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
                 new DuckLakeInitializer(config).initialize(lease.connection(), identity);
                 transactionLocator = new DuckLakeTransactionLocator(config.catalogPath());
                 transactionLocator.rebuildIfRequired(lease.connection(), DuckLakeSql.currentSnapshot(lease.connection()));
-                addressLocator = new DuckLakeAddressLocator(config.catalogPath());
-                addressLocator.rebuildIfRequired(lease.connection(), DuckLakeSql.currentSnapshot(lease.connection()));
             } finally {
                 DuckLakeSql.detach(lease.connection());
             }
@@ -201,27 +200,60 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
     @Override
     public ArchiveCoverage coverage(ArchiveDatasetId dataset) {
         requireOpen();
-        try (CurrentRead read = currentRead();
-             PreparedStatement query = read.connection().prepareStatement(
-                     "SELECT projection_version, source_kind, range_start, range_end, backend_generation "
-                             + "FROM history_lake.archive_coverage WHERE dataset=? ORDER BY range_start")) {
-            query.setString(1, dataset.name());
-            List<ArchiveRange> ranges = new ArrayList<>();
-            long revision = DuckLakeSql.currentSnapshot(read.connection());
-            int projectionVersion = ArchiveSchemas.schema(dataset).projectionVersion();
-            try (ResultSet rows = query.executeQuery()) {
-                while (rows.next()) {
-                    projectionVersion = rows.getInt(1);
-                    SourceKind kind = SourceKind.valueOf(rows.getString(2));
-                    long start = rows.getLong(3);
-                    long end = rows.getLong(4);
-                    ranges.add(kind == SourceKind.BLOCK ? new BlockRange(start, end) : new EpochRange(start, end));
-                }
-            }
-            return new ArchiveCoverage(dataset, projectionVersion, revision, mergeAdjacent(ranges));
+        try (CurrentRead read = currentRead()) {
+            return coverage(read.connection(), DuckLakeSql.currentSnapshot(read.connection()), dataset);
         } catch (SQLException e) {
             markDegraded("DuckLake coverage read failed", e);
             throw new ArchiveStoreException("failed to read DuckLake coverage", e);
+        }
+    }
+
+    @Override
+    public ArchiveCoverage coverage(ArchiveReadSession session, ArchiveDatasetId dataset) {
+        requireOpen();
+        if (!(session instanceof DuckLakeReadSession read)) {
+            throw new IllegalArgumentException("read session does not belong to DuckLake backend");
+        }
+        try {
+            return coverage(read.connection(), read.generation(), dataset);
+        } catch (SQLException e) {
+            markDegraded("DuckLake pinned coverage read failed", e);
+            throw new ArchiveStoreException("failed to read pinned DuckLake coverage", e);
+        }
+    }
+
+    @Override
+    public Optional<ArchiveCommitBoundary> latestBlockBoundary(
+            ArchiveReadSession session, ArchiveDatasetId dataset,
+            BlockRange range, OptionalLong atOrBeforeSlot) {
+        requireOpen();
+        if (!(session instanceof DuckLakeReadSession read)) {
+            throw new IllegalArgumentException("read session does not belong to DuckLake backend");
+        }
+        if (dataset.sourceKind() != SourceKind.BLOCK) {
+            throw new IllegalArgumentException("block boundary requires a block dataset");
+        }
+        String slotPredicate = atOrBeforeSlot.isPresent() ? " AND c.end_slot<=?" : "";
+        try (PreparedStatement query = read.connection().prepareStatement(
+                "SELECT c.projection_version, c.range_start, c.range_end, c.start_slot, c.start_hash, "
+                        + "c.end_slot, c.end_hash, c.backend_generation FROM history_lake.archive_commits c "
+                        + "JOIN history_lake.archive_coverage v ON v.job_id=c.job_id "
+                        + "WHERE c.dataset=? AND c.source_kind='BLOCK' AND c.range_end BETWEEN ? AND ?"
+                        + slotPredicate + " ORDER BY c.range_end DESC LIMIT 1")) {
+            query.setString(1, dataset.name());
+            query.setLong(2, range.startInclusive());
+            query.setLong(3, range.endInclusive());
+            if (atOrBeforeSlot.isPresent()) query.setLong(4, atOrBeforeSlot.getAsLong());
+            try (ResultSet row = query.executeQuery()) {
+                if (!row.next()) return Optional.empty();
+                return Optional.of(new ArchiveCommitBoundary(dataset, row.getInt(1),
+                        new BlockRange(row.getLong(2), row.getLong(3)),
+                        new ArchiveRangeAnchor(row.getLong(4), row.getBytes(5), row.getLong(6), row.getBytes(7)),
+                        row.getLong(8)));
+            }
+        } catch (SQLException e) {
+            markDegraded("DuckLake block boundary read failed", e);
+            throw new ArchiveStoreException("failed to read DuckLake block boundary", e);
         }
     }
 
@@ -590,16 +622,6 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
         transactionLocator.advance(connection, generation, entries);
     }
 
-    DuckLakeAddressLocator.Plan planAddresses(Connection connection,
-                                               Collection<DuckLakeAddressLocator.Entry> entries)
-            throws SQLException {
-        return addressLocator.plan(connection, DuckLakeSql.currentSnapshot(connection), entries);
-    }
-
-    void updateAddressLocator(long generation, DuckLakeAddressLocator.Plan plan) {
-        addressLocator.advance(generation, plan);
-    }
-
     void releaseSnapshot(long generation) {
         activeSnapshots.computeIfPresent(generation, (ignored, count) -> {
             count.decrement();
@@ -626,14 +648,10 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
                     return;
                 }
                 for (UUID jobId : jobs) deleteJobRows(connection, dataset, jobId);
-                if (dataset == ArchiveDatasetId.UTXO_HISTORY && !jobs.isEmpty()) reconcileAddressDimension(connection);
                 insertInvalidation(connection, dataset, range);
                 try (Statement sql = connection.createStatement()) { sql.execute("COMMIT"); }
                 if (dataset == ArchiveDatasetId.TRANSACTION) {
                     transactionLocator.rebuild(connection, DuckLakeSql.currentSnapshot(connection));
-                }
-                if (dataset == ArchiveDatasetId.UTXO_HISTORY) {
-                    addressLocator.rebuild(connection, DuckLakeSql.currentSnapshot(connection));
                 }
             } catch (Exception e) {
                 try (Statement sql = connection.createStatement()) { sql.execute("ROLLBACK"); }
@@ -648,18 +666,6 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
                     : new ArchiveStoreException("DuckLake invalidation failed", e);
         } finally {
             releaseWriter();
-        }
-    }
-
-    private void reconcileAddressDimension(Connection connection) throws SQLException {
-        try (Statement sql = connection.createStatement()) {
-            sql.execute("DELETE FROM history_lake.addresses a WHERE NOT EXISTS (SELECT 1 "
-                    + "FROM history_lake.transaction_outputs o WHERE o.address_key=a.address_key)");
-            sql.execute("UPDATE history_lake.addresses a SET first_seen_block_number=selected.block_number, "
-                    + "first_seen_slot=selected.slot, first_seen_epoch=selected.epoch FROM ("
-                    + "SELECT address_key, block_number, slot, epoch FROM history_lake.transaction_outputs "
-                    + "QUALIFY row_number() OVER (PARTITION BY address_key ORDER BY block_number, tx_index, output_index)=1"
-                    + ") selected WHERE selected.address_key=a.address_key");
         }
     }
 
@@ -791,6 +797,27 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
         }
     }
 
+    private ArchiveCoverage coverage(Connection connection, long revision, ArchiveDatasetId dataset)
+            throws SQLException {
+        try (PreparedStatement query = connection.prepareStatement(
+                "SELECT projection_version, source_kind, range_start, range_end "
+                        + "FROM history_lake.archive_coverage WHERE dataset=? ORDER BY range_start")) {
+            query.setString(1, dataset.name());
+            List<ArchiveRange> ranges = new ArrayList<>();
+            int projectionVersion = ArchiveSchemas.schema(dataset).projectionVersion();
+            try (ResultSet rows = query.executeQuery()) {
+                while (rows.next()) {
+                    projectionVersion = rows.getInt(1);
+                    SourceKind kind = SourceKind.valueOf(rows.getString(2));
+                    long start = rows.getLong(3);
+                    long end = rows.getLong(4);
+                    ranges.add(kind == SourceKind.BLOCK ? new BlockRange(start, end) : new EpochRange(start, end));
+                }
+            }
+            return new ArchiveCoverage(dataset, projectionVersion, revision, mergeAdjacent(ranges));
+        }
+    }
+
     private List<ArchiveRange> mergeAdjacent(List<ArchiveRange> ranges) {
         if (ranges.isEmpty()) return List.of();
         List<ArchiveRange> merged = new ArrayList<>();
@@ -886,7 +913,6 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
         try {
             if (resourcesClosed.compareAndSet(false, true)) {
                 if (transactionLocator != null) transactionLocator.close();
-                if (addressLocator != null) addressLocator.close();
                 if (ownsManager) manager.close();
                 directoryLock.close();
             }

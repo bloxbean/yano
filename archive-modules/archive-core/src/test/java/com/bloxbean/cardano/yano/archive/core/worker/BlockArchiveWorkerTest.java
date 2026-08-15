@@ -397,6 +397,13 @@ class BlockArchiveWorkerTest {
         }
         public Optional<ArchiveReceipt> findReceipt(UUID jobId) { return Optional.empty(); }
         public ArchiveCoverage coverage(ArchiveDatasetId dataset) { return new ArchiveCoverage(dataset, 1, 1, coverage); }
+        public ArchiveCoverage coverage(ArchiveReadSession session, ArchiveDatasetId dataset) {
+            return coverage(dataset);
+        }
+        public Optional<ArchiveCommitBoundary> latestBlockBoundary(ArchiveReadSession session,
+                ArchiveDatasetId dataset, BlockRange range, OptionalLong atOrBeforeSlot) {
+            return Optional.empty();
+        }
         public ArchiveReadSession openReadSession() { return new ArchiveReadSession() {
             public long generation() { return 1; }
             public void close() { }

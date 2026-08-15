@@ -396,6 +396,12 @@ epoch-boundary critical path. In particular:
 
 ## Implementation Sequence
 
+The implementation landed behind an explicit selector while RocksDB remains
+the default. Phase acceptance is recorded by the shared semantic conformance
+suite rather than by preserving the transitional byte-mutation API: logical
+facts and typed resolver/pointer lifecycle operations now cross the seam, and
+the RocksDB adapter alone owns its legacy key encoding.
+
 ### Phase 0: Contract and Baseline
 
 - Record RocksDB hot ingestion, disk, memory, rollback, promotion, and hot-query

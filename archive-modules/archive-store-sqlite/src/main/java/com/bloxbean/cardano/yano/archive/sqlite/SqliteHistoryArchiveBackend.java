@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.archive.sqlite;
 
 import com.bloxbean.cardano.yano.archive.api.ArchiveBackend;
 import com.bloxbean.cardano.yano.archive.api.ArchiveCapabilities;
+import com.bloxbean.cardano.yano.archive.api.ArchiveCommitBoundary;
 import com.bloxbean.cardano.yano.archive.api.ArchiveCoverage;
 import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import com.bloxbean.cardano.yano.archive.api.ArchiveHealth;
@@ -39,6 +40,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -154,31 +156,65 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
     public ArchiveCoverage coverage(ArchiveDatasetId dataset) {
         requireOpen();
         acquireReader();
-        try (Connection connection = SqliteArchiveSql.open(config, true);
-             PreparedStatement query = connection.prepareStatement(
-                     "SELECT projection_version, source_kind, range_start, range_end "
-                             + "FROM archive_coverage WHERE dataset=? ORDER BY range_start")) {
+        try (Connection connection = SqliteArchiveSql.open(config, true)) {
             connection.setAutoCommit(false);
             long revision = currentGeneration(connection); // pins metadata and coverage to one WAL snapshot
-            query.setQueryTimeout(timeoutSeconds(config.queryTimeout()));
-            query.setString(1, dataset.name());
-            List<ArchiveRange> ranges = new ArrayList<>();
-            int projectionVersion = ArchiveSchemas.schema(dataset).projectionVersion();
-            try (ResultSet rows = query.executeQuery()) {
-                while (rows.next()) {
-                    projectionVersion = rows.getInt(1);
-                    SourceKind kind = SourceKind.valueOf(rows.getString(2));
-                    ranges.add(kind == SourceKind.BLOCK
-                            ? new BlockRange(rows.getLong(3), rows.getLong(4))
-                            : new EpochRange(rows.getLong(3), rows.getLong(4)));
-                }
-            }
-            return new ArchiveCoverage(dataset, projectionVersion, revision, mergeAdjacent(ranges));
+            return coverage(connection, revision, dataset);
         } catch (SQLException e) {
             markDegraded("SQLite coverage read failed", e);
             throw new ArchiveStoreException("failed to read SQLite coverage", e);
         } finally {
             releaseReaderPermit();
+        }
+    }
+
+    @Override
+    public ArchiveCoverage coverage(ArchiveReadSession session, ArchiveDatasetId dataset) {
+        requireOpen();
+        if (!(session instanceof SqliteReadSession read)) {
+            throw new IllegalArgumentException("read session does not belong to SQLite backend");
+        }
+        try {
+            return coverage(read.connection(), read.generation(), dataset);
+        } catch (SQLException e) {
+            markDegraded("SQLite pinned coverage read failed", e);
+            throw new ArchiveStoreException("failed to read pinned SQLite coverage", e);
+        }
+    }
+
+    @Override
+    public Optional<ArchiveCommitBoundary> latestBlockBoundary(
+            ArchiveReadSession session, ArchiveDatasetId dataset,
+            BlockRange range, OptionalLong atOrBeforeSlot) {
+        requireOpen();
+        if (!(session instanceof SqliteReadSession read)) {
+            throw new IllegalArgumentException("read session does not belong to SQLite backend");
+        }
+        if (dataset.sourceKind() != SourceKind.BLOCK) {
+            throw new IllegalArgumentException("block boundary requires a block dataset");
+        }
+        String slotPredicate = atOrBeforeSlot.isPresent() ? " AND c.end_slot<=?" : "";
+        try (PreparedStatement query = read.connection().prepareStatement(
+                "SELECT c.projection_version, c.range_start, c.range_end, c.start_slot, c.start_hash, "
+                        + "c.end_slot, c.end_hash, c.backend_generation FROM archive_commits c "
+                        + "JOIN archive_coverage v ON v.job_id=c.job_id "
+                        + "WHERE c.dataset=? AND c.source_kind='BLOCK' AND c.range_end BETWEEN ? AND ?"
+                        + slotPredicate + " ORDER BY c.range_end DESC LIMIT 1")) {
+            query.setQueryTimeout(timeoutSeconds(config.queryTimeout()));
+            query.setString(1, dataset.name());
+            query.setLong(2, range.startInclusive());
+            query.setLong(3, range.endInclusive());
+            if (atOrBeforeSlot.isPresent()) query.setLong(4, atOrBeforeSlot.getAsLong());
+            try (ResultSet row = query.executeQuery()) {
+                if (!row.next()) return Optional.empty();
+                return Optional.of(new ArchiveCommitBoundary(dataset, row.getInt(1),
+                        new BlockRange(row.getLong(2), row.getLong(3)),
+                        new ArchiveRangeAnchor(row.getLong(4), row.getBytes(5), row.getLong(6), row.getBytes(7)),
+                        row.getLong(8)));
+            }
+        } catch (SQLException e) {
+            markDegraded("SQLite block boundary read failed", e);
+            throw new ArchiveStoreException("failed to read SQLite block boundary", e);
         }
     }
 
@@ -197,6 +233,28 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
             readers.release();
             markDegraded("SQLite snapshot open failed", e);
             throw new ArchiveStoreException("failed to open SQLite read snapshot", e);
+        }
+    }
+
+    private ArchiveCoverage coverage(Connection connection, long revision, ArchiveDatasetId dataset)
+            throws SQLException {
+        try (PreparedStatement query = connection.prepareStatement(
+                "SELECT projection_version, source_kind, range_start, range_end "
+                        + "FROM archive_coverage WHERE dataset=? ORDER BY range_start")) {
+            query.setQueryTimeout(timeoutSeconds(config.queryTimeout()));
+            query.setString(1, dataset.name());
+            List<ArchiveRange> ranges = new ArrayList<>();
+            int projectionVersion = ArchiveSchemas.schema(dataset).projectionVersion();
+            try (ResultSet rows = query.executeQuery()) {
+                while (rows.next()) {
+                    projectionVersion = rows.getInt(1);
+                    SourceKind kind = SourceKind.valueOf(rows.getString(2));
+                    ranges.add(kind == SourceKind.BLOCK
+                            ? new BlockRange(rows.getLong(3), rows.getLong(4))
+                            : new EpochRange(rows.getLong(3), rows.getLong(4)));
+                }
+            }
+            return new ArchiveCoverage(dataset, projectionVersion, revision, mergeAdjacent(ranges));
         }
     }
 
@@ -423,9 +481,6 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
                         delete.executeUpdate();
                     }
                 }
-                if (dataset == ArchiveDatasetId.UTXO_HISTORY && !jobs.isEmpty()) {
-                    reconcileAddressDimension(connection);
-                }
                 try (PreparedStatement insert = connection.prepareStatement(
                         "INSERT INTO archive_invalidations VALUES (?, ?, ?, ?, ?, ?)")) {
                     insert.setString(1, UUID.randomUUID().toString());
@@ -448,16 +503,6 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
                     : new ArchiveStoreException("SQLite invalidation failed", e);
         } finally {
             releaseWriter();
-        }
-    }
-
-    private void reconcileAddressDimension(Connection connection) throws SQLException {
-        try (Statement sql = connection.createStatement()) {
-            sql.executeUpdate("DELETE FROM addresses WHERE NOT EXISTS (SELECT 1 FROM transaction_outputs o "
-                    + "WHERE o.address_key=addresses.address_key)");
-            sql.executeUpdate("UPDATE addresses SET (first_seen_block_number, first_seen_slot, first_seen_epoch)="
-                    + "(SELECT o.block_number, o.slot, o.epoch FROM transaction_outputs o "
-                    + "WHERE o.address_key=addresses.address_key ORDER BY o.block_number, o.tx_index, o.output_index LIMIT 1)");
         }
     }
 

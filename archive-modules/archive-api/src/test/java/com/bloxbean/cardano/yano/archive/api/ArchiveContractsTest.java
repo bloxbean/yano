@@ -20,10 +20,11 @@ class ArchiveContractsTest {
             assertThat(schema.paginationOrder()).isNotEmpty();
         });
         assertThat(ArchiveSchemas.schema(ArchiveDatasetId.TRANSACTION).projectionVersion()).isEqualTo(2);
-        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.ACCOUNT_EVENT).projectionVersion()).isEqualTo(2);
-        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.ADDRESS_TRANSACTION).projectionVersion()).isEqualTo(2);
-        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.UTXO_HISTORY).projectionVersion()).isEqualTo(4);
-        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.REWARD).projectionVersion()).isEqualTo(3);
+        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.ACCOUNT_EVENT).projectionVersion()).isEqualTo(3);
+        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.ADDRESS_TRANSACTION).projectionVersion()).isEqualTo(3);
+        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.UTXO_HISTORY).projectionVersion()).isEqualTo(5);
+        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.REWARD).projectionVersion()).isEqualTo(4);
+        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.EPOCH_STAKE).projectionVersion()).isEqualTo(2);
         assertThat(ArchiveSchemas.schema(ArchiveDatasetId.DREP_DISTRIBUTION).projectionVersion()).isEqualTo(2);
     }
 
@@ -43,12 +44,13 @@ class ArchiveContractsTest {
         var schema = ArchiveSchemas.schema(ArchiveDatasetId.UTXO_HISTORY);
         assertThat(schema.tables())
                 .extracting(table -> table.physicalName())
-                .containsExactly("addresses", "transaction_outputs", "transaction_output_assets",
+                .containsExactly("transaction_outputs", "transaction_output_assets",
                         "transaction_inputs", "transaction_datums", "transaction_redeemers");
         assertThat(schema.tables().stream().filter(table -> table.physicalName()
                         .equals("transaction_outputs")).findFirst().orElseThrow().columns())
                 .extracting(column -> column.name())
-                .contains("datum_hash", "inline_datum_cbor", "reference_script_hash",
+                .contains("address", "stake_address", "payment_credential", "stake_credential",
+                        "datum_hash", "inline_datum_cbor", "reference_script_hash",
                         "reference_script_type", "reference_script_cbor");
     }
 

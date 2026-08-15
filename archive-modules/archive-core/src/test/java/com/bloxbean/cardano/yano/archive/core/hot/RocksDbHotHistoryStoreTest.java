@@ -20,43 +20,38 @@ class RocksDbHotHistoryStoreTest {
     @TempDir Path temp;
 
     @Test
-    void exactUndoRestoresReplacedAndDeletedValuesWithoutSlotScan() {
-        byte[] key = bytes("subject/one");
+    void exactUndoRestoresConsumedResolverOutputWithoutSlotScan() {
         try (var store = new RocksDbHotHistoryStore(temp.resolve("hot"))) {
-            store.applyBlock(ArchiveDatasetId.TRANSACTION, checkpoint(1, 10, 1, 0),
-                    List.of(new HotHistoryMutation(key, bytes("one"))), progress(1, 10, 1));
-            store.applyBlock(ArchiveDatasetId.TRANSACTION, checkpoint(2, 20, 2, 1),
-                    List.of(new HotHistoryMutation(key, bytes("two"))), progress(2, 20, 2));
-            try (var pinned = store.snapshot()) {
-                store.applyBlock(ArchiveDatasetId.TRANSACTION, checkpoint(3, 30, 3, 2),
-                        List.of(new HotHistoryMutation(key, null)), progress(3, 30, 3));
-                assertThat(store.get(ArchiveDatasetId.TRANSACTION, key)).isEmpty();
-                assertThat(pinned.scan(ArchiveDatasetId.TRANSACTION, key))
-                        .singleElement()
-                        .extracting(HotHistorySnapshot.Entry::value)
-                        .isEqualTo(bytes("two"));
-            }
-            store.rollbackTo(ArchiveDatasetId.TRANSACTION, ArchiveTrack.LIVE, 1);
-            assertThat(store.get(ArchiveDatasetId.TRANSACTION, key)).contains(bytes("one"));
-            assertThat(store.load(ArchiveDatasetId.TRANSACTION, ArchiveTrack.LIVE).orElseThrow().coordinate())
+            var outpoint = new com.bloxbean.cardano.yano.archive.core.address.Outpoint(hash(1), 0);
+            var output = new com.bloxbean.cardano.yano.archive.core.address.ResolvedOutput(hash(2), "addr",
+                    Arrays.copyOf(hash(3), 28), "key", Arrays.copyOf(hash(4), 28));
+            store.applyBlock(ArchiveDatasetId.ADDRESS_TRANSACTION, checkpoint(1, 10, 1, 0),
+                    List.of(new HotHistoryOperation.OutputCreated("live", outpoint, output)),
+                    progress(ArchiveDatasetId.ADDRESS_TRANSACTION, 1, 10, 1));
+            store.applyBlock(ArchiveDatasetId.ADDRESS_TRANSACTION, checkpoint(2, 20, 2, 1),
+                    List.of(new HotHistoryOperation.OutputConsumed("live", outpoint, hash(5), "ordinary")),
+                    progress(ArchiveDatasetId.ADDRESS_TRANSACTION, 2, 20, 2));
+            store.rollbackTo(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.LIVE, 1);
+            assertThat(store.resolveOutput("live", outpoint)).isPresent();
+            assertThat(store.load(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.LIVE).orElseThrow().coordinate())
                     .isEqualTo(1);
         }
     }
 
     @Test
-    void sameBlockCreateThenReplaceRollsBackWithoutPhantomValue() {
-        byte[] key = bytes("same-block");
+    void sameBlockCreateThenConsumeRollsBackWithoutPhantomValue() {
         try (var store = new RocksDbHotHistoryStore(temp.resolve("same-block-undo"))) {
-            store.applyBlock(ArchiveDatasetId.TRANSACTION, checkpoint(0, 0, 0, -1),
-                    List.of(), progress(0, 0, 0));
-            store.applyBlock(ArchiveDatasetId.TRANSACTION, checkpoint(1, 10, 1, 0),
-                    List.of(new HotHistoryMutation(key, bytes("created")),
-                            new HotHistoryMutation(key, bytes("replaced"))), progress(1, 10, 1));
-            assertThat(store.get(ArchiveDatasetId.TRANSACTION, key)).contains(bytes("replaced"));
-
-            store.rollbackTo(ArchiveDatasetId.TRANSACTION, ArchiveTrack.LIVE, 0);
-
-            assertThat(store.get(ArchiveDatasetId.TRANSACTION, key)).isEmpty();
+            var outpoint = new com.bloxbean.cardano.yano.archive.core.address.Outpoint(hash(6), 0);
+            var output = new com.bloxbean.cardano.yano.archive.core.address.ResolvedOutput(hash(7), "addr",
+                    Arrays.copyOf(hash(8), 28), "key", Arrays.copyOf(hash(9), 28));
+            store.applyBlock(ArchiveDatasetId.ADDRESS_TRANSACTION, checkpoint(0, 0, 0, -1),
+                    List.of(), progress(ArchiveDatasetId.ADDRESS_TRANSACTION, 0, 0, 0));
+            store.applyBlock(ArchiveDatasetId.ADDRESS_TRANSACTION, checkpoint(1, 10, 1, 0),
+                    List.of(new HotHistoryOperation.OutputCreated("live", outpoint, output),
+                            new HotHistoryOperation.OutputConsumed("live", outpoint, hash(10), "ordinary")),
+                    progress(ArchiveDatasetId.ADDRESS_TRANSACTION, 1, 10, 1));
+            store.rollbackTo(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.LIVE, 0);
+            assertThat(store.resolveOutput("live", outpoint)).isEmpty();
         }
     }
 
@@ -125,44 +120,12 @@ class RocksDbHotHistoryStoreTest {
         }
     }
 
-    @Test
-    void sharedAddressDimensionKeepsEarliestTrackObservationAndUndoRestoresLaterOne() {
-        byte[] addressKey = new byte[32];
-        Arrays.fill(addressKey, (byte) 7);
-        HotHistoryMutation later = address(addressKey, 10, 100, 1);
-        HotHistoryMutation earlier = address(addressKey, 2, 20, 0);
-        try (var store = new RocksDbHotHistoryStore(temp.resolve("hot"))) {
-            store.applyBlock(ArchiveDatasetId.UTXO_HISTORY, checkpoint(10, 100, 10, 9), List.of(later),
-                    new ArchiveProgress(ArchiveDatasetId.UTXO_HISTORY, ArchiveTrack.LIVE,
-                            10, 100, new byte[] {10}, 0));
-            store.applyBlock(ArchiveDatasetId.UTXO_HISTORY, checkpoint(2, 20, 2, 1), List.of(earlier),
-                    new ArchiveProgress(ArchiveDatasetId.UTXO_HISTORY, ArchiveTrack.BACKFILL,
-                            2, 20, new byte[] {2}, 0));
-            assertThat(firstSeen(store, addressKey)).isEqualTo(2);
-
-            store.resetTrackFrom(ArchiveDatasetId.UTXO_HISTORY, ArchiveTrack.BACKFILL, 2);
-            assertThat(firstSeen(store, addressKey)).isEqualTo(10);
-        }
-    }
-
-    private long firstSeen(RocksDbHotHistoryStore store, byte[] addressKey) {
-        try (var snapshot = store.snapshot()) {
-            return ((Number) HotArchiveRows.read(snapshot, ArchiveDatasetId.UTXO_HISTORY, "addresses",
-                    java.util.Map.of("address_key", addressKey)).getFirst()
-                    .value("first_seen_block_number")).longValue();
-        }
-    }
-
-    private HotHistoryMutation address(byte[] key, long block, long slot, long epoch) {
-        return HotArchiveRows.put(ArchiveDatasetId.UTXO_HISTORY,
-                new ArchiveRow("addresses", Arrays.asList(key, new byte[] {9}, "addr_test", 0,
-                        "enterprise", "key", new byte[] {3}, "none", null, null,
-                        null, null, null, block, slot, epoch)));
-    }
-
     private ArchiveProgress progress(long block, long slot, int hash) {
         return new ArchiveProgress(ArchiveDatasetId.TRANSACTION, ArchiveTrack.LIVE,
                 block, slot, new byte[] {(byte) hash}, 0);
+    }
+    private ArchiveProgress progress(ArchiveDatasetId dataset, long block, long slot, int hash) {
+        return new ArchiveProgress(dataset, ArchiveTrack.LIVE, block, slot, new byte[] {(byte) hash}, 0);
     }
 
     private HotBlockCheckpoint checkpoint(long block, long slot, int hash, int parent) {
@@ -170,4 +133,5 @@ class RocksDbHotHistoryStoreTest {
     }
 
     private byte[] bytes(String value) { return value.getBytes(StandardCharsets.UTF_8); }
+    private byte[] hash(int marker) { byte[] value = new byte[32]; Arrays.fill(value, (byte) marker); return value; }
 }

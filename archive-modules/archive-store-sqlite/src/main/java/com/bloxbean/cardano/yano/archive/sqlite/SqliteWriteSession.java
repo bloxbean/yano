@@ -72,20 +72,15 @@ final class SqliteWriteSession implements ArchiveWriteSession {
             throw new ArchiveStoreException("row archive_job_id does not match active job for " + row.table());
         }
         List<Object> key = logicalKey(table, row);
-        if (!logicalKeys.computeIfAbsent(row.table(), ignored -> new HashSet<>()).add(key)
-                && !row.table().equals("addresses")) {
+        if (!logicalKeys.computeIfAbsent(row.table(), ignored -> new HashSet<>()).add(key)) {
             throw new ArchiveStoreException("duplicate logical primary key in job for " + row.table());
         }
 
         if (replayReceipt == null) {
             try {
-                if (row.table().equals("addresses")) {
-                    mergeAddress(table, row);
-                } else {
-                    PreparedStatement insert = inserts.computeIfAbsent(row.table(), ignored -> prepareInsert(table));
-                    SqliteArchiveSql.bind(insert, table, row);
-                    insert.executeUpdate();
-                }
+                PreparedStatement insert = inserts.computeIfAbsent(row.table(), ignored -> prepareInsert(table));
+                SqliteArchiveSql.bind(insert, table, row);
+                insert.executeUpdate();
             } catch (SQLException e) {
                 throw new ArchiveStoreException("failed to append SQLite row for " + row.table(), e);
             }
@@ -164,47 +159,6 @@ final class SqliteWriteSession implements ArchiveWriteSession {
             return connection.prepareStatement(SqliteArchiveSql.insertSql(table));
         } catch (SQLException e) {
             throw new ArchiveStoreException("failed to prepare SQLite insert for " + table.physicalName(), e);
-        }
-    }
-
-    private boolean sameValue(Object expected, Object actual) {
-        if (expected instanceof byte[] bytes) return actual instanceof byte[] other && Arrays.equals(bytes, other);
-        if (expected instanceof Number left && actual instanceof Number right) {
-            return new java.math.BigDecimal(left.toString()).compareTo(new java.math.BigDecimal(right.toString())) == 0;
-        }
-        return Objects.equals(expected, actual);
-    }
-
-    private void mergeAddress(ArchiveTableSchema table, ArchiveRow row) throws SQLException {
-        try (PreparedStatement query = connection.prepareStatement(
-                "SELECT * FROM addresses WHERE address_key IS ?")) {
-            query.setBytes(1, (byte[]) row.values().get(0));
-            try (ResultSet existing = query.executeQuery()) {
-                if (!existing.next()) {
-                    PreparedStatement insert = inserts.computeIfAbsent(row.table(), ignored -> prepareInsert(table));
-                    SqliteArchiveSql.bind(insert, table, row);
-                    insert.executeUpdate();
-                    return;
-                }
-                for (int index = 0; index <= 12; index++) {
-                    Object expected = row.values().get(index);
-                    Object actual = expected instanceof byte[] ? existing.getBytes(index + 1) : existing.getObject(index + 1);
-                    if (!sameValue(expected, actual)) {
-                        throw new ArchiveStoreException("address dimension conflict for canonical address key");
-                    }
-                }
-                long incomingBlock = ((Number) row.values().get(13)).longValue();
-                if (incomingBlock < existing.getLong(14)) {
-                    try (PreparedStatement update = connection.prepareStatement("UPDATE addresses SET "
-                            + "first_seen_block_number=?, first_seen_slot=?, first_seen_epoch=? WHERE address_key=?")) {
-                        update.setObject(1, row.values().get(13));
-                        update.setObject(2, row.values().get(14));
-                        update.setObject(3, row.values().get(15));
-                        update.setBytes(4, (byte[]) row.values().get(0));
-                        update.executeUpdate();
-                    }
-                }
-            }
         }
     }
 

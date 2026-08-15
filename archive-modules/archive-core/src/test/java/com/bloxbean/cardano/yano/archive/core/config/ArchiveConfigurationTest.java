@@ -48,13 +48,6 @@ class ArchiveConfigurationTest {
         assertThatThrownBy(() -> configuration(Map.of(
                 ArchiveDatasetId.TRANSACTION, transaction,
                 ArchiveDatasetId.UTXO_HISTORY, new DatasetArchiveConfig(true, ArchiveStartMode.TIP, 0,
-                        Map.of("addresses", false, "transaction_outputs", true)))))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("requires addresses");
-
-        assertThatThrownBy(() -> configuration(Map.of(
-                ArchiveDatasetId.TRANSACTION, transaction,
-                ArchiveDatasetId.UTXO_HISTORY, new DatasetArchiveConfig(true, ArchiveStartMode.TIP, 0,
                         Map.of("transaction_outputs", false, "transaction_output_assets", true)))))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("requires transaction_outputs");
@@ -62,8 +55,7 @@ class ArchiveConfigurationTest {
         var datumOnly = configuration(Map.of(
                 ArchiveDatasetId.TRANSACTION, transaction,
                 ArchiveDatasetId.UTXO_HISTORY, new DatasetArchiveConfig(true, ArchiveStartMode.TIP, 0,
-                        Map.of("addresses", false, "transaction_outputs", false,
-                                "transaction_output_assets", false, "transaction_inputs", false,
+                        Map.of("transaction_outputs", false, "transaction_output_assets", false, "transaction_inputs", false,
                                 "transaction_datums", true, "transaction_redeemers", false))));
         assertThat(datumOnly.datasets().get(ArchiveDatasetId.UTXO_HISTORY)
                 .tableEnabled("transaction_datums")).isTrue();

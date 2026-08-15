@@ -49,8 +49,6 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
     private boolean committed;
     private boolean closed;
     private final List<DuckLakeTransactionLocator.Entry> transactionEntries = new ArrayList<>();
-    private final List<DuckLakeAddressLocator.Entry> addressEntries = new ArrayList<>();
-    private DuckLakeAddressLocator.Plan addressPlan = DuckLakeAddressLocator.Plan.empty();
 
     DuckLakeWriteSession(DuckLakeHistoryArchiveBackend backend, ArchiveJob job,
                          DuckDbLease lease, ArchiveReceipt replayReceipt) {
@@ -95,18 +93,7 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
             transactionEntries.add(new DuckLakeTransactionLocator.Entry((byte[]) values.get(0),
                     ((Number) values.get(2)).longValue(), job.jobId()));
         }
-        if (row.table().equals("addresses")) {
-            addressEntries.add(new DuckLakeAddressLocator.Entry(values));
-        }
         if (replayReceipt != null) {
-            rowCounts.merge(row.table(), 1L, Long::sum);
-            updateDigest(row);
-            return;
-        }
-        // The rebuildable SQLite address locator performs point collision
-        // checks and suppresses already-known dimension rows at commit time.
-        // Avoid staging every repeated address into DuckDB first.
-        if (row.table().equals("addresses")) {
             rowCounts.merge(row.table(), 1L, Long::sum);
             updateDigest(row);
             return;
@@ -141,7 +128,6 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
         String orderedDigest = HexFormat.of().formatHex(digest.digest());
         try {
             long predictedGeneration = Math.addExact(DuckLakeSql.currentSnapshot(connection), 1);
-            prepareAddressStaging();
             flushPendingStagingBatches();
             verifyLogicalKeys();
             flushStaging();
@@ -160,7 +146,6 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
                     job.projectionVersion(), job.range(), job.anchors(), actualGeneration,
                     rowCounts, orderedDigest, committedAt);
             backend.updateTransactionLocator(connection, actualGeneration, transactionEntries);
-            backend.updateAddressLocator(actualGeneration, addressPlan);
             committed = true;
             close();
             return receipt;
@@ -226,19 +211,7 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
                 ArchiveTableSchema schema = allowedTables.get(table);
                 String target = "history_lake." + DuckLakeSql.name(table);
                 String staging = stagingName(table);
-                if (table.equals("addresses")) {
-                    try (PreparedStatement delete = connection.prepareStatement(
-                            "DELETE FROM " + target + " WHERE address_key=?")) {
-                        for (DuckLakeAddressLocator.PlannedEntry planned : addressPlan.accepted()) {
-                            if (!planned.replace()) continue;
-                            delete.setBytes(1, planned.entry().key());
-                            delete.executeUpdate();
-                        }
-                    }
-                    sql.execute("INSERT INTO " + target + " SELECT * FROM " + staging);
-                } else {
-                    sql.execute("INSERT INTO " + target + " SELECT * FROM " + staging);
-                }
+                sql.execute("INSERT INTO " + target + " SELECT * FROM " + staging);
             }
         }
     }
@@ -257,23 +230,17 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
                         result.next();
                         duplicateCount = result.getLong(1);
                     }
-                    if (duplicateCount != 0 && !table.equals("addresses")) {
+                    if (duplicateCount != 0) {
                         throw new ArchiveStoreException("duplicate logical primary key in job for " + table);
                     }
 
                     String target = "history_lake." + DuckLakeSql.name(table);
-                    if (table.equals("addresses")) {
-                        // The address locator already checked durable and
-                        // within-job immutable attributes before staging only
-                        // accepted new/earlier rows.
-                    } else {
-                        try (var result = sql.executeQuery("SELECT count(*) FROM " + staging + " s JOIN " + target
-                                + " t ON " + keyJoin(schema, "s", "t")
-                                + targetRangePredicate(schema, job.range(), staging, "t"))) {
-                            result.next();
-                            if (result.getLong(1) != 0) {
-                                throw new ArchiveStoreException("logical primary key already exists for " + table);
-                            }
+                    try (var result = sql.executeQuery("SELECT count(*) FROM " + staging + " s JOIN " + target
+                            + " t ON " + keyJoin(schema, "s", "t")
+                            + targetRangePredicate(schema, job.range(), staging, "t"))) {
+                        result.next();
+                        if (result.getLong(1) != 0) {
+                            throw new ArchiveStoreException("logical primary key already exists for " + table);
                         }
                     }
                 } catch (SQLException e) {
@@ -281,16 +248,6 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
                             + e.getMessage(), e.getSQLState(), e.getErrorCode(), e);
                 }
             }
-        }
-    }
-
-    private void prepareAddressStaging() throws SQLException {
-        addressPlan = backend.planAddresses(connection, addressEntries);
-        if (addressPlan.accepted().isEmpty()) return;
-        ArchiveTableSchema table = allowedTables.get("addresses");
-        createStaging(table);
-        for (DuckLakeAddressLocator.PlannedEntry planned : addressPlan.accepted()) {
-            stageRow(table, planned.entry().values());
         }
     }
 

@@ -73,6 +73,17 @@ class SqliteBackendConformanceTest extends AbstractArchiveBackendConformanceTest
             assertThat(drepType.next()).isTrue();
             assertThat(drepType.getInt(1)).isOne();
         }
+        try (var connection = DriverManager.getConnection("jdbc:sqlite:" + config().databasePath());
+             var query = connection.createStatement();
+             var objects = query.executeQuery("SELECT name, type FROM sqlite_master WHERE name IN "
+                     + "('addresses','stake_addresses','transaction_outputs','transaction_outputs_data')")) {
+            java.util.Map<String, String> types = new java.util.HashMap<>();
+            while (objects.next()) types.put(objects.getString(1), objects.getString(2));
+            assertThat(types).containsEntry("addresses", "table")
+                    .containsEntry("stake_addresses", "table")
+                    .containsEntry("transaction_outputs", "view")
+                    .containsEntry("transaction_outputs_data", "table");
+        }
     }
 
     @Test
@@ -236,15 +247,11 @@ class SqliteBackendConformanceTest extends AbstractArchiveBackendConformanceTest
     void unsignedAssetQuantityAboveSignedLongRemainsExactText() throws Exception {
         ArchiveJob job = utxoJob(0, 0, (byte) 10);
         byte[] hash = job.anchorBlockHash();
-        byte[] addressKey = new byte[32];
-        Arrays.fill(addressKey, (byte) 11);
         BigInteger quantity = new BigInteger("18446744073709551615");
         try (var write = backend().begin(job)) {
-            write.append(new ArchiveRow("addresses", Arrays.asList(addressKey, new byte[] {1}, "addr_test", 0,
-                    "base", "key", new byte[28], "credential", "key", new byte[28],
-                    null, null, null, 0L, 0L, 0L)));
-            write.append(new ArchiveRow("transaction_outputs", Arrays.asList(hash, 0, 0, "regular", addressKey,
-                    null, null, 1L, "none", null, null, null, null, null, false,
+            write.append(new ArchiveRow("transaction_outputs", Arrays.asList(hash, 0, 0, "regular", "addr_test",
+                    0, "enterprise", null, null, null, null, null, 1L,
+                    "none", null, null, null, null, null, false,
                     hash, 0L, 0L, 0L, 0L, job.jobId())));
             write.append(new ArchiveRow("transaction_output_assets", List.of(hash, 0, new byte[28],
                     new byte[] {2}, quantity, 0L, 0L, 0L, job.jobId())));

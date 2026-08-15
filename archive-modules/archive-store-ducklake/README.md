@@ -19,7 +19,8 @@ The catalog file stores DuckLake metadata, snapshots, schema, and file
 references. Historical table rows live in Parquet under `ducklake-data/`. The
 separate transaction locator is an accelerator only: misses are verified
 against the pinned DuckLake snapshot and it can be rebuilt from
-`chain_transaction`.
+`chain_transaction`. There is no address locator: address-facing Parquet facts
+carry canonical address/stake-address text and binary credentials directly.
 
 Paths can be overridden with:
 

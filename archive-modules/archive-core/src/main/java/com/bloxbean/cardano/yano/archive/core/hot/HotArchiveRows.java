@@ -15,6 +15,11 @@ public final class HotArchiveRows {
     private HotArchiveRows() { }
 
     public static HotHistoryMutation put(ArchiveDatasetId dataset, ArchiveRow row) {
+        return new HotHistoryMutation(key(dataset, row), encode(row));
+    }
+
+    /** Stable digest of a logical table primary key, used only for hot ownership/cleanup. */
+    public static byte[] key(ArchiveDatasetId dataset, ArchiveRow row) {
         ArchiveTableSchema table = ArchiveSchemas.schema(dataset).tables().stream()
                 .filter(candidate -> candidate.physicalName().equals(row.table())).findFirst().orElseThrow();
         if (row.values().size() != table.columns().size()) throw new IllegalArgumentException("row shape mismatch");
@@ -27,20 +32,14 @@ public final class HotArchiveRows {
             byte[] tablePrefix = ("archive-row/" + row.table() + "/").getBytes(StandardCharsets.UTF_8);
             byte[] key = Arrays.copyOf(tablePrefix, tablePrefix.length + digest.getDigestLength());
             System.arraycopy(digest.digest(), 0, key, tablePrefix.length, digest.getDigestLength());
-            return new HotHistoryMutation(key, encode(row));
+            return key;
         } catch (Exception e) { throw new IllegalStateException("cannot encode live archive key", e); }
     }
 
     public static List<ArchiveRecord> read(HotHistorySnapshot snapshot, ArchiveDatasetId dataset,
                                            String table, Map<String, Object> filters) {
-        byte[] prefix = ("archive-row/" + table + "/").getBytes(StandardCharsets.UTF_8);
         List<ArchiveRecord> result = new ArrayList<>();
-        for (var entry : snapshot.scan(dataset, prefix)) {
-            ArchiveRecord row = decode(entry.value());
-            boolean matches = filters.entrySet().stream().allMatch(filter -> valuesEqual(
-                    row.value(filter.getKey()), filter.getValue()));
-            if (matches) result.add(row);
-        }
+        for (var entry : snapshot.queryTable(dataset, table, filters, null, null)) result.add(entry.row());
         return result;
     }
 
@@ -50,27 +49,20 @@ public final class HotArchiveRows {
         if (blockFromInclusive < 0 || blockToInclusive < blockFromInclusive) {
             throw new IllegalArgumentException("invalid hot-history block range");
         }
-        byte[] prefix = ("archive-row/" + table + "/").getBytes(StandardCharsets.UTF_8);
         List<ArchiveRecord> rows = new ArrayList<>();
-        for (var entry : snapshot.scan(dataset, prefix)) {
-            ArchiveRecord row = decode(entry.value());
-            Object coordinate = row.value("block_number");
-            if (coordinate == null) coordinate = row.value("first_seen_block_number");
-            if (coordinate instanceof Number number && number.longValue() >= blockFromInclusive
-                    && number.longValue() <= blockToInclusive) rows.add(row);
-        }
+        for (var entry : snapshot.queryTable(dataset, table, Map.of(), blockFromInclusive,
+                blockToInclusive)) rows.add(entry.row());
+        rows.sort(recordComparator(dataset));
         return List.copyOf(rows);
     }
 
     public static List<ArchiveRecord> allRows(HotHistorySnapshot snapshot, ArchiveDatasetId dataset,
                                               String table) {
-        byte[] prefix = ("archive-row/" + table + "/").getBytes(StandardCharsets.UTF_8);
-        return snapshot.scan(dataset, prefix).stream().map(entry -> decode(entry.value())).toList();
+        return snapshot.scanTable(dataset, table).stream().map(HotHistorySnapshot.Entry::row).toList();
     }
 
     public static List<byte[]> allKeys(HotHistorySnapshot snapshot, ArchiveDatasetId dataset, String table) {
-        byte[] prefix = ("archive-row/" + table + "/").getBytes(StandardCharsets.UTF_8);
-        return snapshot.scan(dataset, prefix).stream().map(HotHistorySnapshot.Entry::logicalKey).toList();
+        return snapshot.scanTable(dataset, table).stream().map(HotHistorySnapshot.Entry::logicalKey).toList();
     }
 
     public static List<byte[]> keysThrough(HotHistorySnapshot snapshot, ArchiveDatasetId dataset,
@@ -84,54 +76,10 @@ public final class HotArchiveRows {
         if (blockFromInclusive < 0 || blockToInclusive < blockFromInclusive) {
             throw new IllegalArgumentException("invalid hot-history block range");
         }
-        byte[] prefix = ("archive-row/" + table + "/").getBytes(StandardCharsets.UTF_8);
         List<byte[]> keys = new ArrayList<>();
-        for (var entry : snapshot.scan(dataset, prefix)) {
-            ArchiveRecord row = decode(entry.value());
-            Object coordinate = row.value("block_number");
-            if (coordinate == null) coordinate = row.value("first_seen_block_number");
-            if (coordinate instanceof Number number && number.longValue() >= blockFromInclusive
-                    && number.longValue() <= blockToInclusive) {
-                keys.add(entry.logicalKey());
-            }
-        }
+        for (var entry : snapshot.queryTable(dataset, table, Map.of(), blockFromInclusive,
+                blockToInclusive)) keys.add(entry.logicalKey());
         return keys;
-    }
-
-    /**
-     * Address dimension rows are shared by the live and backfill tracks. Keep
-     * the earliest observation, while failing closed if a digest key ever maps
-     * to different immutable address attributes.
-     */
-    public static byte[] mergeAddressDimensionValue(byte[] previous, byte[] candidate) {
-        if (previous == null) return candidate;
-        ArchiveRecord oldRow = decode(previous);
-        ArchiveRecord newRow = decode(candidate);
-        if (!oldRow.table().equals("addresses") || !newRow.table().equals("addresses")) {
-            throw new IllegalArgumentException("address dimension rows required");
-        }
-        List<String> immutable = List.of("address_key", "raw_address", "display_address", "network_id",
-                "address_type", "payment_credential_type", "payment_credential", "stake_reference_type",
-                "stake_credential_type", "stake_credential", "pointer_slot", "pointer_tx_index",
-                "pointer_cert_index");
-        for (String column : immutable) {
-            if (!valuesEqual(oldRow.value(column), newRow.value(column))) {
-                throw new ArchiveStoreException("address dimension collision for column " + column);
-            }
-        }
-        long oldBlock = ((Number) oldRow.value("first_seen_block_number")).longValue();
-        long newBlock = ((Number) newRow.value("first_seen_block_number")).longValue();
-        if (newBlock != oldBlock) return newBlock < oldBlock ? candidate : previous;
-        long oldSlot = ((Number) oldRow.value("first_seen_slot")).longValue();
-        long newSlot = ((Number) newRow.value("first_seen_slot")).longValue();
-        if (newSlot != oldSlot) return newSlot < oldSlot ? candidate : previous;
-        long oldEpoch = ((Number) oldRow.value("first_seen_epoch")).longValue();
-        long newEpoch = ((Number) newRow.value("first_seen_epoch")).longValue();
-        return newEpoch < oldEpoch ? candidate : previous;
-    }
-
-    public static boolean isAddressDimensionKey(byte[] logicalKey) {
-        return startsWith(logicalKey, "archive-row/addresses/".getBytes(StandardCharsets.UTF_8));
     }
 
     private static boolean valuesEqual(Object left, Object right) {
@@ -139,21 +87,50 @@ public final class HotArchiveRows {
         return Objects.equals(left, right);
     }
 
+    private static Comparator<ArchiveRecord> recordComparator(ArchiveDatasetId dataset) {
+        List<String> columns = ArchiveSchemas.schema(dataset).paginationOrder();
+        return (left, right) -> {
+            for (String column : columns) {
+                int compared = compareValue(left.value(column), right.value(column));
+                if (compared != 0) return compared;
+            }
+            return 0;
+        };
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static int compareValue(Object left, Object right) {
+        if (left == right) return 0;
+        if (left == null) return -1;
+        if (right == null) return 1;
+        if (left instanceof byte[] a && right instanceof byte[] b) {
+            return Arrays.compareUnsigned(a, b);
+        }
+        if (left instanceof Number a && right instanceof Number b) {
+            return new BigDecimal(a.toString()).compareTo(new BigDecimal(b.toString()));
+        }
+        if (left instanceof Comparable comparable && left.getClass().isInstance(right)) {
+            return comparable.compareTo(right);
+        }
+        return left.toString().compareTo(right.toString());
+    }
+
+
     private static boolean startsWith(byte[] value, byte[] prefix) {
         if (value.length < prefix.length) return false;
         for (int i = 0; i < prefix.length; i++) if (value[i] != prefix[i]) return false;
         return true;
     }
 
-    private static byte[] encode(ArchiveRow row) throws IOException {
+    public static byte[] encode(ArchiveRow row) {
         try (var bytes = new ByteArrayOutputStream(); var out = new DataOutputStream(bytes)) {
             out.writeUTF(row.table()); out.writeInt(row.values().size());
             for (Object value : row.values()) writeValue(out, value);
             return bytes.toByteArray();
-        }
+        } catch (IOException e) { throw new IllegalStateException("cannot encode live archive row", e); }
     }
 
-    private static ArchiveRecord decode(byte[] encoded) {
+    public static ArchiveRecord decode(byte[] encoded) {
         try (var in = new DataInputStream(new ByteArrayInputStream(encoded))) {
             String tableName = in.readUTF();
             ArchiveTableSchema table = ArchiveSchemas.all().values().stream().flatMap(s -> s.tables().stream())

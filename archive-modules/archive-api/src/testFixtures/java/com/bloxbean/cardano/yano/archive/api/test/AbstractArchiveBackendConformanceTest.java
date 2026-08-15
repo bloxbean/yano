@@ -72,7 +72,22 @@ public abstract class AbstractArchiveBackendConformanceTest {
             long pinned = read.generation();
             commit(job(10, 19));
             assertThat(read.generation()).isEqualTo(pinned);
+            assertThat(backend.coverage(read, ArchiveDatasetId.TRANSACTION).covers(9)).isTrue();
+            assertThat(backend.coverage(read, ArchiveDatasetId.TRANSACTION).covers(19)).isFalse();
             assertThat(backend.coverage(ArchiveDatasetId.TRANSACTION).covers(19)).isTrue();
+        }
+    }
+
+    @Test
+    void committedBoundaryIsReadFromThePinnedCoverageSnapshot() {
+        commit(job(0, 9));
+        try (var read = backend.openReadSession()) {
+            var boundary = backend.latestBlockBoundary(read, ArchiveDatasetId.TRANSACTION,
+                    new BlockRange(0, 9), java.util.OptionalLong.empty()).orElseThrow();
+            assertThat(boundary.range()).isEqualTo(new BlockRange(0, 9));
+            assertThat(boundary.anchors().endSlot()).isEqualTo(90);
+            assertThat(boundary.projectionVersion())
+                    .isEqualTo(ArchiveSchemas.schema(ArchiveDatasetId.TRANSACTION).projectionVersion());
         }
     }
 
@@ -110,24 +125,17 @@ public abstract class AbstractArchiveBackendConformanceTest {
     }
 
     @Test
-    void repeatedAddressDimensionMergesAcrossJobsAndRecomputesAfterInvalidation() {
-        byte[] addressKey = new byte[32];
-        Arrays.fill(addressKey, (byte) 7);
+    void repeatedFlatAddressAcrossJobsRemainsAppendOnlyAndInvalidatable() {
         ArchiveJob first = utxoJob(0, (byte) 1);
         ArchiveJob second = utxoJob(1, (byte) 2);
-        commitUtxo(first, addressKey, (byte) 1);
-        commitUtxo(second, addressKey, (byte) 2);
+        commitUtxo(first, "addr_test_fixture", (byte) 1);
+        commitUtxo(second, "addr_test_fixture", (byte) 2);
 
-        assertAddress(first.dataset(), new BlockRange(0, 1), addressKey, 0);
+        assertOutputs(first.dataset(), new BlockRange(0, 1), "addr_test_fixture", 2);
         backend.invalidate(ArchiveDatasetId.UTXO_HISTORY, new BlockRange(0, 0));
-        assertAddress(first.dataset(), new BlockRange(1, 1), addressKey, 1);
+        assertOutputs(first.dataset(), new BlockRange(1, 1), "addr_test_fixture", 1);
         backend.invalidate(ArchiveDatasetId.UTXO_HISTORY, new BlockRange(1, 1));
-        try (var read = backend.openReadSession()) {
-            var result = backend.repositories().records(ArchiveDatasetId.UTXO_HISTORY).query(read,
-                    new ArchiveQuery(new BlockRange(1, 1), Map.of("__table", "addresses"),
-                            ArchivePageCursor.Order.ASC, 10, Optional.empty()));
-            assertThat(result.rows()).isEmpty();
-        }
+        assertOutputs(first.dataset(), new BlockRange(1, 1), "addr_test_fixture", 0);
     }
 
     @Test
@@ -154,13 +162,11 @@ public abstract class AbstractArchiveBackendConformanceTest {
     }
 
     @Test
-    void repeatedPointerAddressAcceptsJdbcNumericRepresentations() {
-        byte[] addressKey = new byte[32];
-        Arrays.fill(addressKey, (byte) 31);
-        commitPointerUtxo(utxoJob(0, (byte) 31), addressKey, (byte) 31);
-        commitPointerUtxo(utxoJob(1, (byte) 32), addressKey, (byte) 32);
+    void longByronAddressRoundTripsWithoutLengthLimit() {
+        String longByron = "DdzFF" + "x".repeat(520);
+        commitUtxo(utxoJob(0, (byte) 31), longByron, (byte) 31);
 
-        assertAddress(ArchiveDatasetId.UTXO_HISTORY, new BlockRange(0, 1), addressKey, 0);
+        assertOutputs(ArchiveDatasetId.UTXO_HISTORY, new BlockRange(0, 0), longByron, 1);
     }
 
     @Test
@@ -175,45 +181,22 @@ public abstract class AbstractArchiveBackendConformanceTest {
         assertThat(backend.coverage(ArchiveDatasetId.ADA_POT).covers(8)).isFalse();
     }
 
-    private void assertAddress(ArchiveDatasetId dataset, BlockRange range, byte[] addressKey, long firstSeen) {
+    private void assertOutputs(ArchiveDatasetId dataset, BlockRange range, String address, int count) {
         try (var read = backend.openReadSession()) {
             var result = backend.repositories().records(dataset).query(read,
-                    new ArchiveQuery(range, Map.of("__table", "addresses", "address_key", addressKey),
+                    new ArchiveQuery(range, Map.of("__table", "transaction_outputs", "address", address),
                             ArchivePageCursor.Order.ASC, 10, Optional.empty()));
-            assertThat(result.rows()).singleElement()
-                    .extracting(row -> ((Number) row.value("first_seen_block_number")).longValue())
-                    .isEqualTo(firstSeen);
+            assertThat(result.rows()).hasSize(count);
         }
     }
 
-    private void commitUtxo(ArchiveJob job, byte[] addressKey, byte txMarker) {
+    private void commitUtxo(ArchiveJob job, String address, byte txMarker) {
         byte[] txHash = new byte[32];
         Arrays.fill(txHash, txMarker);
         try (var write = backend.begin(job)) {
-            write.append(new ArchiveRow("addresses", Arrays.asList(addressKey, new byte[] {9}, "addr_test",
-                    0, "enterprise", "key", new byte[] {3}, "none", null, null,
-                    null, null, null, job.range().startInclusive(), job.anchorSlot(), 0L)));
-            // A batch may observe the same address in several blocks/outputs;
-            // the physical dimension still has exactly one canonical row.
-            write.append(new ArchiveRow("addresses", Arrays.asList(addressKey, new byte[] {9}, "addr_test",
-                    0, "enterprise", "key", new byte[] {3}, "none", null, null,
-                    null, null, null, job.range().startInclusive(), job.anchorSlot(), 0L)));
             write.append(new ArchiveRow("transaction_outputs", Arrays.asList(txHash, 0, 0, "ordinary",
-                    addressKey, new byte[] {3}, null, 10L, "none", null, null, null, null, null, false,
-                    job.anchorBlockHash(), job.range().startInclusive(), job.anchorSlot(), 0L, 0L, job.jobId())));
-            write.commit();
-        }
-    }
-
-    private void commitPointerUtxo(ArchiveJob job, byte[] addressKey, byte txMarker) {
-        byte[] txHash = new byte[32];
-        Arrays.fill(txHash, txMarker);
-        try (var write = backend.begin(job)) {
-            write.append(new ArchiveRow("addresses", Arrays.asList(addressKey, new byte[] {9}, "addr_pointer",
-                    0, "ptr", "key", new byte[] {3}, "pointer", null, null,
-                    42L, 1, 2, job.range().startInclusive(), job.anchorSlot(), 0L)));
-            write.append(new ArchiveRow("transaction_outputs", Arrays.asList(txHash, 0, 0, "ordinary",
-                    addressKey, new byte[] {3}, new byte[28], 10L, "none", null, null, null, null, null, false,
+                    address, null, "byron", null, null, null, null, null, 10L,
+                    "none", null, null, null, null, null, false,
                     job.anchorBlockHash(), job.range().startInclusive(), job.anchorSlot(), 0L, 0L, job.jobId())));
             write.commit();
         }

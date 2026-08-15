@@ -13,13 +13,14 @@ class UtxoHistoryDatasetTest {
     @TempDir Path temp;
     @Test
     void normalizesOutputAssetsAndKeepsStakeCredentialQueryable() {
-        byte[] hash = {1}; byte[] address = {2}; byte[] stake = {3};
+        byte[] hash = {1}; byte[] address = {2}; byte[] stake = new byte[28];
+        Arrays.fill(stake, (byte) 3);
         ArchiveJob job = ArchiveJob.deterministic(new ArchiveNetworkIdentity(1, "g"), ArchiveDatasetId.UTXO_HISTORY,
                 1, new BlockRange(1, 1), new ArchiveRangeAnchor(10, hash, 10, hash), "v1");
         var facts = new UtxoHistoryFact(com.bloxbean.cardano.yaci.core.model.Era.Conway.getValue(), List.of(),
                 List.of(new UtxoHistoryFact.Address(address, new byte[] {4}, "addr", 0, "base", "key",
-                        new byte[] {5}, "credential", "key", stake, null, null, null)),
-                List.of(new UtxoHistoryFact.Output(hash, 0, 0, "regular", address, new byte[] {5}, stake,
+                        new byte[28], "credential", "key", stake, null, null, null)),
+                List.of(new UtxoHistoryFact.Output(hash, 0, 0, "regular", address, new byte[28], stake,
                         10, "none", null, null, null, null, null, false)),
                 List.of(new UtxoHistoryFact.Asset(hash, 0, new byte[28], new byte[] {6},
                         new BigInteger("18446744073709551615"))), List.of(), List.of(), List.of());
@@ -27,9 +28,10 @@ class UtxoHistoryDatasetTest {
         new UtxoHistoryDataset().derive(job, new BlockSourceContext<>(1, 10, 0, Instant.EPOCH,
                 hash, new byte[0], facts), rows::add);
         assertThat(rows).extracting(ArchiveRow::table)
-                .containsExactly("addresses", "transaction_outputs", "transaction_output_assets");
-        assertThat(rows.get(1).values().get(6)).isEqualTo(stake);
-        assertThat(rows.get(2).values().get(4)).isEqualTo(new BigInteger("18446744073709551615"));
+                .containsExactly("transaction_outputs", "transaction_output_assets");
+        assertThat(rows.getFirst().values().get(4)).isEqualTo("addr");
+        assertThat(rows.getFirst().values().get(11)).isEqualTo(stake);
+        assertThat(rows.get(1).values().get(4)).isEqualTo(new BigInteger("18446744073709551615"));
     }
 
     @Test
@@ -64,16 +66,8 @@ class UtxoHistoryDatasetTest {
             dataset.derive(job, firstContext, rows::add);
             dataset.derive(job, secondContext, rows::add);
 
-            assertThat(rows).filteredOn(row -> row.table().equals("addresses"))
-                    .extracting(row -> row.values().get(7))
-                    .containsExactly("pointer", "pointer");
-            List<ArchiveRow> addressRows = rows.stream()
-                    .filter(row -> row.table().equals("addresses"))
-                    .toList();
-            assertThat(addressRows.get(0).values().subList(0, 13))
-                    .containsExactlyElementsOf(addressRows.get(1).values().subList(0, 13));
             assertThat(rows).filteredOn(row -> row.table().equals("transaction_outputs"))
-                    .extracting(row -> row.values().get(6))
+                    .extracting(row -> row.values().get(11))
                     .containsExactly(credential, null);
             dataset.abortBatch();
         }

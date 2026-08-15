@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** RocksDB implementation hidden behind the backend-neutral snapshot contract. */
@@ -25,8 +26,10 @@ final class RocksDbHotHistorySnapshot implements HotHistorySnapshot {
     }
 
     @Override
-    public List<Entry> scan(ArchiveDatasetId dataset, byte[] logicalPrefix) {
+    public List<Entry> queryTable(ArchiveDatasetId dataset, String table, Map<String, Object> filters,
+                                  Long blockFromInclusive, Long blockToInclusive) {
         requireOpen();
+        byte[] logicalPrefix = ("archive-row/" + table + "/").getBytes(StandardCharsets.UTF_8);
         byte[] base = ("d/" + dataset.name() + "/").getBytes(StandardCharsets.UTF_8);
         byte[] physical = Arrays.copyOf(base, base.length + logicalPrefix.length);
         System.arraycopy(logicalPrefix, 0, physical, base.length, logicalPrefix.length);
@@ -34,11 +37,22 @@ final class RocksDbHotHistorySnapshot implements HotHistorySnapshot {
         try (var iterator = database.newIterator(options)) {
             for (iterator.seek(physical); iterator.isValid() && startsWith(iterator.key(), physical);
                  iterator.next()) {
-                result.add(new Entry(Arrays.copyOfRange(iterator.key(), base.length, iterator.key().length),
-                        iterator.value()));
+                var row = HotArchiveRows.decode(iterator.value());
+                boolean matches = filters.entrySet().stream().allMatch(filter -> same(
+                        row.value(filter.getKey()), filter.getValue()));
+                Object coordinate = row.value("block_number");
+                boolean inRange = blockFromInclusive == null || coordinate instanceof Number number
+                        && number.longValue() >= blockFromInclusive && number.longValue() <= blockToInclusive;
+                if (matches && inRange) result.add(new Entry(
+                        Arrays.copyOfRange(iterator.key(), base.length, iterator.key().length), row));
             }
         }
         return List.copyOf(result);
+    }
+
+    private static boolean same(Object left, Object right) {
+        return left instanceof byte[] a && right instanceof byte[] b ? Arrays.equals(a, b)
+                : java.util.Objects.equals(left, right);
     }
 
     private void requireOpen() {

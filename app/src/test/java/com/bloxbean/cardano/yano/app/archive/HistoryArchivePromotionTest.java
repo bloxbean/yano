@@ -7,6 +7,7 @@ import com.bloxbean.cardano.yano.archive.core.config.*;
 import com.bloxbean.cardano.yano.archive.core.hot.*;
 import com.bloxbean.cardano.yano.archive.core.worker.*;
 import com.bloxbean.cardano.yano.archive.sqlite.SqliteArchiveBackendProvider;
+import com.bloxbean.cardano.yano.archive.sqlite.SqliteHotHistoryStore;
 import org.eclipse.microprofile.config.Config;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -39,7 +40,7 @@ class HistoryArchivePromotionTest {
                 1_700_000_000L, 0, true, 5L, UUID.randomUUID()));
         hot.applyBlock(ArchiveDatasetId.TRANSACTION,
                 new HotBlockCheckpoint(10, 100, liveBlockHash, previousBlockHash),
-                List.of(HotArchiveRows.put(ArchiveDatasetId.TRANSACTION, row)),
+                List.of(new HotHistoryOperation.Fact(row)),
                 new ArchiveProgress(ArchiveDatasetId.TRANSACTION, ArchiveTrack.LIVE,
                         10, 100, liveBlockHash, 0));
         hot.applyBlock(ArchiveDatasetId.TRANSACTION,
@@ -79,12 +80,12 @@ class HistoryArchivePromotionTest {
         ArchiveIdentity identity = new ArchiveIdentity(UUID.randomUUID(), "sqlite", 1, 1, "fixture");
         ArchiveBackend backend = new SqliteArchiveBackendProvider().open(identity, temp,
                 Map.of("database.path", temp.resolve("archive.sqlite").toString()));
-        RocksDbHotHistoryStore hot = new RocksDbHotHistoryStore(temp.resolve("hot"));
+        HotHistoryStore hot = new SqliteHotHistoryStore(temp.resolve("hot-history.sqlite"));
         var row = new ArchiveRow("chain_transaction", List.of(txHash, blockHash, 10L, 100L, 0L,
                 1_700_000_000L, 0, true, 5L, UUID.randomUUID()));
         hot.applyBlock(ArchiveDatasetId.TRANSACTION,
                 new HotBlockCheckpoint(10, 100, blockHash, new byte[32]),
-                List.of(HotArchiveRows.put(ArchiveDatasetId.TRANSACTION, row)),
+                List.of(new HotHistoryOperation.Fact(row)),
                 new ArchiveProgress(ArchiveDatasetId.TRANSACTION, ArchiveTrack.LIVE,
                         10, 100, blockHash, 0));
         var oldSnapshot = hot.snapshot();
@@ -128,18 +129,15 @@ class HistoryArchivePromotionTest {
     void promotesTransactionScopedPayloadRowsByBlockRange() throws Exception {
         byte[] txHash = java.util.HexFormat.of().parseHex("31".repeat(32));
         byte[] blockHash = java.util.HexFormat.of().parseHex("32".repeat(32));
-        byte[] addressKey = java.util.HexFormat.of().parseHex("33".repeat(32));
         byte[] datumHash = java.util.HexFormat.of().parseHex("34".repeat(32));
         byte[] datumCbor = {(byte) 0xd8, 0x79, (byte) 0x80};
         ArchiveIdentity identity = new ArchiveIdentity(UUID.randomUUID(), "sqlite", 1, 1, "fixture");
         ArchiveBackend backend = new SqliteArchiveBackendProvider().open(identity, temp,
                 Map.of("database.path", temp.resolve("utxo-content.sqlite").toString()));
         RocksDbHotHistoryStore hot = new RocksDbHotHistoryStore(temp.resolve("utxo-content-hot"));
-        ArchiveRow address = new ArchiveRow("addresses", Arrays.asList(addressKey, new byte[] {0x60},
-                null, 0, "enterprise", null, null, "none", null, null,
-                null, null, null, 10L, 100L, 0L));
         ArchiveRow output = new ArchiveRow("transaction_outputs", Arrays.asList(
-                txHash, 0, 0, "ordinary", addressKey, null, null, 10L,
+                txHash, 0, 0, "ordinary", "addr_test_fixture", 0, "enterprise",
+                null, null, null, null, null, 10L,
                 "none", null, null, null, null, null, false, blockHash, 10L, 100L, 0L,
                 1_700_000_000L, UUID.randomUUID()));
         ArchiveRow datum = new ArchiveRow("transaction_datums", List.of(txHash, 0, datumHash, datumCbor,
@@ -149,10 +147,9 @@ class HistoryArchivePromotionTest {
                 blockHash, 10L, 100L, 0L, 1_700_000_000L, UUID.randomUUID()));
         hot.applyBlock(ArchiveDatasetId.UTXO_HISTORY,
                 new HotBlockCheckpoint(10, 100, blockHash, new byte[32]),
-                List.of(HotArchiveRows.put(ArchiveDatasetId.UTXO_HISTORY, address),
-                        HotArchiveRows.put(ArchiveDatasetId.UTXO_HISTORY, output),
-                        HotArchiveRows.put(ArchiveDatasetId.UTXO_HISTORY, datum),
-                        HotArchiveRows.put(ArchiveDatasetId.UTXO_HISTORY, redeemer)),
+                List.of(new HotHistoryOperation.Fact(output),
+                        new HotHistoryOperation.Fact(datum),
+                        new HotHistoryOperation.Fact(redeemer)),
                 new ArchiveProgress(ArchiveDatasetId.UTXO_HISTORY, ArchiveTrack.LIVE,
                         10, 100, blockHash, 0));
 
@@ -203,8 +200,8 @@ class HistoryArchivePromotionTest {
                 nextBlockHash, 11L, 101L, 0L, 1_700_000_001L, UUID.randomUUID()));
         hot.applyBlock(ArchiveDatasetId.UTXO_HISTORY,
                 new HotBlockCheckpoint(11, 101, nextBlockHash, blockHash),
-                List.of(HotArchiveRows.put(ArchiveDatasetId.UTXO_HISTORY, newDatum),
-                        HotArchiveRows.put(ArchiveDatasetId.UTXO_HISTORY, newRedeemer)),
+                List.of(new HotHistoryOperation.Fact(newDatum),
+                        new HotHistoryOperation.Fact(newRedeemer)),
                 new ArchiveProgress(ArchiveDatasetId.UTXO_HISTORY, ArchiveTrack.LIVE,
                         11, 101, nextBlockHash, 0));
 
@@ -248,7 +245,7 @@ class HistoryArchivePromotionTest {
         ArchiveRow live = accountEvent(stake, liveHash, 10, UUID.randomUUID());
         hot.applyBlock(ArchiveDatasetId.ACCOUNT_EVENT,
                 new HotBlockCheckpoint(10, 100, liveHash, new byte[32]),
-                List.of(HotArchiveRows.put(ArchiveDatasetId.ACCOUNT_EVENT, live)),
+                List.of(new HotHistoryOperation.Fact(live)),
                 new ArchiveProgress(ArchiveDatasetId.ACCOUNT_EVENT, ArchiveTrack.LIVE,
                         10, 100, liveHash, 0));
         var activations = new ActivationStore(temp.resolve("gap-activation.properties"));
@@ -314,7 +311,7 @@ class HistoryArchivePromotionTest {
     private static ArchiveRow accountEvent(byte[] stake, byte[] blockHash, long block, UUID jobId) {
         byte[] txHash = new byte[32];
         txHash[0] = (byte) (block + 1);
-        return new ArchiveRow("account_events", Arrays.asList(stake, "key", "withdrawal", txHash,
+        return new ArchiveRow("account_events", Arrays.asList(stake, "key", "stake_test_fixture", "withdrawal", txHash,
                 blockHash, block, block * 10, 0L, 1_700_000_000L + block, 0, 0L,
                 null, null, null, 5L, jobId));
     }

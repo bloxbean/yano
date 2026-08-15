@@ -11,6 +11,7 @@ import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
 import com.bloxbean.cardano.yano.archive.api.*;
 import com.bloxbean.cardano.yano.archive.core.config.*;
+import com.bloxbean.cardano.yano.archive.core.consistency.ArchiveConsistencyPlanner;
 import com.bloxbean.cardano.yano.archive.core.dataset.BlockArchiveDataset;
 import com.bloxbean.cardano.yano.archive.core.dataset.ArchiveBlockFacts;
 import com.bloxbean.cardano.yano.archive.core.dataset.AddressTransactionDataset;
@@ -18,7 +19,7 @@ import com.bloxbean.cardano.yano.archive.core.dataset.StandardBlockDatasets;
 import com.bloxbean.cardano.yano.archive.core.dataset.UtxoHistoryDataset;
 import com.bloxbean.cardano.yano.archive.core.dataset.UtxoHistoryProjection;
 import com.bloxbean.cardano.yano.archive.core.address.*;
-import com.bloxbean.cardano.yano.archive.core.hot.RocksDbHotHistoryStore;
+import com.bloxbean.cardano.yano.archive.core.hot.*;
 import com.bloxbean.cardano.yano.archive.core.hot.HotArchiveRows;
 import com.bloxbean.cardano.yano.archive.core.hot.HotHistorySnapshot;
 import com.bloxbean.cardano.yano.archive.core.source.ChainBlockArchiveSource;
@@ -73,7 +74,8 @@ public class HistoryArchiveService implements AutoCloseable {
     private volatile String initializationError;
     private volatile ArchiveConfiguration archiveConfig;
     private volatile ArchiveBackend backend;
-    private volatile RocksDbHotHistoryStore controlStore;
+    private volatile HotHistoryStore controlStore;
+    private volatile String hotStoreEngine = "rocksdb";
     private volatile ArchiveSubsystem subsystem;
     private volatile ExecutorService projectionExecutor;
     private volatile CycleCachingBlockArchiveSource<Block> sharedBlockSource;
@@ -170,7 +172,15 @@ public class HistoryArchiveService implements AutoCloseable {
             archiveConfig = new ArchiveConfiguration(true, directory, engine, defaultStart,
                     bool(YanoPropertyKeys.History.LIVE_ENABLED, true), workerConfig, safety, datasets);
 
-            Path hot = directory.resolve("hot-rocksdb");
+            hotStoreEngine = string(YanoPropertyKeys.History.HOT_STORE_ENGINE, "rocksdb")
+                    .trim().toLowerCase(Locale.ROOT);
+            if (!hotStoreEngine.equals("rocksdb") && !hotStoreEngine.equals("sqlite")) {
+                throw new IllegalArgumentException("unsupported history hot-store engine: " + hotStoreEngine);
+            }
+            Path hot = hotStoreEngine.equals("sqlite")
+                    ? Path.of(string(YanoPropertyKeys.History.HOT_STORE_SQLITE_PATH,
+                            directory.resolve("hot-history.sqlite").toString()))
+                    : directory.resolve("hot-rocksdb");
             Path temp = Path.of(string("yano.history.duckdb.temp-directory", directory.resolve("tmp").toString()));
             Map<String, Path> paths = new LinkedHashMap<>();
             paths.put("core", Path.of(nodeConfig.getRocksDBPath()));
@@ -191,7 +201,7 @@ public class HistoryArchiveService implements AutoCloseable {
             ArchivePathValidator.requireDisjoint(paths);
             Files.createDirectories(directory);
             activations = new ActivationStore(directory.resolve("control/activation.properties"));
-            controlStore = new RocksDbHotHistoryStore(hot);
+            controlStore = openHotStore(hotStoreEngine, hot);
             long persistedTip = chain.getLocalTip() == null ? -1 : chain.getLocalTip().getBlockNumber();
             UtxoHistoryProjection utxoProjection = datasetEnabled(ArchiveDatasetId.UTXO_HISTORY)
                     ? resolveUtxoProjection(persistedTip) : UtxoHistoryProjection.all();
@@ -356,6 +366,57 @@ public class HistoryArchiveService implements AutoCloseable {
         return lifecycleLock.readLock()::unlock;
     }
 
+    public Set<ArchiveDatasetId> enabledBlockDatasets() {
+        lifecycleLock.readLock().lock();
+        try {
+            if (archiveConfig == null) return Set.of();
+            EnumSet<ArchiveDatasetId> enabled = EnumSet.noneOf(ArchiveDatasetId.class);
+            for (ArchiveDatasetId dataset : ArchiveDatasetId.values()) {
+                if (dataset.sourceKind() == SourceKind.BLOCK && datasetEnabled(dataset)) enabled.add(dataset);
+            }
+            return Set.copyOf(enabled);
+        } finally {
+            lifecycleLock.readLock().unlock();
+        }
+    }
+
+    public long firstCanonicalHistoryBlock() {
+        return firstCanonicalBlockNumber;
+    }
+
+    public ArchiveConsistentRead openFinalizedRead(Set<ArchiveDatasetId> datasets, long fromBlock,
+                                                   OptionalLong atOrBeforeBlock,
+                                                   OptionalLong atOrBeforeSlot) {
+        QueryLease lease = openQueryLease();
+        ArchiveReadSession session = null;
+        try {
+            ArchiveBackend current = backend;
+            if (current == null || !available()) throw new ArchiveStoreException("history archive is unavailable");
+            for (ArchiveDatasetId dataset : datasets) {
+                if (!datasetEnabled(dataset)) {
+                    throw new IllegalArgumentException("history dataset is disabled: " + dataset.logicalName());
+                }
+            }
+            session = current.openReadSession();
+            ArchiveConsistencyPoint point = ArchiveConsistencyPlanner.plan(current, session, datasets,
+                    fromBlock, atOrBeforeBlock, atOrBeforeSlot);
+            return new ArchiveConsistentRead(session, point, lease);
+        } catch (RuntimeException | Error e) {
+            if (session != null) session.close();
+            lease.close();
+            throw e;
+        }
+    }
+
+    public Map<String, Object> finalizedWatermark(Set<ArchiveDatasetId> datasets, long fromBlock,
+                                                   OptionalLong atOrBeforeBlock,
+                                                   OptionalLong atOrBeforeSlot) {
+        try (ArchiveConsistentRead read = openFinalizedRead(
+                datasets, fromBlock, atOrBeforeBlock, atOrBeforeSlot)) {
+            return consistencyStatus(read.point());
+        }
+    }
+
     List<ArchiveRecord> hotRecords(ArchiveDatasetId dataset, String table, Map<String, Object> filters) {
         if (controlStore == null || !archiveConfig.liveEnabled()) return List.of();
         try (var snapshot = controlStore.snapshot()) {
@@ -393,9 +454,12 @@ public class HistoryArchiveService implements AutoCloseable {
                     if (!live.isEmpty()) return TransactionLookup.found(live.getFirst());
                 }
             }
-            ArchiveCoverage coverage = current.coverage(ArchiveDatasetId.TRANSACTION);
-            if (coverage.completeRanges().isEmpty()) return TransactionLookup.incomplete("transaction history has no coverage");
+            ArchiveCoverage coverage;
             try (ArchiveReadSession read = current.openReadSession()) {
+                coverage = current.coverage(read, ArchiveDatasetId.TRANSACTION);
+                if (coverage.completeRanges().isEmpty()) {
+                    return TransactionLookup.incomplete("transaction history has no coverage");
+                }
                 Optional<ArchiveRecord> found = current.findTransaction(read, txHash);
                 if (found.isPresent()) return TransactionLookup.found(found.orElseThrow());
             }
@@ -431,6 +495,7 @@ public class HistoryArchiveService implements AutoCloseable {
         if (initializationError != null) result.put("error", initializationError);
         if (archiveConfig == null) return result;
         result.put("engine", archiveConfig.engine().name().toLowerCase(Locale.ROOT));
+        result.put("hotStoreEngine", hotStoreEngine);
         result.put("directory", archiveConfig.historyDirectory().toString());
         result.put("finalityBlocks", archiveConfig.safetyWindows().archiveFinalityBlocks());
         result.put("rollbackRetentionBlocks", archiveConfig.safetyWindows().rollbackRetentionBlocks());
@@ -446,21 +511,34 @@ public class HistoryArchiveService implements AutoCloseable {
             result.put("health", backend.health());
             try (ArchiveReadSession read = backend.openReadSession()) {
                 result.put("generation", read.generation());
-            }
-            Map<String, Object> datasets = new LinkedHashMap<>();
-            for (ArchiveDatasetId id : ArchiveDatasetId.values()) {
-                DatasetArchiveConfig selected = archiveConfig.datasets().get(id);
-                Map<String, Object> dataset = new LinkedHashMap<>();
-                dataset.put("enabled", selected.enabled());
-                dataset.put("startMode", selected.startMode().name().toLowerCase(Locale.ROOT));
-                dataset.put("retentionEpochs", selected.retentionEpochs());
-                if (selected.enabled()) {
-                    dataset.put("coverage", backend.coverage(id));
-                    dataset.put("workers", metrics.dataset(id));
+                Map<String, Object> datasets = new LinkedHashMap<>();
+                EnumSet<ArchiveDatasetId> enabledBlocks = EnumSet.noneOf(ArchiveDatasetId.class);
+                for (ArchiveDatasetId id : ArchiveDatasetId.values()) {
+                    DatasetArchiveConfig selected = archiveConfig.datasets().get(id);
+                    Map<String, Object> dataset = new LinkedHashMap<>();
+                    dataset.put("enabled", selected.enabled());
+                    dataset.put("startMode", selected.startMode().name().toLowerCase(Locale.ROOT));
+                    dataset.put("retentionEpochs", selected.retentionEpochs());
+                    if (selected.enabled()) {
+                        dataset.put("coverage", backend.coverage(read, id));
+                        dataset.put("workers", metrics.dataset(id));
+                        if (id.sourceKind() == SourceKind.BLOCK) enabledBlocks.add(id);
+                    }
+                    datasets.put(id.logicalName(), dataset);
                 }
-                datasets.put(id.logicalName(), dataset);
+                result.put("datasets", datasets);
+                if (!enabledBlocks.isEmpty()) {
+                    try {
+                        result.put("finalizedConsistency", consistencyStatus(ArchiveConsistencyPlanner.plan(
+                                backend, read, enabledBlocks, firstCanonicalBlockNumber,
+                                OptionalLong.empty(), OptionalLong.empty())));
+                    } catch (ArchiveStoreException unavailable) {
+                        result.put("finalizedConsistency", Map.of(
+                                "available", false,
+                                "detail", unavailable.getMessage()));
+                    }
+                }
             }
-            result.put("datasets", datasets);
             Map<String, Object> maintenance = new LinkedHashMap<>();
             maintenance.put("intervalSeconds", maintenanceInterval.toSeconds());
             maintenance.put("timeLimitSeconds", maintenanceBudget.timeLimit().toSeconds());
@@ -471,6 +549,22 @@ public class HistoryArchiveService implements AutoCloseable {
         }
         if (epochStaging != null) epochStaging.error().ifPresent(value -> result.put("epochStagingError", value));
         return result;
+    }
+
+    private static Map<String, Object> consistencyStatus(ArchiveConsistencyPoint point) {
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("available", true);
+        value.put("generation", point.generation());
+        value.put("fromBlock", point.completeRange().startInclusive());
+        value.put("toBlock", point.completeRange().endInclusive());
+        value.put("asOf", Map.of(
+                "blockNumber", point.asOf().blockNumber(),
+                "slot", point.asOf().slot(),
+                "blockHash", HexUtil.encodeHexString(point.asOf().blockHash())));
+        Map<String, Integer> versions = new TreeMap<>();
+        point.projectionVersions().forEach((dataset, version) -> versions.put(dataset.logicalName(), version));
+        value.put("projectionVersions", versions);
+        return value;
     }
 
     private void runBoundedWork() {
@@ -776,7 +870,7 @@ public class HistoryArchiveService implements AutoCloseable {
             for (ArchiveDatasetId dataset : ArchiveDatasetId.values()) {
                 if (dataset.sourceKind() != SourceKind.EPOCH || !datasetEnabled(dataset)) continue;
                 if (backend.invalidateEpochJobsAfterSlot(dataset, targetSlot) > 0) {
-                    controlStore.clearTrack(dataset, ArchiveTrack.BACKFILL, List.of());
+                    controlStore.clearTrack(dataset, ArchiveTrack.BACKFILL);
                 }
             }
             log.info("Applied archive epoch rollback through epoch {}, slot {}, block {}; discarded {} staged source jobs",
@@ -824,18 +918,7 @@ public class HistoryArchiveService implements AutoCloseable {
 
     private void reactivateLiveDataset(ArchiveDatasetId dataset, long oldActivation, long currentTip,
                                        long replayAfterBlock, String reason) {
-        List<byte[]> prefixes = com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas.schema(dataset)
-                .tables().stream()
-                .map(table -> ("archive-row/" + table.physicalName() + "/")
-                        .getBytes(java.nio.charset.StandardCharsets.UTF_8))
-                .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
-        if (dataset == ArchiveDatasetId.ADDRESS_TRANSACTION) {
-            prefixes.add("resolver/live/".getBytes(java.nio.charset.StandardCharsets.UTF_8));
-        }
-        if (dataset == ArchiveDatasetId.ADDRESS_TRANSACTION || dataset == ArchiveDatasetId.UTXO_HISTORY) {
-            prefixes.add("pointer/live/".getBytes(java.nio.charset.StandardCharsets.UTF_8));
-        }
-        controlStore.clearTrack(dataset, ArchiveTrack.LIVE, prefixes);
+        controlStore.clearTrack(dataset, ArchiveTrack.LIVE);
         long replacement = Math.addExact(replayAfterBlock, 1);
         if (dataset == ArchiveDatasetId.ADDRESS_TRANSACTION && liveAddressDataset != null
                 && ledger != null && ledger.getUtxoState() != null && ledger.getUtxoState().isEnabled()) {
@@ -850,14 +933,7 @@ public class HistoryArchiveService implements AutoCloseable {
     }
 
     private void reactivateBackfillDataset(ArchiveDatasetId dataset, long activation) {
-        List<byte[]> prefixes = new ArrayList<>();
-        if (dataset == ArchiveDatasetId.ADDRESS_TRANSACTION) {
-            prefixes.add("resolver/backfill/".getBytes(StandardCharsets.UTF_8));
-        }
-        if (dataset == ArchiveDatasetId.ADDRESS_TRANSACTION || dataset == ArchiveDatasetId.UTXO_HISTORY) {
-            prefixes.add("pointer/backfill/".getBytes(StandardCharsets.UTF_8));
-        }
-        controlStore.clearTrack(dataset, ArchiveTrack.BACKFILL, prefixes);
+        controlStore.clearTrack(dataset, ArchiveTrack.BACKFILL);
         long replacement = activation;
         if (dataset == ArchiveDatasetId.ADDRESS_TRANSACTION && backfillAddressDataset != null) {
             backfillAddressDataset.resetResolver();
@@ -1057,7 +1133,7 @@ public class HistoryArchiveService implements AutoCloseable {
                 }
                 write.commit();
             }
-            if (!keys.isEmpty()) controlStore.deleteData(dataset, keys);
+            if (!keys.isEmpty()) controlStore.deleteFacts(dataset, keys);
         }
         if (selectedPromotionBlocks < defaultPromotionBlocks) {
             promotionBatchBlocks.put(dataset, Math.min(defaultPromotionBlocks, selectedPromotionBlocks * 2));
@@ -1077,7 +1153,7 @@ public class HistoryArchiveService implements AutoCloseable {
                             range.startInclusive(), Math.min(finalized, range.endInclusive())));
                 }
             }
-            if (!keys.isEmpty()) controlStore.deleteData(dataset, keys);
+            if (!keys.isEmpty()) controlStore.deleteFacts(dataset, keys);
         }
     }
 
@@ -1150,7 +1226,8 @@ public class HistoryArchiveService implements AutoCloseable {
             AddressTransactionDataset.AddressParts parts = dataset.address(address);
             byte[] txHash = Blake2bUtil.blake2bHash256(parts.raw());
             result.add(new SequentialOutpointResolver.Entry(new Outpoint(txHash, 0),
-                    new ResolvedOutput(parts.addressKey(), parts.paymentCredential(), parts.stakeCredential())));
+                    new ResolvedOutput(parts.addressKey(), parts.displayAddress(), parts.paymentCredential(),
+                            parts.stakeCredentialType(), parts.stakeCredential())));
         }
         return List.copyOf(result);
     }
@@ -1263,7 +1340,8 @@ public class HistoryArchiveService implements AutoCloseable {
                         var parts = dataset.address(input.readUTF(), snapshotEra.getValue());
                         page.add(new SequentialOutpointResolver.Entry(
                                 new Outpoint(HexUtil.decodeHexString(txHash), index),
-                                new ResolvedOutput(parts.addressKey(), parts.paymentCredential(),
+                                new ResolvedOutput(parts.addressKey(), parts.displayAddress(),
+                                        parts.paymentCredential(), parts.stakeCredentialType(),
                                         parts.stakeCredential())));
                         if (page.size() == 10_000) {
                             dataset.seedResolver(page, false);
@@ -1499,6 +1577,15 @@ public class HistoryArchiveService implements AutoCloseable {
         else if (value.endsWith("GB")) { multiplier = 1024L * 1024 * 1024; value = value.substring(0, value.length() - 2); }
         else if (value.endsWith("B")) value = value.substring(0, value.length() - 1);
         return Math.multiplyExact(Long.parseLong(value.trim()), multiplier);
+    }
+    private HotHistoryStore openHotStore(String engine, Path path) {
+        if (engine.equals("rocksdb")) return new RocksDbHotHistoryStore(path);
+        HotHistoryStoreProvider provider = ServiceLoader.load(HotHistoryStoreProvider.class).stream()
+                .map(ServiceLoader.Provider::get)
+                .filter(candidate -> candidate.engine().equals(engine))
+                .findFirst().orElseThrow(() -> new IllegalStateException(
+                        "history hot-store provider not packaged for engine " + engine));
+        return provider.open(path, Map.of());
     }
     private static UUID stableArchiveId(int magic, String genesis, String engine, Path directory) {
         return UUID.nameUUIDFromBytes((magic + "|" + genesis + "|" + engine + "|" + directory)

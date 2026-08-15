@@ -241,6 +241,10 @@ yano:
     dir: ./history
     start-mode: full-required
     live-enabled: true
+    hot-store:
+      engine: rocksdb
+      sqlite:
+        path: ./history/hot-history.sqlite
     archive:
       engine: ducklake
       finality-blocks: auto
@@ -267,8 +271,6 @@ yano:
         enabled: false
         retention-epochs: 0
         tables:
-          addresses:
-            enabled: true
           transaction-outputs:
             enabled: true
           transaction-output-assets:

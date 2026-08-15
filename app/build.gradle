@@ -120,6 +120,7 @@ dependencies {
     testImplementation libs.mockito.inline
     testImplementation libs.mockito.junit.jupiter
     testImplementation project(':archive-modules:archive-store-sqlite')
+    testImplementation project(':archive-modules:archive-store-ducklake')
 
     testImplementation project(':testkit')
     testImplementation project(':app-e2e-testkit')
