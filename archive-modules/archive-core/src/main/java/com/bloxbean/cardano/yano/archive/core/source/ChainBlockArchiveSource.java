@@ -4,7 +4,7 @@ import com.bloxbean.cardano.yano.api.BlockBodyRetentionBoundary;
 import com.bloxbean.cardano.yano.api.ChainBlockReader;
 import com.bloxbean.cardano.yano.archive.api.ArchiveStoreException;
 import com.bloxbean.cardano.yano.archive.core.dataset.BlockSourceContext;
-import com.bloxbean.cardano.yano.archive.core.hot.RocksDbHotHistoryStore;
+import com.bloxbean.cardano.yano.archive.core.hot.HotHistoryStore;
 
 import java.time.Instant;
 import java.util.Optional;
@@ -13,10 +13,10 @@ import java.util.Optional;
 public final class ChainBlockArchiveSource<B> implements BlockArchiveSource<B> {
     private final ChainBlockReader reader;
     private final CanonicalBlockDecoder<B> decoder;
-    private final RocksDbHotHistoryStore leases;
+    private final HotHistoryStore leases;
 
     public ChainBlockArchiveSource(ChainBlockReader reader, CanonicalBlockDecoder<B> decoder,
-                                   RocksDbHotHistoryStore leases) {
+                                   HotHistoryStore leases) {
         this.reader = java.util.Objects.requireNonNull(reader, "reader");
         this.decoder = java.util.Objects.requireNonNull(decoder, "decoder");
         this.leases = java.util.Objects.requireNonNull(leases, "leases");

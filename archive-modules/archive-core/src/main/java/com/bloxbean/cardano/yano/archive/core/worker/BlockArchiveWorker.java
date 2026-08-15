@@ -14,7 +14,7 @@ import com.bloxbean.cardano.yano.archive.core.dataset.BlockArchiveDataset;
 import com.bloxbean.cardano.yano.archive.core.dataset.BlockSourceContext;
 import com.bloxbean.cardano.yano.archive.core.dataset.StatefulBlockArchiveDataset;
 import com.bloxbean.cardano.yano.archive.core.source.BlockArchiveSource;
-import com.bloxbean.cardano.yano.archive.core.hot.RocksDbHotHistoryStore;
+import com.bloxbean.cardano.yano.archive.core.hot.HotHistoryStore;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -196,7 +196,7 @@ public final class BlockArchiveWorker<B> {
                     stateful.abortBatch();
                     throw e;
                 }
-            } else if (progress instanceof RocksDbHotHistoryStore hot) {
+            } else if (progress instanceof HotHistoryStore hot) {
                 hot.saveCoveredProgress(new ArchiveProgress(dataset.dataset(), ArchiveTrack.BACKFILL,
                         end, last.slot(), last.blockHash(), generation));
             } else {
@@ -218,7 +218,7 @@ public final class BlockArchiveWorker<B> {
         // activation anchor is slower than partial surgery but cannot leave a
         // prefix whose receipt/coverage was removed with an overlapping job.
         backend.invalidate(dataset.dataset(), new BlockRange(requestedStart, current.coordinate()));
-        if (progress instanceof RocksDbHotHistoryStore hot) {
+        if (progress instanceof HotHistoryStore hot) {
             try {
                 hot.resetTrackFrom(dataset.dataset(), ArchiveTrack.BACKFILL, requestedStart);
             } catch (IllegalStateException e) {

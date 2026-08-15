@@ -13,12 +13,12 @@ import java.util.*;
 public final class LiveBlockArchiveWorker<B> {
     private final ArchiveNetworkIdentity network;
     private final BlockArchiveSource<B> source;
-    private final RocksDbHotHistoryStore hot;
+    private final HotHistoryStore hot;
     private final ArchiveWorkerConfig config;
     private final ArchiveWorkerMetrics metrics;
 
     public LiveBlockArchiveWorker(ArchiveNetworkIdentity network, BlockArchiveSource<B> source,
-                                  RocksDbHotHistoryStore hot, ArchiveWorkerConfig config,
+                                  HotHistoryStore hot, ArchiveWorkerConfig config,
                                   ArchiveWorkerMetrics metrics) {
         this.network = network; this.source = source; this.hot = hot; this.config = config; this.metrics = metrics;
     }

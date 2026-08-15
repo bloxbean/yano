@@ -16,7 +16,7 @@ import java.util.function.Consumer;
 
 /** Normalized UTXO history with an archive-private, rollback-aware pointer resolver. */
 public final class UtxoHistoryDataset implements LiveStatefulBlockArchiveDataset<UtxoHistoryFact> {
-    private final RocksDbHotHistoryStore state;
+    private final HotHistoryStore state;
     private final SequentialPointerResolver pointers;
     private final ArchiveTrack track;
     private List<BlockSourceContext<UtxoHistoryFact>> blocks = List.of();
@@ -32,7 +32,7 @@ public final class UtxoHistoryDataset implements LiveStatefulBlockArchiveDataset
         this.track = ArchiveTrack.BACKFILL;
     }
 
-    public UtxoHistoryDataset(RocksDbHotHistoryStore state, String namespace, ArchiveTrack track) {
+    public UtxoHistoryDataset(HotHistoryStore state, String namespace, ArchiveTrack track) {
         this.state = Objects.requireNonNull(state, "state");
         this.pointers = new SequentialPointerResolver(state, ArchiveDatasetId.UTXO_HISTORY, namespace);
         this.track = Objects.requireNonNull(track, "track");

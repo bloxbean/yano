@@ -33,7 +33,7 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Dedicated history RocksDB with exact per-block undo; no core-state handle is shared. */
-public final class RocksDbHotHistoryStore implements ArchiveProgressStore, BlockBodyRetentionBoundary, AutoCloseable {
+public final class RocksDbHotHistoryStore implements HotHistoryStore {
     static { RocksDB.loadLibrary(); }
     private static final byte[] DATA = "d/".getBytes(StandardCharsets.UTF_8);
     private static final byte[] UNDO = "u/".getBytes(StandardCharsets.UTF_8);
@@ -286,7 +286,7 @@ public final class RocksDbHotHistoryStore implements ArchiveProgressStore, Block
 
     public HotHistorySnapshot snapshot() {
         requireOpen();
-        return new HotHistorySnapshot(database);
+        return new RocksDbHotHistorySnapshot(database);
     }
 
     public ArchiveSourceLease acquireBlockBodyLease(long startBlock, long endBlock, Instant expiresAt) {

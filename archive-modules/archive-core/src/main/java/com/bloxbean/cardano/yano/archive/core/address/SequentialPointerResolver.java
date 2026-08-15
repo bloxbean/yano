@@ -3,7 +3,7 @@ package com.bloxbean.cardano.yano.archive.core.address;
 import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import com.bloxbean.cardano.yano.archive.api.ArchiveStoreException;
 import com.bloxbean.cardano.yano.archive.core.hot.HotHistoryMutation;
-import com.bloxbean.cardano.yano.archive.core.hot.RocksDbHotHistoryStore;
+import com.bloxbean.cardano.yano.archive.core.hot.HotHistoryStore;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -18,12 +18,12 @@ import java.util.ArrayList;
  * on the authoritative account-state store being ahead of the archive worker.
  */
 public final class SequentialPointerResolver {
-    private final RocksDbHotHistoryStore store;
+    private final HotHistoryStore store;
     private final ArchiveDatasetId dataset;
     private final byte[] prefix;
     private final byte[] reversePrefix;
 
-    public SequentialPointerResolver(RocksDbHotHistoryStore store, ArchiveDatasetId dataset, String namespace) {
+    public SequentialPointerResolver(HotHistoryStore store, ArchiveDatasetId dataset, String namespace) {
         this.store = Objects.requireNonNull(store, "store");
         this.dataset = Objects.requireNonNull(dataset, "dataset");
         if (namespace == null || !namespace.matches("[a-z0-9_-]+")) {

@@ -10,7 +10,8 @@ the optional history subsystem.
   address-transaction, and UTXO-history facts;
 - durable epoch-source decoding for rewards and epoch datasets;
 - independent sequential outpoint and pointer resolution;
-- the recent mutable RocksDB hot zone with exact undo information;
+- the backend-neutral `HotHistoryStore` contract and current RocksDB hot-zone
+  implementation with exact undo information;
 - backfill, live, promotion, rollback, retention, progress, and health workers.
 
 The UTXO decoder emits only configured row families. Inline datum/reference
@@ -49,6 +50,12 @@ hot store.
 This module depends on `archive-api`, RocksDB, and Cardano decoding libraries.
 It contains no DuckLake- or SQLite-specific storage logic and no Quarkus
 application wiring.
+
+`HotHistoryStore` and `HotHistorySnapshot` keep workers, resolvers, promotion,
+and query code independent of the physical hot engine. RocksDB remains the
+runtime implementation while ADR-036 develops and measures an append-only
+SQLite alternative. The shared hot-store conformance fixture is available to
+both implementations.
 
 ## Testing
 

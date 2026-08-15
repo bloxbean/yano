@@ -22,7 +22,7 @@ import java.util.function.Consumer;
 
 /** Resolver-independent-from-core, sequential address history projection. */
 public final class AddressTransactionDataset implements LiveStatefulBlockArchiveDataset<Block> {
-    private final RocksDbHotHistoryStore state;
+    private final HotHistoryStore state;
     private SequentialOutpointResolver durableResolver;
     private SequentialPointerResolver pointerResolver;
     private final String resolverNamespace;
@@ -37,11 +37,11 @@ public final class AddressTransactionDataset implements LiveStatefulBlockArchive
     private Set<SequentialPointerResolver.PointerCoordinate> pendingDeletedPointers = Set.of();
     private int blockIndex;
 
-    public AddressTransactionDataset(RocksDbHotHistoryStore state, AddressKeyCodec addressKeys) {
+    public AddressTransactionDataset(HotHistoryStore state, AddressKeyCodec addressKeys) {
         this(state, addressKeys, "backfill", ArchiveTrack.BACKFILL);
     }
 
-    public AddressTransactionDataset(RocksDbHotHistoryStore state, AddressKeyCodec addressKeys,
+    public AddressTransactionDataset(HotHistoryStore state, AddressKeyCodec addressKeys,
                                      String resolverNamespace, ArchiveTrack track) {
         this.state = Objects.requireNonNull(state, "state");
         this.resolverNamespace = resolverNamespace;

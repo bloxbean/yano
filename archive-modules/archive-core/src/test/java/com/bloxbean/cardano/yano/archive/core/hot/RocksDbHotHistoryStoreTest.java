@@ -31,7 +31,10 @@ class RocksDbHotHistoryStoreTest {
                 store.applyBlock(ArchiveDatasetId.TRANSACTION, checkpoint(3, 30, 3, 2),
                         List.of(new HotHistoryMutation(key, null)), progress(3, 30, 3));
                 assertThat(store.get(ArchiveDatasetId.TRANSACTION, key)).isEmpty();
-                assertThat(pinned.get(physicalKey(key))).contains(bytes("two"));
+                assertThat(pinned.scan(ArchiveDatasetId.TRANSACTION, key))
+                        .singleElement()
+                        .extracting(HotHistorySnapshot.Entry::value)
+                        .isEqualTo(bytes("two"));
             }
             store.rollbackTo(ArchiveDatasetId.TRANSACTION, ArchiveTrack.LIVE, 1);
             assertThat(store.get(ArchiveDatasetId.TRANSACTION, key)).contains(bytes("one"));
@@ -164,10 +167,6 @@ class RocksDbHotHistoryStoreTest {
 
     private HotBlockCheckpoint checkpoint(long block, long slot, int hash, int parent) {
         return new HotBlockCheckpoint(block, slot, new byte[] {(byte) hash}, new byte[] {(byte) parent});
-    }
-
-    private byte[] physicalKey(byte[] logical) {
-        return bytes("d/TRANSACTION/" + new String(logical, StandardCharsets.UTF_8));
     }
 
     private byte[] bytes(String value) { return value.getBytes(StandardCharsets.UTF_8); }

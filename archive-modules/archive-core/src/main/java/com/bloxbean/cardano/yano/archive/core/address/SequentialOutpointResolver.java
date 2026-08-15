@@ -2,7 +2,7 @@ package com.bloxbean.cardano.yano.archive.core.address;
 
 import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import com.bloxbean.cardano.yano.archive.api.ArchiveStoreException;
-import com.bloxbean.cardano.yano.archive.core.hot.RocksDbHotHistoryStore;
+import com.bloxbean.cardano.yano.archive.core.hot.HotHistoryStore;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -15,14 +15,14 @@ import java.util.Optional;
 public final class SequentialOutpointResolver {
     private final byte[] prefix;
     private final byte[] seeded;
-    private final RocksDbHotHistoryStore store;
+    private final HotHistoryStore store;
     private boolean genesisSeeded;
 
-    public SequentialOutpointResolver(RocksDbHotHistoryStore store) {
+    public SequentialOutpointResolver(HotHistoryStore store) {
         this(store, "backfill");
     }
 
-    public SequentialOutpointResolver(RocksDbHotHistoryStore store, String namespace) {
+    public SequentialOutpointResolver(HotHistoryStore store, String namespace) {
         this.store = store;
         if (namespace == null || !namespace.matches("[a-z0-9_-]+")) throw new IllegalArgumentException("resolver namespace");
         this.prefix = ("resolver/" + namespace + "/").getBytes(java.nio.charset.StandardCharsets.UTF_8);
