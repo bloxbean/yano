@@ -43,12 +43,48 @@ class ArchiveConfigurationTest {
     }
 
     @Test
+    void utxoTableSelectionEnforcesOnlyPhysicalDependencies() {
+        var transaction = new DatasetArchiveConfig(true, ArchiveStartMode.TIP, 0);
+        assertThatThrownBy(() -> configuration(Map.of(
+                ArchiveDatasetId.TRANSACTION, transaction,
+                ArchiveDatasetId.UTXO_HISTORY, new DatasetArchiveConfig(true, ArchiveStartMode.TIP, 0,
+                        Map.of("addresses", false, "transaction_outputs", true)))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("requires addresses");
+
+        assertThatThrownBy(() -> configuration(Map.of(
+                ArchiveDatasetId.TRANSACTION, transaction,
+                ArchiveDatasetId.UTXO_HISTORY, new DatasetArchiveConfig(true, ArchiveStartMode.TIP, 0,
+                        Map.of("transaction_outputs", false, "transaction_output_assets", true)))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("requires transaction_outputs");
+
+        var datumOnly = configuration(Map.of(
+                ArchiveDatasetId.TRANSACTION, transaction,
+                ArchiveDatasetId.UTXO_HISTORY, new DatasetArchiveConfig(true, ArchiveStartMode.TIP, 0,
+                        Map.of("addresses", false, "transaction_outputs", false,
+                                "transaction_output_assets", false, "transaction_inputs", false,
+                                "transaction_datums", true, "transaction_redeemers", false))));
+        assertThat(datumOnly.datasets().get(ArchiveDatasetId.UTXO_HISTORY)
+                .tableEnabled("transaction_datums")).isTrue();
+    }
+
+    @Test
     void mutableDatabaseAndTempPathsMustBeDisjoint() {
         assertThatThrownBy(() -> ArchivePathValidator.requireDisjoint(Map.of(
                 "core", temp.resolve("core"),
                 "hot", temp.resolve("core/hot"))))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("overlap");
+    }
+
+    @Test
+    void automaticProjectionParallelismLeavesCapacityForCoreWork() {
+        assertThat(ArchiveWorkerConfig.automaticProjectionParallelism(1, 4)).isEqualTo(1);
+        assertThat(ArchiveWorkerConfig.automaticProjectionParallelism(2, 4)).isEqualTo(1);
+        assertThat(ArchiveWorkerConfig.automaticProjectionParallelism(4, 4)).isEqualTo(2);
+        assertThat(ArchiveWorkerConfig.automaticProjectionParallelism(8, 4)).isEqualTo(4);
+        assertThat(ArchiveWorkerConfig.automaticProjectionParallelism(32, 2)).isEqualTo(2);
     }
 
     private ArchiveConfiguration configuration(Map<ArchiveDatasetId, DatasetArchiveConfig> datasets) {

@@ -16,6 +16,7 @@ import com.bloxbean.cardano.yano.archive.api.ArchiveStoreException;
 import com.bloxbean.cardano.yano.archive.core.address.AddressKeyCodec;
 import com.bloxbean.cardano.yano.archive.core.dataset.BlockSourceContext;
 import com.bloxbean.cardano.yano.archive.core.dataset.UtxoHistoryFact;
+import com.bloxbean.cardano.yano.archive.core.dataset.UtxoHistoryProjection;
 
 import java.math.BigInteger;
 import java.time.Instant;
@@ -29,11 +30,13 @@ public final class YaciUtxoHistoryDecoder implements CanonicalBlockDecoder<UtxoH
     private final AddressKeyCodec addressKeys = new AddressKeyCodec();
     private final List<GenesisOutput> genesisOutputs;
     private final long genesisBlockNumber;
+    private final UtxoHistoryProjection projection;
 
     public YaciUtxoHistoryDecoder(LongUnaryOperator slotToEpoch, LongUnaryOperator slotToUnixTime) {
         this.blockDecoder = new YaciBlockDecoder(slotToEpoch, slotToUnixTime);
         this.genesisOutputs = List.of();
         this.genesisBlockNumber = 0;
+        this.projection = UtxoHistoryProjection.all();
     }
 
     public YaciUtxoHistoryDecoder(LongUnaryOperator slotToEpoch, LongUnaryOperator slotToUnixTime,
@@ -49,18 +52,32 @@ public final class YaciUtxoHistoryDecoder implements CanonicalBlockDecoder<UtxoH
     public YaciUtxoHistoryDecoder(LongUnaryOperator slotToEpoch, LongUnaryOperator slotToUnixTime,
                                   LongFunction<Era> storedEra, List<GenesisOutput> genesisOutputs,
                                   long genesisBlockNumber) {
+        this(slotToEpoch, slotToUnixTime, storedEra, genesisOutputs, genesisBlockNumber,
+                UtxoHistoryProjection.all());
+    }
+
+    public YaciUtxoHistoryDecoder(LongUnaryOperator slotToEpoch, LongUnaryOperator slotToUnixTime,
+                                  LongFunction<Era> storedEra, List<GenesisOutput> genesisOutputs,
+                                  long genesisBlockNumber, UtxoHistoryProjection projection) {
         this.blockDecoder = new YaciBlockDecoder(slotToEpoch, slotToUnixTime, storedEra);
         this.genesisOutputs = List.copyOf(genesisOutputs);
         if (genesisBlockNumber < 0) throw new IllegalArgumentException("genesis block number must be non-negative");
         this.genesisBlockNumber = genesisBlockNumber;
+        this.projection = Objects.requireNonNull(projection, "projection");
     }
 
     @Override
     public BlockSourceContext<UtxoHistoryFact> decode(long blockNumber, CanonicalBlockReference reference, byte[] body) {
         BlockSourceContext<Block> decoded = blockDecoder.decode(blockNumber, reference, body);
+        return project(decoded);
+    }
+
+    /** Derives UTXO facts from a block already parsed by the shared archive source. */
+    public BlockSourceContext<UtxoHistoryFact> project(BlockSourceContext<Block> decoded) {
+        Objects.requireNonNull(decoded, "decoded");
         return new BlockSourceContext<>(decoded.blockNumber(), decoded.slot(), decoded.epoch(), decoded.blockTime(),
                 decoded.blockHash(), decoded.parentHash(),
-                derive(decoded.block(), decoded.slot(), includesGenesis(blockNumber)));
+                derive(decoded.block(), decoded.slot(), includesGenesis(decoded.blockNumber()), decoded.blockNumber()));
     }
 
     boolean includesGenesis(long blockNumber) {
@@ -78,6 +95,10 @@ public final class YaciUtxoHistoryDecoder implements CanonicalBlockDecoder<UtxoH
     }
 
     UtxoHistoryFact derive(Block block, long slot, boolean includeGenesis) {
+        return derive(block, slot, includeGenesis, 0);
+    }
+
+    private UtxoHistoryFact derive(Block block, long slot, boolean includeGenesis, long blockNumber) {
         int era = block.getEra() == null ? Era.Conway.getValue() : block.getEra().getValue();
         List<UtxoHistoryFact.PointerRegistration> pointerRegistrations = new ArrayList<>();
         List<UtxoHistoryFact.PointerDeregistration> pointerDeregistrations = new ArrayList<>();
@@ -85,13 +106,20 @@ public final class YaciUtxoHistoryDecoder implements CanonicalBlockDecoder<UtxoH
         List<UtxoHistoryFact.Output> outputs = new ArrayList<>();
         List<UtxoHistoryFact.Asset> assets = new ArrayList<>();
         List<UtxoHistoryFact.Input> inputs = new ArrayList<>();
-        LinkedHashMap<String, UtxoHistoryFact.Datum> datums = new LinkedHashMap<>();
-        LinkedHashMap<String, UtxoHistoryFact.Script> scripts = new LinkedHashMap<>();
+        List<UtxoHistoryFact.TransactionDatum> transactionDatums = new ArrayList<>();
+        List<UtxoHistoryFact.TransactionRedeemer> transactionRedeemers = new ArrayList<>();
         Set<String> seenAddresses = new HashSet<>();
         Set<Integer> invalid = block.getInvalidTransactions() == null ? Set.of() : Set.copyOf(block.getInvalidTransactions());
         List<TransactionBody> bodies = block.getTransactionBodies() == null ? List.of() : block.getTransactionBodies();
 
-        if (includeGenesis) {
+        boolean includeAddresses = projection.includes(UtxoHistoryProjection.Table.ADDRESSES, blockNumber);
+        boolean includeOutputs = projection.includes(UtxoHistoryProjection.Table.TRANSACTION_OUTPUTS, blockNumber);
+        boolean includeAssets = projection.includes(UtxoHistoryProjection.Table.TRANSACTION_OUTPUT_ASSETS, blockNumber);
+        boolean includeInputs = projection.includes(UtxoHistoryProjection.Table.TRANSACTION_INPUTS, blockNumber);
+        boolean includeDatums = projection.includes(UtxoHistoryProjection.Table.TRANSACTION_DATUMS, blockNumber);
+        boolean includeRedeemers = projection.includes(UtxoHistoryProjection.Table.TRANSACTION_REDEEMERS, blockNumber);
+
+        if (includeGenesis && (includeAddresses || includeOutputs)) {
             LinkedHashMap<String, GenesisOutput> unique = new LinkedHashMap<>();
             for (GenesisOutput genesis : genesisOutputs) {
                 AddressInfo address = address(genesis.address());
@@ -106,11 +134,12 @@ public final class YaciUtxoHistoryDecoder implements CanonicalBlockDecoder<UtxoH
             for (GenesisOutput genesis : unique.values()) {
                 AddressInfo address = address(genesis.address());
                 String addressId = HexUtil.encodeHexString(address.key());
-                if (seenAddresses.add(addressId)) addresses.add(address.fact());
-                outputs.add(new UtxoHistoryFact.Output(
+                if (includeAddresses && seenAddresses.add(addressId)) addresses.add(address.fact());
+                if (includeOutputs) outputs.add(new UtxoHistoryFact.Output(
                         Blake2bUtil.blake2bHash256(address.fact().rawAddress()), 0, -1,
                         genesis.originType(), address.key(), address.paymentCredential(), address.stakeCredential(),
-                        exactLong(genesis.amount(), "genesis lovelace"), "none", null, null, false));
+                        exactLong(genesis.amount(), "genesis lovelace"), "none", null, null,
+                        null, null, null, false));
             }
         }
 
@@ -118,6 +147,9 @@ public final class YaciUtxoHistoryDecoder implements CanonicalBlockDecoder<UtxoH
             TransactionBody tx = bodies.get(txIndex);
             byte[] txHash = hex(tx.getTxHash(), "transaction hash");
             boolean valid = !invalid.contains(txIndex);
+            // Keep the small sequential pointer projection current even while
+            // address/output rows are disabled, so enabling them later does
+            // not require replaying old certificates.
             if (valid && era < Era.Conway.getValue() && tx.getCertificates() != null) {
                 for (int certIndex = 0; certIndex < tx.getCertificates().size(); certIndex++) {
                     var certificate = tx.getCertificates().get(certIndex);
@@ -140,67 +172,76 @@ public final class YaciUtxoHistoryDecoder implements CanonicalBlockDecoder<UtxoH
                     }
                 }
             }
-            addInputs(inputs, txHash, txIndex, "input", tx.getInputs(), valid);
-            addInputs(inputs, txHash, txIndex, "collateral", tx.getCollateralInputs(), !valid);
-            addInputs(inputs, txHash, txIndex, "reference", tx.getReferenceInputs(), false);
-            if (valid && tx.getOutputs() != null) {
+            if (includeInputs) {
+                addInputs(inputs, txHash, txIndex, "input", tx.getInputs(), valid);
+                addInputs(inputs, txHash, txIndex, "collateral", tx.getCollateralInputs(), !valid);
+                addInputs(inputs, txHash, txIndex, "reference", tx.getReferenceInputs(), false);
+            }
+            if ((includeAddresses || includeOutputs) && valid && tx.getOutputs() != null) {
                 for (int outputIndex = 0; outputIndex < tx.getOutputs().size(); outputIndex++) {
-                    addOutput(addresses, outputs, assets, datums, scripts, seenAddresses, txHash, txIndex,
-                            outputIndex, "regular", false, tx.getOutputs().get(outputIndex));
+                    addOutput(addresses, outputs, assets, seenAddresses, txHash, txIndex,
+                            outputIndex, "regular", false, tx.getOutputs().get(outputIndex),
+                            includeAddresses, includeOutputs, includeAssets);
                 }
             }
-            if (!valid && tx.getCollateralReturn() != null) {
+            if ((includeAddresses || includeOutputs) && !valid && tx.getCollateralReturn() != null) {
                 int outputIndex = tx.getOutputs() == null ? 0 : tx.getOutputs().size();
-                addOutput(addresses, outputs, assets, datums, scripts, seenAddresses, txHash, txIndex,
-                        outputIndex, "collateral_return", true, tx.getCollateralReturn());
+                addOutput(addresses, outputs, assets, seenAddresses, txHash, txIndex,
+                        outputIndex, "collateral_return", true, tx.getCollateralReturn(),
+                        includeAddresses, includeOutputs, includeAssets);
             }
-            addWitnessDatums(block, txIndex, datums);
+            if (includeDatums || includeRedeemers) {
+                addWitnessData(block, txHash, txIndex, transactionDatums, transactionRedeemers,
+                        includeDatums, includeRedeemers);
+            }
         }
         return new UtxoHistoryFact(era, pointerRegistrations, pointerDeregistrations,
                 addresses, outputs, assets, inputs,
-                new ArrayList<>(datums.values()), new ArrayList<>(scripts.values()));
+                transactionDatums, transactionRedeemers);
     }
 
     private void addOutput(List<UtxoHistoryFact.Address> addresses, List<UtxoHistoryFact.Output> outputs,
-                           List<UtxoHistoryFact.Asset> assets, Map<String, UtxoHistoryFact.Datum> datums,
-                           Map<String, UtxoHistoryFact.Script> scripts, Set<String> seenAddresses,
+                           List<UtxoHistoryFact.Asset> assets, Set<String> seenAddresses,
                            byte[] txHash, int txIndex, int outputIndex, String originType,
-                           boolean collateralReturn, TransactionOutput output) {
+                           boolean collateralReturn, TransactionOutput output,
+                           boolean includeAddresses, boolean includeOutputs, boolean includeAssets) {
         AddressInfo address = address(output.getAddress());
         String addressId = HexUtil.encodeHexString(address.key());
-        if (seenAddresses.add(addressId)) addresses.add(address.fact());
+        if (includeAddresses && seenAddresses.add(addressId)) addresses.add(address.fact());
         BigInteger lovelace = BigInteger.ZERO;
-        if (output.getAmounts() != null) {
+        if ((includeOutputs || includeAssets) && output.getAmounts() != null) {
             for (Amount amount : output.getAmounts()) {
                 if (amount == null || amount.getQuantity() == null) continue;
                 if ("lovelace".equals(amount.getUnit())) lovelace = lovelace.add(amount.getQuantity());
-                else assets.add(new UtxoHistoryFact.Asset(txHash, outputIndex,
+                else if (includeAssets) assets.add(new UtxoHistoryFact.Asset(txHash, outputIndex,
                         hex(amount.getPolicyId(), "asset policy"), assetName(amount), amount.getQuantity()));
             }
         }
+        if (!includeOutputs) return;
         byte[] datumHash = nullableHex(output.getDatumHash());
+        byte[] inlineDatumCbor = null;
         String datumKind = "none";
         if (output.getInlineDatum() != null && !output.getInlineDatum().isBlank()) {
-            byte[] cbor = hex(output.getInlineDatum(), "inline datum");
-            datumHash = hex(Datum.cborToHash(cbor), "inline datum hash");
-            datums.putIfAbsent(HexUtil.encodeHexString(datumHash), new UtxoHistoryFact.Datum(datumHash, cbor));
+            inlineDatumCbor = hex(output.getInlineDatum(), "inline datum");
+            datumHash = hex(Datum.cborToHash(inlineDatumCbor), "inline datum hash");
             datumKind = "inline";
         } else if (datumHash != null) datumKind = "hash";
         byte[] scriptHash = null;
+        String scriptType = null;
+        byte[] scriptCbor = null;
         if (output.getScriptRef() != null && !output.getScriptRef().isBlank()) {
-            byte[] cbor = hex(output.getScriptRef(), "reference script");
+            scriptCbor = hex(output.getScriptRef(), "reference script");
             try {
-                var script = ReferenceScriptUtil.deserializeScriptRef(cbor);
+                var script = ReferenceScriptUtil.deserializeScriptRef(scriptCbor);
                 scriptHash = script.getScriptHash();
-                scripts.putIfAbsent(HexUtil.encodeHexString(scriptHash),
-                        new UtxoHistoryFact.Script(scriptHash, Integer.toString(script.getScriptType()), cbor));
+                scriptType = scriptType(script.getScriptType());
             } catch (Exception e) {
                 throw new ArchiveStoreException("cannot decode reference script", e);
             }
         }
         outputs.add(new UtxoHistoryFact.Output(txHash, outputIndex, txIndex, originType, address.key(),
                 address.paymentCredential(), address.stakeCredential(), exactLong(lovelace, "lovelace"),
-                datumKind, datumHash, scriptHash, collateralReturn));
+                datumKind, datumHash, inlineDatumCbor, scriptHash, scriptType, scriptCbor, collateralReturn));
     }
 
     private static void addInputs(List<UtxoHistoryFact.Input> sink, byte[] txHash, int txIndex, String role,
@@ -213,16 +254,56 @@ public final class YaciUtxoHistoryDecoder implements CanonicalBlockDecoder<UtxoH
         }
     }
 
-    private static void addWitnessDatums(Block block, int txIndex, Map<String, UtxoHistoryFact.Datum> sink) {
+    private static void addWitnessData(Block block, byte[] txHash, int txIndex,
+                                       List<UtxoHistoryFact.TransactionDatum> datums,
+                                       List<UtxoHistoryFact.TransactionRedeemer> redeemers,
+                                       boolean includeDatums, boolean includeRedeemers) {
         if (block.getTransactionWitness() == null || txIndex >= block.getTransactionWitness().size()) return;
         Witnesses witnesses = block.getTransactionWitness().get(txIndex);
-        if (witnesses == null || witnesses.getDatums() == null) return;
-        for (Datum datum : witnesses.getDatums()) {
-            if (datum == null || datum.getHash() == null || datum.getCbor() == null) continue;
-            byte[] hash = hex(datum.getHash(), "datum hash");
-            sink.putIfAbsent(HexUtil.encodeHexString(hash),
-                    new UtxoHistoryFact.Datum(hash, hex(datum.getCbor(), "datum CBOR")));
+        if (witnesses == null) return;
+        if (includeDatums && witnesses.getDatums() != null) {
+            Set<String> seen = new HashSet<>();
+            for (Datum datum : witnesses.getDatums()) {
+                if (datum == null || datum.getHash() == null || datum.getCbor() == null) continue;
+                byte[] hash = hex(datum.getHash(), "datum hash");
+                if (seen.add(HexUtil.encodeHexString(hash))) {
+                    datums.add(new UtxoHistoryFact.TransactionDatum(txHash, txIndex, hash,
+                            hex(datum.getCbor(), "datum CBOR")));
+                }
+            }
         }
+        if (includeRedeemers && witnesses.getRedeemers() != null) {
+            // Pre-Conway redeemers are encoded as a list. The ledger decodes
+            // that list with Map.fromList, so a repeated pointer is legal on
+            // old chain data and the last value is the semantic redeemer.
+            // Preserve that behavior instead of archiving physical duplicates.
+            Map<RedeemerKey, UtxoHistoryFact.TransactionRedeemer> semanticRedeemers = new LinkedHashMap<>();
+            for (Redeemer redeemer : witnesses.getRedeemers()) {
+                if (redeemer == null || redeemer.getTag() == null || redeemer.getCbor() == null
+                        || redeemer.getCbor().isBlank() || redeemer.getExUnits() == null
+                        || redeemer.getExUnits().getMem() == null || redeemer.getExUnits().getSteps() == null) continue;
+                byte[] dataHash = redeemer.getData() == null ? null : nullableHex(redeemer.getData().getHash());
+                String purpose = redeemer.getTag().name().toLowerCase(Locale.ROOT);
+                var decoded = new UtxoHistoryFact.TransactionRedeemer(txHash, txIndex,
+                        purpose, redeemer.getIndex(),
+                        hex(redeemer.getCbor(), "redeemer CBOR"), dataHash,
+                        redeemer.getExUnits().getMem(), redeemer.getExUnits().getSteps());
+                semanticRedeemers.put(new RedeemerKey(purpose, redeemer.getIndex()), decoded);
+            }
+            redeemers.addAll(semanticRedeemers.values());
+        }
+    }
+
+    private record RedeemerKey(String purpose, int index) {}
+
+    private static String scriptType(int type) {
+        return switch (type) {
+            case 0 -> "native";
+            case 1 -> "plutus_v1";
+            case 2 -> "plutus_v2";
+            case 3 -> "plutus_v3";
+            default -> throw new ArchiveStoreException("unknown reference script type " + type);
+        };
     }
 
     private AddressInfo address(String display) {

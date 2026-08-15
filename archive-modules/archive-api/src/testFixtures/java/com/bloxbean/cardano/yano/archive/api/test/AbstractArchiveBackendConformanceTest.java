@@ -131,15 +131,21 @@ public abstract class AbstractArchiveBackendConformanceTest {
     }
 
     @Test
-    void repeatedContentAddressedDatumInOneJobIsIdempotent() {
+    void repeatedDatumPayloadAcrossTransactionsRemainsAppendOnly() {
         ArchiveJob job = utxoRangeJob(0, 1, (byte) 11);
+        byte[] firstTx = new byte[32];
+        byte[] secondTx = new byte[32];
+        Arrays.fill(firstTx, (byte) 10);
+        Arrays.fill(secondTx, (byte) 11);
         byte[] hash = new byte[32];
         Arrays.fill(hash, (byte) 12);
         byte[] cbor = new byte[] {(byte) 0xd8, 0x79, (byte) 0x80};
 
         try (var write = backend.begin(job)) {
-            write.append(new ArchiveRow("datums", List.of(hash, cbor)));
-            write.append(new ArchiveRow("datums", List.of(hash, cbor)));
+            write.append(new ArchiveRow("transaction_datums", List.of(firstTx, 0, hash, cbor,
+                    job.anchorBlockHash(), 0L, 0L, 0L, 0L, job.jobId())));
+            write.append(new ArchiveRow("transaction_datums", List.of(secondTx, 1, hash, cbor,
+                    job.anchorBlockHash(), 1L, 10L, 0L, 0L, job.jobId())));
             write.commit();
         }
 
@@ -193,7 +199,7 @@ public abstract class AbstractArchiveBackendConformanceTest {
                     0, "enterprise", "key", new byte[] {3}, "none", null, null,
                     null, null, null, job.range().startInclusive(), job.anchorSlot(), 0L)));
             write.append(new ArchiveRow("transaction_outputs", Arrays.asList(txHash, 0, 0, "ordinary",
-                    addressKey, new byte[] {3}, null, 10L, "none", null, null, false,
+                    addressKey, new byte[] {3}, null, 10L, "none", null, null, null, null, null, false,
                     job.anchorBlockHash(), job.range().startInclusive(), job.anchorSlot(), 0L, 0L, job.jobId())));
             write.commit();
         }
@@ -207,7 +213,7 @@ public abstract class AbstractArchiveBackendConformanceTest {
                     0, "ptr", "key", new byte[] {3}, "pointer_resolved", "key", new byte[28],
                     42L, 1, 2, job.range().startInclusive(), job.anchorSlot(), 0L)));
             write.append(new ArchiveRow("transaction_outputs", Arrays.asList(txHash, 0, 0, "ordinary",
-                    addressKey, new byte[] {3}, new byte[28], 10L, "none", null, null, false,
+                    addressKey, new byte[] {3}, new byte[28], 10L, "none", null, null, null, null, null, false,
                     job.anchorBlockHash(), job.range().startInclusive(), job.anchorSlot(), 0L, 0L, job.jobId())));
             write.commit();
         }

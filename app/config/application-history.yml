@@ -28,12 +28,17 @@ yano:
       ducklake:
         # Sized to permit incremental compaction within the default 128MB
         # bulk DuckDB context. Increase together with the bulk memory budget.
-        target-file-size: 32MB
+        target-file-size: 4MB
         row-group-size: 100000
         snapshot-retention-hours: 168
         cleanup-grace-hours: 24
     rollback:
       retention-blocks: auto
+    worker:
+      # Conservative and container-aware. Override with a positive integer.
+      projection-parallelism: auto
+      # Adaptive workers start at 100 and grow to this ceiling after successful batches.
+      max-blocks-per-batch: 1000
     maintenance:
       # Explicit bounded maintenance compacts DuckLake's streamed small files
       # and performs backend cleanup outside core block application.
@@ -60,6 +65,22 @@ yano:
       utxo-history:
         enabled: false
         retention-epochs: 0
+        # Each physical row family is optional. All default to true when UTXO
+        # history is enabled. Enabling one later starts at the next core block;
+        # it never triggers historical backfill.
+        tables:
+          addresses:
+            enabled: true
+          transaction-outputs:
+            enabled: true
+          transaction-output-assets:
+            enabled: true
+          transaction-inputs:
+            enabled: true
+          transaction-datums:
+            enabled: true
+          transaction-redeemers:
+            enabled: true
       epoch-stake:
         enabled: false
         start-mode: earliest-available

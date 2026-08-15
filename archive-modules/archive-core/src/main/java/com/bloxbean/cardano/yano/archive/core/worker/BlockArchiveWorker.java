@@ -36,6 +36,7 @@ public final class BlockArchiveWorker<B> {
     private int preferredBlocksPerBatch;
     private int successfulBatchesAtPreferredSize;
 
+    private static final int INITIAL_BLOCKS_PER_BATCH = 100;
     private static final int SUCCESSES_BEFORE_GROWTH_PROBE = 3;
 
     public BlockArchiveWorker(ArchiveNetworkIdentity network, BlockArchiveSource<B> source,
@@ -50,7 +51,7 @@ public final class BlockArchiveWorker<B> {
         this.coreSync = Objects.requireNonNull(coreSync, "coreSync");
         this.metrics = Objects.requireNonNull(metrics, "metrics");
         this.leaseDuration = Objects.requireNonNull(leaseDuration, "leaseDuration");
-        this.preferredBlocksPerBatch = config.maxBlocksPerBatch();
+        this.preferredBlocksPerBatch = Math.min(INITIAL_BLOCKS_PER_BATCH, config.maxBlocksPerBatch());
     }
 
     /** Processes at most one configured batch and returns the last committed block. */
@@ -238,7 +239,7 @@ public final class BlockArchiveWorker<B> {
     }
 
     private void recheck(BlockSourceContext<B> expected) {
-        BlockSourceContext<B> current = source.readCanonical(expected.blockNumber())
+        var current = source.canonicalReference(expected.blockNumber())
                 .orElseThrow(() -> new ArchiveStoreException("canonical anchor disappeared at block "
                         + expected.blockNumber()));
         if (current.slot() != expected.slot() || !Arrays.equals(current.blockHash(), expected.blockHash())) {

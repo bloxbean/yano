@@ -16,8 +16,9 @@ class DuckLakeArchiveConfigTest {
     void defaultFilesFitIncrementalCompactionWithinBoundedBulkMemory() {
         DuckLakeArchiveConfig config = DuckLakeArchiveConfig.defaults(temp);
 
-        assertThat(config.targetFileSizeBytes()).isEqualTo(32L * 1024 * 1024);
+        assertThat(config.targetFileSizeBytes()).isEqualTo(4L * 1024 * 1024);
         assertThat(config.rowGroupSize()).isEqualTo(100_000);
+        assertThat(config.acquireTimeout()).isEqualTo(Duration.ofSeconds(30));
         assertThat(config.targetFileSizeBytes())
                 .isLessThan(DuckDbManagerConfig.defaults(temp.resolve("tmp"))
                         .bulkCatchUp().memoryLimitBytes());

@@ -14,9 +14,11 @@ import com.bloxbean.cardano.yano.archive.api.ArchiveStoreException;
 import com.bloxbean.cardano.yano.archive.api.BlockRange;
 import com.bloxbean.cardano.yano.archive.api.SourceKind;
 import com.bloxbean.cardano.yano.archive.api.test.AbstractArchiveBackendConformanceTest;
+import com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -49,6 +51,57 @@ class DuckLakeBackendConformanceTest extends AbstractArchiveBackendConformanceTe
                 new java.sql.SQLException("Out of Memory Error"))).isFalse();
         assertThat(DuckLakeHistoryArchiveBackend.degradesArchiveHealth(
                 new java.sql.SQLException("catalog corruption"))).isTrue();
+    }
+
+    @Test
+    void boundedMaintenanceQueryTimeoutDoesNotDegradeCommittedDataHealth() {
+        var timeout = new java.sql.SQLException("INTERRUPT Error: Interrupted!");
+
+        assertThat(DuckLakeHistoryArchiveBackend.isMaintenanceTimeout(timeout)).isTrue();
+        assertThat(DuckLakeHistoryArchiveBackend.degradesArchiveHealth(timeout)).isFalse();
+        assertThat(DuckLakeHistoryArchiveBackend.degradesArchiveHealth(
+                new java.sql.SQLException("catalog corruption"))).isTrue();
+    }
+
+    @Test
+    void aggregateCompactionBudgetIsSharedAcrossDuckLakeTables() {
+        long mib = 1024L * 1024;
+
+        assertThat(DuckLakeHistoryArchiveBackend.compactionOutputsPerTable(
+                512 * mib, 32 * mib, 20)).isEqualTo(1);
+        assertThat(DuckLakeHistoryArchiveBackend.compactionOutputsPerTable(
+                2_048 * mib, 32 * mib, 20)).isEqualTo(3);
+    }
+
+    @Test
+    void compactionIsCommittedOneTableAtATime() {
+        assertThat(DuckLakeHistoryArchiveBackend.compactionCommand("archive_commits", 1))
+                .isEqualTo("CALL ducklake_merge_adjacent_files('history_lake', 'archive_commits', "
+                        + "max_compacted_files => 1)");
+        assertThat(DuckLakeHistoryArchiveBackend.compactionOutputsForTable("archive_coverage", 1))
+                .isEqualTo(100);
+        assertThat(DuckLakeHistoryArchiveBackend.compactionOutputsForTable("transaction_outputs", 1))
+                .isEqualTo(1);
+    }
+
+    @Test
+    void maintenanceIncludesHighChurnControlTablesBeforeDatasetTables() {
+        assertThat(DuckLakeHistoryArchiveBackend.maintenanceTables())
+                .startsWith("archive_commit_counts", "archive_commits", "archive_coverage")
+                .contains("archive_invalidations", "chain_transaction", "transaction_redeemers")
+                .doesNotHaveDuplicates();
+    }
+
+    @Test
+    void logicalKeyChecksPruneToTheStagedBlockRangeAndEpochPartitions() {
+        var outputs = ArchiveSchemas.schema(ArchiveDatasetId.UTXO_HISTORY).tables().stream()
+                .filter(table -> table.physicalName().equals("transaction_outputs"))
+                .findFirst().orElseThrow();
+
+        assertThat(DuckLakeWriteSession.targetRangePredicate(
+                outputs, new BlockRange(1_478_071, 1_478_071), "stage_outputs", "t"))
+                .isEqualTo(" AND t.epoch IN (SELECT DISTINCT epoch FROM stage_outputs WHERE epoch IS NOT NULL)"
+                        + " AND t.block_number BETWEEN 1478071 AND 1478071");
     }
 
     @Override
@@ -109,6 +162,28 @@ class DuckLakeBackendConformanceTest extends AbstractArchiveBackendConformanceTe
             }
         }).isInstanceOf(ArchiveStoreException.class)
                 .hasMessageContaining("archive_job_id");
+    }
+
+    @Test
+    void stagesRowsInBoundedMultiRowInsertsAndFlushesRemainderAtomically() throws Exception {
+        int rows = DuckLakeWriteSession.STAGING_BATCH_SIZE + 1;
+        ArchiveJob job = job(0, rows - 1L, (byte) 11);
+
+        try (var write = backend().begin(job)) {
+            for (int index = 0; index < rows; index++) {
+                byte[] txHash = new byte[32];
+                ByteBuffer.wrap(txHash).putInt(index);
+                write.append(new ArchiveRow("chain_transaction", List.of(
+                        txHash, job.anchorBlockHash(), (long) index, index * 10L,
+                        0L, 0L, 0, true, 10L, job.jobId())));
+            }
+            var receipt = write.commit();
+            assertThat(receipt.rowCounts()).containsEntry("chain_transaction", (long) rows);
+        }
+
+        try (var read = (DuckLakeReadSession) backend().openReadSession()) {
+            assertThat(count(read, "chain_transaction")).isEqualTo(rows);
+        }
     }
 
     @Test

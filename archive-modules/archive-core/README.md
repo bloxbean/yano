@@ -13,10 +13,24 @@ the optional history subsystem.
 - the recent mutable RocksDB hot zone with exact undo information;
 - backfill, live, promotion, rollback, retention, progress, and health workers.
 
+The UTXO decoder emits only configured row families. Inline datum/reference
+script bytes remain output-local, while transaction datums and redeemers are
+streamed as transaction-scoped rows. No global content index or historical
+archive lookup participates in projection.
+
 The workers read durable canonical block or epoch sources. They do not read
 mutable core UTXO/account state as the source of historical truth and they do
 not participate in authoritative block commits. Dataset or backend failure
 must degrade only archive health.
+
+Block backfill parses each canonical body once per bounded coordinator cycle.
+Transaction, account-event, UTXO, and address projections share the immutable
+decoded block and may derive concurrently on an archive-owned fixed executor.
+The default parallelism is conservative and container-aware: half the reported
+processors, capped by four and by the number of enabled block projections.
+Both DuckLake and SQLite retain a single serialized writer. Batch size remains
+adaptive through the existing halve-on-capacity / three-successes-before-grow
+rule.
 
 ## Tracks
 

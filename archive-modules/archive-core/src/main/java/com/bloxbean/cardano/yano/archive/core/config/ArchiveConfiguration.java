@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.archive.core.config;
 
 import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import com.bloxbean.cardano.yano.archive.api.ArchiveSafetyWindows;
+import com.bloxbean.cardano.yano.archive.core.dataset.UtxoHistoryProjection;
 
 import java.nio.file.Path;
 import java.util.EnumMap;
@@ -43,6 +44,23 @@ public record ArchiveConfiguration(
         if (utxo.enabled() && transactions.retentionEpochs() != 0
                 && (utxo.retentionEpochs() == 0 || transactions.retentionEpochs() < utxo.retentionEpochs())) {
             throw new IllegalArgumentException("transaction retention must cover UTXO history retention");
+        }
+        if (utxo.enabled()) {
+            var known = java.util.Arrays.stream(UtxoHistoryProjection.Table.values())
+                    .map(UtxoHistoryProjection.Table::physicalName).collect(java.util.stream.Collectors.toSet());
+            for (String table : utxo.tables().keySet()) {
+                if (!known.contains(table)) throw new IllegalArgumentException("unknown UTXO history table " + table);
+            }
+            if (known.stream().noneMatch(utxo::tableEnabled)) {
+                throw new IllegalArgumentException("enabled UTXO history must select at least one table");
+            }
+            if (utxo.tableEnabled("transaction_outputs") && !utxo.tableEnabled("addresses")) {
+                throw new IllegalArgumentException("transaction_outputs requires addresses");
+            }
+            if (utxo.tableEnabled("transaction_output_assets")
+                    && !utxo.tableEnabled("transaction_outputs")) {
+                throw new IllegalArgumentException("transaction_output_assets requires transaction_outputs");
+            }
         }
     }
 }

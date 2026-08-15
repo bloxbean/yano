@@ -45,6 +45,12 @@ rewards, optional UTXO history, epoch stake, DRep distribution, Ada pots, and
 governance proposal status. Each dataset has independent enablement, start
 mode, coverage, projection version, retention, and health.
 
+UTXO history additionally supports row-family switches. Outputs carry inline
+datum and reference-script CBOR directly; witness datums and redeemers use
+transaction-scoped tables. All row families default to enabled when UTXO
+history is selected. A row family enabled later starts with the next canonical
+core block and is never backfilled implicitly.
+
 ## Runtime use
 
 History is disabled by default. The JVM distribution includes the optional

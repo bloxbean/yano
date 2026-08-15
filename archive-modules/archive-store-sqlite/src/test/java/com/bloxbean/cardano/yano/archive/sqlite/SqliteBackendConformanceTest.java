@@ -244,7 +244,8 @@ class SqliteBackendConformanceTest extends AbstractArchiveBackendConformanceTest
                     "base", "key", new byte[28], "credential", "key", new byte[28],
                     null, null, null, 0L, 0L, 0L)));
             write.append(new ArchiveRow("transaction_outputs", Arrays.asList(hash, 0, 0, "regular", addressKey,
-                    null, null, 1L, "none", null, null, false, hash, 0L, 0L, 0L, 0L, job.jobId())));
+                    null, null, 1L, "none", null, null, null, null, null, false,
+                    hash, 0L, 0L, 0L, 0L, job.jobId())));
             write.append(new ArchiveRow("transaction_output_assets", List.of(hash, 0, new byte[28],
                     new byte[] {2}, quantity, 0L, 0L, 0L, job.jobId())));
             write.commit();

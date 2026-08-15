@@ -73,7 +73,7 @@ final class SqliteWriteSession implements ArchiveWriteSession {
         }
         List<Object> key = logicalKey(table, row);
         if (!logicalKeys.computeIfAbsent(row.table(), ignored -> new HashSet<>()).add(key)
-                && !row.table().equals("addresses") && !isContentAddressed(row.table())) {
+                && !row.table().equals("addresses")) {
             throw new ArchiveStoreException("duplicate logical primary key in job for " + row.table());
         }
 
@@ -81,8 +81,6 @@ final class SqliteWriteSession implements ArchiveWriteSession {
             try {
                 if (row.table().equals("addresses")) {
                     mergeAddress(table, row);
-                } else if (isContentAddressed(row.table()) && contentExists(table, row)) {
-                    // Exact content-addressed reuse is intentionally not inserted again.
                 } else {
                     PreparedStatement insert = inserts.computeIfAbsent(row.table(), ignored -> prepareInsert(table));
                     SqliteArchiveSql.bind(insert, table, row);
@@ -169,31 +167,6 @@ final class SqliteWriteSession implements ArchiveWriteSession {
         }
     }
 
-    private boolean contentExists(ArchiveTableSchema table, ArchiveRow row) throws SQLException {
-        String predicate = table.primaryKey().stream().map(key -> SqliteArchiveSql.name(key) + " IS ?")
-                .reduce((a, b) -> a + " AND " + b).orElseThrow();
-        try (PreparedStatement query = connection.prepareStatement(
-                "SELECT * FROM " + SqliteArchiveSql.name(table.physicalName()) + " WHERE " + predicate)) {
-            int parameter = 1;
-            for (String key : table.primaryKey()) {
-                Object value = row.values().get(columnIndex(table, key));
-                if (value instanceof byte[] bytes) query.setBytes(parameter++, bytes);
-                else query.setObject(parameter++, value);
-            }
-            try (ResultSet existing = query.executeQuery()) {
-                if (!existing.next()) return false;
-                for (int index = 0; index < table.columns().size(); index++) {
-                    Object expected = row.values().get(index);
-                    Object actual = expected instanceof byte[] ? existing.getBytes(index + 1) : existing.getObject(index + 1);
-                    if (!sameValue(expected, actual)) {
-                        throw new ArchiveStoreException("content-addressed payload conflict for " + table.physicalName());
-                    }
-                }
-                return true;
-            }
-        }
-    }
-
     private boolean sameValue(Object expected, Object actual) {
         if (expected instanceof byte[] bytes) return actual instanceof byte[] other && Arrays.equals(bytes, other);
         if (expected instanceof Number left && actual instanceof Number right) {
@@ -249,10 +222,6 @@ final class SqliteWriteSession implements ArchiveWriteSession {
             if (table.columns().get(index).name().equals(name)) return index;
         }
         return -1;
-    }
-
-    private boolean isContentAddressed(String table) {
-        return table.equals("datums") || table.equals("scripts");
     }
 
     private void updateDigest(ArchiveRow row) {

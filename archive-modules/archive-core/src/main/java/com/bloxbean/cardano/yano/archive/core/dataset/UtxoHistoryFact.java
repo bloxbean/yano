@@ -7,20 +7,24 @@ public record UtxoHistoryFact(int era, List<PointerRegistration> pointerRegistra
                               List<PointerDeregistration> pointerDeregistrations,
                               List<Address> newAddresses, List<Output> outputs,
                               List<Asset> assets, List<Input> inputs,
-                              List<Datum> datums, List<Script> scripts) {
+                              List<TransactionDatum> transactionDatums,
+                              List<TransactionRedeemer> transactionRedeemers) {
     public UtxoHistoryFact {
         pointerRegistrations = List.copyOf(pointerRegistrations);
         pointerDeregistrations = List.copyOf(pointerDeregistrations);
         newAddresses = List.copyOf(newAddresses); outputs = List.copyOf(outputs);
         assets = List.copyOf(assets); inputs = List.copyOf(inputs);
-        datums = List.copyOf(datums); scripts = List.copyOf(scripts);
+        transactionDatums = List.copyOf(transactionDatums);
+        transactionRedeemers = List.copyOf(transactionRedeemers);
     }
 
     public UtxoHistoryFact(int era, List<PointerRegistration> pointerRegistrations,
                            List<Address> newAddresses, List<Output> outputs,
                            List<Asset> assets, List<Input> inputs,
-                           List<Datum> datums, List<Script> scripts) {
-        this(era, pointerRegistrations, List.of(), newAddresses, outputs, assets, inputs, datums, scripts);
+                           List<TransactionDatum> transactionDatums,
+                           List<TransactionRedeemer> transactionRedeemers) {
+        this(era, pointerRegistrations, List.of(), newAddresses, outputs, assets, inputs,
+                transactionDatums, transactionRedeemers);
     }
 
     public record PointerRegistration(long slot, int txIndex, int certIndex,
@@ -34,10 +38,14 @@ public record UtxoHistoryFact(int era, List<PointerRegistration> pointerRegistra
                           Long pointerSlot, Integer pointerTxIndex, Integer pointerCertIndex) { }
     public record Output(byte[] txHash, int outputIndex, int txIndex, String originType, byte[] addressKey,
                          byte[] paymentCredential, byte[] stakeCredential, long lovelace, String datumKind,
-                         byte[] datumHash, byte[] referenceScriptHash, boolean collateralReturn) { }
+                         byte[] datumHash, byte[] inlineDatumCbor, byte[] referenceScriptHash,
+                         String referenceScriptType, byte[] referenceScriptCbor,
+                         boolean collateralReturn) { }
     public record Asset(byte[] txHash, int outputIndex, byte[] policyId, byte[] assetName, BigInteger quantity) { }
     public record Input(byte[] spendingTxHash, int spendingTxIndex, int inputIndex, String inputRole,
                         byte[] referencedTxHash, int referencedOutputIndex, boolean consumesOutput) { }
-    public record Datum(byte[] hash, byte[] cbor) { }
-    public record Script(byte[] hash, String type, byte[] cbor) { }
+    public record TransactionDatum(byte[] txHash, int txIndex, byte[] datumHash, byte[] datumCbor) { }
+    public record TransactionRedeemer(byte[] txHash, int txIndex, String purpose, int redeemerIndex,
+                                      byte[] redeemerCbor, byte[] redeemerDataHash,
+                                      BigInteger executionMem, BigInteger executionSteps) { }
 }

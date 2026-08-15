@@ -158,8 +158,9 @@ public final class JdbcArchiveRepositorySet implements ArchiveRepositorySet {
             if (columns.contains("epoch")) return "epoch";
             if (columns.contains("earned_epoch")) return "earned_epoch";
         }
-        // Content-addressed payload tables deliberately have no canonical
-        // coordinate. Their visibility is still guarded by dataset coverage.
+        // Dimension tables may use a first-seen coordinate instead of a block
+        // coordinate. Any future coordinate-free table remains guarded by its
+        // parent dataset coverage.
         return null;
     }
 

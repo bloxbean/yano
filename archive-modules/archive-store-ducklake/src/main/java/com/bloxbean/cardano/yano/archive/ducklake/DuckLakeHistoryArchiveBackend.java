@@ -54,6 +54,13 @@ import java.util.concurrent.locks.StampedLock;
 public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
     private static final ArchiveCapabilities CAPABILITIES = new ArchiveCapabilities(
             true, false, true, true, true);
+    private static final List<String> CONTROL_TABLES = List.of(
+            "archive_commit_counts",
+            "archive_commits",
+            "archive_coverage",
+            "archive_invalidations",
+            "archive_identity",
+            "archive_schema");
 
     private final ArchiveIdentity identity;
     private final DuckLakeArchiveConfig config;
@@ -70,7 +77,11 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
     private final AtomicReference<ArchiveHealth> health = new AtomicReference<>(ArchiveHealth.healthy());
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicBoolean resourcesClosed = new AtomicBoolean();
+    // Guarded by the single-writer semaphore. A round-robin cursor prevents a
+    // busy table from starving the rest of the catalog during bounded upkeep.
+    private int nextCompactionTable;
     private DuckLakeTransactionLocator transactionLocator;
+    private DuckLakeAddressLocator addressLocator;
     private final ArchiveRepositorySet repositories = new JdbcArchiveRepositorySet(
             session -> {
                 if (!(session instanceof DuckLakeReadSession duckLake)) {
@@ -114,6 +125,8 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
                 new DuckLakeInitializer(config).initialize(lease.connection(), identity);
                 transactionLocator = new DuckLakeTransactionLocator(config.catalogPath());
                 transactionLocator.rebuildIfRequired(lease.connection(), DuckLakeSql.currentSnapshot(lease.connection()));
+                addressLocator = new DuckLakeAddressLocator(config.catalogPath());
+                addressLocator.rebuildIfRequired(lease.connection(), DuckLakeSql.currentSnapshot(lease.connection()));
             } finally {
                 DuckLakeSql.detach(lease.connection());
             }
@@ -347,27 +360,55 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
             try {
                 long deadline = System.nanoTime() + budget.timeLimit().toNanos();
                 if (budget.maxBytesToRewrite() > 0) {
-                    int maxFiles = (int) Math.max(1, Math.min(100,
-                            budget.maxBytesToRewrite() / Math.max(1, config.targetFileSizeBytes())));
-                    try {
-                        executeMaintenance(lease, deadline,
-                                "CALL ducklake_merge_adjacent_files('history_lake', max_compacted_files => "
-                                        + maxFiles + ")");
-                    } catch (SQLException e) {
-                        if (!DuckLakeWriteSession.isCapacityFailure(e)) throw e;
-                        compactionDeferred = new ArchiveBatchCapacityException(
-                                "DuckLake compaction exceeded its configured budget", e);
+                    List<String> tables = maintenanceTables();
+                    int maxFiles = compactionOutputsPerTable(budget.maxBytesToRewrite(),
+                            config.targetFileSizeBytes(), tables.size());
+                    int completedTables = 0;
+                    while (completedTables < tables.size() && hasMaintenanceTime(deadline)) {
+                        int index = Math.floorMod(nextCompactionTable, tables.size());
+                        String table = tables.get(index);
+                        try {
+                            // A catalog-wide call applies max_compacted_files once per table and
+                            // rolls the whole call back on timeout. Independent table calls retain
+                            // progress made before the bounded maintenance window expires.
+                            executeMaintenance(lease, deadline, compactionCommand(table,
+                                    compactionOutputsForTable(table, maxFiles)));
+                            nextCompactionTable = (index + 1) % tables.size();
+                            completedTables++;
+                        } catch (SQLException e) {
+                            if (!DuckLakeWriteSession.isCapacityFailure(e)) throw e;
+                            // Do not pin every future maintenance cycle to one table whose
+                            // current payload cannot be compacted within the reserved memory.
+                            // The next full round retries it after all other tables have had a
+                            // bounded opportunity to compact.
+                            nextCompactionTable = (index + 1) % tables.size();
+                            // Earlier table calls are separate committed snapshots. Reaching the
+                            // time/memory edge after useful progress is normal bounded upkeep; the
+                            // cursor retries this table with a fresh window next cycle. A table
+                            // that cannot make any progress with the full window remains visible.
+                            if (completedTables == 0) {
+                                compactionDeferred = new ArchiveBatchCapacityException(
+                                        "DuckLake compaction exceeded its configured budget at table " + table, e);
+                            }
+                            break;
+                        }
                     }
                 }
-                executeMaintenance(lease, deadline,
-                        "CALL ducklake_expire_snapshots('history_lake', older_than => now() - INTERVAL '"
-                                + config.snapshotRetention().toSeconds() + " seconds')");
-                executeMaintenance(lease, deadline,
-                        "CALL ducklake_cleanup_old_files('history_lake', older_than => now() - INTERVAL '"
-                                + config.cleanupGrace().toSeconds() + " seconds')");
-                executeMaintenance(lease, deadline,
-                        "CALL ducklake_delete_orphaned_files('history_lake', older_than => now() - INTERVAL '"
-                                + config.cleanupGrace().toSeconds() + " seconds')");
+                if (compactionDeferred == null && hasMaintenanceTime(deadline)) {
+                    executeMaintenance(lease, deadline,
+                            "CALL ducklake_expire_snapshots('history_lake', older_than => now() - INTERVAL '"
+                                    + config.snapshotRetention().toSeconds() + " seconds')");
+                }
+                if (compactionDeferred == null && hasMaintenanceTime(deadline)) {
+                    executeMaintenance(lease, deadline,
+                            "CALL ducklake_cleanup_old_files('history_lake', older_than => now() - INTERVAL '"
+                                    + config.cleanupGrace().toSeconds() + " seconds')");
+                }
+                if (compactionDeferred == null && hasMaintenanceTime(deadline)) {
+                    executeMaintenance(lease, deadline,
+                            "CALL ducklake_delete_orphaned_files('history_lake', older_than => now() - INTERVAL '"
+                                    + config.cleanupGrace().toSeconds() + " seconds')");
+                }
             } finally {
                 DuckLakeSql.detach(lease.connection());
             }
@@ -392,9 +433,70 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
         }
     }
 
+    /**
+     * DuckLake applies {@code max_compacted_files} independently to every table
+     * when no table name is supplied. Divide the aggregate rewrite allowance by
+     * the number of archive tables so the configured budget remains aggregate
+     * rather than being multiplied once per table.
+     */
+    static int compactionOutputsPerTable(long maxBytesToRewrite, long targetFileSizeBytes, int tableCount) {
+        if (maxBytesToRewrite < 1 || targetFileSizeBytes < 1 || tableCount < 1) {
+            throw new IllegalArgumentException("invalid DuckLake compaction sizing inputs");
+        }
+        long aggregateOutputs = Math.max(1, maxBytesToRewrite / targetFileSizeBytes);
+        return (int) Math.max(1, Math.min(100, aggregateOutputs / tableCount));
+    }
+
+    static List<String> maintenanceTables() {
+        List<String> tables = new ArrayList<>(CONTROL_TABLES);
+        DuckLakeSql.tables().keySet().stream().sorted().forEach(tables::add);
+        return List.copyOf(tables);
+    }
+
+    static String compactionCommand(String table, int maxFiles) {
+        if (maxFiles < 1) throw new IllegalArgumentException("maxFiles must be positive");
+        return "CALL ducklake_merge_adjacent_files('history_lake', '"
+                + DuckLakeSql.literal(DuckLakeSql.name(table))
+                + "', max_compacted_files => " + maxFiles + ")";
+    }
+
+    static int compactionOutputsForTable(String table, int sharedLimit) {
+        if (sharedLimit < 1) throw new IllegalArgumentException("sharedLimit must be positive");
+        return switch (DuckLakeSql.name(table)) {
+            // These append-only control rows are tiny but are written for every archive job.
+            // More outputs here stay well below the byte budget and prevent metadata-file
+            // growth from dominating all data-table maintenance.
+            case "archive_commit_counts", "archive_commits", "archive_coverage" ->
+                    Math.min(100, Math.multiplyExact(sharedLimit, 100));
+            default -> sharedLimit;
+        };
+    }
+
+    private static boolean hasMaintenanceTime(long deadline) {
+        return deadline - System.nanoTime() >= TimeUnit.SECONDS.toNanos(1);
+    }
+
     static boolean degradesArchiveHealth(Throwable maintenanceFailure) {
         return !(maintenanceFailure instanceof ArchiveBatchCapacityException)
-                && !DuckLakeWriteSession.isCapacityFailure(maintenanceFailure);
+                && !DuckLakeWriteSession.isCapacityFailure(maintenanceFailure)
+                && !isMaintenanceTimeout(maintenanceFailure);
+    }
+
+    /**
+     * DuckDB reports a JDBC statement query timeout as an interrupt error. In
+     * this backend statements are interrupted only inside the explicitly
+     * bounded maintenance path, so the outcome means "retry next cycle", not
+     * that committed archive data is unhealthy.
+     */
+    static boolean isMaintenanceTimeout(Throwable failure) {
+        for (Throwable current = failure; current != null; current = current.getCause()) {
+            String message = current.getMessage();
+            if (message != null && (message.contains("INTERRUPT Error: Interrupted")
+                    || message.contains("Query interrupted"))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override
@@ -488,6 +590,16 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
         transactionLocator.advance(connection, generation, entries);
     }
 
+    DuckLakeAddressLocator.Plan planAddresses(Connection connection,
+                                               Collection<DuckLakeAddressLocator.Entry> entries)
+            throws SQLException {
+        return addressLocator.plan(connection, DuckLakeSql.currentSnapshot(connection), entries);
+    }
+
+    void updateAddressLocator(long generation, DuckLakeAddressLocator.Plan plan) {
+        addressLocator.advance(generation, plan);
+    }
+
     void releaseSnapshot(long generation) {
         activeSnapshots.computeIfPresent(generation, (ignored, count) -> {
             count.decrement();
@@ -519,6 +631,9 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
                 try (Statement sql = connection.createStatement()) { sql.execute("COMMIT"); }
                 if (dataset == ArchiveDatasetId.TRANSACTION) {
                     transactionLocator.rebuild(connection, DuckLakeSql.currentSnapshot(connection));
+                }
+                if (dataset == ArchiveDatasetId.UTXO_HISTORY) {
+                    addressLocator.rebuild(connection, DuckLakeSql.currentSnapshot(connection));
                 }
             } catch (Exception e) {
                 try (Statement sql = connection.createStatement()) { sql.execute("ROLLBACK"); }
@@ -721,8 +836,7 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
         long remainingNanos = deadline - System.nanoTime();
         if (remainingNanos <= 0) throw new ArchiveStoreException("DuckLake operation exceeded its time budget");
         Statement statement = connection.createStatement();
-        long seconds = Math.max(1, TimeUnit.NANOSECONDS.toSeconds(remainingNanos)
-                + (remainingNanos % TimeUnit.SECONDS.toNanos(1) == 0 ? 0 : 1));
+        long seconds = Math.max(1, TimeUnit.NANOSECONDS.toSeconds(remainingNanos));
         statement.setQueryTimeout(Math.toIntExact(Math.min(Integer.MAX_VALUE, seconds)));
         return statement;
     }
@@ -772,6 +886,7 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
         try {
             if (resourcesClosed.compareAndSet(false, true)) {
                 if (transactionLocator != null) transactionLocator.close();
+                if (addressLocator != null) addressLocator.close();
                 if (ownsManager) manager.close();
                 directoryLock.close();
             }

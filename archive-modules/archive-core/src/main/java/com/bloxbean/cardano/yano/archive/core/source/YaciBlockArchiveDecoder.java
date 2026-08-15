@@ -47,6 +47,14 @@ public final class YaciBlockArchiveDecoder implements CanonicalBlockDecoder<Arch
         }
     }
 
+    /** Derives dataset facts from a block already parsed by the shared archive source. */
+    public BlockSourceContext<ArchiveBlockFacts> project(BlockSourceContext<Block> decoded) {
+        Objects.requireNonNull(decoded, "decoded");
+        return decodeBlock(decoded.blockNumber(),
+                new CanonicalBlockReference(decoded.blockNumber(), decoded.slot(), decoded.blockHash()),
+                decoded.block());
+    }
+
     BlockSourceContext<ArchiveBlockFacts> decodeBlock(long blockNumber,
                                                       CanonicalBlockReference reference,
                                                       Block block) {

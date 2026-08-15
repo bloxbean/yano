@@ -207,6 +207,28 @@ class BlockArchiveWorkerTest {
     }
 
     @Test
+    void startsConservativelyAndGrowsSuccessfulBatchesToTheConfiguredCeiling() {
+        FixtureSource source = new FixtureSource(0, 4_999);
+        RecordingBackend backend = new RecordingBackend();
+        MemoryProgress progress = new MemoryProgress();
+        ArchiveWorkerConfig config = new ArchiveWorkerConfig(Duration.ofMillis(10), 1_000, 10_000, 5);
+        CoreSyncView sync = new CoreSyncView() {
+            public long localBlock() { return 4_999; }
+            public long targetBlock() { return 4_999; }
+        };
+        var worker = new BlockArchiveWorker<>(new ArchiveNetworkIdentity(1, "fixture"), source,
+                backend, progress, config, sync, new ArchiveWorkerMetrics(), Duration.ofMinutes(1));
+
+        List<Long> committedEnds = new ArrayList<>();
+        for (int attempt = 0; attempt < 10; attempt++) {
+            committedEnds.add(worker.runBatch(dataset(), 0, 4_999));
+        }
+
+        assertThat(committedEnds).containsExactly(99L, 199L, 299L,
+                499L, 699L, 899L, 1_299L, 1_699L, 2_099L, 2_899L);
+    }
+
+    @Test
     void changedCanonicalAnchorAbortsBackendAndDoesNotAdvanceCursor() {
         FixtureSource source = new FixtureSource(0, 0);
         source.changeAfterRead = true;

@@ -306,6 +306,7 @@ public final class YanoPropertyKeys {
         public static final String WORKER_MAX_BLOCKS = PREFIX + "worker.max-blocks-per-batch";
         public static final String WORKER_MAX_ROWS = PREFIX + "worker.max-rows-per-batch";
         public static final String WORKER_CORE_LAG = PREFIX + "worker.bulk-pause-core-lag-blocks";
+        public static final String WORKER_PROJECTION_PARALLELISM = PREFIX + "worker.projection-parallelism";
         public static final String MAINTENANCE_INTERVAL_SECONDS = PREFIX + "maintenance.interval-seconds";
         public static final String MAINTENANCE_TIME_LIMIT_SECONDS = PREFIX + "maintenance.time-limit-seconds";
         public static final String MAINTENANCE_MAX_REWRITE = PREFIX + "maintenance.max-bytes-to-rewrite";

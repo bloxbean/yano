@@ -26,6 +26,6 @@ public record SqliteArchiveConfig(
 
     public static SqliteArchiveConfig defaults(Path historyDirectory) {
         return new SqliteArchiveConfig(historyDirectory.resolve("history.sqlite"),
-                Duration.ofSeconds(5), Duration.ofSeconds(10), 4, Durability.FULL);
+                Duration.ofSeconds(30), Duration.ofSeconds(10), 4, Durability.FULL);
     }
 }

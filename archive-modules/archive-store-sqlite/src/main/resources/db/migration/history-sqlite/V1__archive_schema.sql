@@ -161,7 +161,10 @@ CREATE TABLE transaction_outputs (
     lovelace INTEGER NOT NULL,
     datum_kind TEXT NOT NULL,
     datum_hash BLOB,
+    inline_datum_cbor BLOB,
     reference_script_hash BLOB,
+    reference_script_type TEXT,
+    reference_script_cbor BLOB,
     is_collateral_return INTEGER NOT NULL CHECK (is_collateral_return IN (0, 1)),
     block_hash BLOB,
     block_number INTEGER,
@@ -218,16 +221,49 @@ CREATE INDEX transaction_inputs_block_order
     ON transaction_inputs(block_number, spending_tx_index, input_index, spending_tx_hash);
 CREATE INDEX transaction_inputs_archive_job ON transaction_inputs(archive_job_id);
 
-CREATE TABLE datums (
-    datum_hash BLOB NOT NULL PRIMARY KEY,
-    cbor BLOB NOT NULL
+CREATE TABLE transaction_datums (
+    tx_hash BLOB NOT NULL,
+    tx_index INTEGER NOT NULL,
+    datum_hash BLOB NOT NULL,
+    datum_cbor BLOB NOT NULL,
+    block_hash BLOB NOT NULL,
+    block_number INTEGER NOT NULL,
+    slot INTEGER NOT NULL,
+    epoch INTEGER NOT NULL,
+    block_time INTEGER NOT NULL,
+    archive_job_id TEXT NOT NULL REFERENCES archive_commits(job_id) ON DELETE CASCADE,
+    PRIMARY KEY (tx_hash, datum_hash)
 );
+CREATE INDEX transaction_datums_tx_order
+    ON transaction_datums(tx_hash, datum_hash);
+CREATE INDEX transaction_datums_hash
+    ON transaction_datums(datum_hash, epoch, tx_hash);
+CREATE INDEX transaction_datums_block_order
+    ON transaction_datums(block_number, tx_index, tx_hash, datum_hash);
+CREATE INDEX transaction_datums_archive_job ON transaction_datums(archive_job_id);
 
-CREATE TABLE scripts (
-    script_hash BLOB NOT NULL PRIMARY KEY,
-    script_type TEXT NOT NULL,
-    cbor BLOB NOT NULL
+CREATE TABLE transaction_redeemers (
+    tx_hash BLOB NOT NULL,
+    tx_index INTEGER NOT NULL,
+    purpose TEXT NOT NULL,
+    redeemer_index INTEGER NOT NULL,
+    redeemer_cbor BLOB NOT NULL,
+    redeemer_data_hash BLOB,
+    execution_mem TEXT NOT NULL CHECK (execution_mem <> '' AND execution_mem NOT GLOB '*[^0-9]*'),
+    execution_steps TEXT NOT NULL CHECK (execution_steps <> '' AND execution_steps NOT GLOB '*[^0-9]*'),
+    block_hash BLOB NOT NULL,
+    block_number INTEGER NOT NULL,
+    slot INTEGER NOT NULL,
+    epoch INTEGER NOT NULL,
+    block_time INTEGER NOT NULL,
+    archive_job_id TEXT NOT NULL REFERENCES archive_commits(job_id) ON DELETE CASCADE,
+    PRIMARY KEY (tx_hash, purpose, redeemer_index)
 );
+CREATE INDEX transaction_redeemers_tx_order
+    ON transaction_redeemers(tx_hash, purpose, redeemer_index);
+CREATE INDEX transaction_redeemers_block_order
+    ON transaction_redeemers(block_number, tx_index, purpose, redeemer_index, tx_hash);
+CREATE INDEX transaction_redeemers_archive_job ON transaction_redeemers(archive_job_id);
 
 CREATE TABLE rewards (
     stake_credential BLOB NOT NULL,

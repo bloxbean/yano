@@ -20,7 +20,7 @@ class UtxoHistoryDatasetTest {
                 List.of(new UtxoHistoryFact.Address(address, new byte[] {4}, "addr", 0, "base", "key",
                         new byte[] {5}, "credential", "key", stake, null, null, null)),
                 List.of(new UtxoHistoryFact.Output(hash, 0, 0, "regular", address, new byte[] {5}, stake,
-                        10, "none", null, null, false)),
+                        10, "none", null, null, null, null, null, false)),
                 List.of(new UtxoHistoryFact.Asset(hash, 0, new byte[28], new byte[] {6},
                         new BigInteger("18446744073709551615"))), List.of(), List.of(), List.of());
         List<ArchiveRow> rows = new ArrayList<>();
@@ -81,6 +81,6 @@ class UtxoHistoryDatasetTest {
 
     private static UtxoHistoryFact.Output output(byte[] txHash, byte[] addressKey) {
         return new UtxoHistoryFact.Output(txHash, 0, 0, "regular", addressKey,
-                new byte[28], null, 1, "none", null, null, false);
+                new byte[28], null, 1, "none", null, null, null, null, null, false);
     }
 }

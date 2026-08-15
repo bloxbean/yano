@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yano.archive.api.ArchiveJob;
 import com.bloxbean.cardano.yano.archive.api.ArchiveBatchCapacityException;
 import com.bloxbean.cardano.yano.archive.api.ArchiveReceipt;
 import com.bloxbean.cardano.yano.archive.api.ArchiveRow;
+import com.bloxbean.cardano.yano.archive.api.ArchiveRange;
 import com.bloxbean.cardano.yano.archive.api.ArchiveStoreException;
 import com.bloxbean.cardano.yano.archive.api.ArchiveWriteSession;
 import com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas;
@@ -22,24 +23,34 @@ import java.time.Instant;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 
 final class DuckLakeWriteSession implements ArchiveWriteSession {
+    // Bound JDBC-side buffering while replacing one native execute call per row
+    // with vector-sized staging batches. The worker's independent row limit
+    // remains the archive-job memory bound.
+    static final int STAGING_BATCH_SIZE = 256;
+
     private final DuckLakeHistoryArchiveBackend backend;
     private final ArchiveJob job;
     private final DuckDbLease lease;
     private final Connection connection;
     private final Map<String, ArchiveTableSchema> allowedTables;
-    private final Map<String, PreparedStatement> stagingInserts = new LinkedHashMap<>();
+    private final Set<String> stagingTables = new LinkedHashSet<>();
+    private final Map<String, List<List<Object>>> pendingStagingRows = new LinkedHashMap<>();
     private final Map<String, Long> rowCounts = new LinkedHashMap<>();
     private final MessageDigest digest;
     private final ArchiveReceipt replayReceipt;
     private boolean committed;
     private boolean closed;
     private final List<DuckLakeTransactionLocator.Entry> transactionEntries = new ArrayList<>();
+    private final List<DuckLakeAddressLocator.Entry> addressEntries = new ArrayList<>();
+    private DuckLakeAddressLocator.Plan addressPlan = DuckLakeAddressLocator.Plan.empty();
 
     DuckLakeWriteSession(DuckLakeHistoryArchiveBackend backend, ArchiveJob job,
                          DuckDbLease lease, ArchiveReceipt replayReceipt) {
@@ -84,15 +95,24 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
             transactionEntries.add(new DuckLakeTransactionLocator.Entry((byte[]) values.get(0),
                     ((Number) values.get(2)).longValue(), job.jobId()));
         }
+        if (row.table().equals("addresses")) {
+            addressEntries.add(new DuckLakeAddressLocator.Entry(values));
+        }
         if (replayReceipt != null) {
             rowCounts.merge(row.table(), 1L, Long::sum);
             updateDigest(row);
             return;
         }
+        // The rebuildable SQLite address locator performs point collision
+        // checks and suppresses already-known dimension rows at commit time.
+        // Avoid staging every repeated address into DuckDB first.
+        if (row.table().equals("addresses")) {
+            rowCounts.merge(row.table(), 1L, Long::sum);
+            updateDigest(row);
+            return;
+        }
         try {
-            PreparedStatement insert = stagingInserts.computeIfAbsent(row.table(), ignored -> createStaging(table));
-            for (int i = 0; i < values.size(); i++) insert.setObject(i + 1, values.get(i));
-            insert.executeUpdate();
+            stageRow(table, values);
             rowCounts.merge(row.table(), 1L, Long::sum);
             updateDigest(row);
         } catch (SQLException e) {
@@ -121,6 +141,8 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
         String orderedDigest = HexFormat.of().formatHex(digest.digest());
         try {
             long predictedGeneration = Math.addExact(DuckLakeSql.currentSnapshot(connection), 1);
+            prepareAddressStaging();
+            flushPendingStagingBatches();
             verifyLogicalKeys();
             flushStaging();
             insertCommit(predictedGeneration, orderedDigest, committedAt);
@@ -138,6 +160,7 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
                     job.projectionVersion(), job.range(), job.anchors(), actualGeneration,
                     rowCounts, orderedDigest, committedAt);
             backend.updateTransactionLocator(connection, actualGeneration, transactionEntries);
+            backend.updateAddressLocator(actualGeneration, addressPlan);
             committed = true;
             close();
             return receipt;
@@ -154,7 +177,7 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
         }
     }
 
-    private PreparedStatement createStaging(ArchiveTableSchema table) {
+    private void createStaging(ArchiveTableSchema table) {
         String staging = stagingName(table.physicalName());
         try (Statement sql = connection.createStatement()) {
             sql.execute("CREATE TEMP TABLE " + staging + " AS SELECT * FROM history_lake."
@@ -162,38 +185,57 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
         } catch (SQLException e) {
             throw new ArchiveStoreException("failed to create DuckLake staging table " + staging, e);
         }
-        String placeholders = table.columns().stream().map(ignored -> "?")
-                .reduce((left, right) -> left + ", " + right).orElseThrow();
-        try {
-            return connection.prepareStatement("INSERT INTO " + staging + " VALUES (" + placeholders + ')');
-        } catch (SQLException e) {
-            throw new ArchiveStoreException("failed to prepare DuckLake staging insert", e);
+        stagingTables.add(table.physicalName());
+    }
+
+    private void stageRow(ArchiveTableSchema table, List<Object> values) throws SQLException {
+        String tableName = table.physicalName();
+        if (!stagingTables.contains(tableName)) createStaging(table);
+        List<List<Object>> pending = pendingStagingRows.computeIfAbsent(tableName, ignored -> new ArrayList<>());
+        pending.add(values);
+        if (pending.size() >= STAGING_BATCH_SIZE) flushPendingStagingBatch(table, pending);
+    }
+
+    private void flushPendingStagingBatches() throws SQLException {
+        for (var entry : pendingStagingRows.entrySet()) {
+            flushPendingStagingBatch(allowedTables.get(entry.getKey()), entry.getValue());
         }
+    }
+
+    private void flushPendingStagingBatch(ArchiveTableSchema table, List<List<Object>> pending) throws SQLException {
+        if (pending.isEmpty()) return;
+        String rowPlaceholders = '(' + table.columns().stream().map(ignored -> "?")
+                .reduce((left, right) -> left + ", " + right).orElseThrow() + ')';
+        String valuesPlaceholders = java.util.stream.IntStream.range(0, pending.size())
+                .mapToObj(ignored -> rowPlaceholders)
+                .reduce((left, right) -> left + ", " + right).orElseThrow();
+        try (PreparedStatement insert = connection.prepareStatement("INSERT INTO "
+                + stagingName(table.physicalName()) + " VALUES " + valuesPlaceholders)) {
+            int parameter = 1;
+            for (List<Object> row : pending) {
+                for (Object value : row) insert.setObject(parameter++, value);
+            }
+            insert.executeUpdate();
+        }
+        pending.clear();
     }
 
     private void flushStaging() throws SQLException {
         try (Statement sql = connection.createStatement()) {
-            for (String table : stagingInserts.keySet()) {
+            for (String table : stagingTables) {
                 ArchiveTableSchema schema = allowedTables.get(table);
                 String target = "history_lake." + DuckLakeSql.name(table);
                 String staging = stagingName(table);
                 if (table.equals("addresses")) {
-                    String selected = "(SELECT * FROM " + staging
-                            + " QUALIFY row_number() OVER (PARTITION BY address_key "
-                            + "ORDER BY first_seen_block_number, first_seen_slot)=1)";
-                    sql.execute("DELETE FROM " + target + " t USING " + selected + " s WHERE "
-                            + keyJoin(schema, "s", "t")
-                            + " AND s.first_seen_block_number < t.first_seen_block_number");
-                    sql.execute("INSERT INTO " + target + " SELECT s.* FROM " + selected
-                            + " s WHERE NOT EXISTS (SELECT 1 FROM " + target + " t WHERE "
-                            + keyJoin(schema, "s", "t") + ")");
-                } else if (isContentAddressed(table)) {
-                    String selected = "(SELECT * FROM " + staging + " QUALIFY row_number() OVER (PARTITION BY "
-                            + schema.primaryKey().stream().map(DuckLakeSql::name)
-                            .reduce((left, right) -> left + ", " + right).orElseThrow()
-                            + ")=1)";
-                    sql.execute("INSERT INTO " + target + " SELECT s.* FROM " + selected + " s WHERE NOT EXISTS ("
-                            + "SELECT 1 FROM " + target + " t WHERE " + keyJoin(schema, "s", "t") + ")");
+                    try (PreparedStatement delete = connection.prepareStatement(
+                            "DELETE FROM " + target + " WHERE address_key=?")) {
+                        for (DuckLakeAddressLocator.PlannedEntry planned : addressPlan.accepted()) {
+                            if (!planned.replace()) continue;
+                            delete.setBytes(1, planned.entry().key());
+                            delete.executeUpdate();
+                        }
+                    }
+                    sql.execute("INSERT INTO " + target + " SELECT * FROM " + staging);
                 } else {
                     sql.execute("INSERT INTO " + target + " SELECT * FROM " + staging);
                 }
@@ -203,78 +245,72 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
 
     private void verifyLogicalKeys() throws SQLException {
         try (Statement sql = connection.createStatement()) {
-            for (String table : stagingInserts.keySet()) {
+            for (String table : stagingTables) {
                 ArchiveTableSchema schema = allowedTables.get(table);
                 String staging = stagingName(table);
                 String keys = schema.primaryKey().stream().map(DuckLakeSql::name)
                         .reduce((left, right) -> left + ", " + right).orElseThrow();
-                long duplicateCount;
-                try (var result = sql.executeQuery("SELECT count(*) FROM (SELECT " + keys + " FROM "
-                        + staging + " GROUP BY " + keys + " HAVING count(*) > 1)")) {
-                    result.next();
-                    duplicateCount = result.getLong(1);
-                }
-                if (duplicateCount != 0 && !table.equals("addresses") && !isContentAddressed(table)) {
-                    throw new ArchiveStoreException("duplicate logical primary key in job for " + table);
-                }
+                try {
+                    long duplicateCount;
+                    try (var result = sql.executeQuery("SELECT count(*) FROM (SELECT " + keys + " FROM "
+                            + staging + " GROUP BY " + keys + " HAVING count(*) > 1)")) {
+                        result.next();
+                        duplicateCount = result.getLong(1);
+                    }
+                    if (duplicateCount != 0 && !table.equals("addresses")) {
+                        throw new ArchiveStoreException("duplicate logical primary key in job for " + table);
+                    }
 
-                String target = "history_lake." + DuckLakeSql.name(table);
-                if (table.equals("addresses")) {
-                    String staticDifference = schema.columns().subList(0, 13).stream()
-                            .filter(column -> !schema.primaryKey().contains(column.name()))
-                            .map(column -> "s." + DuckLakeSql.name(column.name()) + " IS DISTINCT FROM t."
-                                    + DuckLakeSql.name(column.name()))
-                            .reduce((left, right) -> left + " OR " + right).orElse("false");
-                    try (var result = sql.executeQuery("SELECT count(*) FROM " + staging + " s JOIN " + target
-                            + " t ON " + keyJoin(schema, "s", "t") + " WHERE " + staticDifference)) {
-                        result.next();
-                        if (result.getLong(1) != 0) {
-                            throw new ArchiveStoreException("address dimension conflict for canonical address key");
+                    String target = "history_lake." + DuckLakeSql.name(table);
+                    if (table.equals("addresses")) {
+                        // The address locator already checked durable and
+                        // within-job immutable attributes before staging only
+                        // accepted new/earlier rows.
+                    } else {
+                        try (var result = sql.executeQuery("SELECT count(*) FROM " + staging + " s JOIN " + target
+                                + " t ON " + keyJoin(schema, "s", "t")
+                                + targetRangePredicate(schema, job.range(), staging, "t"))) {
+                            result.next();
+                            if (result.getLong(1) != 0) {
+                                throw new ArchiveStoreException("logical primary key already exists for " + table);
+                            }
                         }
                     }
-                    try (var result = sql.executeQuery("SELECT count(*) FROM " + staging + " GROUP BY address_key "
-                            + "HAVING count(DISTINCT hash(raw_address, display_address, network_id, address_type, "
-                            + "payment_credential_type, payment_credential, stake_reference_type, "
-                            + "stake_credential_type, stake_credential, pointer_slot, pointer_tx_index, "
-                            + "pointer_cert_index)) > 1")) {
-                        if (result.next()) throw new ArchiveStoreException(
-                                "address dimension conflict within archive job");
-                    }
-                } else if (isContentAddressed(table)) {
-                    String difference = schema.columns().stream()
-                            .filter(column -> !schema.primaryKey().contains(column.name()))
-                            .map(column -> "s." + DuckLakeSql.name(column.name()) + " IS DISTINCT FROM t."
-                                    + DuckLakeSql.name(column.name()))
-                            .reduce((left, right) -> left + " OR " + right).orElse("false");
-                    try (var result = sql.executeQuery("SELECT count(*) FROM " + staging + " s JOIN " + target
-                            + " t ON " + keyJoin(schema, "s", "t") + " WHERE " + difference)) {
-                        result.next();
-                        if (result.getLong(1) != 0) {
-                            throw new ArchiveStoreException("content-addressed payload conflict for " + table);
-                        }
-                    }
-                    String payload = schema.columns().stream()
-                            .filter(column -> !schema.primaryKey().contains(column.name()))
-                            .map(column -> DuckLakeSql.name(column.name()))
-                            .reduce((left, right) -> left + ", " + right).orElseThrow();
-                    try (var result = sql.executeQuery("SELECT 1 FROM " + staging + " GROUP BY " + keys
-                            + " HAVING count(DISTINCT hash(" + payload + ")) > 1 LIMIT 1")) {
-                        if (result.next()) {
-                            throw new ArchiveStoreException("content-addressed payload conflict within job for "
-                                    + table);
-                        }
-                    }
-                } else {
-                    try (var result = sql.executeQuery("SELECT count(*) FROM " + staging + " s JOIN " + target
-                            + " t ON " + keyJoin(schema, "s", "t"))) {
-                        result.next();
-                        if (result.getLong(1) != 0) {
-                            throw new ArchiveStoreException("logical primary key already exists for " + table);
-                        }
-                    }
+                } catch (SQLException e) {
+                    throw new SQLException("logical-key verification failed for " + table + ": "
+                            + e.getMessage(), e.getSQLState(), e.getErrorCode(), e);
                 }
             }
         }
+    }
+
+    private void prepareAddressStaging() throws SQLException {
+        addressPlan = backend.planAddresses(connection, addressEntries);
+        if (addressPlan.accepted().isEmpty()) return;
+        ArchiveTableSchema table = allowedTables.get("addresses");
+        createStaging(table);
+        for (DuckLakeAddressLocator.PlannedEntry planned : addressPlan.accepted()) {
+            stageRow(table, planned.entry().values());
+        }
+    }
+
+    static String targetRangePredicate(ArchiveTableSchema schema, ArchiveRange range,
+                                       String stagingTable, String targetAlias) {
+        boolean hasEpoch = schema.columns().stream().anyMatch(column -> column.name().equals("epoch"));
+        boolean hasBlock = schema.columns().stream().anyMatch(column -> column.name().equals("block_number"));
+        StringBuilder predicate = new StringBuilder();
+        if (hasEpoch) {
+            predicate.append(" AND ").append(targetAlias).append(".epoch IN (SELECT DISTINCT epoch FROM ")
+                    .append(stagingTable).append(" WHERE epoch IS NOT NULL)");
+        }
+        if (range.sourceKind() == com.bloxbean.cardano.yano.archive.api.SourceKind.BLOCK && hasBlock) {
+            predicate.append(" AND ").append(targetAlias).append(".block_number BETWEEN ")
+                    .append(range.startInclusive()).append(" AND ").append(range.endInclusive());
+        } else if (range.sourceKind() == com.bloxbean.cardano.yano.archive.api.SourceKind.EPOCH && hasEpoch) {
+            predicate.append(" AND ").append(targetAlias).append(".epoch BETWEEN ")
+                    .append(range.startInclusive()).append(" AND ").append(range.endInclusive());
+        }
+        return predicate.toString();
     }
 
     private String keyJoin(ArchiveTableSchema schema, String left, String right) {
@@ -282,10 +318,6 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
                 .map(key -> left + '.' + DuckLakeSql.name(key) + " IS NOT DISTINCT FROM "
                         + right + '.' + DuckLakeSql.name(key))
                 .reduce((a, b) -> a + " AND " + b).orElseThrow();
-    }
-
-    private boolean isContentAddressed(String table) {
-        return table.equals("datums") || table.equals("scripts");
     }
 
     static boolean isCapacityFailure(Throwable failure) {
@@ -375,9 +407,6 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
     public void close() {
         if (closed) return;
         closed = true;
-        for (PreparedStatement statement : stagingInserts.values()) {
-            try { statement.close(); } catch (SQLException ignored) { }
-        }
         if (connection != null && !committed) {
             try (Statement sql = connection.createStatement()) { sql.execute("ROLLBACK"); }
             catch (SQLException ignored) { }

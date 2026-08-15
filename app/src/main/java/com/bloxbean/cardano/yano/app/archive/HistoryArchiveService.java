@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.app.archive;
 
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
+import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.ChainQuery;
 import com.bloxbean.cardano.yano.api.LedgerQuery;
@@ -11,18 +12,23 @@ import com.bloxbean.cardano.yano.api.events.RollbackEvent;
 import com.bloxbean.cardano.yano.archive.api.*;
 import com.bloxbean.cardano.yano.archive.core.config.*;
 import com.bloxbean.cardano.yano.archive.core.dataset.BlockArchiveDataset;
+import com.bloxbean.cardano.yano.archive.core.dataset.ArchiveBlockFacts;
 import com.bloxbean.cardano.yano.archive.core.dataset.AddressTransactionDataset;
 import com.bloxbean.cardano.yano.archive.core.dataset.StandardBlockDatasets;
 import com.bloxbean.cardano.yano.archive.core.dataset.UtxoHistoryDataset;
+import com.bloxbean.cardano.yano.archive.core.dataset.UtxoHistoryProjection;
 import com.bloxbean.cardano.yano.archive.core.address.*;
 import com.bloxbean.cardano.yano.archive.core.hot.RocksDbHotHistoryStore;
 import com.bloxbean.cardano.yano.archive.core.hot.HotArchiveRows;
 import com.bloxbean.cardano.yano.archive.core.hot.HotHistorySnapshot;
 import com.bloxbean.cardano.yano.archive.core.source.ChainBlockArchiveSource;
+import com.bloxbean.cardano.yano.archive.core.source.BlockArchiveSource;
+import com.bloxbean.cardano.yano.archive.core.source.CycleCachingBlockArchiveSource;
 import com.bloxbean.cardano.yano.archive.core.source.EpochArchiveJob;
 import com.bloxbean.cardano.yano.archive.core.source.YaciBlockArchiveDecoder;
 import com.bloxbean.cardano.yano.archive.core.source.YaciBlockDecoder;
 import com.bloxbean.cardano.yano.archive.core.source.YaciUtxoHistoryDecoder;
+import com.bloxbean.cardano.yano.archive.core.source.MappingBlockArchiveSource;
 import com.bloxbean.cardano.yano.archive.core.worker.*;
 import com.bloxbean.cardano.yano.runtime.config.NetworkGenesisConfig;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -45,6 +51,10 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
@@ -65,6 +75,12 @@ public class HistoryArchiveService implements AutoCloseable {
     private volatile ArchiveBackend backend;
     private volatile RocksDbHotHistoryStore controlStore;
     private volatile ArchiveSubsystem subsystem;
+    private volatile ExecutorService projectionExecutor;
+    private volatile CycleCachingBlockArchiveSource<Block> sharedBlockSource;
+    private volatile CycleCachingBlockArchiveSource<ArchiveBlockFacts> sharedFactSource;
+    private volatile String projectionParallelismSetting = "auto";
+    private final AtomicLong decodedBlockCount = new AtomicLong();
+    private final AtomicLong decodedBlockCacheHits = new AtomicLong();
     private volatile ArchiveWorkerMetrics metrics = new ArchiveWorkerMetrics();
     private volatile ChainQuery chain;
     private volatile ActivationStore activations;
@@ -128,11 +144,20 @@ public class HistoryArchiveService implements AutoCloseable {
                     .toAbsolutePath().normalize();
             ArchiveEngine engine = enumValue(YanoPropertyKeys.History.ENGINE, "ducklake", ArchiveEngine.class);
             ArchiveStartMode defaultStart = startMode(string(YanoPropertyKeys.History.START_MODE, "full-required"));
+            Map<ArchiveDatasetId, DatasetArchiveConfig> datasets = datasetConfig(defaultStart);
+            validateEpochPrerequisites(datasets);
+            int enabledBlockProjections = (int) datasets.entrySet().stream()
+                    .filter(entry -> entry.getKey().sourceKind() == SourceKind.BLOCK && entry.getValue().enabled())
+                    .count();
+            projectionParallelismSetting = string(
+                    YanoPropertyKeys.History.WORKER_PROJECTION_PARALLELISM, "auto").trim();
+            int projectionParallelism = resolveProjectionParallelism(projectionParallelismSetting,
+                    Runtime.getRuntime().availableProcessors(), Math.max(1, enabledBlockProjections));
             ArchiveWorkerConfig workerConfig = new ArchiveWorkerConfig(
                     Duration.ofMillis(longValue(YanoPropertyKeys.History.WORKER_POLL_MILLIS, 1_000)),
                     intValue(YanoPropertyKeys.History.WORKER_MAX_BLOCKS, 1_000),
                     intValue(YanoPropertyKeys.History.WORKER_MAX_ROWS, 250_000),
-                    longValue(YanoPropertyKeys.History.WORKER_CORE_LAG, 100));
+                    longValue(YanoPropertyKeys.History.WORKER_CORE_LAG, 100), projectionParallelism);
             maintenanceInterval = Duration.ofSeconds(longValue(
                     YanoPropertyKeys.History.MAINTENANCE_INTERVAL_SECONDS, 300));
             if (maintenanceInterval.isNegative() || maintenanceInterval.isZero()) {
@@ -142,8 +167,6 @@ public class HistoryArchiveService implements AutoCloseable {
                     YanoPropertyKeys.History.MAINTENANCE_TIME_LIMIT_SECONDS, 5)), sizeBytes(string(
                     YanoPropertyKeys.History.MAINTENANCE_MAX_REWRITE, "512MB")));
             nextMaintenanceNanos.set(nextMaintenanceDeadline(System.nanoTime(), maintenanceInterval));
-            Map<ArchiveDatasetId, DatasetArchiveConfig> datasets = datasetConfig(defaultStart);
-            validateEpochPrerequisites(datasets);
             archiveConfig = new ArchiveConfiguration(true, directory, engine, defaultStart,
                     bool(YanoPropertyKeys.History.LIVE_ENABLED, true), workerConfig, safety, datasets);
 
@@ -169,6 +192,9 @@ public class HistoryArchiveService implements AutoCloseable {
             Files.createDirectories(directory);
             activations = new ActivationStore(directory.resolve("control/activation.properties"));
             controlStore = new RocksDbHotHistoryStore(hot);
+            long persistedTip = chain.getLocalTip() == null ? -1 : chain.getLocalTip().getBlockNumber();
+            UtxoHistoryProjection utxoProjection = datasetEnabled(ArchiveDatasetId.UTXO_HISTORY)
+                    ? resolveUtxoProjection(persistedTip) : UtxoHistoryProjection.all();
 
             String engineName = engine.name().toLowerCase(Locale.ROOT);
             ArchiveIdentity identity = new ArchiveIdentity(stableArchiveId(magic, genesisHash, engineName, directory),
@@ -200,9 +226,16 @@ public class HistoryArchiveService implements AutoCloseable {
             // must never leave core pruning pointed at a closed control store.
             chain.setBlockBodyRetentionBoundary(controlStore);
 
-            var decoder = new YaciBlockArchiveDecoder(ledger::slotToEpoch, ledger::slotToUnixTime,
+            var blockDecoder = new YaciBlockDecoder(ledger::slotToEpoch, ledger::slotToUnixTime,
                     chain::getBlockEra);
-            var source = new ChainBlockArchiveSource<>(chain, decoder, controlStore);
+            sharedBlockSource = new CycleCachingBlockArchiveSource<>(
+                    new ChainBlockArchiveSource<>(chain, blockDecoder, controlStore),
+                    Math.multiplyExact(workerConfig.maxBlocksPerBatch(), 2));
+            var factDecoder = new YaciBlockArchiveDecoder(ledger::slotToEpoch, ledger::slotToUnixTime,
+                    chain::getBlockEra);
+            sharedFactSource = new CycleCachingBlockArchiveSource<>(
+                    new MappingBlockArchiveSource<>(sharedBlockSource, factDecoder::project),
+                    Math.multiplyExact(workerConfig.maxBlocksPerBatch(), 2));
             var genesisHistoryOutputs = genesisUtxoOutputs(genesis);
             CoreSyncView syncView = new CoreSyncView() {
                 public long localBlock() {
@@ -210,28 +243,24 @@ public class HistoryArchiveService implements AutoCloseable {
                 }
                 public long targetBlock() { return chain.getSyncTargetBlockNumber().orElseGet(this::localBlock); }
             };
-            registerBlockWorker(ArchiveDatasetId.TRANSACTION, StandardBlockDatasets.transactions(), source,
+            registerBlockWorker(ArchiveDatasetId.TRANSACTION, StandardBlockDatasets.transactions(), sharedFactSource,
                     identity.networkIdentity(), workerConfig, syncView);
-            registerBlockWorker(ArchiveDatasetId.ACCOUNT_EVENT, StandardBlockDatasets.accountEvents(), source,
+            registerBlockWorker(ArchiveDatasetId.ACCOUNT_EVENT, StandardBlockDatasets.accountEvents(), sharedFactSource,
                     identity.networkIdentity(), workerConfig, syncView);
+            var utxoDecoder = new YaciUtxoHistoryDecoder(ledger::slotToEpoch, ledger::slotToUnixTime,
+                    chain::getBlockEra, genesisHistoryOutputs, firstCanonicalBlockNumber, utxoProjection);
             registerBlockWorker(ArchiveDatasetId.UTXO_HISTORY,
                     new UtxoHistoryDataset(controlStore, "backfill", ArchiveTrack.BACKFILL),
-                    new ChainBlockArchiveSource<>(chain,
-                            new YaciUtxoHistoryDecoder(ledger::slotToEpoch, ledger::slotToUnixTime,
-                                    chain::getBlockEra, genesisHistoryOutputs,
-                                    firstCanonicalBlockNumber), controlStore),
+                    new MappingBlockArchiveSource<>(sharedBlockSource, utxoDecoder::project),
                     identity.networkIdentity(), workerConfig, syncView);
             if (archiveConfig.liveEnabled()) {
-                registerLiveWorker(ArchiveDatasetId.TRANSACTION, StandardBlockDatasets.transactions(), source,
+                registerLiveWorker(ArchiveDatasetId.TRANSACTION, StandardBlockDatasets.transactions(), sharedFactSource,
                         identity.networkIdentity(), workerConfig);
-                registerLiveWorker(ArchiveDatasetId.ACCOUNT_EVENT, StandardBlockDatasets.accountEvents(), source,
+                registerLiveWorker(ArchiveDatasetId.ACCOUNT_EVENT, StandardBlockDatasets.accountEvents(), sharedFactSource,
                         identity.networkIdentity(), workerConfig);
                 registerLiveWorker(ArchiveDatasetId.UTXO_HISTORY,
                         new UtxoHistoryDataset(controlStore, "live", ArchiveTrack.LIVE),
-                        new ChainBlockArchiveSource<>(chain,
-                                new YaciUtxoHistoryDecoder(ledger::slotToEpoch, ledger::slotToUnixTime,
-                                        chain::getBlockEra, genesisHistoryOutputs,
-                                        firstCanonicalBlockNumber), controlStore),
+                        new MappingBlockArchiveSource<>(sharedBlockSource, utxoDecoder::project),
                         identity.networkIdentity(), workerConfig);
                 if (datasetEnabled(ArchiveDatasetId.ADDRESS_TRANSACTION)
                         && ledger.getUtxoState() != null && ledger.getUtxoState().isEnabled()) {
@@ -240,9 +269,7 @@ public class HistoryArchiveService implements AutoCloseable {
                     liveAddressDataset = liveAddress;
                     initializeAddressLiveResolver(liveAddress, genesis);
                     registerLiveWorker(ArchiveDatasetId.ADDRESS_TRANSACTION, liveAddress,
-                            new ChainBlockArchiveSource<>(chain,
-                                    new YaciBlockDecoder(ledger::slotToEpoch, ledger::slotToUnixTime,
-                                            chain::getBlockEra), controlStore),
+                            sharedBlockSource,
                             identity.networkIdentity(), workerConfig);
                 } else if (datasetEnabled(ArchiveDatasetId.ADDRESS_TRANSACTION)) {
                     log.warn("Address live history disabled because a complete core UTXO snapshot is unavailable");
@@ -258,13 +285,9 @@ public class HistoryArchiveService implements AutoCloseable {
                 backfillAddressDataset = addressDataset;
                 backfillGenesisEntries = genesisOutpoints(genesis, addressDataset);
                 initializeAddressBackfillResolver(addressDataset);
-                var addressSource = new ChainBlockArchiveSource<>(chain,
-                        new YaciBlockDecoder(ledger::slotToEpoch, ledger::slotToUnixTime,
-                                chain::getBlockEra), controlStore);
-                registerBlockWorker(ArchiveDatasetId.ADDRESS_TRANSACTION, addressDataset, addressSource,
+                registerBlockWorker(ArchiveDatasetId.ADDRESS_TRANSACTION, addressDataset, sharedBlockSource,
                         identity.networkIdentity(), workerConfig, syncView);
             }
-            long persistedTip = chain.getLocalTip() == null ? -1 : chain.getLocalTip().getBlockNumber();
             for (ArchiveDatasetId dataset : ArchiveDatasetId.values()) {
                 if (dataset.sourceKind() == SourceKind.BLOCK && !blockWorkers.containsKey(dataset)) {
                     controlStore.releaseBlockBodyRequirement(dataset);
@@ -279,10 +302,16 @@ public class HistoryArchiveService implements AutoCloseable {
                 }
                 if (start >= 0) controlStore.requireBlockBodiesFrom(dataset, start);
             }
+            int effectiveParallelism = Math.min(workerConfig.projectionParallelism(),
+                    Math.max(1, blockWorkers.size()));
+            projectionExecutor = Executors.newFixedThreadPool(effectiveParallelism,
+                    Thread.ofPlatform().name("yano-archive-projection-", 0).factory());
             subsystem = new ArchiveSubsystem(true, workerConfig.pollInterval(), this::runBoundedWork);
             chain.registerListeners(this);
-            log.info("History archive initialized: engine={}, dir={}, finalityBlocks={}, rollbackBlocks={}",
-                    engineName, directory, safety.archiveFinalityBlocks(), safety.rollbackRetentionBlocks());
+            log.info("History archive initialized: engine={}, dir={}, finalityBlocks={}, rollbackBlocks={}, "
+                            + "projectionParallelism={} (requested={})",
+                    engineName, directory, safety.archiveFinalityBlocks(), safety.rollbackRetentionBlocks(),
+                    effectiveParallelism, projectionParallelismSetting);
         } catch (IllegalArgumentException e) {
             closePartial();
             throw e;
@@ -405,6 +434,14 @@ public class HistoryArchiveService implements AutoCloseable {
         result.put("directory", archiveConfig.historyDirectory().toString());
         result.put("finalityBlocks", archiveConfig.safetyWindows().archiveFinalityBlocks());
         result.put("rollbackRetentionBlocks", archiveConfig.safetyWindows().rollbackRetentionBlocks());
+        Map<String, Object> worker = new LinkedHashMap<>();
+        worker.put("projectionParallelismRequested", projectionParallelismSetting);
+        worker.put("projectionParallelismEffective", archiveConfig.worker().projectionParallelism());
+        worker.put("maxBlocksPerBatch", archiveConfig.worker().maxBlocksPerBatch());
+        worker.put("maxRowsPerBatch", archiveConfig.worker().maxRowsPerBatch());
+        worker.put("decodedBlocks", decodedBlockCount.get());
+        worker.put("decodedBlockCacheHits", decodedBlockCacheHits.get());
+        result.put("worker", worker);
         if (backend != null) {
             result.put("health", backend.health());
             try (ArchiveReadSession read = backend.openReadSession()) {
@@ -444,67 +481,127 @@ public class HistoryArchiveService implements AutoCloseable {
         processPendingLiveRollback(tip.getBlockNumber());
         long finalized = tip.getBlockNumber() - archiveConfig.safetyWindows().archiveFinalityBlocks();
         if (finalized < 0) return;
-        for (var entry : blockWorkers.entrySet()) {
-            ArchiveDatasetId dataset = entry.getKey();
-            try {
-                long start = activations.start(dataset).orElseGet(() -> activationStart(dataset, tip.getBlockNumber()));
-                if (start >= 0) {
-                    entry.getValue().run(start, finalized);
-                    long undoCutoff = tip.getBlockNumber()
-                            - archiveConfig.safetyWindows().rollbackRetentionBlocks();
-                    if (undoCutoff >= start) controlStore.pruneUndoThrough(dataset, ArchiveTrack.BACKFILL, undoCutoff);
-                    promoteLiveRows(dataset, finalized);
-                }
-            } catch (BackfillActivationInvalidatedException e) {
-                try {
-                    reactivateBackfillDataset(dataset, e.activation());
-                } catch (Exception recoveryFailure) {
-                    metrics.update(dataset, ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.DEGRADED,
-                            -1, 0, recoveryFailure.getMessage());
-                    log.warn("History worker {} reactivation paused: {}",
-                            dataset.logicalName(), recoveryFailure.toString());
-                }
-            } catch (Exception e) {
-                metrics.update(dataset, ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.DEGRADED,
-                        -1, 0, failureDetail(e));
-                log.warn("History worker {} paused", dataset.logicalName(), e);
-            }
-        }
+        runBlockProjectionCycle(tip.getBlockNumber(), finalized);
         if (archiveConfig.liveEnabled()) {
-            for (var entry : liveWorkers.entrySet()) {
-                ArchiveDatasetId dataset = entry.getKey();
-                try {
-                    reanchorStaleLiveTrack(dataset, tip.getBlockNumber());
-                    long activation = activations.start(dataset, ArchiveTrack.LIVE).orElseGet(() -> {
-                        long value = tip.getBlockNumber() + 1;
-                        activations.putIfAbsent(dataset, ArchiveTrack.LIVE, value);
-                        return value;
-                    });
-                    entry.getValue().run(activation, tip.getBlockNumber());
-                    long undoCutoff = tip.getBlockNumber()
-                            - archiveConfig.safetyWindows().rollbackRetentionBlocks();
-                    if (undoCutoff >= activation) {
-                        controlStore.pruneUndoThrough(dataset, ArchiveTrack.LIVE, undoCutoff);
-                    }
-                } catch (LiveActivationInvalidatedException e) {
+            beginSharedSourceCycle();
+            try {
+                for (var entry : liveWorkers.entrySet()) {
+                    ArchiveDatasetId dataset = entry.getKey();
                     try {
-                        recoverLiveCanonicalMismatch(dataset, e.activation(), tip.getBlockNumber());
-                    } catch (Exception recoveryFailure) {
+                        reanchorStaleLiveTrack(dataset, tip.getBlockNumber());
+                        long activation = activations.start(dataset, ArchiveTrack.LIVE).orElseGet(() -> {
+                            long value = tip.getBlockNumber() + 1;
+                            activations.putIfAbsent(dataset, ArchiveTrack.LIVE, value);
+                            return value;
+                        });
+                        entry.getValue().run(activation, tip.getBlockNumber());
+                        long undoCutoff = tip.getBlockNumber()
+                                - archiveConfig.safetyWindows().rollbackRetentionBlocks();
+                        if (undoCutoff >= activation) {
+                            controlStore.pruneUndoThrough(dataset, ArchiveTrack.LIVE, undoCutoff);
+                        }
+                    } catch (LiveActivationInvalidatedException e) {
+                        try {
+                            recoverLiveCanonicalMismatch(dataset, e.activation(), tip.getBlockNumber());
+                        } catch (Exception recoveryFailure) {
+                            metrics.update(dataset, ArchiveTrack.LIVE, ArchiveWorkerStatus.State.DEGRADED,
+                                    -1, 0, recoveryFailure.getMessage());
+                            log.warn("Live history worker {} reactivation paused: {}",
+                                    dataset.logicalName(), recoveryFailure.toString());
+                        }
+                    } catch (Exception e) {
                         metrics.update(dataset, ArchiveTrack.LIVE, ArchiveWorkerStatus.State.DEGRADED,
-                                -1, 0, recoveryFailure.getMessage());
-                        log.warn("Live history worker {} reactivation paused: {}",
-                                dataset.logicalName(), recoveryFailure.toString());
+                                -1, 0, failureDetail(e));
+                        log.warn("Live history worker {} paused", dataset.logicalName(), e);
                     }
-                } catch (Exception e) {
-                    metrics.update(dataset, ArchiveTrack.LIVE, ArchiveWorkerStatus.State.DEGRADED,
-                            -1, 0, failureDetail(e));
-                    log.warn("Live history worker {} paused", dataset.logicalName(), e);
                 }
+            } finally {
+                endSharedSourceCycle();
             }
         }
         runEpochWork(finalized);
         applyRetention(tip.getBlockNumber(), tip.getSlot());
         runMaintenanceIfDue();
+    }
+
+    private void runBlockProjectionCycle(long tip, long finalized) {
+        if (blockWorkers.isEmpty()) return;
+        beginSharedSourceCycle();
+        try {
+            List<Future<?>> futures = new ArrayList<>(blockWorkers.size());
+            for (var entry : blockWorkers.entrySet()) {
+                futures.add(projectionExecutor.submit(() -> runBackfillDataset(entry.getKey(), entry.getValue(),
+                        tip, finalized)));
+            }
+            boolean interrupted = false;
+            for (Future<?> future : futures) {
+                boolean complete = false;
+                while (!complete) {
+                    try {
+                        future.get();
+                        complete = true;
+                    } catch (InterruptedException e) {
+                        // Do not release decoded blocks or close native stores
+                        // while a projection still owns them. Restore the flag
+                        // after every submitted projection has joined.
+                        interrupted = true;
+                    } catch (java.util.concurrent.ExecutionException e) {
+                        // Dataset tasks contain their own fail-closed status path.
+                        log.warn("Unexpected archive projection task failure", e.getCause());
+                        complete = true;
+                    }
+                }
+            }
+            if (interrupted) Thread.currentThread().interrupt();
+        } finally {
+            endSharedSourceCycle();
+        }
+    }
+
+    private void runBackfillDataset(ArchiveDatasetId dataset, DatasetRunner runner, long tip, long finalized) {
+        try {
+            long start = activations.start(dataset).orElseGet(() -> activationStart(dataset, tip));
+            if (start >= 0) {
+                runner.run(start, finalized);
+                long undoCutoff = tip - archiveConfig.safetyWindows().rollbackRetentionBlocks();
+                if (undoCutoff >= start) {
+                    controlStore.pruneUndoThrough(dataset, ArchiveTrack.BACKFILL, undoCutoff);
+                }
+                promoteLiveRows(dataset, finalized);
+            }
+        } catch (BackfillActivationInvalidatedException e) {
+            try {
+                reactivateBackfillDataset(dataset, e.activation());
+            } catch (Exception recoveryFailure) {
+                metrics.update(dataset, ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.DEGRADED,
+                        -1, 0, recoveryFailure.getMessage());
+                log.warn("History worker {} reactivation paused: {}",
+                        dataset.logicalName(), recoveryFailure.toString());
+            }
+        } catch (Exception e) {
+            metrics.update(dataset, ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.DEGRADED,
+                    -1, 0, failureDetail(e));
+            log.warn("History worker {} paused", dataset.logicalName(), e);
+        }
+    }
+
+    private void beginSharedSourceCycle() {
+        if (sharedBlockSource == null || sharedFactSource == null) return;
+        sharedBlockSource.beginCycle();
+        try {
+            sharedFactSource.beginCycle();
+        } catch (RuntimeException e) {
+            sharedBlockSource.endCycle();
+            throw e;
+        }
+    }
+
+    private void endSharedSourceCycle() {
+        if (sharedBlockSource == null || sharedFactSource == null) return;
+        sharedFactSource.endCycle();
+        CycleCachingBlockArchiveSource.CycleStats stats = sharedBlockSource.endCycle();
+        decodedBlockCount.addAndGet(stats.decodedBlocks());
+        decodedBlockCacheHits.addAndGet(stats.cacheHits());
     }
 
     private void reanchorStaleLiveTrack(ArchiveDatasetId dataset, long currentTip) {
@@ -728,8 +825,7 @@ public class HistoryArchiveService implements AutoCloseable {
     private void reactivateLiveDataset(ArchiveDatasetId dataset, long oldActivation, long currentTip,
                                        long replayAfterBlock, String reason) {
         List<byte[]> prefixes = com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas.schema(dataset)
-                .tables().stream().filter(table -> !table.physicalName().equals("datums")
-                        && !table.physicalName().equals("scripts"))
+                .tables().stream()
                 .map(table -> ("archive-row/" + table.physicalName() + "/")
                         .getBytes(java.nio.charset.StandardCharsets.UTF_8))
                 .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
@@ -892,8 +988,8 @@ public class HistoryArchiveService implements AutoCloseable {
             default -> null;
         };
         List<String> tables = dataset == ArchiveDatasetId.UTXO_HISTORY
-                ? List.of("addresses", "transaction_outputs", "transaction_output_assets", "transaction_inputs",
-                        "datums", "scripts")
+                ? com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas.schema(dataset).tables().stream()
+                        .map(com.bloxbean.cardano.yano.archive.api.schema.ArchiveTableSchema::physicalName).toList()
                 : table == null ? List.of() : List.of(table);
         if (tables.isEmpty()) return;
         ArchiveProgress live = controlStore.load(dataset, ArchiveTrack.LIVE).orElse(null);
@@ -946,23 +1042,10 @@ public class HistoryArchiveService implements AutoCloseable {
             int[] rowCount = {0};
             try (var write = backend.begin(job)) {
                 for (String selected : tables) {
-                    List<ArchiveRecord> rows;
-                    if (selected.equals("datums") || selected.equals("scripts")) {
-                        // Content-addressed payloads can be revealed by a spending transaction
-                        // after the referenced output has already moved cold. They therefore
-                        // cannot be selected only from outputs in this promotion range. Commit
-                        // every currently-hot payload atomically; backend inserts are idempotent.
-                        rows = HotArchiveRows.allRows(snapshot, dataset, selected);
-                        for (ArchiveRecord row : rows) {
-                            keys.add(HotArchiveRows.put(dataset, new ArchiveRow(row.table(),
-                                    new ArrayList<>(row.values().values()))).key());
-                        }
-                    } else {
-                        rows = HotArchiveRows.rowsInRange(snapshot, dataset, selected,
-                                promotionStart, promotionEnd);
-                        keys.addAll(HotArchiveRows.keysInRange(snapshot, dataset, selected,
-                                promotionStart, promotionEnd));
-                    }
+                    List<ArchiveRecord> rows = HotArchiveRows.rowsInRange(snapshot, dataset, selected,
+                            promotionStart, promotionEnd);
+                    keys.addAll(HotArchiveRows.keysInRange(snapshot, dataset, selected,
+                            promotionStart, promotionEnd));
                     for (ArchiveRecord row : rows) {
                         if (++rowCount[0] > archiveConfig.worker().maxRowsPerBatch()) {
                             promotionBatchBlocks.put(dataset, Math.max(1, selectedPromotionBlocks / 2));
@@ -988,52 +1071,14 @@ public class HistoryArchiveService implements AutoCloseable {
         try (var snapshot = controlStore.snapshot()) {
             List<byte[]> keys = new ArrayList<>();
             for (String selected : tables) {
-                if (selected.equals("datums") || selected.equals("scripts")) continue;
                 for (ArchiveRange range : coverage) {
                     if (range.startInclusive() > finalized) break;
                     keys.addAll(HotArchiveRows.keysInRange(snapshot, dataset, selected,
                             range.startInclusive(), Math.min(finalized, range.endInclusive())));
                 }
             }
-            if (dataset == ArchiveDatasetId.UTXO_HISTORY) {
-                // Payload rows have no block coordinate: a witness may reveal a datum or
-                // script for an output that is already cold. Delete only payloads whose
-                // content hash is demonstrably present in the cold archive. This keeps
-                // the cleanup-only path bounded without losing newer witness content.
-                keys.addAll(archivedContentKeys(snapshot, "datums", "datum_hash", finalized));
-                keys.addAll(archivedContentKeys(snapshot, "scripts", "script_hash", finalized));
-            }
             if (!keys.isEmpty()) controlStore.deleteData(dataset, keys);
         }
-    }
-
-    private List<byte[]> archivedContentKeys(HotHistorySnapshot snapshot,
-                                             String table, String hashColumn, long finalized) {
-        List<ArchiveRecord> hotRows = HotArchiveRows.allRows(snapshot, ArchiveDatasetId.UTXO_HISTORY, table);
-        if (hotRows.isEmpty()) return List.of();
-        List<byte[]> removable = new ArrayList<>();
-        var repository = backend.repositories().records(ArchiveDatasetId.UTXO_HISTORY);
-        try (var read = backend.openReadSession()) {
-            for (int start = 0; start < hotRows.size(); start += 500) {
-                List<ArchiveRecord> batch = hotRows.subList(start, Math.min(hotRows.size(), start + 500));
-                List<byte[]> hashes = batch.stream().map(row -> (byte[]) row.value(hashColumn)).toList();
-                var query = new ArchiveQuery(new BlockRange(0, Math.max(0, finalized)),
-                        Map.of("__table", table, hashColumn, hashes),
-                        ArchivePageCursor.Order.ASC, batch.size(), Optional.empty());
-                Set<String> coldHashes = new HashSet<>();
-                for (ArchiveRecord cold : repository.query(read, query).rows()) {
-                    coldHashes.add(HexUtil.encodeHexString((byte[]) cold.value(hashColumn)));
-                }
-                for (ArchiveRecord hot : batch) {
-                    byte[] hash = (byte[]) hot.value(hashColumn);
-                    if (coldHashes.contains(HexUtil.encodeHexString(hash))) {
-                        removable.add(HotArchiveRows.put(ArchiveDatasetId.UTXO_HISTORY,
-                                new ArchiveRow(hot.table(), new ArrayList<>(hot.values().values()))).key());
-                    }
-                }
-            }
-        }
-        return removable;
     }
 
     private static ArchiveRow promotionRow(ArchiveRecord record, UUID jobId) {
@@ -1079,7 +1124,7 @@ public class HistoryArchiveService implements AutoCloseable {
     }
 
     private <B> void registerBlockWorker(ArchiveDatasetId id, BlockArchiveDataset<B> dataset,
-                                         ChainBlockArchiveSource<B> source, ArchiveNetworkIdentity network,
+                                         BlockArchiveSource<B> source, ArchiveNetworkIdentity network,
                                          ArchiveWorkerConfig workerConfig, CoreSyncView syncView) {
         if (!datasetEnabled(id)) return;
         var worker = new BlockArchiveWorker<>(network, source, backend, controlStore,
@@ -1088,7 +1133,7 @@ public class HistoryArchiveService implements AutoCloseable {
     }
 
     private <B> void registerLiveWorker(ArchiveDatasetId id, BlockArchiveDataset<B> dataset,
-                                        ChainBlockArchiveSource<B> source, ArchiveNetworkIdentity network,
+                                        BlockArchiveSource<B> source, ArchiveNetworkIdentity network,
                                         ArchiveWorkerConfig workerConfig) {
         if (!datasetEnabled(id)) return;
         var worker = new LiveBlockArchiveWorker<>(network, source, controlStore, workerConfig, metrics);
@@ -1256,9 +1301,37 @@ public class HistoryArchiveService implements AutoCloseable {
             ArchiveStartMode mode = startMode(string("yano.history.datasets." + name + ".start-mode",
                     defaultStart.name().toLowerCase(Locale.ROOT).replace('_', '-')));
             long retention = longValue("yano.history.datasets." + name + ".retention-epochs", 0);
-            result.put(id, new DatasetArchiveConfig(enabled, mode, retention));
+            Map<String, Boolean> tables = Map.of();
+            if (id == ArchiveDatasetId.UTXO_HISTORY) {
+                Map<String, Boolean> selected = new LinkedHashMap<>();
+                for (UtxoHistoryProjection.Table table : UtxoHistoryProjection.Table.values()) {
+                    selected.put(table.physicalName(), bool("yano.history.datasets.utxo-history.tables."
+                            + table.configName() + ".enabled", true));
+                }
+                tables = Map.copyOf(selected);
+            }
+            result.put(id, new DatasetArchiveConfig(enabled, mode, retention, tables));
         }
         return result;
+    }
+
+    private UtxoHistoryProjection resolveUtxoProjection(long persistedTip) {
+        DatasetArchiveConfig selected = archiveConfig.datasets().get(ArchiveDatasetId.UTXO_HISTORY);
+        OptionalLong existingDatasetStart = activations.start(ArchiveDatasetId.UTXO_HISTORY);
+        long datasetStart = existingDatasetStart.orElseGet(() ->
+                activationStart(ArchiveDatasetId.UTXO_HISTORY, persistedTip));
+        EnumMap<UtxoHistoryProjection.Table, Long> starts =
+                new EnumMap<>(UtxoHistoryProjection.Table.class);
+        for (UtxoHistoryProjection.Table table : UtxoHistoryProjection.Table.values()) {
+            activations.configureTable(ArchiveDatasetId.UTXO_HISTORY, table.physicalName(),
+                            selected.tableEnabled(table.physicalName()), existingDatasetStart.isPresent(),
+                            datasetStart, persistedTip, firstCanonicalBlockNumber)
+                    .ifPresent(start -> starts.put(table, start));
+        }
+        var projection = new UtxoHistoryProjection(starts);
+        log.info("UTXO archive tables: {}", starts.entrySet().stream()
+                .map(entry -> entry.getKey().physicalName() + "@" + entry.getValue()).toList());
+        return projection;
     }
 
     private void validateEpochPrerequisites(Map<ArchiveDatasetId, DatasetArchiveConfig> datasets) {
@@ -1301,7 +1374,7 @@ public class HistoryArchiveService implements AutoCloseable {
             properties.put("extensions.path", string("yano.history.archive.ducklake.extensions-path",
                     directory.resolve("extensions").toString()));
             properties.put("target-file-size-bytes", Long.toString(sizeBytes(string(
-                    YanoPropertyKeys.History.DUCKLAKE_TARGET_FILE_SIZE, "32MB"))));
+                    YanoPropertyKeys.History.DUCKLAKE_TARGET_FILE_SIZE, "4MB"))));
             properties.put("row-group-size", Integer.toString(intValue(
                     YanoPropertyKeys.History.DUCKLAKE_ROW_GROUP_SIZE, 100_000)));
             properties.put("snapshot-retention-hours", Long.toString(longValue(
@@ -1387,6 +1460,26 @@ public class HistoryArchiveService implements AutoCloseable {
     private int intValue(String name, int fallback) {
         return config.getOptionalValue(name, Integer.class).orElse(fallback);
     }
+    static int resolveProjectionParallelism(String configured, int processors, int enabledProjections) {
+        Objects.requireNonNull(configured, "configured");
+        if (processors < 1 || enabledProjections < 1) {
+            throw new IllegalArgumentException("processor and projection counts must be positive");
+        }
+        String value = configured.trim();
+        if (value.equalsIgnoreCase("auto")) {
+            return ArchiveWorkerConfig.automaticProjectionParallelism(processors, enabledProjections);
+        }
+        int requested;
+        try {
+            requested = Integer.parseInt(value);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("history projection parallelism must be auto or a positive integer", e);
+        }
+        if (requested < 1) {
+            throw new IllegalArgumentException("history projection parallelism must be positive");
+        }
+        return Math.min(requested, enabledProjections);
+    }
     private Long autoLong(String name) {
         String value = string(name, "auto").trim();
         return value.equalsIgnoreCase("auto") ? null : Long.parseLong(value);
@@ -1431,12 +1524,27 @@ public class HistoryArchiveService implements AutoCloseable {
         // native handle destruction during graceful application shutdown.
         if (subsystem != null) subsystem.close();
         subsystem = null;
+        ExecutorService selectedProjectionExecutor = projectionExecutor;
+        projectionExecutor = null;
+        if (selectedProjectionExecutor != null) {
+            selectedProjectionExecutor.shutdownNow();
+            try {
+                if (!selectedProjectionExecutor.awaitTermination(30, TimeUnit.SECONDS)) {
+                    log.warn("Archive projection executor did not stop within 30 seconds");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("Interrupted while stopping archive projection executor");
+            }
+        }
         if (ledger != null) try { ledger.setEpochArchiveStagingSink(
                 com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.NOOP); } catch (Exception ignored) { }
         epochStaging = null;
         liveAddressDataset = null;
         backfillAddressDataset = null;
         backfillGenesisEntries = List.of();
+        sharedFactSource = null;
+        sharedBlockSource = null;
         if (chain != null) try { chain.setBlockBodyRetentionBoundary(
                 com.bloxbean.cardano.yano.api.BlockBodyRetentionBoundary.NONE); } catch (Exception ignored) { }
         if (backend != null) try { backend.close(); } catch (Exception ignored) { }

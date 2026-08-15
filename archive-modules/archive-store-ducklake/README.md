@@ -36,6 +36,11 @@ specific DuckLake snapshot read-only, while one process owns the archive writer
 lock. Commits are idempotent by deterministic job ID, and coverage becomes
 visible with the committed snapshot.
 
+Payload writes are append-oriented: output-native CBOR is written with its
+output and witness datum/redeemer rows carry their transaction and block
+coordinates. The writer does not scan historical Parquet files to deduplicate
+payload hashes.
+
 Signed `ducklake` and `sqlite_scanner` extensions are bundled for the build
 platform. Runtime never downloads extensions. This backend is JVM-only.
 

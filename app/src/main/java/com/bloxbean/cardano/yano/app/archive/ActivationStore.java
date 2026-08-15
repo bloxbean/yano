@@ -69,6 +69,55 @@ final class ActivationStore {
         }
     }
 
+    /**
+     * Resolve a table projection cutoff without ever backfilling a table that
+     * was enabled after its parent dataset. Disabled tables retain old rows;
+     * re-enabling starts a new live interval at {@code currentTip + 1}.
+     */
+    synchronized OptionalLong configureTable(ArchiveDatasetId dataset, String table, boolean enabled,
+                                              boolean datasetAlreadyActivated, long datasetStart,
+                                              long currentTip, long firstCanonicalBlock) {
+        String enabledKey = tableKey(dataset, table, "enabled");
+        String startKey = tableKey(dataset, table, "start");
+        String previousEnabled = values.getProperty(enabledKey);
+        if (!enabled) {
+            if (!"false".equals(previousEnabled)) {
+                values.setProperty(enabledKey, "false");
+                try {
+                    persist();
+                } catch (RuntimeException e) {
+                    if (previousEnabled == null) values.remove(enabledKey);
+                    else values.setProperty(enabledKey, previousEnabled);
+                    throw e;
+                }
+            }
+            return OptionalLong.empty();
+        }
+
+        String existingStart = values.getProperty(startKey);
+        if ("true".equals(previousEnabled) && existingStart != null) {
+            return OptionalLong.of(Long.parseLong(existingStart));
+        }
+
+        long liveStart = Math.max(firstCanonicalBlock, Math.addExact(currentTip, 1));
+        long start = previousEnabled == null && !datasetAlreadyActivated && datasetStart >= 0
+                ? datasetStart : liveStart;
+        if (start < 0) throw new IllegalArgumentException("table activation start must be non-negative");
+        String previousStart = values.getProperty(startKey);
+        values.setProperty(enabledKey, "true");
+        values.setProperty(startKey, Long.toString(start));
+        try {
+            persist();
+        } catch (RuntimeException e) {
+            if (previousEnabled == null) values.remove(enabledKey);
+            else values.setProperty(enabledKey, previousEnabled);
+            if (previousStart == null) values.remove(startKey);
+            else values.setProperty(startKey, previousStart);
+            throw e;
+        }
+        return OptionalLong.of(start);
+    }
+
     private void persist() {
         try {
             Files.createDirectories(path.getParent());
@@ -86,5 +135,9 @@ final class ActivationStore {
         // Preserve the original backfill key format for phase-10 development
         // archives while adding an independent live anchor.
         return track == ArchiveTrack.BACKFILL ? dataset.name() : dataset.name() + ".LIVE";
+    }
+
+    private static String tableKey(ArchiveDatasetId dataset, String table, String suffix) {
+        return dataset.name() + ".TABLE." + table + '.' + suffix;
     }
 }

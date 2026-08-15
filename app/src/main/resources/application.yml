@@ -245,7 +245,7 @@ yano:
       engine: ducklake
       finality-blocks: auto
       ducklake:
-        target-file-size: 32MB
+        target-file-size: 4MB
         row-group-size: 100000
         snapshot-retention-hours: 168
         cleanup-grace-hours: 24
@@ -253,14 +253,32 @@ yano:
       retention-blocks: auto
     worker:
       poll-interval-millis: 1000
+      # Adaptive workers start at 100 and grow after successful batches.
       max-blocks-per-batch: 1000
       max-rows-per-batch: 250000
       bulk-pause-core-lag-blocks: 100
+      # auto = min(enabled block projections, 4, max(1, available processors / 2))
+      projection-parallelism: auto
     datasets:
       account-events: { enabled: true, retention-epochs: 0 }
       transactions: { enabled: true, retention-epochs: 0 }
       address-transactions: { enabled: false, retention-epochs: 0 }
-      utxo-history: { enabled: false, retention-epochs: 0 }
+      utxo-history:
+        enabled: false
+        retention-epochs: 0
+        tables:
+          addresses:
+            enabled: true
+          transaction-outputs:
+            enabled: true
+          transaction-output-assets:
+            enabled: true
+          transaction-inputs:
+            enabled: true
+          transaction-datums:
+            enabled: true
+          transaction-redeemers:
+            enabled: true
       rewards: { enabled: false, retention-epochs: 0 }
       epoch-stake: { enabled: false, start-mode: earliest-available, retention-epochs: 0 }
       drep-distribution: { enabled: false, start-mode: earliest-available, retention-epochs: 0 }

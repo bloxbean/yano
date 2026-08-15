@@ -163,8 +163,8 @@ The initial datasets are:
 3. `transaction`
 4. `reward`
 5. optional `utxo_history`, emitted atomically into `address`,
-   `transaction_output`, `transaction_output_asset`, `transaction_input`, and
-   optional content-addressed datum/script payload tables
+   `transaction_output`, `transaction_output_asset`, `transaction_input`,
+   `transaction_datum`, and `transaction_redeemer` tables
 6. `epoch_stake`
 7. `drep_distribution`
 8. `ada_pot`
@@ -248,6 +248,24 @@ canonicalHash(block.number) == block.hash
 An event is only a latency optimization that wakes the worker. On startup,
 after a dropped event, and after reconnect, the worker advances by comparing
 its durable cursor with canonical storage.
+
+For block backfill, one archive-owned coordinator reads each retained body and
+parses it once into a cycle-local immutable block object. Enabled projections
+consume the shared decoded batch through a bounded archive executor. This is
+not the core event bus: the coordinator explicitly joins projection tasks,
+owns failure propagation and backpressure, and releases the decoded batch only
+after every consumer completes. A projection-specific failure pauses only that
+dataset at its previous durable cursor. A canonical source/decode failure
+pauses every dataset that requires the block; no worker skips it or claims
+coverage beyond it.
+
+Projection concurrency is CPU-bounded and backend-neutral. DuckLake and SQLite
+retain one writer each, so projections may derive rows concurrently while
+commits serialize. Stateful address resolution consumes every block and
+transaction in canonical order within its projection. Batches start at the
+configured maximum, halve on row/backend-capacity failure, and double only
+after three successful batches. There is no predictive controller or
+unbounded work queue.
 
 The core commit must never wait for:
 
@@ -557,17 +575,18 @@ context for an epoch calculation.
 Implementations share worker orchestration and resource management but own
 their row schema and query adapter. One logical dataset may emit multiple
 physical tables in the same archive transaction; `utxo_history` uses this to
-keep outputs, assets, inputs, address dictionary entries, and optional payloads
+keep outputs, assets, inputs, address dictionary entries, datums, and redeemers
 at one consistent coverage watermark.
 
 ### Relational and columnar schema principles
 
 Physical archive tables are narrow, typed, and analytics-friendly. JSON/JSONB
 is not used for amounts, inputs, outputs, credentials, or other fields that have
-a stable relational shape. Large or genuinely semi-structured payloads are
-stored separately and content-addressed where possible. Stable views provide
-convenient denormalized query shapes without making duplicated wide rows the
-durability format.
+a stable relational shape. Large binary payloads use canonical CBOR bytes
+rather than hex or JSON. Payloads native to an output stay on that output;
+transaction witness datums and redeemers use transaction-scoped child rows.
+Stable views provide convenient denormalized query shapes without making
+duplicated asset rows the durability format.
 
 Every chain fact/event table contains a canonical coordinate tuple sufficient
 for filtering, stable ordering, and provenance:
@@ -584,10 +603,9 @@ Root facts such as `transaction`, `account_event`, `reward`, and
 `transaction_output` also store `block_hash`. Narrow child facts such as
 `transaction_output_asset` repeat the inexpensive `block_number`, `slot`, and
 `epoch` columns for Parquet pruning and self-contained time filtering, but do
-not repeat wide address, datum, script, or block-hash values. The address
+not repeat wide address or block-hash values. The address
 dimension records first-seen coordinates under the merge rules below rather
-than pretending to be an event. Content-addressed payload tables are object
-storage keyed by content hash and do not claim canonical first-seen semantics.
+than pretending to be an event.
 
 Physical types avoid presentation-driven duplication:
 
@@ -641,11 +659,6 @@ If invalidation removes the range containing the recorded minimum, the same
 backend transaction recomputes the minimum from surviving referencing facts or
 removes the dimension row when none remain. Readers never use first-seen from
 an incomplete track as a claim about uncovered history.
-
-`datum` and `script` payloads are different: their hash key makes reinsertion
-idempotent, and canonical outputs—not payload presence—establish use. Range
-invalidation may leave an unreferenced payload object for later bounded garbage
-collection; it cannot make wallet/history results canonical by itself.
 
 Address-facing fact tables carry `address_key`; tables that must support direct
 credential lookup, especially `address_transaction` and `transaction_output`,
@@ -757,9 +770,10 @@ the physical query plans differ.
 
 ### Optional UTXO history
 
-`utxo_history` is one logical dataset/coverage unit with normalized physical
-tables. Its output, asset, input, address, and enabled payload mutations for a
-canonical range commit atomically.
+`utxo_history` is one logical worker with normalized physical tables. Its
+enabled output, asset, input, address, datum, and redeemer rows for a canonical
+range commit atomically. Each row family is independently selectable without
+creating another worker or cursor.
 
 `transaction_output` contains exactly one row per output:
 
@@ -768,16 +782,18 @@ tx_hash, output_index, tx_index,
 origin_type,
 address_key, payment_credential, stake_credential,
 lovelace,
-datum_kind, datum_hash, reference_script_hash,
+datum_kind, datum_hash, inline_datum_cbor,
+reference_script_hash, reference_script_type, reference_script_cbor,
 is_collateral_return,
 block_hash, block_number, slot, epoch, block_time,
 archive_job_id
 ```
 
-It stores output-level data only. Datum and reference-script hashes remain even
-when payload archival is disabled. When payload archival is enabled, canonical
-datum/script CBOR is deduplicated into content-addressed `datum` and `script`
-tables keyed by hash; it is not repeated per output or asset.
+It stores output-level data only. Inline datum and reference-script CBOR are
+stored directly on the output row as binary CBOR, together with their hashes.
+The writer never probes historical Parquet files to deduplicate these payloads;
+Parquet compression handles repeated values within files and the append-only
+shape keeps memory and write cost predictable.
 
 Before the first block, the dataset writes the same Byron genesis/AVVM and
 Shelley `initialFunds` outpoint seed used by the independent resolver.
@@ -819,6 +835,43 @@ reference inputs and unapplied ordinary inputs do not. A canonical output has
 at most one consuming row. Input rows do not duplicate the referenced output's
 address, credentials, lovelace, assets, datum, or script; queries join by the
 referenced outpoint.
+
+`transaction_datum` contains witness datums only, one row per transaction and
+datum hash:
+
+```text
+tx_hash, tx_index, datum_hash, datum_cbor,
+block_hash, block_number, slot, epoch, block_time,
+archive_job_id
+```
+
+Inline output datums are not duplicated into this table. A hash-only output may
+have its payload revealed by a later spending transaction; that later
+transaction owns the witness datum row. The primary wallet path already knows
+the transaction and epoch coordinates. A future datum-hash accelerator, if an
+API requires it, is rebuildable and read-oriented; it must not add a historical
+archive lookup to the write path.
+
+`transaction_redeemer` contains one row per transaction redeemer:
+
+```text
+tx_hash, tx_index, purpose, redeemer_index,
+redeemer_cbor, redeemer_data_hash, execution_mem, execution_steps,
+block_hash, block_number, slot, epoch, block_time,
+archive_job_id
+```
+
+The archive does not retain VKey signatures, bootstrap witnesses, or witness
+scripts for the wallet-history use case. Exact transaction reconstruction is
+outside this dataset's contract.
+
+Every UTXO-history table is enabled by default when the dataset is enabled and
+may be disabled explicitly. Enabling a table after the parent dataset has
+already activated records `current canonical core tip + 1` as its table
+activation cutoff. Both backfill and live decoders skip rows before that
+cutoff, so enable-later never starts a table backfill. Disabling preserves
+existing rows; re-enabling starts another forward-only interval. The output
+asset table requires outputs, and outputs require the address dimension.
 
 Backend-neutral stable views provide the convenient merged shapes:
 
@@ -1108,7 +1161,8 @@ address                   -> addresses
 transaction_output        -> transaction_outputs
 transaction_output_asset  -> transaction_output_assets
 transaction_input         -> transaction_inputs
-datum / script            -> datums / scripts (when payloads are enabled)
+transaction_datum         -> transaction_datums
+transaction_redeemer      -> transaction_redeemers
 archive_commit            -> archive_commits
 archive_coverage          -> archive_coverage
 
@@ -1122,7 +1176,7 @@ part of DuckLake. Wallet APIs merge hot and cold through the typed repositories.
 
 Epoch is the default coarse partition. Additional credential/hash bucketing is
 introduced only when measurements show that it improves pruning without a
-small-file explosion. The bounded-memory default targets approximately 32 MB
+small-file explosion. The bounded-memory default targets approximately 4 MB
 files and 100,000 rows per row group, then tunes from benchmark data. Larger
 targets are appropriate only when the operator raises the bulk DuckDB memory
 budget as well. Rows are
@@ -1196,7 +1250,7 @@ Flyway rules are strict:
 
 The initial schema uses `chain_transaction` for the logical transaction
 dataset, matching DuckLake. It also includes stable unversioned address, output,
-asset, input, optional datum/script, account-event, address-transaction,
+asset, input, transaction-datum, transaction-redeemer, account-event, address-transaction,
 reward, epoch-stake, DRep-distribution, Ada-pot, governance-proposal-status,
 `archive_commit`, and `archive_coverage` tables, plus convenience views
 equivalent to the DuckLake views. Flyway versions the schema through
@@ -1695,9 +1749,12 @@ yano:
 
     worker:
       poll-interval-millis: 1000
+      # Workers begin at 100 blocks and grow after successful batches.
       max-blocks-per-batch: 1000
       max-rows-per-batch: 250000
       bulk-pause-core-lag-blocks: 100
+      # auto = min(enabled block projections, 4, max(1, available processors / 2))
+      projection-parallelism: auto
 
     rollback:
       retention-blocks: auto        # auto = 2 * genesis k
@@ -1718,7 +1775,7 @@ yano:
           busy-timeout-millis: 5000
           max-retries: 10
         data-path: ./history/ducklake-data
-        target-file-size: 32MB
+        target-file-size: 4MB
         row-group-size: 100000
         data-inlining-row-limit: 0
         snapshot-retention-hours: 168
@@ -1750,9 +1807,19 @@ yano:
         enabled: false
         start-mode: full-required
         retention-epochs: 0
-        payloads:
-          datums: false
-          scripts: false
+        tables:
+          addresses:
+            enabled: true
+          transaction-outputs:
+            enabled: true
+          transaction-output-assets:
+            enabled: true
+          transaction-inputs:
+            enabled: true
+          transaction-datums:
+            enabled: true
+          transaction-redeemers:
+            enabled: true
       rewards:
         enabled: false
         start-mode: earliest-available
@@ -1822,8 +1889,10 @@ Additional validation includes:
   epoch and a source lease that outlives their pending job;
 - `utxo-history.enabled=true` requires `transactions.enabled=true`, and
   transaction retention/coverage must be a superset of retained UTXO history;
-- datum/script payload switches require UTXO history and never remove their
-  hashes from output rows when payload bodies are disabled;
+- UTXO table switches require UTXO history; output assets require outputs and
+  outputs require the address dimension;
+- enabling a UTXO table after dataset activation always starts at the next
+  canonical core block and never schedules table backfill;
 - archive identity matches configured genesis;
 - only one writer owns a history directory;
 - read-only secondary processes cannot become archive writers.
@@ -2257,8 +2326,9 @@ clean implementation branch before code changes begin.
 2. Add `transaction_output`, `transaction_output_asset`, and
    `transaction_input` with atomic group coverage and phase-2 validity,
    collateral, reference-input, and spend semantics.
-3. Add optional content-addressed datum/script payload tables while always
-   retaining their hashes on outputs.
+3. Store inline datum/reference-script CBOR on outputs and add independently
+   optional transaction-scoped datum/redeemer tables; do not perform historical
+   payload lookup or deduplication on the DuckLake write path.
 4. Add merged amount, lifecycle, unspent, address-UTXO, and asset-flow views;
    verify exact-address, payment-credential, stake-credential, asset, outpoint,
    and point-in-time spent/unspent query plans in both backends.
@@ -2334,7 +2404,7 @@ archive engines where applicable:
 - phase-2-invalid collateral input/return and tx validity are indexed;
 - both backends physically store the logical `transaction` dataset in
   `chain_transaction` and expose the same `transactions` view;
-- with UTXO history disabled, no output/asset/input/address/payload row or hot
+- with UTXO history disabled, no output/asset/input/address/datum/redeemer row or hot
   key is produced;
 - canonical address-key encoding round-trips Shelley and Byron forms, treats
   different textual encodings of identical bytes consistently, and fails on a
@@ -2351,24 +2421,23 @@ archive engines where applicable:
   `transaction_output_asset` row;
 - the merged amount view produces one lovelace row plus all native-asset rows
   with the same result, ordering, and exact quantities on DuckLake and SQLite;
-- no output-level address, credential, datum/script payload, or block hash is
+- no output-level address, credential, datum/redeemer payload, or block hash is
   duplicated into native-asset physical rows;
 - address, payment-credential, and stake-credential output/history queries are
   complete across hot/cold promotion, use the expected SQLite composite indexes,
   and meet the benchmarked DuckLake row-group/accelerator scan bound;
 - live-first then backfill-earlier address discovery converges to the minimum
   canonical `first_seen_*`; invalidating that minimum recomputes or removes the
-  dimension row, while unreferenced content-addressed payloads are harmless and
-  eventually garbage-collected;
+  dimension row;
 - transaction inputs distinguish ordinary, collateral, and reference roles;
   `consumes_output` matches valid and phase-2-invalid ledger application and at
   most one canonical consuming input exists per outpoint;
 - output-lifecycle and point-in-time spent/unspent queries match authoritative
   UTXO fixtures before, at, and after a spend, including collateral return;
-- disabling datum/script payloads retains their hashes but writes no payload
-  bodies; enabling them deduplicates identical CBOR by content hash;
+- disabling transaction datum/redeemer tables writes no such rows; enabling
+  them later begins at the next core block without historical backfill;
 - one UTXO archive job promotes or invalidates output, asset, input, address,
-  and enabled payload rows at a single coverage boundary in either backend;
+  and enabled datum/redeemer rows at a single coverage boundary in either backend;
 - retaining/pruning UTXO history never leaves a view claiming complete coverage
   over missing parent/child ranges, and transaction coverage remains a superset;
 - unresolved inputs stop cursor advancement;
@@ -2529,7 +2598,7 @@ and orphan cleanup already provided by DuckLake.
 Rejected as the physical model because it repeats address, credential, datum,
 script, transaction, block, and spend-independent output data for ADA and every
 native asset. Parquet compresses repetition but SQLite does not obtain the same
-benefit, and datum/script payload duplication is especially wasteful. The
+benefit. The
 normalized output-plus-native-asset model is authoritative; a stable view
 provides the wide one-row-per-amount interface when convenient.
 
@@ -2570,8 +2639,8 @@ treated as stable defaults:
 - optimal DuckLake sorting/zone-map layout and whether optional Bloom filters
   on any measured low/moderate-cardinality predicate justify their size without
   forced dictionary encoding;
-- full-mainnet normalized UTXO/archive size with datum/script payloads disabled
-  and enabled, compared with the wide flattened Yaci Store layout;
+- full-mainnet normalized UTXO/archive size with transaction datum/redeemer
+  tables disabled and enabled, compared with the wide flattened Yaci Store layout;
 - maximum useful history query concurrency under the default aggregate 256MB
   DuckDB budget;
 - bulk-catch-up memory/thread settings needed for an acceptable mainnet

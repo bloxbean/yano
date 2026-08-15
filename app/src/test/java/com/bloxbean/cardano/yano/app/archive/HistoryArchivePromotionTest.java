@@ -125,14 +125,12 @@ class HistoryArchivePromotionTest {
     }
 
     @Test
-    void promotesWitnessContentThatIsNotReferencedByAnyHotOutput() throws Exception {
+    void promotesTransactionScopedPayloadRowsByBlockRange() throws Exception {
         byte[] txHash = java.util.HexFormat.of().parseHex("31".repeat(32));
         byte[] blockHash = java.util.HexFormat.of().parseHex("32".repeat(32));
         byte[] addressKey = java.util.HexFormat.of().parseHex("33".repeat(32));
         byte[] datumHash = java.util.HexFormat.of().parseHex("34".repeat(32));
-        byte[] scriptHash = java.util.HexFormat.of().parseHex("35".repeat(28));
         byte[] datumCbor = {(byte) 0xd8, 0x79, (byte) 0x80};
-        byte[] scriptCbor = {0x01, 0x02};
         ArchiveIdentity identity = new ArchiveIdentity(UUID.randomUUID(), "sqlite", 1, 1, "fixture");
         ArchiveBackend backend = new SqliteArchiveBackendProvider().open(identity, temp,
                 Map.of("database.path", temp.resolve("utxo-content.sqlite").toString()));
@@ -142,16 +140,19 @@ class HistoryArchivePromotionTest {
                 null, null, null, 10L, 100L, 0L));
         ArchiveRow output = new ArchiveRow("transaction_outputs", Arrays.asList(
                 txHash, 0, 0, "ordinary", addressKey, null, null, 10L,
-                "none", null, null, false, blockHash, 10L, 100L, 0L,
+                "none", null, null, null, null, null, false, blockHash, 10L, 100L, 0L,
                 1_700_000_000L, UUID.randomUUID()));
-        ArchiveRow datum = new ArchiveRow("datums", List.of(datumHash, datumCbor));
-        ArchiveRow script = new ArchiveRow("scripts", List.of(scriptHash, "plutus_v2", scriptCbor));
+        ArchiveRow datum = new ArchiveRow("transaction_datums", List.of(txHash, 0, datumHash, datumCbor,
+                blockHash, 10L, 100L, 0L, 1_700_000_000L, UUID.randomUUID()));
+        ArchiveRow redeemer = new ArchiveRow("transaction_redeemers", Arrays.asList(txHash, 0, "spend", 0,
+                new byte[] {0x01}, null, java.math.BigInteger.ONE, java.math.BigInteger.TWO,
+                blockHash, 10L, 100L, 0L, 1_700_000_000L, UUID.randomUUID()));
         hot.applyBlock(ArchiveDatasetId.UTXO_HISTORY,
                 new HotBlockCheckpoint(10, 100, blockHash, new byte[32]),
                 List.of(HotArchiveRows.put(ArchiveDatasetId.UTXO_HISTORY, address),
                         HotArchiveRows.put(ArchiveDatasetId.UTXO_HISTORY, output),
                         HotArchiveRows.put(ArchiveDatasetId.UTXO_HISTORY, datum),
-                        HotArchiveRows.put(ArchiveDatasetId.UTXO_HISTORY, script)),
+                        HotArchiveRows.put(ArchiveDatasetId.UTXO_HISTORY, redeemer)),
                 new ArchiveProgress(ArchiveDatasetId.UTXO_HISTORY, ArchiveTrack.LIVE,
                         10, 100, blockHash, 0));
 
@@ -179,42 +180,44 @@ class HistoryArchivePromotionTest {
         try (var read = backend.openReadSession()) {
             var repository = backend.repositories().records(ArchiveDatasetId.UTXO_HISTORY);
             assertThat(repository.query(read, new ArchiveQuery(new BlockRange(10, 10),
-                    Map.of("__table", "datums", "datum_hash", datumHash),
+                    Map.of("__table", "transaction_datums", "datum_hash", datumHash),
                     ArchivePageCursor.Order.ASC, 10, Optional.empty())).rows()).hasSize(1);
             assertThat(repository.query(read, new ArchiveQuery(new BlockRange(10, 10),
-                    Map.of("__table", "scripts", "script_hash", scriptHash),
+                    Map.of("__table", "transaction_redeemers", "tx_hash", txHash),
                     ArchivePageCursor.Order.ASC, 10, Optional.empty())).rows()).hasSize(1);
         }
         try (var current = hot.snapshot()) {
-            assertThat(HotArchiveRows.allRows(current, ArchiveDatasetId.UTXO_HISTORY, "datums")).isEmpty();
-            assertThat(HotArchiveRows.allRows(current, ArchiveDatasetId.UTXO_HISTORY, "scripts")).isEmpty();
+            assertThat(HotArchiveRows.allRows(current, ArchiveDatasetId.UTXO_HISTORY,
+                    "transaction_datums")).isEmpty();
+            assertThat(HotArchiveRows.allRows(current, ArchiveDatasetId.UTXO_HISTORY,
+                    "transaction_redeemers")).isEmpty();
         }
 
         byte[] nextBlockHash = java.util.HexFormat.of().parseHex("36".repeat(32));
         byte[] newDatumHash = java.util.HexFormat.of().parseHex("37".repeat(32));
-        byte[] newScriptHash = java.util.HexFormat.of().parseHex("38".repeat(28));
-        ArchiveRow newDatum = new ArchiveRow("datums", List.of(newDatumHash, new byte[] {0x03}));
-        ArchiveRow newScript = new ArchiveRow("scripts", List.of(newScriptHash, "plutus_v3", new byte[] {0x04}));
+        byte[] nextTxHash = java.util.HexFormat.of().parseHex("38".repeat(32));
+        ArchiveRow newDatum = new ArchiveRow("transaction_datums", List.of(nextTxHash, 0, newDatumHash,
+                new byte[] {0x03}, nextBlockHash, 11L, 101L, 0L, 1_700_000_001L, UUID.randomUUID()));
+        ArchiveRow newRedeemer = new ArchiveRow("transaction_redeemers", Arrays.asList(nextTxHash, 0,
+                "mint", 0, new byte[] {0x04}, null, java.math.BigInteger.ONE, java.math.BigInteger.TWO,
+                nextBlockHash, 11L, 101L, 0L, 1_700_000_001L, UUID.randomUUID()));
         hot.applyBlock(ArchiveDatasetId.UTXO_HISTORY,
                 new HotBlockCheckpoint(11, 101, nextBlockHash, blockHash),
-                List.of(HotArchiveRows.put(ArchiveDatasetId.UTXO_HISTORY, datum),
-                        HotArchiveRows.put(ArchiveDatasetId.UTXO_HISTORY, script),
-                        HotArchiveRows.put(ArchiveDatasetId.UTXO_HISTORY, newDatum),
-                        HotArchiveRows.put(ArchiveDatasetId.UTXO_HISTORY, newScript)),
+                List.of(HotArchiveRows.put(ArchiveDatasetId.UTXO_HISTORY, newDatum),
+                        HotArchiveRows.put(ArchiveDatasetId.UTXO_HISTORY, newRedeemer)),
                 new ArchiveProgress(ArchiveDatasetId.UTXO_HISTORY, ArchiveTrack.LIVE,
                         11, 101, nextBlockHash, 0));
 
         // Cold coverage already owns the finalized range, so this takes the
-        // cleanup-only path. Archived payloads are removed; newer witness-only
-        // payloads must remain hot until a later promotion.
+        // Cleanup of finalized block 10 must leave block 11 payload rows hot.
         service.promoteLiveRows(ArchiveDatasetId.UTXO_HISTORY, 10);
         try (var current = hot.snapshot()) {
-            assertThat(HotArchiveRows.allRows(current, ArchiveDatasetId.UTXO_HISTORY, "datums"))
+            assertThat(HotArchiveRows.allRows(current, ArchiveDatasetId.UTXO_HISTORY, "transaction_datums"))
                     .extracting(row -> java.util.HexFormat.of().formatHex((byte[]) row.value("datum_hash")))
                     .containsExactly(java.util.HexFormat.of().formatHex(newDatumHash));
-            assertThat(HotArchiveRows.allRows(current, ArchiveDatasetId.UTXO_HISTORY, "scripts"))
-                    .extracting(row -> java.util.HexFormat.of().formatHex((byte[]) row.value("script_hash")))
-                    .containsExactly(java.util.HexFormat.of().formatHex(newScriptHash));
+            assertThat(HotArchiveRows.allRows(current, ArchiveDatasetId.UTXO_HISTORY, "transaction_redeemers"))
+                    .extracting(row -> java.util.HexFormat.of().formatHex((byte[]) row.value("tx_hash")))
+                    .containsExactly(java.util.HexFormat.of().formatHex(nextTxHash));
         }
 
         backend.close();

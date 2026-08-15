@@ -116,8 +116,10 @@ public final class UtxoHistoryDataset implements LiveStatefulBlockArchiveDataset
             sink.accept(new ArchiveRow("transaction_outputs", Arrays.asList(
                     output.txHash(), output.outputIndex(), output.txIndex(), output.originType(), output.addressKey(),
                     output.paymentCredential(), stakeCredential, output.lovelace(), output.datumKind(),
-                    output.datumHash(), output.referenceScriptHash(), output.collateralReturn(), block.blockHash(),
-                    block.blockNumber(), block.slot(), block.epoch(), block.blockTime().getEpochSecond(), job.jobId())));
+                    output.datumHash(), output.inlineDatumCbor(), output.referenceScriptHash(),
+                    output.referenceScriptType(), output.referenceScriptCbor(), output.collateralReturn(),
+                    block.blockHash(), block.blockNumber(), block.slot(), block.epoch(),
+                    block.blockTime().getEpochSecond(), job.jobId())));
         }
         for (var asset : facts.assets()) sink.accept(new ArchiveRow("transaction_output_assets", Arrays.asList(
                 asset.txHash(), asset.outputIndex(), asset.policyId(), asset.assetName(), asset.quantity(),
@@ -126,8 +128,14 @@ public final class UtxoHistoryDataset implements LiveStatefulBlockArchiveDataset
                 input.spendingTxHash(), input.spendingTxIndex(), input.inputIndex(), input.inputRole(),
                 input.referencedTxHash(), input.referencedOutputIndex(), input.consumesOutput(), block.blockHash(),
                 block.blockNumber(), block.slot(), block.epoch(), block.blockTime().getEpochSecond(), job.jobId())));
-        for (var datum : facts.datums()) sink.accept(new ArchiveRow("datums", List.of(datum.hash(), datum.cbor())));
-        for (var script : facts.scripts()) sink.accept(new ArchiveRow("scripts", List.of(script.hash(), script.type(), script.cbor())));
+        for (var datum : facts.transactionDatums()) sink.accept(new ArchiveRow("transaction_datums", List.of(
+                datum.txHash(), datum.txIndex(), datum.datumHash(), datum.datumCbor(), block.blockHash(),
+                block.blockNumber(), block.slot(), block.epoch(), block.blockTime().getEpochSecond(), job.jobId())));
+        for (var redeemer : facts.transactionRedeemers()) sink.accept(new ArchiveRow("transaction_redeemers", Arrays.asList(
+                redeemer.txHash(), redeemer.txIndex(), redeemer.purpose(), redeemer.redeemerIndex(),
+                redeemer.redeemerCbor(), redeemer.redeemerDataHash(), redeemer.executionMem(),
+                redeemer.executionSteps(), block.blockHash(), block.blockNumber(), block.slot(), block.epoch(),
+                block.blockTime().getEpochSecond(), job.jobId())));
 
         if (state != null) {
             updates.add(new HotBlockUpdate(new HotBlockCheckpoint(block.blockNumber(), block.slot(),

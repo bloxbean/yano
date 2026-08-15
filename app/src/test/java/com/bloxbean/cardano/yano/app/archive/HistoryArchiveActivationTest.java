@@ -65,6 +65,33 @@ class HistoryArchiveActivationTest {
     }
 
     @Test
+    void tableEnabledWithFreshDatasetSharesBackfillStart() {
+        var activations = new ActivationStore(temp.resolve("fresh-table.properties"));
+
+        assertThat(activations.configureTable(
+                com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.UTXO_HISTORY,
+                "transaction_datums", true, false, 1, -1, 1)).hasValue(1);
+        assertThat(activations.configureTable(
+                com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.UTXO_HISTORY,
+                "transaction_datums", true, true, 1, 500, 1)).hasValue(1);
+    }
+
+    @Test
+    void tableEnabledLaterStartsAfterCanonicalTipAndNeverBackfillsDisabledGap() {
+        var activations = new ActivationStore(temp.resolve("later-table.properties"));
+        var dataset = com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.UTXO_HISTORY;
+
+        assertThat(activations.configureTable(dataset, "transaction_redeemers",
+                false, true, 1, 100, 1)).isEmpty();
+        assertThat(activations.configureTable(dataset, "transaction_redeemers",
+                true, true, 1, 100, 1)).hasValue(101);
+        assertThat(activations.configureTable(dataset, "transaction_redeemers",
+                false, true, 1, 150, 1)).isEmpty();
+        assertThat(activations.configureTable(dataset, "transaction_redeemers",
+                true, true, 1, 150, 1)).hasValue(151);
+    }
+
+    @Test
     void reanchorsAStaleLiveTrackOnlyAfterCoreReachesItsUpstreamTarget() {
         assertThat(HistoryArchiveService.shouldReanchorLive(
                 5_000_000, 5_000_010, 500_000, 100, 4_320)).isTrue();
@@ -72,6 +99,15 @@ class HistoryArchiveActivationTest {
                 4_000_000, 5_000_000, 500_000, 100, 4_320)).isFalse();
         assertThat(HistoryArchiveService.shouldReanchorLive(
                 5_000_000, 5_000_010, 4_998_000, 100, 4_320)).isFalse();
+    }
+
+    @Test
+    void resolvesAutomaticAndExplicitProjectionParallelismConservatively() {
+        assertThat(HistoryArchiveService.resolveProjectionParallelism("auto", 2, 4)).isEqualTo(1);
+        assertThat(HistoryArchiveService.resolveProjectionParallelism("auto", 8, 4)).isEqualTo(4);
+        assertThat(HistoryArchiveService.resolveProjectionParallelism("8", 8, 3)).isEqualTo(3);
+        assertThatThrownBy(() -> HistoryArchiveService.resolveProjectionParallelism("0", 8, 4))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
