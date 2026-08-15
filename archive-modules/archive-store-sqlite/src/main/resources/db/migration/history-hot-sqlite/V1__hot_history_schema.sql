@@ -72,8 +72,13 @@ CREATE TABLE resolver_outputs (
     created_block_hash BLOB,
     source_kind TEXT NOT NULL CHECK (source_kind IN ('BLOCK', 'SEED')),
     PRIMARY KEY (namespace, tx_hash, output_index)
-);
-CREATE INDEX resolver_outputs_created ON resolver_outputs(namespace, created_block_number);
+) WITHOUT ROWID;
+-- Activation seeds have no creation coordinate and dominate the live resolver
+-- on an already-synced node. Excluding them avoids a large, useless NULL-key
+-- index while retaining the exact rollback/cleanup access path for block rows.
+CREATE INDEX resolver_outputs_created
+  ON resolver_outputs(namespace, created_block_number)
+  WHERE source_kind = 'BLOCK';
 
 CREATE TABLE resolver_spends (
     namespace TEXT NOT NULL,
