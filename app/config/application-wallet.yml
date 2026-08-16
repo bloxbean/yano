@@ -4,9 +4,9 @@
 #   ./yano.sh start:preprod,wallet
 #   ./yano.sh start:mainnet,wallet
 #
-# A fresh node records stake-credential transaction history from genesis. When
-# enabled on an already-synced node, start-mode=tip records only subsequent
-# blocks and never initiates a historical backfill.
+# This profile requires complete stake-credential transaction history from
+# genesis. On an existing node it fails clearly if required block bodies have
+# already been pruned.
 
 yano:
   account-state:
@@ -25,7 +25,7 @@ yano:
   history:
     enabled: true
     dir: ${YANO_HISTORY_DIR:./history}
-    start-mode: ${YANO_HISTORY_START_MODE:tip}
+    start-mode: ${YANO_HISTORY_START_MODE:full-required}
     hot-store:
       engine: sqlite
       sqlite:
