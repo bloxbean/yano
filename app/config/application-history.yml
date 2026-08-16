@@ -40,6 +40,10 @@ yano:
       projection-parallelism: auto
       # Adaptive workers start at 100 and grow to this ceiling after successful batches.
       max-blocks-per-batch: 1000
+      # Core sync and history backfill run concurrently by default. Set true
+      # on a constrained machine to prioritize core catch-up.
+      pause-backfill-during-core-catchup: ${YANO_HISTORY_PAUSE_BACKFILL_DURING_CORE_CATCHUP:false}
+      bulk-pause-core-lag-blocks: 100
     maintenance:
       # Explicit bounded maintenance compacts DuckLake's streamed small files
       # and performs backend cleanup outside core block application.

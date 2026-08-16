@@ -66,7 +66,8 @@ public final class BlockArchiveWorker<B> {
                     previous, 0, "caught up to finalized boundary");
             return previous;
         }
-        if (coreSync.lag() > config.bulkPauseCoreLagBlocks()) {
+        if (config.pauseBackfillDuringCoreCatchup()
+                && coreSync.lag() > config.bulkPauseCoreLagBlocks()) {
             metrics.update(dataset.dataset(), ArchiveTrack.BACKFILL,
                     ArchiveWorkerStatus.State.PAUSED_CORE_LAG, previous, coreSync.lag(),
                     "core sync has priority");

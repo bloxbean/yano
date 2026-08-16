@@ -286,6 +286,8 @@ public final class YanoPropertyKeys {
         public static final String WORKER_POLL_MILLIS = PREFIX + "worker.poll-interval-millis";
         public static final String WORKER_MAX_BLOCKS = PREFIX + "worker.max-blocks-per-batch";
         public static final String WORKER_MAX_ROWS = PREFIX + "worker.max-rows-per-batch";
+        public static final String WORKER_PAUSE_DURING_CORE_CATCHUP =
+                PREFIX + "worker.pause-backfill-during-core-catchup";
         public static final String WORKER_CORE_LAG = PREFIX + "worker.bulk-pause-core-lag-blocks";
         public static final String WORKER_PROJECTION_PARALLELISM = PREFIX + "worker.projection-parallelism";
         public static final String MAINTENANCE_INTERVAL_SECONDS = PREFIX + "maintenance.interval-seconds";

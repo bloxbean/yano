@@ -79,6 +79,12 @@ class ArchiveConfigurationTest {
         assertThat(ArchiveWorkerConfig.automaticProjectionParallelism(32, 2)).isEqualTo(2);
     }
 
+    @Test
+    void workerDefaultsAllowBackfillDuringCoreCatchup() {
+        assertThat(ArchiveWorkerConfig.defaults().pauseBackfillDuringCoreCatchup()).isFalse();
+        assertThat(ArchiveWorkerConfig.defaults().bulkPauseCoreLagBlocks()).isEqualTo(100);
+    }
+
     private ArchiveConfiguration configuration(Map<ArchiveDatasetId, DatasetArchiveConfig> datasets) {
         return new ArchiveConfiguration(true, temp, ArchiveEngine.DUCKLAKE,
                 ArchiveStartMode.TIP, ArchiveWorkerConfig.defaults(),

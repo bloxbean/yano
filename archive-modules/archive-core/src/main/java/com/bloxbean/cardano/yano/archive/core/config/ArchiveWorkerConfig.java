@@ -4,7 +4,8 @@ import java.time.Duration;
 import java.util.Objects;
 
 public record ArchiveWorkerConfig(Duration pollInterval, int maxBlocksPerBatch,
-                                  int maxRowsPerBatch, long bulkPauseCoreLagBlocks,
+                                  int maxRowsPerBatch, boolean pauseBackfillDuringCoreCatchup,
+                                  long bulkPauseCoreLagBlocks,
                                   int projectionParallelism) {
     public ArchiveWorkerConfig {
         Objects.requireNonNull(pollInterval, "pollInterval");
@@ -17,7 +18,16 @@ public record ArchiveWorkerConfig(Duration pollInterval, int maxBlocksPerBatch,
     /** Compatibility constructor for deterministic single-projection callers. */
     public ArchiveWorkerConfig(Duration pollInterval, int maxBlocksPerBatch,
                                int maxRowsPerBatch, long bulkPauseCoreLagBlocks) {
-        this(pollInterval, maxBlocksPerBatch, maxRowsPerBatch, bulkPauseCoreLagBlocks, 1);
+        this(pollInterval, maxBlocksPerBatch, maxRowsPerBatch, true,
+                bulkPauseCoreLagBlocks, 1);
+    }
+
+    /** Compatibility constructor retaining the safe core-priority default. */
+    public ArchiveWorkerConfig(Duration pollInterval, int maxBlocksPerBatch,
+                               int maxRowsPerBatch, long bulkPauseCoreLagBlocks,
+                               int projectionParallelism) {
+        this(pollInterval, maxBlocksPerBatch, maxRowsPerBatch, true,
+                bulkPauseCoreLagBlocks, projectionParallelism);
     }
 
     public static int automaticProjectionParallelism(int availableProcessors, int enabledProjections) {
@@ -27,7 +37,7 @@ public record ArchiveWorkerConfig(Duration pollInterval, int maxBlocksPerBatch,
     }
 
     public static ArchiveWorkerConfig defaults() {
-        return new ArchiveWorkerConfig(Duration.ofSeconds(1), 1_000, 250_000, 100,
+        return new ArchiveWorkerConfig(Duration.ofSeconds(1), 1_000, 250_000, false, 100,
                 automaticProjectionParallelism(Runtime.getRuntime().availableProcessors(), 4));
     }
 }

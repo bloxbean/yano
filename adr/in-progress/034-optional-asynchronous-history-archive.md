@@ -1761,6 +1761,9 @@ yano:
       # Workers begin at 100 blocks and grow after successful batches.
       max-blocks-per-batch: 1000
       max-rows-per-batch: 250000
+      # Core sync and block-history backfill run concurrently by default.
+      # Set true on a constrained host to prioritize initial core catch-up.
+      pause-backfill-during-core-catchup: false
       bulk-pause-core-lag-blocks: 100
       # auto = min(enabled block projections, 4, max(1, available processors / 2))
       projection-parallelism: auto

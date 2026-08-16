@@ -48,6 +48,29 @@ class BlockArchiveWorkerTest {
     }
 
     @Test
+    void disabledCoreCatchupPauseProcessesDespiteCoreLag() {
+        FixtureSource source = new FixtureSource(0, 4);
+        RecordingBackend backend = new RecordingBackend();
+        MemoryProgress progress = new MemoryProgress();
+        ArchiveWorkerMetrics metrics = new ArchiveWorkerMetrics();
+        ArchiveWorkerConfig config = new ArchiveWorkerConfig(Duration.ofMillis(10),
+                2, 3, false, 5, 1);
+        CoreSyncView laggingCore = new CoreSyncView() {
+            public long localBlock() { return 0; }
+            public long targetBlock() { return 1_000_000; }
+        };
+        var worker = new BlockArchiveWorker<>(new ArchiveNetworkIdentity(1, "fixture"),
+                source, backend, progress, config, laggingCore, metrics, Duration.ofMinutes(1));
+
+        assertThat(worker.runBatch(dataset(), 0, 4)).isEqualTo(1);
+        assertThat(source.reads).isPositive();
+        assertThat(source.leases).isEqualTo(1);
+        assertThat(backend.rows).hasSize(2);
+        assertThat(metrics.dataset(ArchiveDatasetId.TRANSACTION)
+                .get(ArchiveTrack.BACKFILL).state()).isEqualTo(ArchiveWorkerStatus.State.IDLE);
+    }
+
+    @Test
     void retriesASmallerCompleteRangeWhenRowsExceedTheBatchLimit() {
         FixtureSource source = new FixtureSource(0, 1);
         RecordingBackend backend = new RecordingBackend();

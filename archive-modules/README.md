@@ -40,7 +40,7 @@ migrates it with Flyway.
 
 The bounded rollback-sensitive layer is selected independently with
 `yano.history.hot-store.engine=rocksdb|sqlite`. RocksDB remains the compatibility
-default. SQLite stores the entire hot layer—including recent facts, resolver
+implementation and SQLite is the validated default. SQLite stores the entire hot layer—including recent facts, resolver
 lifecycle, checkpoints, progress, receipts, leases, and requirements—in
 `<history-dir>/hot-history.sqlite`; it is not the standalone archive database.
 
@@ -74,6 +74,16 @@ History is disabled by default. The JVM distribution includes the optional
 See [`application-history.yml`](../app/config/application-history.yml) for the
 operator defaults. DuckLake currently requires the JVM distribution; native
 startup rejects enabled history.
+
+Bulk history backfill and core catch-up run concurrently by default. A
+resource-constrained host can give core catch-up priority with:
+
+```yaml
+yano:
+  history:
+    worker:
+      pause-backfill-during-core-catchup: true
+```
 
 ## Build and test
 

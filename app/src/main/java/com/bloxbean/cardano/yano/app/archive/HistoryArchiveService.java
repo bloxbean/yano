@@ -159,6 +159,7 @@ public class HistoryArchiveService implements AutoCloseable {
                     Duration.ofMillis(longValue(YanoPropertyKeys.History.WORKER_POLL_MILLIS, 1_000)),
                     intValue(YanoPropertyKeys.History.WORKER_MAX_BLOCKS, 1_000),
                     intValue(YanoPropertyKeys.History.WORKER_MAX_ROWS, 250_000),
+                    bool(YanoPropertyKeys.History.WORKER_PAUSE_DURING_CORE_CATCHUP, false),
                     longValue(YanoPropertyKeys.History.WORKER_CORE_LAG, 100), projectionParallelism);
             maintenanceInterval = Duration.ofSeconds(longValue(
                     YanoPropertyKeys.History.MAINTENANCE_INTERVAL_SECONDS, 300));
@@ -307,9 +308,10 @@ public class HistoryArchiveService implements AutoCloseable {
             subsystem = new ArchiveSubsystem(true, workerConfig.pollInterval(), this::runBoundedWork);
             chain.registerListeners(this);
             log.info("History archive initialized: engine={}, dir={}, finalityBlocks={}, rollbackBlocks={}, "
-                            + "projectionParallelism={} (requested={})",
+                            + "projectionParallelism={} (requested={}), pauseBackfillDuringCoreCatchup={}",
                     engineName, directory, safety.archiveFinalityBlocks(), safety.rollbackRetentionBlocks(),
-                    effectiveParallelism, projectionParallelismSetting);
+                    effectiveParallelism, projectionParallelismSetting,
+                    workerConfig.pauseBackfillDuringCoreCatchup());
         } catch (IllegalArgumentException e) {
             closePartial();
             throw e;
@@ -523,6 +525,9 @@ public class HistoryArchiveService implements AutoCloseable {
         Map<String, Object> worker = new LinkedHashMap<>();
         worker.put("projectionParallelismRequested", projectionParallelismSetting);
         worker.put("projectionParallelismEffective", archiveConfig.worker().projectionParallelism());
+        worker.put("pauseBackfillDuringCoreCatchup",
+                archiveConfig.worker().pauseBackfillDuringCoreCatchup());
+        worker.put("bulkPauseCoreLagBlocks", archiveConfig.worker().bulkPauseCoreLagBlocks());
         worker.put("maxBlocksPerBatch", archiveConfig.worker().maxBlocksPerBatch());
         worker.put("maxRowsPerBatch", archiveConfig.worker().maxRowsPerBatch());
         worker.put("decodedBlocks", decodedBlockCount.get());
