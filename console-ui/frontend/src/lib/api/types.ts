@@ -79,6 +79,90 @@ export interface StorageStatus {
     cfEstimates?: Record<string, number>;
   };
   cfEstimates?: Record<string, number>;
+  history?: ArchiveHistoryStatus;
+}
+
+/** Read-only archive status published by GET /status. */
+export interface ArchiveHistoryStatus {
+  enabled?: boolean;
+  available?: boolean;
+  error?: string;
+  engine?: string;
+  hotStoreEngine?: string;
+  directory?: string;
+  finalityBlocks?: number;
+  rollbackRetentionBlocks?: number;
+  generation?: number;
+  health?: ArchiveHealth;
+  worker?: ArchiveWorkerConfiguration;
+  datasets?: Record<string, ArchiveDatasetStatus>;
+  finalizedConsistency?: ArchiveConsistencyStatus;
+  maintenance?: ArchiveMaintenanceStatus;
+  epochStagingError?: string;
+}
+
+export interface ArchiveHealth {
+  status?: string;
+  detail?: string;
+  observedAt?: string;
+}
+
+export interface ArchiveWorkerConfiguration {
+  projectionParallelismRequested?: string;
+  projectionParallelismEffective?: number;
+  pauseBackfillDuringCoreCatchup?: boolean;
+  bulkPauseCoreLagBlocks?: number;
+  maxBlocksPerBatch?: number;
+  maxRowsPerBatch?: number;
+  decodedBlocks?: number;
+  decodedBlockCacheHits?: number;
+}
+
+export interface ArchiveDatasetStatus {
+  enabled?: boolean;
+  startMode?: string;
+  retentionEpochs?: number;
+  subjects?: Record<string, boolean>;
+  phase?: string;
+  ready?: boolean;
+  coverage?: ArchiveCoverage;
+  workers?: Record<string, ArchiveWorkerStatus>;
+}
+
+export interface ArchiveCoverage {
+  dataset?: string;
+  projectionVersion?: number;
+  revision?: number;
+  completeRanges?: Array<{ startInclusive?: number; endInclusive?: number }>;
+}
+
+export interface ArchiveWorkerStatus {
+  dataset?: string;
+  track?: string;
+  state?: string;
+  coordinate?: number;
+  slot?: number;
+  lag?: number;
+  detail?: string;
+  observedAt?: string;
+}
+
+export interface ArchiveConsistencyStatus {
+  available?: boolean;
+  detail?: string;
+  generation?: number;
+  fromBlock?: number;
+  toBlock?: number;
+  asOf?: { blockNumber?: number; blockHash?: string; slot?: number };
+  projectionVersions?: Record<string, number>;
+}
+
+export interface ArchiveMaintenanceStatus {
+  intervalSeconds?: number;
+  timeLimitSeconds?: number;
+  maxBytesToRewrite?: number;
+  lastCompletedAt?: string;
+  error?: string;
 }
 
 export interface Peer {
