@@ -12,9 +12,6 @@
 yano:
   account-state:
     enabled: true
-  account-history:
-    # Legacy synchronous PR-only index. Unsupported and must remain disabled.
-    enabled: false
   rewards:
     enabled: true
   history:
@@ -22,9 +19,8 @@ yano:
     dir: ${YANO_HISTORY_DIR:./history}
     start-mode: ${YANO_HISTORY_START_MODE:full-required}
     hot-store:
-      # RocksDB remains the compatibility default until the ADR-036 matrix is complete.
-      # Set YANO_HISTORY_HOT_STORE_ENGINE=sqlite to use the relational hot layer.
-      engine: ${YANO_HISTORY_HOT_STORE_ENGINE:rocksdb}
+      # SQLite is the validated default; RocksDB remains available for compatibility comparison.
+      engine: ${YANO_HISTORY_HOT_STORE_ENGINE:sqlite}
       sqlite:
         path: ${YANO_HISTORY_HOT_STORE_SQLITE_PATH:${YANO_HISTORY_DIR:./history}/hot-history.sqlite}
     archive:

@@ -12,7 +12,6 @@ import com.bloxbean.cardano.yaci.events.api.EventMetadata;
 import com.bloxbean.cardano.yaci.events.api.PublishOptions;
 import com.bloxbean.cardano.yano.api.ChainBlockReader;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
-import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
 import com.bloxbean.cardano.yano.api.account.AccountStateStore;
 import com.bloxbean.cardano.yano.api.account.AccountStateStoreContext;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
@@ -25,7 +24,6 @@ import com.bloxbean.cardano.yano.api.events.GenesisBlockEvent;
 import com.bloxbean.cardano.yano.api.genesis.GenesisBootstrapData;
 import com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
-import com.bloxbean.cardano.yano.ledgerstate.AccountHistoryStore;
 import com.bloxbean.cardano.yano.ledgerstate.AccountStateCfNames;
 import com.bloxbean.cardano.yano.ledgerstate.AccountStateEventHandler;
 import com.bloxbean.cardano.yano.ledgerstate.AdaPotTracker;
@@ -56,7 +54,6 @@ import org.slf4j.Logger;
 import java.math.BigInteger;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -82,12 +79,10 @@ public final class LedgerStateSubsystem implements Subsystem {
     private final Supplier<UtxoState> utxoStateSupplier;
     private final Supplier<byte[]> genesisHashSupplier;
     private final InMemoryDevnetGenesis inMemoryDevnetGenesis;
-    private final AccountHistorySubsystem accountHistorySubsystem;
     private volatile com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink epochArchiveStagingSink =
             com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.NOOP;
 
     private AccountStateStore accountStateStore;
-    private AccountHistoryStore accountHistoryStore;
     private EpochBoundaryProcessor epochBoundaryProcessor;
     private AccountStateEventHandler accountStateEventHandler;
     private EpochParamProvider epochParamProvider;
@@ -124,12 +119,6 @@ public final class LedgerStateSubsystem implements Subsystem {
         this.utxoStateSupplier = utxoStateSupplier != null ? utxoStateSupplier : () -> null;
         this.genesisHashSupplier = genesisHashSupplier != null ? genesisHashSupplier : () -> null;
         this.inMemoryDevnetGenesis = inMemoryDevnetGenesis;
-        this.accountHistorySubsystem = new AccountHistorySubsystem(
-                config,
-                this.runtimeOptions,
-                chainState,
-                eventBus,
-                log);
         initialize();
     }
 
@@ -142,16 +131,8 @@ public final class LedgerStateSubsystem implements Subsystem {
         return accountStateStore;
     }
 
-    public AccountHistoryStore accountHistoryStore() {
-        return accountHistoryStore;
-    }
-
     public LedgerStateProvider ledgerStateProvider() {
         return accountStateStore;
-    }
-
-    public AccountHistoryProvider accountHistoryProvider() {
-        return accountHistoryStore;
     }
 
     public EpochBoundaryProcessor epochBoundaryProcessor() {
@@ -199,9 +180,6 @@ public final class LedgerStateSubsystem implements Subsystem {
 
     public List<RollbackCapableStore> rollbackCapableStores(UtxoStoreWriter utxoStore) {
         var stores = new ArrayList<RollbackCapableStore>();
-        if (accountHistoryStore instanceof RollbackCapableStore rollbackStore) {
-            stores.add(rollbackStore);
-        }
         if (accountStateStore instanceof RollbackCapableStore rollbackStore) {
             stores.add(rollbackStore);
         }
@@ -269,8 +247,6 @@ public final class LedgerStateSubsystem implements Subsystem {
                 reconcileAccountStateStore();
                 accountStateReconcilePending = false;
             }
-            accountHistorySubsystem.completeStartupRecovery();
-
             if (epochBoundaryProcessor != null) {
                 epochBoundaryProcessor.recoverInterruptedBoundary();
             }
@@ -295,27 +271,6 @@ public final class LedgerStateSubsystem implements Subsystem {
                 throw new IllegalStateException("Account state reconciliation after snapshot restore failed", t);
             }
         }
-        accountHistorySubsystem.reinitializeAndReconcileAfterSnapshotRestore(rocksAccess);
-        accountHistoryStore = accountHistorySubsystem.store();
-        if (accountHistoryStore != null) {
-            accountHistoryStore.setUtxoState(utxoStateSupplier.get());
-        }
-    }
-
-    public boolean isAccountHistoryPruneServiceRunning() {
-        return accountHistorySubsystem.isPruneServiceRunning();
-    }
-
-    public boolean pauseAccountHistoryPruneServiceAndAwait(Duration timeout) {
-        return accountHistorySubsystem.pausePruneServiceAndAwait(timeout);
-    }
-
-    public void resumeAfterSnapshotRestore(boolean accountHistoryPrunePaused) {
-        accountHistorySubsystem.resumeAfterSnapshotRestore(accountHistoryPrunePaused);
-    }
-
-    public void ensureAccountHistoryRolledBack(Point rollbackPoint) {
-        accountHistorySubsystem.ensureRolledBack(rollbackPoint);
     }
 
     public void handleEraTransition(BlockAppliedEvent event) {
@@ -337,12 +292,10 @@ public final class LedgerStateSubsystem implements Subsystem {
 
     @Override
     public void start() {
-        accountHistorySubsystem.start();
     }
 
     @Override
     public void stop() {
-        accountHistorySubsystem.pauseBackgroundServices();
     }
 
     public void closeEventHandlers() {
@@ -354,7 +307,6 @@ public final class LedgerStateSubsystem implements Subsystem {
         } finally {
             accountStateEventHandler = null;
         }
-        accountHistorySubsystem.closeEventHandlers();
     }
 
     @Override
@@ -364,7 +316,6 @@ public final class LedgerStateSubsystem implements Subsystem {
         }
         stop();
         closeEventHandlers();
-        accountHistorySubsystem.close();
         closed = true;
     }
 
@@ -387,10 +338,6 @@ public final class LedgerStateSubsystem implements Subsystem {
                 initializeAccountState(networkGenesisConfig);
             } else {
                 log.info("Account state store not initialized (enabled={})", accountStateEnabled);
-                if (resolveBoolean(runtimeOptions.globals(), YanoPropertyKeys.AccountHistory.ENABLED, false)) {
-                    throw new IllegalStateException(
-                            "Account history requested but not initialized because account-state is disabled");
-                }
             }
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to initialize ledger-state subsystem", t);
@@ -427,13 +374,6 @@ public final class LedgerStateSubsystem implements Subsystem {
 
         if (accountStateStore instanceof DefaultAccountStateStore defaultStore) {
             wireDefaultAccountStateStore(defaultStore, networkGenesisConfig);
-        }
-
-        accountHistorySubsystem.initialize(rocksAccess, epochParamProvider);
-        this.accountHistoryStore = accountHistorySubsystem.store();
-        if (accountHistoryStore != null) {
-            // Input-side address resolution for the address-tx index (ADR-033 M2).
-            accountHistoryStore.setUtxoState(utxoStateSupplier.get());
         }
 
         this.accountStateEventHandler = new AccountStateEventHandler(eventBus, accountStateStore);

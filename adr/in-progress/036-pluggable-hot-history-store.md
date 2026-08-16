@@ -354,8 +354,8 @@ enablement for substantially simpler storage and recovery. There is one
 resolver, one canonical processing order, no merge, and no duplicate current
 UTXO seed during full catch-up. Infrastructure HA supplies service continuity.
 
-SQLite can add B-tree and WAL cost during accelerated sync, so RocksDB remains
-available until measurements justify a default change. Explicit append-only
+SQLite adds B-tree and WAL cost during accelerated sync, while RocksDB remains
+available as a compatibility implementation. Explicit append-only
 lifecycle rows replace generic undo for resolver state; rollback semantics are
 not weakened.
 

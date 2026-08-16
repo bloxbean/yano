@@ -15,10 +15,17 @@ public final class LegacyAccountHistoryCleanup {
 
     public static void main(String[] args) throws Exception {
         Map<String, String> options = parse(args);
-        if (!CONFIRM.equals(options.get("--confirm"))) {
+        Path database = Path.of(Objects.requireNonNull(options.get("--database"), "--database is required"));
+        int dropped = cleanup(database, options.get("--confirm"));
+        System.out.println("Dropped " + dropped + " legacy account-history column families from "
+                + database.toAbsolutePath().normalize());
+    }
+
+    static int cleanup(Path requestedDatabase, String confirmation) throws Exception {
+        if (!CONFIRM.equals(confirmation)) {
             throw new IllegalArgumentException("required: --confirm " + CONFIRM);
         }
-        Path database = Path.of(Objects.requireNonNull(options.get("--database"), "--database is required"))
+        Path database = Objects.requireNonNull(requestedDatabase, "database")
                 .toAbsolutePath().normalize();
         if (!Files.isDirectory(database) || database.getParent() == null || database.getNameCount() < 2) {
             throw new IllegalArgumentException("database must be an existing, explicit RocksDB directory");
@@ -36,7 +43,7 @@ public final class LegacyAccountHistoryCleanup {
                 String name = new String(names.get(i), StandardCharsets.UTF_8);
                 if (TARGETS.contains(name)) { db.dropColumnFamily(handles.get(i)); dropped++; }
             }
-            System.out.println("Dropped " + dropped + " legacy account-history column families from " + database);
+            return dropped;
         } finally {
             handles.forEach(ColumnFamilyHandle::close);
             descriptors.forEach(descriptor -> descriptor.getOptions().close());

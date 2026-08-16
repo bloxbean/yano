@@ -219,21 +219,11 @@ yano:
     # epoch-block-data-retention-lag: 5    # epochs to keep per-block issuer/fee data after consumption (controls rollback depth)
     # snapshot-retention-epochs: 50        # epochs of delegation snapshots to retain
   # Optional umbrella rollback retention. When set, Yano fills missing rollback
-  # retention properties for UTXO/account-state/account-history from genesis epoch length.
+  # retention properties for UTXO/account-state from genesis epoch length.
   # Explicit leaf properties still take precedence.
   # rollback-retention-epochs: 20
   account:
     stake-balance-index-enabled: true
-  account-history:
-    # Legacy PR-only index. Do not enable with yano.history.
-    enabled: false
-    tx-events-enabled: true
-    rewards-enabled: false
-    retention-epochs: 0
-    # Defaults to yano.utxo.rollbackWindow when omitted.
-    # rollback-safety-slots: 4320
-    prune-interval-seconds: 300
-    prune-batch-size: 50000
   # ADR-034 archive is fully optional. Disabled means no archive driver,
   # Flyway, worker thread, history RocksDB, or archive write is initialized.
   history:
@@ -241,7 +231,7 @@ yano:
     dir: ./history
     start-mode: full-required
     hot-store:
-      engine: rocksdb
+      engine: sqlite
       sqlite:
         path: ./history/hot-history.sqlite
     archive:
@@ -367,10 +357,7 @@ yano:
       protocol-parameters-file: config/network/devnet/protocol-param.json
     account-state:
       enabled: true
-    # Keep the legacy PR-only implementation off; exercise the new isolated
-    # SQLite archive in devnet without requiring retained genesis bodies.
-    account-history:
-      enabled: false
+    # Exercise the isolated SQLite archive in devnet without requiring retained genesis bodies.
     history:
       enabled: true
       archive:
@@ -512,8 +499,6 @@ yano:
   yano:
     account-state:
       enabled: true
-    account-history:
-      enabled: false
     history:
       enabled: false
       start-mode: earliest-available

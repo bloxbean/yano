@@ -44,8 +44,9 @@ public class AccountStateResource {
     }
 
     private AccountHistoryProvider historyProvider() {
-        if (historyArchive != null && historyArchive.enabled()) return historyArchive.accountHistoryProvider();
-        return ledgerQuery.getAccountHistoryProvider();
+        return historyArchive != null && historyArchive.enabled()
+                ? historyArchive.accountHistoryProvider()
+                : null;
     }
 
     private AccountStateReadStore readStore() {

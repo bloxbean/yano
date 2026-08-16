@@ -264,26 +264,6 @@ public final class YanoPropertyKeys {
         }
     }
 
-    /**
-     * Account-history index and retention settings.
-     */
-    public static final class AccountHistory {
-        public static final String ENABLED = "yano.account-history.enabled";
-        public static final String TX_EVENTS_ENABLED = "yano.account-history.tx-events-enabled";
-        public static final String REWARDS_ENABLED = "yano.account-history.rewards-enabled";
-        /** Index address/payment-cred/stake-cred → tx history (ADR-033 M2 wallet APIs). */
-        public static final String ADDRESS_TX_ENABLED = "yano.account-history.address-tx-enabled";
-        public static final String RETENTION_EPOCHS = "yano.account-history.retention-epochs";
-        public static final String PRUNE_INTERVAL_SECONDS =
-                "yano.account-history.prune-interval-seconds";
-        public static final String PRUNE_BATCH_SIZE = "yano.account-history.prune-batch-size";
-        public static final String ROLLBACK_SAFETY_SLOTS =
-                "yano.account-history.rollback-safety-slots";
-
-        private AccountHistory() {
-        }
-    }
-
     /** Optional asynchronous history/archive settings (ADR-034). */
     public static final class History {
         public static final String PREFIX = "yano.history.";

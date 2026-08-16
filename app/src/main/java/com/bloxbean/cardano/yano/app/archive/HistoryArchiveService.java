@@ -172,7 +172,7 @@ public class HistoryArchiveService implements AutoCloseable {
             archiveConfig = new ArchiveConfiguration(true, directory, engine, defaultStart,
                     workerConfig, safety, datasets);
 
-            hotStoreEngine = string(YanoPropertyKeys.History.HOT_STORE_ENGINE, "rocksdb")
+            hotStoreEngine = string(YanoPropertyKeys.History.HOT_STORE_ENGINE, "sqlite")
                     .trim().toLowerCase(Locale.ROOT);
             if (!hotStoreEngine.equals("rocksdb") && !hotStoreEngine.equals("sqlite")) {
                 throw new IllegalArgumentException("unsupported history hot-store engine: " + hotStoreEngine);

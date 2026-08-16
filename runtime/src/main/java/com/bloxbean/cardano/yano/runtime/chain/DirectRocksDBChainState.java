@@ -12,7 +12,6 @@ import com.bloxbean.cardano.yano.api.db.RocksDbAccess;
 import com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore;
 import com.bloxbean.cardano.yano.runtime.blockproducer.NonceStateStore;
 import com.bloxbean.cardano.yano.runtime.blockproducer.NonceStateSnapshot;
-import com.bloxbean.cardano.yano.ledgerstate.AccountHistoryCfNames;
 import com.bloxbean.cardano.yano.ledgerstate.AccountStateCfNames;
 import com.bloxbean.cardano.yano.runtime.db.RocksDbContext;
 import com.bloxbean.cardano.yano.runtime.db.RocksDbSupplier;
@@ -129,18 +128,15 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
             ColumnFamilyOptions utxoPointLookup = null;
             ColumnFamilyOptions utxoAddrPrefix = null;
             ColumnFamilyOptions utxoDeltaOpts = null;
-            ColumnFamilyOptions accountHistoryPrefix = null;
             if (tuningEnabled) {
                 utxoPointLookup = buildPointLookupCfOptions(); // utxo_unspent, utxo_spent
                 utxoAddrPrefix = buildPrefixScanCfOptions(28); // utxo_addr
                 utxoDeltaOpts = buildSequentialCfOptions();    // utxo_block_delta
-                accountHistoryPrefix = buildPrefixScanCfOptions(30); // type + stake cred
 
                 // Log effective CF tuning plan for visibility
                 log.info("RocksDB CF tuning: utxo_unspent/utxo_spent => point-lookup (ZSTD, bloom≈10bpk, whole-key, pin L0, partitioned filters)");
                 log.info("RocksDB CF tuning: utxo_addr => prefix-scan (ZSTD, prefixExtractor=28, memtablePrefixBloom≈0.10, bloom≈10bpk, pin L0, partitioned filters)");
                 log.info("RocksDB CF tuning: utxo_block_delta => sequential (ZSTD)");
-                log.info("RocksDB CF tuning: account_history => prefix-scan (ZSTD, prefixExtractor=30)");
             } else {
                 log.info("RocksDB tuning disabled via flag; using defaults for CF options");
             }
@@ -178,11 +174,7 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                     new ColumnFamilyDescriptor(AccountStateCfNames.ACCT_DELTA.getBytes()),
                     new ColumnFamilyDescriptor(AccountStateCfNames.ACCT_BOUNDARY_DELTA.getBytes()),
                     new ColumnFamilyDescriptor(AccountStateCfNames.EPOCH_DELEG_SNAPSHOT.getBytes()),
-                    new ColumnFamilyDescriptor(AccountStateCfNames.EPOCH_PARAMS.getBytes()),
-                    new ColumnFamilyDescriptor(
-                            AccountHistoryCfNames.ACCOUNT_HISTORY.getBytes(),
-                            tuningEnabled ? accountHistoryPrefix : new ColumnFamilyOptions()),
-                    new ColumnFamilyDescriptor(AccountHistoryCfNames.ACCOUNT_HISTORY_DELTA.getBytes())
+                    new ColumnFamilyDescriptor(AccountStateCfNames.EPOCH_PARAMS.getBytes())
             );
 
             // Open database

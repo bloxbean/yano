@@ -317,6 +317,12 @@ class AccountStateResourceBalanceTest {
         TestNodeRoles nodeRoles = nodeRolesWith(ledgerStateProvider, utxoState, accountHistoryProvider);
         resource.nodeLifecycle = nodeRoles;
         resource.ledgerQuery = nodeRoles;
+        if (accountHistoryProvider != null) {
+            HistoryArchiveService archive = mock(HistoryArchiveService.class);
+            when(archive.enabled()).thenReturn(true);
+            when(archive.accountHistoryProvider()).thenReturn(accountHistoryProvider);
+            resource.historyArchive = archive;
+        }
         return resource;
     }
 
@@ -326,7 +332,6 @@ class AccountStateResourceBalanceTest {
                 (proxy, method, args) -> switch (method.getName()) {
                     case "getLedgerStateProvider" -> ledgerStateProvider;
                     case "getUtxoState" -> utxoState;
-                    case "getAccountHistoryProvider" -> accountHistoryProvider;
                     case "getConfig" -> nodeConfig();
                     case "toString" -> "TestNodeRoles";
                     case "hashCode" -> System.identityHashCode(proxy);

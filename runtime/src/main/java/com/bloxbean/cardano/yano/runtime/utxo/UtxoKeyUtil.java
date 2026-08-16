@@ -21,7 +21,7 @@ final class UtxoKeyUtil {
     }
 
     static byte[] addrHash28(String bech32OrHex) {
-        // Canonical implementation shared with the account-history address-tx
+        // Canonical implementation shared with the archive address-tx
         // index — both indexes must agree on what an address hashes to.
         return com.bloxbean.cardano.yano.api.util.AddressKeyUtil.addrHash28(bech32OrHex);
     }
@@ -37,7 +37,7 @@ final class UtxoKeyUtil {
     }
 
     static byte[] paymentCred28(String bech32OrHex) {
-        // Canonical implementation shared with the account-history address-tx index.
+        // Canonical implementation shared with the archive address-tx index.
         return com.bloxbean.cardano.yano.api.util.AddressKeyUtil.paymentCred28(bech32OrHex);
     }
 

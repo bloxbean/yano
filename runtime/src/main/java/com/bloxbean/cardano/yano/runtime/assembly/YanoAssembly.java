@@ -36,9 +36,6 @@ public final class YanoAssembly {
     private static final String[] BOOTSTRAP_DISABLED_DERIVED_LEDGER_KEYS = {
             YanoPropertyKeys.AccountState.ENABLED,
             YanoPropertyKeys.AccountState.STAKE_BALANCE_INDEX_ENABLED,
-            YanoPropertyKeys.AccountHistory.ENABLED,
-            YanoPropertyKeys.AccountHistory.TX_EVENTS_ENABLED,
-            YanoPropertyKeys.AccountHistory.REWARDS_ENABLED,
             YanoPropertyKeys.EpochSnapshot.AMOUNTS_ENABLED,
             YanoPropertyKeys.Ledger.ADAPOT_ENABLED,
             YanoPropertyKeys.Ledger.REWARDS_ENABLED,
@@ -111,7 +108,7 @@ public final class YanoAssembly {
         }
         if (changed) {
             log.info("Bootstrap mode enabled: disabling derived ledger-state subsystems "
-                    + "(account-state, stake-balance-index, account-history, epoch-params, "
+                    + "(account-state, stake-balance-index, epoch-params, "
                     + "rewards, adapot, governance, snapshots). UTXO bootstrap remains enabled; "
                     + "transaction evaluation may use protocol-param.json if configured.");
         }

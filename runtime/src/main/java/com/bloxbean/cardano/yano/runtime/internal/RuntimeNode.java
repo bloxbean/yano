@@ -85,11 +85,9 @@ import com.bloxbean.cardano.yano.runtime.plugins.PluginManager;
 import com.bloxbean.cardano.yano.runtime.plugins.DomainApiRegistry;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginRuntimeEnvironment;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginOperationsRegistry;
-import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
 import com.bloxbean.cardano.yano.api.account.AccountStateReadStore;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore;
-import com.bloxbean.cardano.yano.ledgerstate.AccountHistoryStore;
 import com.bloxbean.cardano.yano.api.account.AccountStateStore;
 import com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore;
 import com.bloxbean.cardano.yano.ledgerstate.EpochParamTracker;
@@ -1405,10 +1403,6 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 : Optional.empty();
     }
 
-    public AccountHistoryStore getAccountHistoryStore() {
-        return ledgerStateSubsystem.accountHistoryStore();
-    }
-
     @Override
     public void setBlockBodyRetentionBoundary(BlockBodyRetentionBoundary boundary) {
         chainStorage.setBlockBodyRetentionBoundary(boundary);
@@ -1425,11 +1419,6 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 outcome, "ledger-state background services", ledgerStateSubsystem::stop);
         return attemptRuntimeCleanup(
                 outcome, "chain-storage prune service", chainStorage::stopBlockPruneService);
-    }
-
-    @Override
-    public AccountHistoryProvider getAccountHistoryProvider() {
-        return ledgerStateSubsystem.accountHistoryProvider();
     }
 
     private void startPluginsAndInitializeFilters() {
@@ -2994,10 +2983,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
             boolean wasRunning = producerSubsystem.isRunning();
             boolean utxoPruneWasRunning = utxoSubsystem.isPruneServiceRunning();
-            boolean accountHistoryPruneWasRunning = ledgerStateSubsystem.isAccountHistoryPruneServiceRunning();
             boolean blockPruneWasRunning = chainStorage.isBlockPruneServiceRunning();
             boolean utxoPrunePaused = false;
-            boolean accountHistoryPrunePaused = false;
             boolean blockPrunePaused = false;
             boolean rollbackStarted = false;
             boolean rollbackCompleted = false;
@@ -3013,13 +3000,6 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                         throw new IllegalStateException("Cannot rollback devnet because UTXO prune service did not stop");
                     }
                     utxoPrunePaused = true;
-                }
-                if (accountHistoryPruneWasRunning) {
-                    if (!ledgerStateSubsystem.pauseAccountHistoryPruneServiceAndAwait(Duration.ofSeconds(5))) {
-                        throw new IllegalStateException(
-                                "Cannot rollback devnet because account-history prune service did not stop");
-                    }
-                    accountHistoryPrunePaused = true;
                 }
                 if (blockPruneWasRunning) {
                     if (!chainStorage.stopBlockPruneServiceAndAwait(Duration.ofSeconds(5))) {
@@ -3053,8 +3033,6 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 if (!utxoSubsystem.drainAsyncHandlerAndRestart(Duration.ofSeconds(30))) {
                     throw new IllegalStateException("Async UTXO handler did not drain after API rollback");
                 }
-                ensureAccountHistoryRolledBack(rollbackPoint);
-
                 // 5. Notify server (ChainSyncServerAgent sends Rollbackward to connected clients)
                 if (serveSubsystem.notifyNewDataAvailable()) {
                     log.info("Notified server agents about API-triggered rollback");
@@ -3084,9 +3062,6 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 if (canResume) {
                     if (utxoPrunePaused) {
                         utxoSubsystem.startBackgroundServices();
-                    }
-                    if (accountHistoryPrunePaused) {
-                        ledgerStateSubsystem.start();
                     }
                     if (blockPrunePaused) {
                         chainStorage.startBlockPruneService();
@@ -3326,23 +3301,12 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                     }
 
                     @Override
-                    public boolean isAccountHistoryPruneServiceRunning() {
-                        return ledgerStateSubsystem.isAccountHistoryPruneServiceRunning();
-                    }
-
-                    @Override
-                    public boolean pauseAccountHistoryPruneServiceAndAwait(Duration timeout) {
-                        return ledgerStateSubsystem.pauseAccountHistoryPruneServiceAndAwait(timeout);
-                    }
-
-                    @Override
                     public void reinitializeLedgerAndReconcileAfterSnapshotRestore() {
                         ledgerStateSubsystem.reinitializeAndReconcileAfterSnapshotRestore();
                     }
 
                     @Override
-                    public void resumeLedgerAfterSnapshotRestore(boolean accountHistoryPrunePaused) {
-                        ledgerStateSubsystem.resumeAfterSnapshotRestore(accountHistoryPrunePaused);
+                    public void resumeLedgerAfterSnapshotRestore() {
                     }
 
                     @Override
@@ -3910,10 +3874,6 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     // Rollback handling - coordinates between managers and handles server notifications
     public void handleChainSyncRollback(Point point) {
         syncSubsystem.handleChainSyncRollback(point);
-    }
-
-    private void ensureAccountHistoryRolledBack(Point rollbackPoint) {
-        ledgerStateSubsystem.ensureAccountHistoryRolledBack(rollbackPoint);
     }
 
     /**

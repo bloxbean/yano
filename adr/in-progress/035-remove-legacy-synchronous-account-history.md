@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 ## Date
 
@@ -141,6 +141,20 @@ opening an existing RocksDB database.
 
 The compatibility provider interface remains temporarily, so this decision
 does not require a simultaneous REST DTO redesign.
+
+## Implementation Outcome
+
+Implemented after the ADR-034 DuckLake and standalone SQLite preprod replay,
+crash-recovery, API, and integrity matrices passed. The synchronous store,
+event handler, codec, runtime subsystem, rollback/pruning/snapshot hooks,
+configuration model, REST fallback, and RocksDB CF descriptors were removed.
+
+`AccountHistoryProvider` remains only as the backend-neutral adapter used by
+the archive-backed REST implementation. `LegacyAccountHistoryCleanup` remains
+as an explicit offline maintenance command for preview databases. New chain
+states no longer create `account_history` or `account_history_delta`; an
+existing preview chain state containing those CFs must run the cleanup command
+with Yano stopped, or be rebuilt, before it is opened by the new runtime.
 
 ## Rejected Alternatives
 

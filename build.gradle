@@ -431,6 +431,60 @@ tasks.named('check') {
     dependsOn tasks.named('verifyRepositorySplitAllocation')
 }
 
+tasks.register('verifyLegacyAccountHistoryRemoved') {
+    group = 'verification'
+    description = 'Prevents the removed synchronous account-history implementation from returning.'
+
+    doLast {
+        def forbiddenPaths = [
+                'ledger-state/src/main/java/com/bloxbean/cardano/yano/ledgerstate/AccountHistoryCborCodec.java',
+                'ledger-state/src/main/java/com/bloxbean/cardano/yano/ledgerstate/AccountHistoryCfNames.java',
+                'ledger-state/src/main/java/com/bloxbean/cardano/yano/ledgerstate/AccountHistoryEventHandler.java',
+                'ledger-state/src/main/java/com/bloxbean/cardano/yano/ledgerstate/AccountHistoryStore.java',
+                'runtime/src/main/java/com/bloxbean/cardano/yano/runtime/ledger/AccountHistorySubsystem.java'
+        ]
+        def failures = forbiddenPaths.findAll { file(it).exists() }
+                .collect { "removed file exists: ${it}" }
+        def forbiddenTokens = [
+                'AccountHistoryStore',
+                'AccountHistoryEventHandler',
+                'AccountHistorySubsystem',
+                'AccountHistoryCborCodec',
+                'AccountHistoryCfNames',
+                'YanoPropertyKeys.AccountHistory',
+                'getAccountHistoryProvider'
+        ]
+        fileTree(rootProject.projectDir) {
+            include '**/src/main/**/*.java'
+            exclude '**/build/**'
+        }.files.each { source ->
+            def text = source.getText('UTF-8')
+            forbiddenTokens.each { token ->
+                if (text.contains(token)) {
+                    failures.add("${rootProject.projectDir.toPath().relativize(source.toPath())} contains ${token}")
+                }
+            }
+        }
+        fileTree(rootProject.projectDir) {
+            include 'app/src/main/resources/**/*.yml'
+            include 'app/config/**/*.yml'
+        }.files.each { configFile ->
+            if (configFile.getText('UTF-8').contains('account-history:')) {
+                failures.add("supported config still declares account-history: "
+                        + rootProject.projectDir.toPath().relativize(configFile.toPath()))
+            }
+        }
+        if (!failures.isEmpty()) {
+            throw new GradleException('Legacy synchronous account history removal verification failed:\n - '
+                    + failures.join('\n - '))
+        }
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyLegacyAccountHistoryRemoved')
+}
+
 tasks.register('verifyLeanHostDependencyBoundary') {
     group = 'verification'
     description = 'Rejects Yano X allocated projects from the Yano host runtime graph.'

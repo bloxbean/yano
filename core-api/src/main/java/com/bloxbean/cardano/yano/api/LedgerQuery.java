@@ -1,6 +1,5 @@
 package com.bloxbean.cardano.yano.api;
 
-import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.model.GenesisParameters;
 import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
@@ -16,10 +15,6 @@ public interface LedgerQuery {
     UtxoState getUtxoState();
 
     default LedgerStateProvider getLedgerStateProvider() {
-        return null;
-    }
-
-    default AccountHistoryProvider getAccountHistoryProvider() {
         return null;
     }
 
