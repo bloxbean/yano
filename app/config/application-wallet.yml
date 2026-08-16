@@ -25,6 +25,10 @@ yano:
   history:
     enabled: true
     dir: ${YANO_HISTORY_DIR:./history}
+    # History coverage mode (override with YANO_HISTORY_START_MODE):
+    #   full-required      - start at genesis; fail if any required block body is unavailable
+    #   earliest-available - start at the earliest retained block body; history may be partial
+    #   tip                - start after the current chain tip; do not backfill older history
     start-mode: ${YANO_HISTORY_START_MODE:full-required}
     hot-store:
       engine: sqlite
