@@ -31,11 +31,16 @@ yano:
     #   tip                - start after the current chain tip; do not backfill older history
     start-mode: ${YANO_HISTORY_START_MODE:full-required}
     hot-store:
+      # Hot rollback-sensitive state: sqlite (validated default) or rocksdb
+      # (compatibility implementation).
       engine: sqlite
       sqlite:
         path: ${YANO_HISTORY_HOT_STORE_SQLITE_PATH:${YANO_HISTORY_DIR:./history}/hot-history.sqlite}
     archive:
-      # SQLite provides direct indexed stake-history lookup without DuckDB.
+      # Archive engine options:
+      #   sqlite   - one Flyway-managed relational database with indexed lookups
+      #   ducklake - SQLite catalog plus DuckLake-managed Parquet data
+      # SQLite is selected here for direct indexed stake-history lookup without DuckDB.
       engine: sqlite
       finality-blocks: auto
       sqlite:
