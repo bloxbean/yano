@@ -85,6 +85,18 @@ class ArchiveConfigurationTest {
         assertThat(ArchiveWorkerConfig.defaults().bulkPauseCoreLagBlocks()).isEqualTo(100);
     }
 
+    @Test
+    void datasetSubjectSelectionDefaultsToEnabled() {
+        var defaults = new DatasetArchiveConfig(true, ArchiveStartMode.TIP, 0);
+        assertThat(defaults.subjectEnabled("address")).isTrue();
+
+        var stakeOnly = new DatasetArchiveConfig(true, ArchiveStartMode.TIP, 0,
+                Map.of(), Map.of("address", false, "payment-credential", false,
+                        "stake-credential", true));
+        assertThat(stakeOnly.subjectEnabled("address")).isFalse();
+        assertThat(stakeOnly.subjectEnabled("stake-credential")).isTrue();
+    }
+
     private ArchiveConfiguration configuration(Map<ArchiveDatasetId, DatasetArchiveConfig> datasets) {
         return new ArchiveConfiguration(true, temp, ArchiveEngine.DUCKLAKE,
                 ArchiveStartMode.TIP, ArchiveWorkerConfig.defaults(),

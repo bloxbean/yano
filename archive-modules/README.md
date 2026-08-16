@@ -62,6 +62,12 @@ address dimension or address locator. The standalone SQLite engine normalizes
 addresses and stake addresses privately and exposes the same flat logical
 contract through views.
 
+Address-transaction subject scopes are projection-time selectable. All three
+default to enabled; the wallet profile selects only `stake-credential`. The
+selection is pinned when the dataset activates, so changing it requires a new
+history directory or an explicit rebuild rather than silently creating partial
+historical coverage.
+
 ## Runtime use
 
 History is disabled by default. The JVM distribution includes the optional
@@ -69,6 +75,13 @@ History is disabled by default. The JVM distribution includes the optional
 
 ```bash
 ./yano.sh start:preprod,history
+```
+
+For indexed stake-address transaction history without the other archive
+datasets or DuckDB, use the SQLite-backed wallet profile:
+
+```bash
+./yano.sh start:preprod,wallet
 ```
 
 See [`application-history.yml`](../app/config/application-history.yml) for the

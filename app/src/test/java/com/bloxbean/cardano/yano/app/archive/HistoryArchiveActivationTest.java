@@ -59,6 +59,15 @@ class HistoryArchiveActivationTest {
     }
 
     @Test
+    void tipModeUsesGenesisSeedUntilTheFirstCanonicalBlockExists() {
+        assertThat(HistoryArchiveService.tipStartsAtGenesis(-1, 1)).isTrue();
+        assertThat(HistoryArchiveService.tipStartsAtGenesis(0, 1)).isTrue();
+        assertThat(HistoryArchiveService.tipStartsAtGenesis(1, 1)).isFalse();
+        assertThat(HistoryArchiveService.tipStartsAtGenesis(-1, 0)).isTrue();
+        assertThat(HistoryArchiveService.tipStartsAtGenesis(0, 0)).isFalse();
+    }
+
+    @Test
     void tableEnabledWithFreshDatasetSharesBackfillStart() {
         var activations = new ActivationStore(temp.resolve("fresh-table.properties"));
 
@@ -83,6 +92,31 @@ class HistoryArchiveActivationTest {
                 false, true, 1, 150, 1)).isEmpty();
         assertThat(activations.configureTable(dataset, "transaction_redeemers",
                 true, true, 1, 150, 1)).hasValue(151);
+    }
+
+    @Test
+    void addressSubjectSelectionIsPinnedAfterDatasetActivation() {
+        Path path = temp.resolve("address-subjects.properties");
+        var activations = new ActivationStore(path);
+        activations.configureAddressSubjects("stake_credential", false);
+        activations.putIfAbsent(ArchiveDatasetId.ADDRESS_TRANSACTION, 1);
+
+        var reopened = new ActivationStore(path);
+        reopened.configureAddressSubjects("stake_credential", true);
+        assertThatThrownBy(() -> reopened.configureAddressSubjects(
+                "address,payment_credential,stake_credential", true))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("new history directory or rebuild");
+    }
+
+    @Test
+    void legacyAddressArchiveIsTreatedAsAllSubjects() {
+        var activations = new ActivationStore(temp.resolve("legacy-address-subjects.properties"));
+        activations.putIfAbsent(ArchiveDatasetId.ADDRESS_TRANSACTION, 1);
+
+        assertThatThrownBy(() -> activations.configureAddressSubjects("stake_credential", true))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("address,payment_credential,stake_credential");
     }
 
     @Test

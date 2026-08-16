@@ -258,7 +258,13 @@ yano:
     datasets:
       account-events: { enabled: true, retention-epochs: 0 }
       transactions: { enabled: true, retention-epochs: 0 }
-      address-transactions: { enabled: false, retention-epochs: 0 }
+      address-transactions:
+        enabled: false
+        retention-epochs: 0
+        subjects:
+          address: true
+          payment-credential: true
+          stake-credential: true
       utxo-history:
         enabled: false
         retention-epochs: 0
@@ -494,30 +500,6 @@ yano:
       alonzo-genesis-file: config/network/sanchonet/alonzo-genesis.json
       conway-genesis-file: config/network/sanchonet/conway-genesis.json
       protocol-parameters-file: config/network/sanchonet/protocol-param.json
-
-# Wallet-serving node profile. Archive history stays opt-in until its network
-# regression and recovery gates have passed.
-# Activate with -Dquarkus.profile=wallet[,preprod|mainnet|preview].
-"%wallet":
-  yano:
-    account-state:
-      enabled: true
-    history:
-      enabled: false
-      start-mode: earliest-available
-      datasets:
-        account-events: { enabled: true }
-        transactions: { enabled: true }
-        address-transactions: { enabled: true }
-        rewards: { enabled: true, start-mode: earliest-available }
-    adapot:
-      enabled: true
-    rewards:
-      enabled: true
-    epoch-params:
-      tracking-enabled: true
-    governance:
-      enabled: true
 
 "%test":
   yaci:

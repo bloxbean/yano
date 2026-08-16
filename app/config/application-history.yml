@@ -61,6 +61,10 @@ yano:
       address-transactions:
         enabled: true
         retention-epochs: 0
+        subjects:
+          address: true
+          payment-credential: true
+          stake-credential: true
       rewards:
         enabled: true
         start-mode: earliest-available

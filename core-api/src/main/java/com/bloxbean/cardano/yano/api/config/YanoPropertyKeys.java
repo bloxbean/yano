@@ -290,6 +290,12 @@ public final class YanoPropertyKeys {
                 PREFIX + "worker.pause-backfill-during-core-catchup";
         public static final String WORKER_CORE_LAG = PREFIX + "worker.bulk-pause-core-lag-blocks";
         public static final String WORKER_PROJECTION_PARALLELISM = PREFIX + "worker.projection-parallelism";
+        public static final String ADDRESS_SUBJECT_ADDRESS =
+                PREFIX + "datasets.address-transactions.subjects.address";
+        public static final String ADDRESS_SUBJECT_PAYMENT_CREDENTIAL =
+                PREFIX + "datasets.address-transactions.subjects.payment-credential";
+        public static final String ADDRESS_SUBJECT_STAKE_CREDENTIAL =
+                PREFIX + "datasets.address-transactions.subjects.stake-credential";
         public static final String MAINTENANCE_INTERVAL_SECONDS = PREFIX + "maintenance.interval-seconds";
         public static final String MAINTENANCE_TIME_LIMIT_SECONDS = PREFIX + "maintenance.time-limit-seconds";
         public static final String MAINTENANCE_MAX_REWRITE = PREFIX + "maintenance.max-bytes-to-rewrite";

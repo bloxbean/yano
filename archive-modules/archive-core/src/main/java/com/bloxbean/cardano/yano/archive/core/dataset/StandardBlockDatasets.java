@@ -46,6 +46,12 @@ public final class StandardBlockDatasets {
     }
 
     public static BlockArchiveDataset<ArchiveBlockFacts> addressTransactions() {
+        return addressTransactions(AddressTransactionSubjects.all());
+    }
+
+    public static BlockArchiveDataset<ArchiveBlockFacts> addressTransactions(
+            AddressTransactionSubjects selectedSubjects) {
+        java.util.Objects.requireNonNull(selectedSubjects, "selectedSubjects");
         return new BlockArchiveDataset<>() {
             public ArchiveDatasetId dataset() { return ArchiveDatasetId.ADDRESS_TRANSACTION; }
             public int projectionVersion() { return ArchiveSchemas.schema(dataset()).projectionVersion(); }
@@ -53,6 +59,7 @@ public final class StandardBlockDatasets {
                                java.util.function.Consumer<ArchiveRow> sink) {
                 for (AddressTransactionFact tx : block.block().addressTransactions()) {
                     for (AddressSubject subject : tx.subjects()) {
+                        if (!selectedSubjects.includes(subject.subjectType())) continue;
                         sink.accept(new ArchiveRow("address_transactions", java.util.Arrays.asList(subject.subjectType(),
                                 subject.subjectKey(), null, null, tx.txHash(), block.blockHash(), block.blockNumber(),
                                 block.slot(), block.epoch(), block.blockTime().getEpochSecond(), tx.txIndex(),

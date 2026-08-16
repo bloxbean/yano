@@ -11,6 +11,8 @@ import java.util.Properties;
 
 /** Small durable activation-anchor store; values are immutable once selected. */
 final class ActivationStore {
+    private static final String LEGACY_ADDRESS_SUBJECTS =
+            "address,payment_credential,stake_credential";
     private final Path path;
     private final Properties values = new Properties();
 
@@ -132,6 +134,34 @@ final class ActivationStore {
             throw e;
         }
         return OptionalLong.of(start);
+    }
+
+    /**
+     * Pins address subject selection for the lifetime of an activated archive.
+     * Archives created before subject selection existed are treated as all-subject.
+     */
+    synchronized void configureAddressSubjects(String fingerprint, boolean datasetAlreadyActivated) {
+        if (fingerprint == null || fingerprint.isBlank()) {
+            throw new IllegalArgumentException("address subject fingerprint is required");
+        }
+        String key = ArchiveDatasetId.ADDRESS_TRANSACTION.name() + ".SUBJECTS";
+        String stored = values.getProperty(key);
+        String effectiveStored = stored == null && datasetAlreadyActivated
+                ? LEGACY_ADDRESS_SUBJECTS : stored;
+        if (effectiveStored != null && !effectiveStored.equals(fingerprint) && datasetAlreadyActivated) {
+            throw new IllegalStateException("address-transactions subject selection changed from "
+                    + effectiveStored + " to " + fingerprint
+                    + "; use a new history directory or rebuild the archive");
+        }
+        if (fingerprint.equals(stored)) return;
+        String previous = (String) values.setProperty(key, fingerprint);
+        try {
+            persist();
+        } catch (RuntimeException e) {
+            if (previous == null) values.remove(key);
+            else values.setProperty(key, previous);
+            throw e;
+        }
     }
 
     private void persist() {

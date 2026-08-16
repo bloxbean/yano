@@ -687,6 +687,14 @@ lists must not return accidental duplicates. Asset deltas are not embedded as
 JSON or repeated in this table. An optional analytics view derives per-address
 asset flows from normalized inputs/outputs when `utxo_history` is enabled.
 
+Each of the exact-address, payment-credential, and stake-credential subject
+scopes can be disabled independently at projection time. Disabled scopes emit
+no rows; they do not emit placeholder rows with null subject data. All scopes
+default to enabled. The selected set is persisted with the dataset activation
+and is immutable for that history directory, because changing it in place
+would make the dataset coverage claim ambiguous. An operator must select a new
+history directory or explicitly rebuild to change scopes after activation.
+
 ### Transactions
 
 `transaction` stores one row per on-chain transaction. It expands the earlier
@@ -1811,6 +1819,10 @@ yano:
         enabled: false
         start-mode: full-required
         retention-epochs: 0
+        subjects:
+          address: true
+          payment-credential: true
+          stake-credential: true
       transactions:
         enabled: false
         start-mode: full-required

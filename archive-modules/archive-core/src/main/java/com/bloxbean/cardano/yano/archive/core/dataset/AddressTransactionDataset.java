@@ -26,6 +26,7 @@ public final class AddressTransactionDataset implements LiveStatefulBlockArchive
     private SequentialOutpointResolver durableResolver;
     private SequentialPointerResolver pointerResolver;
     private final AddressKeyCodec addressKeys;
+    private final AddressTransactionSubjects subjects;
     private final ArchiveTrack track;
     private List<BlockSourceContext<Block>> blocks = List.of();
     private List<HotBlockUpdate> updates = List.of();
@@ -37,16 +38,22 @@ public final class AddressTransactionDataset implements LiveStatefulBlockArchive
     private int blockIndex;
 
     public AddressTransactionDataset(HotHistoryStore state, AddressKeyCodec addressKeys) {
-        this(state, addressKeys, ArchiveTrack.BACKFILL);
+        this(state, addressKeys, ArchiveTrack.BACKFILL, AddressTransactionSubjects.all());
     }
 
     public AddressTransactionDataset(HotHistoryStore state, AddressKeyCodec addressKeys,
                                      ArchiveTrack track) {
+        this(state, addressKeys, track, AddressTransactionSubjects.all());
+    }
+
+    public AddressTransactionDataset(HotHistoryStore state, AddressKeyCodec addressKeys,
+                                     ArchiveTrack track, AddressTransactionSubjects subjects) {
         this.state = Objects.requireNonNull(state, "state");
         this.durableResolver = new SequentialOutpointResolver(state);
         this.pointerResolver = new SequentialPointerResolver(state, ArchiveDatasetId.ADDRESS_TRANSACTION);
         this.addressKeys = Objects.requireNonNull(addressKeys, "addressKeys");
         this.track = Objects.requireNonNull(track, "track");
+        this.subjects = Objects.requireNonNull(subjects, "subjects");
     }
 
     public void seedGenesis(Iterable<SequentialOutpointResolver.Entry> outputs) {
@@ -240,12 +247,21 @@ public final class AddressTransactionDataset implements LiveStatefulBlockArchive
         return pending != null ? Optional.of(pending) : durableResolver.resolve(outpoint);
     }
 
-    private static void addSubjects(Map<SubjectKey, SubjectRoles> subjects, ResolvedOutput output,
-                                    long networkMagic, ParticipationRole role) {
-        add(subjects, "address", output.addressKey(), output.address(), null, role);
-        add(subjects, "payment_credential", output.paymentCredential(), null, null, role);
-        add(subjects, "stake_credential", output.stakeCredential(), null,
-                StakeAddressCodec.encode(networkMagic, output.stakeCredentialType(), output.stakeCredential()), role);
+    private void addSubjects(Map<SubjectKey, SubjectRoles> result, ResolvedOutput output,
+                             long networkMagic, ParticipationRole role) {
+        if (subjects.address()) {
+            add(result, AddressTransactionSubjects.ADDRESS,
+                    output.addressKey(), output.address(), null, role);
+        }
+        if (subjects.paymentCredential()) {
+            add(result, AddressTransactionSubjects.PAYMENT_CREDENTIAL,
+                    output.paymentCredential(), null, null, role);
+        }
+        if (subjects.stakeCredential()) {
+            add(result, AddressTransactionSubjects.STAKE_CREDENTIAL, output.stakeCredential(), null,
+                    StakeAddressCodec.encode(networkMagic, output.stakeCredentialType(),
+                            output.stakeCredential()), role);
+        }
     }
 
     private static void add(Map<SubjectKey, SubjectRoles> subjects, String type, byte[] key,

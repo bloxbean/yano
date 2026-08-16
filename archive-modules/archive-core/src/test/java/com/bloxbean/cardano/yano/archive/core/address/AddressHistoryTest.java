@@ -78,6 +78,39 @@ class AddressHistoryTest {
     }
 
     @Test
+    void statefulProjectionWritesOnlySelectedStakeSubject() {
+        String baseAddress = "00" + "33".repeat(28) + "44".repeat(28);
+        var tx = com.bloxbean.cardano.yaci.core.model.TransactionBody.builder()
+                .txHash("11".repeat(32)).outputs(List.of(
+                        com.bloxbean.cardano.yaci.core.model.TransactionOutput.builder()
+                                .address(baseAddress).build()))
+                .build();
+        var block = com.bloxbean.cardano.yaci.core.model.Block.builder()
+                .era(com.bloxbean.cardano.yaci.core.model.Era.Conway)
+                .transactionBodies(List.of(tx)).invalidTransactions(List.of()).build();
+        var context = new BlockSourceContext<>(1, 10, 0, Instant.EPOCH,
+                new byte[] {1}, new byte[0], block);
+        ArchiveJob job = ArchiveJob.deterministic(new ArchiveNetworkIdentity(1, "g"),
+                ArchiveDatasetId.ADDRESS_TRANSACTION, 3, new BlockRange(1, 1),
+                new ArchiveRangeAnchor(10, new byte[] {1}, 10, new byte[] {1}), "stake-only");
+
+        try (var state = new RocksDbHotHistoryStore(temp.resolve("stake-only-stateful"))) {
+            var dataset = new AddressTransactionDataset(state, new AddressKeyCodec(),
+                    ArchiveTrack.BACKFILL, new AddressTransactionSubjects(false, false, true));
+            dataset.seedGenesis(List.of());
+            dataset.beginBatch(job, List.of(context));
+            List<ArchiveRow> rows = new ArrayList<>();
+            dataset.derive(job, context, rows::add);
+
+            assertThat(rows).hasSize(1);
+            assertThat(rows.getFirst().values().getFirst()).isEqualTo("stake_credential");
+            assertThat(rows.getFirst().values().get(2)).isNull();
+            assertThat(rows.getFirst().values().get(3)).asString().startsWith("stake_test");
+            dataset.abortBatch();
+        }
+    }
+
+    @Test
     void byronGenesisAddressIsCanonicalWithoutShelleyCredentials() {
         String byronAddress = "FHnt4NL7yPXhCzCHVywZLqVsvwuG3HvwmjKXQJBrXh3h2aigv6uxkePbpzRNV8q";
         AddressKeyCodec codec = new AddressKeyCodec();
@@ -214,6 +247,35 @@ class AddressHistoryTest {
         StandardBlockDatasets.addressTransactions().derive(job, block, rows::add);
         assertThat(rows).hasSize(2);
         assertThat(rows.getFirst().values().subList(11, 15)).containsExactly(2, 1, 1, 1);
+    }
+
+    @Test
+    void stakeOnlySelectionOmitsAddressAndPaymentCredentialRows() {
+        byte[] hash = {1};
+        ArchiveJob job = ArchiveJob.deterministic(new ArchiveNetworkIdentity(1, "g"),
+                ArchiveDatasetId.ADDRESS_TRANSACTION, 1, new BlockRange(1, 1),
+                new ArchiveRangeAnchor(10, hash, 10, hash), "stake-only");
+        var fact = new AddressTransactionFact(new byte[] {2}, 0,
+                List.of(new AddressSubject("address", new byte[] {3}),
+                        new AddressSubject("payment_credential", new byte[] {4}),
+                        new AddressSubject("stake_credential", new byte[] {5})), 2, 1, 0, 0);
+        var block = new BlockSourceContext<>(1, 10, 0, Instant.EPOCH, hash, new byte[0],
+                new ArchiveBlockFacts(List.of(), List.of(), List.of(fact)));
+        List<ArchiveRow> rows = new ArrayList<>();
+
+        StandardBlockDatasets.addressTransactions(
+                new AddressTransactionSubjects(false, false, true)).derive(job, block, rows::add);
+
+        assertThat(rows).hasSize(1);
+        assertThat(rows.getFirst().values().getFirst()).isEqualTo("stake_credential");
+        assertThat(rows.getFirst().values().get(1)).isEqualTo(new byte[] {5});
+    }
+
+    @Test
+    void addressSubjectSelectionRequiresAtLeastOneScope() {
+        assertThatThrownBy(() -> new AddressTransactionSubjects(false, false, false))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("at least one");
     }
 
     @Test

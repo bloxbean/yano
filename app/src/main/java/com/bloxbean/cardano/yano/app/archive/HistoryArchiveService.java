@@ -15,6 +15,7 @@ import com.bloxbean.cardano.yano.archive.core.consistency.ArchiveConsistencyPlan
 import com.bloxbean.cardano.yano.archive.core.dataset.BlockArchiveDataset;
 import com.bloxbean.cardano.yano.archive.core.dataset.ArchiveBlockFacts;
 import com.bloxbean.cardano.yano.archive.core.dataset.AddressTransactionDataset;
+import com.bloxbean.cardano.yano.archive.core.dataset.AddressTransactionSubjects;
 import com.bloxbean.cardano.yano.archive.core.dataset.StandardBlockDatasets;
 import com.bloxbean.cardano.yano.archive.core.dataset.UtxoHistoryDataset;
 import com.bloxbean.cardano.yano.archive.core.dataset.UtxoHistoryProjection;
@@ -206,6 +207,14 @@ public class HistoryArchiveService implements AutoCloseable {
             long persistedTip = chain.getLocalTip() == null ? -1 : chain.getLocalTip().getBlockNumber();
             UtxoHistoryProjection utxoProjection = datasetEnabled(ArchiveDatasetId.UTXO_HISTORY)
                     ? resolveUtxoProjection(persistedTip) : UtxoHistoryProjection.all();
+            AddressTransactionSubjects addressSubjects = datasetEnabled(ArchiveDatasetId.ADDRESS_TRANSACTION)
+                    ? AddressTransactionSubjects.fromConfig(archiveConfig.datasets()
+                            .get(ArchiveDatasetId.ADDRESS_TRANSACTION).subjects())
+                    : AddressTransactionSubjects.all();
+            if (datasetEnabled(ArchiveDatasetId.ADDRESS_TRANSACTION)) {
+                activations.configureAddressSubjects(addressSubjects.fingerprint(),
+                        activations.start(ArchiveDatasetId.ADDRESS_TRANSACTION).isPresent());
+            }
 
             String engineName = engine.name().toLowerCase(Locale.ROOT);
             ArchiveIdentity identity = new ArchiveIdentity(stableArchiveId(magic, genesisHash, engineName, directory),
@@ -274,13 +283,13 @@ public class HistoryArchiveService implements AutoCloseable {
                     identity.networkIdentity(), workerConfig);
             if (datasetEnabled(ArchiveDatasetId.ADDRESS_TRANSACTION)) {
                 var liveAddress = new AddressTransactionDataset(controlStore, new AddressKeyCodec(),
-                        ArchiveTrack.LIVE);
+                        ArchiveTrack.LIVE, addressSubjects);
                 registerLiveWorker(ArchiveDatasetId.ADDRESS_TRANSACTION, liveAddress,
                         sharedBlockSource, identity.networkIdentity(), workerConfig);
             }
             if (datasetEnabled(ArchiveDatasetId.ADDRESS_TRANSACTION)) {
                 var addressDataset = new AddressTransactionDataset(controlStore, new AddressKeyCodec(),
-                        ArchiveTrack.BACKFILL);
+                        ArchiveTrack.BACKFILL, addressSubjects);
                 catchupAddressDataset = addressDataset;
                 genesisResolverEntries = genesisOutpoints(genesis, addressDataset);
                 initializeAddressResolver(addressDataset);
@@ -545,6 +554,9 @@ public class HistoryArchiveService implements AutoCloseable {
                     dataset.put("enabled", selected.enabled());
                     dataset.put("startMode", selected.startMode().name().toLowerCase(Locale.ROOT));
                     dataset.put("retentionEpochs", selected.retentionEpochs());
+                    if (id == ArchiveDatasetId.ADDRESS_TRANSACTION) {
+                        dataset.put("subjects", selected.subjects());
+                    }
                     if (selected.enabled()) {
                         if (id.sourceKind() == SourceKind.BLOCK) {
                             dataset.put("phase", isLivePhase(id) ? "live" : "catching_up");
@@ -1334,10 +1346,15 @@ public class HistoryArchiveService implements AutoCloseable {
         ArchiveStartMode mode = archiveConfig.datasets().get(ArchiveDatasetId.ADDRESS_TRANSACTION).startMode();
         long activation;
         if (mode == ArchiveStartMode.TIP) {
-            if (ledger.getUtxoState() == null || !ledger.getUtxoState().isEnabled()) {
+            long currentTip = chain.getLocalTip() == null ? -1 : chain.getLocalTip().getBlockNumber();
+            if (tipStartsAtGenesis(currentTip, firstCanonicalBlockNumber)) {
+                seedGenesisResolver(dataset, genesisResolverEntries);
+                activation = firstCanonicalBlockNumber;
+            } else if (ledger.getUtxoState() == null || !ledger.getUtxoState().isEnabled()) {
                 throw new ArchiveStoreException("address history start-mode=tip requires core UTXO state");
+            } else {
+                activation = Math.addExact(seedResolverSnapshot(ledger.getUtxoState(), dataset), 1);
             }
-            activation = Math.addExact(seedResolverSnapshot(ledger.getUtxoState(), dataset), 1);
         } else {
             long earliest = chain.getEarliestRetainedBodyBlockNumber().orElse(0);
             if (mode == ArchiveStartMode.EARLIEST_AVAILABLE && earliest > firstCanonicalBlockNumber) {
@@ -1353,6 +1370,10 @@ public class HistoryArchiveService implements AutoCloseable {
         } else {
             activations.putIfAbsent(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.BACKFILL, activation);
         }
+    }
+
+    static boolean tipStartsAtGenesis(long currentTip, long firstCanonicalBlock) {
+        return currentTip < firstCanonicalBlock;
     }
 
     private void seedGenesisResolver(AddressTransactionDataset dataset,
@@ -1437,6 +1458,7 @@ public class HistoryArchiveService implements AutoCloseable {
                     defaultStart.name().toLowerCase(Locale.ROOT).replace('_', '-')));
             long retention = longValue("yano.history.datasets." + name + ".retention-epochs", 0);
             Map<String, Boolean> tables = Map.of();
+            Map<String, Boolean> subjects = Map.of();
             if (id == ArchiveDatasetId.UTXO_HISTORY) {
                 Map<String, Boolean> selected = new LinkedHashMap<>();
                 for (UtxoHistoryProjection.Table table : UtxoHistoryProjection.Table.values()) {
@@ -1445,7 +1467,17 @@ public class HistoryArchiveService implements AutoCloseable {
                 }
                 tables = Map.copyOf(selected);
             }
-            result.put(id, new DatasetArchiveConfig(enabled, mode, retention, tables));
+            if (id == ArchiveDatasetId.ADDRESS_TRANSACTION) {
+                Map<String, Boolean> selected = new LinkedHashMap<>();
+                selected.put("address", bool(YanoPropertyKeys.History.ADDRESS_SUBJECT_ADDRESS, true));
+                selected.put("payment-credential", bool(
+                        YanoPropertyKeys.History.ADDRESS_SUBJECT_PAYMENT_CREDENTIAL, true));
+                selected.put("stake-credential", bool(
+                        YanoPropertyKeys.History.ADDRESS_SUBJECT_STAKE_CREDENTIAL, true));
+                subjects = Map.copyOf(selected);
+                if (enabled) AddressTransactionSubjects.fromConfig(subjects);
+            }
+            result.put(id, new DatasetArchiveConfig(enabled, mode, retention, tables, subjects));
         }
         return result;
     }

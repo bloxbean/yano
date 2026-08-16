@@ -1590,6 +1590,9 @@ tasks.register('verifyCoreJvmDistribution') {
             if (archive.getEntry("${root}/config/application-history.yml") == null) {
                 throw new GradleException('Yano JVM distribution is missing the history profile')
             }
+            if (archive.getEntry("${root}/config/application-wallet.yml") == null) {
+                throw new GradleException('Yano JVM distribution is missing the wallet profile')
+            }
             if (archive.getEntry("${root}/LICENSE") == null) {
                 throw new GradleException('Yano JVM distribution is missing LICENSE')
             }
