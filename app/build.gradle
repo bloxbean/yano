@@ -67,6 +67,7 @@ def requireIndexedManifestVersions = { index, Map<String, String> expectedVersio
 }
 
 dependencies {
+    implementation libs.rocksdb
     implementation enforcedPlatform("${quarkusPlatformGroupId}:${quarkusPlatformArtifactId}:${quarkusPlatformVersion}")
 
     // Quarkus dependencies
@@ -94,9 +95,10 @@ dependencies {
     implementation(project(':tx-services')) {
         exclude group: 'io.netty', module: 'netty-all'
     }
-    implementation(project(':epoch-export')) {
-        exclude group: 'io.netty', module: 'netty-all'
-    }
+    implementation project(':archive-modules:archive-api')
+    implementation project(':archive-modules:archive-core')
+    runtimeOnly project(':archive-modules:archive-store-ducklake')
+    runtimeOnly project(':archive-modules:archive-store-sqlite')
     // Uses the release-matched, bounded MPF verifier for the console's
     // node-assisted existing-proof verification endpoint.
     implementation project(':appchain-proof-verifier')
@@ -116,6 +118,9 @@ dependencies {
     testImplementation 'io.rest-assured:rest-assured'
     testImplementation libs.assertj.core
     testImplementation libs.mockito.inline
+    testImplementation libs.mockito.junit.jupiter
+    testImplementation project(':archive-modules:archive-store-sqlite')
+    testImplementation project(':archive-modules:archive-store-ducklake')
 
     testImplementation project(':testkit')
     testImplementation project(':app-e2e-testkit')
@@ -420,6 +425,21 @@ tasks.register('integrationTest', Test) {
     classpath = sourceSets.test.runtimeClasspath
     if (System.getProperty('yano.e2e.baseUrl') != null) {
         systemProperty 'yano.e2e.baseUrl', System.getProperty('yano.e2e.baseUrl')
+    }
+}
+
+tasks.register('cleanupLegacyAccountHistory', JavaExec) {
+    group = 'maintenance'
+    description = 'Offline removal of unreleased PR-era account_history column families'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.bloxbean.cardano.yano.app.archive.LegacyAccountHistoryCleanup'
+    doFirst {
+        if (!project.hasProperty('database') || project.findProperty('confirm') != 'DROP_LEGACY_ACCOUNT_HISTORY') {
+            throw new GradleException('requires -Pdatabase=/explicit/path '
+                    + '-Pconfirm=DROP_LEGACY_ACCOUNT_HISTORY with Yano stopped')
+        }
+        args '--database', project.property('database').toString(),
+                '--confirm', project.property('confirm').toString()
     }
 }
 
@@ -1566,6 +1586,12 @@ tasks.register('verifyCoreJvmDistribution') {
             }
             if (archive.getEntry("${root}/yano.jar") == null) {
                 throw new GradleException('Yano JVM distribution does not contain yano.jar')
+            }
+            if (archive.getEntry("${root}/config/application-history.yml") == null) {
+                throw new GradleException('Yano JVM distribution is missing the history profile')
+            }
+            if (archive.getEntry("${root}/config/application-wallet.yml") == null) {
+                throw new GradleException('Yano JVM distribution is missing the wallet profile')
             }
             if (archive.getEntry("${root}/LICENSE") == null) {
                 throw new GradleException('Yano JVM distribution is missing LICENSE')

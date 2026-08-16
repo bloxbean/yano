@@ -68,13 +68,9 @@ public final class DevnetSnapshotRestoreService {
                                             boolean utxoPrunePaused,
                                             boolean utxoMetricsSamplerPaused);
 
-        boolean isAccountHistoryPruneServiceRunning();
-
-        boolean pauseAccountHistoryPruneServiceAndAwait(Duration timeout);
-
         void reinitializeLedgerAndReconcileAfterSnapshotRestore();
 
-        void resumeLedgerAfterSnapshotRestore(boolean accountHistoryPrunePaused);
+        void resumeLedgerAfterSnapshotRestore();
 
         boolean isBlockPruneServiceRunning();
 
@@ -120,7 +116,6 @@ public final class DevnetSnapshotRestoreService {
         boolean asyncUtxoHandlerPaused = actions.isAsyncUtxoHandlerRunning();
         boolean utxoPrunePaused = actions.isUtxoPruneServiceRunning();
         boolean utxoMetricsSamplerPaused = actions.isUtxoMetricsSamplerRunning();
-        boolean accountHistoryPrunePaused = actions.isAccountHistoryPruneServiceRunning();
         boolean blockPrunePaused = actions.isBlockPruneServiceRunning();
         boolean restoreStarted = false;
         boolean preRestoreResumeAllowed = true;
@@ -158,13 +153,6 @@ public final class DevnetSnapshotRestoreService {
                     throw new IllegalStateException("Cannot restore snapshot because UTXO metrics sampler did not stop");
                 }
             }
-            if (accountHistoryPrunePaused) {
-                if (!actions.pauseAccountHistoryPruneServiceAndAwait(Duration.ofSeconds(5))) {
-                    preRestoreResumeAllowed = false;
-                    throw new IllegalStateException(
-                            "Cannot restore snapshot because account-history prune service did not stop");
-                }
-            }
             if (blockPrunePaused) {
                 if (!actions.stopBlockPruneServiceAndAwait(Duration.ofSeconds(5))) {
                     preRestoreResumeAllowed = false;
@@ -198,7 +186,6 @@ public final class DevnetSnapshotRestoreService {
                         asyncUtxoHandlerPaused,
                         utxoPrunePaused,
                         utxoMetricsSamplerPaused,
-                        accountHistoryPrunePaused,
                         blockPrunePaused,
                         txAdmissionWasAccepting,
                         serverWasRunning,
@@ -217,7 +204,6 @@ public final class DevnetSnapshotRestoreService {
                         asyncUtxoHandlerPaused,
                         utxoPrunePaused,
                         utxoMetricsSamplerPaused,
-                        accountHistoryPrunePaused,
                         blockPrunePaused,
                         txAdmissionWasAccepting,
                         serverWasRunning,
@@ -247,7 +233,6 @@ public final class DevnetSnapshotRestoreService {
     private boolean resumeAfterPause(boolean asyncUtxoHandlerPaused,
                                      boolean utxoPrunePaused,
                                      boolean utxoMetricsSamplerPaused,
-                                     boolean accountHistoryPrunePaused,
                                      boolean blockPrunePaused,
                                      boolean txAdmissionWasAccepting,
                                      boolean serverWasRunning,
@@ -258,7 +243,7 @@ public final class DevnetSnapshotRestoreService {
                     asyncUtxoHandlerPaused,
                     utxoPrunePaused,
                     utxoMetricsSamplerPaused);
-            actions.resumeLedgerAfterSnapshotRestore(accountHistoryPrunePaused);
+            actions.resumeLedgerAfterSnapshotRestore();
             if (blockPrunePaused) {
                 actions.startBlockPruneService();
             }

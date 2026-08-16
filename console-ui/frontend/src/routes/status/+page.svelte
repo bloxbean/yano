@@ -4,6 +4,7 @@
   import MetricCard from '$lib/components/MetricCard.svelte';
   import MetricRow from '$lib/components/MetricRow.svelte';
   import CopyValue from '$lib/components/CopyValue.svelte';
+  import ArchiveHistoryPanel from '$lib/components/ArchiveHistoryPanel.svelte';
   import { apiFailureMessage, resolveApiBase, YanoApi } from '$lib/api/client';
   import type { NodeConfig, NodePeers, NodeStatus, StorageStatus } from '$lib/api/types';
   import { SessionHistory, type CompactSample } from '$lib/telemetry/history';
@@ -26,6 +27,7 @@
   let poller: Poller | null = null;
   let durableSamples: CompactSample[] = [];
   let historySource = 'browser session';
+  let activeTab: 'overview' | 'history' = 'overview';
 
   const n = (value: unknown) => Number.isFinite(Number(value)) ? Number(value) : 0;
   const fmt = (value: unknown) => value === null || value === undefined ? '-' : n(value).toLocaleString();
@@ -184,6 +186,16 @@
   <div class="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-300">{error}</div>
 {/if}
 
+<div class="mb-4 flex gap-2 border-b border-slate-700/50" role="tablist" aria-label="Node sections">
+  <button type="button" role="tab" aria-selected={activeTab === 'overview'}
+          class="border-b-2 px-3 py-2 text-sm font-medium {activeTab === 'overview' ? 'border-blue-400 text-blue-300' : 'border-transparent text-slate-400 hover:text-slate-200'}"
+          on:click={() => activeTab = 'overview'}>Overview</button>
+  <button type="button" role="tab" aria-selected={activeTab === 'history'}
+          class="border-b-2 px-3 py-2 text-sm font-medium {activeTab === 'history' ? 'border-blue-400 text-blue-300' : 'border-transparent text-slate-400 hover:text-slate-200'}"
+          on:click={() => activeTab = 'history'}>History</button>
+</div>
+
+{#if activeTab === 'overview'}
 <section class="card overflow-hidden p-5">
   <div class="flex flex-wrap items-end justify-between gap-6">
     <div>
@@ -326,6 +338,9 @@
     </table>
   </div>
 </section>
+{:else}
+  <ArchiveHistoryPanel history={storage?.history} />
+{/if}
 
 <footer class="mt-6 flex flex-wrap gap-2 text-xs text-slate-600">
   <span>Yano node dashboard</span><span>·</span><span>auto-refresh every 5s</span><span>·</span>

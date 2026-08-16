@@ -1,0 +1,117 @@
+# Optional asynchronous history archive profile (ADR-034).
+#
+# Compose this after a network profile, for example:
+#   ./yano.sh start:preprod,history
+#   ./yano.sh start:mainnet,history
+#
+# History currently requires the JVM distribution; native-image startup rejects
+# yano.history.enabled=true. The default full-required mode fails clearly if a
+# complete block source is unavailable. For an intentionally partial archive on
+# a previously pruned node, override YANO_HISTORY_START_MODE=earliest-available.
+
+yano:
+  account-state:
+    enabled: true
+  rewards:
+    enabled: true
+  history:
+    enabled: true
+    dir: ${YANO_HISTORY_DIR:./history}
+    start-mode: ${YANO_HISTORY_START_MODE:full-required}
+    hot-store:
+      # SQLite is the validated default; RocksDB remains available for compatibility comparison.
+      engine: ${YANO_HISTORY_HOT_STORE_ENGINE:sqlite}
+      sqlite:
+        path: ${YANO_HISTORY_HOT_STORE_SQLITE_PATH:${YANO_HISTORY_DIR:./history}/hot-history.sqlite}
+    archive:
+      engine: ducklake
+      finality-blocks: auto
+      ducklake:
+        # Sized to permit incremental compaction within the default 128MB
+        # bulk DuckDB context. Increase together with the bulk memory budget.
+        target-file-size: 4MB
+        row-group-size: 100000
+        snapshot-retention-hours: 168
+        cleanup-grace-hours: 24
+    rollback:
+      retention-blocks: auto
+    worker:
+      # Conservative and container-aware. Override with a positive integer.
+      projection-parallelism: auto
+      # Adaptive workers start at 100 and grow to this ceiling after successful batches.
+      max-blocks-per-batch: 1000
+      # Core sync and history backfill run concurrently by default. Set true
+      # on a constrained machine to prioritize core catch-up.
+      pause-backfill-during-core-catchup: ${YANO_HISTORY_PAUSE_BACKFILL_DURING_CORE_CATCHUP:false}
+      bulk-pause-core-lag-blocks: 100
+    maintenance:
+      # Explicit bounded maintenance compacts DuckLake's streamed small files
+      # and performs backend cleanup outside core block application.
+      interval-seconds: 300
+      time-limit-seconds: 5
+      max-bytes-to-rewrite: 512MB
+    datasets:
+      # Wallet-facing history enabled by this profile.
+      account-events:
+        enabled: true
+        retention-epochs: 0
+      transactions:
+        enabled: true
+        retention-epochs: 0
+      address-transactions:
+        enabled: true
+        retention-epochs: 0
+        subjects:
+          address: true
+          payment-credential: true
+          stake-credential: true
+      rewards:
+        enabled: true
+        start-mode: earliest-available
+        retention-epochs: 0
+
+      # Larger analytics datasets remain explicit operator choices.
+      utxo-history:
+        enabled: false
+        retention-epochs: 0
+        # Each physical row family is optional. All default to true when UTXO
+        # history is enabled. Enabling one later starts at the next core block;
+        # it never triggers historical backfill.
+        tables:
+          transaction-outputs:
+            enabled: true
+          transaction-output-assets:
+            enabled: true
+          transaction-inputs:
+            enabled: true
+          transaction-datums:
+            enabled: true
+          transaction-redeemers:
+            enabled: true
+      epoch-stake:
+        enabled: false
+        start-mode: earliest-available
+        retention-epochs: 0
+      drep-distribution:
+        enabled: false
+        start-mode: earliest-available
+        retention-epochs: 0
+      ada-pots:
+        enabled: false
+        start-mode: earliest-available
+        retention-epochs: 0
+      governance-proposal-status:
+        enabled: false
+        start-mode: earliest-available
+        retention-epochs: 0
+    duckdb:
+      max-total-memory: 256MB
+      max-concurrent-queries: 2
+      max-temp-directory-size: 2GB
+      steady-state:
+        memory-limit: 128MB
+        threads: 1
+      bulk-catch-up:
+        memory-limit: 128MB
+        threads: 1
+        max-concurrent-jobs: 1

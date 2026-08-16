@@ -1068,17 +1068,6 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                     + rollbackSlot, ex);
         }
 
-        try {
-            ledgerStateSubsystem.ensureAccountHistoryRolledBack(point);
-        } catch (Exception ex) {
-            log.error("Account history rollback verification failed after chainstate rollback to slot {}. "
-                    + "Refusing to continue with possibly inconsistent ledger state.", rollbackSlot, ex);
-            log.error("EMERGENCY EXIT - account history did not verify after chainstate rollback");
-            System.exit(1);
-            throw new RuntimeException("Account history rollback verification failed after chainstate rollback to slot "
-                    + rollbackSlot, ex);
-        }
-
         log.info("ROLLBACK_EVENT: slot={}, type={}, phase={}, serverNotified={}",
                 rollbackSlot, isReal ? "REAL_REORG" : "RECONNECTION", syncPhase,
                 isReal && serveSubsystem.isRunning());

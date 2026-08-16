@@ -6,17 +6,32 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.math.BigInteger;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.Mockito.mock;
 
 class EpochBoundaryProcessorTest {
 
     @TempDir
     Path tempDir;
+
+    @Test
+    void archiveStagingSinkPropagatesToRewardCalculator() throws Exception {
+        var rewards = new EpochRewardCalculator(null, null, null, true);
+        var sink = com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.NOOP;
+        var processor = new EpochBoundaryProcessor(null, rewards, null, null, 1L, null);
+
+        processor.setEpochArchiveStagingSink(sink);
+
+        Field staging = EpochRewardCalculator.class.getDeclaredField("archiveStaging");
+        staging.setAccessible(true);
+        assertThat(staging.get(rewards)).isSameAs(sink);
+    }
 
     @Test
     void rewardCalculationFailsClosedWhenPreviousAdaPotIsMissing() throws Exception {

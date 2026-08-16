@@ -2,7 +2,7 @@ package com.bloxbean.cardano.yano.ledgerstate;
 
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.ledgerstate.UtxoBalanceAggregator;
-import com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter;
+import com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink;
 import com.bloxbean.cardano.yano.ledgerstate.governance.epoch.GovernanceEpochProcessor;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -56,8 +56,8 @@ public class EpochBoundaryProcessor {
     // Expected AdaPot values for verification (loaded lazily from classpath JSON)
     private volatile Map<Integer, ExpectedAdaPot> expectedAdaPots;
 
-    // Optional epoch snapshot exporter for debugging (NOOP when disabled)
-    private EpochSnapshotExporter snapshotExporter = EpochSnapshotExporter.NOOP;
+    private EpochArchiveStagingSink archiveStaging = EpochArchiveStagingSink.NOOP;
+    private volatile EpochArchiveStagingSink.Boundary archiveBoundary;
 
     // Auto-checkpoint: creates a RocksDB checkpoint at epoch boundaries for fast rollback.
     // The callback receives the epoch number and creates the checkpoint externally.
@@ -121,6 +121,10 @@ public class EpochBoundaryProcessor {
      */
     public void setGovernanceEpochProcessor(GovernanceEpochProcessor processor) {
         this.governanceEpochProcessor = processor;
+        if (processor != null) {
+            processor.setEpochArchiveStagingSink(archiveStaging);
+            if (archiveBoundary != null) processor.setBoundaryCoordinates(archiveBoundary);
+        }
         // Wire AdaPot batch adjuster so governance treasury adjustment is atomic with Phase 2
         if (processor != null && adaPotTracker != null && adaPotTracker.isEnabled() && snapshotCreator != null) {
             processor.setAdaPotBatchAdjuster((epoch, treasuryDelta, batch, deltaOps) -> {
@@ -171,15 +175,20 @@ public class EpochBoundaryProcessor {
         return lastVerificationError;
     }
 
-    /**
-     * Set the epoch snapshot exporter for debugging data export.
-     * Propagates to the governance epoch processor if present.
-     */
-    public void setSnapshotExporter(EpochSnapshotExporter exporter) {
-        this.snapshotExporter = exporter != null ? exporter : EpochSnapshotExporter.NOOP;
-        if (governanceEpochProcessor != null) {
-            governanceEpochProcessor.setSnapshotExporter(this.snapshotExporter);
+    public void setEpochArchiveStagingSink(EpochArchiveStagingSink sink) {
+        this.archiveStaging = sink != null ? sink : EpochArchiveStagingSink.NOOP;
+        if (rewardCalculator != null) {
+            rewardCalculator.setEpochArchiveStagingSink(this.archiveStaging);
         }
+        if (governanceEpochProcessor != null) {
+            governanceEpochProcessor.setEpochArchiveStagingSink(this.archiveStaging);
+        }
+    }
+
+    public void setBoundaryCoordinates(EpochArchiveStagingSink.Boundary boundary) {
+        this.archiveBoundary = boundary;
+        if (governanceEpochProcessor != null) governanceEpochProcessor.setBoundaryCoordinates(boundary);
+        if (rewardCalculator != null) rewardCalculator.setArchiveBoundary(boundary);
     }
 
     /**
@@ -364,7 +373,7 @@ public class EpochBoundaryProcessor {
         if (resumeFromStep <= STEP_POOLREAP) {
             if (rewardCalculator != null && rewardCalculator.isEnabled()) {
                 long boundarySlot = snapshotCreator != null ? snapshotCreator.slotForEpochStart(newEpoch) : 0;
-                rewardCalculator.beginRewardBatch();
+                rewardCalculator.beginRewardBatch(newEpoch, "pool-reap");
                 rewardCalculator.processPoolDepositRefunds(newEpoch);
                 try {
                     rewardCalculator.commitRewardBatch(boundarySlot, DefaultAccountStateStore.PHASE_POOLREAP);
@@ -431,12 +440,14 @@ public class EpochBoundaryProcessor {
             if (finalPot.isPresent()) {
                 verifyAdaPot(newEpoch, finalPot.get().treasury(), finalPot.get().reserves());
 
-                // Export AdaPot snapshot for debugging
-                if (snapshotExporter != EpochSnapshotExporter.NOOP) {
+                if (archiveStaging.enabled(EpochArchiveStagingSink.Dataset.ADA_POT)) {
                     var p = finalPot.get();
-                    snapshotExporter.exportAdaPot(newEpoch, new EpochSnapshotExporter.AdaPotEntry(
-                            newEpoch, p.treasury(), p.reserves(), p.deposits(), p.fees(),
-                            p.distributed(), p.undistributed(), p.rewardsPot(), p.poolRewardsPot()));
+                    try (var writer = archiveStaging.openAdaPot(newEpoch)) {
+                        writer.append(new EpochArchiveStagingSink.AdaPotFact(
+                                p.treasury(), p.reserves(), p.deposits(), p.fees(),
+                                p.distributed(), p.undistributed(), p.rewardsPot(), p.poolRewardsPot()));
+                        writer.commit();
+                    }
                 }
             }
         }
@@ -507,7 +518,7 @@ public class EpochBoundaryProcessor {
                 ? paramTracker : paramProvider;
 
         // Calculate and distribute rewards (delta-aware batch for rollback safety)
-        rewardCalculator.beginRewardBatch();
+        rewardCalculator.beginRewardBatch(newEpoch, "rewards");
         Optional<EpochCalculationResult> resultOpt = rewardCalculator.calculateAndDistribute(
                 newEpoch, prevTreasury, prevReserves, effectiveParams, networkMagic);
         if (resultOpt.isEmpty()) {

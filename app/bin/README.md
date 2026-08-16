@@ -117,6 +117,7 @@ The `config/` directory contains genesis files and protocol parameters for each 
 config/
   application.yml
   application-appchain.yml
+  application-history.yml
   application-preprod.yml
   application-relay.yml
   application-praos-lite.yml
@@ -137,7 +138,21 @@ optional validation:
 ./yano.sh start:mainnet,trusted-peers
 ./yano.sh start:preview,relay,praos-lite
 ./yano.sh start:preprod,relay,praos-ledger
+./yano.sh start:preprod,history
 ```
+
+The `history` profile enables the optional JVM-only ADR-034 DuckLake archive
+with account events, transaction locations, address transactions, and rewards.
+It uses `full-required` coverage by default. On a node whose older block bodies
+were intentionally pruned, select explicitly partial coverage with:
+
+```bash
+YANO_HISTORY_START_MODE=earliest-available ./yano.sh start:preprod,history
+```
+
+The archive defaults to `./history`; override it with `YANO_HISTORY_DIR`.
+UTXO history and the larger epoch analytics datasets remain disabled unless
+the operator enables them explicitly.
 
 ## Directory Structure
 

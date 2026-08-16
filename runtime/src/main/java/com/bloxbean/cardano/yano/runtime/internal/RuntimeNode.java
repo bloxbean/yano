@@ -18,6 +18,7 @@ import com.bloxbean.cardano.yaci.events.impl.NoopEventBus;
 import com.bloxbean.cardano.yaci.helper.*;
 import com.bloxbean.cardano.yaci.helper.listener.BlockChainDataListener;
 import com.bloxbean.cardano.yano.api.ChainQuery;
+import com.bloxbean.cardano.yano.api.BlockBodyRetentionBoundary;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.NodeLifecycle;
@@ -84,11 +85,9 @@ import com.bloxbean.cardano.yano.runtime.plugins.PluginManager;
 import com.bloxbean.cardano.yano.runtime.plugins.DomainApiRegistry;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginRuntimeEnvironment;
 import com.bloxbean.cardano.yano.runtime.plugins.PluginOperationsRegistry;
-import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
 import com.bloxbean.cardano.yano.api.account.AccountStateReadStore;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore;
-import com.bloxbean.cardano.yano.ledgerstate.AccountHistoryStore;
 import com.bloxbean.cardano.yano.api.account.AccountStateStore;
 import com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore;
 import com.bloxbean.cardano.yano.ledgerstate.EpochParamTracker;
@@ -173,7 +172,8 @@ import java.util.function.Supplier;
  */
 @Slf4j
 public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGateway, TxEvaluationGateway,
-        ProducerControl, AutoCloseable, DebugLedgerStateAccess, RuntimeKernelProvider, DevnetRuntimeProvider {
+        ProducerControl, AutoCloseable, DebugLedgerStateAccess, RuntimeKernelProvider, DevnetRuntimeProvider,
+        com.bloxbean.cardano.yano.api.events.stream.NodeEventStream {
     // Configuration
     private final YanoConfig config;
 
@@ -270,6 +270,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     private final RuntimeOptions runtimeOptions;
     private final BodyValidator bodyValidator;
     private final EventBus eventBus;
+    private final com.bloxbean.cardano.yano.runtime.events.L1EventFanout l1EventFanout;
     private final PluginRuntimeEnvironment pluginEnvironment;
     private PluginManager pluginManager;
     private final UtxoSubsystem utxoSubsystem;
@@ -384,6 +385,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         // Event bus
         EventsOptions ev = this.runtimeOptions.events();
         this.eventBus = ev.enabled() ? new PropagatingEventBus() : new NoopEventBus();
+        this.l1EventFanout = new com.bloxbean.cardano.yano.runtime.events.L1EventFanout(
+                ev.enabled() ? this.eventBus : null);
         this.txSubsystem = new TxSubsystem(eventBus, scheduler, this.runtimeOptions, this::getUtxoState, log);
         AtomicReference<Supplier<List<PeerStoreEntry>>> peerStoreSupplierRef =
                 new AtomicReference<>(List::of);
@@ -1400,8 +1403,9 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 : Optional.empty();
     }
 
-    public AccountHistoryStore getAccountHistoryStore() {
-        return ledgerStateSubsystem.accountHistoryStore();
+    @Override
+    public void setBlockBodyRetentionBoundary(BlockBodyRetentionBoundary boundary) {
+        chainStorage.setBlockBodyRetentionBoundary(boundary);
     }
 
     private void completeStartupDerivedStateRecovery() {
@@ -1415,11 +1419,6 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 outcome, "ledger-state background services", ledgerStateSubsystem::stop);
         return attemptRuntimeCleanup(
                 outcome, "chain-storage prune service", chainStorage::stopBlockPruneService);
-    }
-
-    @Override
-    public AccountHistoryProvider getAccountHistoryProvider() {
-        return ledgerStateSubsystem.accountHistoryProvider();
     }
 
     private void startPluginsAndInitializeFilters() {
@@ -2644,6 +2643,22 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     }
 
     @Override
+    public boolean isTransactionInMemPool(String txHash) {
+        return txSubsystem != null && txSubsystem.containsTransaction(txHash);
+    }
+
+    @Override
+    public com.bloxbean.cardano.yano.api.events.stream.NodeEventStream.Subscription subscribe(
+            java.util.Set<String> topics) {
+        return l1EventFanout.subscribe(topics);
+    }
+
+    @Override
+    public boolean isAvailable() {
+        return l1EventFanout.isAvailable();
+    }
+
+    @Override
     public String getProtocolParameters() {
         // The no-epoch API returns only static protocol-param.json content. When
         // epoch-param tracking is enabled, callers must use the epoch-specific
@@ -2745,6 +2760,19 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 d.maxKESEvolutions(),
                 d.securityParam()
         );
+    }
+
+    @Override
+    public long slotToEpoch(long slot) {
+        EpochParamProvider provider = effectiveEpochParamProvider();
+        if (provider == null) throw new IllegalStateException("epoch parameters are unavailable");
+        return provider.getEpochSlotCalc().slotToEpoch(slot);
+    }
+
+    @Override
+    public void setEpochArchiveStagingSink(
+            com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink sink) {
+        ledgerStateSubsystem.setEpochArchiveStagingSink(sink);
     }
 
     @Override
@@ -2918,13 +2946,6 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                     + newHeaderTip.getSlot() + " after adhoc rollback to " + targetSlot);
         }
 
-        // Resolve target epoch for cleanup
-        Integer targetEpoch = null;
-        EpochParamProvider epochParamProvider = getEpochParamProvider();
-        if (epochParamProvider != null) {
-            targetEpoch = epochParamProvider.getEpochSlotCalc().slotToEpoch(targetSlot);
-        }
-
         log.info("=== Adhoc Rollback Complete ===");
         log.info("New tip: slot={}, block={}", newTip != null ? newTip.getSlot() : "none",
                 newTip != null ? newTip.getBlockNumber() : "none");
@@ -2932,10 +2953,6 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 newHeaderTip != null ? newHeaderTip.getSlot() : "none",
                 newHeaderTip != null ? newHeaderTip.getBlockNumber() : "none");
 
-        // Cleanup derived ledger export artifacts.
-        if (targetEpoch != null) {
-            ledgerStateSubsystem.cleanupSnapshotExportsAfterRollback(targetEpoch);
-        }
     }
 
     private void rollbackDevnetToSlot(long targetSlot) {
@@ -2966,10 +2983,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
             boolean wasRunning = producerSubsystem.isRunning();
             boolean utxoPruneWasRunning = utxoSubsystem.isPruneServiceRunning();
-            boolean accountHistoryPruneWasRunning = ledgerStateSubsystem.isAccountHistoryPruneServiceRunning();
             boolean blockPruneWasRunning = chainStorage.isBlockPruneServiceRunning();
             boolean utxoPrunePaused = false;
-            boolean accountHistoryPrunePaused = false;
             boolean blockPrunePaused = false;
             boolean rollbackStarted = false;
             boolean rollbackCompleted = false;
@@ -2985,13 +3000,6 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                         throw new IllegalStateException("Cannot rollback devnet because UTXO prune service did not stop");
                     }
                     utxoPrunePaused = true;
-                }
-                if (accountHistoryPruneWasRunning) {
-                    if (!ledgerStateSubsystem.pauseAccountHistoryPruneServiceAndAwait(Duration.ofSeconds(5))) {
-                        throw new IllegalStateException(
-                                "Cannot rollback devnet because account-history prune service did not stop");
-                    }
-                    accountHistoryPrunePaused = true;
                 }
                 if (blockPruneWasRunning) {
                     if (!chainStorage.stopBlockPruneServiceAndAwait(Duration.ofSeconds(5))) {
@@ -3025,8 +3033,6 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 if (!utxoSubsystem.drainAsyncHandlerAndRestart(Duration.ofSeconds(30))) {
                     throw new IllegalStateException("Async UTXO handler did not drain after API rollback");
                 }
-                ensureAccountHistoryRolledBack(rollbackPoint);
-
                 // 5. Notify server (ChainSyncServerAgent sends Rollbackward to connected clients)
                 if (serveSubsystem.notifyNewDataAvailable()) {
                     log.info("Notified server agents about API-triggered rollback");
@@ -3056,9 +3062,6 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 if (canResume) {
                     if (utxoPrunePaused) {
                         utxoSubsystem.startBackgroundServices();
-                    }
-                    if (accountHistoryPrunePaused) {
-                        ledgerStateSubsystem.start();
                     }
                     if (blockPrunePaused) {
                         chainStorage.startBlockPruneService();
@@ -3298,23 +3301,12 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                     }
 
                     @Override
-                    public boolean isAccountHistoryPruneServiceRunning() {
-                        return ledgerStateSubsystem.isAccountHistoryPruneServiceRunning();
-                    }
-
-                    @Override
-                    public boolean pauseAccountHistoryPruneServiceAndAwait(Duration timeout) {
-                        return ledgerStateSubsystem.pauseAccountHistoryPruneServiceAndAwait(timeout);
-                    }
-
-                    @Override
                     public void reinitializeLedgerAndReconcileAfterSnapshotRestore() {
                         ledgerStateSubsystem.reinitializeAndReconcileAfterSnapshotRestore();
                     }
 
                     @Override
-                    public void resumeLedgerAfterSnapshotRestore(boolean accountHistoryPrunePaused) {
-                        ledgerStateSubsystem.resumeAfterSnapshotRestore(accountHistoryPrunePaused);
+                    public void resumeLedgerAfterSnapshotRestore() {
                     }
 
                     @Override
@@ -3884,10 +3876,6 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         syncSubsystem.handleChainSyncRollback(point);
     }
 
-    private void ensureAccountHistoryRolledBack(Point rollbackPoint) {
-        ledgerStateSubsystem.ensureAccountHistoryRolledBack(rollbackPoint);
-    }
-
     /**
      * Update sync phase based on sync progress
      */
@@ -3947,6 +3935,13 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     }
 
     @Override
+    public java.util.OptionalLong getSyncTargetBlockNumber() {
+        var remote = syncSubsystem.remoteTip();
+        return remote == null ? java.util.OptionalLong.empty()
+                : java.util.OptionalLong.of(remote.getBlock());
+    }
+
+    @Override
     public byte[] getBlock(byte[] blockHash) {
         return chainState.getBlock(blockHash);
     }
@@ -3959,6 +3954,31 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     @Override
     public Era getBlockEra(long blockNumber) {
         return chainState.getBlockEra(blockNumber);
+    }
+
+    @Override
+    public Optional<com.bloxbean.cardano.yano.api.CanonicalBlockReference> getCanonicalBlockReference(
+            long blockNumber) {
+        if (chainState instanceof com.bloxbean.cardano.yano.runtime.chain.ArchiveChainStateCapabilities capabilities) {
+            return capabilities.getCanonicalBlockReference(blockNumber);
+        }
+        return Optional.empty();
+    }
+
+    @Override
+    public Optional<com.bloxbean.cardano.yano.api.ByronEpochBoundaryReference> getByronEpochBoundaryBlock(long slot) {
+        if (chainState instanceof com.bloxbean.cardano.yano.runtime.chain.ArchiveChainStateCapabilities capabilities) {
+            return capabilities.getByronEpochBoundaryBlock(slot);
+        }
+        return Optional.empty();
+    }
+
+    @Override
+    public java.util.OptionalLong getEarliestRetainedBodyBlockNumber() {
+        if (chainState instanceof com.bloxbean.cardano.yano.runtime.chain.ArchiveChainStateCapabilities capabilities) {
+            return capabilities.getEarliestRetainedBodyBlockNumber();
+        }
+        return java.util.OptionalLong.empty();
     }
 
     public RuntimeMaintenanceGate getMaintenanceGate() {

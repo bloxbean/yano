@@ -264,22 +264,51 @@ public final class YanoPropertyKeys {
         }
     }
 
-    /**
-     * Account-history index and retention settings.
-     */
-    public static final class AccountHistory {
-        public static final String ENABLED = "yano.account-history.enabled";
-        public static final String TX_EVENTS_ENABLED = "yano.account-history.tx-events-enabled";
-        public static final String REWARDS_ENABLED = "yano.account-history.rewards-enabled";
-        public static final String RETENTION_EPOCHS = "yano.account-history.retention-epochs";
-        public static final String PRUNE_INTERVAL_SECONDS =
-                "yano.account-history.prune-interval-seconds";
-        public static final String PRUNE_BATCH_SIZE = "yano.account-history.prune-batch-size";
-        public static final String ROLLBACK_SAFETY_SLOTS =
-                "yano.account-history.rollback-safety-slots";
+    /** Optional asynchronous history/archive settings (ADR-034). */
+    public static final class History {
+        public static final String PREFIX = "yano.history.";
+        public static final String ENABLED = PREFIX + "enabled";
+        public static final String DIR = PREFIX + "dir";
+        public static final String START_MODE = PREFIX + "start-mode";
+        public static final String HOT_STORE_ENGINE = PREFIX + "hot-store.engine";
+        public static final String HOT_STORE_SQLITE_PATH = PREFIX + "hot-store.sqlite.path";
+        public static final String ENGINE = PREFIX + "archive.engine";
+        public static final String FINALITY_BLOCKS = PREFIX + "archive.finality-blocks";
+        public static final String DUCKLAKE_TARGET_FILE_SIZE =
+                PREFIX + "archive.ducklake.target-file-size";
+        public static final String DUCKLAKE_ROW_GROUP_SIZE =
+                PREFIX + "archive.ducklake.row-group-size";
+        public static final String DUCKLAKE_SNAPSHOT_RETENTION_HOURS =
+                PREFIX + "archive.ducklake.snapshot-retention-hours";
+        public static final String DUCKLAKE_CLEANUP_GRACE_HOURS =
+                PREFIX + "archive.ducklake.cleanup-grace-hours";
+        public static final String ROLLBACK_RETENTION_BLOCKS = PREFIX + "rollback.retention-blocks";
+        public static final String WORKER_POLL_MILLIS = PREFIX + "worker.poll-interval-millis";
+        public static final String WORKER_MAX_BLOCKS = PREFIX + "worker.max-blocks-per-batch";
+        public static final String WORKER_MAX_ROWS = PREFIX + "worker.max-rows-per-batch";
+        public static final String WORKER_PAUSE_DURING_CORE_CATCHUP =
+                PREFIX + "worker.pause-backfill-during-core-catchup";
+        public static final String WORKER_CORE_LAG = PREFIX + "worker.bulk-pause-core-lag-blocks";
+        public static final String WORKER_PROJECTION_PARALLELISM = PREFIX + "worker.projection-parallelism";
+        public static final String ADDRESS_SUBJECT_ADDRESS =
+                PREFIX + "datasets.address-transactions.subjects.address";
+        public static final String ADDRESS_SUBJECT_PAYMENT_CREDENTIAL =
+                PREFIX + "datasets.address-transactions.subjects.payment-credential";
+        public static final String ADDRESS_SUBJECT_STAKE_CREDENTIAL =
+                PREFIX + "datasets.address-transactions.subjects.stake-credential";
+        public static final String MAINTENANCE_INTERVAL_SECONDS = PREFIX + "maintenance.interval-seconds";
+        public static final String MAINTENANCE_TIME_LIMIT_SECONDS = PREFIX + "maintenance.time-limit-seconds";
+        public static final String MAINTENANCE_MAX_REWRITE = PREFIX + "maintenance.max-bytes-to-rewrite";
+        public static final String DUCKDB_MAX_TOTAL_MEMORY = PREFIX + "duckdb.max-total-memory";
+        public static final String DUCKDB_MAX_CONCURRENT_QUERIES = PREFIX + "duckdb.max-concurrent-queries";
+        public static final String DUCKDB_MAX_TEMP_SIZE = PREFIX + "duckdb.max-temp-directory-size";
+        public static final String DUCKDB_STEADY_MEMORY = PREFIX + "duckdb.steady-state.memory-limit";
+        public static final String DUCKDB_STEADY_THREADS = PREFIX + "duckdb.steady-state.threads";
+        public static final String DUCKDB_BULK_MEMORY = PREFIX + "duckdb.bulk-catch-up.memory-limit";
+        public static final String DUCKDB_BULK_THREADS = PREFIX + "duckdb.bulk-catch-up.threads";
+        public static final String DUCKDB_BULK_JOBS = PREFIX + "duckdb.bulk-catch-up.max-concurrent-jobs";
 
-        private AccountHistory() {
-        }
+        private History() { }
     }
 
     /**
@@ -308,21 +337,6 @@ public final class YanoPropertyKeys {
                 "yano.auto-checkpoint-interval";
 
         private Ledger() {
-        }
-    }
-
-    /**
-     * Snapshot export settings for offline diagnostics and comparisons.
-     */
-    public static final class SnapshotExport {
-        public static final String ENABLED = "yano.snapshot-export.enabled";
-        public static final String DIR = "yano.snapshot-export.dir";
-        public static final String STAKE = "yano.snapshot-export.stake";
-        public static final String DREP_DIST = "yano.snapshot-export.drep-dist";
-        public static final String ADAPOT = "yano.snapshot-export.adapot";
-        public static final String PROPOSALS = "yano.snapshot-export.proposals";
-
-        private SnapshotExport() {
         }
     }
 

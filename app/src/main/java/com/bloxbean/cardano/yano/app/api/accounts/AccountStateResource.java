@@ -10,6 +10,8 @@ import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.api.util.CardanoBech32Ids;
 import com.bloxbean.cardano.yano.app.api.EpochUtil;
 import com.bloxbean.cardano.yano.app.api.accounts.dto.AccountStateDtos.*;
+import com.bloxbean.cardano.yano.app.archive.HistoryArchiveService;
+import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
@@ -34,13 +36,18 @@ public class AccountStateResource {
     @Inject
     LedgerQuery ledgerQuery;
 
+    @Inject
+    HistoryArchiveService historyArchive;
+
     private AccountStateStore store() {
         LedgerStateProvider provider = ledgerQuery.getLedgerStateProvider();
         return provider instanceof AccountStateStore accountStateStore ? accountStateStore : null;
     }
 
     private AccountHistoryProvider historyProvider() {
-        return ledgerQuery.getAccountHistoryProvider();
+        return historyArchive != null && historyArchive.enabled()
+                ? historyArchive.accountHistoryProvider()
+                : null;
     }
 
     private AccountStateReadStore readStore() {
@@ -193,7 +200,7 @@ public class AccountStateResource {
         StakeCredentialRef credential = parseStakeCredential(stakeAddress);
         if (credential == null) return badRequest("Invalid stake address");
         AccountHistoryProvider history = historyProvider();
-        Response unavailable = historyUnavailable(history, true);
+        Response unavailable = historyUnavailable(history, ArchiveDatasetId.ACCOUNT_EVENT);
         if (unavailable != null) return unavailable;
         String resolvedOrder = normalizeOrder(order);
         if (resolvedOrder == null) return badRequest("order must be asc or desc");
@@ -221,7 +228,7 @@ public class AccountStateResource {
         StakeCredentialRef credential = parseStakeCredential(stakeAddress);
         if (credential == null) return badRequest("Invalid stake address");
         AccountHistoryProvider history = historyProvider();
-        Response unavailable = historyUnavailable(history, true);
+        Response unavailable = historyUnavailable(history, ArchiveDatasetId.ACCOUNT_EVENT);
         if (unavailable != null) return unavailable;
         String resolvedOrder = normalizeOrder(order);
         if (resolvedOrder == null) return badRequest("order must be asc or desc");
@@ -250,7 +257,7 @@ public class AccountStateResource {
         StakeCredentialRef credential = parseStakeCredential(stakeAddress);
         if (credential == null) return badRequest("Invalid stake address");
         AccountHistoryProvider history = historyProvider();
-        Response unavailable = historyUnavailable(history, true);
+        Response unavailable = historyUnavailable(history, ArchiveDatasetId.ACCOUNT_EVENT);
         if (unavailable != null) return unavailable;
         String resolvedOrder = normalizeOrder(order);
         if (resolvedOrder == null) return badRequest("order must be asc or desc");
@@ -279,7 +286,7 @@ public class AccountStateResource {
         StakeCredentialRef credential = parseStakeCredential(stakeAddress);
         if (credential == null) return badRequest("Invalid stake address");
         AccountHistoryProvider history = historyProvider();
-        Response unavailable = historyUnavailable(history, true);
+        Response unavailable = historyUnavailable(history, ArchiveDatasetId.ACCOUNT_EVENT);
         if (unavailable != null) return unavailable;
         String resolvedOrder = normalizeOrder(order);
         if (resolvedOrder == null) return badRequest("order must be asc or desc");
@@ -293,6 +300,96 @@ public class AccountStateResource {
                             r.txHash(), r.pot(), r.amount().toString(), r.earnedEpoch(),
                             r.slot(), r.blockNo(), r.txIdx(), r.certIdx()))
                     .toList();
+            return Response.ok(body).build();
+        } catch (IllegalStateException e) {
+            return readUnavailable("Account history read failed", e);
+        }
+    }
+
+    /**
+     * Per-epoch reward history (ADR-033 M2), Blockfrost-shaped:
+     * [{epoch, amount, pool_id, type}].
+     */
+    @GET
+    @Path("/{stakeAddress}/rewards")
+    public Response getRewards(@PathParam("stakeAddress") String stakeAddress,
+                               @QueryParam("page") @DefaultValue("1") int page,
+                               @QueryParam("count") @DefaultValue("20") int count,
+                               @QueryParam("order") @DefaultValue("desc") String order) {
+        StakeCredentialRef credential = parseStakeCredential(stakeAddress);
+        if (credential == null) return badRequest("Invalid stake address");
+        AccountHistoryProvider history = historyProvider();
+        Response unavailable = historyUnavailable(history, ArchiveDatasetId.REWARD);
+        if (unavailable != null) return unavailable;
+        String resolvedOrder = normalizeOrder(order);
+        if (resolvedOrder == null) return badRequest("order must be asc or desc");
+
+        page = clampPage(page);
+        count = clampCount(count);
+        try {
+            List<RewardHistoryDto> body = history.getRewards(
+                            credential.credType(), credential.credHash(), page, count, resolvedOrder)
+                    .stream()
+                    .map(r -> new RewardHistoryDto(
+                            r.earnedEpoch(),
+                            r.amount().toString(),
+                            r.poolHash() != null ? CardanoBech32Ids.poolId(r.poolHash()) : null,
+                            blockfrostRewardType(r.type())))
+                    .toList();
+            return Response.ok(body).build();
+        } catch (IllegalStateException e) {
+            return readUnavailable("Reward history read failed", e);
+        }
+    }
+
+    private static String blockfrostRewardType(String rewardType) {
+        if (rewardType == null) return null;
+        return switch (rewardType) {
+            case "MEMBER" -> "member";
+            case "LEADER" -> "leader";
+            case "REFUND" -> "pool_deposit_refund";
+            default -> rewardType.toLowerCase();
+        };
+    }
+
+    private record RewardHistoryDto(
+            @com.fasterxml.jackson.annotation.JsonProperty("epoch") int epoch,
+            @com.fasterxml.jackson.annotation.JsonProperty("amount") String amount,
+            @com.fasterxml.jackson.annotation.JsonProperty("pool_id") String poolId,
+            @com.fasterxml.jackson.annotation.JsonProperty("type") String type) {
+    }
+
+    /**
+     * All transactions that touched any address delegated to this stake
+     * credential (ADR-033 M2), from the address-tx index.
+     */
+    @GET
+    @Path("/{stakeAddress}/transactions")
+    public Response getAccountTransactions(@PathParam("stakeAddress") String stakeAddress,
+                                           @QueryParam("page") @DefaultValue("1") int page,
+                                           @QueryParam("count") @DefaultValue("20") int count,
+                                           @QueryParam("order") @DefaultValue("asc") String order) {
+        StakeCredentialRef credential = parseStakeCredential(stakeAddress);
+        if (credential == null) return badRequest("Invalid stake address");
+        AccountHistoryProvider history = historyProvider();
+        Response unavailable = historyUnavailable(history, ArchiveDatasetId.ADDRESS_TRANSACTION);
+        if (unavailable != null) return unavailable;
+        String resolvedOrder = normalizeOrder(order);
+        if (resolvedOrder == null) return badRequest("order must be asc or desc");
+
+        page = clampPage(page);
+        count = clampCount(count);
+        try {
+            // Same Blockfrost shape as /addresses/{address}/transactions.
+            List<com.bloxbean.cardano.yano.app.api.addresses.dto.AddressTxDto> body =
+                    history.getAddressTransactions(
+                                    AccountHistoryProvider.ADDR_SCOPE_STAKE_CRED, credential.credHash(),
+                                    page, count, resolvedOrder)
+                            .stream()
+                            .map(r -> new com.bloxbean.cardano.yano.app.api.addresses.dto.AddressTxDto(
+                                    r.txHash(), r.txIdx(), r.blockNo(),
+                                    ledgerQuery.slotToUnixTime(r.slot()), r.slot()))
+                            .toList();
             return Response.ok(body).build();
         } catch (IllegalStateException e) {
             return readUnavailable("Account history read failed", e);
@@ -417,17 +514,40 @@ public class AccountStateResource {
         }
     }
 
-    private Response historyUnavailable(AccountHistoryProvider history, boolean requireTxEvents) {
+    private Response historyUnavailable(AccountHistoryProvider history, ArchiveDatasetId dataset) {
         if (history == null || !history.isEnabled()) {
             return featureUnavailable("Account history not available");
         }
         if (!history.isHealthy()) {
             return featureUnavailable("Account history index is not healthy");
         }
-        if (requireTxEvents && !history.isTxEventsEnabled()) {
-            return featureUnavailable("Account tx/cert history index is disabled");
+        boolean available = switch (dataset) {
+            case ACCOUNT_EVENT -> history.isTxEventsEnabled();
+            case ADDRESS_TRANSACTION -> history.isAddressTxEnabled();
+            case REWARD -> history.isRewardsHistoryEnabled();
+            default -> throw new IllegalArgumentException(
+                    "Unsupported account-history dataset: " + dataset.logicalName());
+        };
+        if (available) {
+            return null;
         }
-        return null;
+        if (historyArchive != null && historyArchive.datasetBuilding(dataset)) {
+            return featureUnavailable(switch (dataset) {
+                case ACCOUNT_EVENT -> "Account tx/cert history is still building";
+                case ADDRESS_TRANSACTION -> "Address transaction history is still building";
+                case REWARD -> "Reward history is still building";
+                default -> throw new IllegalArgumentException(
+                        "Unsupported account-history dataset: " + dataset.logicalName());
+            });
+        }
+        return featureUnavailable(switch (dataset) {
+            case ACCOUNT_EVENT -> "Account tx/cert history index is disabled";
+            case ADDRESS_TRANSACTION -> "Address transaction history disabled "
+                    + "(enable yano.history.datasets.address-transactions.enabled)";
+            case REWARD -> "Reward history disabled (enable yano.history.datasets.rewards.enabled)";
+            default -> throw new IllegalArgumentException(
+                    "Unsupported account-history dataset: " + dataset.logicalName());
+        });
     }
 
     private record StakeCredentialRef(String stakeAddress, int credType, String credHash) {}

@@ -21,19 +21,7 @@
     "allDeclaredFields": true
   },
   {
-    "name": "com.bloxbean.cardano.yano.ledgerstate.AccountHistoryEventHandler_EventBindings",
-    "allDeclaredConstructors": true,
-    "allDeclaredMethods": true,
-    "allDeclaredFields": true
-  },
-  {
     "name": "com.bloxbean.cardano.yano.ledgerstate.AccountStateEventHandler",
-    "allDeclaredConstructors": true,
-    "allDeclaredMethods": true,
-    "allDeclaredFields": true
-  },
-  {
-    "name": "com.bloxbean.cardano.yano.ledgerstate.AccountHistoryEventHandler",
     "allDeclaredConstructors": true,
     "allDeclaredMethods": true,
     "allDeclaredFields": true

@@ -12,7 +12,6 @@ import com.bloxbean.cardano.yaci.events.api.EventMetadata;
 import com.bloxbean.cardano.yaci.events.api.PublishOptions;
 import com.bloxbean.cardano.yano.api.ChainBlockReader;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
-import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
 import com.bloxbean.cardano.yano.api.account.AccountStateStore;
 import com.bloxbean.cardano.yano.api.account.AccountStateStoreContext;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
@@ -25,7 +24,6 @@ import com.bloxbean.cardano.yano.api.events.GenesisBlockEvent;
 import com.bloxbean.cardano.yano.api.genesis.GenesisBootstrapData;
 import com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
-import com.bloxbean.cardano.yano.ledgerstate.AccountHistoryStore;
 import com.bloxbean.cardano.yano.ledgerstate.AccountStateCfNames;
 import com.bloxbean.cardano.yano.ledgerstate.AccountStateEventHandler;
 import com.bloxbean.cardano.yano.ledgerstate.AdaPotTracker;
@@ -35,8 +33,8 @@ import com.bloxbean.cardano.yano.ledgerstate.EpochParamTracker;
 import com.bloxbean.cardano.yano.ledgerstate.EpochRewardCalculator;
 import com.bloxbean.cardano.yano.ledgerstate.EpochStakeSnapshotService;
 import com.bloxbean.cardano.yano.ledgerstate.NetworkConfigBuilder;
-import com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter;
 import com.bloxbean.cardano.yano.runtime.account.AccountStateStoreDiscovery;
+import com.bloxbean.cardano.yano.runtime.chain.ArchiveChainStateCapabilities;
 import com.bloxbean.cardano.yano.runtime.chain.ByronGenesisUtxoMetadataStore;
 import com.bloxbean.cardano.yano.runtime.chain.ChainStateSnapshots;
 import com.bloxbean.cardano.yano.runtime.chain.EraMetadataStore;
@@ -56,12 +54,10 @@ import org.slf4j.Logger;
 import java.math.BigInteger;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.ServiceLoader;
 import java.util.function.Supplier;
 
 /**
@@ -83,10 +79,10 @@ public final class LedgerStateSubsystem implements Subsystem {
     private final Supplier<UtxoState> utxoStateSupplier;
     private final Supplier<byte[]> genesisHashSupplier;
     private final InMemoryDevnetGenesis inMemoryDevnetGenesis;
-    private final AccountHistorySubsystem accountHistorySubsystem;
+    private volatile com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink epochArchiveStagingSink =
+            com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.NOOP;
 
     private AccountStateStore accountStateStore;
-    private AccountHistoryStore accountHistoryStore;
     private EpochBoundaryProcessor epochBoundaryProcessor;
     private AccountStateEventHandler accountStateEventHandler;
     private EpochParamProvider epochParamProvider;
@@ -123,12 +119,6 @@ public final class LedgerStateSubsystem implements Subsystem {
         this.utxoStateSupplier = utxoStateSupplier != null ? utxoStateSupplier : () -> null;
         this.genesisHashSupplier = genesisHashSupplier != null ? genesisHashSupplier : () -> null;
         this.inMemoryDevnetGenesis = inMemoryDevnetGenesis;
-        this.accountHistorySubsystem = new AccountHistorySubsystem(
-                config,
-                this.runtimeOptions,
-                chainState,
-                eventBus,
-                log);
         initialize();
     }
 
@@ -141,20 +131,23 @@ public final class LedgerStateSubsystem implements Subsystem {
         return accountStateStore;
     }
 
-    public AccountHistoryStore accountHistoryStore() {
-        return accountHistoryStore;
-    }
-
     public LedgerStateProvider ledgerStateProvider() {
         return accountStateStore;
     }
 
-    public AccountHistoryProvider accountHistoryProvider() {
-        return accountHistoryStore;
-    }
-
     public EpochBoundaryProcessor epochBoundaryProcessor() {
         return epochBoundaryProcessor;
+    }
+
+    public void setEpochArchiveStagingSink(
+            com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink sink) {
+        epochArchiveStagingSink = sink != null ? sink
+                : com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.NOOP;
+        if (accountStateStore instanceof DefaultAccountStateStore store) {
+            store.setEpochArchiveStagingSink(epochArchiveStagingSink);
+        } else if (epochBoundaryProcessor != null) {
+            epochBoundaryProcessor.setEpochArchiveStagingSink(epochArchiveStagingSink);
+        }
     }
 
     public EpochParamProvider epochParamProvider() {
@@ -187,9 +180,6 @@ public final class LedgerStateSubsystem implements Subsystem {
 
     public List<RollbackCapableStore> rollbackCapableStores(UtxoStoreWriter utxoStore) {
         var stores = new ArrayList<RollbackCapableStore>();
-        if (accountHistoryStore instanceof RollbackCapableStore rollbackStore) {
-            stores.add(rollbackStore);
-        }
         if (accountStateStore instanceof RollbackCapableStore rollbackStore) {
             stores.add(rollbackStore);
         }
@@ -257,8 +247,6 @@ public final class LedgerStateSubsystem implements Subsystem {
                 reconcileAccountStateStore();
                 accountStateReconcilePending = false;
             }
-            accountHistorySubsystem.completeStartupRecovery();
-
             if (epochBoundaryProcessor != null) {
                 epochBoundaryProcessor.recoverInterruptedBoundary();
             }
@@ -283,68 +271,6 @@ public final class LedgerStateSubsystem implements Subsystem {
                 throw new IllegalStateException("Account state reconciliation after snapshot restore failed", t);
             }
         }
-        accountHistorySubsystem.reinitializeAndReconcileAfterSnapshotRestore(rocksAccess);
-        accountHistoryStore = accountHistorySubsystem.store();
-    }
-
-    public boolean isAccountHistoryPruneServiceRunning() {
-        return accountHistorySubsystem.isPruneServiceRunning();
-    }
-
-    public boolean pauseAccountHistoryPruneServiceAndAwait(Duration timeout) {
-        return accountHistorySubsystem.pausePruneServiceAndAwait(timeout);
-    }
-
-    public void resumeAfterSnapshotRestore(boolean accountHistoryPrunePaused) {
-        accountHistorySubsystem.resumeAfterSnapshotRestore(accountHistoryPrunePaused);
-    }
-
-    public void ensureAccountHistoryRolledBack(Point rollbackPoint) {
-        accountHistorySubsystem.ensureRolledBack(rollbackPoint);
-    }
-
-    /**
-     * Delete exported epoch snapshot directories after a rollback target.
-     */
-    public void cleanupSnapshotExportsAfterRollback(int targetEpoch) {
-        Object exportDirObj = runtimeOptions.globals().get(YanoPropertyKeys.SnapshotExport.DIR);
-        if (exportDirObj == null) {
-            return;
-        }
-        String exportDir = String.valueOf(exportDirObj);
-        if (exportDir.isBlank()) {
-            return;
-        }
-
-        java.io.File dir = new java.io.File(exportDir);
-        if (!dir.exists() || !dir.isDirectory()) {
-            return;
-        }
-
-        java.io.File[] epochDirs = dir.listFiles(f -> f.isDirectory() && f.getName().startsWith("epoch="));
-        if (epochDirs == null) {
-            return;
-        }
-
-        int deleted = 0;
-        for (java.io.File epochDir : epochDirs) {
-            try {
-                int epoch = Integer.parseInt(epochDir.getName().substring("epoch=".length()));
-                if (epoch > targetEpoch) {
-                    Files.walk(epochDir.toPath())
-                            .sorted(java.util.Comparator.reverseOrder())
-                            .map(java.nio.file.Path::toFile)
-                            .forEach(java.io.File::delete);
-                    deleted++;
-                }
-            } catch (NumberFormatException ignored) {
-            } catch (Exception e) {
-                log.warn("Failed to delete epoch snapshot export dir {}: {}", epochDir, e.getMessage());
-            }
-        }
-        if (deleted > 0) {
-            log.info("Ledger snapshot export cleanup deleted {} epoch directories after epoch {}", deleted, targetEpoch);
-        }
     }
 
     public void handleEraTransition(BlockAppliedEvent event) {
@@ -366,12 +292,10 @@ public final class LedgerStateSubsystem implements Subsystem {
 
     @Override
     public void start() {
-        accountHistorySubsystem.start();
     }
 
     @Override
     public void stop() {
-        accountHistorySubsystem.pauseBackgroundServices();
     }
 
     public void closeEventHandlers() {
@@ -383,7 +307,6 @@ public final class LedgerStateSubsystem implements Subsystem {
         } finally {
             accountStateEventHandler = null;
         }
-        accountHistorySubsystem.closeEventHandlers();
     }
 
     @Override
@@ -393,7 +316,6 @@ public final class LedgerStateSubsystem implements Subsystem {
         }
         stop();
         closeEventHandlers();
-        accountHistorySubsystem.close();
         closed = true;
     }
 
@@ -416,10 +338,6 @@ public final class LedgerStateSubsystem implements Subsystem {
                 initializeAccountState(networkGenesisConfig);
             } else {
                 log.info("Account state store not initialized (enabled={})", accountStateEnabled);
-                if (resolveBoolean(runtimeOptions.globals(), YanoPropertyKeys.AccountHistory.ENABLED, false)) {
-                    throw new IllegalStateException(
-                            "Account history requested but not initialized because account-state is disabled");
-                }
             }
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to initialize ledger-state subsystem", t);
@@ -457,9 +375,6 @@ public final class LedgerStateSubsystem implements Subsystem {
         if (accountStateStore instanceof DefaultAccountStateStore defaultStore) {
             wireDefaultAccountStateStore(defaultStore, networkGenesisConfig);
         }
-
-        accountHistorySubsystem.initialize(rocksAccess, epochParamProvider);
-        this.accountHistoryStore = accountHistorySubsystem.store();
 
         this.accountStateEventHandler = new AccountStateEventHandler(eventBus, accountStateStore);
         log.info("Account state store initialized ({}); event handler registered",
@@ -524,7 +439,7 @@ public final class LedgerStateSubsystem implements Subsystem {
         wireGovernance(defaultStore, paramTrackerInstance);
 
         defaultStore.migrateAcctRegSlots();
-        wireSnapshotExporter(defaultStore);
+        defaultStore.setEpochArchiveStagingSink(epochArchiveStagingSink);
     }
 
     private EpochParamTracker wireEpochParamTracker(DefaultAccountStateStore defaultStore,
@@ -709,41 +624,6 @@ public final class LedgerStateSubsystem implements Subsystem {
             epochBoundaryProcessor.setGovernanceEpochProcessor(govEpochProcessor);
         }
         log.info("Governance subsystem enabled (block processor + epoch processor)");
-    }
-
-    private void wireSnapshotExporter(DefaultAccountStateStore defaultStore) {
-        boolean exportEnabled = resolveBoolean(runtimeOptions.globals(), YanoPropertyKeys.SnapshotExport.ENABLED, false);
-        if (!exportEnabled) {
-            return;
-        }
-
-        String exportDir = String.valueOf(runtimeOptions.globals().getOrDefault(
-                YanoPropertyKeys.SnapshotExport.DIR, "data"));
-        var loader = ServiceLoader.load(EpochSnapshotExporter.class);
-        var impl = loader.findFirst();
-        if (impl.isPresent()) {
-            var exporter = impl.get();
-            exporter.setOutputDir(exportDir);
-            exporter.setNetworkMagic(config.getProtocolMagic());
-            var exportOptions = Map.of(
-                    "stake", String.valueOf(runtimeOptions.globals().getOrDefault(
-                            YanoPropertyKeys.SnapshotExport.STAKE, "false")),
-                    "drep-dist", String.valueOf(runtimeOptions.globals().getOrDefault(
-                            YanoPropertyKeys.SnapshotExport.DREP_DIST, "true")),
-                    "adapot", String.valueOf(runtimeOptions.globals().getOrDefault(
-                            YanoPropertyKeys.SnapshotExport.ADAPOT, "true")),
-                    "proposals", String.valueOf(runtimeOptions.globals().getOrDefault(
-                            YanoPropertyKeys.SnapshotExport.PROPOSALS, "true")));
-            exporter.configure(exportOptions);
-            defaultStore.setSnapshotExporter(exporter);
-            if (epochBoundaryProcessor != null) {
-                epochBoundaryProcessor.setSnapshotExporter(exporter);
-            }
-            log.info("Epoch snapshot export enabled: {} -> {}", exporter.getClass().getSimpleName(), exportDir);
-        } else {
-            log.warn("Snapshot export enabled but no EpochSnapshotExporter implementation found on classpath. "
-                    + "Add the epoch-export module to enable parquet export.");
-        }
     }
 
     private void reconcileAccountStateStore() {
@@ -978,6 +858,32 @@ public final class LedgerStateSubsystem implements Subsystem {
         @Override
         public com.bloxbean.cardano.yaci.core.model.Era getBlockEra(long blockNumber) {
             return chainState.getBlockEra(blockNumber);
+        }
+
+        @Override
+        public java.util.Optional<com.bloxbean.cardano.yano.api.CanonicalBlockReference>
+        getCanonicalBlockReference(long blockNumber) {
+            if (chainState instanceof ArchiveChainStateCapabilities capabilities) {
+                return capabilities.getCanonicalBlockReference(blockNumber);
+            }
+            return java.util.Optional.empty();
+        }
+
+        @Override
+        public java.util.Optional<com.bloxbean.cardano.yano.api.ByronEpochBoundaryReference>
+        getByronEpochBoundaryBlock(long slot) {
+            if (chainState instanceof ArchiveChainStateCapabilities capabilities) {
+                return capabilities.getByronEpochBoundaryBlock(slot);
+            }
+            return java.util.Optional.empty();
+        }
+
+        @Override
+        public java.util.OptionalLong getEarliestRetainedBodyBlockNumber() {
+            if (chainState instanceof ArchiveChainStateCapabilities capabilities) {
+                return capabilities.getEarliestRetainedBodyBlockNumber();
+            }
+            return java.util.OptionalLong.empty();
         }
     }
 }

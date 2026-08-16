@@ -219,20 +219,77 @@ yano:
     # epoch-block-data-retention-lag: 5    # epochs to keep per-block issuer/fee data after consumption (controls rollback depth)
     # snapshot-retention-epochs: 50        # epochs of delegation snapshots to retain
   # Optional umbrella rollback retention. When set, Yano fills missing rollback
-  # retention properties for UTXO/account-state/account-history from genesis epoch length.
+  # retention properties for UTXO/account-state from genesis epoch length.
   # Explicit leaf properties still take precedence.
   # rollback-retention-epochs: 20
   account:
     stake-balance-index-enabled: true
-  account-history:
+  # ADR-034 archive is fully optional. Disabled means no archive driver,
+  # Flyway, worker thread, history RocksDB, or archive write is initialized.
+  history:
     enabled: false
-    tx-events-enabled: true
-    rewards-enabled: false
-    retention-epochs: 0
-    # Defaults to yano.utxo.rollbackWindow when omitted.
-    # rollback-safety-slots: 4320
-    prune-interval-seconds: 300
-    prune-batch-size: 50000
+    dir: ./history
+    start-mode: full-required
+    hot-store:
+      engine: sqlite
+      sqlite:
+        path: ./history/hot-history.sqlite
+    archive:
+      engine: ducklake
+      finality-blocks: auto
+      ducklake:
+        target-file-size: 4MB
+        row-group-size: 100000
+        snapshot-retention-hours: 168
+        cleanup-grace-hours: 24
+    rollback:
+      retention-blocks: auto
+    worker:
+      poll-interval-millis: 1000
+      # Adaptive workers start at 100 and grow after successful batches.
+      max-blocks-per-batch: 1000
+      max-rows-per-batch: 250000
+      # Core sync and history backfill run concurrently by default. Constrained
+      # machines may enable this to prioritize core catch-up.
+      pause-backfill-during-core-catchup: false
+      bulk-pause-core-lag-blocks: 100
+      # auto = min(enabled block projections, 4, max(1, available processors / 2))
+      projection-parallelism: auto
+    datasets:
+      account-events: { enabled: true, retention-epochs: 0 }
+      transactions: { enabled: true, retention-epochs: 0 }
+      address-transactions:
+        enabled: false
+        retention-epochs: 0
+        subjects:
+          address: true
+          payment-credential: true
+          stake-credential: true
+      utxo-history:
+        enabled: false
+        retention-epochs: 0
+        tables:
+          transaction-outputs:
+            enabled: true
+          transaction-output-assets:
+            enabled: true
+          transaction-inputs:
+            enabled: true
+          transaction-datums:
+            enabled: true
+          transaction-redeemers:
+            enabled: true
+      rewards: { enabled: false, retention-epochs: 0 }
+      epoch-stake: { enabled: false, start-mode: earliest-available, retention-epochs: 0 }
+      drep-distribution: { enabled: false, start-mode: earliest-available, retention-epochs: 0 }
+      ada-pots: { enabled: false, start-mode: earliest-available, retention-epochs: 0 }
+      governance-proposal-status: { enabled: false, start-mode: earliest-available, retention-epochs: 0 }
+    duckdb:
+      max-total-memory: 256MB
+      max-concurrent-queries: 2
+      max-temp-directory-size: 2GB
+      steady-state: { memory-limit: 128MB, threads: 1 }
+      bulk-catch-up: { memory-limit: 128MB, threads: 1, max-concurrent-jobs: 1 }
   epoch-snapshot:
     amounts-enabled: true
   adapot:
@@ -309,6 +366,16 @@ yano:
       protocol-parameters-file: config/network/devnet/protocol-param.json
     account-state:
       enabled: true
+    # Exercise the isolated SQLite archive in devnet without requiring retained genesis bodies.
+    history:
+      enabled: true
+      archive:
+        engine: sqlite
+      start-mode: tip
+      datasets:
+        account-events: { enabled: true, start-mode: tip }
+        transactions: { enabled: true, start-mode: tip }
+        address-transactions: { enabled: true, start-mode: tip }
     epoch-snapshot:
       amounts-enabled: true           # UTXO balance aggregation in snapshots
     adapot:

@@ -65,6 +65,11 @@ public interface Yano extends AutoCloseable {
         return Optional.empty();
     }
 
+    /** L1 event stream for API-layer consumers (SSE, ADR-033 M2). */
+    default Optional<com.bloxbean.cardano.yano.api.events.stream.NodeEventStream> eventStream() {
+        return Optional.empty();
+    }
+
     /** Immutable, secret-free ADR-011.2 plugin catalog inventory. */
     default Optional<com.bloxbean.cardano.yano.api.plugin.PluginCatalogView> pluginCatalog() {
         return Optional.empty();

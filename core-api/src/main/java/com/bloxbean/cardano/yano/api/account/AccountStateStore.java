@@ -35,6 +35,9 @@ public interface AccountStateStore extends LedgerStateProvider {
      */
     default void handleEpochTransition(int previousEpoch, int newEpoch) {}
 
+    /** Supplies the canonical first-block coordinates before the epoch rule runs. */
+    default void prepareEpochBoundary(int previousEpoch, int newEpoch, long slot, long blockNumber) { }
+
     /**
      * Handle epoch transition snapshot: create delegation/stake mark snapshot (SNAP).
      * Maps to the <b>SNAP</b> rule of the ledger spec's EPOCH rule (shelley-ledger.pdf §17.4).

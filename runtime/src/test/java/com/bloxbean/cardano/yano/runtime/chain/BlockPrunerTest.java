@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.nio.file.Files;
+import java.util.OptionalLong;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -89,6 +90,11 @@ class BlockPrunerTest {
         for (int i = 0; i < 10; i++) {
             assertNotNull(chain.getBlockHeader(hash(i)), "Header " + i + " should be preserved");
         }
+
+        assertEquals(7L, chain.getEarliestRetainedBodyBlockNumber().orElseThrow());
+        var reference = chain.getCanonicalBlockReference(3).orElseThrow();
+        assertEquals(30L, reference.slot());
+        assertArrayEquals(hash(3), reference.blockHash());
     }
 
     @Test
@@ -175,5 +181,21 @@ class BlockPrunerTest {
 
         // Block 6 still around
         assertNotNull(chain.getBlock(hash(6)));
+    }
+
+    @Test
+    void pruneOnce_honorsConsumerLowWatermark() throws Exception {
+        for (int i = 0; i < 10; i++) storeBlockAndHeader(i, i * 10);
+        BlockPruner pruner = new BlockPruner(chain, chain, 2, 100, () -> OptionalLong.of(4));
+        pruner.pruneOnce();
+        for (int i = 0; i < 4; i++) assertNull(chain.getBlock(hash(i)));
+        for (int i = 4; i < 10; i++) assertNotNull(chain.getBlock(hash(i)));
+    }
+
+    @Test
+    void pruneOnce_zeroLowWatermarkStopsPruning() throws Exception {
+        for (int i = 0; i < 6; i++) storeBlockAndHeader(i, i * 10);
+        new BlockPruner(chain, chain, 1, 100, () -> OptionalLong.of(0)).pruneOnce();
+        for (int i = 0; i < 6; i++) assertNotNull(chain.getBlock(hash(i)));
     }
 }

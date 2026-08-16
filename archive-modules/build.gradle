@@ -1,0 +1,5 @@
+plugins {
+    id 'base'
+}
+
+description = 'Grouping project for optional Yano archive modules'

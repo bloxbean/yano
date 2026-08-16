@@ -105,6 +105,34 @@ class NonceReplayServiceTest {
     }
 
     @Test
+    void skipsMissingByronIndexedBodyDuringGenesisRepair() {
+        InMemoryChainState chain = new InMemoryChainState() {
+            @Override
+            public byte[] getBlockByNumber(Long number) {
+                return number == 0L ? null : super.getBlockByNumber(number);
+            }
+
+            @Override
+            public Era getBlockEra(long blockNumber) {
+                return blockNumber == 0L ? Era.Byron : Era.Conway;
+            }
+
+            @Override
+            public Long getSlotByBlockNumber(Long blockNumber) {
+                return blockNumber == 0L ? null : super.getSlotByBlockNumber(blockNumber);
+            }
+        };
+        storeBlocks(chain, 0, 1);
+
+        EpochNonceState repaired = newState();
+        repaired.setShelleyStartSlot(1);
+        var result = newService(chain).repairToBodyTip(repaired, GENESIS_HASH, "test");
+
+        assertThat(result.source()).isEqualTo("genesis");
+        assertThat(result.replayedBlocks()).isEqualTo(1);
+    }
+
+    @Test
     void exactBodyTipRestorePrunesFutureEpochNonceEntries() {
         InMemoryChainState chain = new InMemoryChainState();
         var blocks = storeBlocks(chain, 0);
