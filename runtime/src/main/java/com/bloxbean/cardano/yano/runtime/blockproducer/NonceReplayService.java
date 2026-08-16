@@ -183,13 +183,31 @@ public final class NonceReplayService {
 
         long replayed = 0;
         for (long blockNumber = startBlock; blockNumber <= tipBlock; blockNumber++) {
+            // Byron does not contribute to the Shelley nonce. In particular,
+            // epoch-boundary blocks are not represented by a numbered body in
+            // the main block index, so do not require a body merely to skip it.
+            Long storedSlot = chainState.getSlotByBlockNumber(blockNumber);
+            if (storedSlot != null && nonceState.isShelleyStartSlotSet()
+                    && storedSlot < nonceState.getShelleyStartSlot()) {
+                continue;
+            }
+            Era storedEra = chainState.getBlockEra(blockNumber);
+            if (storedEra == Era.Byron) {
+                continue;
+            }
             byte[] blockBytes = chainState.getBlockByNumber(blockNumber);
             if (blockBytes == null) {
+                // Public networks with a Byron era can retain the genesis EBB
+                // at numbered coordinate zero without a main-block body. It is
+                // before the Shelley nonce domain and therefore safe to skip.
+                if (blockNumber == 0 && nonceState.isShelleyStartSlotSet()
+                        && nonceState.getShelleyStartSlot() > 0) {
+                    continue;
+                }
                 throw new IllegalStateException("Cannot repair epoch nonce state: missing local block body "
                         + blockNumber + " while replaying to " + tipBlock);
             }
 
-            Era storedEra = chainState.getBlockEra(blockNumber);
             if (StoredBlockUtil.isStoredByronBlock(storedEra, blockBytes)) {
                 continue;
             }
