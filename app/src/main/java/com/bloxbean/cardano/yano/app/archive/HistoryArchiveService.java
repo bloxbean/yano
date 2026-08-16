@@ -1047,7 +1047,7 @@ public class HistoryArchiveService implements AutoCloseable {
                         seedResolverSnapshot(ledger.getUtxoState(), catchupAddressDataset), 1);
                 activations.replace(dataset, ArchiveTrack.BACKFILL, replacement);
             } else {
-                catchupAddressDataset.seedGenesis(genesisResolverEntries);
+                seedGenesisResolver(catchupAddressDataset, replacement);
             }
         } else if (dataset == ArchiveDatasetId.UTXO_HISTORY) {
             controlStore.resetResolver(dataset);
@@ -1337,10 +1337,30 @@ public class HistoryArchiveService implements AutoCloseable {
     private void initializeAddressResolver(AddressTransactionDataset dataset) {
         OptionalLong existingActivation = activations.start(ArchiveDatasetId.ADDRESS_TRANSACTION,
                 ArchiveTrack.BACKFILL);
-        if (existingActivation.isPresent() && dataset.resolverSeeded()
-                && dataset.resolverBaseBlock().isPresent()
-                && existingActivation.getAsLong() >= firstCanonicalBlockNumber
-                && existingActivation.getAsLong() == dataset.resolverBaseBlock().getAsLong() + 1) return;
+        OptionalLong existingBase = dataset.resolverBaseBlock();
+        if (existingActivation.isPresent() && dataset.resolverSeeded() && existingBase.isPresent()
+                && existingActivation.getAsLong() >= firstCanonicalBlockNumber) {
+            long activation = existingActivation.getAsLong();
+            long expectedBase = activation - 1;
+            if (existingBase.getAsLong() == expectedBase) return;
+            if (legacyGenesisBaseCanBeNormalized(
+                    archiveConfig.datasets().get(ArchiveDatasetId.ADDRESS_TRANSACTION).startMode(),
+                    firstCanonicalBlockNumber, activation, existingBase.getAsLong())) {
+                dataset.completeResolverSeed(expectedBase);
+                log.info("Normalized address resolver genesis base from {} to {} for activation {}",
+                        existingBase.getAsLong(), expectedBase, activation);
+                return;
+            }
+            // Resolver and progress form one logical cursor. If the base is not
+            // a known legacy marker, rewind the private progress before
+            // rebuilding so a restart can never resume with genesis-only state
+            // at a later block.
+            controlStore.clearTrack(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.BACKFILL);
+            log.warn("Address resolver base {} does not match activation {}; rebuilding private resolver state",
+                    existingBase.getAsLong(), activation);
+        } else if (existingActivation.isPresent()) {
+            controlStore.clearTrack(ArchiveDatasetId.ADDRESS_TRANSACTION, ArchiveTrack.BACKFILL);
+        }
 
         dataset.resetResolver();
         ArchiveStartMode mode = archiveConfig.datasets().get(ArchiveDatasetId.ADDRESS_TRANSACTION).startMode();
@@ -1376,10 +1396,28 @@ public class HistoryArchiveService implements AutoCloseable {
         return currentTip < firstCanonicalBlock;
     }
 
+    static boolean legacyGenesisBaseCanBeNormalized(ArchiveStartMode mode, long firstCanonicalBlock,
+                                                     long activation, long baseBlock) {
+        return mode != ArchiveStartMode.TIP
+                && firstCanonicalBlock == 1
+                && activation == firstCanonicalBlock
+                && baseBlock == -1;
+    }
+
     private void seedGenesisResolver(AddressTransactionDataset dataset,
                                      List<SequentialOutpointResolver.Entry> entries) {
+        seedGenesisResolver(dataset, entries, firstCanonicalBlockNumber);
+    }
+
+    private void seedGenesisResolver(AddressTransactionDataset dataset, long activation) {
+        seedGenesisResolver(dataset, genesisResolverEntries, activation);
+    }
+
+    private void seedGenesisResolver(AddressTransactionDataset dataset,
+                                     List<SequentialOutpointResolver.Entry> entries,
+                                     long activation) {
         dataset.seedResolver(entries, false);
-        dataset.completeResolverSeed(firstCanonicalBlockNumber - 1);
+        dataset.completeResolverSeed(activation - 1);
     }
 
     private long seedResolverSnapshot(com.bloxbean.cardano.yano.api.utxo.UtxoState utxos,

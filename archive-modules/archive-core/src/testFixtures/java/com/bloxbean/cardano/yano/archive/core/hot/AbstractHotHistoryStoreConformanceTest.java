@@ -94,6 +94,20 @@ public abstract class AbstractHotHistoryStoreConformanceTest {
         }
     }
 
+    @Test void longLivedLiveResolverObservesSeedCompletedByCatchupResolver() {
+        try (HotHistoryStore store = open(temp.resolve("shared-resolver-seed"))) {
+            Outpoint outpoint = new Outpoint(hash(44), 0);
+            var live = new SequentialOutpointResolver(store);
+            var catchup = new SequentialOutpointResolver(store);
+
+            assertThat(live.isSeeded()).isFalse();
+            catchup.seedGenesis(List.of(new SequentialOutpointResolver.Entry(outpoint, output(44))));
+
+            assertThat(live.resolve(outpoint)).get()
+                    .extracting(ResolvedOutput::address).isEqualTo(output(44).address());
+        }
+    }
+
     @Test void sameBlockCreateAndConsumeRollsBackWithoutPhantomOutpoint() {
         try (HotHistoryStore store = open(temp.resolve("same-block"))) {
             store.applyBlock(ArchiveDatasetId.ADDRESS_TRANSACTION, checkpoint(0, 0, 0, -1), List.of(),

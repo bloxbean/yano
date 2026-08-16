@@ -68,6 +68,20 @@ class HistoryArchiveActivationTest {
     }
 
     @Test
+    void onlyLegacyByronGenesisBaseCanBeNormalizedWithoutRebuild() {
+        assertThat(HistoryArchiveService.legacyGenesisBaseCanBeNormalized(
+                ArchiveStartMode.FULL_REQUIRED, 1, 1, -1)).isTrue();
+        assertThat(HistoryArchiveService.legacyGenesisBaseCanBeNormalized(
+                ArchiveStartMode.EARLIEST_AVAILABLE, 1, 1, -1)).isTrue();
+        assertThat(HistoryArchiveService.legacyGenesisBaseCanBeNormalized(
+                ArchiveStartMode.TIP, 1, 1, -1)).isFalse();
+        assertThat(HistoryArchiveService.legacyGenesisBaseCanBeNormalized(
+                ArchiveStartMode.FULL_REQUIRED, 0, 0, -1)).isFalse();
+        assertThat(HistoryArchiveService.legacyGenesisBaseCanBeNormalized(
+                ArchiveStartMode.FULL_REQUIRED, 1, 2, -1)).isFalse();
+    }
+
+    @Test
     void tableEnabledWithFreshDatasetSharesBackfillStart() {
         var activations = new ActivationStore(temp.resolve("fresh-table.properties"));
 

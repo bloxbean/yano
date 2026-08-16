@@ -22,11 +22,16 @@ public final class SequentialOutpointResolver {
     }
 
     public void seedGenesis(Iterable<Entry> outputs) {
-        if (genesisSeeded) return;
+        if (isSeeded()) return;
         seedEntries(outputs, true);
     }
 
     public boolean isSeeded() {
+        // A live projection can be constructed before the catch-up projection
+        // completes the shared durable seed. Refresh only while false; normal
+        // input resolution keeps the cached fast path and performs no seed
+        // lookup per input.
+        if (!genesisSeeded) genesisSeeded = store.resolverSeeded();
         return genesisSeeded;
     }
 
@@ -45,7 +50,7 @@ public final class SequentialOutpointResolver {
     }
 
     public Optional<ResolvedOutput> resolve(Outpoint outpoint) {
-        if (!genesisSeeded) throw new ArchiveStoreException("outpoint resolver is not genesis-seeded");
+        if (!isSeeded()) throw new ArchiveStoreException("outpoint resolver is not genesis-seeded");
         return store.resolveOutput(outpoint);
     }
 

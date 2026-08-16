@@ -43,6 +43,24 @@ class AddressHistoryTest {
     }
 
     @Test
+    void longLivedLiveResolverObservesSeedCompletedByCatchupResolver() {
+        Outpoint genesis = new Outpoint(new byte[] {8}, 0);
+        var entry = new SequentialOutpointResolver.Entry(genesis,
+                new ResolvedOutput(new byte[] {1}, new byte[] {2}, new byte[] {3}));
+        try (var hot = new RocksDbHotHistoryStore(temp.resolve("shared-seed"))) {
+            var live = new SequentialOutpointResolver(hot);
+            var catchup = new SequentialOutpointResolver(hot);
+
+            assertThat(live.isSeeded()).isFalse();
+            catchup.seedGenesis(List.of(entry));
+
+            assertThat(live.resolve(genesis)).get()
+                    .extracting(ResolvedOutput::stakeCredential)
+                    .isEqualTo(new byte[] {3});
+        }
+    }
+
+    @Test
     void addressRoleCountsArePerSubjectRatherThanWholeTransaction() {
         String firstAddress = "60" + "33".repeat(28);
         String secondAddress = "60" + "44".repeat(28);
