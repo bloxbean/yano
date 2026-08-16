@@ -332,6 +332,60 @@ public class NodeStatus {
      */
     private final Long mempoolTtlSeconds;
 
+    /** Current physical records across the mempool UTXO and dependency indexes. */
+    private final Integer mempoolUtxoIndexEntries;
+
+    /** Configured maximum records across the mempool UTXO and dependency indexes. */
+    private final Integer mempoolMaxUtxoIndexEntries;
+
+    /** Current outputs projected by unconfirmed mempool transactions. */
+    private final Integer mempoolProducedOutputs;
+
+    /** Current regular-input claims held by mempool transactions. */
+    private final Integer mempoolSpentOutpoints;
+
+    /** Current unique reference scripts indexed from mempool outputs. */
+    private final Integer mempoolReferenceScripts;
+
+    /** Current parent-to-child dependency edge count. */
+    private final Integer mempoolDependencyEdges;
+
+    /** Estimated retained bytes for mempool indexes. */
+    private final Long mempoolEstimatedIndexBytes;
+
+    /** Process-lifetime mempool duplicate rejections. */
+    private final Long mempoolDuplicateRejections;
+
+    /** Process-lifetime mempool input-conflict rejections. */
+    private final Long mempoolConflictRejections;
+
+    /** Process-lifetime mempool capacity rejections. */
+    private final Long mempoolCapacityRejections;
+
+    /** Process-lifetime malformed transaction rejections. */
+    private final Long mempoolMalformedRejections;
+
+    /** Process-lifetime ledger validation rejections. */
+    private final Long mempoolLedgerRejections;
+
+    /** Process-lifetime descendant removals caused by cascading eviction. */
+    private final Long mempoolCascadedRemovals;
+
+    /** Current number of threads queued for the serialized admission lane. */
+    private final Integer mempoolAdmissionQueueLength;
+
+    /** Process-lifetime nanoseconds spent waiting for the admission lane. */
+    private final Long mempoolAdmissionWaitNanos;
+
+    /** Process-lifetime nanoseconds holding the admission lane. */
+    private final Long mempoolAdmissionHoldNanos;
+
+    /** Process-lifetime nanoseconds spent validating admitted candidates. */
+    private final Long mempoolValidationNanos;
+
+    /** Process-lifetime count of slow validation listener dispatches. */
+    private final Long mempoolSlowValidations;
+
     /**
      * Whether transaction admission is currently accepting new transactions.
      */

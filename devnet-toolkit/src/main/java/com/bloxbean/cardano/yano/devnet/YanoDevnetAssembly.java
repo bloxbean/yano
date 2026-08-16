@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.devnet;
 import com.bloxbean.cardano.yano.api.ChainQuery;
 import com.bloxbean.cardano.yano.api.DevnetControl;
 import com.bloxbean.cardano.yano.api.LedgerQuery;
+import com.bloxbean.cardano.yano.api.MempoolQueryGateway;
 import com.bloxbean.cardano.yano.api.NodeLifecycle;
 import com.bloxbean.cardano.yano.api.ProducerControl;
 import com.bloxbean.cardano.yano.api.TxEvaluationGateway;
@@ -203,6 +204,11 @@ public final class YanoDevnetAssembly {
         @Override
         public TxEvaluationGateway txEvaluationGateway() {
             return delegate.txEvaluationGateway();
+        }
+
+        @Override
+        public MempoolQueryGateway mempoolQueryGateway() {
+            return delegate.mempoolQueryGateway();
         }
 
         @Override

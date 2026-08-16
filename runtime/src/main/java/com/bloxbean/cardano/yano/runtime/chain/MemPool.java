@@ -5,7 +5,10 @@ import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
 import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
 import com.bloxbean.cardano.yaci.events.api.VetoableEvent;
 
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -26,6 +29,21 @@ public interface MemPool {
                                     AdmissionValidator validator,
                                     MempoolAdmissionLimits limits,
                                     Consumer<MemPoolTransaction> acceptedListener);
+
+    /**
+     * Resolve a collection of outpoints against one stable mempool-plus-canonical
+     * UTXO view. Outpoints already claimed by a mempool transaction are absent
+     * from the returned snapshot.
+     *
+     * <p>The returned map and UTXOs are detached from implementation-owned
+     * indexes, so callers may perform expensive work after the mempool lane has
+     * been released.</p>
+     */
+    Map<Outpoint, Utxo> resolveUtxos(Collection<Outpoint> outpoints,
+                                     Function<Outpoint, Utxo> canonicalResolver);
+
+    /** Look up encoded reference-script bytes produced by a live mempool entry. */
+    Optional<byte[]> getScriptRefBytesByHash(String scriptHash);
 
     // Add a transaction to the mempool and return the created mempool transaction
     // Compatibility path for trusted callers. Implementations must still project

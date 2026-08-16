@@ -17,6 +17,8 @@ import com.bloxbean.cardano.yano.api.events.UtxoStateRolledBackEvent;
 import com.bloxbean.cardano.yano.api.model.MemPoolTransaction;
 import com.bloxbean.cardano.yano.api.model.TxEvaluationResult;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
+import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
+import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
 import com.bloxbean.cardano.yano.ledgerrules.TransactionEvaluator;
 import com.bloxbean.cardano.yano.ledgerrules.TransactionValidator;
 import com.bloxbean.cardano.yano.runtime.blockproducer.TransactionEvaluationService;
@@ -29,6 +31,7 @@ import com.bloxbean.cardano.yano.runtime.chain.MempoolEvictionPolicy;
 import com.bloxbean.cardano.yano.runtime.chain.MempoolAdmissionException;
 import com.bloxbean.cardano.yano.runtime.chain.MempoolAdmissionLimits;
 import com.bloxbean.cardano.yano.runtime.chain.MempoolAdmissionResult;
+import com.bloxbean.cardano.yano.runtime.chain.MempoolStats;
 import com.bloxbean.cardano.yano.runtime.kernel.Subsystem;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
 import com.bloxbean.cardano.yano.p2p.tx.diffusion.DefaultTxDiffusion;
@@ -43,6 +46,7 @@ import org.slf4j.Logger;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -290,10 +294,32 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
         if (transactionEvaluationService == null) {
             throw new UnsupportedOperationException("Transaction evaluation is not available");
         }
-        return transactionEvaluationService.evaluate(txCbor).stream()
+        UtxoState canonicalState = utxoStateSupplier.get();
+        return transactionEvaluationService.evaluate(txCbor,
+                        outpoints -> memPool.resolveUtxos(outpoints,
+                                outpoint -> canonicalState != null
+                                        ? canonicalState.getUtxo(outpoint).orElse(null) : null))
+                .stream()
                 .map(result -> new TxEvaluationResult(
                         result.tag(), result.index(), result.memory(), result.steps()))
                 .toList();
+    }
+
+    public Optional<Utxo> resolveUtxo(Outpoint outpoint) {
+        Objects.requireNonNull(outpoint, "outpoint");
+        UtxoState canonicalState = utxoStateSupplier.get();
+        return Optional.ofNullable(memPool.resolveUtxos(List.of(outpoint),
+                candidate -> canonicalState != null
+                        ? canonicalState.getUtxo(candidate).orElse(null) : null).get(outpoint));
+    }
+
+    public Optional<byte[]> getScriptRefBytesByHash(String scriptHash) {
+        Objects.requireNonNull(scriptHash, "scriptHash");
+        Optional<byte[]> mempoolScript = memPool.getScriptRefBytesByHash(scriptHash);
+        if (mempoolScript.isPresent()) return mempoolScript;
+        UtxoState canonicalState = utxoStateSupplier.get();
+        return canonicalState != null
+                ? canonicalState.getScriptRefBytesByHash(scriptHash) : Optional.empty();
     }
 
     public String submitTransaction(byte[] txCbor, BiConsumer<String, byte[]> acceptedSubmitter) {
@@ -370,6 +396,10 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
         return mempoolMaxUtxoIndexEntries;
     }
 
+    public MempoolStats mempoolStats() {
+        return memPool.stats();
+    }
+
     public String txDiffusionMode() {
         return txDiffusionMode;
     }
@@ -432,6 +462,11 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
         blockTransactionSelector.blockSelectionFailed();
     }
 
+    @Override
+    public int invalidateSelectedTransaction(String txHash) {
+        return blockTransactionSelector.invalidateSelectedTransaction(txHash);
+    }
+
     /** Canonical acknowledgement, not publication, completes TxSubsystem selection. */
     @Override
     public void blockCandidatePublished() {
@@ -464,6 +499,7 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
                 Map.entry("mempoolUtxoIndexEntries", mempoolStats.utxoIndexEntries()),
                 Map.entry("mempoolProducedOutputs", mempoolStats.producedOutputs()),
                 Map.entry("mempoolSpentOutpoints", mempoolStats.spentOutpoints()),
+                Map.entry("mempoolReferenceScripts", mempoolStats.referenceScripts()),
                 Map.entry("mempoolDependencyEdges", mempoolStats.dependencyEdges()),
                 Map.entry("mempoolEstimatedIndexBytes", mempoolStats.estimatedIndexBytes()),
                 Map.entry("mempoolMaxUtxoIndexEntries", mempoolMaxUtxoIndexEntries),

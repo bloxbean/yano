@@ -21,6 +21,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
@@ -38,6 +39,7 @@ public class DefaultMemPool implements MemPool {
     private final LinkedHashMap<TxId, Entry> transactionsByHash = new LinkedHashMap<>();
     private final Map<IndexedOutpoint, ProducedOutput> producedByOutpoint = new HashMap<>();
     private final Map<IndexedOutpoint, TxId> spentByOutpoint = new HashMap<>();
+    private final Map<String, ReferenceScriptEntry> referenceScriptsByHash = new HashMap<>();
     private final Map<TxId, Set<TxId>> parentsByTransaction = new HashMap<>();
     private final Map<TxId, Set<TxId>> childrenByTransaction = new HashMap<>();
     private final AtomicLong cursor = new AtomicLong();
@@ -126,6 +128,7 @@ public class DefaultMemPool implements MemPool {
             Set<TxId> parents = discoverParents(projection.allInputs());
             int addedIndexEntries = projection.outputs().size()
                     + projection.regularInputs().size()
+                    + newReferenceScriptHashes(projection).size()
                     + (parents.size() * 2);
 
             if (effectiveLimits.maxTransactions() > 0
@@ -197,6 +200,92 @@ public class DefaultMemPool implements MemPool {
                     projection.txHash(), externalCopy(transaction), List.of(), "accepted");
         } finally {
             totalAdmissionHoldNanos += System.nanoTime() - holdStarted;
+            lane.unlock();
+        }
+    }
+
+    @Override
+    public Map<Outpoint, Utxo> resolveUtxos(Collection<Outpoint> outpoints,
+                                            Function<Outpoint, Utxo> canonicalResolver) {
+        Objects.requireNonNull(outpoints, "outpoints");
+        Function<Outpoint, Utxo> canonical = canonicalResolver != null
+                ? canonicalResolver : ignored -> null;
+
+        Set<Outpoint> ordered = new LinkedHashSet<>();
+        for (Outpoint outpoint : outpoints) {
+            ordered.add(Objects.requireNonNull(outpoint,
+                    "outpoints must not contain null"));
+        }
+        Map<Outpoint, Utxo> resolved = new HashMap<>();
+        Set<Outpoint> canonicalCandidates = new LinkedHashSet<>();
+
+        lane.lock();
+        try {
+            for (Outpoint outpoint : ordered) {
+                IndexedOutpoint indexed = tryIndexedOutpoint(outpoint);
+                if (indexed == null || spentByOutpoint.containsKey(indexed)) continue;
+                ProducedOutput produced = producedByOutpoint.get(indexed);
+                if (produced != null) {
+                    resolved.put(outpoint, externalCopy(produced.utxo()));
+                } else {
+                    canonicalCandidates.add(outpoint);
+                }
+            }
+        } finally {
+            lane.unlock();
+        }
+
+        // Persistent-state reads may block on storage and must not hold the
+        // single-writer admission lane.
+        Map<Outpoint, Utxo> canonicalResults = new HashMap<>();
+        for (Outpoint outpoint : canonicalCandidates) {
+            Utxo utxo = canonical.apply(outpoint);
+            if (utxo != null) canonicalResults.put(outpoint, externalCopy(utxo));
+        }
+
+        // Reconcile every requested outpoint after persistent-state reads. A
+        // produced overlay hit can itself be claimed or removed while another
+        // outpoint is read from storage, so limiting this pass to canonical
+        // misses would return a stale transient output.
+        lane.lock();
+        try {
+            for (Outpoint outpoint : ordered) {
+                IndexedOutpoint indexed = tryIndexedOutpoint(outpoint);
+                if (indexed == null || spentByOutpoint.containsKey(indexed)) {
+                    resolved.remove(outpoint);
+                    continue;
+                }
+                ProducedOutput produced = producedByOutpoint.get(indexed);
+                if (produced != null) {
+                    resolved.put(outpoint, externalCopy(produced.utxo()));
+                } else {
+                    Utxo canonicalUtxo = canonicalResults.get(outpoint);
+                    if (canonicalUtxo != null) resolved.put(outpoint, canonicalUtxo);
+                }
+            }
+        } finally {
+            lane.unlock();
+        }
+
+        Map<Outpoint, Utxo> snapshot = new LinkedHashMap<>();
+        for (Outpoint outpoint : ordered) {
+            Utxo utxo = resolved.get(outpoint);
+            if (utxo != null) snapshot.put(outpoint, utxo);
+        }
+        return Collections.unmodifiableMap(snapshot);
+    }
+
+    @Override
+    public Optional<byte[]> getScriptRefBytesByHash(String scriptHash) {
+        String normalized = normalizeScriptHash(scriptHash);
+        if (normalized == null) return Optional.empty();
+        lane.lock();
+        try {
+            ReferenceScriptEntry entry = referenceScriptsByHash.get(normalized);
+            return entry != null
+                    ? Optional.of(Arrays.copyOf(entry.scriptRefBytes, entry.scriptRefBytes.length))
+                    : Optional.empty();
+        } finally {
             lane.unlock();
         }
     }
@@ -311,6 +400,7 @@ public class DefaultMemPool implements MemPool {
             transactionsByHash.clear();
             producedByOutpoint.clear();
             spentByOutpoint.clear();
+            referenceScriptsByHash.clear();
             parentsByTransaction.clear();
             childrenByTransaction.clear();
             byteSize = 0;
@@ -468,14 +558,18 @@ public class DefaultMemPool implements MemPool {
         lane.lock();
         try {
             int dependencyIndexRecords = indexEntryCount
-                    - producedByOutpoint.size() - spentByOutpoint.size();
+                    - producedByOutpoint.size() - spentByOutpoint.size()
+                    - referenceScriptsByHash.size();
             int dependencyEdges = dependencyIndexRecords / 2;
             long estimatedIndexBytes = (producedByOutpoint.size() * 256L)
                     + (spentByOutpoint.size() * 96L)
+                    + referenceScriptsByHash.values().stream()
+                    .mapToLong(entry -> 96L + entry.scriptRefBytes.length).sum()
                     + (dependencyEdges * 256L);
             return new MempoolStats(
                     transactionsByHash.size(), byteSize, indexEntryCount,
-                    producedByOutpoint.size(), spentByOutpoint.size(), dependencyEdges,
+                    producedByOutpoint.size(), spentByOutpoint.size(),
+                    referenceScriptsByHash.size(), dependencyEdges,
                     estimatedIndexBytes,
                     duplicateRejections, conflictRejections, capacityRejections,
                     malformedRejections, ledgerRejections, cascadedRemovals,
@@ -492,6 +586,7 @@ public class DefaultMemPool implements MemPool {
         byteSize += entry.transaction().size();
         entry.projection().outputs().forEach((outpoint, utxo) ->
                 producedByOutpoint.put(outpoint, new ProducedOutput(id, utxo)));
+        int newReferenceScripts = addReferenceScripts(entry.projection());
         entry.projection().regularInputs().forEach(outpoint -> spentByOutpoint.put(outpoint, id));
         if (!parents.isEmpty()) {
             parentsByTransaction.put(id, new HashSet<>(parents));
@@ -500,6 +595,7 @@ public class DefaultMemPool implements MemPool {
         }
         indexEntryCount += entry.projection().outputs().size()
                 + entry.projection().regularInputs().size()
+                + newReferenceScripts
                 + (parents.size() * 2);
     }
 
@@ -512,6 +608,7 @@ public class DefaultMemPool implements MemPool {
             transactionsByHash.clear();
             producedByOutpoint.clear();
             spentByOutpoint.clear();
+            referenceScriptsByHash.clear();
             parentsByTransaction.clear();
             childrenByTransaction.clear();
             byteSize = 0;
@@ -522,6 +619,7 @@ public class DefaultMemPool implements MemPool {
     private void rebuildIndexesFromEntries() {
         producedByOutpoint.clear();
         spentByOutpoint.clear();
+        referenceScriptsByHash.clear();
         parentsByTransaction.clear();
         childrenByTransaction.clear();
         byteSize = 0;
@@ -540,6 +638,7 @@ public class DefaultMemPool implements MemPool {
             }
             projection.outputs().forEach((outpoint, utxo) ->
                     producedByOutpoint.put(outpoint, new ProducedOutput(id, utxo)));
+            addReferenceScripts(projection);
             if (!parents.isEmpty()) {
                 parentsByTransaction.put(id, new HashSet<>(parents));
                 parents.forEach(parent -> childrenByTransaction
@@ -577,6 +676,7 @@ public class DefaultMemPool implements MemPool {
             for (IndexedOutpoint outpoint : entry.projection().outputs().keySet()) {
                 if (producedByOutpoint.remove(outpoint) != null) removedIndexEntries++;
             }
+            removedIndexEntries += removeReferenceScripts(entry.projection());
             for (IndexedOutpoint outpoint : entry.projection().regularInputs()) {
                 if (spentByOutpoint.remove(outpoint, id)) removedIndexEntries++;
             }
@@ -615,8 +715,67 @@ public class DefaultMemPool implements MemPool {
     private int calculateIndexEntryCount() {
         return producedByOutpoint.size()
                 + spentByOutpoint.size()
+                + referenceScriptsByHash.size()
                 + parentsByTransaction.values().stream().mapToInt(Set::size).sum()
                 + childrenByTransaction.values().stream().mapToInt(Set::size).sum();
+    }
+
+    private Set<String> newReferenceScriptHashes(Projection projection) {
+        Set<String> additions = new HashSet<>();
+        for (Utxo utxo : projection.outputs().values()) {
+            String hash = normalizeScriptHash(utxo.referenceScriptHash());
+            if (hash != null && utxo.scriptRef() != null
+                    && !referenceScriptsByHash.containsKey(hash)) {
+                additions.add(hash);
+            }
+        }
+        return additions;
+    }
+
+    private int addReferenceScripts(Projection projection) {
+        int additions = 0;
+        for (Utxo utxo : projection.outputs().values()) {
+            String hash = normalizeScriptHash(utxo.referenceScriptHash());
+            if (hash == null || utxo.scriptRef() == null) continue;
+            byte[] bytes = HexUtil.decodeHexString(utxo.scriptRef());
+            ReferenceScriptEntry existing = referenceScriptsByHash.get(hash);
+            if (existing == null) {
+                referenceScriptsByHash.put(hash, new ReferenceScriptEntry(bytes, 1));
+                additions++;
+            } else {
+                if (!Arrays.equals(existing.scriptRefBytes, bytes)) {
+                    throw new IllegalStateException(
+                            "different reference-script bytes share hash " + hash);
+                }
+                existing.references++;
+            }
+        }
+        return additions;
+    }
+
+    private int removeReferenceScripts(Projection projection) {
+        int removals = 0;
+        for (Utxo utxo : projection.outputs().values()) {
+            String hash = normalizeScriptHash(utxo.referenceScriptHash());
+            if (hash == null || utxo.scriptRef() == null) continue;
+            ReferenceScriptEntry existing = referenceScriptsByHash.get(hash);
+            if (existing == null) continue;
+            if (--existing.references == 0) {
+                referenceScriptsByHash.remove(hash);
+                removals++;
+            }
+        }
+        return removals;
+    }
+
+    private static String normalizeScriptHash(String scriptHash) {
+        if (scriptHash == null || scriptHash.isBlank()) return null;
+        try {
+            byte[] decoded = HexUtil.decodeHexString(scriptHash);
+            return decoded.length > 0 ? HexUtil.encodeHexString(decoded) : null;
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 
     private Set<TxId> discoverParents(Set<IndexedOutpoint> inputs) {
@@ -755,6 +914,22 @@ public class DefaultMemPool implements MemPool {
                 transaction.insertedAt());
     }
 
+    private static Utxo externalCopy(Utxo utxo) {
+        return new Utxo(
+                utxo.outpoint(),
+                utxo.address(),
+                utxo.lovelace(),
+                utxo.assets() != null ? List.copyOf(utxo.assets()) : List.of(),
+                utxo.datumHash(),
+                utxo.inlineDatum() != null ? utxo.inlineDatum().clone() : null,
+                utxo.scriptRef(),
+                utxo.referenceScriptHash(),
+                utxo.collateralReturn(),
+                utxo.slot(),
+                utxo.blockNumber(),
+                utxo.blockHash());
+    }
+
     private static MempoolAdmissionResult result(MempoolAdmissionResult.Status status,
                                                   String txHash,
                                                   MemPoolTransaction transaction,
@@ -773,6 +948,16 @@ public class DefaultMemPool implements MemPool {
     }
 
     private record ProducedOutput(TxId owner, Utxo utxo) {
+    }
+
+    private static final class ReferenceScriptEntry {
+        private final byte[] scriptRefBytes;
+        private int references;
+
+        private ReferenceScriptEntry(byte[] scriptRefBytes, int references) {
+            this.scriptRefBytes = Arrays.copyOf(scriptRefBytes, scriptRefBytes.length);
+            this.references = references;
+        }
     }
 
     private record IndexedOutpoint(TxId txId, int index) {

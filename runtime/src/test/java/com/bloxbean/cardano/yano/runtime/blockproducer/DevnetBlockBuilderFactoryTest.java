@@ -3,12 +3,14 @@ package com.bloxbean.cardano.yano.runtime.blockproducer;
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
+import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.runtime.chain.InMemoryChainState;
 import com.bloxbean.cardano.yano.runtime.producer.DevnetBlockBuilderFactory;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.math.BigInteger;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -116,7 +118,7 @@ class DevnetBlockBuilderFactoryTest {
                 genesisConfig,
                 new DevnetBlockBuilderFactory.Dependencies(
                         new InMemoryChainState(),
-                        () -> null,
+                        DevnetBlockBuilderFactoryTest::epochParams,
                         DevnetBlockBuilderFactoryTest::genesisHash,
                         nonceState -> nonceState.setShelleyStartSlot(0),
                         (nonceState, nonceStore, replay, repairReason, modeDescription) -> {
@@ -145,7 +147,7 @@ class DevnetBlockBuilderFactoryTest {
                 genesisConfig,
                 new DevnetBlockBuilderFactory.Dependencies(
                         chainState,
-                        () -> null,
+                        DevnetBlockBuilderFactoryTest::epochParams,
                         DevnetBlockBuilderFactoryTest::genesisHash,
                         nonceState -> nonceState.setShelleyStartSlot(0),
                         (nonceState, nonceStore, replay, repairReason, modeDescription) -> {
@@ -172,6 +174,35 @@ class DevnetBlockBuilderFactoryTest {
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
+    }
+
+    private static EpochParamProvider epochParams() {
+        return new EpochParamProvider() {
+            @Override
+            public BigInteger getKeyDeposit(long epoch) {
+                return BigInteger.ZERO;
+            }
+
+            @Override
+            public BigInteger getPoolDeposit(long epoch) {
+                return BigInteger.ZERO;
+            }
+
+            @Override
+            public Integer getMaxBlockSize(long epoch) {
+                return 90_112;
+            }
+
+            @Override
+            public BigInteger getMaxBlockExMem(long epoch) {
+                return BigInteger.valueOf(72_000_000L);
+            }
+
+            @Override
+            public BigInteger getMaxBlockExSteps(long epoch) {
+                return BigInteger.valueOf(20_000_000_000L);
+            }
+        };
     }
 
     private static YanoConfig signedProducerConfig() {

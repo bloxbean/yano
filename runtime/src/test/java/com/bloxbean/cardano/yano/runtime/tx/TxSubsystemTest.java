@@ -23,6 +23,8 @@ import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
 import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
 import com.bloxbean.cardano.yano.ledgerrules.ValidationError;
 import com.bloxbean.cardano.yano.ledgerrules.ValidationResult;
+import com.bloxbean.cardano.yano.ledgerrules.ScriptReferenceResolverScope;
+import com.bloxbean.cardano.yano.ledgerrules.TransactionEvaluator;
 import com.bloxbean.cardano.yano.runtime.blockproducer.TransactionValidationException;
 import com.bloxbean.cardano.yano.runtime.blockproducer.TransactionValidationService;
 import com.bloxbean.cardano.yano.runtime.chain.DefaultMemPool;
@@ -328,6 +330,90 @@ class TxSubsystemTest {
         assertThatThrownBy(() -> subsystem.evaluateTransaction(sampleTxCbor()))
                 .isInstanceOf(UnsupportedOperationException.class)
                 .hasMessage("Transaction evaluation is not available");
+    }
+
+    @Test
+    void evaluationResolvesUnconfirmedReferenceScriptOutputWithoutHoldingMempoolLane() throws Exception {
+        java.util.Map<Outpoint, Utxo> canonical = new java.util.HashMap<>();
+        Outpoint parentSeed = new Outpoint("61".repeat(32), 0);
+        Outpoint childSeed = new Outpoint("62".repeat(32), 0);
+        Outpoint concurrentSeed = new Outpoint("63".repeat(32), 0);
+        canonical.put(parentSeed, testUtxo(parentSeed));
+        canonical.put(childSeed, testUtxo(childSeed));
+        canonical.put(concurrentSeed, testUtxo(concurrentSeed));
+        UtxoState state = mapUtxoState(canonical);
+        TxSubsystem subsystem = new TxSubsystem(
+                eventBus, scheduler, RuntimeOptions.defaults(), () -> state,
+                LoggerFactory.getLogger(TxSubsystemTest.class));
+        subsystem.setTransactionEvaluator((txCbor, inputUtxos) -> ValidationResult.success());
+        subsystem.start();
+
+        var script = com.bloxbean.cardano.client.plutus.spec.PlutusV2Script.builder()
+                .cborHex("49480100002221200101")
+                .build();
+        String scriptHash = java.util.HexFormat.of().formatHex(script.getScriptHash());
+        var referenceOutput = com.bloxbean.cardano.client.transaction.spec.TransactionOutput.builder()
+                .address("addr_test1qz2fxv2umyhttkxyxp8x0dlpdt3k6cwng5pxj3jhsydzer3jcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwq2ytjqp")
+                .value(new com.bloxbean.cardano.client.transaction.spec.Value(
+                        java.math.BigInteger.valueOf(1_000_000), null))
+                .scriptRef(script)
+                .build();
+        var spendOutput = com.bloxbean.cardano.client.transaction.spec.TransactionOutput.builder()
+                .address(referenceOutput.getAddress())
+                .value(referenceOutput.getValue())
+                .build();
+        var parentBody = com.bloxbean.cardano.client.transaction.spec.TransactionBody.builder()
+                .inputs(List.of(cclInput(parentSeed)))
+                .outputs(List.of(spendOutput, referenceOutput))
+                .fee(java.math.BigInteger.valueOf(200_001))
+                .build();
+        byte[] parent = com.bloxbean.cardano.client.transaction.spec.Transaction.builder()
+                .body(parentBody).build().serialize();
+        Outpoint parentSpendOutput = new Outpoint(TransactionUtil.getTxHash(parent), 0);
+        Outpoint parentReferenceOutput = new Outpoint(TransactionUtil.getTxHash(parent), 1);
+        subsystem.admitTransaction(parent, "test");
+        assertThat(subsystem.resolveUtxo(parentReferenceOutput)).isPresent();
+        assertThat(subsystem.getScriptRefBytesByHash(scriptHash).orElseThrow())
+                .containsExactly(referenceOutput.getScriptRef());
+
+        var childBody = com.bloxbean.cardano.client.transaction.spec.TransactionBody.builder()
+                .inputs(List.of(cclInput(parentSpendOutput)))
+                .referenceInputs(List.of(cclInput(parentReferenceOutput)))
+                .collateral(List.of(cclInput(childSeed)))
+                .outputs(List.of(spendOutput))
+                .fee(java.math.BigInteger.valueOf(200_002))
+                .build();
+        byte[] child = com.bloxbean.cardano.client.transaction.spec.Transaction.builder()
+                .body(childBody).build().serialize();
+        byte[] concurrent = cclTransaction(concurrentSeed, 200_003);
+        AtomicBoolean referenceScriptVisible = new AtomicBoolean();
+        AtomicBoolean concurrentAdmissionSucceeded = new AtomicBoolean();
+        AtomicReference<java.util.Set<com.bloxbean.cardano.client.api.model.Utxo>> evaluatedInputs =
+                new AtomicReference<>();
+
+        subsystem.setScriptEvaluator((txCbor, inputUtxos) -> {
+            evaluatedInputs.set(java.util.Set.copyOf(inputUtxos));
+            referenceScriptVisible.set(ScriptReferenceResolverScope.resolve(scriptHash).isPresent());
+            concurrentAdmissionSucceeded.set(
+                    subsystem.admitTransaction(concurrent, "evaluation-test") != null);
+            return List.of(new TransactionEvaluator.EvaluationResult("spend", 0, 10, 20));
+        });
+
+        var results = subsystem.evaluateTransaction(child);
+
+        assertThat(results).singleElement().satisfies(result -> {
+            assertThat(result.tag()).isEqualTo("spend");
+            assertThat(result.memory()).isEqualTo(10);
+            assertThat(result.steps()).isEqualTo(20);
+        });
+        assertThat(evaluatedInputs.get())
+                .extracting(com.bloxbean.cardano.client.api.model.Utxo::getTxHash)
+                .containsExactlyInAnyOrder(
+                        parentSpendOutput.txHash(), parentReferenceOutput.txHash(), childSeed.txHash());
+        assertThat(referenceScriptVisible).isTrue();
+        assertThat(ScriptReferenceResolverScope.resolve(scriptHash)).isEmpty();
+        assertThat(concurrentAdmissionSucceeded).isTrue();
+        assertThat(subsystem.memPool().size()).isEqualTo(2);
     }
 
     @Test
@@ -665,6 +751,12 @@ class TxSubsystemTest {
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
+    }
+
+    private static com.bloxbean.cardano.client.transaction.spec.TransactionInput cclInput(
+            Outpoint input) {
+        return com.bloxbean.cardano.client.transaction.spec.TransactionInput.builder()
+                .transactionId(input.txHash()).index(input.index()).build();
     }
 
     private static Utxo testUtxo(Outpoint outpoint) {

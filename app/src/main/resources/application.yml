@@ -320,6 +320,8 @@ yano:
       tracking-enabled: true          # Protocol param tracking from blocks
     governance:
       enabled: true                   # Governance state tracking
+    utxo:
+      enabled: true                   # Required by devnet faucet, queries, and transaction validation
     block-producer:
       enabled: true
       block-time-millis: 0
@@ -359,6 +361,8 @@ yano:
       tracking-enabled: true          # Protocol param tracking from blocks
     governance:
       enabled: true                   # Governance state tracking
+    utxo:
+      enabled: true                   # Required by devnet faucet, queries, and transaction validation
     block-producer:
       enabled: true
       slot-leader-mode: true

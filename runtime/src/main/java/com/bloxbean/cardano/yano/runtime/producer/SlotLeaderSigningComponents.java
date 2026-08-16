@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.producer;
 
 import com.bloxbean.cardano.yano.runtime.blockproducer.EpochNonceState;
+import com.bloxbean.cardano.yano.runtime.blockproducer.BlockBodySizeLimitSupplier;
 import com.bloxbean.cardano.yano.runtime.blockproducer.NonceStateStore;
 import com.bloxbean.cardano.yano.runtime.blockproducer.ProtocolVersionSupplier;
 import com.bloxbean.cardano.yano.runtime.blockproducer.SignedBlockBuilder;
@@ -28,9 +29,22 @@ public record SlotLeaderSigningComponents(
                                                      NonceStateStore nonceStore,
                                                      ProtocolVersionSupplier protocolVersionSupplier,
                                                      double activeSlotsCoeff) {
+        return create(keyMaterial, slotsPerKESPeriod, maxKESEvolutions, epochNonceState, nonceStore,
+                protocolVersionSupplier, BlockBodySizeLimitSupplier.unbounded(), activeSlotsCoeff);
+    }
+
+    public static SlotLeaderSigningComponents create(SlotLeaderKeyMaterial keyMaterial,
+                                                     long slotsPerKESPeriod,
+                                                     long maxKESEvolutions,
+                                                     EpochNonceState epochNonceState,
+                                                     NonceStateStore nonceStore,
+                                                     ProtocolVersionSupplier protocolVersionSupplier,
+                                                     BlockBodySizeLimitSupplier blockBodySizeLimitSupplier,
+                                                     double activeSlotsCoeff) {
         Objects.requireNonNull(keyMaterial, "keyMaterial");
         Objects.requireNonNull(epochNonceState, "epochNonceState");
         Objects.requireNonNull(protocolVersionSupplier, "protocolVersionSupplier");
+        Objects.requireNonNull(blockBodySizeLimitSupplier, "blockBodySizeLimitSupplier");
 
         var signedBlockBuilder = new SignedBlockBuilder(
                 keyMaterial.keys(),
@@ -38,7 +52,8 @@ public record SlotLeaderSigningComponents(
                 maxKESEvolutions,
                 epochNonceState,
                 nonceStore,
-                protocolVersionSupplier);
+                protocolVersionSupplier,
+                blockBodySizeLimitSupplier);
         var slotLeaderCheck = new SlotLeaderCheck(
                 keyMaterial.keys().getVrfSkey(),
                 BigDecimal.valueOf(activeSlotsCoeff),

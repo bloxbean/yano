@@ -19,6 +19,9 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -57,6 +60,169 @@ class DefaultMemPoolTest {
         assertThat(stats.spentOutpoints()).isEqualTo(3);
         assertThat(stats.dependencyEdges()).isEqualTo(2);
         assertThat(stats.utxoIndexEntries()).isEqualTo(10);
+    }
+
+    @Test
+    void resolvesBulkSnapshotFromOverlayAndCanonicalStateAndHidesClaims() {
+        DefaultMemPool pool = new DefaultMemPool();
+        Map<Outpoint, Utxo> canonical = new HashMap<>();
+        Outpoint parentSeed = seed(canonical, 30);
+        Outpoint canonicalOnly = seed(canonical, 31);
+        byte[] parent = transaction(parentSeed, 200_001, List.of(), List.of());
+        Outpoint parentOutput = new Outpoint(TransactionUtil.getTxHash(parent), 0);
+
+        assertThat(admit(pool, parent, canonical).accepted()).isTrue();
+
+        Map<Outpoint, Utxo> resolved = pool.resolveUtxos(
+                List.of(parentOutput, canonicalOnly), canonical::get);
+        assertThat(resolved).containsOnlyKeys(parentOutput, canonicalOnly);
+        assertThat(resolved.get(parentOutput).lovelace()).isEqualTo(BigInteger.valueOf(1_000_000));
+        assertThatThrownBy(() -> resolved.clear())
+                .isInstanceOf(UnsupportedOperationException.class);
+
+        byte[] child = transaction(parentOutput, 200_002, List.of(), List.of());
+        assertThat(admit(pool, child, canonical).accepted()).isTrue();
+
+        assertThat(pool.resolveUtxos(List.of(parentOutput, canonicalOnly), canonical::get))
+                .containsOnlyKeys(canonicalOnly);
+    }
+
+    @Test
+    void referenceScriptHashIndexIsBoundedAndRemovedWithItsProducer() throws Exception {
+        DefaultMemPool pool = new DefaultMemPool();
+        Map<Outpoint, Utxo> canonical = new HashMap<>();
+        Outpoint input = seed(canonical, 35);
+        var script = com.bloxbean.cardano.client.plutus.spec.PlutusV2Script.builder()
+                .cborHex("49480100002221200101")
+                .build();
+        var output = TransactionOutput.builder()
+                .address(ADDRESS)
+                .value(new Value(BigInteger.valueOf(1_000_000), null))
+                .scriptRef(script)
+                .build();
+        byte[] transaction = transaction(input, 200_001, output);
+        String transactionHash = TransactionUtil.getTxHash(transaction);
+        String scriptHash = com.bloxbean.cardano.yaci.core.util.HexUtil
+                .encodeHexString(script.getScriptHash());
+
+        assertThat(admit(pool, transaction, canonical).accepted()).isTrue();
+        assertThat(pool.stats().referenceScripts()).isEqualTo(1);
+        assertThat(pool.stats().utxoIndexEntries()).isEqualTo(3);
+
+        byte[] resolved = pool.getScriptRefBytesByHash(scriptHash).orElseThrow();
+        assertThat(resolved).containsExactly(output.getScriptRef());
+        resolved[0] ^= 1;
+        assertThat(pool.getScriptRefBytesByHash(scriptHash).orElseThrow())
+                .containsExactly(output.getScriptRef());
+
+        assertThat(pool.removeInvalidated(java.util.Set.of(transactionHash))).isEqualTo(1);
+        assertThat(pool.getScriptRefBytesByHash(scriptHash)).isEmpty();
+        assertThat(pool.stats().utxoIndexEntries()).isZero();
+    }
+
+    @Test
+    void canonicalSnapshotReadsDoNotHoldAdmissionLane() throws Exception {
+        DefaultMemPool pool = new DefaultMemPool();
+        Map<Outpoint, Utxo> canonical = new HashMap<>();
+        Outpoint requested = seed(canonical, 32);
+        Outpoint concurrentSeed = seed(canonical, 33);
+        CountDownLatch storageReadStarted = new CountDownLatch(1);
+        CountDownLatch releaseStorageRead = new CountDownLatch(1);
+
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var resolution = executor.submit(() -> pool.resolveUtxos(List.of(requested), outpoint -> {
+                storageReadStarted.countDown();
+                try {
+                    if (!releaseStorageRead.await(5, TimeUnit.SECONDS))
+                        throw new IllegalStateException("timed out waiting to release storage read");
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(e);
+                }
+                return canonical.get(outpoint);
+            }));
+
+            assertThat(storageReadStarted.await(1, TimeUnit.SECONDS)).isTrue();
+            var admission = executor.submit(() -> admit(pool,
+                    transaction(concurrentSeed, 200_001, List.of(), List.of()), canonical));
+            assertThat(admission.get(1, TimeUnit.SECONDS).accepted()).isTrue();
+
+            releaseStorageRead.countDown();
+            assertThat(resolution.get(1, TimeUnit.SECONDS)).containsOnlyKeys(requested);
+        } finally {
+            releaseStorageRead.countDown();
+        }
+    }
+
+    @Test
+    void canonicalSnapshotRecheckHidesClaimCreatedDuringStorageRead() throws Exception {
+        DefaultMemPool pool = new DefaultMemPool();
+        Map<Outpoint, Utxo> canonical = new HashMap<>();
+        Outpoint requested = seed(canonical, 34);
+        CountDownLatch storageReadStarted = new CountDownLatch(1);
+        CountDownLatch releaseStorageRead = new CountDownLatch(1);
+
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var resolution = executor.submit(() -> pool.resolveUtxos(List.of(requested), outpoint -> {
+                storageReadStarted.countDown();
+                try {
+                    if (!releaseStorageRead.await(5, TimeUnit.SECONDS))
+                        throw new IllegalStateException("timed out waiting to release storage read");
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(e);
+                }
+                return canonical.get(outpoint);
+            }));
+
+            assertThat(storageReadStarted.await(1, TimeUnit.SECONDS)).isTrue();
+            var admission = executor.submit(() -> admit(pool,
+                    transaction(requested, 200_001, List.of(), List.of()), canonical));
+            assertThat(admission.get(1, TimeUnit.SECONDS).accepted()).isTrue();
+
+            releaseStorageRead.countDown();
+            assertThat(resolution.get(1, TimeUnit.SECONDS)).isEmpty();
+        } finally {
+            releaseStorageRead.countDown();
+        }
+    }
+
+    @Test
+    void canonicalSnapshotRecheckAlsoHidesOverlayHitClaimedDuringStorageRead() throws Exception {
+        DefaultMemPool pool = new DefaultMemPool();
+        Map<Outpoint, Utxo> canonical = new HashMap<>();
+        Outpoint parentSeed = seed(canonical, 36);
+        Outpoint canonicalRead = seed(canonical, 37);
+        byte[] parent = transaction(parentSeed, 200_001, List.of(), List.of());
+        Outpoint parentOutput = new Outpoint(TransactionUtil.getTxHash(parent), 0);
+        assertThat(admit(pool, parent, canonical).accepted()).isTrue();
+        CountDownLatch storageReadStarted = new CountDownLatch(1);
+        CountDownLatch releaseStorageRead = new CountDownLatch(1);
+
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var resolution = executor.submit(() -> pool.resolveUtxos(
+                    List.of(parentOutput, canonicalRead), outpoint -> {
+                        storageReadStarted.countDown();
+                        try {
+                            if (!releaseStorageRead.await(5, TimeUnit.SECONDS))
+                                throw new IllegalStateException("timed out waiting to release storage read");
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new IllegalStateException(e);
+                        }
+                        return canonical.get(outpoint);
+                    }));
+
+            assertThat(storageReadStarted.await(1, TimeUnit.SECONDS)).isTrue();
+            var admission = executor.submit(() -> admit(pool,
+                    transaction(parentOutput, 200_002, List.of(), List.of()), canonical));
+            assertThat(admission.get(1, TimeUnit.SECONDS).accepted()).isTrue();
+
+            releaseStorageRead.countDown();
+            assertThat(resolution.get(1, TimeUnit.SECONDS)).containsOnlyKeys(canonicalRead);
+        } finally {
+            releaseStorageRead.countDown();
+        }
     }
 
     @Test
@@ -402,6 +568,20 @@ class DefaultMemPoolTest {
             if (!collateralInputs.isEmpty())
                 body.collateral(collateralInputs.stream().map(DefaultMemPoolTest::input).toList());
             return Transaction.builder().body(body.build()).build().serialize();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private static byte[] transaction(Outpoint regularInput, long fee,
+                                      TransactionOutput output) {
+        try {
+            TransactionBody body = TransactionBody.builder()
+                    .inputs(List.of(input(regularInput)))
+                    .outputs(List.of(output))
+                    .fee(BigInteger.valueOf(fee))
+                    .build();
+            return Transaction.builder().body(body).build().serialize();
         } catch (Exception e) {
             throw new RuntimeException(e);
         }

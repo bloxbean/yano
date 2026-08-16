@@ -288,11 +288,12 @@ public class DevnetBlockProducer implements BlockProducerService {
         BlockProducerHelper.prepareEpochTransitionBeforeBlock(
                 eventBus, slot, nextBlockNumber, "devnet-block-producer");
 
-        List<byte[]> txList = drainMempool();
-        if (lazy && txList.isEmpty()) {
-            return;
-        }
         try {
+            List<byte[]> txList = blockBuilder.fitTransactions(slot, drainMempool());
+            if (lazy && txList.isEmpty()) {
+                transactions.blockSelectionFailed();
+                return;
+            }
             var result = blockBuilder.buildBlock(nextBlockNumber, slot, prevBlockHash, txList);
             storeBlock(result);
 
@@ -306,6 +307,15 @@ public class DevnetBlockProducer implements BlockProducerService {
             publishEvent(result, txList.size());
             transactions.blockCandidatePublished();
             notifyServer();
+        } catch (UnfitBlockTransactionException e) {
+            int removed;
+            try {
+                removed = transactions.invalidateSelectedTransaction(e.transactionHash());
+            } finally {
+                transactions.blockSelectionFailed();
+            }
+            log.warn("Discarded {} mempool transaction(s) after block resource rejection: {}",
+                    removed, e.getMessage());
         } catch (RuntimeException | Error e) {
             transactions.blockSelectionFailed();
             throw e;

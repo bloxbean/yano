@@ -19,6 +19,7 @@ import com.bloxbean.cardano.yano.runtime.blockproducer.NonceEvolutionListener;
 import com.bloxbean.cardano.yano.runtime.blockproducer.NonceReplayService;
 import com.bloxbean.cardano.yano.runtime.blockproducer.NonceStateStore;
 import com.bloxbean.cardano.yano.runtime.blockproducer.ProtocolVersionSupplier;
+import com.bloxbean.cardano.yano.runtime.blockproducer.BlockBodySizeLimitSupplier;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.List;
@@ -174,6 +175,7 @@ public final class ProducerStartupCoordinator {
                     epochNonceState,
                     nonceStore,
                     protocolVersionSupplier,
+                    BlockBodySizeLimitSupplier.fromEpochParams(actions::effectiveEpochParamProvider),
                     activeSlotsCoeff);
             var signedBlockBuilder = signingComponents.signedBlockBuilder();
             var slotLeaderCheck = signingComponents.slotLeaderCheck();

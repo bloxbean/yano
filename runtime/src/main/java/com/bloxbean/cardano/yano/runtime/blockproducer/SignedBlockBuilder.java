@@ -57,7 +57,15 @@ public class SignedBlockBuilder extends DevnetBlockBuilder {
     public SignedBlockBuilder(BlockProducerKeys keys, long slotsPerKESPeriod, long maxKESEvolutions,
                               EpochNonceState epochNonceState, NonceStateStore nonceStore,
                               ProtocolVersionSupplier protocolVersionSupplier) {
-        super(protocolVersionSupplier);
+        this(keys, slotsPerKESPeriod, maxKESEvolutions, epochNonceState, nonceStore,
+                protocolVersionSupplier, BlockBodySizeLimitSupplier.unbounded());
+    }
+
+    public SignedBlockBuilder(BlockProducerKeys keys, long slotsPerKESPeriod, long maxKESEvolutions,
+                              EpochNonceState epochNonceState, NonceStateStore nonceStore,
+                              ProtocolVersionSupplier protocolVersionSupplier,
+                              BlockBodySizeLimitSupplier blockBodySizeLimitSupplier) {
+        super(protocolVersionSupplier, blockBodySizeLimitSupplier);
         this.keys = keys;
         this.blockSigner = new BlockSigner();
         this.epochNonceState = epochNonceState;
@@ -110,6 +118,7 @@ public class SignedBlockBuilder extends DevnetBlockBuilder {
                                                  BlockSigner.VrfSignResult vrfResult) {
         // 1. Compute block body
         BlockBodyResult body = computeBlockBody(transactions);
+        enforceBlockBodySize(slot, body.bodySize());
 
         // 2. Build header body CBOR array
         Array headerBody = buildSignedHeaderBody(blockNumber, slot, prevHash,

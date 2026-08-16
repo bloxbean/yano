@@ -7,6 +7,7 @@ public record MempoolStats(
         int utxoIndexEntries,
         int producedOutputs,
         int spentOutpoints,
+        int referenceScripts,
         int dependencyEdges,
         long estimatedIndexBytes,
         long duplicateRejections,

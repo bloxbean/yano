@@ -37,6 +37,23 @@ class NodeMetricsTest {
                 .mempoolBytes(11L)
                 .mempoolMaxTxs(12)
                 .mempoolMaxBytes(13L)
+                .mempoolUtxoIndexEntries(22)
+                .mempoolMaxUtxoIndexEntries(23)
+                .mempoolProducedOutputs(24)
+                .mempoolSpentOutpoints(25)
+                .mempoolDependencyEdges(26)
+                .mempoolEstimatedIndexBytes(27L)
+                .mempoolDuplicateRejections(28L)
+                .mempoolConflictRejections(29L)
+                .mempoolCapacityRejections(30L)
+                .mempoolMalformedRejections(31L)
+                .mempoolLedgerRejections(32L)
+                .mempoolCascadedRemovals(33L)
+                .mempoolAdmissionQueueLength(34)
+                .mempoolAdmissionWaitNanos(1_500_000_000L)
+                .mempoolAdmissionHoldNanos(2_500_000_000L)
+                .mempoolValidationNanos(3_500_000_000L)
+                .mempoolSlowValidations(35L)
                 .txDiffusionOutboundForwarded(14L)
                 .txDiffusionOutboundSuppressed(15L)
                 .txDiffusionInboundTxBodiesAccepted(16L)
@@ -61,6 +78,16 @@ class NodeMetricsTest {
         assertThat(registry.get("yano.node.sync.gap.blocks").gauge().value()).isZero();
         assertThat(registry.get("yano.node.utxo.enabled").gauge().value()).isZero();
         assertThat(registry.get("yano.node.utxo.lag.blocks").gauge().value()).isZero();
+        assertThat(registry.get("yano.node.mempool.index.entries").tag("type", "total")
+                .gauge().value()).isEqualTo(22);
+        assertThat(registry.get("yano.node.mempool.dependency.edges")
+                .gauge().value()).isEqualTo(26);
+        assertThat(registry.get("yano.node.mempool.rejections.total").tag("reason", "capacity")
+                .functionCounter().count()).isEqualTo(30);
+        assertThat(registry.get("yano.node.mempool.admission.duration.seconds").tag("phase", "wait")
+                .functionCounter().count()).isEqualTo(1.5);
+        assertThat(registry.get("yano.node.mempool.admission.duration.seconds").tag("phase", "hold")
+                .functionCounter().count()).isEqualTo(2.5);
 
         assertThat(registry.get("yano.node.peers.connections").gauges())
                 .extracting(gauge -> gauge.getId().getTag("type"))

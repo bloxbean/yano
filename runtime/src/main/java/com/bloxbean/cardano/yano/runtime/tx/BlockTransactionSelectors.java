@@ -97,6 +97,11 @@ public final class BlockTransactionSelectors {
         }
 
         @Override
+        public int invalidateSelectedTransaction(String txHash) {
+            return memPool.removeInvalidated(Set.of(txHash));
+        }
+
+        @Override
         public void blockCandidatePublished() {
             Set<String> published = selectedHashes;
             if (!published.isEmpty()) memPool.removeByTxHashes(published);

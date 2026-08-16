@@ -2,10 +2,15 @@ package com.bloxbean.cardano.yano.runtime.blockproducer;
 
 import co.nstant.in.cbor.model.*;
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
+import com.bloxbean.cardano.client.plutus.spec.ExUnits;
+import com.bloxbean.cardano.client.plutus.spec.Redeemer;
+import com.bloxbean.cardano.client.transaction.spec.Transaction;
+import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import lombok.extern.slf4j.Slf4j;
 
+import java.math.BigInteger;
 import java.util.List;
 import java.util.Objects;
 
@@ -46,6 +51,7 @@ public class DevnetBlockBuilder {
     private static final long DEFAULT_PROTOCOL_MINOR = 2;
 
     private final ProtocolVersionSupplier protocolVersionSupplier;
+    private final BlockBodySizeLimitSupplier blockBodySizeLimitSupplier;
 
     public DevnetBlockBuilder() {
         this(DEFAULT_PROTOCOL_MAJOR, DEFAULT_PROTOCOL_MINOR);
@@ -56,8 +62,15 @@ public class DevnetBlockBuilder {
     }
 
     public DevnetBlockBuilder(ProtocolVersionSupplier protocolVersionSupplier) {
+        this(protocolVersionSupplier, BlockBodySizeLimitSupplier.unbounded());
+    }
+
+    public DevnetBlockBuilder(ProtocolVersionSupplier protocolVersionSupplier,
+                              BlockBodySizeLimitSupplier blockBodySizeLimitSupplier) {
         this.protocolVersionSupplier = Objects.requireNonNull(protocolVersionSupplier,
                 "protocolVersionSupplier must not be null");
+        this.blockBodySizeLimitSupplier = Objects.requireNonNull(blockBodySizeLimitSupplier,
+                "blockBodySizeLimitSupplier must not be null");
     }
 
     /**
@@ -85,12 +98,56 @@ public class DevnetBlockBuilder {
                                        List<byte[]> transactions) {
         // 1. Compute block body
         BlockBodyResult body = computeBlockBody(transactions);
+        enforceBlockLimits(slot, body.bodySize(), transactions);
 
         // 2. Build header array: [[header_body], signature]
         Array headerArray = buildHeaderArray(blockNumber, slot, prevHash, body.bodySize(), body.bodyHash());
 
         // 3-5. Compute block hash, assemble full block and wrapped header
         return assembleBlock(headerArray, body, blockNumber, slot, transactions != null ? transactions.size() : 0);
+    }
+
+    /**
+     * Return the largest insertion-ordered transaction prefix whose exact encoded block body
+     * fits the epoch-effective protocol limit. Transactions outside the prefix remain in the
+     * mempool and are eligible for the next block.
+     */
+    public List<byte[]> fitTransactions(long slot, List<byte[]> transactions) {
+        if (transactions == null || transactions.isEmpty()) {
+            return List.of();
+        }
+
+        BlockProductionLimits limits = resolveBlockProductionLimits(slot);
+        if (limits.maxBodyBytes() == Long.MAX_VALUE
+                && limits.maxExecutionMemory() == null
+                && limits.maxExecutionSteps() == null) {
+            return List.copyOf(transactions);
+        }
+
+        BodySizeAccumulator size = new BodySizeAccumulator();
+        int accepted = 0;
+        for (byte[] transaction : transactions) {
+            TransactionComponentSize componentSize = measureTransaction(transaction, accepted);
+            if (!size.canAdd(componentSize, limits)) {
+                break;
+            }
+            size.add(componentSize);
+            accepted++;
+        }
+
+        if (accepted == transactions.size()) {
+            return List.copyOf(transactions);
+        }
+        if (accepted == 0) {
+            throw new UnfitBlockTransactionException(
+                    TransactionUtil.getTxHash(transactions.getFirst()));
+        }
+
+        log.info("Block resource limits selected {} of {} mempool transactions "
+                        + "(maxBlockSize={} bytes, maxBlockExMem={}, maxBlockExSteps={})",
+                accepted, transactions.size(), limits.maxBodyBytes(),
+                limits.maxExecutionMemory(), limits.maxExecutionSteps());
+        return List.copyOf(transactions.subList(0, accepted));
     }
 
     /**
@@ -193,6 +250,167 @@ public class DevnetBlockBuilder {
         long bodySize = txBodiesBytes.length + txWitnessesBytes.length + auxDataBytes.length + invalidTxsBytes.length;
 
         return new BlockBodyResult(txBodiesArray, txWitnessesArray, auxDataMap, invalidTxsArray, bodySize, bodyHash);
+    }
+
+    protected long resolveMaxBlockBodySize(long slot) {
+        return resolveBlockProductionLimits(slot).maxBodyBytes();
+    }
+
+    protected void enforceBlockBodySize(long slot, long bodySize) {
+        BlockProductionLimits limits = resolveBlockProductionLimits(slot);
+        if (bodySize > limits.maxBodyBytes()) {
+            throw new IllegalStateException("Encoded block body size " + bodySize
+                    + " exceeds effective maxBlockSize " + limits.maxBodyBytes() + " at slot " + slot);
+        }
+    }
+
+    protected BlockProductionLimits resolveBlockProductionLimits(long slot) {
+        return blockBodySizeLimitSupplier.getLimits(slot);
+    }
+
+    protected void enforceBlockLimits(long slot, long bodySize, List<byte[]> transactions) {
+        BlockProductionLimits limits = resolveBlockProductionLimits(slot);
+        if (bodySize > limits.maxBodyBytes()) {
+            throw new IllegalStateException("Encoded block body size " + bodySize
+                    + " exceeds effective maxBlockSize " + limits.maxBodyBytes() + " at slot " + slot);
+        }
+
+        ExecutionUnitTotal total = measureExecutionUnits(transactions);
+        if (exceeds(total.memory(), limits.maxExecutionMemory())) {
+            throw new IllegalStateException("Block execution memory " + total.memory()
+                    + " exceeds effective maxBlockExMem " + limits.maxExecutionMemory()
+                    + " at slot " + slot);
+        }
+        if (exceeds(total.steps(), limits.maxExecutionSteps())) {
+            throw new IllegalStateException("Block execution steps " + total.steps()
+                    + " exceeds effective maxBlockExSteps " + limits.maxExecutionSteps()
+                    + " at slot " + slot);
+        }
+    }
+
+    private TransactionComponentSize measureTransaction(byte[] txCbor, int index) {
+        try {
+            DataItem txDI = CborSerializationUtil.deserializeOne(txCbor);
+            Array txArray = (Array) txDI;
+            List<DataItem> items = txArray.getDataItems();
+            int bodyBytes = CborSerializationUtil.serialize(items.get(0)).length;
+            int witnessBytes = CborSerializationUtil.serialize(items.get(1)).length;
+            int auxiliaryEntries = 0;
+            int auxiliaryBytes = 0;
+            if (items.size() > 3 && items.get(3).getMajorType() != MajorType.SPECIAL) {
+                auxiliaryEntries = 1;
+                auxiliaryBytes = CborSerializationUtil.serialize(new UnsignedInteger(index)).length
+                        + CborSerializationUtil.serialize(items.get(3)).length;
+            }
+            ExecutionUnitTotal executionUnits = measureExecutionUnits(txCbor);
+            return new TransactionComponentSize(
+                    bodyBytes, witnessBytes, auxiliaryEntries, auxiliaryBytes,
+                    executionUnits.memory(), executionUnits.steps());
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Failed to size selected transaction at index " + index, e);
+        }
+    }
+
+    private record TransactionComponentSize(
+            int bodyBytes,
+            int witnessBytes,
+            int auxiliaryEntries,
+            int auxiliaryBytes,
+            BigInteger executionMemory,
+            BigInteger executionSteps) {
+    }
+
+    private static final class BodySizeAccumulator {
+        private int transactions;
+        private int auxiliaryEntries;
+        private long bodyBytes;
+        private long witnessBytes;
+        private long auxiliaryBytes;
+        private BigInteger executionMemory = BigInteger.ZERO;
+        private BigInteger executionSteps = BigInteger.ZERO;
+
+        boolean canAdd(TransactionComponentSize addition, BlockProductionLimits limits) {
+            int projectedTransactions = transactions + 1;
+            int projectedAuxiliaryEntries = auxiliaryEntries + addition.auxiliaryEntries();
+            long projected = cborCollectionHeaderSize(projectedTransactions) * 2L
+                    + bodyBytes + addition.bodyBytes()
+                    + witnessBytes + addition.witnessBytes()
+                    + cborCollectionHeaderSize(projectedAuxiliaryEntries)
+                    + auxiliaryBytes + addition.auxiliaryBytes()
+                    + cborCollectionHeaderSize(0); // invalid transaction index array
+            return projected <= limits.maxBodyBytes()
+                    && !exceeds(executionMemory.add(addition.executionMemory()),
+                    limits.maxExecutionMemory())
+                    && !exceeds(executionSteps.add(addition.executionSteps()),
+                    limits.maxExecutionSteps());
+        }
+
+        void add(TransactionComponentSize addition) {
+            transactions++;
+            auxiliaryEntries += addition.auxiliaryEntries();
+            bodyBytes += addition.bodyBytes();
+            witnessBytes += addition.witnessBytes();
+            auxiliaryBytes += addition.auxiliaryBytes();
+            executionMemory = executionMemory.add(addition.executionMemory());
+            executionSteps = executionSteps.add(addition.executionSteps());
+        }
+
+        private static int cborCollectionHeaderSize(long entries) {
+            if (entries <= 23) return 1;
+            if (entries <= 0xffL) return 2;
+            if (entries <= 0xffffL) return 3;
+            if (entries <= 0xffff_ffffL) return 5;
+            return 9;
+        }
+    }
+
+    private static ExecutionUnitTotal measureExecutionUnits(List<byte[]> transactions) {
+        if (transactions == null || transactions.isEmpty()) {
+            return ExecutionUnitTotal.ZERO;
+        }
+        BigInteger memory = BigInteger.ZERO;
+        BigInteger steps = BigInteger.ZERO;
+        for (byte[] transaction : transactions) {
+            ExecutionUnitTotal total = measureExecutionUnits(transaction);
+            memory = memory.add(total.memory());
+            steps = steps.add(total.steps());
+        }
+        return new ExecutionUnitTotal(memory, steps);
+    }
+
+    private static ExecutionUnitTotal measureExecutionUnits(byte[] txCbor) {
+        try {
+            Transaction transaction = Transaction.deserialize(txCbor);
+            if (transaction.getWitnessSet() == null
+                    || transaction.getWitnessSet().getRedeemers() == null) {
+                return ExecutionUnitTotal.ZERO;
+            }
+            BigInteger memory = BigInteger.ZERO;
+            BigInteger steps = BigInteger.ZERO;
+            for (Redeemer redeemer : transaction.getWitnessSet().getRedeemers()) {
+                ExUnits exUnits = redeemer != null ? redeemer.getExUnits() : null;
+                if (exUnits == null) continue;
+                if (exUnits.getMem() != null) memory = memory.add(exUnits.getMem());
+                if (exUnits.getSteps() != null) steps = steps.add(exUnits.getSteps());
+            }
+            if (memory.signum() < 0 || steps.signum() < 0) {
+                throw new IllegalArgumentException("negative execution units");
+            }
+            return new ExecutionUnitTotal(memory, steps);
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Failed to read selected transaction execution units", e);
+        }
+    }
+
+    private static boolean exceeds(BigInteger value, BigInteger limit) {
+        return limit != null && value.compareTo(limit) > 0;
+    }
+
+    private record ExecutionUnitTotal(BigInteger memory, BigInteger steps) {
+        private static final ExecutionUnitTotal ZERO =
+                new ExecutionUnitTotal(BigInteger.ZERO, BigInteger.ZERO);
     }
 
     /**

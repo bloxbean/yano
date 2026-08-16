@@ -5,6 +5,12 @@ import co.nstant.in.cbor.model.ByteString;
 import co.nstant.in.cbor.model.DataItem;
 import co.nstant.in.cbor.model.Map;
 import co.nstant.in.cbor.model.UnsignedInteger;
+import com.bloxbean.cardano.client.plutus.spec.BigIntPlutusData;
+import com.bloxbean.cardano.client.plutus.spec.ExUnits;
+import com.bloxbean.cardano.client.plutus.spec.Redeemer;
+import com.bloxbean.cardano.client.plutus.spec.RedeemerTag;
+import com.bloxbean.cardano.client.transaction.spec.Transaction;
+import com.bloxbean.cardano.client.transaction.spec.TransactionWitnessSet;
 import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yaci.core.model.BlockHeader;
 import com.bloxbean.cardano.yaci.core.model.serializers.BlockHeaderSerializer;
@@ -16,9 +22,12 @@ import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.List;
+import java.math.BigInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.*;
 
 class DevnetBlockBuilderTest {
@@ -159,6 +168,101 @@ class DevnetBlockBuilderTest {
                 .isEqualTo(new ProtocolVersion(11, 0));
     }
 
+    @Test
+    void fitTransactionsUsesExactEncodedBodySizeAndKeepsInsertionOrderedPrefix() throws Exception {
+        byte[] tx = buildSampleTxCbor();
+        List<byte[]> candidates = IntStream.range(0, 30).mapToObj(ignored -> tx).toList();
+        long exactLimit = builder.computeBlockBody(candidates.subList(0, 24)).bodySize();
+        AtomicLong requestedSlot = new AtomicLong(-1);
+        var limitedBuilder = new DevnetBlockBuilder(
+                ProtocolVersionSupplier.fixed(10, 2),
+                slot -> {
+                    requestedSlot.set(slot);
+                    return exactLimit;
+                });
+
+        List<byte[]> selected = limitedBuilder.fitTransactions(321, candidates);
+
+        assertThat(requestedSlot).hasValue(321);
+        assertThat(selected).hasSize(24).containsExactlyElementsOf(candidates.subList(0, 24));
+        assertThat(limitedBuilder.computeBlockBody(selected).bodySize()).isEqualTo(exactLimit);
+        assertThat(limitedBuilder.buildBlock(1, 321, new byte[32], selected).blockCbor()).isNotEmpty();
+    }
+
+    @Test
+    void buildBlockRejectsBodyAboveEffectiveProtocolLimit() throws Exception {
+        byte[] tx = buildSampleTxCbor();
+        long oneTransactionSize = builder.computeBlockBody(List.of(tx)).bodySize();
+        var limitedBuilder = new DevnetBlockBuilder(
+                ProtocolVersionSupplier.fixed(10, 2), slot -> oneTransactionSize);
+
+        assertThatThrownBy(() -> limitedBuilder.buildBlock(1, 10, new byte[32], List.of(tx, tx)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("exceeds effective maxBlockSize");
+    }
+
+    @Test
+    void fitTransactionsAppliesMemoryAndStepLimitsToInsertionOrderedPrefix() throws Exception {
+        byte[] first = buildTransactionWithExUnits(30, 40);
+        byte[] second = buildTransactionWithExUnits(20, 30);
+        byte[] third = buildTransactionWithExUnits(1, 1);
+        long bodyLimit = builder.computeBlockBody(List.of(first, second, third)).bodySize();
+        var limitedBuilder = new DevnetBlockBuilder(
+                ProtocolVersionSupplier.fixed(10, 2),
+                limits(bodyLimit, 50, 70));
+
+        List<byte[]> selected = limitedBuilder.fitTransactions(
+                42, List.of(first, second, third));
+
+        assertThat(selected).containsExactly(first, second);
+        assertThat(limitedBuilder.buildBlock(1, 42, new byte[32], selected).blockCbor())
+                .isNotEmpty();
+    }
+
+    @Test
+    void buildBlockRejectsAggregateExecutionUnitsWhenFitIsBypassed() throws Exception {
+        byte[] first = buildTransactionWithExUnits(30, 40);
+        byte[] second = buildTransactionWithExUnits(21, 31);
+        long bodyLimit = builder.computeBlockBody(List.of(first, second)).bodySize();
+        var limitedBuilder = new DevnetBlockBuilder(
+                ProtocolVersionSupplier.fixed(10, 2),
+                limits(bodyLimit, 50, 70));
+
+        assertThatThrownBy(() -> limitedBuilder.buildBlock(
+                1, 42, new byte[32], List.of(first, second)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("execution memory")
+                .hasMessageContaining("maxBlockExMem");
+    }
+
+    @Test
+    void fitTransactionsAcceptsExactExecutionUnitBoundary() throws Exception {
+        byte[] first = buildTransactionWithExUnits(30, 40);
+        byte[] second = buildTransactionWithExUnits(20, 30);
+        long bodyLimit = builder.computeBlockBody(List.of(first, second)).bodySize();
+        var limitedBuilder = new DevnetBlockBuilder(
+                ProtocolVersionSupplier.fixed(10, 2),
+                limits(bodyLimit, 50, 70));
+
+        assertThat(limitedBuilder.fitTransactions(42, List.of(first, second)))
+                .containsExactly(first, second);
+    }
+
+    @Test
+    void fitTransactionsIdentifiesFirstTransactionThatCannotFitEmptyBlock() throws Exception {
+        byte[] transaction = buildTransactionWithExUnits(51, 1);
+        long bodyLimit = builder.computeBlockBody(List.of(transaction)).bodySize();
+        var limitedBuilder = new DevnetBlockBuilder(
+                ProtocolVersionSupplier.fixed(10, 2),
+                limits(bodyLimit, 50, 70));
+
+        assertThatThrownBy(() -> limitedBuilder.fitTransactions(42, List.of(transaction)))
+                .isInstanceOf(UnfitBlockTransactionException.class)
+                .extracting(failure -> ((UnfitBlockTransactionException) failure).transactionHash())
+                .isEqualTo(com.bloxbean.cardano.client.transaction.util.TransactionUtil
+                        .getTxHash(transaction));
+    }
+
     /**
      * Same as extractRawBytesAndCompare but uses a non-canonically encoded transaction
      * (map keys in descending order, which canonical mode will re-sort).
@@ -268,6 +372,37 @@ class DevnetBlockBuilderTest {
         tx.add(co.nstant.in.cbor.model.SimpleValue.NULL);
 
         return CborSerializationUtil.serialize(tx);
+    }
+
+    private byte[] buildTransactionWithExUnits(long memory, long steps) throws Exception {
+        Transaction transaction = Transaction.deserialize(buildSampleTxCbor());
+        transaction.setWitnessSet(TransactionWitnessSet.builder()
+                .redeemers(List.of(Redeemer.builder()
+                        .tag(RedeemerTag.Spend)
+                        .index(0)
+                        .data(BigIntPlutusData.of(1))
+                        .exUnits(ExUnits.builder()
+                                .mem(BigInteger.valueOf(memory))
+                                .steps(BigInteger.valueOf(steps))
+                                .build())
+                        .build()))
+                .build());
+        return transaction.serialize();
+    }
+
+    private static BlockBodySizeLimitSupplier limits(long bodyBytes, long memory, long steps) {
+        return new BlockBodySizeLimitSupplier() {
+            @Override
+            public long getMaxBlockBodySize(long slot) {
+                return bodyBytes;
+            }
+
+            @Override
+            public BlockProductionLimits getLimits(long slot) {
+                return new BlockProductionLimits(
+                        bodyBytes, BigInteger.valueOf(memory), BigInteger.valueOf(steps));
+            }
+        };
     }
 
     @Test
