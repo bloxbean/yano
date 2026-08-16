@@ -50,6 +50,16 @@ class CycleCachingBlockArchiveSourceTest {
         assertThat(reads).hasValue(1);
     }
 
+    @Test
+    void forwardsExceptionalParentValidationToDelegate() {
+        AtomicInteger reads = new AtomicInteger();
+        var source = new CycleCachingBlockArchiveSource<>(new FixtureSource(reads), 10);
+        var current = new BlockSourceContext<>(7, 7, 0, Instant.EPOCH,
+                new byte[] {7}, new byte[] {99}, "block-7");
+
+        assertThat(source.extendsCanonicalParent(new byte[] {42}, current)).isTrue();
+    }
+
     private record FixtureSource(AtomicInteger reads) implements BlockArchiveSource<String> {
         @Override
         public Optional<BlockSourceContext<String>> readCanonical(long blockNumber) {
@@ -76,5 +86,10 @@ class CycleCachingBlockArchiveSourceTest {
 
         @Override
         public long earliestRetainedBody() { return 0; }
+
+        @Override
+        public boolean extendsCanonicalParent(byte[] predecessorHash, BlockSourceContext<String> current) {
+            return predecessorHash.length == 1 && predecessorHash[0] == 42;
+        }
     }
 }

@@ -69,6 +69,11 @@ public final class CycleCachingBlockArchiveSource<B> implements BlockArchiveSour
     }
 
     @Override
+    public boolean extendsCanonicalParent(byte[] predecessorHash, BlockSourceContext<B> current) {
+        return delegate.extendsCanonicalParent(predecessorHash, current);
+    }
+
+    @Override
     public ArchiveSourceLease acquire(long startBlock, long endBlock, Instant expiresAt) {
         return delegate.acquire(startBlock, endBlock, expiresAt);
     }

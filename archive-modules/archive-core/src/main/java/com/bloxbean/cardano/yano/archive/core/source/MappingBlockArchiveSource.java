@@ -29,6 +29,17 @@ public final class MappingBlockArchiveSource<S, T> implements BlockArchiveSource
     }
 
     @Override
+    public boolean extendsCanonicalParent(byte[] predecessorHash, BlockSourceContext<T> current) {
+        if (BlockArchiveSource.super.extendsCanonicalParent(predecessorHash, current)) return true;
+        // A mapped fact no longer carries the decoded Block needed for the
+        // exceptional Byron EBB bridge. Reuse the shared canonical source; in
+        // a projection cycle this is a cache hit, not another decode.
+        return source.readCanonical(current.blockNumber())
+                .map(sourceCurrent -> source.extendsCanonicalParent(predecessorHash, sourceCurrent))
+                .orElse(false);
+    }
+
+    @Override
     public ArchiveSourceLease acquire(long startBlock, long endBlock, Instant expiresAt) {
         return source.acquire(startBlock, endBlock, expiresAt);
     }
