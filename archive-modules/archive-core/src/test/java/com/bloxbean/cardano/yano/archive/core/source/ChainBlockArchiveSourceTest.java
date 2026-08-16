@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.archive.core.source;
 
 import com.bloxbean.cardano.yaci.core.model.Era;
+import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yano.api.ByronEpochBoundaryReference;
 import com.bloxbean.cardano.yano.api.ChainBlockReader;
@@ -21,10 +22,10 @@ class ChainBlockArchiveSourceTest {
     @Test
     void acceptsOnlyTheProvenByronEpochBoundaryBridge() {
         try (var hot = new RocksDbHotHistoryStore(temp.resolve("hot"))) {
-            ChainBlockReader reader = reader(Era.Byron,
+            ChainBlockReader reader = reader(Era.Conway,
                     Optional.of(new ByronEpochBoundaryReference(21_600, new byte[] {2}, new byte[] {1})));
-            var source = new ChainBlockArchiveSource<String>(reader, (number, reference, body) -> null, hot);
-            var current = context(new byte[] {2});
+            var source = new ChainBlockArchiveSource<Block>(reader, (number, reference, body) -> null, hot);
+            var current = context(Era.Byron, new byte[] {2});
 
             assertThat(source.extendsCanonicalParent(new byte[] {1}, current)).isTrue();
             assertThat(source.extendsCanonicalParent(new byte[] {3}, current)).isFalse();
@@ -36,9 +37,9 @@ class ChainBlockArchiveSourceTest {
         try (var hot = new RocksDbHotHistoryStore(temp.resolve("hot"))) {
             ChainBlockReader reader = reader(Era.Conway,
                     Optional.of(new ByronEpochBoundaryReference(21_600, new byte[] {2}, new byte[] {1})));
-            var source = new ChainBlockArchiveSource<String>(reader, (number, reference, body) -> null, hot);
+            var source = new ChainBlockArchiveSource<Block>(reader, (number, reference, body) -> null, hot);
 
-            assertThat(source.extendsCanonicalParent(new byte[] {1}, context(new byte[] {2}))).isFalse();
+            assertThat(source.extendsCanonicalParent(new byte[] {1}, context(Era.Conway, new byte[] {2}))).isFalse();
         }
     }
 
@@ -53,8 +54,8 @@ class ChainBlockArchiveSourceTest {
         };
     }
 
-    private static BlockSourceContext<String> context(byte[] parentHash) {
+    private static BlockSourceContext<Block> context(Era era, byte[] parentHash) {
         return new BlockSourceContext<>(21_587, 21_600, 0, Instant.EPOCH,
-                new byte[] {3}, parentHash, "block");
+                new byte[] {3}, parentHash, Block.builder().era(era).build());
     }
 }
