@@ -251,11 +251,11 @@ public final class BlockArchiveWorker<B> {
     private void verifyParentChain(List<BlockSourceContext<B>> blocks, ArchiveProgress prior) {
         if (blocks.isEmpty()) return;
         if (prior != null && blocks.getFirst().blockNumber() == prior.coordinate() + 1
-                && !Arrays.equals(blocks.getFirst().parentHash(), prior.blockHash())) {
+                && !source.extendsCanonicalParent(prior.blockHash(), blocks.getFirst())) {
             throw new ArchiveStoreException("archive batch does not extend its committed parent");
         }
         for (int index = 1; index < blocks.size(); index++) {
-            if (!Arrays.equals(blocks.get(index).parentHash(), blocks.get(index - 1).blockHash())) {
+            if (!source.extendsCanonicalParent(blocks.get(index - 1).blockHash(), blocks.get(index))) {
                 throw new ArchiveStoreException("mixed canonical forks in archive batch at block "
                         + blocks.get(index).blockNumber());
             }

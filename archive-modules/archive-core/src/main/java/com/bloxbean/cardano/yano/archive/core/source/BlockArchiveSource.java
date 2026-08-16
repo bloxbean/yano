@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yano.archive.core.dataset.BlockSourceContext;
 import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
 
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.Optional;
 
 /** Canonical block-body source with a durable pruning lease. */
@@ -14,6 +15,15 @@ public interface BlockArchiveSource<B> {
     default Optional<CanonicalBlockReference> canonicalReference(long blockNumber) {
         return readCanonical(blockNumber).map(block -> new CanonicalBlockReference(
                 block.blockNumber(), block.slot(), block.blockHash()));
+    }
+
+    /**
+     * Whether a canonical block continues from its numbered predecessor. The
+     * default is a direct parent link; Byron sources may bridge one epoch-boundary
+     * block, which has no main-chain number.
+     */
+    default boolean extendsCanonicalParent(byte[] predecessorHash, BlockSourceContext<B> current) {
+        return Arrays.equals(current.parentHash(), predecessorHash);
     }
 
     ArchiveSourceLease acquire(long startBlock, long endBlock, Instant expiresAt);

@@ -27,6 +27,15 @@ public interface ChainBlockReader {
     }
 
     /**
+     * Canonical Byron epoch-boundary block at an epoch-start slot. Epoch-boundary
+     * blocks have no main-chain block number, so this is intentionally a
+     * separate lookup.
+     */
+    default Optional<ByronEpochBoundaryReference> getByronEpochBoundaryBlock(long slot) {
+        return Optional.empty();
+    }
+
+    /**
      * Lowest canonical block number whose body is currently retained.
      * Empty means that no body is retained. This is a capability value, not a
      * promise that a future pruning pass will keep the body indefinitely.

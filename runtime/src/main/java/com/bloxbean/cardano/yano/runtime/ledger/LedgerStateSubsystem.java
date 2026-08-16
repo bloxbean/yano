@@ -870,6 +870,15 @@ public final class LedgerStateSubsystem implements Subsystem {
         }
 
         @Override
+        public java.util.Optional<com.bloxbean.cardano.yano.api.ByronEpochBoundaryReference>
+        getByronEpochBoundaryBlock(long slot) {
+            if (chainState instanceof ArchiveChainStateCapabilities capabilities) {
+                return capabilities.getByronEpochBoundaryBlock(slot);
+            }
+            return java.util.Optional.empty();
+        }
+
+        @Override
         public java.util.OptionalLong getEarliestRetainedBodyBlockNumber() {
             if (chainState instanceof ArchiveChainStateCapabilities capabilities) {
                 return capabilities.getEarliestRetainedBodyBlockNumber();

@@ -5,8 +5,10 @@ import com.bloxbean.cardano.yano.api.ChainBlockReader;
 import com.bloxbean.cardano.yano.archive.api.ArchiveStoreException;
 import com.bloxbean.cardano.yano.archive.core.dataset.BlockSourceContext;
 import com.bloxbean.cardano.yano.archive.core.hot.HotHistoryStore;
+import com.bloxbean.cardano.yaci.core.model.Era;
 
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.Optional;
 
 /** Narrow read-only adapter from core block capabilities to the archive worker. */
@@ -39,6 +41,18 @@ public final class ChainBlockArchiveSource<B> implements BlockArchiveSource<B> {
     @Override
     public Optional<com.bloxbean.cardano.yano.api.CanonicalBlockReference> canonicalReference(long blockNumber) {
         return reader.getCanonicalBlockReference(blockNumber);
+    }
+
+    @Override
+    public boolean extendsCanonicalParent(byte[] predecessorHash, BlockSourceContext<B> current) {
+        if (BlockArchiveSource.super.extendsCanonicalParent(predecessorHash, current)) return true;
+        // The EBB lookup is deliberately exceptional: only a failed direct
+        // parent check in Byron can need this bridge.
+        if (reader.getBlockEra(current.blockNumber()) != Era.Byron) return false;
+        return reader.getByronEpochBoundaryBlock(current.slot())
+                .filter(ebb -> Arrays.equals(ebb.blockHash(), current.parentHash())
+                        && Arrays.equals(ebb.parentHash(), predecessorHash))
+                .isPresent();
     }
 
     @Override

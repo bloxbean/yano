@@ -1,12 +1,14 @@
 package com.bloxbean.cardano.yano.runtime.chain;
 
 import com.bloxbean.cardano.yaci.core.model.Era;
+import com.bloxbean.cardano.yaci.core.model.serializers.ByronEbBlockSerializer;
 import java.math.BigInteger;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
+import com.bloxbean.cardano.yano.api.ByronEpochBoundaryReference;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.db.RocksDbAccess;
 import com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore;
@@ -540,6 +542,24 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                     : Optional.of(new CanonicalBlockReference(blockNumber, slot, blockHash));
         } catch (Exception e) {
             log.warn("Failed to read canonical reference for block {}: {}", blockNumber, e.toString());
+            return Optional.empty();
+        }
+    }
+
+    @Override
+    public Optional<ByronEpochBoundaryReference> getByronEpochBoundaryBlock(long slot) {
+        if (slot < 0) return Optional.empty();
+        try {
+            byte[] blockHash = db.get(ebbBySlot0Handle, longToBytes(slot));
+            if (blockHash == null) return Optional.empty();
+            byte[] body = db.get(blocksHandle, blockHash);
+            if (body == null) return Optional.empty();
+            String parentHash = ByronEbBlockSerializer.INSTANCE.deserialize(body).getHeader().getPrevBlock();
+            if (parentHash == null || parentHash.isBlank()) return Optional.empty();
+            return Optional.of(new ByronEpochBoundaryReference(slot, blockHash,
+                    HexUtil.decodeHexString(parentHash)));
+        } catch (Exception e) {
+            log.warn("Failed to read Byron EBB reference for slot {}: {}", slot, e.toString());
             return Optional.empty();
         }
     }

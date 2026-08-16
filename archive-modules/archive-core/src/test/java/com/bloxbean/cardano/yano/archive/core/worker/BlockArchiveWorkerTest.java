@@ -288,6 +288,31 @@ class BlockArchiveWorkerTest {
     }
 
     @Test
+    void acceptsAProvenByronEpochBoundaryBridgeInsideBatch() {
+        FixtureSource source = new FixtureSource(0, 1) {
+            @Override public Optional<BlockSourceContext<String>> readCanonical(long block) {
+                Optional<BlockSourceContext<String>> original = super.readCanonical(block);
+                if (block != 1 || original.isEmpty()) return original;
+                BlockSourceContext<String> value = original.orElseThrow();
+                return Optional.of(new BlockSourceContext<>(value.blockNumber(), value.slot(), value.epoch(),
+                        value.blockTime(), value.blockHash(), new byte[] {99}, value.block()));
+            }
+
+            @Override public boolean extendsCanonicalParent(byte[] predecessorHash,
+                                                            BlockSourceContext<String> current) {
+                return super.extendsCanonicalParent(predecessorHash, current)
+                        || (Arrays.equals(predecessorHash, new byte[] {1})
+                        && Arrays.equals(current.parentHash(), new byte[] {99}));
+            }
+        };
+        RecordingBackend backend = new RecordingBackend();
+
+        assertThat(worker(source, backend, new MemoryProgress(), new ArchiveWorkerMetrics(), () -> 0)
+                .runBatch(dataset(), 0, 1)).isEqualTo(1);
+        assertThat(backend.committed).isTrue();
+    }
+
+    @Test
     void advancesDurableCursorThroughLivePromotedCoverageWithoutRewritingBackend() {
         FixtureSource source = new FixtureSource(0, 1);
         RecordingBackend backend = new RecordingBackend();
