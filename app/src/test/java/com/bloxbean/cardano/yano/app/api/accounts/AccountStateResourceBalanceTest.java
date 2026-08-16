@@ -54,6 +54,32 @@ class AccountStateResourceBalanceTest {
     }
 
     @Test
+    void accountTransactionsRequireAddressHistoryButNotAccountEvents() {
+        AccountHistoryProvider provider = mock(AccountHistoryProvider.class);
+        when(provider.isEnabled()).thenReturn(true);
+        when(provider.isHealthy()).thenReturn(true);
+        when(provider.isAddressTxEnabled()).thenReturn(true);
+        when(provider.isTxEventsEnabled()).thenReturn(false);
+        when(provider.getAddressTransactions(
+                org.mockito.ArgumentMatchers.eq(AccountHistoryProvider.ADDR_SCOPE_STAKE_CRED),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.eq(1),
+                org.mockito.ArgumentMatchers.eq(20),
+                org.mockito.ArgumentMatchers.eq("asc")))
+                .thenReturn(List.of(new AccountHistoryProvider.AddressTxRecord(
+                        "aa".repeat(32), 1000, 10, 0)));
+
+        AccountStateResource resource = resourceWith(
+                ledgerState(true, BigInteger.ZERO, BigInteger.ZERO, null, null),
+                utxoState(true, true, BigInteger.ZERO), provider);
+
+        Response response = resource.getAccountTransactions(STAKE_ADDRESS, 1, 20, "asc");
+
+        assertEquals(200, response.getStatus());
+        assertEquals(1, ((List<?>) response.getEntity()).size());
+    }
+
+    @Test
     void getAccountShouldCombineUtxoAndRewards() {
         AccountStateResource resource = resourceWith(
                 ledgerState(true, BigInteger.valueOf(50), BigInteger.valueOf(2),

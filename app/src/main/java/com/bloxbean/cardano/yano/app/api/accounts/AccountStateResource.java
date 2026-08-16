@@ -11,6 +11,7 @@ import com.bloxbean.cardano.yano.api.util.CardanoBech32Ids;
 import com.bloxbean.cardano.yano.app.api.EpochUtil;
 import com.bloxbean.cardano.yano.app.api.accounts.dto.AccountStateDtos.*;
 import com.bloxbean.cardano.yano.app.archive.HistoryArchiveService;
+import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
@@ -199,7 +200,7 @@ public class AccountStateResource {
         StakeCredentialRef credential = parseStakeCredential(stakeAddress);
         if (credential == null) return badRequest("Invalid stake address");
         AccountHistoryProvider history = historyProvider();
-        Response unavailable = historyUnavailable(history, true);
+        Response unavailable = historyUnavailable(history, ArchiveDatasetId.ACCOUNT_EVENT);
         if (unavailable != null) return unavailable;
         String resolvedOrder = normalizeOrder(order);
         if (resolvedOrder == null) return badRequest("order must be asc or desc");
@@ -227,7 +228,7 @@ public class AccountStateResource {
         StakeCredentialRef credential = parseStakeCredential(stakeAddress);
         if (credential == null) return badRequest("Invalid stake address");
         AccountHistoryProvider history = historyProvider();
-        Response unavailable = historyUnavailable(history, true);
+        Response unavailable = historyUnavailable(history, ArchiveDatasetId.ACCOUNT_EVENT);
         if (unavailable != null) return unavailable;
         String resolvedOrder = normalizeOrder(order);
         if (resolvedOrder == null) return badRequest("order must be asc or desc");
@@ -256,7 +257,7 @@ public class AccountStateResource {
         StakeCredentialRef credential = parseStakeCredential(stakeAddress);
         if (credential == null) return badRequest("Invalid stake address");
         AccountHistoryProvider history = historyProvider();
-        Response unavailable = historyUnavailable(history, true);
+        Response unavailable = historyUnavailable(history, ArchiveDatasetId.ACCOUNT_EVENT);
         if (unavailable != null) return unavailable;
         String resolvedOrder = normalizeOrder(order);
         if (resolvedOrder == null) return badRequest("order must be asc or desc");
@@ -285,7 +286,7 @@ public class AccountStateResource {
         StakeCredentialRef credential = parseStakeCredential(stakeAddress);
         if (credential == null) return badRequest("Invalid stake address");
         AccountHistoryProvider history = historyProvider();
-        Response unavailable = historyUnavailable(history, true);
+        Response unavailable = historyUnavailable(history, ArchiveDatasetId.ACCOUNT_EVENT);
         if (unavailable != null) return unavailable;
         String resolvedOrder = normalizeOrder(order);
         if (resolvedOrder == null) return badRequest("order must be asc or desc");
@@ -318,11 +319,8 @@ public class AccountStateResource {
         StakeCredentialRef credential = parseStakeCredential(stakeAddress);
         if (credential == null) return badRequest("Invalid stake address");
         AccountHistoryProvider history = historyProvider();
-        Response unavailable = historyUnavailable(history, false);
+        Response unavailable = historyUnavailable(history, ArchiveDatasetId.REWARD);
         if (unavailable != null) return unavailable;
-        if (!history.isRewardsHistoryEnabled()) {
-            return featureUnavailable("Reward history disabled (enable yano.history.datasets.rewards.enabled)");
-        }
         String resolvedOrder = normalizeOrder(order);
         if (resolvedOrder == null) return badRequest("order must be asc or desc");
 
@@ -374,17 +372,8 @@ public class AccountStateResource {
         StakeCredentialRef credential = parseStakeCredential(stakeAddress);
         if (credential == null) return badRequest("Invalid stake address");
         AccountHistoryProvider history = historyProvider();
-        Response unavailable = historyUnavailable(history, true);
+        Response unavailable = historyUnavailable(history, ArchiveDatasetId.ADDRESS_TRANSACTION);
         if (unavailable != null) return unavailable;
-        if (!history.isAddressTxEnabled()) {
-            if (historyArchive != null
-                    && historyArchive.datasetBuilding(
-                    com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.ADDRESS_TRANSACTION)) {
-                return featureUnavailable("Address transaction history is still building");
-            }
-            return featureUnavailable("Address transaction history disabled "
-                    + "(enable yano.history.datasets.address-transactions.enabled)");
-        }
         String resolvedOrder = normalizeOrder(order);
         if (resolvedOrder == null) return badRequest("order must be asc or desc");
 
@@ -525,22 +514,40 @@ public class AccountStateResource {
         }
     }
 
-    private Response historyUnavailable(AccountHistoryProvider history, boolean requireTxEvents) {
+    private Response historyUnavailable(AccountHistoryProvider history, ArchiveDatasetId dataset) {
         if (history == null || !history.isEnabled()) {
             return featureUnavailable("Account history not available");
         }
         if (!history.isHealthy()) {
             return featureUnavailable("Account history index is not healthy");
         }
-        if (requireTxEvents && !history.isTxEventsEnabled()) {
-            if (historyArchive != null
-                    && historyArchive.datasetBuilding(
-                    com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.ACCOUNT_EVENT)) {
-                return featureUnavailable("Account tx/cert history is still building");
-            }
-            return featureUnavailable("Account tx/cert history index is disabled");
+        boolean available = switch (dataset) {
+            case ACCOUNT_EVENT -> history.isTxEventsEnabled();
+            case ADDRESS_TRANSACTION -> history.isAddressTxEnabled();
+            case REWARD -> history.isRewardsHistoryEnabled();
+            default -> throw new IllegalArgumentException(
+                    "Unsupported account-history dataset: " + dataset.logicalName());
+        };
+        if (available) {
+            return null;
         }
-        return null;
+        if (historyArchive != null && historyArchive.datasetBuilding(dataset)) {
+            return featureUnavailable(switch (dataset) {
+                case ACCOUNT_EVENT -> "Account tx/cert history is still building";
+                case ADDRESS_TRANSACTION -> "Address transaction history is still building";
+                case REWARD -> "Reward history is still building";
+                default -> throw new IllegalArgumentException(
+                        "Unsupported account-history dataset: " + dataset.logicalName());
+            });
+        }
+        return featureUnavailable(switch (dataset) {
+            case ACCOUNT_EVENT -> "Account tx/cert history index is disabled";
+            case ADDRESS_TRANSACTION -> "Address transaction history disabled "
+                    + "(enable yano.history.datasets.address-transactions.enabled)";
+            case REWARD -> "Reward history disabled (enable yano.history.datasets.rewards.enabled)";
+            default -> throw new IllegalArgumentException(
+                    "Unsupported account-history dataset: " + dataset.logicalName());
+        });
     }
 
     private record StakeCredentialRef(String stakeAddress, int credType, String credHash) {}
