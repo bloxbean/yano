@@ -278,17 +278,31 @@ public class SlotLeaderBlockProducer implements BlockProducerService {
         BlockProducerHelper.prepareEpochTransitionBeforeBlock(
                 eventBus, slot, blockNumber, "slot-leader-block-producer");
 
-        List<byte[]> txList = transactions.drainForBlock();
+        try {
+            List<byte[]> txList = blockBuilder.fitTransactions(slot, transactions.drainForBlock());
+            var result = blockBuilder.buildBlock(blockNumber, slot, prevHash, txList, vrfResult);
 
-        var result = blockBuilder.buildBlock(blockNumber, slot, prevHash, txList, vrfResult);
+            BlockProducerHelper.storeProducedBlock(chainState, blockBuilder, result);
 
-        BlockProducerHelper.storeProducedBlock(chainState, blockBuilder, result);
+            log.info("Block #{} produced: slot={}, txs={}, hash={}",
+                    blockNumber, slot, txList.size(), HexUtil.encodeHexString(result.blockHash()));
 
-        log.info("Block #{} produced: slot={}, txs={}, hash={}",
-                blockNumber, slot, txList.size(), HexUtil.encodeHexString(result.blockHash()));
-
-        BlockProducerHelper.publishEvent(eventBus, result, txList.size(), "slot-leader-block-producer");
-        BlockProducerHelper.notifyServer(nodeServerSupplier.get());
+            BlockProducerHelper.publishEvent(eventBus, result, txList.size(), "slot-leader-block-producer");
+            transactions.blockCandidatePublished();
+            BlockProducerHelper.notifyServer(nodeServerSupplier.get());
+        } catch (UnfitBlockTransactionException e) {
+            int removed;
+            try {
+                removed = transactions.invalidateSelectedTransaction(e.transactionHash());
+            } finally {
+                transactions.blockSelectionFailed();
+            }
+            log.warn("Discarded {} mempool transaction(s) after block resource rejection: {}",
+                    removed, e.getMessage());
+        } catch (RuntimeException | Error e) {
+            transactions.blockSelectionFailed();
+            throw e;
+        }
     }
 
     /**

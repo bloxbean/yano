@@ -24,6 +24,7 @@ import com.bloxbean.cardano.yano.api.NodeLifecycle;
 import com.bloxbean.cardano.yano.api.ProducerControl;
 import com.bloxbean.cardano.yano.api.SyncPhase;
 import com.bloxbean.cardano.yano.api.TxEvaluationGateway;
+import com.bloxbean.cardano.yano.api.MempoolQueryGateway;
 import com.bloxbean.cardano.yano.api.TxGateway;
 import com.bloxbean.cardano.yano.api.appchain.AppChainConfig;
 import com.bloxbean.cardano.yano.appchain.config.AppChainConfigParser;
@@ -46,6 +47,8 @@ import com.bloxbean.cardano.yano.api.model.SnapshotInfo;
 import com.bloxbean.cardano.yano.api.model.TimeAdvanceResult;
 import com.bloxbean.cardano.yano.api.model.TxEvaluationResult;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
+import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
+import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
 import com.bloxbean.cardano.yano.ledgerrules.TransactionEvaluator;
 import com.bloxbean.cardano.yano.ledgerrules.TransactionValidator;
 import com.bloxbean.cardano.yano.api.bootstrap.BootstrapDataProvider;
@@ -173,6 +176,7 @@ import java.util.function.Supplier;
  */
 @Slf4j
 public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGateway, TxEvaluationGateway,
+        MempoolQueryGateway,
         ProducerControl, AutoCloseable, DebugLedgerStateAccess, RuntimeKernelProvider, DevnetRuntimeProvider {
     // Configuration
     private final YanoConfig config;
@@ -2388,6 +2392,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                     epochNonceState,
                     nonceStore,
                     protocolVersionSupplier,
+                    BlockBodySizeLimitSupplier.fromEpochParams(this::effectiveEpochParamProvider),
                     activeSlotsCoeff);
             var signedBlockBuilder = signingComponents.signedBlockBuilder();
             var slotLeaderCheck = signingComponents.slotLeaderCheck();
@@ -2444,6 +2449,16 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     @Override
     public List<TxEvaluationResult> evaluateTransaction(byte[] txCbor) throws Exception {
         return txSubsystem.evaluateTransaction(txCbor);
+    }
+
+    @Override
+    public Optional<Utxo> resolveUtxo(Outpoint outpoint) {
+        return txSubsystem.resolveUtxo(outpoint);
+    }
+
+    @Override
+    public Optional<byte[]> getScriptRefBytesByHash(String scriptHash) {
+        return txSubsystem.getScriptRefBytesByHash(scriptHash);
     }
 
     @Override
@@ -4054,6 +4069,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         PeerRecoveryFailureTracker.Snapshot recoveryStatus = syncSubsystem.peerRecoverySnapshot();
         UpstreamStatus upstreamStatus = syncSubsystem.upstreamStatus();
         TxDiffusionStats txDiffusionStats = txSubsystem.txDiffusionStats();
+        var mempoolStats = txSubsystem.mempoolStats();
         RuntimeMaintenanceGate maintenanceGate = chainStorage.maintenanceGate();
         RuntimeMaintenanceGate.Degradation maintenanceDegradation = maintenanceGate.degradation();
 
@@ -4183,6 +4199,24 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 .mempoolMaxTxs(txSubsystem.mempoolMaxTxs())
                 .mempoolMaxBytes(txSubsystem.mempoolMaxBytes())
                 .mempoolTtlSeconds(txSubsystem.mempoolTtlSeconds())
+                .mempoolUtxoIndexEntries(mempoolStats.utxoIndexEntries())
+                .mempoolMaxUtxoIndexEntries(txSubsystem.mempoolMaxUtxoIndexEntries())
+                .mempoolProducedOutputs(mempoolStats.producedOutputs())
+                .mempoolSpentOutpoints(mempoolStats.spentOutpoints())
+                .mempoolReferenceScripts(mempoolStats.referenceScripts())
+                .mempoolDependencyEdges(mempoolStats.dependencyEdges())
+                .mempoolEstimatedIndexBytes(mempoolStats.estimatedIndexBytes())
+                .mempoolDuplicateRejections(mempoolStats.duplicateRejections())
+                .mempoolConflictRejections(mempoolStats.conflictRejections())
+                .mempoolCapacityRejections(mempoolStats.capacityRejections())
+                .mempoolMalformedRejections(mempoolStats.malformedRejections())
+                .mempoolLedgerRejections(mempoolStats.ledgerRejections())
+                .mempoolCascadedRemovals(mempoolStats.cascadedRemovals())
+                .mempoolAdmissionQueueLength(mempoolStats.admissionQueueLength())
+                .mempoolAdmissionWaitNanos(mempoolStats.totalAdmissionWaitNanos())
+                .mempoolAdmissionHoldNanos(mempoolStats.totalAdmissionHoldNanos())
+                .mempoolValidationNanos(mempoolStats.totalValidationNanos())
+                .mempoolSlowValidations(mempoolStats.slowValidations())
                 .mempoolAccepting(txSubsystem.isAccepting())
                 .mempoolValidationAvailable(txSubsystem.transactionValidationService() != null)
                 .mempoolEvaluationAvailable(txSubsystem.isTransactionEvaluationAvailable())

@@ -6,6 +6,7 @@ import com.bloxbean.cardano.client.transaction.spec.TransactionInput;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
 import com.bloxbean.cardano.yano.ledgerrules.TransactionValidator;
+import com.bloxbean.cardano.yano.ledgerrules.ScriptReferenceResolverScope;
 import com.bloxbean.cardano.yano.ledgerrules.ValidationError;
 import com.bloxbean.cardano.yano.ledgerrules.ValidationResult;
 import lombok.extern.slf4j.Slf4j;
@@ -54,6 +55,7 @@ public class TransactionValidationService {
 
         // Collect all inputs that need resolution: regular + reference + collateral
         Set<Utxo> inputUtxos = new HashSet<>();
+        List<com.bloxbean.cardano.yano.api.utxo.model.Utxo> resolvedInputUtxos = new ArrayList<>();
         List<TransactionInput> allInputs = new ArrayList<>();
 
         if (transaction.getBody().getInputs() != null) {
@@ -76,10 +78,11 @@ public class TransactionValidationService {
                         ValidationError.Phase.PHASE_1));
             }
 
+            resolvedInputUtxos.add(yaciUtxo);
             inputUtxos.add(UtxoMapper.toCclUtxo(yaciUtxo));
         }
 
-        try {
+        try (var ignored = ScriptReferenceResolverScope.open(resolvedInputUtxos)) {
             return validator.validate(txCbor, inputUtxos);
         } catch (Exception e) {
             log.debug("Validation threw exception: {}", e.getMessage());

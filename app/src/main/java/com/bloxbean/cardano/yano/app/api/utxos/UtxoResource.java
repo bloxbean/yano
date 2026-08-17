@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.app.api.utxos;
 
 import com.bloxbean.cardano.yano.api.LedgerQuery;
+import com.bloxbean.cardano.yano.api.MempoolQueryGateway;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
 import com.bloxbean.cardano.yano.app.api.utxos.dto.UtxoDto;
@@ -20,6 +21,9 @@ public class UtxoResource {
 
     @Inject
     LedgerQuery ledgerQuery;
+
+    @Inject
+    MempoolQueryGateway mempoolQueryGateway;
 
     private UtxoState utxo() {
         return ledgerQuery.getUtxoState();
@@ -81,14 +85,20 @@ public class UtxoResource {
     @GET
     @Path("/utxos/{txHash}/{index}")
     public Response getUtxo(@PathParam("txHash") String txHash,
-                            @PathParam("index") int index) {
+                            @PathParam("index") int index,
+                            @QueryParam("include_mempool")
+                            @DefaultValue("false") boolean includeMempool) {
         UtxoState u = utxo();
         if (u == null || !u.isEnabled()) {
             return Response.status(Response.Status.SERVICE_UNAVAILABLE)
                     .entity("{\"error\":\"UTXO state disabled\"}")
                     .build();
         }
-        return u.getUtxo(new Outpoint(txHash, index))
+        Outpoint outpoint = new Outpoint(txHash, index);
+        var result = includeMempool
+                ? mempoolQueryGateway.resolveUtxo(outpoint)
+                : u.getUtxo(outpoint);
+        return result
                 .map(utxo -> Response.ok(UtxoDtoMapper.toDto(utxo, ledgerQuery::slotToUnixTime)).build())
                 .orElse(Response.status(Response.Status.NOT_FOUND).build());
     }

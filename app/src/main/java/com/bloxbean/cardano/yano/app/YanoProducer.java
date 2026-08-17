@@ -8,6 +8,7 @@ import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.NodeLifecycle;
 import com.bloxbean.cardano.yano.api.ProducerControl;
 import com.bloxbean.cardano.yano.api.TxEvaluationGateway;
+import com.bloxbean.cardano.yano.api.MempoolQueryGateway;
 import com.bloxbean.cardano.yano.api.TxGateway;
 import com.bloxbean.cardano.yano.api.config.PluginsOptions;
 import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
@@ -830,6 +831,12 @@ public class YanoProducer {
     @ApplicationScoped
     public TxEvaluationGateway createTxEvaluationGateway() {
         return ensureYano().txEvaluationGateway();
+    }
+
+    @Produces
+    @ApplicationScoped
+    public MempoolQueryGateway createMempoolQueryGateway() {
+        return ensureYano().mempoolQueryGateway();
     }
 
     @Produces

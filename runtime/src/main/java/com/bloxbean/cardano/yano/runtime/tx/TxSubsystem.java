@@ -11,9 +11,14 @@ import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.MemPoolTransactionReceivedEvent;
 import com.bloxbean.cardano.yano.api.events.TransactionValidateEvent;
+import com.bloxbean.cardano.yano.api.events.RollbackEvent;
+import com.bloxbean.cardano.yano.api.events.UtxoStateAppliedEvent;
+import com.bloxbean.cardano.yano.api.events.UtxoStateRolledBackEvent;
 import com.bloxbean.cardano.yano.api.model.MemPoolTransaction;
 import com.bloxbean.cardano.yano.api.model.TxEvaluationResult;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
+import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
+import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
 import com.bloxbean.cardano.yano.ledgerrules.TransactionEvaluator;
 import com.bloxbean.cardano.yano.ledgerrules.TransactionValidator;
 import com.bloxbean.cardano.yano.runtime.blockproducer.TransactionEvaluationService;
@@ -23,6 +28,10 @@ import com.bloxbean.cardano.yano.runtime.chain.DefaultMemPool;
 import com.bloxbean.cardano.yano.runtime.chain.DefaultMempoolEvictionPolicy;
 import com.bloxbean.cardano.yano.runtime.chain.MemPool;
 import com.bloxbean.cardano.yano.runtime.chain.MempoolEvictionPolicy;
+import com.bloxbean.cardano.yano.runtime.chain.MempoolAdmissionException;
+import com.bloxbean.cardano.yano.runtime.chain.MempoolAdmissionLimits;
+import com.bloxbean.cardano.yano.runtime.chain.MempoolAdmissionResult;
+import com.bloxbean.cardano.yano.runtime.chain.MempoolStats;
 import com.bloxbean.cardano.yano.runtime.kernel.Subsystem;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
 import com.bloxbean.cardano.yano.p2p.tx.diffusion.DefaultTxDiffusion;
@@ -36,14 +45,16 @@ import org.slf4j.Logger;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.BiConsumer;
 import java.util.function.Supplier;
+
+import static com.bloxbean.cardano.yano.runtime.util.LifecycleFailures.rethrowIfProcessFatalReachable;
 
 /**
  * Owns mempool state, transaction validation/evaluation services, and transaction
@@ -53,6 +64,7 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
     private static final int DEFAULT_MEMPOOL_MAX_TXS = 10_000;
     private static final long DEFAULT_MEMPOOL_MAX_BYTES = 128L * 1024L * 1024L;
     private static final long DEFAULT_MEMPOOL_TTL_SECONDS = 10_800L;
+    private static final int DEFAULT_MEMPOOL_MAX_UTXO_INDEX_ENTRIES = 100_000;
     private static final boolean DEFAULT_TX_DIFFUSION_ENABLED = true;
     private static final String DEFAULT_TX_DIFFUSION_MODE = "all-hot";
     private static final int DEFAULT_MAX_IN_FLIGHT_TXS_PER_PEER = 100;
@@ -72,6 +84,9 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
     private volatile TransactionEvaluationService transactionEvaluationService;
     private MempoolEvictionPolicy mempoolEvictionPolicy;
     private SubscriptionHandle mempoolEvictionSubscription;
+    private SubscriptionHandle mempoolUtxoAppliedSubscription;
+    private SubscriptionHandle mempoolRollbackSubscription;
+    private SubscriptionHandle mempoolUtxoRollbackSubscription;
     private SubscriptionHandle txDiffusionSubscription;
     private ScheduledFuture<?> mempoolEvictionTask;
     private List<SubscriptionHandle> validatorListenerSubscriptions = List.of();
@@ -81,6 +96,7 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
     private volatile int mempoolMaxTxs = DEFAULT_MEMPOOL_MAX_TXS;
     private volatile long mempoolMaxBytes = DEFAULT_MEMPOOL_MAX_BYTES;
     private volatile long mempoolTtlSeconds = DEFAULT_MEMPOOL_TTL_SECONDS;
+    private volatile int mempoolMaxUtxoIndexEntries = DEFAULT_MEMPOOL_MAX_UTXO_INDEX_ENTRIES;
     private volatile String txDiffusionMode = DEFAULT_TX_DIFFUSION_MODE;
     private volatile int txDiffusionMaxInFlightTxsPerPeer = DEFAULT_MAX_IN_FLIGHT_TXS_PER_PEER;
     private volatile long txDiffusionMaxInFlightBytesPerPeer = DEFAULT_MAX_IN_FLIGHT_BYTES_PER_PEER;
@@ -140,9 +156,23 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
         mempoolEvictionPolicy = new DefaultMempoolEvictionPolicy(
                 memPool, maxAgeMillis, mempoolMaxTxs, mempoolMaxBytes);
 
-        mempoolEvictionSubscription = eventBus.subscribe(BlockAppliedEvent.class, ctx ->
-                        mempoolEvictionPolicy.onBlockApplied(ctx.event()),
+        mempoolEvictionSubscription = eventBus.subscribe(BlockAppliedEvent.class, ctx -> {
+                    UtxoState state = utxoStateSupplier.get();
+                    if (state == null || !state.isEnabled()) {
+                        onCanonicalBlockApplied(ctx.event());
+                    }
+                }, SubscriptionOptions.builder().priority(200).build());
+        mempoolUtxoAppliedSubscription = eventBus.subscribe(UtxoStateAppliedEvent.class,
+                ctx -> onCanonicalBlockApplied(ctx.event().blockAppliedEvent()),
                 SubscriptionOptions.builder().build());
+        mempoolRollbackSubscription = eventBus.subscribe(RollbackEvent.class, ctx -> {
+                    UtxoState state = utxoStateSupplier.get();
+                    if (state == null || !state.isEnabled()) {
+                        onCanonicalRollbackApplied();
+                    }
+                }, SubscriptionOptions.builder().priority(200).build());
+        mempoolUtxoRollbackSubscription = eventBus.subscribe(UtxoStateRolledBackEvent.class,
+                ctx -> onCanonicalRollbackApplied(), SubscriptionOptions.builder().build());
         txDiffusionSubscription = eventBus.subscribe(MemPoolTransactionReceivedEvent.class,
                 ctx -> txDiffusion.onTransactionAccepted(ctx.event().transaction()),
                 SubscriptionOptions.builder().build());
@@ -156,8 +186,9 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
         }, 30, 30, TimeUnit.SECONDS);
 
         enableAdmission();
-        log.info("Mempool eviction policy initialized (ttl={}s, maxTxs={}, maxBytes={}, txDiffusionMode={})",
-                mempoolTtlSeconds, mempoolMaxTxs, mempoolMaxBytes, txDiffusionMode);
+        log.info("Mempool initialized (ttl={}s, maxTxs={}, maxBytes={}, maxUtxoIndexEntries={}, txDiffusionMode={})",
+                mempoolTtlSeconds, mempoolMaxTxs, mempoolMaxBytes,
+                mempoolMaxUtxoIndexEntries, txDiffusionMode);
     }
 
     @Override
@@ -191,6 +222,18 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
         if (mempoolEvictionSubscription != null) {
             mempoolEvictionSubscription.close();
             mempoolEvictionSubscription = null;
+        }
+        if (mempoolUtxoAppliedSubscription != null) {
+            mempoolUtxoAppliedSubscription.close();
+            mempoolUtxoAppliedSubscription = null;
+        }
+        if (mempoolRollbackSubscription != null) {
+            mempoolRollbackSubscription.close();
+            mempoolRollbackSubscription = null;
+        }
+        if (mempoolUtxoRollbackSubscription != null) {
+            mempoolUtxoRollbackSubscription.close();
+            mempoolUtxoRollbackSubscription = null;
         }
         if (txDiffusionSubscription != null) {
             txDiffusionSubscription.close();
@@ -251,10 +294,32 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
         if (transactionEvaluationService == null) {
             throw new UnsupportedOperationException("Transaction evaluation is not available");
         }
-        return transactionEvaluationService.evaluate(txCbor).stream()
+        UtxoState canonicalState = utxoStateSupplier.get();
+        return transactionEvaluationService.evaluate(txCbor,
+                        outpoints -> memPool.resolveUtxos(outpoints,
+                                outpoint -> canonicalState != null
+                                        ? canonicalState.getUtxo(outpoint).orElse(null) : null))
+                .stream()
                 .map(result -> new TxEvaluationResult(
                         result.tag(), result.index(), result.memory(), result.steps()))
                 .toList();
+    }
+
+    public Optional<Utxo> resolveUtxo(Outpoint outpoint) {
+        Objects.requireNonNull(outpoint, "outpoint");
+        UtxoState canonicalState = utxoStateSupplier.get();
+        return Optional.ofNullable(memPool.resolveUtxos(List.of(outpoint),
+                candidate -> canonicalState != null
+                        ? canonicalState.getUtxo(candidate).orElse(null) : null).get(outpoint));
+    }
+
+    public Optional<byte[]> getScriptRefBytesByHash(String scriptHash) {
+        Objects.requireNonNull(scriptHash, "scriptHash");
+        Optional<byte[]> mempoolScript = memPool.getScriptRefBytesByHash(scriptHash);
+        if (mempoolScript.isPresent()) return mempoolScript;
+        UtxoState canonicalState = utxoStateSupplier.get();
+        return canonicalState != null
+                ? canonicalState.getScriptRefBytesByHash(scriptHash) : Optional.empty();
     }
 
     public String submitTransaction(byte[] txCbor, BiConsumer<String, byte[]> acceptedSubmitter) {
@@ -273,35 +338,34 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
         readLock.lock();
         try {
             ensureAccepting();
-            String txHash = TransactionUtil.getTxHash(txCbor);
             String eventOrigin = normalizeOrigin(origin);
-
-            var validateEvent = new TransactionValidateEvent(txCbor, txHash, eventOrigin);
-            eventBus.publish(validateEvent,
-                    EventMetadata.builder().origin(eventOrigin).build(),
-                    PublishOptions.builder().build());
-
-            if (validateEvent.isRejected()) {
-                throw new TransactionValidationException(validateEvent.rejections());
-            }
-
-            ensureAccepting();
-            boolean alreadyPresent = memPool.contains(txHash);
-            var memPoolTransaction = memPool.addTransaction(txCbor);
-            if (memPoolTransaction != null) {
-                try {
-                    eventBus.publish(new MemPoolTransactionReceivedEvent(memPoolTransaction),
+            UtxoState canonicalState = utxoStateSupplier.get();
+            var admission = memPool.tryAdmit(
+                    txCbor,
+                    outpoint -> canonicalState != null
+                            ? canonicalState.getUtxo(outpoint).orElse(null) : null,
+                    (admissionBytes, txHash, resolver) -> {
+                        var validateEvent = new TransactionValidateEvent(
+                                admissionBytes, txHash, eventOrigin, resolver);
+                        eventBus.publish(validateEvent,
+                                EventMetadata.builder().origin(eventOrigin).build(),
+                                PublishOptions.builder().build());
+                        return validateEvent.rejections();
+                    },
+                    new MempoolAdmissionLimits(
+                            mempoolMaxTxs, mempoolMaxBytes, mempoolMaxUtxoIndexEntries),
+                    memPoolTransaction -> eventBus.publish(
+                            new MemPoolTransactionReceivedEvent(memPoolTransaction),
                             EventMetadata.builder().origin(eventOrigin).build(),
-                            PublishOptions.builder().build());
-                } catch (RuntimeException | Error e) {
-                    if (!alreadyPresent) {
-                        memPool.removeByTxHashes(Set.of(txHash));
-                    }
-                    throw e;
-                }
-            }
+                            PublishOptions.builder().build()));
 
-            return txHash;
+            if (admission.status() == MempoolAdmissionResult.Status.LEDGER_REJECTED) {
+                throw new TransactionValidationException(admission.rejections());
+            }
+            if (!admission.present()) {
+                throw new MempoolAdmissionException(admission);
+            }
+            return admission.txHash();
         } finally {
             readLock.unlock();
         }
@@ -326,6 +390,14 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
 
     public long mempoolTtlSeconds() {
         return mempoolTtlSeconds;
+    }
+
+    public int mempoolMaxUtxoIndexEntries() {
+        return mempoolMaxUtxoIndexEntries;
+    }
+
+    public MempoolStats mempoolStats() {
+        return memPool.stats();
     }
 
     public String txDiffusionMode() {
@@ -380,6 +452,28 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
         return blockTransactionSelector.drainForBlock();
     }
 
+    @Override
+    public void blockSelectionCompleted() {
+        blockTransactionSelector.blockSelectionCompleted();
+    }
+
+    @Override
+    public void blockSelectionFailed() {
+        blockTransactionSelector.blockSelectionFailed();
+    }
+
+    @Override
+    public int invalidateSelectedTransaction(String txHash) {
+        return blockTransactionSelector.invalidateSelectedTransaction(txHash);
+    }
+
+    /** Canonical acknowledgement, not publication, completes TxSubsystem selection. */
+    @Override
+    public void blockCandidatePublished() {
+        // Intentionally no-op. Selected entries remain visible until
+        // UtxoStateAppliedEvent drives onCanonicalBlockApplied().
+    }
+
     public void clearPendingTransactions() {
         var writeLock = admissionGate.writeLock();
         writeLock.lock();
@@ -396,11 +490,30 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
 
     @Override
     public synchronized SubsystemHealth health() {
+        var mempoolStats = memPool.stats();
         return new SubsystemHealth(name(), SubsystemHealth.Status.UP, null, Map.ofEntries(
                 Map.entry("mempoolSize", memPool.size()),
                 Map.entry("mempoolBytes", memPool.byteSize()),
                 Map.entry("mempoolMaxTxs", mempoolMaxTxs),
                 Map.entry("mempoolMaxBytes", mempoolMaxBytes),
+                Map.entry("mempoolUtxoIndexEntries", mempoolStats.utxoIndexEntries()),
+                Map.entry("mempoolProducedOutputs", mempoolStats.producedOutputs()),
+                Map.entry("mempoolSpentOutpoints", mempoolStats.spentOutpoints()),
+                Map.entry("mempoolReferenceScripts", mempoolStats.referenceScripts()),
+                Map.entry("mempoolDependencyEdges", mempoolStats.dependencyEdges()),
+                Map.entry("mempoolEstimatedIndexBytes", mempoolStats.estimatedIndexBytes()),
+                Map.entry("mempoolMaxUtxoIndexEntries", mempoolMaxUtxoIndexEntries),
+                Map.entry("mempoolDuplicateRejections", mempoolStats.duplicateRejections()),
+                Map.entry("mempoolConflictRejections", mempoolStats.conflictRejections()),
+                Map.entry("mempoolCapacityRejections", mempoolStats.capacityRejections()),
+                Map.entry("mempoolMalformedRejections", mempoolStats.malformedRejections()),
+                Map.entry("mempoolLedgerRejections", mempoolStats.ledgerRejections()),
+                Map.entry("mempoolCascadedRemovals", mempoolStats.cascadedRemovals()),
+                Map.entry("mempoolAdmissionQueueLength", mempoolStats.admissionQueueLength()),
+                Map.entry("mempoolAdmissionWaitNanos", mempoolStats.totalAdmissionWaitNanos()),
+                Map.entry("mempoolAdmissionHoldNanos", mempoolStats.totalAdmissionHoldNanos()),
+                Map.entry("mempoolValidationNanos", mempoolStats.totalValidationNanos()),
+                Map.entry("mempoolSlowValidations", mempoolStats.slowValidations()),
                 Map.entry("mempoolTtlSeconds", mempoolTtlSeconds),
                 Map.entry("accepting", accepting),
                 Map.entry("validationAvailable", transactionValidationService != null),
@@ -420,6 +533,9 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
                 globals, YanoPropertyKeys.Tx.MEMPOOL_MAX_BYTES, DEFAULT_MEMPOOL_MAX_BYTES));
         mempoolTtlSeconds = Math.max(0L, resolveLong(
                 globals, YanoPropertyKeys.Tx.MEMPOOL_TTL_SECONDS, DEFAULT_MEMPOOL_TTL_SECONDS));
+        mempoolMaxUtxoIndexEntries = Math.max(1, resolveInt(
+                globals, YanoPropertyKeys.Tx.MEMPOOL_MAX_UTXO_INDEX_ENTRIES,
+                DEFAULT_MEMPOOL_MAX_UTXO_INDEX_ENTRIES));
         txDiffusionMode = resolveTxDiffusionMode(globals);
         txDiffusionMaxInFlightTxsPerPeer = Math.max(1, resolveInt(
                 globals,
@@ -497,6 +613,35 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
 
     private static String normalizeOrigin(String origin) {
         return origin != null && !origin.isBlank() ? origin : "unknown";
+    }
+
+    private void onCanonicalBlockApplied(BlockAppliedEvent event) {
+        try {
+            MempoolEvictionPolicy policy = mempoolEvictionPolicy;
+            if (policy != null) policy.onBlockApplied(event);
+        } catch (Throwable e) {
+            rethrowIfProcessFatalReachable(e);
+            // Canonical UTXO state is already durable. Mempool reconciliation is
+            // derived bookkeeping and cannot be allowed to fail ledger apply.
+            log.error("Mempool cleanup failed after canonical block #{} apply: {}",
+                    event.blockNumber(), e.toString(), e);
+        } finally {
+            blockTransactionSelector.blockSelectionCompleted();
+        }
+    }
+
+    private void onCanonicalRollbackApplied() {
+        try {
+            UtxoState state = utxoStateSupplier.get();
+            memPool.revalidate(outpoint -> state != null
+                    ? state.getUtxo(outpoint).orElse(null) : null);
+        } catch (Throwable e) {
+            rethrowIfProcessFatalReachable(e);
+            log.error("Mempool reconciliation failed after canonical rollback: {}",
+                    e.toString(), e);
+        } finally {
+            blockTransactionSelector.blockSelectionCompleted();
+        }
     }
 
     private void ensureAccepting() {

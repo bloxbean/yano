@@ -125,6 +125,7 @@ yano:
     mempool:
       max-txs: 10000
       max-bytes: 134217728
+      max-utxo-index-entries: 100000
       ttl-seconds: 10800
     diffusion:
       # Simple relay MVP switch. true maps to all-hot transaction diffusion.
@@ -319,6 +320,8 @@ yano:
       tracking-enabled: true          # Protocol param tracking from blocks
     governance:
       enabled: true                   # Governance state tracking
+    utxo:
+      enabled: true                   # Required by devnet faucet, queries, and transaction validation
     block-producer:
       enabled: true
       block-time-millis: 0
@@ -358,6 +361,8 @@ yano:
       tracking-enabled: true          # Protocol param tracking from blocks
     governance:
       enabled: true                   # Governance state tracking
+    utxo:
+      enabled: true                   # Required by devnet faucet, queries, and transaction validation
     block-producer:
       enabled: true
       slot-leader-mode: true

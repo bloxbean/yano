@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.runtime.assembly;
 import com.bloxbean.cardano.yano.api.ChainQuery;
 import com.bloxbean.cardano.yano.api.DevnetControl;
 import com.bloxbean.cardano.yano.api.LedgerQuery;
+import com.bloxbean.cardano.yano.api.MempoolQueryGateway;
 import com.bloxbean.cardano.yano.api.NodeLifecycle;
 import com.bloxbean.cardano.yano.api.ProducerControl;
 import com.bloxbean.cardano.yano.api.TxEvaluationGateway;
@@ -135,6 +136,12 @@ final class RuntimeYano implements Yano, DevnetRuntimeProvider {
     @Override
     public TxEvaluationGateway txEvaluationGateway() {
         return txEvaluationGateway;
+    }
+
+    @Override
+    public MempoolQueryGateway mempoolQueryGateway() {
+        return txEvaluationGateway instanceof MempoolQueryGateway gateway
+                ? gateway : MempoolQueryGateway.UNAVAILABLE;
     }
 
     @Override

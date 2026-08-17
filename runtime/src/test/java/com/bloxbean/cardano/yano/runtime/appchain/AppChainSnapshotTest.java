@@ -287,11 +287,17 @@ class AppChainSnapshotTest {
         Path ledgerDir = restoreBase.resolve("snap-chain");
         copyDir(snapshotDir, ledgerDir);
 
-        // Flip one byte in the first sst/log file covered by the manifest
-        Path victim = java.nio.file.Files.walk(ledgerDir)
-                .filter(java.nio.file.Files::isRegularFile)
-                .filter(p -> !p.getFileName().toString().startsWith("snapshot-manifest"))
-                .findFirst().orElseThrow();
+        // Flip one byte in a non-empty snapshot data file covered by the manifest.
+        // RocksDB checkpoints may contain zero-byte files, and Files.walk() does
+        // not guarantee an order across filesystems.
+        Path victim;
+        try (var files = java.nio.file.Files.walk(ledgerDir)) {
+            victim = files
+                    .filter(java.nio.file.Files::isRegularFile)
+                    .filter(p -> !p.getFileName().toString().startsWith("snapshot-manifest"))
+                    .filter(AppChainSnapshotTest::isNonEmptyFile)
+                    .findFirst().orElseThrow();
+        }
         byte[] bytes = java.nio.file.Files.readAllBytes(victim);
         bytes[bytes.length / 2] ^= 0x01;
         java.nio.file.Files.write(victim, bytes);
@@ -366,6 +372,14 @@ class AppChainSnapshotTest {
                 throw new RuntimeException(e);
             }
         });
+    }
+
+    private static boolean isNonEmptyFile(Path path) {
+        try {
+            return java.nio.file.Files.size(path) > 0;
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
     }
 
     private static AppStateMachine snapshotEffectEmitter() {
