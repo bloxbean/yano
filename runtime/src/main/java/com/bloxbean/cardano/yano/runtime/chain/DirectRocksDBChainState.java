@@ -547,19 +547,21 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
     }
 
     @Override
-    public Optional<ByronEpochBoundaryReference> getByronEpochBoundaryBlock(long slot) {
+    public Optional<ByronEpochBoundaryReference> getByronEpochBoundaryBlockAtOrBefore(long slot) {
         if (slot < 0) return Optional.empty();
-        try {
-            byte[] blockHash = db.get(ebbBySlot0Handle, longToBytes(slot));
-            if (blockHash == null) return Optional.empty();
+        try (RocksIterator iterator = db.newIterator(ebbBySlot0Handle)) {
+            iterator.seekForPrev(longToBytes(slot));
+            if (!iterator.isValid()) return Optional.empty();
+            long ebbSlot = bytesToLong(iterator.key());
+            byte[] blockHash = Arrays.copyOf(iterator.value(), iterator.value().length);
             byte[] body = db.get(blocksHandle, blockHash);
             if (body == null) return Optional.empty();
             String parentHash = ByronEbBlockSerializer.INSTANCE.deserialize(body).getHeader().getPrevBlock();
             if (parentHash == null || parentHash.isBlank()) return Optional.empty();
-            return Optional.of(new ByronEpochBoundaryReference(slot, blockHash,
+            return Optional.of(new ByronEpochBoundaryReference(ebbSlot, blockHash,
                     HexUtil.decodeHexString(parentHash)));
         } catch (Exception e) {
-            log.warn("Failed to read Byron EBB reference for slot {}: {}", slot, e.toString());
+            log.warn("Failed to read Byron EBB reference at or before slot {}: {}", slot, e.toString());
             return Optional.empty();
         }
     }

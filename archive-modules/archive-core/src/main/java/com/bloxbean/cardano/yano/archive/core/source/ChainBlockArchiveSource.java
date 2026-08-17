@@ -52,7 +52,7 @@ public final class ChainBlockArchiveSource<B> implements BlockArchiveSource<B> {
         // The decoded source block is authoritative here. The chain-state era
         // helper can be unavailable for raw Byron storage representations.
         if (!(current.block() instanceof Block block) || block.getEra() != Era.Byron) return false;
-        return reader.getByronEpochBoundaryBlock(current.slot())
+        return reader.getByronEpochBoundaryBlockAtOrBefore(current.slot())
                 .filter(ebb -> Arrays.equals(ebb.blockHash(), current.parentHash())
                         && Arrays.equals(ebb.parentHash(), predecessorHash))
                 .isPresent();

@@ -3966,9 +3966,10 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     }
 
     @Override
-    public Optional<com.bloxbean.cardano.yano.api.ByronEpochBoundaryReference> getByronEpochBoundaryBlock(long slot) {
+    public Optional<com.bloxbean.cardano.yano.api.ByronEpochBoundaryReference>
+    getByronEpochBoundaryBlockAtOrBefore(long slot) {
         if (chainState instanceof com.bloxbean.cardano.yano.runtime.chain.ArchiveChainStateCapabilities capabilities) {
-            return capabilities.getByronEpochBoundaryBlock(slot);
+            return capabilities.getByronEpochBoundaryBlockAtOrBefore(slot);
         }
         return Optional.empty();
     }

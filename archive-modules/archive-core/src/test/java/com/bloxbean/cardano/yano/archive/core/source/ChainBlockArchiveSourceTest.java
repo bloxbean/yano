@@ -25,7 +25,7 @@ class ChainBlockArchiveSourceTest {
             ChainBlockReader reader = reader(Era.Conway,
                     Optional.of(new ByronEpochBoundaryReference(21_600, new byte[] {2}, new byte[] {1})));
             var source = new ChainBlockArchiveSource<Block>(reader, (number, reference, body) -> null, hot);
-            var current = context(Era.Byron, new byte[] {2});
+            var current = context(Era.Byron, 22_588, new byte[] {2});
 
             assertThat(source.extendsCanonicalParent(new byte[] {1}, current)).isTrue();
             assertThat(source.extendsCanonicalParent(new byte[] {3}, current)).isFalse();
@@ -39,7 +39,7 @@ class ChainBlockArchiveSourceTest {
                     Optional.of(new ByronEpochBoundaryReference(21_600, new byte[] {2}, new byte[] {1})));
             var source = new ChainBlockArchiveSource<Block>(reader, (number, reference, body) -> null, hot);
 
-            assertThat(source.extendsCanonicalParent(new byte[] {1}, context(Era.Conway, new byte[] {2}))).isFalse();
+            assertThat(source.extendsCanonicalParent(new byte[] {1}, context(Era.Conway, 22_588, new byte[] {2}))).isFalse();
         }
     }
 
@@ -48,14 +48,14 @@ class ChainBlockArchiveSourceTest {
             @Override public ChainTip getLocalTip() { return null; }
             @Override public byte[] getBlockByNumber(long blockNumber) { return null; }
             @Override public Era getBlockEra(long blockNumber) { return era; }
-            @Override public Optional<ByronEpochBoundaryReference> getByronEpochBoundaryBlock(long slot) {
+            @Override public Optional<ByronEpochBoundaryReference> getByronEpochBoundaryBlockAtOrBefore(long slot) {
                 return ebb;
             }
         };
     }
 
-    private static BlockSourceContext<Block> context(Era era, byte[] parentHash) {
-        return new BlockSourceContext<>(21_587, 21_600, 0, Instant.EPOCH,
+    private static BlockSourceContext<Block> context(Era era, long slot, byte[] parentHash) {
+        return new BlockSourceContext<>(21_587, slot, 0, Instant.EPOCH,
                 new byte[] {3}, parentHash, Block.builder().era(era).build());
     }
 }

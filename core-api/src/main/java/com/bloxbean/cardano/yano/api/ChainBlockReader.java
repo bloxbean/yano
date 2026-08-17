@@ -27,11 +27,11 @@ public interface ChainBlockReader {
     }
 
     /**
-     * Canonical Byron epoch-boundary block at an epoch-start slot. Epoch-boundary
-     * blocks have no main-chain block number, so this is intentionally a
-     * separate lookup.
+     * Latest canonical Byron epoch-boundary block at or before {@code slot}.
+     * A main block can follow an epoch boundary several empty Byron slots later,
+     * while still naming that boundary block as its direct parent.
      */
-    default Optional<ByronEpochBoundaryReference> getByronEpochBoundaryBlock(long slot) {
+    default Optional<ByronEpochBoundaryReference> getByronEpochBoundaryBlockAtOrBefore(long slot) {
         return Optional.empty();
     }
 

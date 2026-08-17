@@ -10,7 +10,7 @@ import java.util.OptionalLong;
 public interface ArchiveChainStateCapabilities {
     Optional<CanonicalBlockReference> getCanonicalBlockReference(long blockNumber);
 
-    default Optional<ByronEpochBoundaryReference> getByronEpochBoundaryBlock(long slot) {
+    default Optional<ByronEpochBoundaryReference> getByronEpochBoundaryBlockAtOrBefore(long slot) {
         return Optional.empty();
     }
 
