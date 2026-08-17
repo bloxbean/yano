@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 ## Date
 
@@ -401,12 +401,27 @@ yano:
       max-txs: 10000
       max-bytes: 134217728
       ttl-seconds: 10800
-      max-utxo-index-entries: 250000
+      max-utxo-index-entries: 100000
 ```
 
 `max-utxo-index-entries` counts physical records across produced, spent, parent,
-and child indexes. The default of 250,000 is an initial operational limit and
-must be validated with heap profiling before this ADR is accepted.
+child, and reference-script indexes. The default is 100,000. Operators with a
+larger measured heap envelope can raise it explicitly.
+
+The acceptance profile on 2026-08-16 filled an adversarial mempool with 9,615
+transactions containing 25 outputs and one regular input each. The index stopped
+at 249,990 physical records under a temporary 250,000-record limit. After forced
+GC, used heap increased from 31.9 MiB with an empty mempool to 567 MiB at the
+limit: approximately 535 MiB retained, or 2.2 KiB per physical record for that
+transaction shape. Raw transaction CBOR was only 16.4 MiB.
+
+That result closes the profiling gate and makes 250,000 too costly as a general
+default. The 100,000-record default would retain approximately 214 MiB if the
+profiled workload scaled linearly; this is sizing guidance, not a JVM-independent
+guarantee. It still permits the 10,000-transaction limit for common independent
+payments (about three records per transaction) and simple parent-linked payments
+(about five records per transaction), while complex transactions encounter
+explicit `INDEX_CAPACITY` backpressure sooner.
 
 Before commit, admission calculates every record the candidate would add. If
 transaction count, raw bytes, or index cardinality would exceed a hard limit,
@@ -426,12 +441,17 @@ Expose at least:
 - admission-lane wait and hold duration;
 - ledger-validation duration;
 - slow validation-listener count;
-- estimated index bytes, explicitly labeled as an estimate.
+- estimated index bytes, explicitly labeled as a structural estimate rather
+  than a retained-heap forecast.
 
-Exact retained heap is JVM-dependent. Acceptance therefore requires profiling
-representative and adversarial full-mempool workloads. If 250,000 records exceed
-the agreed heap envelope, lower the default or use a more compact representation
-before enabling the feature by default.
+Exact retained heap is JVM- and workload-dependent. In the acceptance profile,
+the existing structural estimate reported about 62 MiB while the entire mempool
+overlay retained about 535 MiB. The values measure different things: the latter
+also includes transaction bodies, projections, decoded UTXOs, collection
+capacity, and object overhead. Operators must therefore use the hard cardinality
+limit and measured workload profiles for heap sizing, not treat the structural
+metric as a heap commitment. A calibrated whole-overlay retained-heap estimator
+is deferred until multiple representative transaction shapes have been profiled.
 
 ## Removal Semantics
 
@@ -559,9 +579,13 @@ Tradeoffs:
   contract.
 - A concurrently submitted child can be rejected if it reaches the lane before
   its parent.
-- The overlay consumes additional heap and needs retained-heap profiling.
+- The overlay consumes bounded but material heap; the profiled 100,000-record
+  default is expected to retain roughly 214 MiB under the adversarial acceptance
+  workload, with actual retention dependent on transaction shape and JVM.
 - Removing one non-confirmed parent can cascade through a large chain.
 - Correct confirmation cleanup requires ordering against canonical UTXO apply.
+- Transactions removed as confirmed are not automatically re-admitted if that
+  block is later rolled back; clients or peers must resubmit them.
 - Only UTXO chaining is supported; cross-transaction certificate and governance
   state dependencies remain unsupported.
 
@@ -586,7 +610,7 @@ Tradeoffs:
 9. Order confirmed removal after synchronous UTXO apply or async UTXO apply
    acknowledgement, and add rollback revalidation.
 10. Add metrics and heap-profile representative and adversarial full-mempool
-    workloads; validate or revise the 250,000-entry default.
+    workloads; use the measured result to set the accepted 100,000-entry default.
 
 ## Verification
 

@@ -64,7 +64,7 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
     private static final int DEFAULT_MEMPOOL_MAX_TXS = 10_000;
     private static final long DEFAULT_MEMPOOL_MAX_BYTES = 128L * 1024L * 1024L;
     private static final long DEFAULT_MEMPOOL_TTL_SECONDS = 10_800L;
-    private static final int DEFAULT_MEMPOOL_MAX_UTXO_INDEX_ENTRIES = 250_000;
+    private static final int DEFAULT_MEMPOOL_MAX_UTXO_INDEX_ENTRIES = 100_000;
     private static final boolean DEFAULT_TX_DIFFUSION_ENABLED = true;
     private static final String DEFAULT_TX_DIFFUSION_MODE = "all-hot";
     private static final int DEFAULT_MAX_IN_FLIGHT_TXS_PER_PEER = 100;

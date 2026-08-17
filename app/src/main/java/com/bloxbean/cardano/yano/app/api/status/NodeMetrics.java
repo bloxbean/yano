@@ -120,7 +120,7 @@ public class NodeMetrics {
         gauge("yano.node.mempool.capacity.index.entries", Snapshot::mempoolMaxUtxoIndexEntries,
                 "Configured mempool UTXO and dependency index capacity");
         gauge("yano.node.mempool.index.estimated.bytes", Snapshot::mempoolEstimatedIndexBytes,
-                "Estimated retained bytes for mempool indexes");
+                "Structural byte estimate for mempool indexes, not a retained-heap forecast");
 
         taggedFunctionCounter("yano.node.mempool.rejections.total", "reason", "duplicate",
                 Snapshot::mempoolDuplicateRejections, "Process-lifetime mempool rejections by bounded reason");

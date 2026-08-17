@@ -82,6 +82,9 @@ class NodeMetricsTest {
                 .gauge().value()).isEqualTo(22);
         assertThat(registry.get("yano.node.mempool.dependency.edges")
                 .gauge().value()).isEqualTo(26);
+        assertThat(registry.get("yano.node.mempool.index.estimated.bytes")
+                .gauge().getId().getDescription())
+                .isEqualTo("Structural byte estimate for mempool indexes, not a retained-heap forecast");
         assertThat(registry.get("yano.node.mempool.rejections.total").tag("reason", "capacity")
                 .functionCounter().count()).isEqualTo(30);
         assertThat(registry.get("yano.node.mempool.admission.duration.seconds").tag("phase", "wait")

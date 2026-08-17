@@ -427,6 +427,7 @@ class TxSubsystemTest {
         subsystem.stop();
         subsystem.start();
 
+        assertThat(subsystem.mempoolMaxUtxoIndexEntries()).isEqualTo(100_000);
         assertThat(subsystem.health().details()).containsEntry("mempoolSize", 0);
         subsystem.close();
     }
