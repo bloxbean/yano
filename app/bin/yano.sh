@@ -56,7 +56,10 @@ Examples:
   ./yano.sh observability status
 
 Environment:
-  JAVA_OPTS        JVM options for jar distribution only
+  JAVA_OPTS        JVM options for jar and native distributions. The native
+                   binary accepts -D, -X (-Xmx/-Xms/-Xss) and -verbose entries;
+                   HotSpot -XX: flags, agents and module flags are dropped with
+                   a warning because a native image has no equivalent.
   YANO_EXTRA_ARGS  Extra runtime args for jar and native distributions
 
 Advanced:
@@ -295,15 +298,54 @@ if [ -n "$PROFILE" ]; then
     PROFILE_PROP="-Dquarkus.profile=${PROFILE}"
 fi
 
+# JAVA_OPTS is honoured by both distributions. A GraalVM native image accepts
+# -D system properties and the -X memory flags (-Xmx/-Xms/-Xss), so those are
+# forwarded verbatim. It does not implement HotSpot's -XX: namespace or JVM
+# agents -- passing those through aborts startup with
+# "error: Could not find option ..." -- so they are dropped with an explicit
+# warning rather than silently ignored or allowed to break the launch.
+NATIVE_JAVA_OPTS=()
+collect_native_java_opts() {
+    NATIVE_JAVA_OPTS=()
+    [ -n "${JAVA_OPTS:-}" ] || return 0
+
+    local dropped=""
+    local opt
+    # shellcheck disable=SC2086
+    set -- $JAVA_OPTS
+    for opt in "$@"; do
+        case "$opt" in
+            -XX:*|-javaagent*|-agentlib*|-agentpath*|--add-*|--enable-preview)
+                dropped="${dropped} ${opt}"
+                ;;
+            -D*|-X*|-verbose*)
+                NATIVE_JAVA_OPTS[${#NATIVE_JAVA_OPTS[@]}]="$opt"
+                ;;
+            *)
+                dropped="${dropped} ${opt}"
+                ;;
+        esac
+    done
+
+    if [ -n "$dropped" ]; then
+        echo "Warning: the native binary cannot accept these JAVA_OPTS entries:" >&2
+        echo "        ${dropped# }" >&2
+        echo "         HotSpot -XX: flags, agents and module flags have no native" >&2
+        echo "         equivalent. All -D, -X and -verbose entries were applied." >&2
+    fi
+}
+
 # Auto-detect mode: native binary or JAR
 if [ -f "$YANO_ROOT/yano" ]; then
     # Native binary mode
     echo "Starting Yano (native)${PROFILE:+ with profile: $PROFILE}..."
+    collect_native_java_opts
+    echo "JAVA_OPTS=${JAVA_OPTS:-}"
     echo "YANO_EXTRA_ARGS=${YANO_EXTRA_ARGS:-}"
     # shellcheck disable=SC2086
     exec "$YANO_ROOT/yano" \
         -Dyano.block-producer.script-evaluator=scalus \
-        $PROFILE_PROP ${YANO_EXTRA_ARGS:-} "${PASSTHROUGH_ARGS[@]}"
+        "${NATIVE_JAVA_OPTS[@]}" $PROFILE_PROP ${YANO_EXTRA_ARGS:-} "${PASSTHROUGH_ARGS[@]}"
 elif [ -f "$YANO_ROOT/yano.jar" ]; then
     # Uber-jar mode
     echo "Starting Yano (JVM)${PROFILE:+ with profile: $PROFILE}..."
@@ -313,11 +355,13 @@ elif [ -f "$YANO_ROOT/yano.jar" ]; then
     exec java ${JAVA_OPTS:-} $PROFILE_PROP -jar "$YANO_ROOT/yano.jar" ${YANO_EXTRA_ARGS:-} "${PASSTHROUGH_ARGS[@]}"
 elif [ -n "$REPOSITORY_ROOT" ] && [ -f "$YANO_ROOT/build/yano" ]; then
     echo "Starting Yano (native)${PROFILE:+ with profile: $PROFILE}..."
+    collect_native_java_opts
+    echo "JAVA_OPTS=${JAVA_OPTS:-}"
     echo "YANO_EXTRA_ARGS=${YANO_EXTRA_ARGS:-}"
     # shellcheck disable=SC2086
     exec "$YANO_ROOT/build/yano" \
         -Dyano.block-producer.script-evaluator=scalus \
-        $PROFILE_PROP ${YANO_EXTRA_ARGS:-} "${PASSTHROUGH_ARGS[@]}"
+        "${NATIVE_JAVA_OPTS[@]}" $PROFILE_PROP ${YANO_EXTRA_ARGS:-} "${PASSTHROUGH_ARGS[@]}"
 elif [ -n "$REPOSITORY_ROOT" ] && [ -f "$YANO_ROOT/build/yano.jar" ]; then
     echo "Starting Yano (JVM)${PROFILE:+ with profile: $PROFILE}..."
     echo "JAVA_OPTS=${JAVA_OPTS:-}"
