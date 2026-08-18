@@ -311,12 +311,19 @@ fi
 #
 # Only constructs a native image can never implement -- JVM agents and the
 # module-system flags -- are dropped, and then with an explicit warning.
+#
+# -X is the asymmetric case: the image silently ignores an -X it does not
+# understand, so a typo or a HotSpot-only flag would take no effect with no
+# error. Anything beyond the verified -Xmx/-Xms/-Xss is therefore still
+# forwarded, but called out so the operator is never left assuming a setting
+# applied when it did not.
 NATIVE_JAVA_OPTS=()
 collect_native_java_opts() {
     NATIVE_JAVA_OPTS=()
     [ -n "${JAVA_OPTS:-}" ] || return 0
 
     local dropped=""
+    local unverified=""
     local opt
     # shellcheck disable=SC2086
     set -- $JAVA_OPTS
@@ -325,7 +332,13 @@ collect_native_java_opts() {
             -javaagent*|-agentlib*|-agentpath*|--add-*|--enable-preview)
                 dropped="${dropped} ${opt}"
                 ;;
-            -D*|-X*|-verbose*)
+            -D*|-Xmx*|-Xms*|-Xss*|-XX:*|-verbose*)
+                NATIVE_JAVA_OPTS[${#NATIVE_JAVA_OPTS[@]}]="$opt"
+                ;;
+            -X*)
+                # Forwarded so a newer GraalVM keeps working, but flagged: the
+                # image will not complain if it does not understand it.
+                unverified="${unverified} ${opt}"
                 NATIVE_JAVA_OPTS[${#NATIVE_JAVA_OPTS[@]}]="$opt"
                 ;;
             *)
@@ -338,8 +351,14 @@ collect_native_java_opts() {
         echo "Warning: dropping JAVA_OPTS entries a native image cannot implement:" >&2
         echo "        ${dropped# }" >&2
         echo "         JVM agents and module-system flags have no native equivalent." >&2
-        echo "         All other entries, including -XX: options, were applied; run" >&2
-        echo "         '<binary> -XX:PrintFlags=' to list the options this image supports." >&2
+    fi
+    if [ -n "$unverified" ]; then
+        echo "Warning: forwarding JAVA_OPTS entries this image may ignore silently:" >&2
+        echo "        ${unverified# }" >&2
+        echo "         Only -Xmx, -Xms and -Xss are verified on a native image, and" >&2
+        echo "         unknown -X options are accepted without error, so a typo or a" >&2
+        echo "         HotSpot-only flag would take no effect. Prefer the equivalent" >&2
+        echo "         -XX: option; run '<binary> -XX:PrintFlags=' to list them." >&2
     fi
 }
 
