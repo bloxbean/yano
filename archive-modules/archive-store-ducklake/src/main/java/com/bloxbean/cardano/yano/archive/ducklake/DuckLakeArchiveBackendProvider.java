@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.archive.ducklake;
 import com.bloxbean.cardano.yano.archive.api.ArchiveBackend;
 import com.bloxbean.cardano.yano.archive.api.ArchiveBackendProvider;
 import com.bloxbean.cardano.yano.archive.api.ArchiveIdentity;
+import com.bloxbean.cardano.yano.archive.api.ArchiveWaitPolicy;
 
 import java.nio.file.Path;
 import java.time.Duration;
@@ -35,7 +36,7 @@ public final class DuckLakeArchiveBackendProvider implements ArchiveBackendProvi
                         number(validatedProperties, "duckdb.bulk-memory-bytes", defaultsManager.bulkCatchUp().memoryLimitBytes()),
                         integer(validatedProperties, "duckdb.bulk-threads", defaultsManager.bulkCatchUp().threads())));
         return DuckLakeHistoryArchiveBackend.open(expectedIdentity, archiveConfig, manager,
-                new PackagedDuckDbExtensionLoader(extensions));
+                new PackagedDuckDbExtensionLoader(extensions), archiveConfig.waitPolicy());
     }
 
     static DuckLakeArchiveConfig archiveConfig(Path historyDirectory,
@@ -51,7 +52,8 @@ public final class DuckLakeArchiveBackendProvider implements ArchiveBackendProvi
                 Duration.ofHours(number(validatedProperties, "snapshot-retention-hours",
                         defaults.snapshotRetention().toHours())),
                 Duration.ofHours(number(validatedProperties, "cleanup-grace-hours",
-                        defaults.cleanupGrace().toHours())));
+                        defaults.cleanupGrace().toHours())),
+                ArchiveWaitPolicy.fromProperties(validatedProperties, defaults.waitPolicy()));
     }
 
     private static Path path(Map<String, String> properties, String name, Path fallback) {

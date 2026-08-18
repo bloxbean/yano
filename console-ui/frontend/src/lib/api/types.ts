@@ -98,7 +98,44 @@ export interface ArchiveHistoryStatus {
   datasets?: Record<string, ArchiveDatasetStatus>;
   finalizedConsistency?: ArchiveConsistencyStatus;
   maintenance?: ArchiveMaintenanceStatus;
+  resources?: ArchiveResourceStatus;
   epochStagingError?: string;
+  cycleError?: string;
+  shutdownError?: string;
+  /** Present when dataset state could not be read, e.g. under reader saturation. */
+  datasetsUnavailable?: string;
+  /** Per-stage cycle failures, keyed by stage name; a stage failing no longer skips the rest. */
+  stageErrors?: Record<string, string>;
+}
+
+/** Scheduling-only contention view. Carries no row, address, or transaction data. */
+export interface ArchiveResourceStatus {
+  gates?: ArchiveGateUsage[];
+  lastWaitWarning?: ArchiveWaitWarning;
+  lastMutationFailure?: ArchiveMutationFailure;
+}
+
+export interface ArchiveGateUsage {
+  name?: string;
+  inUse?: number;
+  totalPermits?: number;
+  waiters?: number;
+  holder?: string;
+  holderSeconds?: number;
+}
+
+export interface ArchiveWaitWarning {
+  gate?: string;
+  operation?: string;
+  waitedSeconds?: number;
+  holder?: string;
+  at?: string;
+}
+
+export interface ArchiveMutationFailure {
+  operation?: string;
+  detail?: string;
+  at?: string;
 }
 
 export interface ArchiveHealth {
@@ -120,6 +157,8 @@ export interface ArchiveWorkerConfiguration {
 
 export interface ArchiveDatasetStatus {
   enabled?: boolean;
+  /** Present only for a configured-but-disabled dataset. */
+  state?: string;
   startMode?: string;
   retentionEpochs?: number;
   subjects?: Record<string, boolean>;
@@ -163,6 +202,8 @@ export interface ArchiveMaintenanceStatus {
   maxBytesToRewrite?: number;
   lastCompletedAt?: string;
   error?: string;
+  /** Why bounded upkeep did not run: active snapshot, writer wait, time budget, rewrite budget. */
+  deferredReason?: string;
 }
 
 export interface Peer {

@@ -296,6 +296,10 @@ public final class YanoPropertyKeys {
                 PREFIX + "datasets.address-transactions.subjects.payment-credential";
         public static final String ADDRESS_SUBJECT_STAKE_CREDENTIAL =
                 PREFIX + "datasets.address-transactions.subjects.stake-credential";
+        /** Interval at which an ongoing archive resource wait logs diagnostics. Waiting is not a failure. */
+        public static final String ARCHIVE_WAIT_WARN_SECONDS = PREFIX + "archive.wait-warn-seconds";
+        /** Only after this does a resource wait fail the archive mutation, without advancing any cursor. */
+        public static final String ARCHIVE_STUCK_OPERATION_SECONDS = PREFIX + "archive.stuck-operation-seconds";
         public static final String MAINTENANCE_INTERVAL_SECONDS = PREFIX + "maintenance.interval-seconds";
         public static final String MAINTENANCE_TIME_LIMIT_SECONDS = PREFIX + "maintenance.time-limit-seconds";
         public static final String MAINTENANCE_MAX_REWRITE = PREFIX + "maintenance.max-bytes-to-rewrite";

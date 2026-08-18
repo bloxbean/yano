@@ -302,5 +302,9 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
         }
     }
 
-    record SourceBinding<T>(DurableEpochFileSource<T> source, EpochArchiveDataset<T> projection) { }
+    record SourceBinding<T>(DurableEpochFileSource<T> source, EpochArchiveDataset<T> projection) {
+        ArchiveDatasetId dataset() {
+            return projection.dataset();
+        }
+    }
 }

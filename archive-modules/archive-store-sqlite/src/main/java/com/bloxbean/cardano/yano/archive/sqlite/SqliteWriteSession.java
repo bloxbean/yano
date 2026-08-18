@@ -33,6 +33,9 @@ final class SqliteWriteSession implements ArchiveWriteSession {
     private final ArchiveJob job;
     private final Connection connection;
     private final ArchiveReceipt replayReceipt;
+    // This session owns its writer permit for its whole life, including when it
+    // is closed on a different executor than the one that opened it.
+    private final long writerTicket;
     private final long generation;
     private final Map<String, ArchiveTableSchema> allowedTables;
     private final Map<String, PreparedStatement> inserts = new HashMap<>();
@@ -43,12 +46,13 @@ final class SqliteWriteSession implements ArchiveWriteSession {
     private boolean closed;
 
     SqliteWriteSession(SqliteHistoryArchiveBackend backend, ArchiveJob job, Connection connection,
-                       ArchiveReceipt replayReceipt, long generation) {
+                       ArchiveReceipt replayReceipt, long generation, long writerTicket) {
         this.backend = backend;
         this.job = job;
         this.connection = connection;
         this.replayReceipt = replayReceipt;
         this.generation = generation;
+        this.writerTicket = writerTicket;
         this.allowedTables = ArchiveSchemas.schema(job.dataset()).tables().stream()
                 .collect(java.util.stream.Collectors.toUnmodifiableMap(ArchiveTableSchema::physicalName, table -> table));
         try {
@@ -211,6 +215,6 @@ final class SqliteWriteSession implements ArchiveWriteSession {
             }
             try { connection.close(); } catch (SQLException ignored) { }
         }
-        backend.releaseWriter();
+        backend.releaseWriter(writerTicket);
     }
 }

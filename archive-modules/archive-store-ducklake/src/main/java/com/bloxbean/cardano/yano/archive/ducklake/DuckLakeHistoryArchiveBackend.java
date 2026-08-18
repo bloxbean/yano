@@ -6,11 +6,16 @@ import com.bloxbean.cardano.yano.archive.api.ArchiveCapabilities;
 import com.bloxbean.cardano.yano.archive.api.ArchiveCommitBoundary;
 import com.bloxbean.cardano.yano.archive.api.ArchiveCoverage;
 import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
+import com.bloxbean.cardano.yano.archive.api.ArchiveFatalException;
 import com.bloxbean.cardano.yano.archive.api.ArchiveHealth;
 import com.bloxbean.cardano.yano.archive.api.ArchiveIdentity;
 import com.bloxbean.cardano.yano.archive.api.ArchiveJob;
 import com.bloxbean.cardano.yano.archive.api.ArchiveMaintenanceBudget;
 import com.bloxbean.cardano.yano.archive.api.ArchiveRange;
+import com.bloxbean.cardano.yano.archive.api.ArchiveResourceDiagnostics;
+import com.bloxbean.cardano.yano.archive.api.ArchiveResourceGate;
+import com.bloxbean.cardano.yano.archive.api.ArchiveStuckOperationException;
+import com.bloxbean.cardano.yano.archive.api.ArchiveWaitPolicy;
 import com.bloxbean.cardano.yano.archive.api.ArchiveRangeAnchor;
 import com.bloxbean.cardano.yano.archive.api.ArchiveReadSession;
 import com.bloxbean.cardano.yano.archive.api.ArchiveReceipt;
@@ -45,7 +50,6 @@ import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -54,6 +58,8 @@ import java.util.concurrent.locks.StampedLock;
 
 /** DuckLake/SQLite-catalog backend. All historical row data is DuckLake-managed Parquet. */
 public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
+    private static final System.Logger LOG =
+            System.getLogger(DuckLakeHistoryArchiveBackend.class.getName());
     private static final ArchiveCapabilities CAPABILITIES = new ArchiveCapabilities(
             true, false, true, true, true);
     private static final List<String> CONTROL_TABLES = List.of(
@@ -70,8 +76,12 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
     private final boolean ownsManager;
     private final ArchiveDirectoryLock directoryLock;
     // A session may be closed by a different executor than the one that opened it.
-    // A semaphore preserves single-writer semantics without thread ownership.
-    private final Semaphore writer = new Semaphore(1, true);
+    // A fair semaphore preserves single-writer FIFO semantics without thread
+    // ownership; the gate adds only wait diagnostics and the warn/stuck split.
+    private final ArchiveResourceGate writer;
+    private final AtomicReference<ArchiveResourceDiagnostics.FailureEvent> lastFailure =
+            new AtomicReference<>();
+    private final AtomicReference<String> lastMaintenanceDeferral = new AtomicReference<>();
     // Stamps are not thread-owned, so a request/session may be closed by a
     // different executor while backup and shutdown still wait for quiescence.
     private final StampedLock sessionGate = new StampedLock();
@@ -100,12 +110,26 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
                                                       DuckLakeArchiveConfig config,
                                                       DuckDbManagerConfig managerConfig,
                                                       PackagedDuckDbExtensionLoader extensions) {
+        return open(identity, config, managerConfig, extensions, config.waitPolicy());
+    }
+
+    public static DuckLakeHistoryArchiveBackend open(ArchiveIdentity identity,
+                                                      DuckLakeArchiveConfig config,
+                                                      DuckDbManagerConfig managerConfig,
+                                                      PackagedDuckDbExtensionLoader extensions,
+                                                      ArchiveWaitPolicy waitPolicy) {
         return new DuckLakeHistoryArchiveBackend(identity, config,
-                new DuckDbManager(managerConfig, extensions), true);
+                new DuckDbManager(managerConfig, extensions, waitPolicy), true, waitPolicy);
     }
 
     private DuckLakeHistoryArchiveBackend(ArchiveIdentity identity, DuckLakeArchiveConfig config,
                                           DuckDbManager manager, boolean ownsManager) {
+        this(identity, config, manager, ownsManager, config.waitPolicy());
+    }
+
+    private DuckLakeHistoryArchiveBackend(ArchiveIdentity identity, DuckLakeArchiveConfig config,
+                                          DuckDbManager manager, boolean ownsManager,
+                                          ArchiveWaitPolicy waitPolicy) {
         this.identity = java.util.Objects.requireNonNull(identity, "identity");
         if (!identity.engine().equals("ducklake")) {
             throw new IllegalArgumentException("DuckLake backend requires engine=ducklake");
@@ -113,6 +137,9 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
         this.config = java.util.Objects.requireNonNull(config, "config");
         this.manager = java.util.Objects.requireNonNull(manager, "manager");
         this.ownsManager = ownsManager;
+        this.writer = new ArchiveResourceGate("ducklake-writer", 1,
+                java.util.Objects.requireNonNull(waitPolicy, "waitPolicy"),
+                DuckLakeHistoryArchiveBackend::logWait);
         try {
             Files.createDirectories(config.dataPath());
         } catch (Exception | Error e) {
@@ -153,36 +180,62 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
         requireOpen();
         java.util.Objects.requireNonNull(job, "job");
         if (!job.networkIdentity().equals(identity.networkIdentity())) {
-            throw new ArchiveStoreException("archive job network identity does not match backend");
+            throw new ArchiveFatalException("archive job network identity does not match backend");
         }
         int currentProjection = ArchiveSchemas.schema(job.dataset()).projectionVersion();
         if (job.projectionVersion() != currentProjection) {
-            throw new ArchiveStoreException("archive job projection version " + job.projectionVersion()
+            throw new ArchiveFatalException("archive job projection version " + job.projectionVersion()
                     + " does not match current " + currentProjection + " for " + job.dataset());
         }
-        acquireWriter();
+        String operation = "begin " + job.dataset().name();
+        // Resource order invariant: DuckDB capacity, then the archive writer.
+        // Taking the writer first would let a capacity wait occupy the single
+        // writer permit and stall every other projection behind it.
         DuckDbLease lease = null;
+        long ticket = -1;
+        boolean leaseClosed = false;
         try {
-            lease = manager.acquire(DuckDbWorkload.BULK_CATCH_UP, config.acquireTimeout());
+            // Inside the guarded scope so a stuck capacity or writer wait is
+            // recorded like any other mutation failure. Order is unchanged:
+            // DuckDB capacity, then the archive writer, then the transaction.
+            lease = acquireCapacity(operation);
+            ticket = acquireWriter(operation);
             DuckLakeSql.attach(lease.connection(), config, null, false);
             Optional<ArchiveReceipt> replay = findReceipt(lease.connection(), job.jobId());
             if (replay.isPresent()) {
                 verifyReplayMetadata(job, replay.orElseThrow());
                 DuckLakeSql.detach(lease.connection());
                 lease.close();
-                return new DuckLakeWriteSession(this, job, null, replay.orElseThrow());
+                leaseClosed = true;
+                return new DuckLakeWriteSession(this, job, null, replay.orElseThrow(), ticket);
             }
             rejectCoverageOverlap(lease.connection(), job);
-            return new DuckLakeWriteSession(this, job, lease, null);
+            return new DuckLakeWriteSession(this, job, lease, null, ticket);
         } catch (Exception e) {
-            if (lease != null) {
-                try { DuckLakeSql.detach(lease.connection()); } catch (SQLException ignored) { }
+            // Detach and close the lease before releasing the writer: handing the
+            // permit over while this connection still has the catalog attached
+            // would let the next mutation run DDL against it.
+            if (lease != null && !leaseClosed) {
+                try { DuckLakeSql.detach(lease.connection()); } catch (SQLException | RuntimeException ignored) { }
                 lease.close();
             }
-            releaseWriter();
+            releaseWriter(ticket);
+            recordFailure(operation, e);
             markDegraded("DuckLake begin failed", e);
             throw e instanceof ArchiveStoreException store ? store
                     : new ArchiveStoreException("failed to begin DuckLake job", e);
+        }
+    }
+
+    /**
+     * Acquires bounded DuckDB capacity before the writer. A caller that cannot
+     * get capacity never occupies the writer semaphore while it waits.
+     */
+    private DuckDbLease acquireCapacity(String operation) {
+        try {
+            return manager.acquire(DuckDbWorkload.BULK_CATCH_UP, config.waitPolicy(), operation);
+        } catch (SQLException e) {
+            throw new ArchiveStoreException("failed to acquire DuckDB capacity for " + operation, e);
         }
     }
 
@@ -263,6 +316,8 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
         DuckDbLease lease = null;
         try {
             requireOpen();
+            // Request-facing: a query must fail fast under saturation rather than
+            // wait for the stuck threshold, so the API can answer unavailable.
             lease = manager.acquire(DuckDbWorkload.STEADY, config.acquireTimeout());
             Connection connection = lease.connection();
             DuckLakeSql.attach(connection, config, null, true);
@@ -274,6 +329,13 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
         } catch (Exception | Error e) {
             if (lease != null) lease.close();
             releaseRead(gateStamp);
+            if (isRequestCapacityTimeout(e)) {
+                // Every query permit was busy for this request's bounded wait.
+                // That is contention, so the request is refused but the archive
+                // itself stays healthy; degrading here would outlive the burst.
+                throw new ArchiveStoreException(
+                        "DuckLake read capacity is saturated; retry shortly", e);
+            }
             markDegraded("DuckLake snapshot open failed", e);
             throw new ArchiveStoreException("failed to open pinned DuckLake snapshot", e);
         }
@@ -319,8 +381,10 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
         }
         if (rollbackSlot < 0) throw new IllegalArgumentException("rollbackSlot must be non-negative");
         requireOpen();
-        acquireWriter();
-        try (DuckDbLease lease = manager.acquire(DuckDbWorkload.BULK_CATCH_UP, config.acquireTimeout())) {
+        String operation = "invalidate-epoch-jobs " + dataset.name();
+        long ticket = -1;
+        try (DuckDbLease lease = acquireCapacity(operation)) {
+            ticket = acquireWriter(operation);
             Connection connection = lease.connection();
             DuckLakeSql.attach(connection, config, null, false);
             try {
@@ -357,11 +421,12 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
                 DuckLakeSql.detach(connection);
             }
         } catch (Exception e) {
+            recordFailure(operation, e);
             markDegraded("DuckLake epoch rollback invalidation failed", e);
             throw e instanceof ArchiveStoreException store ? store
                     : new ArchiveStoreException("DuckLake epoch rollback invalidation failed", e);
         } finally {
-            releaseWriter();
+            releaseWriter(ticket);
         }
     }
 
@@ -381,12 +446,22 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
     public void maintain(ArchiveMaintenanceBudget budget) {
         requireOpen();
         java.util.Objects.requireNonNull(budget, "budget");
-        acquireWriter();
+        // Check for pinned readers before taking any resource. Maintenance that
+        // will immediately defer must not burn the scarce bulk permit or the
+        // writer to discover that.
         if (!activeSnapshots.isEmpty()) {
-            releaseWriter();
+            deferMaintenance("active reader snapshot");
             return;
         }
-        try (DuckDbLease lease = manager.acquire(DuckDbWorkload.BULK_CATCH_UP, config.acquireTimeout())) {
+        String operation = "maintenance";
+        long ticket = -1;
+        try (DuckDbLease lease = acquireCapacity(operation)) {
+            ticket = acquireWriter(operation);
+            // A reader may have pinned a snapshot while capacity was awaited.
+            if (!activeSnapshots.isEmpty()) {
+                deferMaintenance("active reader snapshot");
+                return;
+            }
             DuckLakeSql.attach(lease.connection(), config, null, false);
             ArchiveBatchCapacityException compactionDeferred = null;
             try {
@@ -445,24 +520,46 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
                 DuckLakeSql.detach(lease.connection());
             }
             health.set(ArchiveHealth.healthy());
-            if (compactionDeferred != null) throw compactionDeferred;
+            if (compactionDeferred != null) {
+                deferMaintenance("rewrite budget");
+                throw compactionDeferred;
+            }
+            lastMaintenanceDeferral.set(null);
         } catch (ArchiveBatchCapacityException e) {
             // Compaction/cleanup is optional and its bounded resource pressure
-            // does not make committed archive data unhealthy. The caller
-            // records the deferred maintenance detail for operators.
+            // does not make committed archive data unhealthy. Record the reason
+            // here too, or a capacity deferral raised outside the tracked
+            // compaction variable leaves a stale reason from an earlier run.
             health.set(ArchiveHealth.healthy());
+            deferMaintenance("rewrite budget");
+            throw e;
+        } catch (ArchiveStuckOperationException e) {
+            // With capacity acquired before the writer, a stuck wait can come from
+            // either gate; naming the wrong one defeats the diagnostic.
+            deferMaintenance(e.gate().contains("writer") ? "writer wait" : "capacity wait");
             throw e;
         } catch (Exception e) {
             if (!degradesArchiveHealth(e)) {
                 health.set(ArchiveHealth.healthy());
+                deferMaintenance(isMaintenanceTimeout(e) ? "time budget" : "rewrite budget");
                 throw new ArchiveBatchCapacityException(
                         "DuckLake maintenance exceeded its configured budget", e);
             }
+            recordFailure("maintenance", e);
             markDegraded("DuckLake maintenance failed", e);
             throw new ArchiveStoreException("DuckLake maintenance failed", e);
         } finally {
-            releaseWriter();
+            releaseWriter(ticket);
         }
+    }
+
+    /**
+     * Records why bounded upkeep did not run. Repeated deferral is an
+     * operational health signal, not a silent no-op.
+     */
+    private void deferMaintenance(String reason) {
+        lastMaintenanceDeferral.set(reason);
+        LOG.log(System.Logger.Level.DEBUG, "DuckLake maintenance deferred: {0}", reason);
     }
 
     /**
@@ -577,13 +674,19 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
         requireOpen();
         Path normalized = java.util.Objects.requireNonNull(target, "target").toAbsolutePath().normalize();
         if (normalized.equals(config.catalogPath())) throw new IllegalArgumentException("backup target equals catalog");
-        acquireWriter();
+        // Backup is the one path that holds the reader gate and the writer but
+        // never a DuckDB lease, so it cannot participate in the lease->writer
+        // inversion. It drains readers first and then takes the writer with a
+        // short bounded wait: holding the reader gate for the full stuck
+        // threshold would block new queries for minutes.
         long gateStamp = 0;
+        long ticket = -1;
         try {
             gateStamp = sessionGate.tryWriteLock(config.acquireTimeout().toMillis(), TimeUnit.MILLISECONDS);
             if (gateStamp == 0) {
                 throw new ArchiveStoreException("timed out waiting for DuckLake readers before catalog backup");
             }
+            ticket = acquireWriter("catalog-backup", config.waitPolicy().boundedTo(config.acquireTimeout()));
             Path parent = normalized.getParent();
             if (parent == null) throw new ArchiveStoreException("catalog backup target has no parent");
             Files.createDirectories(parent);
@@ -604,16 +707,18 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
             Thread.currentThread().interrupt();
             throw new ArchiveStoreException("interrupted waiting for DuckLake readers before catalog backup", e);
         } catch (Exception e) {
+            recordFailure("catalog-backup", e);
             throw e instanceof ArchiveStoreException store ? store
                     : new ArchiveStoreException("DuckLake catalog backup failed", e);
         } finally {
+            releaseWriter(ticket);
             if (gateStamp != 0) sessionGate.unlockWrite(gateStamp);
-            releaseWriter();
         }
     }
 
-    void releaseWriter() {
-        writer.release();
+    /** Releases exactly the supplied ticket. An unheld ticket is a no-op. */
+    void releaseWriter(long ticket) {
+        if (ticket >= 0) writer.release(ticket);
         finishCloseIfIdle();
     }
 
@@ -636,8 +741,10 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
     private void mutateCommittedJobs(ArchiveDatasetId dataset, ArchiveRange range, boolean wholeJobsOnly) {
         requireOpen();
         if (dataset.sourceKind() != range.sourceKind()) throw new IllegalArgumentException("dataset/range source mismatch");
-        acquireWriter();
-        try (DuckDbLease lease = manager.acquire(DuckDbWorkload.BULK_CATCH_UP, config.acquireTimeout())) {
+        String operation = (wholeJobsOnly ? "retention " : "invalidate ") + dataset.name();
+        long ticket = -1;
+        try (DuckDbLease lease = acquireCapacity(operation)) {
+            ticket = acquireWriter(operation);
             Connection connection = lease.connection();
             DuckLakeSql.attach(connection, config, null, false);
             try {
@@ -661,11 +768,12 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
                 DuckLakeSql.detach(connection);
             }
         } catch (Exception e) {
+            recordFailure(operation, e);
             markDegraded("DuckLake invalidation failed", e);
             throw e instanceof ArchiveStoreException store ? store
                     : new ArchiveStoreException("DuckLake invalidation failed", e);
         } finally {
-            releaseWriter();
+            releaseWriter(ticket);
         }
     }
 
@@ -778,16 +886,23 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
         if (receipt.dataset() != job.dataset() || receipt.projectionVersion() != job.projectionVersion()
                 || !receipt.range().equals(job.range()) || !receipt.anchors().equals(job.anchors())
                 || !receipt.networkIdentity().equals(job.networkIdentity())) {
-            throw new ArchiveStoreException("job ID conflicts with different committed metadata: " + job.jobId());
+            // Identity conflict: retrying the same job can never succeed.
+            throw new ArchiveFatalException("job ID conflicts with different committed metadata: " + job.jobId());
         }
     }
 
+    /**
+     * Internal archive read (receipts, coverage, integrity). This is worker-side
+     * work, so capacity contention follows the warn/stuck policy rather than
+     * failing at a short timeout. Request-facing {@link #openReadSession()} keeps
+     * a bounded wait so an API call cannot hang for the stuck threshold.
+     */
     private CurrentRead currentRead() throws SQLException {
         long gateStamp = sessionGate.readLock();
         DuckDbLease lease = null;
         try {
             requireOpen();
-            lease = manager.acquire(DuckDbWorkload.STEADY, config.acquireTimeout());
+            lease = manager.acquire(DuckDbWorkload.STEADY, config.waitPolicy(), "archive-read");
             DuckLakeSql.attach(lease.connection(), config, null, true);
             return new CurrentRead(lease, () -> releaseRead(gateStamp));
         } catch (SQLException | RuntimeException | Error e) {
@@ -838,19 +953,56 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
         return List.copyOf(merged);
     }
 
-    private void acquireWriter() {
-        try {
-            if (!writer.tryAcquire(config.acquireTimeout().toMillis(), TimeUnit.MILLISECONDS)) {
-                throw new ArchiveStoreException("timed out waiting for DuckLake writer");
-            }
-            if (closed.get()) {
-                releaseWriter();
-                throw new IllegalStateException("DuckLake backend is closed");
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new ArchiveStoreException("interrupted waiting for DuckLake writer", e);
+    /**
+     * Waits for the single writer using the configured warn/stuck policy and
+     * returns the caller's own ticket.
+     *
+     * <p>The ticket is deliberately not stored on the backend. A shared field
+     * cannot express ownership: a caller whose acquisition fails would release
+     * whichever ticket happened to be there, handing the active writer's permit
+     * to a third operation and breaking single-writer isolation exactly on the
+     * new stuck-operation path.
+     */
+    private long acquireWriter(String operation) {
+        return acquireWriter(operation, config.waitPolicy());
+    }
+
+    private long acquireWriter(String operation, ArchiveWaitPolicy policy) {
+        long ticket = writer.acquire(operation, policy);
+        if (closed.get()) {
+            releaseWriter(ticket);
+            throw new IllegalStateException("DuckLake backend is closed");
         }
+        return ticket;
+    }
+
+    private static void logWait(String gate, String operation, Duration waited, String holderDetail) {
+        LOG.log(System.Logger.Level.WARNING,
+                "Archive still waiting for {0} after {1}s while running {2}; {3}",
+                gate, waited.toSeconds(), operation, holderDetail);
+    }
+
+    private void recordFailure(String operation, Throwable failure) {
+        // A shutdown-rejected mutation is expected, not a diagnostic worth keeping.
+        if (closed.get()) return;
+        lastFailure.set(new ArchiveResourceDiagnostics.FailureEvent(operation,
+                failure.getMessage() == null ? failure.toString() : failure.getMessage(), Instant.now()));
+    }
+
+    @Override
+    public ArchiveResourceDiagnostics resourceDiagnostics() {
+        List<ArchiveResourceDiagnostics.GateUsage> gates = new ArrayList<>();
+        gates.add(writer.usage());
+        gates.addAll(manager.gateUsage());
+        Optional<ArchiveResourceDiagnostics.WaitEvent> writerWarning = writer.lastWaitWarning();
+        Optional<ArchiveResourceDiagnostics.WaitEvent> capacityWarning = manager.lastWaitWarning();
+        Optional<ArchiveResourceDiagnostics.WaitEvent> latest;
+        if (writerWarning.isEmpty()) latest = capacityWarning;
+        else if (capacityWarning.isEmpty()) latest = writerWarning;
+        else latest = writerWarning.orElseThrow().at().isAfter(capacityWarning.orElseThrow().at())
+                    ? writerWarning : capacityWarning;
+        return new ArchiveResourceDiagnostics(gates, latest, Optional.ofNullable(lastFailure.get()),
+                Optional.ofNullable(lastMaintenanceDeferral.get()));
     }
 
     private void executeMaintenance(DuckDbLease lease, long deadline, String command) throws SQLException {
@@ -870,6 +1022,18 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
 
     private void requireOpen() {
         if (closed.get()) throw new IllegalStateException("DuckLake backend is closed");
+    }
+
+    /**
+     * True for a bounded request-facing capacity timeout. A raw
+     * {@link ArchiveStuckOperationException} from a worker path is deliberately
+     * excluded: exceeding the operator's stuck threshold is a real problem.
+     */
+    static boolean isRequestCapacityTimeout(Throwable failure) {
+        for (Throwable current = failure; current != null; current = current.getCause()) {
+            if (current instanceof DuckDbCapacityTimeoutException) return true;
+        }
+        return false;
     }
 
     private void markDegraded(String detail, Throwable error) {
@@ -904,10 +1068,12 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
      * use-after-free race this gate is intended to prevent.
      */
     private void finishCloseIfIdle() {
-        if (!closed.get() || resourcesClosed.get() || !writer.tryAcquire()) return;
+        if (!closed.get() || resourcesClosed.get()) return;
+        Optional<Long> ticket = writer.tryAcquire("deferred-close");
+        if (ticket.isEmpty()) return;
         long gateStamp = sessionGate.tryWriteLock();
         if (gateStamp == 0) {
-            writer.release();
+            writer.release(ticket.orElseThrow());
             return;
         }
         try {
@@ -918,7 +1084,7 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
             }
         } finally {
             sessionGate.unlockWrite(gateStamp);
-            writer.release();
+            writer.release(ticket.orElseThrow());
         }
     }
 

@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.app.archive;
 
 import com.bloxbean.cardano.yano.archive.api.ArchiveBackend;
 import com.bloxbean.cardano.yano.archive.api.ArchiveMaintenanceBudget;
+import com.bloxbean.cardano.yano.archive.api.ArchiveResourceDiagnostics;
 import org.eclipse.microprofile.config.Config;
 import org.junit.jupiter.api.Test;
 
@@ -12,6 +13,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.verify;
 
 class HistoryArchiveMaintenanceTest {
@@ -24,12 +26,37 @@ class HistoryArchiveMaintenanceTest {
         set(service, "maintenanceInterval", Duration.ofMinutes(5));
         set(service, "maintenanceBudget", budget);
         ((AtomicLong) get(service, "nextMaintenanceNanos")).set(0);
+        // No deferral reason means upkeep actually ran.
+        when(backend.resourceDiagnostics()).thenReturn(ArchiveResourceDiagnostics.empty());
 
         service.runMaintenanceIfDue();
         service.runMaintenanceIfDue();
 
         verify(backend, times(1)).maintain(budget);
         assertThat(get(service, "lastMaintenanceAt")).isNotNull();
+        assertThat(get(service, "maintenanceError")).isNull();
+    }
+
+    @Test
+    void aDeferredRunIsNotRecordedAsACompletedOne() throws Exception {
+        var service = new HistoryArchiveService(mock(Config.class));
+        var backend = mock(ArchiveBackend.class);
+        var budget = new ArchiveMaintenanceBudget(Duration.ofSeconds(3), 64L * 1024 * 1024);
+        set(service, "backend", backend);
+        set(service, "maintenanceInterval", Duration.ofMinutes(5));
+        set(service, "maintenanceBudget", budget);
+        ((AtomicLong) get(service, "nextMaintenanceNanos")).set(0);
+        // maintain() returns normally when it defers, so only the reason
+        // distinguishes "ran" from "did not run".
+        when(backend.resourceDiagnostics()).thenReturn(new ArchiveResourceDiagnostics(
+                java.util.List.of(), java.util.Optional.empty(), java.util.Optional.empty(),
+                java.util.Optional.of("active reader snapshot")));
+
+        service.runMaintenanceIfDue();
+
+        verify(backend, times(1)).maintain(budget);
+        assertThat(get(service, "lastMaintenanceAt"))
+                .as("a deferred run must not stamp a completion time").isNull();
         assertThat(get(service, "maintenanceError")).isNull();
     }
 

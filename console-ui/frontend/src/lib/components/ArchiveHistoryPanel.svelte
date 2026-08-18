@@ -3,9 +3,15 @@
   import MetricRow from './MetricRow.svelte';
   import CopyValue from './CopyValue.svelte';
   import type { ArchiveHistoryStatus, ArchiveWorkerStatus } from '$lib/api/types';
-  import { archiveDatasets, archiveState, coverageLabel } from '$lib/status/archive';
+  import { archiveDatasets, archiveState, coverageLabel, failedWorker, failedWorkerStates } from '$lib/status/archive';
 
   let { history } = $props<{ history?: ArchiveHistoryStatus }>();
+
+  const failedDatasets = $derived(
+    archiveDatasets(history).filter(([, dataset]) => dataset.enabled && failedWorker(dataset))
+  );
+  const stageErrorEntries = $derived(Object.entries(history?.stageErrors ?? {}));
+  const gates = $derived(history?.resources?.gates ?? []);
 
   const n = (value: unknown) => Number.isFinite(Number(value)) ? Number(value) : 0;
   const fmt = (value: unknown) => value === null || value === undefined ? '-' : n(value).toLocaleString();
@@ -42,12 +48,21 @@
     <span class="badge {stateTone(state)}">{state}</span>
   </div>
 
-  {#if history.error || history.epochStagingError || history.maintenance?.error}
+  {#if history.error || history.epochStagingError || history.maintenance?.error || history.cycleError || history.shutdownError || history.datasetsUnavailable || stageErrorEntries.length > 0 || failedDatasets.length > 0}
     <section class="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200">
       <h3 class="m-0 text-sm font-semibold">Archive attention required</h3>
       {#if history.error}<p class="mb-0 mt-2"><strong>Archive:</strong> {history.error}</p>{/if}
       {#if history.epochStagingError}<p class="mb-0 mt-2"><strong>Epoch staging:</strong> {history.epochStagingError}</p>{/if}
       {#if history.maintenance?.error}<p class="mb-0 mt-2"><strong>Maintenance:</strong> {history.maintenance.error}</p>{/if}
+      {#if history.cycleError}<p class="mb-0 mt-2"><strong>Cycle:</strong> {history.cycleError}</p>{/if}
+      {#if history.shutdownError}<p class="mb-0 mt-2"><strong>Shutdown:</strong> {history.shutdownError}</p>{/if}
+      {#if history.datasetsUnavailable}<p class="mb-0 mt-2"><strong>Datasets:</strong> {history.datasetsUnavailable}</p>{/if}
+      {#each stageErrorEntries as [stage, detail]}
+        <p class="mb-0 mt-2"><strong>Cycle stage {stage}:</strong> {detail}</p>
+      {/each}
+      {#each failedDatasets as [name, dataset]}
+        <p class="mb-0 mt-2"><strong>Dataset {name}:</strong> {failedWorkerStates(dataset).join(', ')}</p>
+      {/each}
     </section>
   {/if}
 
@@ -75,8 +90,53 @@
       <MetricRow label="Time limit" value={`${fmt(history.maintenance?.timeLimitSeconds)} seconds`} />
       <MetricRow label="Rewrite budget" value={bytes(history.maintenance?.maxBytesToRewrite)} />
       <MetricRow label="Last completed" value={when(history.maintenance?.lastCompletedAt)} />
+      <MetricRow label="Deferred because" value={history.maintenance?.deferredReason ?? 'not deferred'} />
     </MetricCard>
   </div>
+
+  <section class="card mt-4 overflow-hidden">
+    <div class="border-b border-slate-700/40 px-4 py-3">
+      <h2 class="m-0 text-sm font-semibold">Writer and capacity contention</h2>
+      <p class="mb-0 mt-1 text-xs text-slate-500">
+        Waiting for the single writer or bounded DuckDB capacity is normal scheduling, not a failure.
+      </p>
+    </div>
+    {#if gates.length > 0}
+      <table class="w-full text-sm">
+        <thead class="text-left text-xs uppercase tracking-wide text-slate-500">
+          <tr><th class="px-4 py-2">Gate</th><th class="px-4 py-2">In use</th>
+            <th class="px-4 py-2">Waiters</th><th class="px-4 py-2">Holder</th>
+            <th class="px-4 py-2">Held for</th></tr>
+        </thead>
+        <tbody>
+          {#each gates as gate}
+            <tr class="border-t border-slate-800/60">
+              <td class="px-4 py-2 font-mono text-xs">{gate.name}</td>
+              <td class="px-4 py-2">{gate.inUse} / {gate.totalPermits}</td>
+              <td class="px-4 py-2">{gate.waiters}</td>
+              <td class="px-4 py-2 font-mono text-xs">{gate.holder || 'idle'}</td>
+              <td class="px-4 py-2">{gate.holderSeconds ?? 0}s</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+      {#if history.resources?.lastWaitWarning}
+        <p class="mb-0 border-t border-slate-800/60 px-4 py-3 text-xs text-amber-300">
+          Last wait warning: {history.resources.lastWaitWarning.operation} waited
+          {history.resources.lastWaitWarning.waitedSeconds}s on
+          {history.resources.lastWaitWarning.gate} — {history.resources.lastWaitWarning.holder}
+        </p>
+      {/if}
+      {#if history.resources?.lastMutationFailure}
+        <p class="mb-0 border-t border-slate-800/60 px-4 py-3 text-xs text-rose-300">
+          Last mutation failure: {history.resources.lastMutationFailure.operation} —
+          {history.resources.lastMutationFailure.detail}
+        </p>
+      {/if}
+    {:else}
+      <p class="mb-0 px-4 py-3 text-sm text-slate-400">No archive resource activity recorded.</p>
+    {/if}
+  </section>
 
   <section class="card mt-4 overflow-hidden">
     <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-700/40 px-4 py-3">

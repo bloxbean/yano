@@ -63,6 +63,15 @@ public interface ArchiveBackend extends AutoCloseable {
 
     ArchiveHealth health();
 
+    /**
+     * Scheduling-only view of writer/capacity contention. Waiting for a resource
+     * is normal, so it is reported here rather than through {@link #health()},
+     * which stays reserved for actual archive failures.
+     */
+    default ArchiveResourceDiagnostics resourceDiagnostics() {
+        return ArchiveResourceDiagnostics.empty();
+    }
+
     @Override
     void close();
 }

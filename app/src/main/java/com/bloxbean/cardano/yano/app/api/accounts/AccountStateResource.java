@@ -540,6 +540,16 @@ public class AccountStateResource {
                         "Unsupported account-history dataset: " + dataset.logicalName());
             });
         }
+        if (historyArchive != null && historyArchive.datasetFailed(dataset)) {
+            return featureUnavailable(switch (dataset) {
+                case ACCOUNT_EVENT -> "Account tx/cert history is unavailable after a non-retryable failure";
+                case ADDRESS_TRANSACTION ->
+                        "Address transaction history is unavailable after a non-retryable failure";
+                case REWARD -> "Reward history is unavailable after a non-retryable failure";
+                default -> throw new IllegalArgumentException(
+                        "Unsupported account-history dataset: " + dataset.logicalName());
+            });
+        }
         return featureUnavailable(switch (dataset) {
             case ACCOUNT_EVENT -> "Account tx/cert history index is disabled";
             case ADDRESS_TRANSACTION -> "Address transaction history disabled "

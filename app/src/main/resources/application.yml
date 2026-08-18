@@ -237,6 +237,11 @@ yano:
     archive:
       engine: ducklake
       finality-blocks: auto
+      # Waiting for the single archive writer or bounded DuckDB capacity is
+      # normal flow control. Diagnostics are logged at wait-warn-seconds; only
+      # stuck-operation-seconds fails a mutation, and it never advances a cursor.
+      wait-warn-seconds: 30
+      stuck-operation-seconds: 300
       ducklake:
         target-file-size: 4MB
         row-group-size: 100000

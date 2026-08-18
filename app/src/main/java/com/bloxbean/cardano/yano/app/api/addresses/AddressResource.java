@@ -69,11 +69,15 @@ public class AddressResource {
                                            boolean usePaymentCredential) {
         AccountHistoryProvider history = historyProvider();
         if (history == null || !history.isEnabled() || !history.isAddressTxEnabled()) {
-            String error = historyArchive != null
-                    && historyArchive.datasetBuilding(ArchiveDatasetId.ADDRESS_TRANSACTION)
-                    ? "Address transaction history is still building"
-                    : "Address transaction history disabled "
-                    + "(enable yano.history and address-transactions dataset)";
+            String error;
+            if (historyArchive != null && historyArchive.datasetBuilding(ArchiveDatasetId.ADDRESS_TRANSACTION)) {
+                error = "Address transaction history is still building";
+            } else if (historyArchive != null && historyArchive.datasetFailed(ArchiveDatasetId.ADDRESS_TRANSACTION)) {
+                error = "Address transaction history is unavailable after a non-retryable failure";
+            } else {
+                error = "Address transaction history disabled "
+                        + "(enable yano.history and address-transactions dataset)";
+            }
             return Response.status(Response.Status.SERVICE_UNAVAILABLE)
                     .entity(Map.of("error", error))
                     .build();

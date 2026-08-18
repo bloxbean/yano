@@ -46,15 +46,19 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
     private final Map<String, Long> rowCounts = new LinkedHashMap<>();
     private final MessageDigest digest;
     private final ArchiveReceipt replayReceipt;
+    // This session owns its writer permit for its whole life, including when it
+    // is closed on a different executor than the one that opened it.
+    private final long writerTicket;
     private boolean committed;
     private boolean closed;
     private final List<DuckLakeTransactionLocator.Entry> transactionEntries = new ArrayList<>();
 
     DuckLakeWriteSession(DuckLakeHistoryArchiveBackend backend, ArchiveJob job,
-                         DuckDbLease lease, ArchiveReceipt replayReceipt) {
+                         DuckDbLease lease, ArchiveReceipt replayReceipt, long writerTicket) {
         this.backend = backend;
         this.job = job;
         this.lease = lease;
+        this.writerTicket = writerTicket;
         this.connection = lease == null ? null : lease.connection();
         this.replayReceipt = replayReceipt;
         this.allowedTables = ArchiveSchemas.schema(job.dataset()).tables().stream()
@@ -372,6 +376,6 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
             try { DuckLakeSql.detach(connection); } catch (SQLException ignored) { }
         }
         if (lease != null) lease.close();
-        backend.releaseWriter();
+        backend.releaseWriter(writerTicket);
     }
 }

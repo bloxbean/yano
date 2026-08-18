@@ -54,6 +54,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
@@ -86,6 +87,10 @@ public class HistoryArchiveService implements AutoCloseable {
     private final AtomicLong decodedBlockCount = new AtomicLong();
     private final AtomicLong decodedBlockCacheHits = new AtomicLong();
     private volatile ArchiveWorkerMetrics metrics = new ArchiveWorkerMetrics();
+    private volatile CycleScopedCoverageCache coverageCache;
+    private volatile String shutdownError;
+    private volatile String cycleError;
+    private final Map<String, String> stageErrors = new ConcurrentHashMap<>();
     private volatile ChainQuery chain;
     private volatile ActivationStore activations;
     private volatile EpochArchiveStagingService epochStaging;
@@ -225,6 +230,7 @@ public class HistoryArchiveService implements AutoCloseable {
                     .findFirst().orElseThrow(() -> new IllegalStateException(
                             "archive backend provider not packaged for engine " + engineName));
             backend = provider.open(identity, directory, backendProperties(directory, engine));
+            coverageCache = new CycleScopedCoverageCache(backend);
             EnumSet<com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset> epochDatasets =
                     EnumSet.noneOf(com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset.class);
             if (datasetEnabled(ArchiveDatasetId.EPOCH_STAKE)) epochDatasets.add(
@@ -314,7 +320,8 @@ public class HistoryArchiveService implements AutoCloseable {
                     Math.max(1, catchupWorkers.size()));
             projectionExecutor = Executors.newFixedThreadPool(effectiveParallelism,
                     Thread.ofPlatform().name("yano-archive-projection-", 0).factory());
-            subsystem = new ArchiveSubsystem(true, workerConfig.pollInterval(), this::runBoundedWork);
+            subsystem = new ArchiveSubsystem(true, workerConfig.pollInterval(), this::runBoundedWork,
+                    this::recordCycleFailure);
             chain.registerListeners(this);
             log.info("History archive initialized: engine={}, dir={}, finalityBlocks={}, rollbackBlocks={}, "
                             + "projectionParallelism={} (requested={}), pauseBackfillDuringCoreCatchup={}",
@@ -359,8 +366,35 @@ public class HistoryArchiveService implements AutoCloseable {
     boolean datasetAvailable(ArchiveDatasetId dataset) {
         lifecycleLock.readLock().lock();
         try {
-            return available() && datasetEnabled(dataset)
+            return available() && datasetEnabled(dataset) && datasetOperational(dataset)
                     && (dataset.sourceKind() == SourceKind.EPOCH || isLivePhase(dataset));
+        } finally {
+            lifecycleLock.readLock().unlock();
+        }
+    }
+
+    /**
+     * False once the worker that owns this dataset is parked non-retryably.
+     *
+     * <p>A parked dataset keeps its durable LIVE phase marker — that marker is
+     * crash-safe handoff state and must not be cleared — but its cursor can never
+     * advance again. Serving it would return a silently truncated history as
+     * though it were complete, which the archive contract forbids. The phase
+     * marker therefore stops being sufficient for readiness.
+     */
+    boolean datasetOperational(ArchiveDatasetId dataset) {
+        Map<ArchiveTrack, ArchiveWorkerStatus> statuses = metrics.dataset(dataset);
+        ArchiveTrack owning = dataset.sourceKind() == SourceKind.EPOCH
+                ? ArchiveTrack.BACKFILL
+                : (isLivePhase(dataset) ? ArchiveTrack.LIVE : ArchiveTrack.BACKFILL);
+        return !nonRetryablyFailed(statuses, owning);
+    }
+
+    /** True when a configured dataset is parked by a non-retryable failure. */
+    public boolean datasetFailed(ArchiveDatasetId dataset) {
+        lifecycleLock.readLock().lock();
+        try {
+            return available() && datasetEnabled(dataset) && !datasetOperational(dataset);
         } finally {
             lifecycleLock.readLock().unlock();
         }
@@ -370,7 +404,7 @@ public class HistoryArchiveService implements AutoCloseable {
     public boolean datasetBuilding(ArchiveDatasetId dataset) {
         lifecycleLock.readLock().lock();
         try {
-            return available() && datasetEnabled(dataset)
+            return available() && datasetEnabled(dataset) && datasetOperational(dataset)
                     && dataset.sourceKind() == SourceKind.BLOCK && !isLivePhase(dataset);
         } finally {
             lifecycleLock.readLock().unlock();
@@ -411,6 +445,10 @@ public class HistoryArchiveService implements AutoCloseable {
             for (ArchiveDatasetId dataset : datasets) {
                 if (!datasetEnabled(dataset)) {
                     throw new IllegalArgumentException("history dataset is disabled: " + dataset.logicalName());
+                }
+                if (!datasetOperational(dataset)) {
+                    throw new ArchiveStoreException("history dataset is unavailable after a "
+                            + "non-retryable failure: " + dataset.logicalName());
                 }
                 if (dataset.sourceKind() == SourceKind.BLOCK && !isLivePhase(dataset)) {
                     throw new ArchiveStoreException("history dataset is still building: "
@@ -468,6 +506,12 @@ public class HistoryArchiveService implements AutoCloseable {
             ArchiveBackend current = backend;
             if (current == null || !datasetEnabled(ArchiveDatasetId.TRANSACTION)) {
                 return TransactionLookup.unavailable("transaction history is disabled or unavailable");
+            }
+            if (!datasetOperational(ArchiveDatasetId.TRANSACTION)) {
+                // Unavailable, not incomplete: the cursor can never advance, so a
+                // "not found" here would be a silently wrong answer forever.
+                return TransactionLookup.unavailable(
+                        "transaction history is unavailable after a non-retryable failure");
             }
             if (!isLivePhase(ArchiveDatasetId.TRANSACTION)) {
                 return TransactionLookup.incomplete("transaction history is still building");
@@ -544,6 +588,22 @@ public class HistoryArchiveService implements AutoCloseable {
         result.put("worker", worker);
         if (backend != null) {
             result.put("health", backend.health());
+            // Contention diagnostics are collected before the snapshot read.
+            // Saturation is exactly what they explain, so they must not be lost
+            // when the bounded request read cannot obtain a permit.
+            // One snapshot for both sections: two calls would describe two
+            // different instants and rebuild the whole gate view twice.
+            ArchiveResourceDiagnostics diagnostics = backend.resourceDiagnostics();
+            result.put("resources", resourceStatus(diagnostics));
+            Map<String, Object> maintenance = new LinkedHashMap<>();
+            maintenance.put("intervalSeconds", maintenanceInterval.toSeconds());
+            maintenance.put("timeLimitSeconds", maintenanceBudget.timeLimit().toSeconds());
+            maintenance.put("maxBytesToRewrite", maintenanceBudget.maxBytesToRewrite());
+            maintenance.put("lastCompletedAt", lastMaintenanceAt);
+            maintenance.put("error", maintenanceError);
+            diagnostics.lastMaintenanceDeferral()
+                    .ifPresent(reason -> maintenance.put("deferredReason", reason));
+            result.put("maintenance", maintenance);
             try (ArchiveReadSession read = backend.openReadSession()) {
                 result.put("generation", read.generation());
                 Map<String, Object> datasets = new LinkedHashMap<>();
@@ -560,11 +620,15 @@ public class HistoryArchiveService implements AutoCloseable {
                     if (selected.enabled()) {
                         if (id.sourceKind() == SourceKind.BLOCK) {
                             dataset.put("phase", isLivePhase(id) ? "live" : "catching_up");
-                            dataset.put("ready", isLivePhase(id));
+                            // Matches the read paths: a parked dataset is not ready,
+                            // whatever its durable phase marker still says.
+                            dataset.put("ready", isLivePhase(id) && datasetOperational(id));
                         }
                         dataset.put("coverage", backend.coverage(read, id));
                         dataset.put("workers", metrics.dataset(id));
                         if (id.sourceKind() == SourceKind.BLOCK) enabledBlocks.add(id);
+                    } else {
+                        dataset.put("state", ArchiveWorkerStatus.State.DISABLED.name());
                     }
                     datasets.put(id.logicalName(), dataset);
                 }
@@ -580,17 +644,47 @@ public class HistoryArchiveService implements AutoCloseable {
                                 "detail", unavailable.getMessage()));
                     }
                 }
+            } catch (RuntimeException unavailable) {
+                // A status endpoint must still answer under saturation; the
+                // dataset section degrades instead of failing the whole payload.
+                result.put("datasetsUnavailable", unavailable.getMessage() == null
+                        ? unavailable.toString() : unavailable.getMessage());
             }
-            Map<String, Object> maintenance = new LinkedHashMap<>();
-            maintenance.put("intervalSeconds", maintenanceInterval.toSeconds());
-            maintenance.put("timeLimitSeconds", maintenanceBudget.timeLimit().toSeconds());
-            maintenance.put("maxBytesToRewrite", maintenanceBudget.maxBytesToRewrite());
-            maintenance.put("lastCompletedAt", lastMaintenanceAt);
-            maintenance.put("error", maintenanceError);
-            result.put("maintenance", maintenance);
         }
         if (epochStaging != null) epochStaging.error().ifPresent(value -> result.put("epochStagingError", value));
+        if (!stageErrors.isEmpty()) result.put("stageErrors", Map.copyOf(stageErrors));
+        if (cycleError != null) result.put("cycleError", cycleError);
+        if (shutdownError != null) result.put("shutdownError", shutdownError);
         return result;
+    }
+
+    /**
+     * Scheduling-only contention view: gate occupancy, holder operation names and
+     * durations, waiter counts, the last wait warning, and the last real failure.
+     * It deliberately carries no row, address, or transaction data.
+     */
+    private static Map<String, Object> resourceStatus(ArchiveResourceDiagnostics diagnostics) {
+        Map<String, Object> value = new LinkedHashMap<>();
+        List<Map<String, Object>> gates = new ArrayList<>();
+        for (ArchiveResourceDiagnostics.GateUsage gate : diagnostics.gates()) {
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("name", gate.name());
+            entry.put("inUse", gate.inUse());
+            entry.put("totalPermits", gate.totalPermits());
+            entry.put("waiters", gate.waiters());
+            entry.put("holder", gate.holder());
+            entry.put("holderSeconds", gate.holderDuration().toSeconds());
+            gates.add(entry);
+        }
+        value.put("gates", gates);
+        diagnostics.lastWaitWarning().ifPresent(wait -> value.put("lastWaitWarning", Map.of(
+                "gate", wait.gate(), "operation", wait.operation(),
+                "waitedSeconds", wait.waited().toSeconds(),
+                "holder", wait.holderDetail(), "at", wait.at().toString())));
+        diagnostics.lastMutationFailure().ifPresent(failure -> value.put("lastMutationFailure", Map.of(
+                "operation", failure.operation(), "detail", failure.detail(),
+                "at", failure.at().toString())));
+        return value;
     }
 
     private static Map<String, Object> consistencyStatus(ArchiveConsistencyPoint point) {
@@ -609,21 +703,33 @@ public class HistoryArchiveService implements AutoCloseable {
         return value;
     }
 
-    private void runBoundedWork() {
+    void runBoundedWork() {
+        runCycle();
+        // Reached only when the whole cycle returned normally, so a recovered
+        // transient failure stops being reported as an active one.
+        cycleError = null;
+    }
+
+    private void runCycle() {
         if (backend == null || chain == null) return;
+        // One durable coverage read per dataset per cycle, reused by catch-up,
+        // handoff, promotion, and rollback invalidation within that cycle.
+        CycleScopedCoverageCache cache = coverageCache;
+        if (cache != null) cache.beginCycle();
         var tip = chain.getLocalTip();
         if (tip == null) return;
         processPendingEpochRollback(tip.getBlockNumber());
         processPendingLiveRollback(tip.getBlockNumber());
         long finalized = tip.getBlockNumber() - archiveConfig.safetyWindows().archiveFinalityBlocks();
         if (finalized < 0) return;
-        runBlockProjectionCycle(tip.getBlockNumber(), finalized);
-        transitionCaughtUpDatasets(finalized);
+        runStage("block-projection", () -> runBlockProjectionCycle(tip.getBlockNumber(), finalized));
+        runStage("catchup-handoff", () -> transitionCaughtUpDatasets(finalized));
         beginSharedSourceCycle();
         try {
             for (var entry : liveWorkers.entrySet()) {
                 ArchiveDatasetId dataset = entry.getKey();
                 if (!isLivePhase(dataset)) continue;
+                if (nonRetryablyFailed(metrics.dataset(dataset), ArchiveTrack.LIVE)) continue;
                 try {
                     promoteLiveRows(dataset, finalized);
                     reanchorStaleLiveTrack(dataset, tip.getBlockNumber());
@@ -647,16 +753,20 @@ public class HistoryArchiveService implements AutoCloseable {
                                 dataset.logicalName(), recoveryFailure.toString());
                     }
                 } catch (Exception e) {
-                    metrics.update(dataset, ArchiveTrack.LIVE, ArchiveWorkerStatus.State.DEGRADED,
-                            -1, 0, failureDetail(e));
-                    log.warn("Live history worker {} paused", dataset.logicalName(), e);
+                    ArchiveWorkerStatus.State state = classifyFailure(e);
+                    metrics.update(dataset, ArchiveTrack.LIVE, state, -1, 0, failureDetail(e));
+                    if (state == ArchiveWorkerStatus.State.FAILED) {
+                        parkFailedDataset(dataset, e);
+                    } else {
+                        log.warn("Live history worker {} paused", dataset.logicalName(), e);
+                    }
                 }
             }
         } finally {
             endSharedSourceCycle();
         }
-        runEpochWork(finalized);
-        applyRetention(tip.getBlockNumber(), tip.getSlot());
+        runStage("epoch-archive", () -> runEpochWork(finalized));
+        runStage("retention", () -> applyRetention(tip.getBlockNumber(), tip.getSlot()));
         runMaintenanceIfDue();
     }
 
@@ -696,6 +806,10 @@ public class HistoryArchiveService implements AutoCloseable {
     }
 
     private void runCatchupDataset(ArchiveDatasetId dataset, DatasetRunner runner, long tip, long finalized) {
+        // A non-retryable error is reported once and then left alone. Re-deriving
+        // the same batch every poll would only reproduce the same failure and the
+        // same log flood.
+        if (nonRetryablyFailed(metrics.dataset(dataset), ArchiveTrack.BACKFILL)) return;
         try {
             long start = activations.start(dataset).orElseGet(() -> activationStart(dataset, tip));
             if (start >= 0) {
@@ -716,9 +830,13 @@ public class HistoryArchiveService implements AutoCloseable {
                         dataset.logicalName(), recoveryFailure.toString());
             }
         } catch (Exception e) {
-            metrics.update(dataset, ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.DEGRADED,
-                    -1, 0, failureDetail(e));
-            log.warn("History worker {} paused", dataset.logicalName(), e);
+            ArchiveWorkerStatus.State state = classifyFailure(e);
+            metrics.update(dataset, ArchiveTrack.BACKFILL, state, -1, 0, failureDetail(e));
+            if (state == ArchiveWorkerStatus.State.FAILED) {
+                parkFailedDataset(dataset, e);
+            } else {
+                log.warn("History worker {} paused", dataset.logicalName(), e);
+            }
         }
     }
 
@@ -731,11 +849,14 @@ public class HistoryArchiveService implements AutoCloseable {
         if (finalized < firstCanonicalBlockNumber - 1) return;
         for (ArchiveDatasetId dataset : catchupWorkers.keySet()) {
             if (isLivePhase(dataset) || !liveWorkers.containsKey(dataset)) continue;
+            // Without this a parked catch-up dataset is promoted to LIVE, and the
+            // promotion itself clears the failed backfill state that parked it.
+            if (nonRetryablyFailed(metrics.dataset(dataset), ArchiveTrack.BACKFILL)) continue;
             long activation = activations.start(dataset).orElse(-1);
             if (activation < 0) continue;
             ArchiveProgress catchup = controlStore.load(dataset, ArchiveTrack.BACKFILL).orElse(null);
             OptionalLong selectedBaseline = handoffBaseline(
-                    activation, finalized, catchup, backend.coverage(dataset));
+                    activation, finalized, catchup, datasetCoverage(dataset));
             if (selectedBaseline.isEmpty()) continue;
             long baseline = selectedBaseline.getAsLong();
             var canonical = chain.getCanonicalBlockReference(baseline).orElse(null);
@@ -833,10 +954,20 @@ public class HistoryArchiveService implements AutoCloseable {
                 due, nextMaintenanceDeadline(now, maintenanceInterval))) return;
         try {
             selected.maintain(maintenanceBudget);
-            lastMaintenanceAt = Instant.now();
             maintenanceError = null;
-            log.info("History archive maintenance completed within {}s / {} bytes rewrite budget",
-                    maintenanceBudget.timeLimit().toSeconds(), maintenanceBudget.maxBytesToRewrite());
+            // maintain() returns normally when it defers, so a deferral reason
+            // means upkeep did not actually run and must not stamp a completion.
+            // One snapshot, and tolerant of a backend that reports none.
+            ArchiveResourceDiagnostics diagnostics = selected.resourceDiagnostics();
+            Optional<String> deferred = diagnostics == null
+                    ? Optional.empty() : diagnostics.lastMaintenanceDeferral();
+            if (deferred.isPresent()) {
+                log.debug("History archive maintenance deferred: {}", deferred.orElseThrow());
+            } else {
+                lastMaintenanceAt = Instant.now();
+                log.info("History archive maintenance completed within {}s / {} bytes rewrite budget",
+                        maintenanceBudget.timeLimit().toSeconds(), maintenanceBudget.maxBytesToRewrite());
+            }
         } catch (Exception e) {
             maintenanceError = e.getMessage();
             log.warn("History archive maintenance deferred after bounded failure: {}", e.toString());
@@ -849,6 +980,107 @@ public class HistoryArchiveService implements AutoCloseable {
         } catch (ArithmeticException overflow) {
             return Long.MAX_VALUE;
         }
+    }
+
+    /**
+     * Runs one cycle stage in isolation.
+     *
+     * <p>An unguarded stage failure used to skip every later stage on every
+     * cycle, so a single broken dataset silently stopped promotion, retention,
+     * and maintenance for good. Each stage now fails on its own and is reported
+     * by name.
+     */
+    void runStage(String stage, Runnable work) {
+        try {
+            work.run();
+            stageErrors.remove(stage);
+        } catch (Exception e) {
+            stageErrors.put(stage, failureDetail(e));
+            log.warn("Archive cycle stage {} failed; continuing with the remaining stages", stage, e);
+        }
+    }
+
+    /** Coverage for one dataset, reusing this cycle's durable read when present. */
+    private ArchiveCoverage datasetCoverage(ArchiveDatasetId dataset) {
+        CycleScopedCoverageCache cache = coverageCache;
+        return cache == null ? backend.coverage(dataset) : cache.coverage(dataset);
+    }
+
+    private void invalidateCoverageCache(ArchiveDatasetId dataset) {
+        CycleScopedCoverageCache cache = coverageCache;
+        if (cache != null) cache.invalidate(dataset);
+    }
+
+    /**
+     * A cycle failure thrown before any dataset could record its own status would
+     * otherwise be invisible, since the subsystem must not let one bad cycle kill
+     * the schedule.
+     */
+    /** Last top-level cycle failure, cleared once a whole cycle completes. */
+    String cycleError() {
+        return cycleError;
+    }
+
+    /** Per-stage cycle failures by stage name; an entry clears when that stage succeeds. */
+    Map<String, String> stageErrors() {
+        return Map.copyOf(stageErrors);
+    }
+
+    void recordCycleFailure(Throwable failure) {
+        String detail = failureDetail(failure);
+        // A cycle failure repeats every poll interval; log the stack once per
+        // distinct failure instead of flooding, which is the same policy the
+        // per-dataset paths follow.
+        if (!detail.equals(cycleError)) {
+            log.warn("Archive cycle failed; retrying on the next poll", failure);
+        }
+        cycleError = detail;
+    }
+
+    /**
+     * Parks a dataset that failed non-retryably and releases the core resources it
+     * was holding on behalf of future work it will never do.
+     *
+     * <p>A parked dataset stops advancing its cursor, so its block-body floor
+     * would otherwise pin core pruning forever and grow the chain database without
+     * bound. Its coverage stays exactly as committed; only the claim on future
+     * source bodies is dropped. Recovering the dataset needs a restart with
+     * corrected configuration and may then require a rebuild if bodies have since
+     * been pruned — which is the documented trade against unbounded core disk use.
+     */
+    private void parkFailedDataset(ArchiveDatasetId dataset, Exception failure) {
+        log.error("History dataset {} failed non-retryably and is parked until restart. Releasing its "
+                        + "block-body retention hold so core pruning is not pinned; a later rebuild may be "
+                        + "required if those bodies are pruned meanwhile.",
+                dataset.logicalName(), failure);
+        try {
+            if (controlStore != null) controlStore.releaseBlockBodyRequirement(dataset);
+        } catch (Exception release) {
+            log.warn("Could not release the block-body requirement for parked dataset {}",
+                    dataset.logicalName(), release);
+        }
+    }
+
+    /**
+     * A dataset whose last outcome was non-retryable stays parked until the node
+     * restarts with corrected configuration, schema, or projection state.
+     */
+    static boolean nonRetryablyFailed(Map<ArchiveTrack, ArchiveWorkerStatus> statuses, ArchiveTrack track) {
+        ArchiveWorkerStatus status = statuses.get(track);
+        return status != null && status.state() == ArchiveWorkerStatus.State.FAILED;
+    }
+
+    /**
+     * Waiting is not a failure, and a non-retryable error is not the same as a
+     * transient one. Keeping the three apart is what makes archive status
+     * actionable.
+     */
+    static ArchiveWorkerStatus.State classifyFailure(Throwable failure) {
+        for (Throwable current = failure; current != null; current = current.getCause()) {
+            if (current instanceof ArchiveFatalException) return ArchiveWorkerStatus.State.FAILED;
+            if (current instanceof ArchiveStuckOperationException) return ArchiveWorkerStatus.State.DEGRADED;
+        }
+        return ArchiveWorkerStatus.State.DEGRADED;
     }
 
     private static String failureDetail(Throwable failure) {
@@ -878,17 +1110,35 @@ public class HistoryArchiveService implements AutoCloseable {
                 if (progress == null || progress.coordinate() <= targetBlock) continue;
                 long activation = activations.hotStart(dataset)
                         .orElseGet(() -> activations.start(dataset).orElse(targetBlock + 1));
+                // Cold coverage above was invalidated for every dataset, parked
+                // or not. Only reactivation and the status update are withheld
+                // from a parked dataset: reactivating would re-arm catch-up and
+                // the body-retention floor for a worker that cannot advance, and
+                // overwriting FAILED would silently unpark it.
+                boolean parked = !datasetOperational(dataset);
                 try {
-                    if (finalizedInvalidated.contains(dataset) || targetBlock < activation - 1) {
-                        reactivateLiveDataset(dataset, activation, currentTip, targetBlock);
-                    } else if (targetBlock == activation - 1) {
-                        controlStore.resetTrackFrom(dataset, ArchiveTrack.LIVE, activation);
-                    } else {
-                        controlStore.rollbackTo(dataset, ArchiveTrack.LIVE, targetBlock);
+                    switch (liveRollbackAction(parked, finalizedInvalidated.contains(dataset),
+                            targetBlock, activation)) {
+                        case CLEAR_STALE_PARKED -> clearStaleParkedLiveTrack(dataset, targetBlock);
+                        case REACTIVATE -> reactivateLiveDataset(dataset, activation, currentTip, targetBlock);
+                        case RESET_TO_ACTIVATION ->
+                                controlStore.resetTrackFrom(dataset, ArchiveTrack.LIVE, activation);
+                        case EXACT_ROLLBACK -> controlStore.rollbackTo(dataset, ArchiveTrack.LIVE, targetBlock);
                     }
-                    metrics.update(dataset, ArchiveTrack.LIVE, ArchiveWorkerStatus.State.IDLE,
-                            targetBlock, currentTip - targetBlock, "exact rollback applied");
+                    if (!parked) {
+                        metrics.update(dataset, ArchiveTrack.LIVE, ArchiveWorkerStatus.State.IDLE,
+                                targetBlock, currentTip - targetBlock, "exact rollback applied");
+                    }
                 } catch (Exception rollbackFailure) {
+                    if (parked) {
+                        // Stays parked, but the rollback is requeued: leaving the
+                        // stale cursor and orphaned hot rows in place would let a
+                        // restart promote them against new canonical anchors.
+                        retry = true;
+                        log.warn("Rollback of parked history dataset {} failed and is pending retry",
+                                dataset.logicalName(), rollbackFailure);
+                        continue;
+                    }
                     try {
                         reactivateLiveDataset(dataset, activation, currentTip, targetBlock);
                     } catch (Exception recoveryFailure) {
@@ -909,6 +1159,48 @@ public class HistoryArchiveService implements AutoCloseable {
         }
     }
 
+    /** What a live rollback may do to one dataset. */
+    enum LiveRollbackAction { EXACT_ROLLBACK, RESET_TO_ACTIVATION, REACTIVATE, CLEAR_STALE_PARKED }
+
+    /**
+     * Chooses the rollback action for one dataset.
+     *
+     * <p>A parked dataset never reactivates: that would re-arm catch-up and the
+     * block-body retention floor that {@code parkFailedDataset} deliberately
+     * released, resuming a worker whose fatal condition is unchanged. Its stale
+     * live track is still cleared, because the parked state lives only in memory
+     * and a surviving cursor would let a restarted worker resume on an orphaned
+     * branch. Exact hot rollback still applies otherwise, so private hot state is
+     * never left beyond the common block.
+     */
+    static LiveRollbackAction liveRollbackAction(boolean parked, boolean coldInvalidated,
+                                                 long targetBlock, long activation) {
+        if (coldInvalidated || targetBlock < activation - 1) {
+            return parked ? LiveRollbackAction.CLEAR_STALE_PARKED : LiveRollbackAction.REACTIVATE;
+        }
+        if (targetBlock == activation - 1) return LiveRollbackAction.RESET_TO_ACTIVATION;
+        return LiveRollbackAction.EXACT_ROLLBACK;
+    }
+
+    /**
+     * Drops the orphaned live cursor and hot rows of a parked dataset.
+     *
+     * <p>Parking is in-memory only, so leaving the durable cursor in place would
+     * let the next process resume above an invalidated range. Clearing it returns
+     * the dataset to catch-up on restart, and the failed state is mirrored onto
+     * the backfill track so it stays parked for the rest of this process.
+     */
+    private void clearStaleParkedLiveTrack(ArchiveDatasetId dataset, long targetBlock) {
+        log.warn("Parked history dataset {} had its live track invalidated by a rollback to block {}; "
+                        + "clearing the stale cursor so a restart rebuilds instead of resuming an orphan branch",
+                dataset.logicalName(), targetBlock);
+        // Deliberately not swallowed: the caller requeues the rollback so the
+        // orphaned cursor cannot survive to the next process.
+        controlStore.clearTrack(dataset, ArchiveTrack.LIVE);
+        metrics.update(dataset, ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.FAILED, -1, 0,
+                "parked; live track invalidated by rollback to block " + targetBlock);
+    }
+
     private Set<ArchiveDatasetId> invalidateBlockArchivesAfterRollback(long targetBlock) {
         EnumSet<ArchiveDatasetId> invalidated = EnumSet.noneOf(ArchiveDatasetId.class);
         for (ArchiveDatasetId dataset : catchupWorkers.keySet()) {
@@ -918,11 +1210,12 @@ public class HistoryArchiveService implements AutoCloseable {
     }
 
     private boolean invalidateFinalizedBlockDataset(ArchiveDatasetId dataset, long commonBlock) {
-        ArchiveCoverage coverage = backend.coverage(dataset);
+        ArchiveCoverage coverage = datasetCoverage(dataset);
         long last = coverage.completeRanges().stream().mapToLong(ArchiveRange::endInclusive)
                 .max().orElse(commonBlock);
         if (last <= commonBlock) return false;
         backend.invalidate(dataset, new BlockRange(Math.addExact(commonBlock, 1), last));
+        invalidateCoverageCache(dataset);
         log.warn("Invalidated finalized {} archive after canonical rollback to block {}",
                 dataset.logicalName(), commonBlock);
         return true;
@@ -999,6 +1292,7 @@ public class HistoryArchiveService implements AutoCloseable {
                     ? cutoffEpoch : firstBlockAtOrAfterEpoch(cutoffEpoch, tipBlock);
             if (cutoff <= 0 || appliedRetention.getOrDefault(dataset, -1L) >= cutoff) continue;
             backend.applyRetention(dataset, new ArchiveRetentionCutoff(dataset.sourceKind(), cutoff));
+            invalidateCoverageCache(dataset);
             appliedRetention.put(dataset, cutoff);
         }
     }
@@ -1034,6 +1328,7 @@ public class HistoryArchiveService implements AutoCloseable {
     }
 
     private void reactivateCatchupDataset(ArchiveDatasetId dataset, long activation) {
+        invalidateCoverageCache(dataset);
         controlStore.clearTrack(dataset, ArchiveTrack.BACKFILL);
         long replacement = activation;
         if (dataset == ArchiveDatasetId.ADDRESS_TRANSACTION && catchupAddressDataset != null) {
@@ -1066,6 +1361,9 @@ public class HistoryArchiveService implements AutoCloseable {
         Map<Key, List<EpochPending>> groups = new TreeMap<>(Comparator
                 .comparingLong(Key::block).thenComparing(key -> key.dataset().name()).thenComparingLong(Key::epoch));
         for (var binding : staging.sources()) {
+            // A parked epoch dataset can never commit, so scanning its pending
+            // set every poll only re-materializes a set that keeps growing.
+            if (nonRetryablyFailed(metrics.dataset(binding.dataset()), ArchiveTrack.BACKFILL)) continue;
             for (var job : staging.pending(binding, 16)) {
                 long activation = activations.start(job.dataset()).orElseThrow(() ->
                         new ArchiveStoreException("missing epoch activation for " + job.dataset().logicalName()));
@@ -1078,7 +1376,24 @@ public class HistoryArchiveService implements AutoCloseable {
         int completed = 0;
         for (var group : groups.values()) {
             group.sort(Comparator.comparing(item -> item.job().sourceReference()));
-            commitEpochGroup(group);
+            ArchiveDatasetId dataset = group.getFirst().job().dataset();
+            // Epoch datasets get the same non-retryable handling as block and
+            // live projections; without it a fatal group is re-derived forever
+            // and its failure escapes to the cycle instead of parking one dataset.
+            if (nonRetryablyFailed(metrics.dataset(dataset), ArchiveTrack.BACKFILL)) continue;
+            try {
+                commitEpochGroup(group);
+                metrics.update(dataset, ArchiveTrack.BACKFILL, ArchiveWorkerStatus.State.IDLE,
+                        group.getFirst().job().epoch(), 0, "epoch archive committed");
+            } catch (Exception e) {
+                ArchiveWorkerStatus.State state = classifyFailure(e);
+                metrics.update(dataset, ArchiveTrack.BACKFILL, state, -1, 0, failureDetail(e));
+                if (state == ArchiveWorkerStatus.State.FAILED) {
+                    parkFailedDataset(dataset, e);
+                } else {
+                    log.warn("Epoch history worker {} paused", dataset.logicalName(), e);
+                }
+            }
             if (++completed == 4) break;
         }
     }
@@ -1102,6 +1417,7 @@ public class HistoryArchiveService implements AutoCloseable {
             ArchiveReceipt receipt = write.commit();
             controlStore.save(new ArchiveProgress(first.dataset(), ArchiveTrack.BACKFILL, first.epoch(),
                     first.boundarySlot(), first.boundaryBlockHash(), receipt.backendGeneration()), receipt);
+            invalidateCoverageCache(first.dataset());
             for (EpochPending item : group) acknowledgeEpochPart(item);
         }
     }
@@ -1178,7 +1494,7 @@ public class HistoryArchiveService implements AutoCloseable {
         long promotableEnd = Math.min(finalized, live.coordinate());
         if (promotableEnd < activation) return;
         long candidateStart = activation;
-        List<ArchiveRange> coverage = backend.coverage(dataset).completeRanges();
+        List<ArchiveRange> coverage = datasetCoverage(dataset).completeRanges();
         for (ArchiveRange range : coverage) {
             if (range.endInclusive() < candidateStart) continue;
             if (range.startInclusive() > candidateStart) break;
@@ -1225,6 +1541,7 @@ public class HistoryArchiveService implements AutoCloseable {
                 }
                 write.commit();
             }
+            invalidateCoverageCache(dataset);
             if (!keys.isEmpty()) controlStore.deleteFacts(dataset, keys);
         }
         if (selectedPromotionBlocks < defaultPromotionBlocks) {
@@ -1296,7 +1613,7 @@ public class HistoryArchiveService implements AutoCloseable {
                                          ArchiveWorkerConfig workerConfig, CoreSyncView syncView) {
         if (!datasetEnabled(id)) return;
         var worker = new BlockArchiveWorker<>(network, source, backend, controlStore,
-                workerConfig, syncView, metrics, Duration.ofMinutes(5));
+                workerConfig, syncView, metrics, Duration.ofMinutes(5), coverageCache);
         catchupWorkers.put(id, (start, end) -> worker.runBatch(dataset, start, end));
     }
 
@@ -1566,6 +1883,14 @@ public class HistoryArchiveService implements AutoCloseable {
 
     private Map<String, String> backendProperties(Path directory, ArchiveEngine engine) {
         Map<String, String> properties = new HashMap<>();
+        // Ordinary contention is warned about; only the stuck threshold fails a
+        // mutation, and it never advances a cursor when it does.
+        // Emitted raw: ArchiveWaitPolicy.fromProperties is the one place that
+        // parses and validates these, so one operator mistake yields one message.
+        properties.put("wait-warn-seconds", string(
+                YanoPropertyKeys.History.ARCHIVE_WAIT_WARN_SECONDS, "30"));
+        properties.put("stuck-operation-seconds", string(
+                YanoPropertyKeys.History.ARCHIVE_STUCK_OPERATION_SECONDS, "300"));
         if (engine == ArchiveEngine.SQLITE) {
             properties.put("database.path", string("yano.history.archive.sqlite.path",
                     directory.resolve("history.sqlite").toString()));
@@ -1737,40 +2062,77 @@ public class HistoryArchiveService implements AutoCloseable {
     }
 
     private void closePartial() {
-        // Join the optional worker before detaching dependencies or closing JNI
-        // stores. shutdownNow alone permits in-flight RocksDB/DuckDB calls to race
-        // native handle destruction during graceful application shutdown.
-        if (subsystem != null) subsystem.close();
-        subsystem = null;
+        // Join the optional worker before destroying anything it touches.
+        // shutdownNow alone permits in-flight RocksDB/DuckDB calls to race native
+        // handle destruction during graceful application shutdown.
+        // Projections first. The cycle thread joins their futures and ignores its
+        // own interrupt while doing so, so joining the scheduler first would time
+        // out behind a projection parked on a long resource wait -- and leave the
+        // backend, hot store, and process lock open for the single close call.
+        boolean projectionsStopped = true;
         ExecutorService selectedProjectionExecutor = projectionExecutor;
-        projectionExecutor = null;
         if (selectedProjectionExecutor != null) {
             selectedProjectionExecutor.shutdownNow();
             try {
-                if (!selectedProjectionExecutor.awaitTermination(30, TimeUnit.SECONDS)) {
+                if (selectedProjectionExecutor.awaitTermination(30, TimeUnit.SECONDS)) {
+                    projectionExecutor = null;
+                } else {
+                    projectionsStopped = false;
                     log.warn("Archive projection executor did not stop within 30 seconds");
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
+                projectionsStopped = false;
                 log.warn("Interrupted while stopping archive projection executor");
             }
         }
+        boolean workerStopped = (subsystem == null || subsystem.stop()) && projectionsStopped;
+        if (subsystem != null && subsystem.terminated()) subsystem = null;
+
+        // Detaching core from the archive is safe either way, and it is exactly
+        // what we want when the subsystem is being abandoned: core pruning and
+        // epoch staging must stop depending on stores we may not be able to close.
         if (ledger != null) try { ledger.setEpochArchiveStagingSink(
                 com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.NOOP); } catch (Exception ignored) { }
+        if (chain != null) try { chain.setBlockBodyRetentionBoundary(
+                com.bloxbean.cardano.yano.api.BlockBodyRetentionBoundary.NONE); } catch (Exception ignored) { }
         epochStaging = null;
+        // Closing the archive backend is deferred by design: it fails new
+        // mutations cleanly and destroys native handles only once every session
+        // is idle, so it is safe even while a worker is still running.
+        if (workerStopped) {
+            // Closing the backend is deferred-safe, but nulling the field while a
+            // live cycle still dereferences it turns a graceful stop into a burst
+            // of NPE-driven dataset failures.
+            if (backend != null) try { backend.close(); } catch (Exception ignored) { }
+            backend = null;
+        }
+
+        if (!workerStopped) {
+            // The hot store closes its native handles immediately, and the
+            // worker still owns the decoded-block sources and dataset maps.
+            // Leaking them is recoverable; destroying them underneath a live JNI
+            // call is not. Leave them referenced so a later close can retry.
+            shutdownError = "archive worker did not terminate; hot store and worker state left open "
+                    + "to avoid closing native handles under a running task";
+            log.error("Archive worker did not terminate within the shutdown budget; leaving the hot store "
+                    + "open rather than racing native handle destruction. Retry close once it exits.");
+            return;
+        }
+
         catchupAddressDataset = null;
         genesisResolverEntries = List.of();
         sharedFactSource = null;
         sharedBlockSource = null;
-        if (chain != null) try { chain.setBlockBodyRetentionBoundary(
-                com.bloxbean.cardano.yano.api.BlockBodyRetentionBoundary.NONE); } catch (Exception ignored) { }
-        if (backend != null) try { backend.close(); } catch (Exception ignored) { }
-        backend = null;
+        coverageCache = null;
         if (controlStore != null) try { controlStore.close(); } catch (Exception ignored) { }
         controlStore = null;
         catchupWorkers.clear();
         liveWorkers.clear();
         appliedRetention.clear();
+        shutdownError = null;
+        cycleError = null;
+        stageErrors.clear();
         nextMaintenanceNanos.set(Long.MAX_VALUE);
     }
 

@@ -5,12 +5,17 @@ import com.bloxbean.cardano.yano.archive.api.ArchiveCapabilities;
 import com.bloxbean.cardano.yano.archive.api.ArchiveCommitBoundary;
 import com.bloxbean.cardano.yano.archive.api.ArchiveCoverage;
 import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
+import com.bloxbean.cardano.yano.archive.api.ArchiveFatalException;
 import com.bloxbean.cardano.yano.archive.api.ArchiveHealth;
 import com.bloxbean.cardano.yano.archive.api.ArchiveIdentity;
 import com.bloxbean.cardano.yano.archive.api.ArchiveJob;
 import com.bloxbean.cardano.yano.archive.api.ArchiveMaintenanceBudget;
 import com.bloxbean.cardano.yano.archive.api.ArchiveRange;
 import com.bloxbean.cardano.yano.archive.api.ArchiveRangeAnchor;
+import com.bloxbean.cardano.yano.archive.api.ArchiveResourceDiagnostics;
+import com.bloxbean.cardano.yano.archive.api.ArchiveResourceGate;
+import com.bloxbean.cardano.yano.archive.api.ArchiveStuckOperationException;
+import com.bloxbean.cardano.yano.archive.api.ArchiveWaitPolicy;
 import com.bloxbean.cardano.yano.archive.api.ArchiveReadSession;
 import com.bloxbean.cardano.yano.archive.api.ArchiveReceipt;
 import com.bloxbean.cardano.yano.archive.api.ArchiveRetentionCutoff;
@@ -58,8 +63,15 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
     private final ArchiveIdentity identity;
     private final SqliteArchiveConfig config;
     private final SqliteArchiveFileLock fileLock;
+    // Fair semaphores stay the FIFO mechanism; the gates add only wait
+    // diagnostics and the warn-versus-stuck distinction.
     private final Semaphore writer = new Semaphore(1, true);
     private final Semaphore readers;
+    private final ArchiveResourceGate writerGate;
+    private final ArchiveResourceGate readerGate;
+    private final AtomicReference<ArchiveResourceDiagnostics.FailureEvent> lastFailure =
+            new AtomicReference<>();
+    private final AtomicReference<String> lastMaintenanceDeferral = new AtomicReference<>();
     private final AtomicReference<ArchiveHealth> health = new AtomicReference<>(ArchiveHealth.healthy());
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicBoolean fileLockClosed = new AtomicBoolean();
@@ -76,6 +88,10 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
         if (!identity.engine().equals("sqlite")) throw new IllegalArgumentException("SQLite backend requires engine=sqlite");
         this.config = java.util.Objects.requireNonNull(config, "config");
         this.readers = new Semaphore(config.maxReaders(), true);
+        this.writerGate = new ArchiveResourceGate("sqlite-writer", 1, writer,
+                config.waitPolicy(), SqliteHistoryArchiveBackend::logWait);
+        this.readerGate = new ArchiveResourceGate("sqlite-readers", config.maxReaders(), readers,
+                config.waitPolicy(), SqliteHistoryArchiveBackend::logWait);
         this.fileLock = new SqliteArchiveFileLock(config.databasePath());
         try {
             new SqliteArchiveInitializer(config).initialize(identity);
@@ -102,35 +118,40 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
         requireOpen();
         java.util.Objects.requireNonNull(job, "job");
         if (!job.networkIdentity().equals(identity.networkIdentity())) {
-            throw new ArchiveStoreException("archive job network identity does not match backend");
+            throw new ArchiveFatalException("archive job network identity does not match backend");
         }
         int currentProjection = ArchiveSchemas.schema(job.dataset()).projectionVersion();
         if (job.projectionVersion() != currentProjection) {
-            throw new ArchiveStoreException("archive job projection version " + job.projectionVersion()
+            throw new ArchiveFatalException("archive job projection version " + job.projectionVersion()
                     + " does not match current " + currentProjection + " for " + job.dataset());
         }
-        acquireWriter();
+        long writerTicket = -1;
         Connection connection = null;
         try {
+            // Inside the guarded scope so a stuck writer wait is recorded like
+            // any other mutation failure rather than escaping undiagnosed.
+            writerTicket = acquireWriter("begin " + job.dataset().name());
             connection = SqliteArchiveSql.open(config, false);
             Optional<ArchiveReceipt> replay = findReceipt(connection, job.jobId());
             if (replay.isPresent()) {
                 verifyReplayMetadata(job, replay.orElseThrow());
                 connection.close();
-                return new SqliteWriteSession(this, job, null, replay.orElseThrow(), replay.orElseThrow().backendGeneration());
+                return new SqliteWriteSession(this, job, null, replay.orElseThrow(),
+                        replay.orElseThrow().backendGeneration(), writerTicket);
             }
             ((SQLiteConnection) connection).setCurrentTransactionMode(SQLiteConfig.TransactionMode.IMMEDIATE);
             connection.setAutoCommit(false);
             rejectCoverageOverlap(connection, job);
             long generation = Math.addExact(currentGeneration(connection), 1);
             insertJobHeader(connection, job, generation);
-            return new SqliteWriteSession(this, job, connection, null, generation);
+            return new SqliteWriteSession(this, job, connection, null, generation, writerTicket);
         } catch (Exception e) {
             if (connection != null) {
                 try { connection.rollback(); } catch (SQLException ignored) { }
                 try { connection.close(); } catch (SQLException ignored) { }
             }
-            releaseWriter();
+            releaseWriter(writerTicket);
+            recordFailure("begin " + job.dataset().name(), e);
             markDegraded("SQLite begin failed", e);
             throw e instanceof ArchiveStoreException store ? store
                     : new ArchiveStoreException("failed to begin SQLite job", e);
@@ -140,7 +161,7 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
     @Override
     public Optional<ArchiveReceipt> findReceipt(UUID jobId) {
         requireOpen();
-        acquireReader();
+        long readerTicket = acquireReader("find-receipt");
         try (Connection connection = SqliteArchiveSql.open(config, true)) {
             connection.setAutoCommit(false);
             return findReceipt(connection, jobId);
@@ -148,14 +169,14 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
             markDegraded("SQLite receipt read failed", e);
             throw new ArchiveStoreException("failed to read SQLite receipt", e);
         } finally {
-            releaseReaderPermit();
+            releaseReaderPermit(readerTicket);
         }
     }
 
     @Override
     public ArchiveCoverage coverage(ArchiveDatasetId dataset) {
         requireOpen();
-        acquireReader();
+        long readerTicket = acquireReader("coverage " + dataset.name());
         try (Connection connection = SqliteArchiveSql.open(config, true)) {
             connection.setAutoCommit(false);
             long revision = currentGeneration(connection); // pins metadata and coverage to one WAL snapshot
@@ -164,7 +185,7 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
             markDegraded("SQLite coverage read failed", e);
             throw new ArchiveStoreException("failed to read SQLite coverage", e);
         } finally {
-            releaseReaderPermit();
+            releaseReaderPermit(readerTicket);
         }
     }
 
@@ -221,16 +242,21 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
     @Override
     public ArchiveReadSession openReadSession() {
         requireOpen();
-        acquireReader();
+        // Request-facing: a query must fail within the bounded acquisition
+        // timeout so the API can answer unavailable, rather than parking an HTTP
+        // worker toward the five-minute stuck threshold and exhausting request
+        // capacity. Internal worker reads keep the longer policy.
+        long readerTicket = acquireReader("read-session",
+                config.waitPolicy().boundedTo(config.acquireTimeout()));
         Connection connection = null;
         try {
             connection = SqliteArchiveSql.open(config, true);
             connection.setAutoCommit(false);
             long generation = currentGeneration(connection); // establishes the WAL snapshot
-            return new SqliteReadSession(this, generation, connection);
+            return new SqliteReadSession(this, generation, connection, readerTicket);
         } catch (Exception e) {
             if (connection != null) try { connection.close(); } catch (SQLException ignored) { }
-            readers.release();
+            releaseReaderPermit(readerTicket);
             markDegraded("SQLite snapshot open failed", e);
             throw new ArchiveStoreException("failed to open SQLite read snapshot", e);
         }
@@ -275,8 +301,9 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
         }
         if (rollbackSlot < 0) throw new IllegalArgumentException("rollbackSlot must be non-negative");
         requireOpen();
-        acquireWriter();
+        long writerTicket = -1;
         try (Connection connection = SqliteArchiveSql.open(config, false)) {
+            writerTicket = acquireWriter("invalidate-epoch-jobs " + dataset.name());
             ((SQLiteConnection) connection).setCurrentTransactionMode(SQLiteConfig.TransactionMode.IMMEDIATE);
             connection.setAutoCommit(false);
             try {
@@ -324,11 +351,12 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
                 throw e;
             }
         } catch (Exception e) {
+            recordFailure("invalidate-epoch-jobs " + dataset.name(), e);
             markDegraded("SQLite epoch rollback invalidation failed", e);
             throw e instanceof ArchiveStoreException store ? store
                     : new ArchiveStoreException("SQLite epoch rollback invalidation failed", e);
         } finally {
-            releaseWriter();
+            releaseWriter(writerTicket);
         }
     }
 
@@ -346,26 +374,53 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
     public void maintain(ArchiveMaintenanceBudget budget) {
         requireOpen();
         java.util.Objects.requireNonNull(budget, "budget");
-        acquireWriter();
-        long deadline = System.nanoTime() + budget.timeLimit().toNanos();
         boolean exclusiveReaders = false;
-        try (Connection connection = SqliteArchiveSql.open(config, false)) {
+        // Acquired inside the protected scope with a sentinel ticket: acquiring
+        // outside it meant a stuck writer bypassed the deferral bookkeeping and
+        // operators saw a maintenance error with no reason.
+        long writerTicket = -1;
+        try {
+            writerTicket = acquireWriter("maintenance");
+            // The budget covers execution, not the wait for the writer. Starting
+            // it earlier would let ordinary contention exhaust a short budget and
+            // report contended upkeep as a backend failure.
+            long deadline = System.nanoTime() + budget.timeLimit().toNanos();
+            // Opened only after the writer is held: opening first would keep an
+            // idle write connection for the whole wait, and discard it entirely
+            // when the wait ends in a stuck-operation failure.
+            try (Connection connection = SqliteArchiveSql.open(config, false)) {
             executeBounded(connection, deadline, "PRAGMA wal_checkpoint(PASSIVE)");
             executeBounded(connection, deadline, "PRAGMA optimize");
             long databaseBytes = Files.size(config.databasePath());
             long freePages = SqliteArchiveSql.scalarLong(connection, "PRAGMA freelist_count");
-            if (freePages > 0 && budget.maxBytesToRewrite() >= databaseBytes && databaseBytes > 0) {
-                exclusiveReaders = readers.tryAcquire(config.maxReaders());
-                if (exclusiveReaders) executeBounded(connection, deadline, "VACUUM");
+            if (freePages > 0 && databaseBytes > 0) {
+                if (budget.maxBytesToRewrite() < databaseBytes) {
+                    deferMaintenance("rewrite budget");
+                } else {
+                    exclusiveReaders = readers.tryAcquire(config.maxReaders());
+                    if (exclusiveReaders) {
+                        executeBounded(connection, deadline, "VACUUM");
+                        lastMaintenanceDeferral.set(null);
+                    } else {
+                        deferMaintenance("active reader snapshot");
+                    }
+                }
+            } else {
+                lastMaintenanceDeferral.set(null);
             }
             health.set(ArchiveHealth.healthy());
+            }
+        } catch (ArchiveStuckOperationException e) {
+            deferMaintenance("writer wait");
+            throw e;
         } catch (Exception e) {
+            recordFailure("maintenance", e);
             markDegraded("SQLite maintenance failed", e);
             throw e instanceof ArchiveStoreException store ? store
                     : new ArchiveStoreException("SQLite maintenance failed", e);
         } finally {
             if (exclusiveReaders) readers.release(config.maxReaders());
-            releaseWriter();
+            releaseWriter(writerTicket);
         }
     }
 
@@ -374,7 +429,7 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
 
     public SqliteStorageStats storageStats() {
         requireOpen();
-        acquireReader();
+        long readerTicket = acquireReader("storage-stats");
         try (Connection connection = SqliteArchiveSql.open(config, true)) {
             long pageCount = SqliteArchiveSql.scalarLong(connection, "PRAGMA page_count");
             long freePages = SqliteArchiveSql.scalarLong(connection, "PRAGMA freelist_count");
@@ -387,7 +442,7 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
             throw e instanceof ArchiveStoreException store ? store
                     : new ArchiveStoreException("failed to read SQLite storage statistics", e);
         } finally {
-            releaseReaderPermit();
+            releaseReaderPermit(readerTicket);
         }
     }
 
@@ -396,7 +451,7 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
         if (timeout == null || timeout.isZero() || timeout.isNegative()) {
             throw new IllegalArgumentException("integrity timeout must be positive");
         }
-        acquireReader();
+        long readerTicket = acquireReader("verify-integrity");
         try (Connection connection = SqliteArchiveSql.open(config, true);
              Statement sql = connection.createStatement()) {
             connection.setAutoCommit(false);
@@ -417,7 +472,7 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
             throw e instanceof ArchiveStoreException store ? store
                     : new ArchiveStoreException("SQLite integrity check failed", e);
         } finally {
-            readers.release();
+            releaseReaderPermit(readerTicket);
         }
     }
 
@@ -425,8 +480,9 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
         requireOpen();
         Path normalized = java.util.Objects.requireNonNull(target, "target").toAbsolutePath().normalize();
         if (normalized.equals(config.databasePath())) throw new IllegalArgumentException("backup target equals database");
-        acquireWriter();
+        long writerTicket = -1;
         try {
+            writerTicket = acquireWriter("backup");
             Path parent = normalized.getParent();
             if (parent == null) throw new ArchiveStoreException("backup target has no parent");
             Files.createDirectories(parent);
@@ -446,27 +502,30 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
             }
             return normalized;
         } catch (Exception e) {
+            recordFailure("backup", e);
             throw e instanceof ArchiveStoreException store ? store
                     : new ArchiveStoreException("SQLite online backup failed", e);
         } finally {
-            releaseWriter();
+            releaseWriter(writerTicket);
         }
     }
 
-    void releaseWriter() {
-        writer.release();
+    /** Releases exactly the supplied ticket. An unheld ticket is a no-op. */
+    void releaseWriter(long ticket) {
+        if (ticket >= 0) writerGate.release(ticket);
         finishCloseIfIdle();
     }
 
-    void releaseReader() {
-        releaseReaderPermit();
+    void releaseReader(long readerTicket) {
+        releaseReaderPermit(readerTicket);
     }
 
     private void mutateCommittedJobs(ArchiveDatasetId dataset, ArchiveRange range, boolean wholeJobsOnly) {
         requireOpen();
         if (dataset.sourceKind() != range.sourceKind()) throw new IllegalArgumentException("dataset/range source mismatch");
-        acquireWriter();
+        long writerTicket = -1;
         try (Connection connection = SqliteArchiveSql.open(config, false)) {
+            writerTicket = acquireWriter((wholeJobsOnly ? "retention " : "invalidate ") + dataset.name());
             ((SQLiteConnection) connection).setCurrentTransactionMode(SQLiteConfig.TransactionMode.IMMEDIATE);
             connection.setAutoCommit(false);
             try {
@@ -498,11 +557,12 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
                 throw e;
             }
         } catch (Exception e) {
+            recordFailure((wholeJobsOnly ? "retention " : "invalidate ") + dataset.name(), e);
             markDegraded("SQLite invalidation failed", e);
             throw e instanceof ArchiveStoreException store ? store
                     : new ArchiveStoreException("SQLite invalidation failed", e);
         } finally {
-            releaseWriter();
+            releaseWriter(writerTicket);
         }
     }
 
@@ -600,7 +660,8 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
         if (receipt.dataset() != job.dataset() || receipt.projectionVersion() != job.projectionVersion()
                 || !receipt.range().equals(job.range()) || !receipt.anchors().equals(job.anchors())
                 || !receipt.networkIdentity().equals(job.networkIdentity())) {
-            throw new ArchiveStoreException("job ID conflicts with different committed metadata: " + job.jobId());
+            // Identity conflict: retrying the same job can never succeed.
+            throw new ArchiveFatalException("job ID conflicts with different committed metadata: " + job.jobId());
         }
     }
 
@@ -646,34 +707,65 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
         }
     }
 
-    private void acquireWriter() {
-        try {
-            if (!writer.tryAcquire(config.acquireTimeout().toMillis(), TimeUnit.MILLISECONDS)) {
-                throw new ArchiveStoreException("timed out waiting for SQLite writer");
-            }
-            if (closed.get()) {
-                writer.release();
-                throw new IllegalStateException("SQLite backend is closed");
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new ArchiveStoreException("interrupted waiting for SQLite writer", e);
+    /**
+     * Waits for the single writer using the configured warn/stuck policy and
+     * returns the caller's own ticket. The ticket is deliberately not stored on
+     * the backend: a shared field cannot express ownership, so a caller whose
+     * acquisition fails could release the active writer's permit.
+     */
+    private long acquireWriter(String operation) {
+        long ticket = writerGate.acquire(operation);
+        if (closed.get()) {
+            releaseWriter(ticket);
+            throw new IllegalStateException("SQLite backend is closed");
         }
+        return ticket;
     }
 
-    private void acquireReader() {
-        try {
-            if (!readers.tryAcquire(config.acquireTimeout().toMillis(), TimeUnit.MILLISECONDS)) {
-                throw new ArchiveStoreException("timed out waiting for SQLite archive reader");
-            }
-            if (closed.get()) {
-                readers.release();
-                throw new IllegalStateException("SQLite backend is closed");
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new ArchiveStoreException("interrupted waiting for SQLite archive reader", e);
+    /** Internal worker read: ordinary contention waits under the warn/stuck policy. */
+    private long acquireReader(String operation) {
+        return acquireReader(operation, config.waitPolicy());
+    }
+
+    private long acquireReader(String operation, ArchiveWaitPolicy policy) {
+        long ticket = readerGate.acquire(operation, policy);
+        if (closed.get()) {
+            releaseReaderPermit(ticket);
+            throw new IllegalStateException("SQLite backend is closed");
         }
+        return ticket;
+    }
+
+    private static void logWait(String gate, String operation, Duration waited, String holderDetail) {
+        LOG.log(System.Logger.Level.WARNING,
+                "Archive still waiting for {0} after {1}s while running {2}; {3}",
+                gate, waited.toSeconds(), operation, holderDetail);
+    }
+
+    private void recordFailure(String operation, Throwable failure) {
+        if (closed.get()) return;
+        lastFailure.set(new ArchiveResourceDiagnostics.FailureEvent(operation,
+                failure.getMessage() == null ? failure.toString() : failure.getMessage(), Instant.now()));
+    }
+
+    /** Records why bounded upkeep did not run, so repeated deferral is visible. */
+    private void deferMaintenance(String reason) {
+        lastMaintenanceDeferral.set(reason);
+        LOG.log(System.Logger.Level.DEBUG, "SQLite archive maintenance deferred: {0}", reason);
+    }
+
+    @Override
+    public ArchiveResourceDiagnostics resourceDiagnostics() {
+        Optional<ArchiveResourceDiagnostics.WaitEvent> writerWarning = writerGate.lastWaitWarning();
+        Optional<ArchiveResourceDiagnostics.WaitEvent> readerWarning = readerGate.lastWaitWarning();
+        Optional<ArchiveResourceDiagnostics.WaitEvent> latest;
+        if (writerWarning.isEmpty()) latest = readerWarning;
+        else if (readerWarning.isEmpty()) latest = writerWarning;
+        else latest = writerWarning.orElseThrow().at().isAfter(readerWarning.orElseThrow().at())
+                    ? writerWarning : readerWarning;
+        return new ArchiveResourceDiagnostics(List.of(writerGate.usage(), readerGate.usage()),
+                latest, Optional.ofNullable(lastFailure.get()),
+                Optional.ofNullable(lastMaintenanceDeferral.get()));
     }
 
     private int timeoutSeconds(Duration timeout) {
@@ -690,11 +782,15 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
     }
 
     private void markDegraded(String detail, Throwable error) {
+        // CLOSED is terminal. A mutation queued behind the writer and rejected by
+        // shutdown is an expected outcome, not a health regression.
+        if (closed.get()) return;
         health.set(new ArchiveHealth(ArchiveHealth.Status.DEGRADED,
                 detail + ": " + error.getMessage(), Instant.now()));
     }
 
     private void markUnhealthy(String detail, Throwable error) {
+        if (closed.get()) return;
         health.set(new ArchiveHealth(ArchiveHealth.Status.UNHEALTHY,
                 detail + ": " + error.getMessage(), Instant.now()));
     }
@@ -706,8 +802,8 @@ public final class SqliteHistoryArchiveBackend implements ArchiveBackend {
         finishCloseIfIdle();
     }
 
-    private void releaseReaderPermit() {
-        readers.release();
+    private void releaseReaderPermit(long readerTicket) {
+        readerGate.release(readerTicket);
         finishCloseIfIdle();
     }
 

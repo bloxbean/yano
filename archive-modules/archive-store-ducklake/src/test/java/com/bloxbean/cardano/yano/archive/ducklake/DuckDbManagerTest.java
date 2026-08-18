@@ -94,6 +94,52 @@ class DuckDbManagerTest {
         }
     }
 
+    @Test
+    void bothCapacityGatesShareOneDeadlineInsteadOfEachGettingTheFullWait() throws Exception {
+        // Regression: each gate used to receive the full policy timeout, so a
+        // bulk acquisition could wait nearly the threshold for the bulk gate and
+        // then the whole threshold again for the total gate.
+        var workload = new DuckDbWorkloadConfig(64L * 1024 * 1024, 1);
+        var config = new DuckDbManagerConfig(256L * 1024 * 1024, 2, 1,
+                temp.resolve("shared-deadline"), 0, workload, workload);
+        Duration bound = Duration.ofSeconds(1);
+        try (var manager = new DuckDbManager(config, DuckDbExtensionLoader.none());
+             var steadyOne = manager.acquire(DuckDbWorkload.STEADY, Duration.ofSeconds(2));
+             var steadyTwo = manager.acquire(DuckDbWorkload.STEADY, Duration.ofSeconds(2))) {
+            assertThat(steadyOne).isNotNull();
+            assertThat(steadyTwo).isNotNull();
+
+            // Hold the bulk permit directly so releasing it does not also free a
+            // total permit; total stays exhausted by the two steady leases.
+            Semaphore bulkPermits = semaphore(manager, "bulkPermits");
+            bulkPermits.acquire();
+
+            // Free the bulk gate partway through the budget. A correct
+            // implementation still fails at the shared deadline; the old one
+            // would then start a fresh full wait on the total gate.
+            Thread releaser = Thread.ofPlatform().start(() -> {
+                try {
+                    Thread.sleep(bound.toMillis() * 6 / 10);
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                }
+                bulkPermits.release();
+            });
+
+            long startedAt = System.nanoTime();
+            assertThatThrownBy(() -> manager.acquire(DuckDbWorkload.BULK_CATCH_UP, bound))
+                    .isInstanceOf(SQLException.class);
+            Duration waited = Duration.ofNanos(System.nanoTime() - startedAt);
+            releaser.join(5_000);
+
+            assertThat(waited).as("waited %s against a %s bound", waited, bound)
+                    .isLessThan(bound.multipliedBy(3).dividedBy(2));
+            // The failed acquisition must not have kept either permit.
+            assertThat(bulkPermits.availablePermits()).isEqualTo(1);
+            assertThat(semaphore(manager, "totalPermits").availablePermits()).isZero();
+        }
+    }
+
     private String setting(DuckDbLease lease, String name) throws SQLException {
         try (var statement = lease.connection().createStatement();
              var result = statement.executeQuery("SELECT current_setting('" + name + "')")) {

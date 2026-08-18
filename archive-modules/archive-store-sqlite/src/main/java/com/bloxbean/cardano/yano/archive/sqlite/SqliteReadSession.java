@@ -10,12 +10,15 @@ final class SqliteReadSession implements ArchiveReadSession {
     private final SqliteHistoryArchiveBackend backend;
     private final long generation;
     private final Connection connection;
+    private final long readerTicket;
     private final AtomicBoolean closed = new AtomicBoolean();
 
-    SqliteReadSession(SqliteHistoryArchiveBackend backend, long generation, Connection connection) {
+    SqliteReadSession(SqliteHistoryArchiveBackend backend, long generation, Connection connection,
+                      long readerTicket) {
         this.backend = backend;
         this.generation = generation;
         this.connection = connection;
+        this.readerTicket = readerTicket;
     }
 
     @Override
@@ -36,7 +39,7 @@ final class SqliteReadSession implements ArchiveReadSession {
         } catch (SQLException ignored) {
         } finally {
             try { connection.close(); } catch (SQLException ignored) { }
-            backend.releaseReader();
+            backend.releaseReader(readerTicket);
         }
     }
 }

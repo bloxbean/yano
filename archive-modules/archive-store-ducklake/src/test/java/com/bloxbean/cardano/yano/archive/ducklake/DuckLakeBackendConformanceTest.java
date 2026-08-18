@@ -2,6 +2,9 @@ package com.bloxbean.cardano.yano.archive.ducklake;
 
 import com.bloxbean.cardano.yano.archive.api.ArchiveBackend;
 import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
+import com.bloxbean.cardano.yano.archive.api.ArchiveFatalException;
+import com.bloxbean.cardano.yano.archive.api.ArchiveStuckOperationException;
+import com.bloxbean.cardano.yano.archive.api.ArchiveWaitPolicy;
 import com.bloxbean.cardano.yano.archive.api.ArchiveIdentity;
 import com.bloxbean.cardano.yano.archive.api.ArchiveHealth;
 import com.bloxbean.cardano.yano.archive.api.ArchiveJob;
@@ -22,9 +25,14 @@ import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -336,6 +344,261 @@ class DuckLakeBackendConformanceTest extends AbstractArchiveBackendConformanceTe
         try (var after = (DuckLakeReadSession) backend().openReadSession()) {
             assertThat(count(after, "chain_transaction")).isEqualTo(1);
         }
+    }
+
+    @Test
+    void aWriterWaitingForDuckDbCapacityDoesNotOccupyTheWriterSemaphore() throws Exception {
+        // Saturate every DuckDB permit with readers, then start a mutation. Under
+        // the lease->writer order it blocks on capacity, so the writer stays free.
+        var backend = (DuckLakeHistoryArchiveBackend) backend();
+        var managerConfig = DuckDbManagerConfig.defaults(temp.resolve("saturated-tmp"));
+        try (var reader = backend.openReadSession()) {
+            assertThat(reader.generation()).isNotNegative();
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            Thread mutation = Thread.ofPlatform().start(() -> {
+                try (var write = backend.begin(job(900, 901, (byte) 91))) {
+                    write.commit();
+                } catch (Throwable error) {
+                    failure.set(error);
+                }
+            });
+            // Give the mutation time to reach whichever resource is scarce.
+            Thread.sleep(200);
+            var writerGate = backend.resourceDiagnostics().gates().stream()
+                    .filter(gate -> gate.name().equals("ducklake-writer")).findFirst().orElseThrow();
+            assertThat(writerGate.totalPermits()).isEqualTo(1);
+            mutation.join(60_000);
+            assertThat(failure.get()).isNull();
+        }
+        assertThat(managerConfig.maxConcurrentBulkJobs())
+                .isLessThan(managerConfig.maxConcurrentQueries());
+    }
+
+    @Test
+    void maintenanceDefersWithAReasonWhileAReaderSnapshotIsPinnedAndTakesNoCapacity() {
+        var backend = (DuckLakeHistoryArchiveBackend) backend();
+        try (var pinned = backend.openReadSession()) {
+            assertThat(pinned.generation()).isNotNegative();
+            backend.maintain(new ArchiveMaintenanceBudget(Duration.ofSeconds(2), 1024L * 1024));
+            assertThat(backend.resourceDiagnostics().lastMaintenanceDeferral())
+                    .contains("active reader snapshot");
+            // Deferral must not have consumed the writer or a bulk permit.
+            for (var gate : backend.resourceDiagnostics().gates()) {
+                assertThat(gate.inUse())
+                        .as("gate %s must be free after a deferred maintenance run", gate.name())
+                        .isLessThanOrEqualTo(gate.name().equals("duckdb-total") ? 1 : 0);
+            }
+        }
+    }
+
+    @Test
+    void everyMutationReleasesItsWriterAndLeaseExactlyOnceAcrossSuccessAndFailure() {
+        var backend = (DuckLakeHistoryArchiveBackend) backend();
+        try (var write = backend.begin(job(700, 701, (byte) 71))) {
+            write.commit();
+        }
+        // A distinct job overlapping committed coverage is rejected, and that
+        // rejection must release both resources too. (Repeating the *same* job id
+        // is a legitimate idempotent replay, not a failure.)
+        assertThatThrownBy(() -> backend.begin(job(700, 705, (byte) 73)).close())
+                .isInstanceOf(ArchiveStoreException.class)
+                .hasMessageContaining("overlaps committed coverage");
+        for (var gate : backend.resourceDiagnostics().gates()) {
+            assertThat(gate.inUse()).as("gate %s leaked a permit", gate.name()).isZero();
+        }
+        // The backend still works after the failure, proving nothing was leaked.
+        try (var write = backend.begin(job(702, 703, (byte) 72))) {
+            write.commit();
+        }
+        assertThat(backend.coverage(ArchiveDatasetId.TRANSACTION).completeRanges()).isNotEmpty();
+    }
+
+    @Test
+    void mismatchedProjectionAndIdentityAreNonRetryableFatalErrors() {
+        var backend = (DuckLakeHistoryArchiveBackend) backend();
+        ArchiveJob foreign = ArchiveJob.deterministic(new ArchiveNetworkIdentity(999, "other-genesis"),
+                ArchiveDatasetId.TRANSACTION,
+                ArchiveSchemas.schema(ArchiveDatasetId.TRANSACTION).projectionVersion(),
+                new BlockRange(0, 1), new ArchiveRangeAnchor(0, new byte[32], 10, new byte[32]), "fixture-v1");
+        assertThatThrownBy(() -> backend.begin(foreign))
+                .isInstanceOf(ArchiveFatalException.class);
+        for (var gate : backend.resourceDiagnostics().gates()) {
+            assertThat(gate.inUse()).as("gate %s leaked a permit", gate.name()).isZero();
+        }
+    }
+
+    @Test
+    void concurrentProjectionsSerializeOnOneWriterWithoutLosingOrDuplicatingCoverage() throws Exception {
+        var backend = (DuckLakeHistoryArchiveBackend) backend();
+        int projections = 4;
+        var start = new CountDownLatch(1);
+        var done = new CountDownLatch(projections);
+        List<Throwable> failures = new CopyOnWriteArrayList<>();
+        for (int index = 0; index < projections; index++) {
+            long from = 1000L + index * 10L;
+            byte marker = (byte) (40 + index);
+            Thread.ofPlatform().start(() -> {
+                try {
+                    start.await();
+                    ArchiveJob job = job(from, from + 9, marker);
+                    try (var write = backend.begin(job)) {
+                        write.append(row(job, marker, from + 9));
+                        write.commit();
+                    }
+                } catch (Throwable error) {
+                    failures.add(error);
+                } finally {
+                    done.countDown();
+                }
+            });
+        }
+        start.countDown();
+        assertThat(done.await(120, TimeUnit.SECONDS)).isTrue();
+        assertThat(failures).isEmpty();
+
+        var ranges = backend.coverage(ArchiveDatasetId.TRANSACTION).completeRanges();
+        // One merged run: every concurrent commit landed exactly once, in order.
+        assertThat(ranges).contains(new BlockRange(1000, 1000 + projections * 10L - 1));
+        for (var gate : backend.resourceDiagnostics().gates()) {
+            assertThat(gate.inUse()).as("gate %s leaked a permit", gate.name()).isZero();
+            assertThat(gate.waiters()).as("gate %s left a waiter", gate.name()).isZero();
+        }
+    }
+
+    @Test
+    void catalogBackupDrainsReadersFirstAndReleasesBothLocksOnEveryPath() throws Exception {
+        var backend = (DuckLakeHistoryArchiveBackend) backend();
+        Path target = temp.resolve("backup/catalog-copy.sqlite");
+
+        assertThat(backend.backupCatalog(target)).isEqualTo(target.toAbsolutePath().normalize());
+        assertThat(Files.size(target)).isPositive();
+        for (var gate : backend.resourceDiagnostics().gates()) {
+            assertThat(gate.inUse()).as("gate %s leaked after backup", gate.name()).isZero();
+        }
+
+        // A rejected target must release the reader gate and writer too.
+        assertThatThrownBy(() -> backend.backupCatalog(config().catalogPath()))
+                .isInstanceOf(IllegalArgumentException.class);
+        for (var gate : backend.resourceDiagnostics().gates()) {
+            assertThat(gate.inUse()).as("gate %s leaked after a rejected backup", gate.name()).isZero();
+        }
+        // Normal work still proceeds, proving neither lock was stranded.
+        try (var write = backend.begin(job(800, 809, (byte) 80))) {
+            write.commit();
+        }
+        try (var reader = backend.openReadSession()) {
+            assertThat(reader.generation()).isNotNegative();
+        }
+    }
+
+    @Test
+    void aStuckWaiterMustNotReleaseTheActiveWritersPermit() throws Exception {
+        // Regression: the writer ticket used to live in one backend-wide field,
+        // so a caller whose acquisition timed out released whichever ticket was
+        // there -- handing the active writer's permit to a third operation.
+        var shortStuck = new DuckLakeArchiveConfig(temp.resolve("stuck-catalog.sqlite"),
+                temp.resolve("stuck-data"), Duration.ofSeconds(5), 10, 10,
+                16L * 1024 * 1024, 10_000, Duration.ofHours(168), Duration.ofHours(24),
+                new ArchiveWaitPolicy(
+                        Duration.ofMillis(50), Duration.ofMillis(300)));
+        try (var backend = DuckLakeHistoryArchiveBackend.open(identity(UUID.randomUUID()), shortStuck,
+                DuckDbManagerConfig.defaults(temp.resolve("stuck-tmp")),
+                new PackagedDuckDbExtensionLoader(temp.resolve("extensions")), shortStuck.waitPolicy())) {
+
+            ArchiveJob held = job(0, 9, (byte) 1);
+            var active = backend.begin(held);   // holds the writer for the whole test
+            try {
+                // A second mutation cannot get the writer and hits its stuck threshold.
+                assertThatThrownBy(() -> backend.maintain(
+                        new ArchiveMaintenanceBudget(Duration.ofSeconds(2), 1024L * 1024)))
+                        .isInstanceOf(ArchiveStuckOperationException.class);
+
+                // The active writer must still hold its permit after that failure.
+                var writerGate = backend.resourceDiagnostics().gates().stream()
+                        .filter(gate -> gate.name().equals("ducklake-writer")).findFirst().orElseThrow();
+                assertThat(writerGate.inUse())
+                        .as("the timed-out waiter released the active writer's permit")
+                        .isEqualTo(1);
+
+                // And no third mutation may enter while the first is still open.
+                assertThatThrownBy(() -> backend.invalidate(ArchiveDatasetId.TRANSACTION, new BlockRange(50, 59)))
+                        .isInstanceOf(ArchiveStuckOperationException.class);
+                assertThat(backend.resourceDiagnostics().gates().stream()
+                        .filter(gate -> gate.name().equals("ducklake-writer")).findFirst().orElseThrow().inUse())
+                        .isEqualTo(1);
+
+                active.append(row(held, (byte) 1, 9));
+                active.commit();
+            } finally {
+                active.close();
+            }
+
+            // Exactly one permit was released: the writer is free and usable again.
+            assertThat(backend.resourceDiagnostics().gates().stream()
+                    .filter(gate -> gate.name().equals("ducklake-writer")).findFirst().orElseThrow().inUse())
+                    .isZero();
+            try (var next = backend.begin(job(10, 19, (byte) 2))) {
+                next.commit();
+            }
+        }
+    }
+
+    @Test
+    void requestCapacitySaturationFailsFastAndLeavesBackendHealthUntouched() throws Exception {
+        // Ordinary API saturation must not persist as DEGRADED health after the
+        // burst clears; only real read failures degrade the backend.
+        Duration requestBound = Duration.ofSeconds(1);
+        var config = new DuckLakeArchiveConfig(temp.resolve("sat-catalog.sqlite"),
+                temp.resolve("sat-data"), requestBound, 10, 10,
+                16L * 1024 * 1024, 10_000, Duration.ofHours(168), Duration.ofHours(24),
+                new ArchiveWaitPolicy(Duration.ofMillis(200), Duration.ofMinutes(5)));
+        try (var backend = DuckLakeHistoryArchiveBackend.open(identity(UUID.randomUUID()), config,
+                DuckDbManagerConfig.defaults(temp.resolve("sat-tmp")),
+                new PackagedDuckDbExtensionLoader(temp.resolve("extensions")), config.waitPolicy())) {
+
+            assertThat(backend.health().status()).isEqualTo(ArchiveHealth.Status.HEALTHY);
+            int permits = DuckDbManagerConfig.defaults(temp.resolve("sat-tmp")).maxConcurrentQueries();
+            List<com.bloxbean.cardano.yano.archive.api.ArchiveReadSession> held = new ArrayList<>();
+            try {
+                for (int index = 0; index < permits; index++) held.add(backend.openReadSession());
+
+                long startedAt = System.nanoTime();
+                assertThatThrownBy(backend::openReadSession)
+                        .isInstanceOf(ArchiveStoreException.class)
+                        .hasMessageContaining("saturated");
+                Duration waited = Duration.ofNanos(System.nanoTime() - startedAt);
+                assertThat(waited).as("request waited %s against a %s bound", waited, requestBound)
+                        .isLessThan(requestBound.multipliedBy(4));
+
+                // The whole point: saturation is contention, not ill health.
+                assertThat(backend.health().status()).isEqualTo(ArchiveHealth.Status.HEALTHY);
+            } finally {
+                held.forEach(com.bloxbean.cardano.yano.archive.api.ArchiveReadSession::close);
+            }
+
+            // Capacity is back and the archive is still usable and healthy.
+            try (var reader = backend.openReadSession()) {
+                assertThat(reader.generation()).isNotNegative();
+            }
+            assertThat(backend.health().status()).isEqualTo(ArchiveHealth.Status.HEALTHY);
+        }
+    }
+
+    @Test
+    void onlyABoundedRequestTimeoutIsTreatedAsCapacitySaturation() {
+        var capacity = new DuckDbCapacityTimeoutException("timed out waiting for a DuckDB query slot",
+                new ArchiveStuckOperationException("duckdb-total", "read-session",
+                        Duration.ofSeconds(1), "held by read-session"));
+        assertThat(DuckLakeHistoryArchiveBackend.isRequestCapacityTimeout(capacity)).isTrue();
+        assertThat(DuckLakeHistoryArchiveBackend.isRequestCapacityTimeout(
+                new ArchiveStoreException("wrapped", capacity))).isTrue();
+
+        // A worker-path stuck breach exceeded the operator threshold: a real problem.
+        assertThat(DuckLakeHistoryArchiveBackend.isRequestCapacityTimeout(
+                new ArchiveStuckOperationException("ducklake-writer", "begin", Duration.ofMinutes(5), "")))
+                .isFalse();
+        assertThat(DuckLakeHistoryArchiveBackend.isRequestCapacityTimeout(
+                new java.sql.SQLException("catalog corruption"))).isFalse();
     }
 
     private DuckLakeHistoryArchiveBackend open(ArchiveIdentity identity) {

@@ -2,16 +2,20 @@ package com.bloxbean.cardano.yano.archive.sqlite;
 
 import com.bloxbean.cardano.yano.archive.api.ArchiveBackend;
 import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
+import com.bloxbean.cardano.yano.archive.api.ArchiveFatalException;
 import com.bloxbean.cardano.yano.archive.api.ArchiveIdentity;
 import com.bloxbean.cardano.yano.archive.api.ArchiveJob;
 import com.bloxbean.cardano.yano.archive.api.ArchiveMaintenanceBudget;
 import com.bloxbean.cardano.yano.archive.api.ArchiveNetworkIdentity;
 import com.bloxbean.cardano.yano.archive.api.ArchiveRangeAnchor;
+import com.bloxbean.cardano.yano.archive.api.ArchiveReadSession;
 import com.bloxbean.cardano.yano.archive.api.ArchiveRetentionCutoff;
 import com.bloxbean.cardano.yano.archive.api.ArchiveRow;
 import com.bloxbean.cardano.yano.archive.api.ArchiveStoreException;
+import com.bloxbean.cardano.yano.archive.api.ArchiveWaitPolicy;
 import com.bloxbean.cardano.yano.archive.api.BlockRange;
 import com.bloxbean.cardano.yano.archive.api.SourceKind;
+import com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas;
 import com.bloxbean.cardano.yano.archive.api.test.AbstractArchiveBackendConformanceTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -21,10 +25,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.DriverManager;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.ServiceLoader;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -139,8 +146,12 @@ class SqliteBackendConformanceTest extends AbstractArchiveBackendConformanceTest
 
     @Test
     void readerPoolIsBoundedAndCrossExecutorAbortReleasesWriter() throws Exception {
+        // Reader saturation is ordinary contention and no longer fails at the
+        // acquisition timeout, so a test that wants the failure states its own
+        // short stuck threshold instead of relying on busy_timeout.
         SqliteArchiveConfig bounded = new SqliteArchiveConfig(temp.resolve("bounded.sqlite"),
-                Duration.ofMillis(100), Duration.ofSeconds(2), 1, SqliteArchiveConfig.Durability.FULL);
+                Duration.ofMillis(100), Duration.ofSeconds(2), 1, SqliteArchiveConfig.Durability.FULL,
+                new ArchiveWaitPolicy(Duration.ofMillis(50), Duration.ofMillis(200)));
         backend().close();
         try (var store = open(identity(UUID.randomUUID()), bounded);
              var firstReader = store.openReadSession()) {
@@ -268,6 +279,150 @@ class SqliteBackendConformanceTest extends AbstractArchiveBackendConformanceTest
 
     private SqliteHistoryArchiveBackend open(ArchiveIdentity identity, SqliteArchiveConfig config) {
         return new SqliteHistoryArchiveBackend(identity, config);
+    }
+
+    @Test
+    void requestFacingReadSessionsFailWithinTheBoundedAcquireTimeout() throws Exception {
+        // A history API request must not park an HTTP worker toward the
+        // five-minute stuck threshold; it fails fast so the endpoint can answer
+        // unavailable. DuckLake already bounds this path the same way.
+        var backend = (SqliteHistoryArchiveBackend) backend();
+        int readers = backend.resourceDiagnostics().gates().stream()
+                .filter(gate -> gate.name().equals("sqlite-readers")).findFirst().orElseThrow().totalPermits();
+        List<ArchiveReadSession> held = new ArrayList<>();
+        try {
+            for (int index = 0; index < readers; index++) held.add(backend.openReadSession());
+
+            Duration bound = config().acquireTimeout();
+            long startedAt = System.nanoTime();
+            assertThatThrownBy(backend::openReadSession)
+                    .isInstanceOf(ArchiveStoreException.class)
+                    .hasMessageContaining("reader");
+            Duration waited = Duration.ofNanos(System.nanoTime() - startedAt);
+            assertThat(waited).as("request read waited %s, bound is %s", waited, bound)
+                    .isLessThan(bound.multipliedBy(3));
+        } finally {
+            held.forEach(ArchiveReadSession::close);
+        }
+        for (var gate : backend.resourceDiagnostics().gates()) {
+            assertThat(gate.inUse()).as("gate %s leaked a permit", gate.name()).isZero();
+        }
+    }
+
+    @Test
+    void internalWorkerReadsKeepWaitingUnderSaturationInsteadOfFailing() throws Exception {
+        // Worker-side coverage reads are ordinary contention: they wait under the
+        // warn/stuck policy rather than turning saturation into a projection failure.
+        var backend = (SqliteHistoryArchiveBackend) backend();
+        int readers = backend.resourceDiagnostics().gates().stream()
+                .filter(gate -> gate.name().equals("sqlite-readers")).findFirst().orElseThrow().totalPermits();
+        List<ArchiveReadSession> held = new ArrayList<>();
+        try {
+            for (int index = 0; index < readers; index++) held.add(backend.openReadSession());
+
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            AtomicBoolean completed = new AtomicBoolean();
+            Thread waiter = Thread.ofPlatform().start(() -> {
+                try {
+                    backend.coverage(ArchiveDatasetId.TRANSACTION);
+                    completed.set(true);
+                } catch (Throwable error) {
+                    failure.set(error);
+                }
+            });
+
+            // Still waiting well past the bounded request timeout, and not failed.
+            Thread.sleep(config().acquireTimeout().toMillis() + 500);
+            assertThat(failure.get()).as("internal read must not fail at the request bound").isNull();
+            assertThat(completed).isFalse();
+            assertThat(backend.resourceDiagnostics().gates().stream()
+                    .filter(gate -> gate.name().equals("sqlite-readers")).findFirst().orElseThrow().waiters())
+                    .isEqualTo(1);
+
+            held.removeLast().close();
+            waiter.join(10_000);
+            assertThat(failure.get()).isNull();
+            assertThat(completed).isTrue();
+        } finally {
+            held.forEach(ArchiveReadSession::close);
+        }
+        for (var gate : backend.resourceDiagnostics().gates()) {
+            assertThat(gate.inUse()).as("gate %s leaked a permit", gate.name()).isZero();
+        }
+    }
+
+    @Test
+    void everyMutationReleasesItsWriterExactlyOnceAcrossSuccessAndFailure() {
+        var backend = (SqliteHistoryArchiveBackend) backend();
+        try (var write = backend.begin(job(700, 701, (byte) 71))) {
+            write.commit();
+        }
+        assertThatThrownBy(() -> backend.begin(job(700, 705, (byte) 73)).close())
+                .isInstanceOf(ArchiveStoreException.class)
+                .hasMessageContaining("overlaps committed coverage");
+        for (var gate : backend.resourceDiagnostics().gates()) {
+            assertThat(gate.inUse()).as("gate %s leaked a permit", gate.name()).isZero();
+        }
+        try (var write = backend.begin(job(702, 703, (byte) 72))) {
+            write.commit();
+        }
+    }
+
+    @Test
+    void ordinaryMutationFailuresAreRecordedAsTheLastMutationFailure() {
+        var backend = (SqliteHistoryArchiveBackend) backend();
+        assertThat(backend.resourceDiagnostics().lastMutationFailure()).isEmpty();
+
+        ArchiveJob job = job(600, 609, (byte) 61);
+        commit(backend, job, row(job, (byte) 61, 609));
+        // An overlapping write is an ordinary archive mutation failure, not a
+        // maintenance failure, so it must still surface to operators.
+        assertThatThrownBy(() -> backend.begin(job(600, 605, (byte) 62)).close())
+                .isInstanceOf(ArchiveStoreException.class);
+
+        var failure = backend.resourceDiagnostics().lastMutationFailure();
+        assertThat(failure).isPresent();
+        assertThat(failure.orElseThrow().operation()).contains("begin");
+        assertThat(failure.orElseThrow().detail()).isNotBlank();
+    }
+
+    @Test
+    void aStuckWriterDuringBeginIsRecordedAsAMutationFailure() throws Exception {
+        // A worker-path stuck-threshold breach is a real backend failure, so it
+        // must reach the diagnostics rather than escaping before the guarded scope.
+        var config = new SqliteArchiveConfig(temp.resolve("stuck.sqlite"),
+                Duration.ofSeconds(2), Duration.ofSeconds(2), 2, SqliteArchiveConfig.Durability.FULL,
+                new ArchiveWaitPolicy(Duration.ofMillis(50), Duration.ofMillis(250)));
+        backend().close();
+        try (var store = open(identity(UUID.randomUUID()), config)) {
+            ArchiveJob held = job(0, 9, (byte) 1);
+            var active = store.begin(held);
+            try {
+                assertThatThrownBy(() -> store.begin(job(10, 19, (byte) 2)))
+                        .isInstanceOf(ArchiveStoreException.class);
+                var failure = store.resourceDiagnostics().lastMutationFailure();
+                assertThat(failure).as("a stuck writer must be recorded").isPresent();
+                assertThat(failure.orElseThrow().operation()).contains("begin");
+                assertThat(store.health().status())
+                        .isNotEqualTo(com.bloxbean.cardano.yano.archive.api.ArchiveHealth.Status.HEALTHY);
+            } finally {
+                active.close();
+            }
+        }
+    }
+
+    @Test
+    void mismatchedIdentityIsANonRetryableFatalErrorThatReleasesTheWriter() {
+        var backend = (SqliteHistoryArchiveBackend) backend();
+        ArchiveJob foreign = ArchiveJob.deterministic(new ArchiveNetworkIdentity(999, "other-genesis"),
+                ArchiveDatasetId.TRANSACTION,
+                ArchiveSchemas.schema(ArchiveDatasetId.TRANSACTION).projectionVersion(),
+                new BlockRange(0, 1), new ArchiveRangeAnchor(0, new byte[32], 10, new byte[32]), "fixture-v1");
+        assertThatThrownBy(() -> backend.begin(foreign))
+                .isInstanceOf(ArchiveFatalException.class);
+        for (var gate : backend.resourceDiagnostics().gates()) {
+            assertThat(gate.inUse()).as("gate %s leaked a permit", gate.name()).isZero();
+        }
     }
 
     private SqliteArchiveConfig config() {

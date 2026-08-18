@@ -33,6 +33,7 @@ public final class BlockArchiveWorker<B> {
     private final CoreSyncView coreSync;
     private final ArchiveWorkerMetrics metrics;
     private final Duration leaseDuration;
+    private final ArchiveCoverageView coverageView;
     private int preferredBlocksPerBatch;
     private int successfulBatchesAtPreferredSize;
 
@@ -43,6 +44,15 @@ public final class BlockArchiveWorker<B> {
                               ArchiveBackend backend, ArchiveProgressStore progress,
                               ArchiveWorkerConfig config, CoreSyncView coreSync,
                               ArchiveWorkerMetrics metrics, Duration leaseDuration) {
+        this(network, source, backend, progress, config, coreSync, metrics, leaseDuration,
+                ArchiveCoverageView.direct(backend));
+    }
+
+    public BlockArchiveWorker(ArchiveNetworkIdentity network, BlockArchiveSource<B> source,
+                              ArchiveBackend backend, ArchiveProgressStore progress,
+                              ArchiveWorkerConfig config, CoreSyncView coreSync,
+                              ArchiveWorkerMetrics metrics, Duration leaseDuration,
+                              ArchiveCoverageView coverageView) {
         this.network = Objects.requireNonNull(network, "network");
         this.source = Objects.requireNonNull(source, "source");
         this.backend = Objects.requireNonNull(backend, "backend");
@@ -51,6 +61,7 @@ public final class BlockArchiveWorker<B> {
         this.coreSync = Objects.requireNonNull(coreSync, "coreSync");
         this.metrics = Objects.requireNonNull(metrics, "metrics");
         this.leaseDuration = Objects.requireNonNull(leaseDuration, "leaseDuration");
+        this.coverageView = Objects.requireNonNull(coverageView, "coverageView");
         this.preferredBlocksPerBatch = Math.min(INITIAL_BLOCKS_PER_BATCH, config.maxBlocksPerBatch());
     }
 
@@ -73,7 +84,7 @@ public final class BlockArchiveWorker<B> {
                     "core sync has priority");
             return previous;
         }
-        long alreadyCoveredEnd = backend.coverage(dataset.dataset()).completeRanges().stream()
+        long alreadyCoveredEnd = coverageView.coverage(dataset.dataset()).completeRanges().stream()
                 .filter(range -> range.startInclusive() <= start && range.endInclusive() >= start)
                 .mapToLong(com.bloxbean.cardano.yano.archive.api.ArchiveRange::endInclusive)
                 .findFirst().orElse(-1);
@@ -116,12 +127,26 @@ public final class BlockArchiveWorker<B> {
                     });
                 }
                 ArchiveReceipt receipt;
+                // Waiting for the single writer or bounded backend capacity is
+                // ordinary flow control, so it is reported as a non-error state
+                // rather than left looking like active derivation.
+                metrics.update(dataset.dataset(), ArchiveTrack.BACKFILL,
+                        ArchiveWorkerStatus.State.WAITING_FOR_WRITER, previous, finalizedEnd - previous,
+                        "awaiting archive writer for " + start + ".." + end);
                 try (var write = backend.begin(job)) {
+                    // The writer is held from here on, so the state must stop
+                    // claiming the worker is blocked on it; otherwise a long
+                    // uncontended commit reports as contention while the gate
+                    // diagnostics correctly show no waiters.
+                    metrics.update(dataset.dataset(), ArchiveTrack.BACKFILL,
+                            ArchiveWorkerStatus.State.RUNNING, previous, finalizedEnd - previous,
+                            "committing " + start + ".." + end);
                     rows.forEach(write::append);
                     recheck(first);
                     recheck(last);
                     receipt = write.commit();
                 }
+                coverageView.invalidate(dataset.dataset());
                 if (dataset instanceof StatefulBlockArchiveDataset<B> stateful) {
                     stateful.commitBatch(receipt);
                 } else {
@@ -219,6 +244,7 @@ public final class BlockArchiveWorker<B> {
         // activation anchor is slower than partial surgery but cannot leave a
         // prefix whose receipt/coverage was removed with an overlapping job.
         backend.invalidate(dataset.dataset(), new BlockRange(requestedStart, current.coordinate()));
+        coverageView.invalidate(dataset.dataset());
         if (progress instanceof HotHistoryStore hot) {
             try {
                 hot.resetTrackFrom(dataset.dataset(), ArchiveTrack.BACKFILL, requestedStart);
