@@ -351,7 +351,13 @@ tasks.register('generatePluginCatalogIndex', JavaExec) {
         }
         arguments.add('--')
         arguments.addAll(artifacts.collect { it.absolutePath })
-        args = arguments
+        // The closure inventory is tens of thousands of characters of absolute
+        // paths, well past the Windows 32k command-line limit, so the generator
+        // always reads the argument list from a file instead.
+        def argumentsFile = new File(temporaryDir, 'plugin-index-args.txt')
+        argumentsFile.parentFile.mkdirs()
+        argumentsFile.setText(arguments.join('\n') + '\n', 'UTF-8')
+        args = ['--args-file', argumentsFile.absolutePath]
     }
     doLast {
         def outputRoot = generatedPluginCatalogDir.get()
