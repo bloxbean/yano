@@ -2,7 +2,7 @@
 
 ## Status
 
-Partially implemented. Reconciled with Amendment 3 (mainnet-validated 2026-08-18).
+Partially implemented. Reconciled with Amendments 3 and 4.
 
 | phase | status |
 |---|---|
@@ -10,6 +10,7 @@ Partially implemented. Reconciled with Amendment 3 (mainnet-validated 2026-08-18
 | **Phase 2** — Appender-to-staging write path (shape (b)) | **Implemented and validated on mainnet** |
 | **Phase 2b** — live-path anchor recheck | **Implemented and validated on mainnet** |
 | **Locator-generation fix** (added after Phase 2 measurement) | **Implemented and validated on mainnet** |
+| **Phase 2c** — bounded ordered UTXO block prefetch | **Prototype complete, all local gates passed; opt-in, serial by default, not deployed** (Amendment 4) |
 | **Phase 1** — configuration and profile | **Not started.** Its throughput rationale is measurably unsupported: DuckDB thread/memory settings showed no effect on the append path, and the production `UTXO_HISTORY` session already runs under the production DuckDB configuration |
 | **Phase 3** — unified block pipeline and group-atomic storage transitions | **Blocked on C1–C5** (see *Prerequisite contract changes for Phase 3*). Must not begin until those contracts are agreed |
 | **Phase 4** — retry without repeated derivation | **Not started, deprioritised.** Writer waits and discarded batches are now zero |
@@ -24,6 +25,89 @@ Details in Amendment 3.
 ## Date
 
 2026-08-18
+
+## Amendment 4 — Phase 2c: bounded ordered UTXO block prefetch (2026-08-19)
+
+Full evidence: `adr/reports/adr-038-phase2c-concurrency-boundary-2026-08-18.md`
+(boundary inspection) and `adr/reports/adr-038-phase2c-prototype-2026-08-19.md`
+(prototype, correctness and benchmarks).
+
+**Status: prototype complete, all local gates passed, opt-in and serial by
+default, not deployed.**
+
+### Design
+
+An ordered prefetching `BlockArchiveSource` **decorator**, so `BlockArchiveWorker`
+and `UtxoHistoryDataset` are unchanged. Block fetch and pure deserialization run in
+parallel across blocks; UTXO derivation, the pointer resolver, undo records,
+cursor, coverage and hot state stay strictly sequential in canonical order, and
+transaction order within a block is untouched. Applied to the **UTXO catch-up
+worker only**.
+
+The boundary is sound because `YaciUtxoHistoryDecoder` is documented and verified
+as resolver-independent, `BlockSerializer` is a stateless enum singleton, chain
+reads are concurrent-safe, and `UtxoHistoryDataset` already **enforces** sequential
+consumption — an ordering bug fails loudly at the dataset rather than corrupting
+state.
+
+### Memory budget is a conservative estimate, not a byte ceiling
+
+`readCanonical` fetches and decodes together, so exact accounting is unavailable
+through this interface. Reservation is per-block and taken on the submitting
+thread in canonical order before task registration, so **no task blocks on a
+memory permit and the permit-ordering deadlock is structurally impossible**.
+Measured footprint is tracked; exceeding a reservation is surfaced, throttles
+further submission, and bounds overshoot to active tasks. A strict in-flight block
+count bound is retained.
+
+### Lease safety
+
+The block-body lease is released only after every registered task body has
+genuinely terminated; `CompletableFuture` cancellation is never treated as proof
+of termination. **On drain timeout the lease is not released** — the failure is
+raised and a reaper retains pruning protection until tasks finish. Converting a
+hang into an early lease release would drop pruning protection while a task is
+still reading a body.
+
+### Results
+
+| config | blocks/s | vs serial | spread |
+|---|---:|---:|---:|
+| serial + cycle cache | 204.0 | — | 2.8% |
+| prefetch p=1 | 203.8 | **1.00x** | 2.2% |
+| prefetch p=2 | 346.6 | **1.70x** | 0.6% |
+| prefetch p=4 | 531.0 | **2.61x** | 0.1% |
+
+**Cache bypass and the prefetch machinery contribute exactly nothing (1.00x at
+p=1)**; all gain above is genuine concurrency.
+
+Correctness: 19 decorator tests, 4 end-to-end equivalence tests (byte-identical
+rows, ordered digest, per-table counts, cursor, stateful call sequence and undo
+records against serial, including under forced out-of-order completion and across
+repeated runs), 7 configuration tests. Whole repository: **2,334 tests, 0
+failures**, `:app:quarkusBuild` successful.
+
+### Selected setting
+
+**Parallelism 2**, the smallest value that clears the target: projected
+`utxo_history` **≈53.7 blocks/s** (31.57 × 1.70) against the ≥50 provisional
+target — a real but **thin 7% margin**. p=4 would project ≈82 blocks/s. p=2 also
+perturbs `address_transaction` (56.46 blocks/s) least, which must stay above 50.
+
+**The projection rests on a simulated-decode benchmark**: real mainnet CBOR bodies
+were unavailable because both deployments hold their chainstate open. Decode cost
+was modelled with CPU-bound work calibrated to the production profile (86% decode
+here against ~82% measured). The ≥50 target therefore remains **provisional and
+unproven in production**, and is not lowered.
+
+### Not done
+
+The real `UtxoHistoryDataset` with a live hot store was not driven end to end, and
+multi-asset / datum / redeemer / collateral / pre-Conway pointer fixture variants
+were not constructed — those distinctions live inside decoder output, which
+prefetching does not alter, and equivalence was proven through the real worker
+with a dependency-carrying dataset instead. Low residual risk, but recorded rather
+than claimed.
 
 ## Amendment 3 — locator fix validated on mainnet; Phase 2 + 2b accepted (2026-08-18)
 
