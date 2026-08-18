@@ -30,6 +30,10 @@ import com.bloxbean.cardano.yano.archive.core.source.EpochArchiveJob;
 import com.bloxbean.cardano.yano.archive.core.source.YaciBlockArchiveDecoder;
 import com.bloxbean.cardano.yano.archive.core.source.YaciBlockDecoder;
 import com.bloxbean.cardano.yano.archive.core.source.YaciUtxoHistoryDecoder;
+import com.bloxbean.cardano.yano.archive.core.source.OrderedPrefetchingBlockArchiveSource;
+import com.bloxbean.cardano.yano.archive.core.config.UtxoPrefetchConfig;
+import com.bloxbean.cardano.yano.archive.core.dataset.UtxoHistoryFact;
+import com.bloxbean.cardano.yano.archive.core.dataset.BlockSourceContext;
 import com.bloxbean.cardano.yano.archive.core.source.MappingBlockArchiveSource;
 import com.bloxbean.cardano.yano.archive.core.worker.*;
 import com.bloxbean.cardano.yano.runtime.config.NetworkGenesisConfig;
@@ -83,6 +87,10 @@ public class HistoryArchiveService implements AutoCloseable {
     private volatile ExecutorService projectionExecutor;
     private volatile CycleCachingBlockArchiveSource<Block> sharedBlockSource;
     private volatile CycleCachingBlockArchiveSource<ArchiveBlockFacts> sharedFactSource;
+    // ADR-038 Phase 2c: owned by this service so shutdown is deterministic and no
+    // pool is created per batch. Null unless UTXO prefetch is explicitly enabled.
+    private volatile java.util.concurrent.ExecutorService utxoPrefetchExecutor;
+    private volatile OrderedPrefetchingBlockArchiveSource<UtxoHistoryFact> utxoPrefetchSource;
     private volatile String projectionParallelismSetting = "auto";
     private final AtomicLong decodedBlockCount = new AtomicLong();
     private final AtomicLong decodedBlockCacheHits = new AtomicLong();
@@ -254,8 +262,8 @@ public class HistoryArchiveService implements AutoCloseable {
 
             var blockDecoder = new YaciBlockDecoder(ledger::slotToEpoch, ledger::slotToUnixTime,
                     chain::getBlockEra);
-            sharedBlockSource = new CycleCachingBlockArchiveSource<>(
-                    new ChainBlockArchiveSource<>(chain, blockDecoder, controlStore),
+            var rawBlockSource = new ChainBlockArchiveSource<>(chain, blockDecoder, controlStore);
+            sharedBlockSource = new CycleCachingBlockArchiveSource<>(rawBlockSource,
                     Math.multiplyExact(workerConfig.maxBlocksPerBatch(), 2));
             var factDecoder = new YaciBlockArchiveDecoder(ledger::slotToEpoch, ledger::slotToUnixTime,
                     chain::getBlockEra);
@@ -277,7 +285,7 @@ public class HistoryArchiveService implements AutoCloseable {
                     chain::getBlockEra, genesisHistoryOutputs, firstCanonicalBlockNumber, utxoProjection);
             registerBlockWorker(ArchiveDatasetId.UTXO_HISTORY,
                     new UtxoHistoryDataset(controlStore, ArchiveTrack.BACKFILL),
-                    new MappingBlockArchiveSource<>(sharedBlockSource, utxoDecoder::project),
+                    utxoCatchupSource(rawBlockSource, utxoDecoder),
                     identity.networkIdentity(), workerConfig, syncView);
             registerLiveWorker(ArchiveDatasetId.TRANSACTION, StandardBlockDatasets.transactions(), sharedFactSource,
                     identity.networkIdentity(), workerConfig);
@@ -1982,6 +1990,89 @@ public class HistoryArchiveService implements AutoCloseable {
         };
     }
 
+    /**
+     * ADR-038 Phase 2c. Ordered prefetching is applied to the UTXO catch-up worker
+     * only, is opt-in, and defaults to the existing serial path. When enabled it
+     * decodes against the raw chain source rather than the shared cycle cache,
+     * whose {@code computeIfAbsent} holds a bin lock across a decode and whose
+     * measured hit rate on this workload is 4.1%.
+     */
+    private com.bloxbean.cardano.yano.archive.core.source.BlockArchiveSource<UtxoHistoryFact> utxoCatchupSource(
+            ChainBlockArchiveSource<Block> rawBlockSource, YaciUtxoHistoryDecoder utxoDecoder) {
+        var serial = new MappingBlockArchiveSource<>(sharedBlockSource, utxoDecoder::project);
+        UtxoPrefetchConfig prefetch = utxoPrefetchConfig();
+        if (!prefetch.enabled()) return serial;
+
+        utxoPrefetchExecutor = java.util.concurrent.Executors.newFixedThreadPool(prefetch.parallelism(), runnable -> {
+            Thread thread = new Thread(runnable);
+            thread.setName("yano-archive-utxo-decode-" + thread.threadId());
+            thread.setDaemon(true);
+            return thread;
+        });
+        var prefetching = new OrderedPrefetchingBlockArchiveSource<>(
+                new MappingBlockArchiveSource<>(rawBlockSource, utxoDecoder::project),
+                utxoPrefetchExecutor, prefetch.maxInFlightBlocks(), prefetch.maxInFlightBytes(),
+                prefetch.estimatedBytesPerBlock(), HistoryArchiveService::estimateUtxoFootprint,
+                prefetch.drainTimeout());
+        utxoPrefetchSource = prefetching;
+        log.info("UTXO ordered prefetch enabled: parallelism={}, maxInFlightBlocks={}, maxInFlightBytes={},"
+                        + " estimatedBytesPerBlock={} (conservative estimate, not an exact byte ceiling)",
+                prefetch.parallelism(), prefetch.maxInFlightBlocks(), prefetch.maxInFlightBytes(),
+                prefetch.estimatedBytesPerBlock());
+        return prefetching;
+    }
+
+    /**
+     * Deterministic shutdown of the ADR-038 Phase 2c decode pool. Runs only after
+     * the projection executor has stopped, so no batch can still be consuming from
+     * a prefetch window.
+     */
+    private void shutdownUtxoPrefetchExecutor() {
+        java.util.concurrent.ExecutorService selected = utxoPrefetchExecutor;
+        if (selected == null) return;
+        selected.shutdownNow();
+        try {
+            if (!selected.awaitTermination(30, TimeUnit.SECONDS)) {
+                log.warn("UTXO prefetch executor did not stop within 30 seconds");
+                return;
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return;
+        }
+        utxoPrefetchExecutor = null;
+        utxoPrefetchSource = null;
+    }
+
+    UtxoPrefetchConfig utxoPrefetchConfig() {
+        String prefix = "yano.history.worker.utxo-prefetch.";
+        UtxoPrefetchConfig defaults = UtxoPrefetchConfig.disabled();
+        return new UtxoPrefetchConfig(
+                bool(prefix + "enabled", false),
+                intValue(prefix + "parallelism", defaults.parallelism()),
+                intValue(prefix + "max-in-flight-blocks", defaults.maxInFlightBlocks()),
+                longValue(prefix + "max-in-flight-bytes", defaults.maxInFlightBytes()),
+                longValue(prefix + "estimated-bytes-per-block", defaults.estimatedBytesPerBlock()),
+                java.time.Duration.ofSeconds(longValue(prefix + "drain-timeout-seconds",
+                        defaults.drainTimeout().toSeconds())));
+    }
+
+    /**
+     * Conservative footprint estimate for one decoded UTXO fact set, used only to
+     * detect and surface reservation underestimates. Counts the fact collections
+     * that dominate a block rather than attempting exact heap measurement.
+     */
+    static long estimateUtxoFootprint(BlockSourceContext<UtxoHistoryFact> context) {
+        UtxoHistoryFact facts = context.block();
+        if (facts == null) return 0;
+        long entries = facts.outputs().size() + facts.inputs().size() + facts.assets().size()
+                + facts.newAddresses().size() + facts.transactionDatums().size()
+                + facts.transactionRedeemers().size() + facts.pointerRegistrations().size()
+                + facts.pointerDeregistrations().size();
+        // ~512B per fact covers the record, its byte arrays and map/list overhead.
+        return Math.multiplyExact(entries, 512L);
+    }
+
     private boolean bool(String name, boolean fallback) {
         return config.getOptionalValue(name, Boolean.class).orElse(fallback);
     }
@@ -2076,6 +2167,7 @@ public class HistoryArchiveService implements AutoCloseable {
             try {
                 if (selectedProjectionExecutor.awaitTermination(30, TimeUnit.SECONDS)) {
                     projectionExecutor = null;
+                    shutdownUtxoPrefetchExecutor();
                 } else {
                     projectionsStopped = false;
                     log.warn("Archive projection executor did not stop within 30 seconds");
