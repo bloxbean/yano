@@ -7,9 +7,16 @@ import com.bloxbean.cardano.yano.archive.api.ArchiveRow;
 import com.bloxbean.cardano.yano.archive.api.ArchiveRange;
 import com.bloxbean.cardano.yano.archive.api.ArchiveStoreException;
 import com.bloxbean.cardano.yano.archive.api.ArchiveWriteSession;
+import com.bloxbean.cardano.yano.archive.api.schema.ArchiveColumn;
 import com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas;
 import com.bloxbean.cardano.yano.archive.api.schema.ArchiveTableSchema;
+import com.bloxbean.cardano.yano.archive.api.schema.ArchiveValueType;
 
+import org.duckdb.DuckDBAppender;
+import org.duckdb.DuckDBConnection;
+
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -52,6 +59,34 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
     private boolean committed;
     private boolean closed;
     private final List<DuckLakeTransactionLocator.Entry> transactionEntries = new ArrayList<>();
+    private final DuckLakeWriteStageTimings timings = new DuckLakeWriteStageTimings();
+    // One lazily created Appender per staging table. UTXO_HISTORY interleaves five
+    // tables in a single row stream, so several stay open for the whole session.
+    private final Map<String, DuckDBAppender> appenders = new LinkedHashMap<>();
+    private final boolean appenderMode;
+    // Appends arrive contiguously from the worker, which materialises every row
+    // before opening the session. Timing the window rather than each call keeps
+    // per-row cost at zero while still attributing the stage accurately.
+    private long appendWindowStart;
+
+    private static final System.Logger LOG = System.getLogger(DuckLakeWriteSession.class.getName());
+
+    /**
+     * Temporary rollback switch for the ADR-038 Phase 2 append path. Set
+     * {@code -Dyano.archive.ducklake.append-mode=legacy} to restore the
+     * prepared-statement batches without rebuilding. Remove once the Appender path
+     * has been validated in production.
+     */
+    static final String APPEND_MODE_PROPERTY = "yano.archive.ducklake.append-mode";
+
+    static boolean appenderModeEnabled() {
+        return !"legacy".equalsIgnoreCase(System.getProperty(APPEND_MODE_PROPERTY, "appender").trim());
+    }
+
+    /** Per-commit stage attribution; see ADR-038 Phase 0. */
+    DuckLakeWriteStageTimings timings() {
+        return timings;
+    }
 
     DuckLakeWriteSession(DuckLakeHistoryArchiveBackend backend, ArchiveJob job,
                          DuckDbLease lease, ArchiveReceipt replayReceipt, long writerTicket) {
@@ -63,6 +98,8 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
         this.replayReceipt = replayReceipt;
         this.allowedTables = ArchiveSchemas.schema(job.dataset()).tables().stream()
                 .collect(java.util.stream.Collectors.toUnmodifiableMap(ArchiveTableSchema::physicalName, table -> table));
+        // Replay verification is write-free, so it never opens an Appender.
+        this.appenderMode = replayReceipt == null && appenderModeEnabled();
         try {
             this.digest = MessageDigest.getInstance("SHA-256");
             if (connection != null) {
@@ -132,15 +169,26 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
         String orderedDigest = HexFormat.of().formatHex(digest.digest());
         try {
             long predictedGeneration = Math.addExact(DuckLakeSql.currentSnapshot(connection), 1);
+            // Rows must all be in staging before logical-key verification runs.
             flushPendingStagingBatches();
+            finishAppends();
+            if (appendWindowStart != 0) timings.addAppend(System.nanoTime() - appendWindowStart);
+            long mark = System.nanoTime();
             verifyLogicalKeys();
+            timings.addVerify(System.nanoTime() - mark);
+            mark = System.nanoTime();
             flushStaging();
+            timings.addCopy(System.nanoTime() - mark);
+            mark = System.nanoTime();
             insertCommit(predictedGeneration, orderedDigest, committedAt);
             insertCounts();
             insertCoverage(predictedGeneration);
+            timings.addMetadata(System.nanoTime() - mark);
+            mark = System.nanoTime();
             try (Statement sql = connection.createStatement()) {
                 sql.execute("COMMIT");
             }
+            timings.addCommit(System.nanoTime() - mark);
             long actualGeneration = DuckLakeSql.currentSnapshot(connection);
             if (actualGeneration != predictedGeneration) {
                 throw new ArchiveStoreException("DuckLake generation mismatch after commit: predicted="
@@ -149,7 +197,15 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
             ArchiveReceipt receipt = new ArchiveReceipt(job.jobId(), job.networkIdentity(), job.dataset(),
                     job.projectionVersion(), job.range(), job.anchors(), actualGeneration,
                     rowCounts, orderedDigest, committedAt);
+            long locatorMark = System.nanoTime();
             backend.updateTransactionLocator(connection, actualGeneration, transactionEntries);
+            timings.addLocator(System.nanoTime() - locatorMark);
+            timings.rows(rowCounts.values().stream().mapToLong(Long::longValue).sum());
+            // One line per commit (tens per hour), deliberately INFO so ADR-038
+            // validation can observe stage attribution without enabling broad
+            // DEBUG logging on a production deployment.
+            LOG.log(System.Logger.Level.INFO, "Archive commit stages {0} mode={1} {2}",
+                    job.dataset(), appenderMode ? "appender" : "legacy", timings.summary());
             committed = true;
             close();
             return receipt;
@@ -180,9 +236,82 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
     private void stageRow(ArchiveTableSchema table, List<Object> values) throws SQLException {
         String tableName = table.physicalName();
         if (!stagingTables.contains(tableName)) createStaging(table);
+        if (appendWindowStart == 0) appendWindowStart = System.nanoTime();
+        if (appenderMode) {
+            appendViaAppender(table, values);
+            return;
+        }
         List<List<Object>> pending = pendingStagingRows.computeIfAbsent(tableName, ignored -> new ArrayList<>());
         pending.add(values);
-        if (pending.size() >= STAGING_BATCH_SIZE) flushPendingStagingBatch(table, pending);
+        if (pending.size() >= STAGING_BATCH_SIZE) {
+            flushPendingStagingBatch(table, pending);
+        }
+    }
+
+    /**
+     * ADR-038 Phase 2, shape (b): rows enter the native staging table through a
+     * DuckDB Appender instead of 256-row prepared-statement batches. Staging,
+     * {@link #verifyLogicalKeys()} and the {@code INSERT ... SELECT} publication
+     * are unchanged, so the write contract is untouched.
+     */
+    private void appendViaAppender(ArchiveTableSchema table, List<Object> values) throws SQLException {
+        DuckDBAppender appender = appenders.get(table.physicalName());
+        if (appender == null) {
+            appender = ((DuckDBConnection) connection)
+                    .createAppender("temp", "main", stagingName(table.physicalName()));
+            appenders.put(table.physicalName(), appender);
+        }
+        appender.beginRow();
+        List<ArchiveColumn> columns = table.columns();
+        for (int index = 0; index < columns.size(); index++) {
+            appendValue(appender, columns.get(index).type(), values.get(index));
+        }
+        appender.endRow();
+    }
+
+    private static void appendValue(DuckDBAppender appender, ArchiveValueType type, Object value)
+            throws SQLException {
+        if (value == null) {
+            appender.appendNull();
+            return;
+        }
+        switch (type) {
+            case BINARY -> appender.append((byte[]) value);
+            case TEXT -> appender.append((String) value);
+            case BOOLEAN -> appender.append((Boolean) value);
+            case INT32 -> appender.append(((Number) value).intValue());
+            case INT64 -> appender.append(((Number) value).longValue());
+            case DECIMAL_38 -> appender.append(value instanceof BigDecimal decimal
+                    ? decimal : new BigDecimal(value instanceof BigInteger big ? big : new BigInteger(value.toString())));
+            case UUID -> appender.append((UUID) value);
+        }
+    }
+
+    /**
+     * Flushes and closes every Appender so all rows are visible to
+     * {@link #verifyLogicalKeys()} before publication. Closing is idempotent; the
+     * map is cleared so {@link #close()} does not double-close.
+     */
+    private void finishAppends() throws SQLException {
+        SQLException failure = null;
+        for (DuckDBAppender appender : appenders.values()) {
+            try {
+                appender.flush();
+                appender.close();
+            } catch (SQLException e) {
+                if (failure == null) failure = e;
+            }
+        }
+        appenders.clear();
+        if (failure != null) throw failure;
+    }
+
+    /** Best-effort Appender disposal on the failure path, before ROLLBACK. */
+    private void discardAppenders() {
+        for (DuckDBAppender appender : appenders.values()) {
+            try { appender.close(); } catch (SQLException ignored) { }
+        }
+        appenders.clear();
     }
 
     private void flushPendingStagingBatches() throws SQLException {
@@ -368,6 +497,9 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
     public void close() {
         if (closed) return;
         closed = true;
+        // Appenders hold native handles against the staging tables and must be
+        // released before the transaction is rolled back and the catalog detached.
+        discardAppenders();
         if (connection != null && !committed) {
             try (Statement sql = connection.createStatement()) { sql.execute("ROLLBACK"); }
             catch (SQLException ignored) { }
