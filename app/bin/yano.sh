@@ -57,9 +57,10 @@ Examples:
 
 Environment:
   JAVA_OPTS        JVM options for jar and native distributions. The native
-                   binary accepts -D, -X (-Xmx/-Xms/-Xss) and -verbose entries;
-                   HotSpot -XX: flags, agents and module flags are dropped with
-                   a warning because a native image has no equivalent.
+                   binary accepts -D, -X (-Xmx/-Xms/-Xss), -verbose and its own
+                   -XX: options; run '<binary> -XX:PrintFlags=' to list them.
+                   JVM agents and module-system flags cannot exist in a native
+                   image and are dropped with a warning.
   YANO_EXTRA_ARGS  Extra runtime args for jar and native distributions
 
 Advanced:
@@ -299,11 +300,17 @@ if [ -n "$PROFILE" ]; then
 fi
 
 # JAVA_OPTS is honoured by both distributions. A GraalVM native image accepts
-# -D system properties and the -X memory flags (-Xmx/-Xms/-Xss), so those are
-# forwarded verbatim. It does not implement HotSpot's -XX: namespace or JVM
-# agents -- passing those through aborts startup with
-# "error: Could not find option ..." -- so they are dropped with an explicit
-# warning rather than silently ignored or allowed to break the launch.
+# -D system properties, the -X memory flags, -verbose, and its own -XX:
+# namespace (this image advertises 48 of them, including MaxHeapSize,
+# MinHeapSize, MaximumHeapSizePercent and VerboseGC), so all of those are
+# forwarded verbatim -- the launcher must not second-guess an option set that
+# varies by GraalVM version. A HotSpot-only -XX: flag is rejected by the image
+# itself with an immediate, precise "error: Could not find option 'X'. Use
+# -XX:PrintFlags= to list all available options", which is a better outcome
+# than silently discarding tuning the operator asked for.
+#
+# Only constructs a native image can never implement -- JVM agents and the
+# module-system flags -- are dropped, and then with an explicit warning.
 NATIVE_JAVA_OPTS=()
 collect_native_java_opts() {
     NATIVE_JAVA_OPTS=()
@@ -315,7 +322,7 @@ collect_native_java_opts() {
     set -- $JAVA_OPTS
     for opt in "$@"; do
         case "$opt" in
-            -XX:*|-javaagent*|-agentlib*|-agentpath*|--add-*|--enable-preview)
+            -javaagent*|-agentlib*|-agentpath*|--add-*|--enable-preview)
                 dropped="${dropped} ${opt}"
                 ;;
             -D*|-X*|-verbose*)
@@ -328,10 +335,11 @@ collect_native_java_opts() {
     done
 
     if [ -n "$dropped" ]; then
-        echo "Warning: the native binary cannot accept these JAVA_OPTS entries:" >&2
+        echo "Warning: dropping JAVA_OPTS entries a native image cannot implement:" >&2
         echo "        ${dropped# }" >&2
-        echo "         HotSpot -XX: flags, agents and module flags have no native" >&2
-        echo "         equivalent. All -D, -X and -verbose entries were applied." >&2
+        echo "         JVM agents and module-system flags have no native equivalent." >&2
+        echo "         All other entries, including -XX: options, were applied; run" >&2
+        echo "         '<binary> -XX:PrintFlags=' to list the options this image supports." >&2
     fi
 }
 
