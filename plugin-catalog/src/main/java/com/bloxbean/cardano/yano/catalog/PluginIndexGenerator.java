@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.catalog;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
@@ -367,14 +368,21 @@ public final class PluginIndexGenerator {
     /**
      * Runs the build-time generator command.
      *
-     * @param args {@code --output <index.json> [--strict-bundle-closures]
+     * <p>A full classpath closure is far longer than the command line a
+     * platform will accept, so {@code --args-file} reads the same argument
+     * list from a UTF-8 file holding one argument per line.</p>
+     *
+     * @param rawArgs {@code --args-file <arguments.txt>} or
+     *             {@code --output <index.json> [--strict-bundle-closures]
      *             [--bundle-closure <bundle-id> <artifact>]... -- [artifact ...]}
      * @throws Exception if arguments, inputs, metadata, or output are invalid
      */
-    public static void main(String[] args) throws Exception {
+    public static void main(String[] rawArgs) throws Exception {
+        String[] args = expandArgumentsFile(rawArgs);
         if (args.length < 2 || !"--output".equals(args[0])) {
             throw new IllegalArgumentException(
-                    "Usage: PluginIndexGenerator --output <index.json> "
+                    "Usage: PluginIndexGenerator --args-file <arguments.txt> | "
+                            + "--output <index.json> "
                             + "[--strict-bundle-closures] "
                             + "[--bundle-closure <bundle-id> <artifact>]... -- [artifact ...]");
         }
@@ -412,6 +420,30 @@ public final class PluginIndexGenerator {
         } else {
             generator.write(artifacts, output);
         }
+    }
+
+    private static String[] expandArgumentsFile(String[] args) throws IOException {
+        Objects.requireNonNull(args, "args");
+        if (args.length == 0 || !"--args-file".equals(args[0])) {
+            return args;
+        }
+        if (args.length != 2) {
+            throw new IllegalArgumentException(
+                    "--args-file takes exactly one file and cannot be combined "
+                            + "with other command-line arguments");
+        }
+        Path argumentsFile = Path.of(args[1]);
+        if (!Files.isRegularFile(argumentsFile)) {
+            throw new IllegalArgumentException(
+                    "Argument file is not a readable file: " + argumentsFile);
+        }
+        List<String> expanded = new ArrayList<>();
+        for (String line : Files.readAllLines(argumentsFile, StandardCharsets.UTF_8)) {
+            if (!line.isEmpty()) {
+                expanded.add(line);
+            }
+        }
+        return expanded.toArray(String[]::new);
     }
 
     private static List<Path> canonicalArtifacts(Collection<Path> artifacts) throws IOException {

@@ -82,9 +82,14 @@ tasks.register('generateTestPluginCatalogIndex', JavaExec) {
         def providersJar = tasks.named('testCatalogProvidersJar').get()
                 .archiveFile.get().asFile
         def moduleJar = tasks.named('jar').get().archiveFile.get().asFile
-        args = ['--output', output.absolutePath, '--'] +
+        def arguments = ['--output', output.absolutePath, '--'] +
                 artifacts.collect { it.absolutePath } +
                 [moduleJar.absolutePath, providersJar.absolutePath]
+        // Same Windows 32k command-line limit as :app:generatePluginCatalogIndex.
+        def argumentsFile = new File(temporaryDir, 'test-plugin-index-args.txt')
+        argumentsFile.parentFile.mkdirs()
+        argumentsFile.setText(arguments.join('\n') + '\n', 'UTF-8')
+        args = ['--args-file', argumentsFile.absolutePath]
     }
 }
 
