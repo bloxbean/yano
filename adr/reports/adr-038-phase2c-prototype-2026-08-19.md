@@ -2,7 +2,7 @@
 
 Date: 2026-08-19
 Branch: `feat/adr-038-archive-throughput`
-Status: **prototype complete, all local gates passed, not deployed, opt-in and serial by default**
+Status: **deployed to mainnet with parallelism 2 and measured; 6 of 7 acceptance criteria met, 1 missed (see §9)**
 
 Concurrency boundary inspection: `adr/reports/adr-038-phase2c-concurrency-boundary-2026-08-18.md`.
 
@@ -210,3 +210,127 @@ worst-case in-flight at ~16 MiB reserved.
   decoder's output, which prefetching does not alter. Pointer-address behaviour is
   exercised only through the dependency dataset's cross-block state, not through
   real pre-Conway pointer resolution.
+
+
+---
+
+# 9. Production validation (mainnet, 2026-08-19)
+
+Deployed jar `178783d22c4dcbc1671037a376003998aed87926c00bf7a47bbaf2280ce45f02`,
+PID 93631 → 70435, startup 23.7 s with no locator rebuild, shutdown 2 s.
+Configuration diff was a pure addition of the `utxo-prefetch` block under
+`worker:` with parallelism 2. Jar, log and config backed up as
+`*.20260819-134049.pre-phase2c.bak`. Preprod and two unrelated JVMs never
+signalled. Raw samples: `adr/reports/adr-038-samples/adr-038-phase2c-mainnet-sampler.txt`.
+
+## Throughput — equal 2.03 h window, 25 samples
+
+| dataset | blocks | blocks/s | previous (Phase 2 + locator fix) | gain |
+|---|---:|---:|---:|---:|
+| `account_event` | 818,600 | 111.75 | 85.62 | 1.31x |
+| `transaction` | 818,600 | 111.75 | 85.64 | 1.30x |
+| `address_transaction` | 818,800 | **111.78** | 56.46 | 1.98x |
+| **`utxo_history` (slowest)** | 438,350 | **59.84** | 31.57 | **1.90x** |
+
+**The slowest dataset clears the ≥50 blocks/s target at 59.84.** The measured
+1.90x closely matches the 1.70x the synthetic benchmark predicted for
+parallelism 2, so the simulated-decode model was a fair guide.
+
+All four datasets improved, not only UTXO. Prefetching is UTXO-scoped, so the
+gains elsewhere come from reduced shared-writer contention: faster UTXO commits
+release the single writer sooner.
+
+Cumulative against the original pre-Phase-2 baseline: `utxo_history` **3.17 →
+59.84 blocks/s (18.9x)**, `address_transaction` **2.90 → 111.78 (38.5x)**.
+
+## Operational counters
+
+| metric | value | criterion |
+|---|---:|---|
+| stuck-operation pauses | **0** | pass |
+| writer/bulk wait warnings | **0** | pass |
+| drain timeouts | **0** | pass |
+| reaper releases / leaked leases | **0** | pass |
+| locator full rebuilds | **0** | pass |
+| digest or duplicate-row issues | **0** | pass |
+| prefetch cancelled / lease retained | **0** | pass |
+| **estimate underflows** | **1** | **miss** |
+| health across all 25 samples | HEALTHY | pass |
+| RSS | 3.7 – 10.4 GB | pass |
+| CPU | 190 – 352% of 1600% | pass |
+
+Representative UTXO session after deployment — append still dominates and the
+locator remains negligible:
+
+```
+rows=194452 total=0.516s append=0.387 verify=0.027 copy=0.087 commit=0.011 locator=0.001
+```
+
+## The one missed criterion
+
+```
+Prefetch footprint estimate exceeded at block 9,304,864:
+observed 2,962,432 > estimate 2,097,152 (occurrences=1); submission throttled
+```
+
+One block in 438,350 produced a decoded fact graph of **2.96 MB against the
+2 MiB reservation** — 1.41x the estimate. The mechanism behaved exactly as
+designed: it surfaced the underestimate, throttled further submission until
+ordered consumption cleared the debt, and bounded overshoot to already-active
+tasks. Nothing failed, memory stayed bounded, and no other criterion was
+affected.
+
+It is nevertheless a **miss** against "no memory-budget underestimate", and it is
+recorded as such. **The estimate was deliberately not raised**, because doing so
+after the fact would hide the very signal the criterion exists to surface. The
+recommended follow-up is to raise `estimated-bytes-per-block` from 2 MiB to
+**4 MiB** as an explicit, approved change — roughly a 40x safety factor over a
+mainnet block body — which would also reduce in-flight block count at the same
+byte budget.
+
+## Errors observed and attributed
+
+18 `ERROR ... BlockSerializer ... redeemer does not have the same size` lines
+appeared, on `yano-archive-projection-*` threads. These are **pre-existing and not
+a Phase 2c regression**: the same message occurs **70 times** in the pre-Phase-2c
+log, they originate in yaci-core's serializer rather than Yano, and they are
+emitted by the projection threads rather than the `yano-archive-utxo-decode-*`
+prefetch threads. Coverage advanced past the affected blocks with a single
+contiguous range and zero digest or duplicate-row issues.
+
+## Restart and recovery check
+
+Graceful restart after the measurement: shutdown **2 s**, startup **24.2 s**, no
+locator rebuild, prefetch re-enabled automatically, zero errors on the new run.
+
+| dataset | before | after | continuity |
+|---|---:|---:|---|
+| `account_event` | 13,134,750 | 13,142,250 | OK, 1 range |
+| `transaction` | 13,137,500 | 13,145,000 | OK, 1 range |
+| `address_transaction` | 12,540,625 | 12,547,125 | OK, 1 range |
+| `utxo_history` | 9,458,900 | 9,464,000 | OK, 1 range |
+
+`cycleError` and `maintenance.error` both null; core at `lagBlocks: 0`, HEALTHY.
+
+## Acceptance summary
+
+| criterion | result |
+|---|---|
+| sustained slowest-dataset ≥50 blocks/s | **PASS** — 59.84 |
+| `address_transaction` ≥50 blocks/s | **PASS** — 111.78 |
+| no correctness or recovery regression | **PASS** |
+| no drain timeout | **PASS** — 0 |
+| no leaked task, executor, reaper or lease | **PASS** — 0 |
+| core sync healthy at lag zero | **PASS** |
+| **no memory-budget underestimate** | **MISS** — 1 occurrence, handled as designed |
+
+The deployment was left running rather than rolled back: every throughput and
+safety criterion passed, and the single miss is a by-design detection event of
+0.87 MB overshoot on one block. Reverting is one line —
+`yano.history.worker.utxo-prefetch.enabled=false` — and needs no rebuild, so the
+decision to keep or revert is cheap either way and belongs to the operator.
+
+## Disk note
+
+`history/` has grown to **104 GB** and free space is down to **482 GB**. Not an
+acceptance criterion, but the fastest-growing artefact and worth watching.

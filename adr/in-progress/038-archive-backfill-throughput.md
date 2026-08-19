@@ -10,7 +10,7 @@ Partially implemented. Reconciled with Amendments 3 and 4.
 | **Phase 2** — Appender-to-staging write path (shape (b)) | **Implemented and validated on mainnet** |
 | **Phase 2b** — live-path anchor recheck | **Implemented and validated on mainnet** |
 | **Locator-generation fix** (added after Phase 2 measurement) | **Implemented and validated on mainnet** |
-| **Phase 2c** — bounded ordered UTXO block prefetch | **Prototype complete, all local gates passed; opt-in, serial by default, not deployed** (Amendment 4) |
+| **Phase 2c** — bounded ordered UTXO block prefetch | **Deployed to mainnet at parallelism 2 and measured: slowest dataset 31.57 → 59.84 blocks/s. 6 of 7 acceptance criteria met, 1 missed** (Amendment 5) |
 | **Phase 1** — configuration and profile | **Not started.** Its throughput rationale is measurably unsupported: DuckDB thread/memory settings showed no effect on the append path, and the production `UTXO_HISTORY` session already runs under the production DuckDB configuration |
 | **Phase 3** — unified block pipeline and group-atomic storage transitions | **Blocked on C1–C5** (see *Prerequisite contract changes for Phase 3*). Must not begin until those contracts are agreed |
 | **Phase 4** — retry without repeated derivation | **Not started, deprioritised.** Writer waits and discarded batches are now zero |
@@ -25,6 +25,45 @@ Details in Amendment 3.
 ## Date
 
 2026-08-18
+
+## Amendment 5 — Phase 2c production result (2026-08-19)
+
+Evidence: `adr/reports/adr-038-phase2c-prototype-2026-08-19.md` §9, raw samples in
+`adr/reports/adr-038-samples/adr-038-phase2c-mainnet-sampler.txt`.
+
+Deployed at **parallelism 2**, measured over an equal 2.03 h window:
+
+| dataset | before | after | gain |
+|---|---:|---:|---:|
+| `utxo_history` (slowest) | 31.57 | **59.84** | **1.90x** |
+| `address_transaction` | 56.46 | **111.78** | 1.98x |
+| `transaction` | 85.64 | 111.75 | 1.30x |
+| `account_event` | 85.62 | 111.75 | 1.31x |
+
+**The provisional ≥50 blocks/s target is met** by the slowest dataset at 59.84,
+and the measured 1.90x closely tracks the 1.70x the synthetic benchmark predicted.
+All datasets gained, not only UTXO: prefetching is UTXO-scoped, so the rest comes
+from reduced shared-writer contention.
+
+Against the original pre-Phase-2 baseline the cumulative improvement is
+`utxo_history` **3.17 → 59.84 (18.9x)** and `address_transaction` **2.90 → 111.78
+(38.5x)**.
+
+Zero stuck pauses, writer waits, drain timeouts, reaper releases, locator rebuilds
+and digest or duplicate-row issues; HEALTHY across all 25 samples; RSS 3.7–10.4 GB;
+graceful restart recovered in 24.2 s with contiguous coverage and no rebuild.
+
+**One criterion missed:** a single estimate underflow — one block in 438,350 whose
+decoded fact graph measured 2.96 MB against the 2 MiB reservation. The mechanism
+surfaced it and throttled submission exactly as designed, and overshoot stayed
+bounded to active tasks. **The estimate was deliberately not raised**, since doing
+so afterwards would hide the signal the criterion exists to produce; raising
+`estimated-bytes-per-block` to 4 MiB is recommended as an explicit, approved
+change. Reverting to serial is one configuration line and needs no rebuild.
+
+The 18 `BlockSerializer ... redeemer does not have the same size` errors are
+**pre-existing** — 70 occurrences in the pre-Phase-2c log, originating in yaci-core
+and emitted by projection rather than prefetch threads — not a Phase 2c regression.
 
 ## Amendment 4 — Phase 2c: bounded ordered UTXO block prefetch (2026-08-19)
 
