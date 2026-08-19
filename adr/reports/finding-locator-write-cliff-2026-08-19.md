@@ -251,9 +251,17 @@ rate:
 | 7.29 blocks/s | post-restart, stage 2 | **~7 days** |
 
 That spread — not the throughput number itself — is what makes this the
-operator's decision. It also means the cheapest possible experiment is worth
-running first: if stage 2 really is cold-cache, the deployment may partially
-recover on its own as the working set rebuilds, and the sampler will show it.
+operator's decision.
+
+**Update — it is not recovering on its own.** Over a further hour of sampling
+(17:06 → 18:08), `utxo_history` held at 5.06–7.88 blocks/s with no upward trend,
+and RSS stayed at 1.2–2.2 GB rather than climbing back toward the 10.4 GB the
+process held before the restart. The "it will rewarm" hypothesis is therefore not
+supported: waiting is not a remedy, and the ~7-day catch-up figure should be
+treated as the current standing rate until something is changed.
+
+(Health did self-clear from DEGRADED to HEALTHY at 17:58 after ~37 minutes, so the
+degraded status was transient even though the throughput regression is not.)
 
 ### Candidate mitigations, cheapest first
 

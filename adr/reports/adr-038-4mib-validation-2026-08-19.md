@@ -127,15 +127,29 @@ Failed to prepare query "SELECT type FROM sqlite_master WHERE
 lower(name)=lower('ducklake_metadata');": database is locked
 ```
 
-Assessment: **a stale record of one failed probe, not a stuck writer.**
-`observedAt` remained frozen at `09:16:12Z` while `generation` continued to
-advance (59145 → 59164 → …), and all four workers stayed `IDLE` with committed
-generations advancing. The probe contended for a SQLite lock during a long
-locator stage — the same root contention as the cliff.
+Assessment: **a record of failed probes, not a stuck writer.** While DEGRADED,
+`observedAt` stayed frozen at `09:16:12Z` while `generation` continued to advance
+(59145 → 59164 → …), and all four workers stayed `IDLE` with committed generations
+advancing. The probe contended for a SQLite lock during a long locator stage — the
+same root contention as the cliff.
 
-That the status does **not** clear once the condition passes is ADR-034 review
-finding D manifesting live: there is no re-observation path that downgrades a
-transient failure back to HEALTHY.
+**It self-cleared.** Health returned to HEALTHY at **17:58:15**, roughly 37 minutes
+after first going DEGRADED, and stayed HEALTHY thereafter. So a re-observation
+path does exist and does downgrade a transient failure back to healthy.
+
+> **Correction.** An earlier draft of this report asserted that the status does not
+> clear, and cited it as ADR-034 review finding D manifesting live. That was wrong
+> — it was written while the condition was still active, before the sampler had
+> observed recovery. Finding D's substance (no metrics, no readiness check, no
+> machine-alertable signal) is unaffected; the specific "never clears" claim is
+> withdrawn.
+
+Two samples (17:42:42, 18:13:51) recorded a **parse error** because
+`/api/v1/status` returned nothing within its 25 s timeout, with process CPU at
+0.4% and 1.7% at those moments. The status endpoint is therefore occasionally
+unresponsive while the writer gate is held through a long locator stage — a
+read-path symptom of the same contention, worth noting because `/status` is what
+an operator would reach for during exactly this condition.
 
 ## What was deliberately not done
 
