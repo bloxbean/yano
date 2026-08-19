@@ -50,8 +50,27 @@ public record UtxoPrefetchConfig(boolean enabled, int parallelism, int maxInFlig
         }
     }
 
-    /** Serial behaviour: the production default until mainnet validation. */
+    /**
+     * Serial behaviour with the calibrated reservation.
+     *
+     * <p>The per-block reservation is 4 MiB. This is <b>reservation accounting,
+     * not an allocation</b>: nothing pre-allocates 4 MiB per block. It was raised
+     * from 2 MiB after mainnet measurement observed a maximum decoded fact graph
+     * of 2.96 MiB, which exceeded the old reservation once in 438,350 blocks. The
+     * runtime handled that correctly — it surfaced the underestimate, stopped
+     * further submission while accounting debt remained, and bounded overshoot to
+     * already-active tasks — so this is a calibration change, not a defect fix.
+     * 4 MiB leaves roughly 35% headroom over the largest graph observed.
+     *
+     * <p>The 256 MiB total estimated in-flight budget and the block-count bound are
+     * unchanged. At these settings the change costs no prefetch depth: admission
+     * requires both {@code pending < 8} and {@code reserved + estimate <= 256 MiB},
+     * and 8 blocks reserve only 32 MiB at 4 MiB each, so the <em>count</em> bound
+     * is the binding constraint before and after. The byte budget would begin to
+     * bind only above 64 in-flight blocks. No throughput change is expected from
+     * this calibration.
+     */
     public static UtxoPrefetchConfig disabled() {
-        return new UtxoPrefetchConfig(false, 1, 8, 256L * 1024 * 1024, 2L * 1024 * 1024, Duration.ofSeconds(120));
+        return new UtxoPrefetchConfig(false, 1, 8, 256L * 1024 * 1024, 4L * 1024 * 1024, Duration.ofSeconds(120));
     }
 }

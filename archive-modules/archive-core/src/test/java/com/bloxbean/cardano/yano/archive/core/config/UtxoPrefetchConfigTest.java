@@ -20,6 +20,26 @@ class UtxoPrefetchConfigTest {
         assertThat(defaults.drainTimeout()).isPositive();
     }
 
+    /**
+     * ADR-038 Phase 2c calibration: mainnet observed a maximum decoded fact graph
+     * of 2.96 MiB, so the reservation is 4 MiB with roughly 35% headroom. This is
+     * reservation accounting, not a per-block allocation.
+     */
+    @Test
+    void defaultReservationExceedsTheLargestObservedFactGraphWithHeadroom() {
+        UtxoPrefetchConfig defaults = UtxoPrefetchConfig.disabled();
+        long largestObservedFactGraph = 2_962_432L;
+        assertThat(defaults.estimatedBytesPerBlock())
+                .as("reservation must exceed the largest graph observed on mainnet")
+                .isEqualTo(4L * 1024 * 1024)
+                .isGreaterThan(largestObservedFactGraph);
+        double headroom = (double) defaults.estimatedBytesPerBlock() / largestObservedFactGraph - 1;
+        assertThat(headroom).as("documented headroom").isGreaterThan(0.30);
+        assertThat(defaults.maxInFlightBytes()).as("total budget unchanged at 256 MiB")
+                .isEqualTo(256L * 1024 * 1024);
+        assertThat(defaults.maxInFlightBlocks()).as("count bound unchanged").isEqualTo(8);
+    }
+
     @Test
     void acceptsAnExplicitLiteralParallelism() {
         var config = new UtxoPrefetchConfig(true, 2, 8, 64L * 1024 * 1024, 2L * 1024 * 1024,
