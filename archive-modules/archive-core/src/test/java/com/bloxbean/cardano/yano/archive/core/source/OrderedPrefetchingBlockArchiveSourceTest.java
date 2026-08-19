@@ -406,6 +406,42 @@ class OrderedPrefetchingBlockArchiveSourceTest {
     }
 
     @Test
+    void repeatedDrainTimeoutsUseOneBoundedReaperAndEventuallyReleaseEveryLease() throws Exception {
+        CountDownLatch release = new CountDownLatch(1);
+        var delegate = new FakeSource(n -> {
+            try { release.await(30, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            return Optional.of(block(n));
+        });
+        var src = source(delegate, 2, 4, 64 * 1024, FIXED, Duration.ofMillis(150));
+
+        int timedOutBatches = 4;
+        for (int i = 0; i < timedOutBatches; i++) {
+            var lease = src.acquire(100 + i * 100L, 130 + i * 100L, Instant.now().plusSeconds(60));
+            Thread.sleep(60);
+            assertThatThrownBy(lease::close).isInstanceOf(ArchiveStoreException.class)
+                    .hasMessageContaining("lease retained");
+        }
+
+        assertThat(src.stats().drainTimeouts()).isEqualTo(timedOutBatches);
+        assertThat(src.pendingReapers()).as("every timed-out lease is still held").isEqualTo(timedOutBatches);
+        assertThat(delegate.leasesOpen.get()).isEqualTo(timedOutBatches);
+
+        // A single named reaper thread regardless of how many batches timed out.
+        long reaperThreads = Thread.getAllStackTraces().keySet().stream()
+                .filter(thread -> thread.getName().contains("prefetch-reaper")).count();
+        assertThat(reaperThreads).as("reaper threads are bounded, not one per timeout").isLessThanOrEqualTo(1);
+
+        release.countDown();
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
+        while ((delegate.leasesOpen.get() != 0 || src.pendingReapers() != 0) && System.nanoTime() < deadline) {
+            Thread.sleep(25);
+        }
+        assertThat(delegate.leasesOpen.get()).as("all retained leases eventually released").isZero();
+        assertThat(src.pendingReapers()).isZero();
+        src.shutdownReaper();
+    }
+
+    @Test
     void rejectsInvalidConfiguration() {
         executor = Executors.newFixedThreadPool(1);
         var delegate = new FakeSource(n -> Optional.of(block(n)));

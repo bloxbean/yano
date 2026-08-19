@@ -2028,8 +2028,12 @@ public class HistoryArchiveService implements AutoCloseable {
      * a prefetch window.
      */
     private void shutdownUtxoPrefetchExecutor() {
+        OrderedPrefetchingBlockArchiveSource<UtxoHistoryFact> source = utxoPrefetchSource;
         java.util.concurrent.ExecutorService selected = utxoPrefetchExecutor;
-        if (selected == null) return;
+        if (selected == null) {
+            if (source != null) source.shutdownReaper();
+            return;
+        }
         selected.shutdownNow();
         try {
             if (!selected.awaitTermination(30, TimeUnit.SECONDS)) {
@@ -2040,6 +2044,7 @@ public class HistoryArchiveService implements AutoCloseable {
             Thread.currentThread().interrupt();
             return;
         }
+        if (source != null) source.shutdownReaper();
         utxoPrefetchExecutor = null;
         utxoPrefetchSource = null;
     }

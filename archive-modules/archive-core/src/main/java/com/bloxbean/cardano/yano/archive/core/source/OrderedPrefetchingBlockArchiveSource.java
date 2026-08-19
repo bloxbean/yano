@@ -92,6 +92,43 @@ public final class OrderedPrefetchingBlockArchiveSource<B> implements BlockArchi
     private final AtomicLong reservationOverages = new AtomicLong();
     private final AtomicLong reorderWaitNanos = new AtomicLong();
     private final AtomicLong drainTimeouts = new AtomicLong();
+    private final AtomicLong pendingReapers = new AtomicLong();
+
+    // Lazily created, single-threaded and owned here so repeated drain timeouts
+    // cannot create unbounded reaper threads.
+    private volatile ExecutorService reaper;
+
+    private synchronized ExecutorService reaperExecutor() {
+        if (reaper == null) {
+            reaper = java.util.concurrent.Executors.newSingleThreadExecutor(runnable -> {
+                Thread thread = new Thread(runnable, "yano-archive-prefetch-reaper");
+                thread.setDaemon(true);
+                return thread;
+            });
+        }
+        return reaper;
+    }
+
+    /** Outstanding reaper tasks still holding a block-body lease. */
+    public long pendingReapers() {
+        return pendingReapers.get();
+    }
+
+    /** Stops the reaper thread. Any lease already handed to it is released first. */
+    public void shutdownReaper() {
+        ExecutorService selected;
+        synchronized (this) { selected = reaper; reaper = null; }
+        if (selected == null) return;
+        selected.shutdown();
+        try {
+            if (!selected.awaitTermination(30, TimeUnit.SECONDS)) {
+                LOG.log(System.Logger.Level.WARNING,
+                        "Prefetch reaper did not terminate within 30s; {0} task(s) pending", pendingReapers.get());
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
 
     public OrderedPrefetchingBlockArchiveSource(BlockArchiveSource<B> delegate, ExecutorService executor,
                                                 int maxInFlightBlocks, long maxInFlightBytes,
@@ -371,17 +408,21 @@ public final class OrderedPrefetchingBlockArchiveSource<B> implements BlockArchi
         LOG.log(System.Logger.Level.ERROR,
                 "Prefetch drain exceeded its deadline with {0} task(s) still running; retaining the block-body"
                         + " lease until they terminate rather than dropping pruning protection", stuck);
-        Thread reaper = new Thread(() -> {
+        // One shared single-thread reaper, not a thread per timeout: repeated
+        // timeouts must not be able to spawn unbounded threads. Pending reaper work
+        // is counted so a backlog is observable rather than silent.
+        pendingReapers.incrementAndGet();
+        reaperExecutor().execute(() -> {
             try {
                 opened.awaitTerminationUninterruptibly();
             } finally {
                 lease.close();
+                long outstanding = pendingReapers.decrementAndGet();
                 LOG.log(System.Logger.Level.WARNING,
-                        "Prefetch reaper released the block-body lease after delayed task termination");
+                        "Prefetch reaper released the block-body lease after delayed task termination;"
+                                + " {0} reaper task(s) still pending", outstanding);
             }
-        }, "yano-archive-prefetch-reaper");
-        reaper.setDaemon(false);
-        reaper.start();
+        });
         throw new ArchiveStoreException("prefetch tasks did not terminate within the drain deadline; "
                 + stuck + " still running, block-body lease retained");
     }
@@ -394,7 +435,7 @@ public final class OrderedPrefetchingBlockArchiveSource<B> implements BlockArchi
     public Stats stats() {
         return new Stats(peakInFlightBlocks.get(), peakReservedBytes.get(), peakObservedBytes.get(),
                 peakCompletedWaiting.get(), largestObservedBlock.get(), blocksPrefetched.get(),
-                reservationOverages.get(), reorderWaitNanos.get(), drainTimeouts.get(),
+                reservationOverages.get(), reorderWaitNanos.get(), drainTimeouts.get(), pendingReapers.get(),
                 maxInFlightBlocks, maxInFlightBytes, estimatedBytesPerBlock);
     }
 
@@ -413,7 +454,7 @@ public final class OrderedPrefetchingBlockArchiveSource<B> implements BlockArchi
     /** Prefetch instrumentation for ADR-038 Phase 2c benchmarking. */
     public record Stats(long peakInFlightBlocks, long peakReservedBytes, long peakObservedBytes,
                         long peakCompletedWaiting, long largestObservedBlockBytes, long blocksPrefetched,
-                        long reservationOverages, long reorderWaitNanos, long drainTimeouts,
+                        long reservationOverages, long reorderWaitNanos, long drainTimeouts, long pendingReapers,
                         int maxInFlightBlocks, long maxInFlightBytes, long estimatedBytesPerBlock) {
 
         /** True when measured footprint ever exceeded its conservative reservation. */
@@ -430,6 +471,7 @@ public final class OrderedPrefetchingBlockArchiveSource<B> implements BlockArchi
             values.put("reservationOverages", reservationOverages);
             values.put("reorderWaitMillis", TimeUnit.NANOSECONDS.toMillis(reorderWaitNanos));
             values.put("drainTimeouts", drainTimeouts);
+            values.put("pendingReapers", pendingReapers);
             return values;
         }
     }
