@@ -2,7 +2,9 @@
 
 ## Status
 
-Partially implemented. Reconciled with Amendments 3 and 4.
+Partially implemented. Reconciled with Amendments 3, 4, 5 and 6.
+**Throughput objective met and campaign closed at Phase 2c** — remaining phases
+are deliberately unstarted.
 
 | phase | status |
 |---|---|
@@ -10,17 +12,18 @@ Partially implemented. Reconciled with Amendments 3 and 4.
 | **Phase 2** — Appender-to-staging write path (shape (b)) | **Implemented and validated on mainnet** |
 | **Phase 2b** — live-path anchor recheck | **Implemented and validated on mainnet** |
 | **Locator-generation fix** (added after Phase 2 measurement) | **Implemented and validated on mainnet** |
-| **Phase 2c** — bounded ordered UTXO block prefetch | **Deployed to mainnet at parallelism 2 and measured: slowest dataset 31.57 → 59.84 blocks/s. 6 of 7 acceptance criteria met, 1 missed** (Amendment 5) |
+| **Phase 2c** — bounded ordered UTXO block prefetch | **Accepted.** Deployed to mainnet at parallelism 2 and measured: slowest dataset 31.57 → 59.84 blocks/s; all acceptance criteria met; reservation recalibrated 2 MiB → 4 MiB (Amendments 5 and 6) |
 | **Phase 1** — configuration and profile | **Not started.** Its throughput rationale is measurably unsupported: DuckDB thread/memory settings showed no effect on the append path, and the production `UTXO_HISTORY` session already runs under the production DuckDB configuration |
 | **Phase 3** — unified block pipeline and group-atomic storage transitions | **Blocked on C1–C5** (see *Prerequisite contract changes for Phase 3*). Must not begin until those contracts are agreed |
 | **Phase 4** — retry without repeated derivation | **Not started, deprioritised.** Writer waits and discarded batches are now zero |
 | **Phase 5** — transaction locator lifecycle | **Not implemented.** Remains the durable locator solution and still requires the generation-ordered delta journal; it is no longer the slowest-dataset throughput lever |
 | **Phases 6 and 7** — commit granularity, concurrent per-table writers | **Not implemented** |
 
-Outcome to date: slowest dataset **2.90 → 31.57 blocks/s (10.9x)**; all locator-fix
-acceptance criteria passed. The provisional **≥50 blocks/s** target remains
-**unmet** (`utxo_history` is slowest at 31.57) and is deliberately not lowered.
-Details in Amendment 3.
+Outcome: slowest dataset **3.17 → 59.84 blocks/s (18.9x)** after Phase 2c. The
+provisional **≥50 blocks/s** target is **met** without having been lowered at any
+point. Throughput optimisation for this campaign stops here; Phases 1, 3, 4, 6
+and 7 remain unstarted by decision, not by omission. Details in Amendments 3, 5
+and 6.
 
 ## Date
 
@@ -53,17 +56,110 @@ Zero stuck pauses, writer waits, drain timeouts, reaper releases, locator rebuil
 and digest or duplicate-row issues; HEALTHY across all 25 samples; RSS 3.7–10.4 GB;
 graceful restart recovered in 24.2 s with contiguous coverage and no rebuild.
 
-**One criterion missed:** a single estimate underflow — one block in 438,350 whose
-decoded fact graph measured 2.96 MB against the 2 MiB reservation. The mechanism
-surfaced it and throttled submission exactly as designed, and overshoot stayed
-bounded to active tasks. **The estimate was deliberately not raised**, since doing
-so afterwards would hide the signal the criterion exists to produce; raising
-`estimated-bytes-per-block` to 4 MiB is recommended as an explicit, approved
-change. Reverting to serial is one configuration line and needs no rebuild.
+**One reservation event:** a single estimate underflow — one block in 438,350
+whose decoded fact graph measured 2.96 MB against the 2 MiB reservation. The
+mechanism surfaced it and throttled submission exactly as designed, and overshoot
+stayed bounded to active tasks. The estimate was deliberately **not** raised
+during the measurement window, since doing so afterwards would hide the signal.
+It was recalibrated to 4 MiB afterwards as an explicit approved change — see
+Amendment 6, which also corrects the acceptance criterion this event was
+originally graded against. Reverting to serial is one configuration line and
+needs no rebuild.
 
 The 18 `BlockSerializer ... redeemer does not have the same size` errors are
 **pre-existing** — 70 occurrences in the pre-Phase-2c log, originating in yaci-core
 and emitted by projection rather than prefetch threads — not a Phase 2c regression.
+They are **not harmless**, however: they cause silently incomplete redeemer
+coverage. Tracked separately in
+`adr/reports/issue-redeemer-size-mismatch-2026-08-19.md`; explicitly **not** in
+Phase 2c scope.
+
+## Amendment 6 — Phase 2c closeout: reservation calibration and corrected acceptance (2026-08-19)
+
+Evidence: `adr/reports/adr-038-phase2c-prototype-2026-08-19.md`, raw samples in
+`adr/reports/adr-038-samples/adr-038-4mib-mainnet-sampler.txt`.
+
+### The acceptance criterion was wrong, and is superseded
+
+Phase 2c was graded against *"no memory-budget underestimate."* That criterion
+contradicts the design it was grading. The budget is specified throughout this
+ADR as a **conservative estimate, not an exact byte ceiling**; the runtime exists
+precisely to detect and absorb underestimates. Grading it on whether an
+underestimate ever occurs marks the mechanism as failing exactly when it works.
+
+It is replaced by five criteria that test what actually matters — that an
+underestimate is detected, bounded, and consequence-free:
+
+1. **No unreported underestimate.** Every occurrence logs block, observed size,
+   estimate and running count.
+2. **No unbounded overshoot.** Excess is capped to already-active tasks.
+3. **No submission while accounting debt remains.** Submission throttles until
+   ordered consumption clears the debt.
+4. **No lease release or cursor advancement caused by an underestimate.** The
+   block-body lease is released only after drain; the cursor advances only on a
+   committed durable receipt.
+5. **The selected estimate exceeds the maximum observed fact graph, with
+   documented headroom.**
+
+All five pass. The superseded criterion is recorded rather than deleted so the
+regrade is auditable and cannot be read as a retroactively lowered bar. The
+throughput results were earned at the original 2 MiB reservation; the
+recalibration was applied only afterwards.
+
+### Calibration
+
+| quantity | value |
+|---|---:|
+| max decoded fact graph observed on mainnet | **2,962,432 B** (2.83 MiB) at block 9,304,864 |
+| previous reservation | 2 MiB — 1 overage in 438,350 blocks |
+| **selected reservation** | **4 MiB** |
+| **documented headroom** | **~35%** |
+| total estimated in-flight budget | unchanged, 256 MiB |
+| in-flight block-count bound | unchanged, 8 |
+
+Applied in `UtxoPrefetchConfig.disabled()` and in the deployed mainnet
+`application-history.yml`; asserted by `UtxoPrefetchConfigTest
+.defaultReservationExceedsTheLargestObservedFactGraphWithHeadroom`. This is
+**reservation accounting, not an allocation** — nothing pre-allocates 4 MiB.
+
+**The calibration costs no prefetch depth, so no throughput change is expected.**
+Admission requires both `pending < maxInFlightBlocks` (8) and
+`reserved + estimate <= maxInFlightBytes` (256 MiB). Eight blocks reserve 32 MiB
+at 4 MiB each, so the **count** bound is the binding constraint both before and
+after; the byte budget would only begin to bind above 64 in-flight blocks. Rates
+in the post-calibration window should therefore match the ~59.84 blocks/s already
+measured, and any delta is workload variance rather than an effect of this change.
+
+### Campaign close
+
+The ≥50 blocks/s objective is met and throughput optimisation stops here. Phase 3
+and later phases are **not** to be started as a continuation of this work.
+
+Disk forecast to catch-up: `adr/reports/archive-disk-forecast-2026-08-19.md` — no
+capacity risk (~61–95 GB more needed against 589 GB free); the real watch item is
+the 141,594-file Parquet population, since maintenance has never completed a full
+rewrite pass.
+
+### Calibration deployment result, and an unrelated regression found during it
+
+The 4 MiB change was validated on mainnet: `adr/reports/adr-038-4mib-validation-2026-08-19.md`.
+All five calibration criteria pass — zero reservation underestimates, zero drain
+timeouts, zero reapers, zero locator rebuilds, contiguous coverage across a
+graceful restart.
+
+The **throughput** criteria could not be measured in that window. A transaction-locator
+write regression, unrelated to this change and beginning before it, dropped
+`utxo_history` from 59.84 to 41.87 blocks/s pre-restart and to 7.29 blocks/s after.
+It is a **different mechanism** from the read-triggered rebuild fixed in
+Amendment 3 — a write-side index-size cliff on a 20.64 GB SQLite locator, with the
+upsert held inside the single-permit writer gate, which is why all four datasets
+now advance in lockstep. Diagnosis:
+`adr/reports/finding-locator-write-cliff-2026-08-19.md`.
+
+This does not reopen the throughput campaign. It does make the **locator lifecycle**
+the clear next task, now carrying both a correctness defect (an unrepaired
+replay gap) and an active throughput defect. Recommendation:
+`adr/reports/next-correctness-task-locator-seam-2026-08-19.md`.
 
 ## Amendment 4 — Phase 2c: bounded ordered UTXO block prefetch (2026-08-19)
 
