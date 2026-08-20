@@ -16,6 +16,7 @@ import com.bloxbean.cardano.yano.runtime.blockproducer.NonceStateStore;
 import com.bloxbean.cardano.yano.runtime.blockproducer.NonceStateSnapshot;
 import com.bloxbean.cardano.yano.ledgerstate.AccountStateCfNames;
 import com.bloxbean.cardano.yano.runtime.db.RocksDbContext;
+import com.bloxbean.cardano.yano.api.archive.ProjectionCfNames;
 import com.bloxbean.cardano.yano.runtime.db.RocksDbSupplier;
 import com.bloxbean.cardano.yano.runtime.db.UtxoCfNames;
 import lombok.extern.slf4j.Slf4j;
@@ -176,7 +177,15 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                     new ColumnFamilyDescriptor(AccountStateCfNames.ACCT_DELTA.getBytes()),
                     new ColumnFamilyDescriptor(AccountStateCfNames.ACCT_BOUNDARY_DELTA.getBytes()),
                     new ColumnFamilyDescriptor(AccountStateCfNames.EPOCH_DELEG_SNAPSHOT.getBytes()),
-                    new ColumnFamilyDescriptor(AccountStateCfNames.EPOCH_PARAMS.getBytes())
+                    new ColumnFamilyDescriptor(AccountStateCfNames.EPOCH_PARAMS.getBytes()),
+                    // Canonical projection outbox (ADR-039). Declared here so a contributor
+                    // can write its section inside the same WriteBatch as the state it was
+                    // derived from. Created on open, so a node that never enables history
+                    // simply leaves them empty.
+                    new ColumnFamilyDescriptor(ProjectionCfNames.PROJ_HEADER.getBytes(), buildSequentialCfOptions()),
+                    new ColumnFamilyDescriptor(ProjectionCfNames.PROJ_SECTION.getBytes(), buildSequentialCfOptions()),
+                    new ColumnFamilyDescriptor(ProjectionCfNames.PROJ_META.getBytes()),
+                    new ColumnFamilyDescriptor(ProjectionCfNames.PROJ_ARTIFACT.getBytes())
             );
 
             // Open database
