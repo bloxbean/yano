@@ -77,6 +77,14 @@ public final class LiveBlockArchiveWorker<B> {
             rowsByBlock.add(List.copyOf(operations));
             last = block;
         }
+        // Re-verify the batch anchors immediately before the durable hot commit,
+        // ahead of the stateful/stateless branch so both commit paths are
+        // covered. Derivation runs after the batch was read, so a fork switch in
+        // that window would otherwise make hot facts for an orphaned range
+        // durable. The catch-up worker already does this before its archive
+        // commit; this is the near-tip equivalent.
+        recheck(blocks.getFirst());
+        recheck(blocks.getLast());
         if (dataset instanceof LiveStatefulBlockArchiveDataset<B> stateful) {
             stateful.commitLiveBatch(rowsByBlock);
         } else {
@@ -90,6 +98,20 @@ public final class LiveBlockArchiveWorker<B> {
         metrics.update(dataset.dataset(), ArchiveTrack.LIVE, ArchiveWorkerStatus.State.IDLE,
                 end, tip - end, "live projection updated");
         return end;
+    }
+
+    /**
+     * Fails the batch when a canonical anchor moved between the batch read and
+     * the hot commit. Uses {@code canonicalReference} rather than
+     * {@code readCanonical} so a pruned body is not mistaken for a fork switch.
+     */
+    private void recheck(BlockSourceContext<B> expected) {
+        var current = source.canonicalReference(expected.blockNumber())
+                .orElseThrow(() -> new ArchiveStoreException("canonical live anchor disappeared at block "
+                        + expected.blockNumber()));
+        if (current.slot() != expected.slot() || !Arrays.equals(current.blockHash(), expected.blockHash())) {
+            throw new ArchiveStoreException("canonical live anchor changed at block " + expected.blockNumber());
+        }
     }
 
     private void verifyParentChain(List<BlockSourceContext<B>> blocks, ArchiveProgress prior) {
