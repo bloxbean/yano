@@ -49,7 +49,9 @@ import java.util.*;
  * and reward balances with delta-journal rollback support.
  */
 public class DefaultAccountStateStore implements AccountStateStore, AccountStateReadStore,
-        com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore {
+        com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore,
+        com.bloxbean.cardano.yano.api.archive.PointerCredentialSource,
+        com.bloxbean.cardano.yano.api.archive.PointerIndexMaintenance {
 
     // Key prefixes
     public static final byte PREFIX_ACCT = 0x01;
@@ -67,6 +69,49 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     static final byte PREFIX_POOL_REG_SLOT = 0x13;   // pool registration slot: poolHash → slot (long BE)
     static final byte PREFIX_ACCT_REG_SLOT = 0x14;   // stake account registration slot: credType + credHash → slot (long BE)
     static final byte PREFIX_POINTER_ADDR = 0x15;    // pointer address: slot(8) + txIdx(4) + certIdx(4) → credType(1) + credHash(28)
+    /**
+     * Stake deregistration index: credType(1) + credHash(28) + slot(8) → marker.
+     *
+     * <p>Credential-major so "was this credential deregistered between slot A and slot B"
+     * is one seek. {@code PREFIX_STAKE_EVENT} already records deregistrations but is
+     * slot-major, which would make that question a range scan over every event in the
+     * window.
+     *
+     * <p>Exists so pointer-address resolution can answer <em>as of a given slot</em> rather
+     * than as of now. The Shelley ledger removes a credential's {@code ptrs} entries when it
+     * is deregistered, so a pointer address must stop resolving from that slot onward — but
+     * ADR-039 contributor replay may project block N while this store is far ahead of N, and
+     * a mutable "is it registered now" answer would differ between the first pass and the
+     * replay. Append-only slot-keyed records give the same answer both times.
+     */
+    /**
+     * Derived credential-major deregistration index:
+     * credType(1) + credHash(28) + slot(8) + txIdx(2) + certIdx(2) -> marker.
+     *
+     * <p>The <strong>authoritative</strong> record of stake registration and deregistration
+     * remains {@link #PREFIX_STAKE_EVENT}, which is slot-major and carries the event type.
+     * This structure is a pure lookup index over the deregistration subset of that log: it
+     * adds no fact, and it can be rebuilt or verified from the event log alone.
+     *
+     * <p>It exists because pointer-address resolution must answer "was this credential
+     * deregistered strictly after coordinate R and at or before coordinate B" in one seek.
+     * Asking the slot-major log would mean scanning every event in the window.
+     *
+     * <p>The key carries the <em>complete event coordinate</em>, not just the slot. Two
+     * deregistrations of the same credential in one slot are legal (different transactions),
+     * and a slot-only key would collide and lose one. Big-endian packing makes RocksDB byte
+     * order identical to coordinate order, so an ordered seek is an ordered coordinate scan.
+     */
+    static final byte PREFIX_ACCT_DEREG_COORD = 0x16;
+
+    /** Durable marker: the as-of pointer index has been maintained from genesis. */
+    static final byte[] META_POINTER_INDEX_GENESIS =
+            "meta.pointer.index.from-genesis".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    /** Durable marker: pointer history was cleaned up through the recorded slot. */
+    static final byte[] META_POINTER_INDEX_CLEANED =
+            "meta.pointer.index.cleaned-through".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+    private static final byte[] EMPTY_MARKER = new byte[0];
 
     // Epoch-scoped prefixes for reward calculation
     static final byte PREFIX_POOL_BLOCK_COUNT = 0x50;
@@ -712,6 +757,44 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
      * Build stake event key: [0x55][slot(8 BE)][txIdx(2 BE)][certIdx(2 BE)][credType(1)][credHash(28)]
      * Slot-first ordering enables efficient range scans for "all events in slot range".
      */
+    /** Full-coordinate key: [prefix][credType][hash(28)][slot(8)][txIdx(2)][certIdx(2)]. */
+    static byte[] acctDeregCoordKey(int credType, String credHash, long slot, int txIdx, int certIdx) {
+        byte[] hash = HexUtil.decodeHexString(credHash);
+        byte[] key = new byte[1 + 1 + hash.length + 8 + 2 + 2];
+        key[0] = PREFIX_ACCT_DEREG_COORD;
+        key[1] = (byte) credType;
+        System.arraycopy(hash, 0, key, 2, hash.length);
+        int off = 2 + hash.length;
+        ByteBuffer.wrap(key, off, 8).order(ByteOrder.BIG_ENDIAN).putLong(slot);
+        ByteBuffer.wrap(key, off + 8, 2).order(ByteOrder.BIG_ENDIAN).putShort((short) txIdx);
+        ByteBuffer.wrap(key, off + 10, 2).order(ByteOrder.BIG_ENDIAN).putShort((short) certIdx);
+        return key;
+    }
+
+    /** Credential prefix, so a seek stays inside one credential's entries. */
+    static byte[] acctDeregCoordPrefix(int credType, String credHash) {
+        byte[] hash = HexUtil.decodeHexString(credHash);
+        byte[] key = new byte[1 + 1 + hash.length];
+        key[0] = PREFIX_ACCT_DEREG_COORD;
+        key[1] = (byte) credType;
+        System.arraycopy(hash, 0, key, 2, hash.length);
+        return key;
+    }
+
+    private static boolean startsWith(byte[] key, byte[] prefix) {
+        if (key.length < prefix.length) return false;
+        for (int i = 0; i < prefix.length; i++) if (key[i] != prefix[i]) return false;
+        return true;
+    }
+
+    /** Decodes (slot, txIdx, certIdx) from a deregistration-index key. */
+    private static long[] coordinateOf(byte[] key, int prefixLength) {
+        long slot = ByteBuffer.wrap(key, prefixLength, 8).order(ByteOrder.BIG_ENDIAN).getLong();
+        int txIdx = ByteBuffer.wrap(key, prefixLength + 8, 2).order(ByteOrder.BIG_ENDIAN).getShort() & 0xFFFF;
+        int certIdx = ByteBuffer.wrap(key, prefixLength + 10, 2).order(ByteOrder.BIG_ENDIAN).getShort() & 0xFFFF;
+        return new long[]{slot, txIdx, certIdx};
+    }
+
     static byte[] stakeEventKey(long slot, int txIdx, int certIdx, int credType, String credHash) {
         byte[] hash = HexUtil.decodeHexString(credHash);
         // 1 prefix + 8 slot + 2 txIdx + 2 certIdx + 1 credType + 28 hash = 42
@@ -2904,6 +2987,181 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         return key;
     }
 
+    // ------------------------------------------------------------------
+    // ADR-039 as-of pointer resolution
+    // ------------------------------------------------------------------
+
+    @Override
+    public java.util.Optional<com.bloxbean.cardano.yano.api.archive.PointerCredentialSource.PointerCredential>
+            registrationAt(com.bloxbean.cardano.yano.api.archive.PointerCredentialSource.PointerCoordinate coordinate) {
+        if (pointerAddressResolver == null) return java.util.Optional.empty();
+        PointerAddressResolver.StakeCredential credential = pointerAddressResolver.resolve(
+                coordinate.slot(), coordinate.txIndex(), coordinate.certIndex());
+        return credential == null ? java.util.Optional.empty()
+                : java.util.Optional.of(new com.bloxbean.cardano.yano.api.archive.PointerCredentialSource
+                        .PointerCredential(credential.credType(), credential.credHash()));
+    }
+
+    /**
+     * Seeks the derived deregistration index for this credential's first entry strictly after
+     * {@code after}, and reports whether it lies at or before {@code through}.
+     *
+     * <p>One seek bounded by the credential prefix. The upper bound is what makes replay
+     * deterministic: a deregistration recorded later than the block being projected falls
+     * outside the interval and is ignored, so projecting block N yields the same answer
+     * however far this store has since advanced.
+     */
+    @Override
+    public boolean deregisteredWithin(
+            com.bloxbean.cardano.yano.api.archive.PointerCredentialSource.PointerCredential credential,
+            com.bloxbean.cardano.yano.api.archive.PointerCredentialSource.PointerCoordinate after,
+            com.bloxbean.cardano.yano.api.archive.PointerCredentialSource.PointerCoordinate through) {
+        if (credential == null || after.compareTo(through) >= 0) return false;
+        byte[] prefix = acctDeregCoordPrefix(credential.credentialType(), credential.credentialHash());
+        byte[] seek = acctDeregCoordKey(credential.credentialType(), credential.credentialHash(),
+                after.slot(), after.txIndex(), after.certIndex());
+        try (RocksIterator it = db.newIterator(cfState)) {
+            for (it.seek(seek); it.isValid(); it.next()) {
+                byte[] key = it.key();
+                if (!startsWith(key, prefix)) return false;
+                long[] c = coordinateOf(key, prefix.length);
+                var found = new com.bloxbean.cardano.yano.api.archive.PointerCredentialSource
+                        .PointerCoordinate(c[0], (int) c[1], (int) c[2]);
+                // seek() lands on >= ; the interval is strictly greater than `after`.
+                if (found.compareTo(after) <= 0) continue;
+                return found.compareTo(through) <= 0;
+            }
+        }
+        return false;
+    }
+
+    @Override
+    public com.bloxbean.cardano.yano.api.archive.PointerCredentialSource.IndexCompleteness completeness() {
+        try {
+            if (db.get(cfState, META_POINTER_INDEX_CLEANED) != null) {
+                return com.bloxbean.cardano.yano.api.archive.PointerCredentialSource
+                        .IndexCompleteness.CLEANED;
+            }
+            return db.get(cfState, META_POINTER_INDEX_GENESIS) != null
+                    ? com.bloxbean.cardano.yano.api.archive.PointerCredentialSource.IndexCompleteness.COMPLETE
+                    : com.bloxbean.cardano.yano.api.archive.PointerCredentialSource.IndexCompleteness.INCOMPLETE;
+        } catch (RocksDBException e) {
+            throw ledgerStateReadFailure("pointer index completeness", e);
+        }
+    }
+
+    /**
+     * Record that the derived index has been maintained from genesis.
+     *
+     * <p>Refused on a chainstate that has already advanced. Asserting completeness there
+     * would claim coverage the index does not have: pre-Conway deregistrations applied
+     * before this point were never indexed, and nothing downstream could detect it.
+     */
+    public void markPointerIndexFromGenesis() {
+        if (getLatestAppliedSlot() > 0) {
+            throw new IllegalStateException("refusing to mark the pointer index complete on a"
+                    + " chainstate that has already advanced; projection history is fresh-sync only");
+        }
+        try (WriteOptions wo = new WriteOptions().setSync(true)) {
+            db.put(cfState, wo, META_POINTER_INDEX_GENESIS, EMPTY_MARKER);
+        } catch (RocksDBException e) {
+            throw new RuntimeException("failed to mark pointer index complete", e);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // ADR-039 pointer index maintenance
+    // ------------------------------------------------------------------
+
+    @Override
+    public com.bloxbean.cardano.yano.api.archive.PointerIndexMaintenance.PointerIndexStatus
+            pointerIndexStatus() {
+        long cleaned = -1;
+        try {
+            byte[] value = db.get(cfState, META_POINTER_INDEX_CLEANED);
+            if (value != null && value.length >= 8) {
+                cleaned = ByteBuffer.wrap(value).order(ByteOrder.BIG_ENDIAN).getLong();
+            }
+        } catch (RocksDBException e) {
+            throw ledgerStateReadFailure("pointer index status", e);
+        }
+        return new com.bloxbean.cardano.yano.api.archive.PointerIndexMaintenance.PointerIndexStatus(
+                completeness(), pointerDeregIndexEntryCount(), pointerDeregIndexBytes(),
+                cleaned < 0 ? java.util.OptionalLong.empty() : java.util.OptionalLong.of(cleaned));
+    }
+
+    /**
+     * Bounded, idempotent removal of derived index entries at or before {@code throughSlot}.
+     *
+     * <p>Scans the whole index prefix because it is credential-major: entries for one slot are
+     * scattered across credentials, so there is no contiguous slot range to drop. The bound
+     * keeps each pass short, and the scan is cheap because the index only ever holds
+     * pre-Conway deregistrations.
+     *
+     * <p>Deletes only the derived index. The authoritative {@code PREFIX_STAKE_EVENT} log is
+     * untouched: reward calculation and deregistered-account detection still read it, and
+     * conflating the two would delete history another subsystem depends on.
+     */
+    @Override
+    public long cleanupPointerIndex(long throughSlot, int maxKeys) {
+        if (maxKeys <= 0) return 0;
+        byte[] prefix = {PREFIX_ACCT_DEREG_COORD};
+        long removed = 0;
+        try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions().setSync(true);
+             RocksIterator it = db.newIterator(cfState)) {
+            for (it.seek(prefix); it.isValid() && removed < maxKeys; it.next()) {
+                byte[] key = it.key();
+                if (!startsWith(key, prefix)) break;
+                // key = [prefix][credType][hash(28)][slot(8)][txIdx(2)][certIdx(2)]
+                int coordinateOffset = key.length - 12;
+                long slot = ByteBuffer.wrap(key, coordinateOffset, 8).order(ByteOrder.BIG_ENDIAN).getLong();
+                if (slot > throughSlot) continue;
+                batch.delete(cfState, key);
+                removed++;
+            }
+            if (removed > 0) db.write(wo, batch);
+        } catch (RocksDBException e) {
+            throw new RuntimeException("pointer index cleanup failed", e);
+        }
+        return removed;
+    }
+
+    @Override
+    public void markPointerIndexCleaned(long throughSlot) {
+        try (WriteOptions wo = new WriteOptions().setSync(true)) {
+            db.put(cfState, wo, META_POINTER_INDEX_CLEANED,
+                    ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(throughSlot).array());
+        } catch (RocksDBException e) {
+            throw new RuntimeException("failed to record pointer index cleanup", e);
+        }
+    }
+
+    /** Derived index entry count, for capacity accounting and measurement. */
+    public long pointerDeregIndexEntryCount() {
+        long count = 0;
+        byte[] prefix = {PREFIX_ACCT_DEREG_COORD};
+        try (RocksIterator it = db.newIterator(cfState)) {
+            for (it.seek(prefix); it.isValid(); it.next()) {
+                if (!startsWith(it.key(), prefix)) break;
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /** Logical bytes held by the derived index; values are empty markers. */
+    public long pointerDeregIndexBytes() {
+        long bytes = 0;
+        byte[] prefix = {PREFIX_ACCT_DEREG_COORD};
+        try (RocksIterator it = db.newIterator(cfState)) {
+            for (it.seek(prefix); it.isValid(); it.next()) {
+                if (!startsWith(it.key(), prefix)) break;
+                bytes += it.key().length + it.value().length;
+            }
+        }
+        return bytes;
+    }
+
     /** Key for pointer address mapping: PREFIX_POINTER_ADDR | slot(8 BE) | txIdx(4 BE) | certIdx(4 BE) */
     private static byte[] pointerAddrKey(long slot, int txIdx, int certIdx) {
         byte[] key = new byte[1 + 8 + 4 + 4];
@@ -3044,6 +3302,13 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         byte[] eventVal = AccountStateCborCodec.encodeStakeEvent(AccountStateCborCodec.EVENT_DEREGISTRATION);
         batch.put(cfState, eventKey, eventVal);
         deltaOps.add(new DeltaOp(OP_PUT, eventKey, null));
+
+        // Derived credential-major index over the deregistration just recorded above, so
+        // pointer resolution can seek rather than scan. Same batch and same delta op as the
+        // authoritative event, so the two can never disagree and rollback removes both.
+        byte[] deregKey = acctDeregCoordKey(ct, cred.getHash(), slot, txIdx, certIdx);
+        batch.put(cfState, deregKey, EMPTY_MARKER);
+        deltaOps.add(new DeltaOp(OP_PUT, deregKey, null));
 
         return depositRefund;
     }
