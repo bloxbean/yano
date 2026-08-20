@@ -28,6 +28,7 @@ import com.bloxbean.cardano.yano.api.plugin.PluginCatalogView;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginOperationsView;
 import com.bloxbean.cardano.yano.app.bootstrap.BootstrapConfigParser;
 import com.bloxbean.cardano.yano.app.archive.HistoryArchiveService;
+import com.bloxbean.cardano.yano.app.archive.ProjectionHistoryService;
 import com.bloxbean.cardano.yano.bootstrap.providers.DefaultBootstrapDataProviderFactory;
 import com.bloxbean.cardano.yano.devnet.YanoDevnetAssembly;
 import com.bloxbean.cardano.yano.runtime.assembly.YanoAssembly;
@@ -98,6 +99,9 @@ public class YanoProducer {
 
     @Inject
     HistoryArchiveService historyArchive;
+
+    @Inject
+    ProjectionHistoryService projectionHistory;
 
     @ConfigProperty(name = YanoPropertyKeys.NETWORK, defaultValue = "mainnet")
     String network;
@@ -962,6 +966,15 @@ public class YanoProducer {
                     assembledYano.chain(),
                     assembledYano.ledger(),
                     (YanoConfig) assembledYano.lifecycle().getConfig());
+            // ADR-039 projection history. Composed separately from the replay-worker
+            // service above so the two can run side by side while the old path serves as
+            // the differential oracle. Disabled by default; a disabled node installs no
+            // contributor and keeps its current behaviour.
+            projectionHistory.initialize(
+                    assembledYano,
+                    assembledYano.chain(),
+                    assembledYano.ledger(),
+                    (YanoConfig) assembledYano.lifecycle().getConfig());
             if (autoSyncStart) {
                 log.info("Auto-starting Yano synchronization...");
                 assembledYano.start();
@@ -1345,6 +1358,7 @@ public class YanoProducer {
         // Stop and join optional archive work while its core query dependencies
         // and native stores are still valid.
         try {
+            projectionHistory.close();
             historyArchive.close();
         } finally {
             if (yano != null) {

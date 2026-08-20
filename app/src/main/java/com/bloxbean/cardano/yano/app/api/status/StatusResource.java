@@ -7,6 +7,7 @@ import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.runtime.utxo.UtxoStatusProvider;
 import com.bloxbean.cardano.yano.app.archive.HistoryArchiveService;
+import com.bloxbean.cardano.yano.app.archive.ProjectionHistoryService;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
@@ -28,6 +29,9 @@ public class StatusResource {
 
     @Inject
     HistoryArchiveService historyArchive;
+
+    @Inject
+    ProjectionHistoryService projectionHistory;
 
     @GET
     public Response status() {
@@ -77,6 +81,7 @@ public class StatusResource {
         body.put("chain", chain);
         body.put("utxo", utxo);
         body.put("history", historyArchive.status());
+        body.put("projection", projectionHistory.status());
         body.put("cfEstimates", cfEstimates);
         return Response.ok(body).build();
     }
