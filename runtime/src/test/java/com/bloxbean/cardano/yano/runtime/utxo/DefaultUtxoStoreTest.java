@@ -830,4 +830,157 @@ class DefaultUtxoStoreTest {
     }
 
     private record StakeCred(int credType, String credHash) {}
+
+    // ------------------------------------------------------------------ #74
+
+    /**
+     * Builds the block-1,809,762 shape: an invalid transaction whose collateral return is
+     * consumed by a later transaction in the same block.
+     *
+     * @param spenderIsInvalid whether the consuming transaction is itself invalid, which makes
+     *                         it take the collateral-input branch rather than the ordinary one
+     */
+    private Block collateralReturnSpentInSameBlock(String returnAddr, String spentToAddr,
+                                                   String fundingTxHash, boolean spenderIsInvalid) {
+        TransactionBody invalidTx = TransactionBody.builder()
+                .txHash("bb".repeat(32))
+                .inputs(Set.of())
+                .collateralInputs(Set.of(TransactionInput.builder()
+                        .transactionId(fundingTxHash).index(0).build()))
+                .outputs(List.of())
+                .collateralReturn(TransactionOutput.builder().address(returnAddr)
+                        .amounts(List.of(lovelaceAmount(7_000_000))).build())
+                .build();
+        // The collateral return takes index outputs.size() == 0.
+        TransactionInput consumesReturn = TransactionInput.builder()
+                .transactionId(invalidTx.getTxHash()).index(0).build();
+        TransactionBody.TransactionBodyBuilder spender = TransactionBody.builder()
+                .txHash("cc".repeat(32))
+                .outputs(List.of(TransactionOutput.builder().address(spentToAddr)
+                        .amounts(List.of(lovelaceAmount(6_500_000))).build()));
+        if (spenderIsInvalid) {
+            spender.inputs(Set.of()).collateralInputs(Set.of(consumesReturn));
+        } else {
+            spender.inputs(Set.of(consumesReturn));
+        }
+        List<Integer> invalid = spenderIsInvalid ? List.of(0, 1) : List.of(0);
+        return Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(invalidTx, spender.build()))
+                .invalidTransactions(invalid).build();
+    }
+
+    private void fundCollateral(String fundingTxHash, String collateralAddr) {
+        TransactionBody funding = TransactionBody.builder()
+                .txHash(fundingTxHash)
+                .outputs(List.of(TransactionOutput.builder().address(collateralAddr)
+                        .amounts(List.of(lovelaceAmount(10_000_000))).build()))
+                .build();
+        publishBlock(100, 1, "b1".repeat(32),
+                Block.builder().era(Era.Babbage).transactionBodies(List.of(funding))
+                        .invalidTransactions(Collections.emptyList()).build());
+    }
+
+    @Test
+    void collateralReturnSpentInTheSameBlockIsFullyAccountedFor() throws Exception {
+        // Regression for #74. The collateral return was written to the unspent set but never
+        // added to intraBlockOutputs, so a spend of it later in the same block resolved to
+        // nothing and was skipped — leaving a phantom unspent output, a stale address index and
+        // an overstated stake balance. Observed on preprod block 1,809,762.
+        String collateralAddr = "addr_test1vpxcollateral000000000000000000000000000000000";
+        String returnAddr = BASE_ADDR_WITH_STAKE;   // has a stake part, so the balance is checked
+        String spentToAddr = "addr_test1vpxspentto00000000000000000000000000000000000";
+        StakeCred stakeCred = stakeCred(returnAddr);
+        String fundingTxHash = "aa".repeat(32);
+
+        fundCollateral(fundingTxHash, collateralAddr);
+        long spendSlot = 200;
+        publishBlock(spendSlot, 2, "b2".repeat(32),
+                collateralReturnSpentInSameBlock(returnAddr, spentToAddr, fundingTxHash, false));
+
+        Outpoint collateralReturn = new Outpoint("bb".repeat(32), 0);
+
+        // 1. Gone from the unspent set...
+        assertTrue(store.getUtxo(collateralReturn).isEmpty(),
+                "collateral return spent in the same block must not remain unspent");
+        // 2. ...and actually recorded as spent, not merely dropped.
+        assertTrue(store.getUtxoSpentOrUnspent(collateralReturn).isPresent(),
+                "the spend must be recorded in the spent set");
+        // 3. The address and payment-credential index entries are gone.
+        var cfAddr = chain.rocks().handle(UtxoCfNames.UTXO_ADDR);
+        byte[] addrHash28 = UtxoKeyUtil.addrHash28(returnAddr);
+        byte[] payCred28 = UtxoKeyUtil.paymentCred28(returnAddr);
+        assertNull(chain.rocks().db().get(cfAddr,
+                        UtxoKeyUtil.addressIndexKey(addrHash28, spendSlot, "bb".repeat(32), 0)),
+                "address index entry must be deleted when the return is spent");
+        if (payCred28 != null) {
+            assertNull(chain.rocks().db().get(cfAddr,
+                            UtxoKeyUtil.addressIndexKey(payCred28, spendSlot, "bb".repeat(32), 0)),
+                    "payment-credential index entry must be deleted when the return is spent");
+        }
+        // 4. The stake balance reflects the spend rather than still counting the return.
+        assertEquals(Optional.of(BigInteger.ZERO),
+                store.getUtxoBalanceByStakeCredential(stakeCred.credType(), stakeCred.credHash()),
+                "stake balance must not still include the spent collateral return");
+        // 5. The block applied normally otherwise.
+        assertEquals(1, store.getUtxosByAddress(spentToAddr, 1, 10).size());
+    }
+
+    @Test
+    void collateralReturnSpentByAnInvalidTransactionIsAlsoAccountedFor() {
+        // The consuming transaction can itself be invalid, which routes the spend through the
+        // collateral-input branch instead of the ordinary-input branch. Both must resolve.
+        String collateralAddr = "addr_test1vpxcollateral2000000000000000000000000000000";
+        String returnAddr = BASE_ADDR_WITH_STAKE;
+        String spentToAddr = "addr_test1vpxspentto20000000000000000000000000000000000";
+        StakeCred stakeCred = stakeCred(returnAddr);
+        String fundingTxHash = "a1".repeat(32);
+
+        fundCollateral(fundingTxHash, collateralAddr);
+        publishBlock(200, 2, "b2".repeat(32),
+                collateralReturnSpentInSameBlock(returnAddr, spentToAddr, fundingTxHash, true));
+
+        Outpoint collateralReturn = new Outpoint("bb".repeat(32), 0);
+        assertTrue(store.getUtxo(collateralReturn).isEmpty(),
+                "a collateral return consumed as collateral must also be marked spent");
+        assertTrue(store.getUtxoSpentOrUnspent(collateralReturn).isPresent());
+        assertEquals(Optional.of(BigInteger.ZERO),
+                store.getUtxoBalanceByStakeCredential(stakeCred.credType(), stakeCred.credHash()));
+    }
+
+    @Test
+    void rollbackAndReplayOfTheSameBlockReachTheSameState() {
+        // The fix adds state inside the block's write batch, so it must survive the rollback and
+        // replay path unchanged — otherwise a fork near such a block would leave the store in a
+        // different place depending on how it got there.
+        String collateralAddr = "addr_test1vpxcollateral3000000000000000000000000000000";
+        String returnAddr = BASE_ADDR_WITH_STAKE;
+        String spentToAddr = "addr_test1vpxspentto30000000000000000000000000000000000";
+        StakeCred stakeCred = stakeCred(returnAddr);
+        String fundingTxHash = "a2".repeat(32);
+
+        fundCollateral(fundingTxHash, collateralAddr);
+        Block spendBlock = collateralReturnSpentInSameBlock(returnAddr, spentToAddr, fundingTxHash, false);
+        publishBlock(200, 2, "b2".repeat(32), spendBlock);
+
+        Outpoint collateralReturn = new Outpoint("bb".repeat(32), 0);
+        assertTrue(store.getUtxo(collateralReturn).isEmpty());
+        var afterFirstApply = store.getUtxoBalanceByStakeCredential(
+                stakeCred.credType(), stakeCred.credHash());
+
+        // Roll the block away: the collateral return should not linger in any form.
+        publishRollback(199);
+        assertTrue(store.getUtxo(collateralReturn).isEmpty(),
+                "a rolled-back collateral return must not reappear as unspent");
+        assertTrue(store.getUtxosByAddress(spentToAddr, 1, 10).isEmpty());
+
+        // Replay the identical block.
+        publishBlock(200, 2, "b2".repeat(32), spendBlock);
+
+        assertTrue(store.getUtxo(collateralReturn).isEmpty());
+        assertTrue(store.getUtxoSpentOrUnspent(collateralReturn).isPresent());
+        assertEquals(afterFirstApply,
+                store.getUtxoBalanceByStakeCredential(stakeCred.credType(), stakeCred.credHash()),
+                "replay must reach the same stake balance as the first apply");
+        assertEquals(1, store.getUtxosByAddress(spentToAddr, 1, 10).size());
+    }
 }
