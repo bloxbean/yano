@@ -914,6 +914,11 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
 
                         byte[] outKey = UtxoKeyUtil.outpointKey(tx.getTxHash(), outIdx);
                         batch.put(cfUnspent, outKey, val);
+                        // Track for intra-block spend detection, exactly as ordinary outputs are.
+                        // Without this a collateral return spent later in the same block resolves
+                        // to nothing — the committed read cannot see this batch — and the spend is
+                        // skipped, leaving the output unspent forever.
+                        intraBlockOutputs.put(tx.getTxHash() + ":" + outIdx, val);
                         if (referenceScriptHash != null && out.getScriptRef() != null) {
                             batch.put(cfScriptRef, referenceScriptHash, HexUtil.decodeHexString(out.getScriptRef()));
                         }
