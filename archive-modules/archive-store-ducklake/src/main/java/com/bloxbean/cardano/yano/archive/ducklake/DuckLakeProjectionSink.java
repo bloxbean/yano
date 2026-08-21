@@ -396,7 +396,11 @@ public final class DuckLakeProjectionSink implements ProjectionSink {
             try {
                 java.util.OptionalLong filesBefore = countDataFiles(connection);
 
-                long fileIdWatermark = maxDataFileId(connection).orElse(Long.MAX_VALUE);
+                // Keep the watermark optional. Substituting Long.MAX_VALUE would make the later
+                // "files newer than the watermark" query return 0 rows and report 0 bytes
+                // rewritten as though measured - the same fabricated-zero mistake this change
+                // exists to remove, just one level further along.
+                java.util.OptionalLong fileIdWatermark = maxDataFileId(connection);
 
                 // --- mandatory housekeeping, budgeted on its own ---------------
                 long housekeepingDeadline = System.nanoTime() + budget.housekeepingTimeLimit().toNanos();
@@ -422,19 +426,20 @@ public final class DuckLakeProjectionSink implements ProjectionSink {
                         else housekeepingProblems.add(step.diagnostic());
                     }
 
-                    // A failed CALL can leave the connection unable to answer anything else.
-                    // Stop here rather than running compaction and taking measurements through
-                    // it: every one would fail, the diagnostics would be a cascade of
-                    // meaningless driver errors, and the file counts would be unknown while
-                    // looking like zero. The lease closes this connection on the way out, so the
-                    // next scheduled pass starts on a fresh one.
-                    if (!housekeepingProblems.isEmpty() && !usable(connection)) {
+                    // Abandon the pass after ANY failed housekeeping CALL, rather than asking
+                    // SELECT 1 whether the connection is still usable. A trivial query can
+                    // succeed on a connection whose DuckLake transaction context is already
+                    // ruined, so the probe answers a narrower question than the one that matters.
+                    // Compaction on a pass whose mandatory housekeeping failed is not wanted
+                    // anyway: cleanup is the part that reclaims space, and merging files while
+                    // unable to expire snapshots only adds orphans.
+                    if (!housekeepingProblems.isEmpty()) {
                         return finish(ProjectionMaintenance.Outcome.FAILED, start,
                                 java.util.OptionalLong.empty(), java.util.OptionalLong.empty(),
                                 java.util.OptionalLong.empty(), snapshotsExpired, orphansDeleted,
                                 writerWait,
-                                "connection unusable after a failed housekeeping step; pass abandoned"
-                                        + " and compaction skipped, retrying on a fresh connection: "
+                                "housekeeping failed; pass abandoned and compaction skipped,"
+                                        + " retrying on a fresh connection: "
                                         + String.join("; ", housekeepingProblems));
                     }
                 }
@@ -499,7 +504,9 @@ public final class DuckLakeProjectionSink implements ProjectionSink {
                 }
 
                 var filesAfter = countDataFiles(connection);
-                var bytesRewritten = bytesWrittenSince(connection, fileIdWatermark);
+                var bytesRewritten = fileIdWatermark.isPresent()
+                        ? bytesWrittenSince(connection, fileIdWatermark.getAsLong())
+                        : java.util.OptionalLong.empty();
 
                 java.util.List<String> problems = new java.util.ArrayList<>(housekeepingProblems);
                 problems.addAll(compactionProblems);
@@ -677,23 +684,6 @@ public final class DuckLakeProjectionSink implements ProjectionSink {
             // Unknown, not zero. Reporting a failed measurement as 0 is how "files 35 -> 0" came
             // to read as a catastrophic deletion when nothing had been deleted at all.
             return java.util.OptionalLong.empty();
-        }
-    }
-
-    /**
-     * Whether this connection can still answer a query.
-     *
-     * <p>A failed CALL inside DuckLake leaves the connection in a state where every later
-     * statement fails with "attempting to execute an unsuccessful or closed pending query
-     * result". Continuing on it turns one real failure into a cascade of meaningless ones and
-     * makes every subsequent measurement wrong, which is exactly what happened in the captured
-     * pinned-reader run.
-     */
-    private static boolean usable(Connection connection) {
-        try (Statement sql = connection.createStatement(); ResultSet rs = sql.executeQuery("SELECT 1")) {
-            return rs.next();
-        } catch (SQLException e) {
-            return false;
         }
     }
 

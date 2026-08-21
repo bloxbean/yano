@@ -64,5 +64,14 @@ public interface ArchiveArtifactReader {
      * this may the source become eligible for deletion, and never while a live
      * reader lease exists.
      */
+    /**
+     * Release an artifact's source protection, once a durable receipt covers the batch.
+     *
+     * <p><strong>Must be idempotent.</strong> The consumer calls this <em>before</em> the outbox
+     * drops the artifact reference, because the reference is the only thing a restart could
+     * reconcile from - dropping it first turns a crash in the gap into a permanently pinned
+     * source. That ordering means a crash after acknowledging replays the acknowledgement on the
+     * next pass, so a second call for the same artifact must be a no-op rather than an error.
+     */
     void acknowledge(ProjectionArtifactRef ref);
 }

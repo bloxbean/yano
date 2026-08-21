@@ -35,12 +35,35 @@ public final class NoopArtifactReader implements ArchiveArtifactReader {
         return new ArtifactPage(List.of(), Optional.empty());
     }
 
+    private int failAfter = Integer.MAX_VALUE;
+
+    /**
+     * Throw once the given number of acknowledgements have succeeded, to simulate a crash
+     * partway through releasing a batch's artifacts.
+     */
+    public void failAcknowledgeAfter(int successes) {
+        this.failAfter = successes;
+    }
+
     @Override
     public void acknowledge(ProjectionArtifactRef ref) {
-        acknowledged.add(ref);
+        calls++;
+        if (acknowledged.size() >= failAfter) {
+            throw new IllegalStateException("simulated crash during artifact acknowledgement");
+        }
+        // Idempotent, as the contract requires: the consumer acknowledges before the outbox
+        // drops the reference, so a crash in between replays the acknowledgement.
+        if (!acknowledged.contains(ref)) acknowledged.add(ref);
     }
 
     public List<ProjectionArtifactRef> acknowledged() {
         return List.copyOf(acknowledged);
     }
+
+    /** Total calls, including repeats, so idempotency can be distinguished from never-called. */
+    public int acknowledgeCalls() {
+        return calls;
+    }
+
+    private int calls;
 }

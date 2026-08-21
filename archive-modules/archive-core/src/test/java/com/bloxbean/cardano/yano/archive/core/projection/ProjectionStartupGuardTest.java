@@ -175,4 +175,60 @@ class ProjectionStartupGuardTest {
                 .isInstanceOf(ProjectionActivationException.class)
                 .hasMessageContaining("none could be read");
     }
+
+    // ------------------------------ sink and outbox must describe the same archive
+
+    @Test
+    void anEmptySinkWithAnAcknowledgedOutboxFailsClosed() {
+        // The history directory was deleted or repointed while the chainstate was kept. The
+        // outbox pruned everything it acknowledged, so those blocks are in the sink or nowhere.
+        // Accepting this would create a fresh archive, resume draining after the acknowledged
+        // point, and leave 0..5,000,000 permanently missing while reporting healthy.
+        var observed = new ProjectionStartupGuard.Observed(
+                5_000_100, true, Optional.of(expected()),
+                true, Optional.empty(), ProjectionCoordinate.NONE, REQUIRED,
+                5_000_000);
+
+        assertThatThrownBy(() -> ProjectionStartupGuard.verify(expected(), observed))
+                .isInstanceOf(ProjectionActivationException.class)
+                .hasMessageContaining("acknowledged blocks through 5000000")
+                .hasMessageContaining("permanently missing");
+    }
+
+    @Test
+    void anEmptySinkOnAFreshChainIsStillFine() {
+        // Nothing acknowledged yet, so an empty sink is exactly what a fresh sync looks like.
+        var observed = new ProjectionStartupGuard.Observed(
+                0, false, Optional.empty(),
+                true, Optional.empty(), ProjectionCoordinate.NONE, REQUIRED, -1);
+
+        ProjectionStartupGuard.verify(expected(), observed);
+    }
+
+    @Test
+    void aSinkBehindTheOutboxAcknowledgementFailsClosed() {
+        // The gap cannot be refilled: the outbox pruned those blocks when it acknowledged them,
+        // so this is either a sink that lost committed data or a different archive entirely.
+        var observed = new ProjectionStartupGuard.Observed(
+                5_000_100, true, Optional.of(expected()),
+                false, Optional.of(expected()), coordinateAt(4_000_000), REQUIRED,
+                5_000_000);
+
+        assertThatThrownBy(() -> ProjectionStartupGuard.verify(expected(), observed))
+                .isInstanceOf(ProjectionActivationException.class)
+                .hasMessageContaining("sink is at block 4000000")
+                .hasMessageContaining("not from the same archive");
+    }
+
+    @Test
+    void aSinkAtOrAheadOfTheAcknowledgementIsAccepted() {
+        // Equal is the normal steady state. Ahead happens after a crash between the sink commit
+        // and the outbox acknowledgement, and replays against the durable receipt.
+        for (long sinkBlock : new long[]{5_000_000, 5_000_050}) {
+            ProjectionStartupGuard.verify(expected(), new ProjectionStartupGuard.Observed(
+                    5_000_100, true, Optional.of(expected()),
+                    false, Optional.of(expected()), coordinateAt(sinkBlock), REQUIRED,
+                    5_000_000));
+        }
+    }
 }

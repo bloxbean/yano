@@ -157,9 +157,24 @@ public class ProjectionHistoryService implements AutoCloseable {
         // silently discarded; the guard is the single place that decides a start is unsupported.
         boolean hasStoredIdentity = outbox.identityFingerprint().isPresent();
 
+        // The sink is opened and inspected BEFORE the guard runs. Passing synthetic state here -
+        // sinkEmpty=true, no identity, coordinate NONE - made the most dangerous case
+        // unreachable: an outbox that has acknowledged and pruned five million blocks against a
+        // history directory that was deleted or repointed would have been accepted, a fresh
+        // empty archive created, and every block below the acknowledgement lost with the archive
+        // reporting itself healthy.
+        openSink();
+
+        // Real observed sink state, not an assumption about it.
+        long acknowledgedThrough = outbox.acknowledgedThrough();
+        ProjectionCoordinate sinkCoordinate = projectionSink == null
+                ? ProjectionCoordinate.NONE : projectionSink.coordinate();
+        boolean sinkEmpty = !sinkCoordinate.isPresent();
+        Optional<ProjectionIdentity> sinkIdentity = projectionSink == null || sinkEmpty
+                ? Optional.empty() : Optional.of(identity);
         ProjectionStartupGuard.verify(identity, new ProjectionStartupGuard.Observed(
                 tipBlock, hasStoredIdentity, storedIdentity,
-                true, Optional.empty(), ProjectionCoordinate.NONE, required));
+                sinkEmpty, sinkIdentity, sinkCoordinate, required, acknowledgedThrough));
 
         outbox.putIdentity(identity);
 
@@ -215,7 +230,7 @@ public class ProjectionHistoryService implements AutoCloseable {
                 config.getOptionalValue(YanoPropertyKeys.History.DIR, String.class).orElse("./history"))
                 .toAbsolutePath().normalize();
 
-        openSinkAndConsumer(chain, ledger, genesis, nodeConfig);
+        startConsumerAndDrain(chain);
 
         installShelleyPlusContributor(yano);
         // Hold canonical ingestion only when the archive's aggregate disk budget or the
@@ -251,8 +266,14 @@ public class ProjectionHistoryService implements AutoCloseable {
      * silently running with no sink while claiming one is configured would look like a healthy
      * archive that never receives anything.
      */
-    private void openSinkAndConsumer(ChainQuery chain, LedgerQuery ledger,
-                                     NetworkGenesisConfig genesis, YanoConfig nodeConfig) {
+    /**
+     * Open and initialise the sink, without starting to drain.
+     *
+     * <p>Separate from starting the drain loop on purpose: the startup guard must see the real
+     * sink - its identity and its coordinate - before anything is written, and it cannot do that
+     * if the sink is opened as part of starting up.
+     */
+    private void openSink() {
         if ("none".equals(sink)) {
             log.info("ADR-039 projection sink is 'none'; the outbox will accumulate for measurement");
             return;
@@ -275,7 +296,11 @@ public class ProjectionHistoryService implements AutoCloseable {
         // Every later use of the sink goes through this, so shutdown can guarantee it is never
         // closed while a commit or a maintenance pass is in flight.
         sinkLifecycle = new ProjectionSinkLifecycle(projectionSink);
+    }
 
+    /** Start the ordered drain, once the guard has accepted the sink. */
+    private void startConsumerAndDrain(ChainQuery chain) {
+        if (projectionSink == null) return;
         consumer = new ProjectionOutboxConsumer(outbox, projectionSink, identity,
                 new ProjectionFinalityGate(safetyWindows), consumerBounds(),
                 new com.bloxbean.cardano.yano.app.archive.NoArtifactReader(),

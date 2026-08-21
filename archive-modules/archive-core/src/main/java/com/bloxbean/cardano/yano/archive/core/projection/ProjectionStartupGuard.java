@@ -23,13 +23,30 @@ import java.util.stream.Collectors;
 public final class ProjectionStartupGuard {
 
     /** Observed state of the node and its configured sink at startup. */
+    /**
+     * @param outboxAcknowledgedThrough the highest block the outbox has already handed to a sink
+     *                                  and pruned, or -1 when nothing has been acknowledged. This
+     *                                  is the number that makes an empty sink dangerous: the
+     *                                  outbox no longer holds those blocks, so if the sink does
+     *                                  not either, they exist nowhere.
+     */
     public record Observed(long canonicalTipBlockNumber,
                            boolean outboxHasProjectionIdentity,
                            Optional<ProjectionIdentity> outboxIdentity,
                            boolean sinkEmpty,
                            Optional<ProjectionIdentity> sinkIdentity,
                            ProjectionCoordinate sinkCoordinate,
-                           Set<ProjectionSectionType> sinkReadableSections) {
+                           Set<ProjectionSectionType> sinkReadableSections,
+                           long outboxAcknowledgedThrough) {
+
+        /** Legacy shape for callers with nothing acknowledged yet. */
+        public Observed(long canonicalTipBlockNumber, boolean outboxHasProjectionIdentity,
+                        Optional<ProjectionIdentity> outboxIdentity, boolean sinkEmpty,
+                        Optional<ProjectionIdentity> sinkIdentity, ProjectionCoordinate sinkCoordinate,
+                        Set<ProjectionSectionType> sinkReadableSections) {
+            this(canonicalTipBlockNumber, outboxHasProjectionIdentity, outboxIdentity, sinkEmpty,
+                    sinkIdentity, sinkCoordinate, sinkReadableSections, -1L);
+        }
         public Observed {
             Objects.requireNonNull(outboxIdentity, "outboxIdentity");
             Objects.requireNonNull(sinkIdentity, "sinkIdentity");
@@ -79,6 +96,21 @@ public final class ProjectionStartupGuard {
         }
 
         if (observed.sinkEmpty()) {
+            // The case that silently loses history: the outbox has already acknowledged blocks
+            // and pruned them, so an empty sink means those blocks exist nowhere. It happens
+            // when the history directory is deleted or repointed while the chainstate is kept -
+            // draining would resume after the acknowledged point and every earlier block would
+            // be permanently missing, with the archive reporting itself healthy.
+            if (observed.outboxAcknowledgedThrough() >= 0) {
+                throw new ProjectionActivationException(
+                        "the outbox has acknowledged blocks through " + observed.outboxAcknowledgedThrough()
+                                + " but the configured sink is empty. Those blocks have been pruned from"
+                                + " the outbox, so resuming would leave 0.."
+                                + observed.outboxAcknowledgedThrough() + " permanently missing from the"
+                                + " archive. This usually means the history directory was deleted or"
+                                + " repointed while the chainstate was kept: restore the archive it"
+                                + " belongs to, or start a fresh sync with a fresh chainstate.");
+            }
             if (observed.sinkCoordinate().isPresent()) {
                 throw new ProjectionActivationException(
                         "configured sink reports itself empty but exposes a committed coordinate at block "
@@ -98,6 +130,18 @@ public final class ProjectionStartupGuard {
             throw new ProjectionActivationException("archive identity mismatch: node is configured for "
                     + expected.fingerprint() + " but the archive was written by " + sink.fingerprint());
         }
+        // A sink behind the acknowledgement has lost committed data, or is a different archive.
+        // Either way the gap between them cannot be refilled: the outbox pruned those blocks when
+        // it acknowledged them.
+        if (observed.outboxAcknowledgedThrough() >= 0 && observed.sinkCoordinate().isPresent()
+                && observed.sinkCoordinate().blockNumber() < observed.outboxAcknowledgedThrough()) {
+            throw new ProjectionActivationException(
+                    "the sink is at block " + observed.sinkCoordinate().blockNumber()
+                            + " but the outbox acknowledged through " + observed.outboxAcknowledgedThrough()
+                            + "; the blocks between them were pruned on acknowledgement and cannot be"
+                            + " replayed. The sink and the chainstate are not from the same archive.");
+        }
+
         if (freshChain && observed.sinkCoordinate().isPresent()) {
             throw new ProjectionActivationException(
                     "a fresh chainstate cannot adopt an archive that already covers blocks through "

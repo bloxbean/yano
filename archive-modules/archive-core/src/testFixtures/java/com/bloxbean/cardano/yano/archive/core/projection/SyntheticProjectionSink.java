@@ -109,7 +109,9 @@ public final class SyntheticProjectionSink implements ProjectionSink {
             return result;
         }
         return new ProjectionMaintenance.Result(ProjectionMaintenance.Outcome.COMPLETED,
-                java.time.Duration.ZERO, 10, budget.compactionAllowed() ? 2 : 10, 0, 1, 1,
+                java.time.Duration.ZERO, java.util.OptionalLong.of(10),
+                java.util.OptionalLong.of(budget.compactionAllowed() ? 2 : 10),
+                java.util.OptionalLong.of(0), 1, 1,
                 java.time.Duration.ZERO, Optional.empty());
     }
 

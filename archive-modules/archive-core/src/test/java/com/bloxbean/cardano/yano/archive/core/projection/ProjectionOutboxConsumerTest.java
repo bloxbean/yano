@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.archive.core.projection;
 import com.bloxbean.cardano.yano.api.archive.ProjectionCfNames;
 import com.bloxbean.cardano.yano.archive.api.ArchiveNetworkIdentity;
 import com.bloxbean.cardano.yano.archive.api.ArchiveSafetyWindows;
+import com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionBlockKind;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionEnvelopeHeader;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionIdentity;
@@ -534,5 +535,85 @@ class ProjectionOutboxConsumerTest {
         assertThat(first.workPending())
                 .as("more eligible envelopes remain, so the loop must not sleep")
                 .isTrue();
+    }
+
+    // ------------------------------- artifact cleanup ordering across crash boundaries
+
+    private static ProjectionArtifactRef artifactAt(long block, int epoch) {
+        return new ProjectionArtifactRef(
+                com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.EPOCH_STAKE, epoch, block,
+                block * 20, com.bloxbean.cardano.yano.archive.api.projection
+                        .ProjectionArtifactRepresentation.IMMUTABLE_GENERATION,
+                "gen-" + epoch, 1, "state-1", java.util.OptionalLong.of(10), "", block * 20);
+    }
+
+    /** Stage an artifact reference against a block, the way an epoch transition would. */
+    private void commitArtifact(long blockNumber, ProjectionArtifactRef ref) {
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
+            store.putArtifact(ProjectionOutboxStore.batchWriter(batch, store.handles()), blockNumber, ref);
+            db.write(options, batch);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    @Test
+    void artifactsAreAcknowledgedBeforeTheOutboxDropsTheirReference() {
+        // acknowledgeThrough() deletes the artifact references along with the range, so
+        // acknowledging the range first would destroy the only record of what still needs
+        // releasing. A crash in that gap pins the source forever with nothing to reconcile from.
+        commitBlocks(0, 5);
+        commitArtifact(3, artifactAt(3, 100));
+        tip.set(200);
+
+        var consumer = consumer();
+        // Crash before any artifact is acknowledged: the range must NOT have been acknowledged,
+        // so the reference survives and the next pass can retry.
+        artifacts.failAcknowledgeAfter(0);
+        assertThatThrownBy(() -> consumer.drainOnce(Instant.EPOCH))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("simulated crash");
+
+        assertThat(store.acknowledgedThrough())
+                .as("the range must not be acknowledged while an artifact is unreleased")
+                .isEqualTo(-1);
+        assertThat(artifacts.acknowledged()).isEmpty();
+    }
+
+    @Test
+    void aRetryAfterACrashAcknowledgesIdempotentlyAndThenCompletes() {
+        commitBlocks(0, 5);
+        commitArtifact(3, artifactAt(3, 100));
+        tip.set(200);
+        var consumer = consumer();
+
+        artifacts.failAcknowledgeAfter(0);
+        assertThatThrownBy(() -> consumer.drainOnce(Instant.EPOCH)).isInstanceOf(IllegalStateException.class);
+
+        // The sink already holds a durable receipt for this batch, so the retry recognises it and
+        // does not rewrite rows - but it must still finish releasing the artifact.
+        artifacts.failAcknowledgeAfter(Integer.MAX_VALUE);
+        var result = consumer.drainOnce(Instant.EPOCH.plusSeconds(1));
+
+        assertThat(result.outcome()).isIn(ProjectionConsumerResult.Outcome.COMMITTED,
+                ProjectionConsumerResult.Outcome.REPLAYED);
+        assertThat(artifacts.acknowledged()).hasSize(1);
+        assertThat(store.acknowledgedThrough()).isEqualTo(5);
+        assertThat(sink.appendCalls())
+                .as("the receipt must have prevented a second row write")
+                .isEqualTo(1);
+    }
+
+    @Test
+    void acknowledgingTheSameArtifactTwiceIsHarmless() {
+        // The ordering guarantees a replayed acknowledgement, so the contract must absorb it.
+        var ref = artifactAt(3, 100);
+        artifacts.acknowledge(ref);
+        artifacts.acknowledge(ref);
+
+        assertThat(artifacts.acknowledged()).hasSize(1);
+        assertThat(artifacts.acknowledgeCalls())
+                .as("it really was called twice; the reader absorbed the repeat")
+                .isEqualTo(2);
     }
 }

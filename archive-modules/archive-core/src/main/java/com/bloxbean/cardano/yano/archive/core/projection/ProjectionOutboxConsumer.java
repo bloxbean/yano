@@ -221,11 +221,23 @@ public final class ProjectionOutboxConsumer {
             }
         }
 
-        // Only now is removal authorised, and only for exactly this verified range.
-        store.acknowledgeThrough(batch.lastBlock());
+        // Order matters here, and the obvious order is wrong.
+        //
+        // acknowledgeThrough() deletes the outbox's artifact references along with the range.
+        // Acknowledging the range first would therefore destroy the only record of which
+        // artifacts still need releasing: a crash in the gap leaves their sources pinned
+        // forever, with nothing left to reconcile from. Startup cannot repair it either,
+        // because the reference it would repair from is exactly what was deleted.
+        //
+        // So artifact acknowledgement completes first, against a verified durable receipt.
+        // Acknowledging an artifact twice is harmless - the reader's contract is idempotent -
+        // whereas losing the reference is not, so a crash between the two steps costs a repeat
+        // rather than a leak.
         for (var artifact : batch.artifacts()) {
             artifacts.acknowledge(artifact);
         }
+        // Only now is removal authorised, and only for exactly this verified range.
+        store.acknowledgeThrough(batch.lastBlock());
         accumulator.recordFlush(decision);
         lastDecision = decision;
         accumulator.reset();

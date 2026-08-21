@@ -61,14 +61,15 @@ class ProjectionMaintenanceBudgetTest {
     void unnecessaryReportsFileCountWithoutClaimingWork() {
         var result = ProjectionMaintenance.Result.unnecessary(42);
         assertThat(result.outcome()).isEqualTo(ProjectionMaintenance.Outcome.UNNECESSARY);
-        assertThat(result.filesBefore()).isEqualTo(42);
-        assertThat(result.filesReclaimed()).isZero();
+        assertThat(result.filesBefore()).hasValue(42);
+        assertThat(result.filesReclaimed()).hasValue(0);
     }
 
     @Test
     void filesReclaimedNeverGoesNegative() {
         var grew = new ProjectionMaintenance.Result(ProjectionMaintenance.Outcome.COMPLETED,
-                Duration.ZERO, 10, 12, 0, 0, 0, Duration.ZERO, java.util.Optional.empty());
-        assertThat(grew.filesReclaimed()).isZero();
+                Duration.ZERO, java.util.OptionalLong.of(10), java.util.OptionalLong.of(12),
+                java.util.OptionalLong.of(0), 0, 0, Duration.ZERO, java.util.Optional.empty());
+        assertThat(grew.filesReclaimed()).hasValue(0);
     }
 }
