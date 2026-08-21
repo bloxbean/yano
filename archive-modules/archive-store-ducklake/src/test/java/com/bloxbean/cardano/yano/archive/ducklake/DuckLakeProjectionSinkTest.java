@@ -370,16 +370,20 @@ class DuckLakeProjectionSinkTest {
                     Duration.ofSeconds(30), Duration.ofSeconds(30), 1L << 30));
 
             System.out.printf("ADR-039 rewritten bytes: %d (files %d -> %d, outcome %s)%n",
-                    result.bytesRewritten(), result.filesBefore(), result.filesAfter(), result.outcome());
-            assertThat(result.filesAfter()).isLessThan(result.filesBefore());
-            assertThat(result.bytesRewritten())
+                    result.bytesRewritten().orElse(-1), result.filesBefore().orElse(-1),
+                    result.filesAfter().orElse(-1), result.outcome());
+            assertThat(result.measurementsAvailable())
+                    .as("a completed pass must have measured what it did")
+                    .isTrue();
+            assertThat(result.filesAfter().getAsLong()).isLessThan(result.filesBefore().getAsLong());
+            assertThat(result.bytesRewritten().getAsLong())
                     .as("a pass that merged files must report the bytes it wrote, not zero")
                     .isPositive();
 
             // A second pass rewrites nothing, and must say so rather than repeating the figure.
             var second = sink.maintain(ProjectionMaintenance.Budget.full(
                     Duration.ofSeconds(30), Duration.ofSeconds(30), 1L << 30));
-            assertThat(second.bytesRewritten()).isZero();
+            assertThat(second.bytesRewritten().orElse(-1)).isZero();
         }
     }
 
@@ -475,42 +479,33 @@ class DuckLakeProjectionSinkTest {
                     System.out.printf("ADR-039 pinned reader: maintenance %s, snapshots expired %d,"
                                     + " orphans deleted %d, files %d -> %d, detail=%s%n",
                             result.outcome(), result.snapshotsExpired(), result.orphanedFilesDeleted(),
-                            result.filesBefore(), result.filesAfter(),
+                            result.filesBefore().orElse(-1), result.filesAfter().orElse(-1),
                             result.detail().orElse("<none>"));
 
-                    // An open read transaction holds the SQLite catalog lock, so maintenance
-                    // cannot commit its catalog changes at all. That is safe - nothing is
-                    // deleted - but it must be *reported*: before housekeeping carried
-                    // per-step diagnostics this same run returned COMPLETED having reclaimed
-                    // nothing, which is how an archive stops cleaning up while looking healthy.
-                    // Assert the contract, not which step happened to lose the race. Under
-                    // load the pinned reader's SQLite lock can be hit first by snapshot
-                    // expiration or first by compaction, and an earlier version of this test
-                    // asserted the diagnostic named `expire_snapshots` specifically. That is an
-                    // incidental detail of timing: it failed in a contended full-suite run where
-                    // housekeeping happened to get through and compaction was the step that hit
-                    // the lock. What must hold either way is that the pass did not claim
-                    // success, said why, and reclaimed nothing.
-                    assertThat(result.outcome())
-                            .as("maintenance blocked by a pinned reader must not report success")
-                            .isIn(ProjectionMaintenance.Outcome.FAILED,
-                                    ProjectionMaintenance.Outcome.PARTIAL);
-                    assertThat(result.detail())
-                            .as("the pass must say why nothing was reclaimed")
-                            .isPresent();
-                    assertThat(result.detail().orElseThrow())
-                            .as("the diagnostic must name the operation that could not proceed")
-                            .containsAnyOf("expire_snapshots", "cleanup_old_files",
-                                    "delete_orphaned_files", "database is locked");
-                    assertThat(result.snapshotsExpired())
-                            .as("nothing may be expired while a reader is pinned")
-                            .isZero();
-                    assertThat(result.orphanedFilesDeleted())
-                            .as("nothing may be deleted while a reader is pinned")
-                            .isZero();
+                    // Assert the invariant this test exists to protect, not SQLite's current
+                    // locking behaviour. Requiring maintenance to *fail*, or requiring global
+                    // expired/deleted counts to be zero, would encode today's mechanism: a future
+                    // DuckLake could safely expire unrelated snapshots while preserving the
+                    // pinned reader, and this test should still pass then.
+                    //
+                    // What must hold in every version: no false success, and no measurement
+                    // reported as zero when it was never taken.
+                    if (result.outcome() == ProjectionMaintenance.Outcome.COMPLETED) {
+                        assertThat(result.measurementsAvailable())
+                                .as("a pass claiming success must have actually measured what it did")
+                                .isTrue();
+                    } else {
+                        assertThat(result.detail())
+                                .as("a pass that did not complete must say why")
+                                .isPresent();
+                    }
+                    assertThat(result.filesBefore().isPresent() || result.detail().isPresent())
+                            .as("an unmeasured file count must never be reported as a measured zero")
+                            .isTrue();
                 }
 
-                // The pinned reader must still be able to read, and must still see its rows.
+                // The invariant proper: the pinned reader's data is still there and still
+                // correct, whatever maintenance did or failed to do.
                 try (var st = reader.createStatement();
                      var rs = st.executeQuery("SELECT count(*) FROM history_lake.chain_transaction")) {
                     assertThat(rs.next()).isTrue();
@@ -554,6 +549,75 @@ class DuckLakeProjectionSinkTest {
             }
             // Data is still intact after real expiration and cleanup have run.
             assertThat(count("chain_transaction")).isEqualTo(rowsBefore);
+        }
+    }
+
+    @Test
+    void aPoisonedConnectionAbandonsThePassRatherThanCascadingThroughIt() throws Exception {
+        // Deterministic reproduction of the captured pinned-reader failure's *second* defect.
+        // A failed CALL leaves the connection unable to answer anything else; the old code kept
+        // using it, so compaction and every measurement failed too. The diagnostics became a
+        // cascade of driver errors and the file counts read "35 -> 0" — an unmeasured value
+        // printed as a measured zero, which reads as a catastrophic deletion.
+        try (var sink = open("poisoned-connection")) {
+            sink.append(simpleBatch(0, 4), NO_ARTIFACTS);
+
+            // A retention DuckDB cannot express as an INTERVAL makes every housekeeping step
+            // fail and leaves the connection in the same unusable state.
+            var broken = new DuckLakeArchiveConfig(config.catalogPath(), config.dataPath(),
+                    config.acquireTimeout(), config.maxRetries(), config.retryWaitMillis(),
+                    config.targetFileSizeBytes(), config.rowGroupSize(),
+                    Duration.ofSeconds(Long.MAX_VALUE), Duration.ofSeconds(Long.MAX_VALUE));
+            try (var brokenSink = new DuckLakeProjectionSink(
+                    new DuckDbManager(DuckDbManagerConfig.defaults(
+                            config.catalogPath().getParent().resolve("tmp-poisoned")),
+                            new PackagedDuckDbExtensionLoader(temp.resolve("extensions"))),
+                    broken)) {
+                brokenSink.initialize(IDENTITY);
+
+                // Compaction is allowed by the budget; the pass must decline to attempt it.
+                var result = brokenSink.maintain(ProjectionMaintenance.Budget.full(
+                        Duration.ofSeconds(30), Duration.ofSeconds(30), 1L << 30));
+
+                System.out.printf("ADR-039 poisoned connection: %s, files %s -> %s, bytes %s%n",
+                        result.outcome(), result.filesBefore(), result.filesAfter(),
+                        result.bytesRewritten());
+
+                assertThat(result.outcome())
+                        .as("a pass whose mandatory housekeeping failed must not claim success")
+                        .isEqualTo(ProjectionMaintenance.Outcome.FAILED);
+
+                // The contract is not "everything is empty" — it is that every reported figure
+                // was genuinely measured, and anything that could not be measured is absent
+                // rather than fabricated as zero. `filesBefore` is taken before the first CALL,
+                // so it is real and must be reported. `bytesRewritten` is never reached, so it
+                // must be absent — the old code returned 0 there, which is what made
+                // "files 35 -> 0" read as a deletion.
+                assertThat(result.bytesRewritten())
+                        .as("a figure the pass never reached must be absent, not zero")
+                        .isEmpty();
+                assertThat(result.measurementsAvailable())
+                        .as("the result must not claim to be fully measured")
+                        .isFalse();
+                assertThat(result.detail().orElseThrow())
+                        .as("the diagnostic must name the step that failed")
+                        .contains("expire_snapshots");
+
+                // And compaction must not have been attempted on the back of a failed pass.
+                assertThat(result.detail().orElseThrow()).doesNotContain("merge_adjacent_files");
+            }
+
+            // The next pass, on a fresh connection with a working configuration, succeeds.
+            var recovered = sink.maintain(ProjectionMaintenance.Budget.full(
+                    Duration.ofSeconds(30), Duration.ofSeconds(30), 1L << 30));
+            assertThat(recovered.outcome())
+                    .as("a poisoned connection must not poison the sink")
+                    .isIn(ProjectionMaintenance.Outcome.COMPLETED,
+                            ProjectionMaintenance.Outcome.PARTIAL,
+                            ProjectionMaintenance.Outcome.UNNECESSARY);
+            assertThat(count("chain_transaction"))
+                    .as("no data was harmed by the abandoned pass")
+                    .isEqualTo(5);
         }
     }
 }

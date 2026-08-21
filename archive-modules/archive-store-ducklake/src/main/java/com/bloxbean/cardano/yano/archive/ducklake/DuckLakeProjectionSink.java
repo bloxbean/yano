@@ -394,9 +394,9 @@ public final class DuckLakeProjectionSink implements ProjectionSink {
             Connection connection = lease.connection();
             DuckLakeSql.attach(connection, config, null, false);
             try {
-                long filesBefore = countDataFiles(connection);
+                java.util.OptionalLong filesBefore = countDataFiles(connection);
 
-                long fileIdWatermark = maxDataFileId(connection);
+                long fileIdWatermark = maxDataFileId(connection).orElse(Long.MAX_VALUE);
 
                 // --- mandatory housekeeping, budgeted on its own ---------------
                 long housekeepingDeadline = System.nanoTime() + budget.housekeepingTimeLimit().toNanos();
@@ -421,13 +421,30 @@ public final class DuckLakeProjectionSink implements ProjectionSink {
                         if (step.ok()) anyHousekeepingRan = true;
                         else housekeepingProblems.add(step.diagnostic());
                     }
+
+                    // A failed CALL can leave the connection unable to answer anything else.
+                    // Stop here rather than running compaction and taking measurements through
+                    // it: every one would fail, the diagnostics would be a cascade of
+                    // meaningless driver errors, and the file counts would be unknown while
+                    // looking like zero. The lease closes this connection on the way out, so the
+                    // next scheduled pass starts on a fresh one.
+                    if (!housekeepingProblems.isEmpty() && !usable(connection)) {
+                        return finish(ProjectionMaintenance.Outcome.FAILED, start,
+                                java.util.OptionalLong.empty(), java.util.OptionalLong.empty(),
+                                java.util.OptionalLong.empty(), snapshotsExpired, orphansDeleted,
+                                writerWait,
+                                "connection unusable after a failed housekeeping step; pass abandoned"
+                                        + " and compaction skipped, retrying on a fresh connection: "
+                                        + String.join("; ", housekeepingProblems));
+                    }
                 }
 
                 // A pass whose mandatory housekeeping did not fully succeed can never be
                 // COMPLETED, whatever compaction did.
                 if (!housekeepingProblems.isEmpty() && !anyHousekeepingRan) {
                     return finish(ProjectionMaintenance.Outcome.FAILED, start, filesBefore,
-                            countDataFiles(connection), 0, snapshotsExpired, orphansDeleted, writerWait,
+                            countDataFiles(connection), java.util.OptionalLong.empty(),
+                            snapshotsExpired, orphansDeleted, writerWait,
                             "all housekeeping steps failed: " + String.join("; ", housekeepingProblems));
                 }
 
@@ -438,12 +455,12 @@ public final class DuckLakeProjectionSink implements ProjectionSink {
                 if (budget.compactionAllowed() && budget.compactionTimeLimit().toNanos() > 0
                         && budget.maxBytesToRewrite() > 0) {
                     if (!compactionWorthwhile(connection, budget)) {
-                        long files = countDataFiles(connection);
+                        var files = countDataFiles(connection);
                         return finish(housekeepingProblems.isEmpty()
                                         ? ProjectionMaintenance.Outcome.UNNECESSARY
                                         : ProjectionMaintenance.Outcome.PARTIAL,
                                 start, filesBefore, files,
-                                0, snapshotsExpired, orphansDeleted, writerWait,
+                                java.util.OptionalLong.of(0), snapshotsExpired, orphansDeleted, writerWait,
                                 housekeepingProblems.isEmpty()
                                         ? "file distribution is below the compaction threshold"
                                         : "housekeeping incomplete: " + String.join("; ", housekeepingProblems));
@@ -481,8 +498,8 @@ public final class DuckLakeProjectionSink implements ProjectionSink {
                     }
                 }
 
-                long filesAfter = countDataFiles(connection);
-                long bytesRewritten = bytesWrittenSince(connection, fileIdWatermark);
+                var filesAfter = countDataFiles(connection);
+                var bytesRewritten = bytesWrittenSince(connection, fileIdWatermark);
 
                 java.util.List<String> problems = new java.util.ArrayList<>(housekeepingProblems);
                 problems.addAll(compactionProblems);
@@ -506,13 +523,16 @@ public final class DuckLakeProjectionSink implements ProjectionSink {
         } catch (SQLException e) {
             health = ProjectionSinkHealth.unavailable(e.toString());
             return new ProjectionMaintenance.Result(ProjectionMaintenance.Outcome.FAILED,
-                    java.time.Duration.ofNanos(System.nanoTime() - start), 0, 0, 0, 0, 0,
+                    java.time.Duration.ofNanos(System.nanoTime() - start), java.util.OptionalLong.empty(),
+                    java.util.OptionalLong.empty(), java.util.OptionalLong.empty(), 0, 0,
                     java.time.Duration.ZERO, Optional.of(e.toString()));
         }
     }
 
     private static ProjectionMaintenance.Result finish(ProjectionMaintenance.Outcome outcome, long start,
-                                                       long before, long after, long rewritten,
+                                                       java.util.OptionalLong before,
+                                                       java.util.OptionalLong after,
+                                                       java.util.OptionalLong rewritten,
                                                        long snapshots, long orphans,
                                                        java.time.Duration writerWait, String detail) {
         return new ProjectionMaintenance.Result(outcome,
@@ -620,14 +640,16 @@ public final class DuckLakeProjectionSink implements ProjectionSink {
      * id is past the watermark. {@code begin_snapshot} cannot serve here: a merged file keeps
      * the earliest snapshot its rows came from, so it looks older than the pass that wrote it.
      */
-    private static long maxDataFileId(Connection connection) {
+    private static java.util.OptionalLong maxDataFileId(Connection connection) {
         try (Statement sql = connection.createStatement();
              ResultSet rs = sql.executeQuery(
                      "SELECT coalesce(max(data_file_id), 0) FROM"
                              + " __ducklake_metadata_history_lake.ducklake_data_file")) {
-            return rs.next() ? rs.getLong(1) : 0;
+            return rs.next() ? java.util.OptionalLong.of(rs.getLong(1)) : java.util.OptionalLong.empty();
         } catch (SQLException e) {
-            return 0;
+            // Unknown, not zero. Reporting a failed measurement as 0 is how "files 35 -> 0" came
+            // to read as a catastrophic deletion when nothing had been deleted at all.
+            return java.util.OptionalLong.empty();
         }
     }
 
@@ -644,36 +666,57 @@ public final class DuckLakeProjectionSink implements ProjectionSink {
      * <p>Returning a real number matters: an unenforced budget that reports {@code 0} looks
      * identical to a budget that was respected.
      */
-    private static long bytesWrittenSince(Connection connection, long fileIdWatermark) {
+    private static java.util.OptionalLong bytesWrittenSince(Connection connection, long fileIdWatermark) {
         try (Statement sql = connection.createStatement();
              ResultSet rs = sql.executeQuery(
                      "SELECT coalesce(sum(file_size_bytes), 0) FROM"
                              + " __ducklake_metadata_history_lake.ducklake_data_file"
                              + " WHERE end_snapshot IS NULL AND data_file_id > " + fileIdWatermark)) {
-            return rs.next() ? rs.getLong(1) : 0;
+            return rs.next() ? java.util.OptionalLong.of(rs.getLong(1)) : java.util.OptionalLong.empty();
         } catch (SQLException e) {
-            return 0;
+            // Unknown, not zero. Reporting a failed measurement as 0 is how "files 35 -> 0" came
+            // to read as a catastrophic deletion when nothing had been deleted at all.
+            return java.util.OptionalLong.empty();
         }
     }
 
-    private static long countDataFiles(Connection connection) {
+    /**
+     * Whether this connection can still answer a query.
+     *
+     * <p>A failed CALL inside DuckLake leaves the connection in a state where every later
+     * statement fails with "attempting to execute an unsuccessful or closed pending query
+     * result". Continuing on it turns one real failure into a cascade of meaningless ones and
+     * makes every subsequent measurement wrong, which is exactly what happened in the captured
+     * pinned-reader run.
+     */
+    private static boolean usable(Connection connection) {
+        try (Statement sql = connection.createStatement(); ResultSet rs = sql.executeQuery("SELECT 1")) {
+            return rs.next();
+        } catch (SQLException e) {
+            return false;
+        }
+    }
+
+    private static java.util.OptionalLong countDataFiles(Connection connection) {
         try (Statement sql = connection.createStatement();
              ResultSet rs = sql.executeQuery(
                      "SELECT count(*) FROM ducklake_table_info('history_lake')")) {
             // table_info reports per-table file counts; sum them for a catalog total.
-            return rs.next() ? sumFileCounts(connection) : 0;
+            return rs.next() ? sumFileCounts(connection) : java.util.OptionalLong.empty();
         } catch (SQLException e) {
-            return 0;
+            return java.util.OptionalLong.empty();
         }
     }
 
-    private static long sumFileCounts(Connection connection) {
+    private static java.util.OptionalLong sumFileCounts(Connection connection) {
         try (Statement sql = connection.createStatement();
              ResultSet rs = sql.executeQuery(
                      "SELECT coalesce(sum(file_count), 0) FROM ducklake_table_info('history_lake')")) {
-            return rs.next() ? rs.getLong(1) : 0;
+            return rs.next() ? java.util.OptionalLong.of(rs.getLong(1)) : java.util.OptionalLong.empty();
         } catch (SQLException e) {
-            return 0;
+            // Unknown, not zero. Reporting a failed measurement as 0 is how "files 35 -> 0" came
+            // to read as a catastrophic deletion when nothing had been deleted at all.
+            return java.util.OptionalLong.empty();
         }
     }
 
@@ -693,8 +736,10 @@ public final class DuckLakeProjectionSink implements ProjectionSink {
      */
     private boolean compactionWorthwhile(Connection connection, ProjectionMaintenance.Budget budget) {
         long smallFileCeiling = Math.min(budget.minSmallFileBytes(), config.targetFileSizeBytes());
-        long small = countSmallFiles(connection, smallFileCeiling);
-        return small >= budget.minFilesToCompact();
+        var small = countSmallFiles(connection, smallFileCeiling);
+        // Unknown distribution: attempt the pass. merge_adjacent_files is idempotent, so a
+        // needless attempt is cheap, while skipping a needed one lets small files accumulate.
+        return small.isEmpty() || small.getAsLong() >= budget.minFilesToCompact();
     }
 
     /**
@@ -704,16 +749,14 @@ public final class DuckLakeProjectionSink implements ProjectionSink {
      * would need one call per table; the metadata schema answers it in one query, and it is the
      * same table the catalog stores file statistics in.
      */
-    private static long countSmallFiles(Connection connection, long ceiling) {
+    private static java.util.OptionalLong countSmallFiles(Connection connection, long ceiling) {
         try (Statement sql = connection.createStatement();
              ResultSet rs = sql.executeQuery(
                      "SELECT count(*) FROM __ducklake_metadata_history_lake.ducklake_data_file"
                              + " WHERE end_snapshot IS NULL AND file_size_bytes < " + ceiling)) {
-            return rs.next() ? rs.getLong(1) : Long.MAX_VALUE;
+            return rs.next() ? java.util.OptionalLong.of(rs.getLong(1)) : java.util.OptionalLong.empty();
         } catch (SQLException e) {
-            // If the distribution cannot be read, fall back to the file count: attempting a
-            // no-op compaction is cheap, skipping a needed one is not.
-            return sumFileCounts(connection);
+            return java.util.OptionalLong.empty();
         }
     }
 

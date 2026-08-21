@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.archive.api.projection;
 import java.time.Duration;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 
 /** Value types for bounded sink maintenance (ADR-039). */
 public final class ProjectionMaintenance {
@@ -79,11 +80,21 @@ public final class ProjectionMaintenance {
      * backend that genuinely has nothing to maintain should say so, so an operator can tell
      * that apart from maintenance that is configured but never running.
      */
+    /**
+     * What a maintenance pass did.
+     *
+     * <p>The file and byte figures are {@link OptionalLong} rather than {@code long} on purpose.
+     * They are read with SQL against a catalog that can be locked or in a failed transaction, and
+     * an earlier version returned {@code 0} when the query failed. That produced the diagnostic
+     * "files 35 -> 0", which reads as "maintenance deleted everything" when it means "the
+     * measurement could not be taken". An unavailable measurement must be distinguishable from a
+     * measured zero, because they call for opposite reactions.
+     */
     public record Result(Outcome outcome,
                          Duration duration,
-                         long filesBefore,
-                         long filesAfter,
-                         long bytesRewritten,
+                         OptionalLong filesBefore,
+                         OptionalLong filesAfter,
+                         OptionalLong bytesRewritten,
                          long snapshotsExpired,
                          long orphanedFilesDeleted,
                          Duration writerWait,
@@ -97,22 +108,35 @@ public final class ProjectionMaintenance {
         }
 
         public static Result unsupported(String why) {
-            return new Result(Outcome.UNSUPPORTED, Duration.ZERO, 0, 0, 0, 0, 0,
-                    Duration.ZERO, Optional.of(why));
+            return new Result(Outcome.UNSUPPORTED, Duration.ZERO, OptionalLong.empty(),
+                    OptionalLong.empty(), OptionalLong.empty(), 0, 0, Duration.ZERO, Optional.of(why));
         }
 
         public static Result deferred(String why) {
-            return new Result(Outcome.DEFERRED, Duration.ZERO, 0, 0, 0, 0, 0,
-                    Duration.ZERO, Optional.of(why));
+            return new Result(Outcome.DEFERRED, Duration.ZERO, OptionalLong.empty(),
+                    OptionalLong.empty(), OptionalLong.empty(), 0, 0, Duration.ZERO, Optional.of(why));
+        }
+
+        /** Whether every file/byte figure in this result was actually measured. */
+        public boolean measurementsAvailable() {
+            return filesBefore.isPresent() && filesAfter.isPresent() && bytesRewritten.isPresent();
         }
 
         public static Result unnecessary(long files) {
-            return new Result(Outcome.UNNECESSARY, Duration.ZERO, files, files, 0, 0, 0,
-                    Duration.ZERO, Optional.empty());
+            return new Result(Outcome.UNNECESSARY, Duration.ZERO, OptionalLong.of(files),
+                    OptionalLong.of(files), OptionalLong.of(0), 0, 0, Duration.ZERO, Optional.empty());
         }
 
-        public long filesReclaimed() {
-            return Math.max(0, filesBefore - filesAfter);
+        /**
+         * Files reclaimed, or empty when either end of the comparison was not measured.
+         *
+         * <p>Deliberately not "0 when unknown": a pass that could not read the catalog has not
+         * reclaimed nothing, it has not been measured, and reporting the two the same way is how
+         * "files 35 -> 0" came to look like a catastrophic deletion.
+         */
+        public OptionalLong filesReclaimed() {
+            if (filesBefore.isEmpty() || filesAfter.isEmpty()) return OptionalLong.empty();
+            return OptionalLong.of(Math.max(0, filesBefore.getAsLong() - filesAfter.getAsLong()));
         }
     }
 }
