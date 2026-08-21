@@ -633,6 +633,79 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         return chainStorage.rocksDbAccessOrNull();
     }
 
+    /**
+     * Install an external hold on canonical ingestion for ADR-039 disk backpressure.
+     *
+     * <p>Applied to the header sync manager, which is where the node already implements a
+     * pause/resume loop. The same predicate governs both directions, so cleanup freeing disk
+     * resumes ingestion automatically without a second mechanism.
+     *
+     * @return false when no header sync manager is active yet
+     */
+    public boolean installArchiveIngestHold(java.util.function.BooleanSupplier hold, String reason) {
+        if (syncSubsystem == null) return false;
+        // Registered on the subsystem rather than on the current manager: the manager belongs
+        // to a peer session that is replaced on every reconnect, and it does not exist at all
+        // before the node starts. The subsystem remembers the hold and re-applies it.
+        syncSubsystem.setIngestHold(hold, reason);
+        return true;
+    }
+
+    /**
+     * Authoritative pointer-address mapping for ADR-039 projection history.
+     *
+     * <p>Owned by the account-state store, which writes it while applying registration
+     * certificates. The archive therefore no longer needs its own sequential pointer
+     * lifecycle for the projection path.
+     */
+    /**
+     * Record that the as-of pointer index is maintained from genesis.
+     *
+     * <p>Called by projection history when it starts on an empty chainstate. The store refuses
+     * this on a chainstate that has already advanced, so a mid-chain activation cannot claim
+     * completeness it does not have.
+     *
+     * @return false when there is no account-state store to mark
+     */
+    public boolean markPointerIndexFromGenesis() {
+        var store = getDefaultAccountStateStore();
+        if (store.isEmpty()) return false;
+        store.get().markPointerIndexFromGenesis();
+        return true;
+    }
+
+    public com.bloxbean.cardano.yano.api.archive.PointerCredentialSource pointerCredentialSource() {
+        return getDefaultAccountStateStore()
+                .map(store -> (com.bloxbean.cardano.yano.api.archive.PointerCredentialSource) store)
+                .orElse(com.bloxbean.cardano.yano.api.archive.PointerCredentialSource.NONE);
+    }
+
+    /**
+     * Install the ADR-039 projection contributor on the UTXO subsystem.
+     *
+     * <p>Routed through the node rather than {@code NodeKernel.subsystem(...)} because the
+     * kernel is composed of lifecycle stages, not the subsystem instances themselves, so a
+     * type lookup there would silently find nothing.
+     *
+     * @return false when no contributing UTXO store is present, so a caller can fail closed
+     *         rather than assume history is being captured
+     */
+    public boolean installProjectionContributor(
+            com.bloxbean.cardano.yano.api.archive.CanonicalProjectionContributor contributor) {
+        return utxoSubsystem != null && utxoSubsystem.installProjectionContributor(contributor);
+    }
+
+    /**
+     * Shared chainstate RocksDB handles for optional host-side components.
+     *
+     * <p>Exposed for the ADR-039 projection outbox, whose column families live in this
+     * same database precisely so a contributor's projection write is atomic with the
+     * state it derives from. Empty for non-RocksDB chain states.
+     */
+    public java.util.Optional<RocksDbAccess> chainstateRocksAccess() {
+        return java.util.Optional.ofNullable(rocksDbAccessOrNull());
+    }
+
     private EraMetadataStore eraMetadataStoreOrNull() {
         return chainStorage.eraMetadataStoreOrNull();
     }

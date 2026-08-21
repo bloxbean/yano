@@ -31,6 +31,11 @@ public final class YaciUtxoHistoryDecoder implements CanonicalBlockDecoder<UtxoH
     private final List<GenesisOutput> genesisOutputs;
     private final long genesisBlockNumber;
     private final UtxoHistoryProjection projection;
+    /** Per-block address memoisation bound; 0 disables caching entirely. */
+    private volatile int addressCacheMaxEntries = BoundedDecodeCache.DEFAULT_MAX_ENTRIES;
+    private final java.util.concurrent.atomic.LongAdder addressCacheHits = new java.util.concurrent.atomic.LongAdder();
+    private final java.util.concurrent.atomic.LongAdder addressCacheMisses = new java.util.concurrent.atomic.LongAdder();
+    private final java.util.concurrent.atomic.LongAdder addressCacheSkipped = new java.util.concurrent.atomic.LongAdder();
 
     public YaciUtxoHistoryDecoder(LongUnaryOperator slotToEpoch, LongUnaryOperator slotToUnixTime) {
         this.blockDecoder = new YaciBlockDecoder(slotToEpoch, slotToUnixTime);
@@ -109,6 +114,15 @@ public final class YaciUtxoHistoryDecoder implements CanonicalBlockDecoder<UtxoH
         List<UtxoHistoryFact.TransactionDatum> transactionDatums = new ArrayList<>();
         List<UtxoHistoryFact.TransactionRedeemer> transactionRedeemers = new ArrayList<>();
         Set<String> seenAddresses = new HashSet<>();
+        // Per-block memoisation of address decoding. Profiling attributed ~82% of the
+        // ADR-039 projection cost to fact derivation, and nearly all of that to decoding the
+        // same output addresses repeatedly: each call parses the address, extracts payment
+        // and delegation credentials, hashes a key, and re-encodes the whole thing back to
+        // bech32. Addresses repeat heavily within a block, and the decode is a pure function
+        // of the display string, so caching is semantics-preserving. Scoped to one block, so
+        // it is inherently bounded and needs no eviction policy; passed as a parameter rather
+        // than held as a field because one decoder instance may serve two worker threads.
+        BoundedDecodeCache<AddressInfo> addressCache = new BoundedDecodeCache<>(addressCacheMaxEntries);
         Set<Integer> invalid = block.getInvalidTransactions() == null ? Set.of() : Set.copyOf(block.getInvalidTransactions());
         List<TransactionBody> bodies = block.getTransactionBodies() == null ? List.of() : block.getTransactionBodies();
 
@@ -121,7 +135,7 @@ public final class YaciUtxoHistoryDecoder implements CanonicalBlockDecoder<UtxoH
         if (includeGenesis && includeOutputs) {
             LinkedHashMap<String, GenesisOutput> unique = new LinkedHashMap<>();
             for (GenesisOutput genesis : genesisOutputs) {
-                AddressInfo address = address(genesis.address());
+                AddressInfo address = address(genesis.address(), addressCache);
                 String outpoint = HexUtil.encodeHexString(Blake2bUtil.blake2bHash256(address.fact().rawAddress()));
                 GenesisOutput previous = unique.get(outpoint);
                 if (previous == null) unique.put(outpoint, genesis);
@@ -131,7 +145,7 @@ public final class YaciUtxoHistoryDecoder implements CanonicalBlockDecoder<UtxoH
                         previous.amount().add(genesis.amount()), previous.originType()));
             }
             for (GenesisOutput genesis : unique.values()) {
-                AddressInfo address = address(genesis.address());
+                AddressInfo address = address(genesis.address(), addressCache);
                 String addressId = HexUtil.encodeHexString(address.key());
                 if (seenAddresses.add(addressId)) addresses.add(address.fact());
                 if (includeOutputs) outputs.add(new UtxoHistoryFact.Output(
@@ -178,14 +192,14 @@ public final class YaciUtxoHistoryDecoder implements CanonicalBlockDecoder<UtxoH
             }
             if (includeOutputs && valid && tx.getOutputs() != null) {
                 for (int outputIndex = 0; outputIndex < tx.getOutputs().size(); outputIndex++) {
-                    addOutput(addresses, outputs, assets, seenAddresses, txHash, txIndex,
+                    addOutput(addresses, outputs, assets, seenAddresses, addressCache, txHash, txIndex,
                             outputIndex, "regular", false, tx.getOutputs().get(outputIndex),
                             includeOutputs, includeAssets);
                 }
             }
             if (includeOutputs && !valid && tx.getCollateralReturn() != null) {
                 int outputIndex = tx.getOutputs() == null ? 0 : tx.getOutputs().size();
-                addOutput(addresses, outputs, assets, seenAddresses, txHash, txIndex,
+                addOutput(addresses, outputs, assets, seenAddresses, addressCache, txHash, txIndex,
                         outputIndex, "collateral_return", true, tx.getCollateralReturn(),
                         includeOutputs, includeAssets);
             }
@@ -194,6 +208,10 @@ public final class YaciUtxoHistoryDecoder implements CanonicalBlockDecoder<UtxoH
                         includeDatums, includeRedeemers);
             }
         }
+        addressCacheHits.add(addressCache.hits());
+        addressCacheMisses.add(addressCache.misses());
+        addressCacheSkipped.add(addressCache.admissionsSkipped());
+
         return new UtxoHistoryFact(era, pointerRegistrations, pointerDeregistrations,
                 addresses, outputs, assets, inputs,
                 transactionDatums, transactionRedeemers);
@@ -201,10 +219,11 @@ public final class YaciUtxoHistoryDecoder implements CanonicalBlockDecoder<UtxoH
 
     private void addOutput(List<UtxoHistoryFact.Address> addresses, List<UtxoHistoryFact.Output> outputs,
                            List<UtxoHistoryFact.Asset> assets, Set<String> seenAddresses,
+                           BoundedDecodeCache<AddressInfo> addressCache,
                            byte[] txHash, int txIndex, int outputIndex, String originType,
                            boolean collateralReturn, TransactionOutput output,
                            boolean includeOutputs, boolean includeAssets) {
-        AddressInfo address = address(output.getAddress());
+        AddressInfo address = address(output.getAddress(), addressCache);
         String addressId = HexUtil.encodeHexString(address.key());
         if (includeOutputs && seenAddresses.add(addressId)) addresses.add(address.fact());
         BigInteger lovelace = BigInteger.ZERO;
@@ -305,7 +324,47 @@ public final class YaciUtxoHistoryDecoder implements CanonicalBlockDecoder<UtxoH
         };
     }
 
-    private AddressInfo address(String display) {
+    /**
+     * Bound on per-block address memoisation. Zero disables caching, which must produce
+     * byte-identical output — that equivalence is asserted by
+     * {@code AddressCacheEquivalenceTest}.
+     */
+    public void setAddressCacheMaxEntries(int maxEntries) {
+        if (maxEntries < 0) throw new IllegalArgumentException("maxEntries must not be negative");
+        this.addressCacheMaxEntries = maxEntries;
+    }
+
+    public int addressCacheMaxEntries() {
+        return addressCacheMaxEntries;
+    }
+
+    /** Cumulative memoisation counters across every block this decoder has processed. */
+    public AddressCacheStats addressCacheStats() {
+        return new AddressCacheStats(addressCacheHits.sum(), addressCacheMisses.sum(),
+                addressCacheSkipped.sum(), addressCacheMaxEntries);
+    }
+
+    /**
+     * @param admissionsSkipped lookups that could not be admitted because the per-block bound
+     *                          was reached; a persistently non-zero value means the bound is
+     *                          too small for this chain's blocks, not that anything is wrong
+     */
+    public record AddressCacheStats(long hits, long misses, long admissionsSkipped, int maxEntries) {
+        public double hitRate() {
+            long total = hits + misses;
+            return total == 0 ? 0.0 : (double) hits / total;
+        }
+    }
+
+    private AddressInfo address(String display, BoundedDecodeCache<AddressInfo> cache) {
+        AddressInfo cached = cache.get(display);
+        if (cached != null) return cached;
+        AddressInfo decoded = decodeAddress(display);
+        cache.put(display, decoded);
+        return decoded;
+    }
+
+    private AddressInfo decodeAddress(String display) {
         try {
             byte[] raw;
             try { raw = AddressUtil.addressToBytes(display); }

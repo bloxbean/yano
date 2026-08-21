@@ -24,6 +24,7 @@ import com.bloxbean.cardano.yano.api.events.GenesisBlockEvent;
 import com.bloxbean.cardano.yano.api.events.PostEpochTransitionEvent;
 import com.bloxbean.cardano.yano.api.events.PreEpochTransitionEvent;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
+import com.bloxbean.cardano.yano.api.events.ByronBlockProjectionEvent;
 import com.bloxbean.cardano.yano.api.events.BlockReceivedEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
 import com.bloxbean.cardano.yano.api.events.TipChangedEvent;
@@ -894,6 +895,12 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
 
             // Publish BlockApplied after storage
             eventBus.publish(new BlockAppliedEvent(Era.Byron, slot, blockNumber, hash, null), appMeta, appOptions);
+            // ADR-039: carry the already-decoded Byron block to projection history on a
+            // dedicated type. BlockAppliedEvent's null block stays a Byron/EBB sentinel
+            // for its existing consumers; this adds a subscriber-free cost when history
+            // is disabled.
+            eventBus.publish(ByronBlockProjectionEvent.main(slot, blockNumber, hash,
+                    byronBlock.getHeader().getPrevBlock(), byronBlock), appMeta, appOptions);
             recordBodyApplied(slot, blockNumber);
 
             // Publish TipChanged if tip advanced
@@ -1037,6 +1044,11 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
 
             // Publish BlockApplied after storage
             eventBus.publish(new BlockAppliedEvent(Era.Byron, slot, blockNumber, hash, null), appMeta, appOptions);
+            // ADR-039: an EBB carries no transactions but does occupy a block number, so
+            // it must still produce an empty projection envelope. Without it the
+            // archive's greatest *contiguous* block coordinate would stop at the EBB.
+            eventBus.publish(ByronBlockProjectionEvent.epochBoundary(slot, blockNumber, hash,
+                    byronEbBlock.getHeader().getPrevBlock(), byronEbBlock), appMeta, appOptions);
             recordBodyApplied(slot, blockNumber);
 
             // Publish TipChanged if tip advanced

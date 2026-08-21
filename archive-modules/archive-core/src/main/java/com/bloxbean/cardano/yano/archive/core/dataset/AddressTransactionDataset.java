@@ -160,7 +160,8 @@ public final class AddressTransactionDataset implements LiveStatefulBlockArchive
             TransactionBody tx = transactions.get(txIndex);
             boolean valid = !invalid.contains(txIndex);
             byte[] txHash = HexUtil.decodeHexString(tx.getTxHash());
-            LinkedHashMap<SubjectKey, SubjectRoles> subjects = new LinkedHashMap<>();
+            AddressSubjectRows accumulator = new AddressSubjectRows(this.subjects,
+                    job.networkIdentity().networkMagic());
 
             var consumed = valid ? tx.getInputs() : tx.getCollateralInputs();
             if (consumed != null) {
@@ -168,8 +169,8 @@ public final class AddressTransactionDataset implements LiveStatefulBlockArchive
                     Outpoint outpoint = new Outpoint(HexUtil.decodeHexString(input.getTransactionId()), input.getIndex());
                     ResolvedOutput resolved = resolve(outpoint).orElseThrow(() -> new ArchiveStoreException(
                             "unresolved address-history input " + input.getTransactionId() + '#' + input.getIndex()));
-                    addSubjects(subjects, resolved, job.networkIdentity().networkMagic(),
-                            valid ? ParticipationRole.INPUT : ParticipationRole.COLLATERAL_INPUT);
+                    accumulator.add(participant(resolved),
+                            valid ? AddressSubjectRows.Role.INPUT : AddressSubjectRows.Role.COLLATERAL_INPUT);
                     pendingPuts.remove(outpoint);
                     pendingDeletes.add(outpoint);
                     resolverOperations.add(durableResolver.consumeOperation(outpoint, txHash,
@@ -180,31 +181,29 @@ public final class AddressTransactionDataset implements LiveStatefulBlockArchive
             if (valid && tx.getOutputs() != null) {
                 for (int outputIndex = 0; outputIndex < tx.getOutputs().size(); outputIndex++) {
                     addOutput(txHash, outputIndex, tx.getOutputs().get(outputIndex), era,
-                            job.networkIdentity().networkMagic(), subjects,
-                            resolverOperations, ParticipationRole.OUTPUT);
+                            accumulator, resolverOperations, AddressSubjectRows.Role.OUTPUT);
                 }
             } else if (!valid && tx.getCollateralReturn() != null) {
                 addOutput(txHash, tx.getOutputs() == null ? 0 : tx.getOutputs().size(), tx.getCollateralReturn(), era,
-                        job.networkIdentity().networkMagic(), subjects, resolverOperations,
-                        ParticipationRole.COLLATERAL_RETURN);
+                        accumulator, resolverOperations, AddressSubjectRows.Role.COLLATERAL_RETURN);
             }
-            for (SubjectRoles roles : subjects.values()) {
-                AddressSubject subject = roles.subject;
-                sink.accept(new ArchiveRow("address_transactions", Arrays.asList(subject.subjectType(),
-                        subject.subjectKey(), roles.address, roles.stakeAddress, txHash, context.blockHash(),
-                        context.blockNumber(), context.slot(),
-                        context.epoch(), context.blockTime().getEpochSecond(), txIndex, roles.inputCount,
-                        roles.outputCount, roles.collateralInputCount, roles.collateralReturnCount, job.jobId())));
-            }
+            accumulator.emit(txHash, txIndex, context.blockHash(), context.blockNumber(), context.slot(),
+                    context.epoch(), context.blockTime().getEpochSecond(), job.jobId(), sink);
         }
         updates.add(new HotBlockUpdate(new HotBlockCheckpoint(context.blockNumber(), context.slot(),
                 context.blockHash(), context.parentHash()), resolverOperations));
         blockIndex++;
     }
 
-    private void addOutput(byte[] txHash, int index, TransactionOutput output, int era, long networkMagic,
-                           Map<SubjectKey, SubjectRoles> subjects,
-                           List<HotHistoryOperation> operations, ParticipationRole role) {
+    /** Bridge from the live resolver's shape to the shared accumulator's. */
+    static AddressSubjectRows.Participant participant(ResolvedOutput resolved) {
+        return new AddressSubjectRows.Participant(resolved.addressKey(), resolved.address(),
+                resolved.paymentCredential(), resolved.stakeCredentialType(), resolved.stakeCredential());
+    }
+
+    private void addOutput(byte[] txHash, int index, TransactionOutput output, int era,
+                           AddressSubjectRows accumulator,
+                           List<HotHistoryOperation> operations, AddressSubjectRows.Role role) {
         AddressParts parts = address(output.getAddress(), era);
         ResolvedOutput resolved = new ResolvedOutput(parts.addressKey(), parts.displayAddress(),
                 parts.paymentCredential(), parts.stakeCredentialType(), parts.stakeCredential());
@@ -223,14 +222,14 @@ public final class AddressTransactionDataset implements LiveStatefulBlockArchive
                 // An interrupted rollback/replay can present the already-applied
                 // resolver value. Identical content is idempotent; a different
                 // value for the same outpoint remains fatal.
-                addSubjects(subjects, resolved, networkMagic, role);
+                accumulator.add(participant(resolved), role);
                 return;
             }
         }
         pendingDeletes.remove(outpoint);
         pendingPuts.put(outpoint, resolved);
         operations.add(durableResolver.putOperation(outpoint, resolved));
-        addSubjects(subjects, resolved, networkMagic, role);
+        accumulator.add(participant(resolved), role);
     }
 
     private static boolean sameOutput(ResolvedOutput left, ResolvedOutput right) {
@@ -247,35 +246,40 @@ public final class AddressTransactionDataset implements LiveStatefulBlockArchive
         return pending != null ? Optional.of(pending) : durableResolver.resolve(outpoint);
     }
 
-    private void addSubjects(Map<SubjectKey, SubjectRoles> result, ResolvedOutput output,
-                             long networkMagic, ParticipationRole role) {
-        if (subjects.address()) {
-            add(result, AddressTransactionSubjects.ADDRESS,
-                    output.addressKey(), output.address(), null, role);
-        }
-        if (subjects.paymentCredential()) {
-            add(result, AddressTransactionSubjects.PAYMENT_CREDENTIAL,
-                    output.paymentCredential(), null, null, role);
-        }
-        if (subjects.stakeCredential()) {
-            add(result, AddressTransactionSubjects.STAKE_CREDENTIAL, output.stakeCredential(), null,
-                    StakeAddressCodec.encode(networkMagic, output.stakeCredentialType(),
-                            output.stakeCredential()), role);
-        }
-    }
-
-    private static void add(Map<SubjectKey, SubjectRoles> subjects, String type, byte[] key,
-                            String address, String stakeAddress, ParticipationRole role) {
-        if (key == null) return;
-        subjects.computeIfAbsent(new SubjectKey(type, key), ignored ->
-                new SubjectRoles(new AddressSubject(type, key), address, stakeAddress)).increment(role);
-    }
-
     public AddressParts address(String display) {
         return address(display, Era.Conway.getValue());
     }
 
     public AddressParts address(String display, int era) {
+        return parse(display, era, addressKeys, coordinate ->
+                pendingDeletedPointers.contains(coordinate) ? null
+                        : Optional.ofNullable(pendingPointers.get(coordinate))
+                                .or(() -> pointerResolver.resolve(coordinate)).orElse(null));
+    }
+
+    /**
+     * Resolves a pre-Conway pointer stake reference to the credential it pointed at.
+     *
+     * <p>Injected rather than fixed, because the two archive paths answer it from different
+     * places: the replay path from its sequential resolver, the ADR-039 projection path from
+     * the account-state subsystem's as-of index. Everything else about address decomposition is
+     * identical and lives below.
+     */
+    @FunctionalInterface
+    public interface PointerLookup {
+        SequentialPointerResolver.ResolvedStakeCredential resolve(
+                SequentialPointerResolver.PointerCoordinate coordinate);
+    }
+
+    /**
+     * Decompose an address into the parts the archive indexes it by.
+     *
+     * <p>Static and shared so the live path and the projection path cannot disagree about what
+     * an address <em>is</em>. Differential parity between two implementations of this would be
+     * a test that can pass while both are wrong.
+     */
+    public static AddressParts parse(String display, int era, AddressKeyCodec addressKeys,
+                                     PointerLookup pointers) {
         try {
             byte[] raw;
             try {
@@ -306,9 +310,7 @@ public final class AddressTransactionDataset implements LiveStatefulBlockArchive
                     var pointer = new PointerAddress(raw).getPointer();
                     var coordinate = new SequentialPointerResolver.PointerCoordinate(pointer.getSlot(),
                             pointer.getTxIndex(), pointer.getCertIndex());
-                    var credential = pendingDeletedPointers.contains(coordinate) ? null
-                            : Optional.ofNullable(pendingPointers.get(coordinate))
-                                    .or(() -> pointerResolver.resolve(coordinate)).orElse(null);
+                    var credential = pointers.resolve(coordinate);
                     stake = credential == null ? null : credential.hash();
                     stakeType = credential == null ? null : credential.type();
                 }
@@ -316,7 +318,7 @@ public final class AddressTransactionDataset implements LiveStatefulBlockArchive
             String normalized;
             try { normalized = AddressUtil.bytesToAddress(raw); }
             catch (Exception ignored) { normalized = display; }
-            return new AddressParts(raw, addressKeys.key(raw), normalized,
+            return new AddressParts(raw, addressKeys.key(raw),  normalized,
                     AddressKeyUtil.paymentCred28(display), stakeType, stake);
         } catch (Exception e) {
             throw new ArchiveStoreException("cannot decode canonical output address", e);
@@ -366,38 +368,4 @@ public final class AddressTransactionDataset implements LiveStatefulBlockArchive
                                byte[] paymentCredential, String stakeCredentialType,
                                byte[] stakeCredential) { }
 
-    private enum ParticipationRole { INPUT, OUTPUT, COLLATERAL_INPUT, COLLATERAL_RETURN }
-
-    private static final class SubjectRoles {
-        private final AddressSubject subject;
-        private final String address;
-        private final String stakeAddress;
-        private int inputCount;
-        private int outputCount;
-        private int collateralInputCount;
-        private int collateralReturnCount;
-
-        private SubjectRoles(AddressSubject subject, String address, String stakeAddress) {
-            this.subject = subject;
-            this.address = address;
-            this.stakeAddress = stakeAddress;
-        }
-
-        private void increment(ParticipationRole role) {
-            switch (role) {
-                case INPUT -> inputCount++;
-                case OUTPUT -> outputCount++;
-                case COLLATERAL_INPUT -> collateralInputCount++;
-                case COLLATERAL_RETURN -> collateralReturnCount++;
-            }
-        }
-    }
-
-    private record SubjectKey(String type, byte[] key) {
-        private SubjectKey { key = key.clone(); }
-        @Override public boolean equals(Object other) {
-            return other instanceof SubjectKey that && type.equals(that.type) && Arrays.equals(key, that.key);
-        }
-        @Override public int hashCode() { return 31 * type.hashCode() + Arrays.hashCode(key); }
-    }
 }

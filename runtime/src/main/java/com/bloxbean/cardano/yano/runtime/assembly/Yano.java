@@ -57,6 +57,50 @@ public interface Yano extends AutoCloseable {
         return Optional.empty();
     }
 
+    /**
+     * Shared chainstate RocksDB handles, when the chain state is RocksDB-backed.
+     * Used by ADR-039 projection history to place its outbox in the same database as
+     * the state its contributors derive projections from.
+     */
+    default Optional<com.bloxbean.cardano.yano.api.db.RocksDbAccess> chainstateRocksAccess() {
+        return Optional.empty();
+    }
+
+    /**
+     * Install an external hold on canonical ingestion (ADR-039 disk backpressure).
+     * Returns false when this runtime has no active sync manager to hold.
+     */
+    default boolean installArchiveIngestHold(java.util.function.BooleanSupplier hold, String reason) {
+        return false;
+    }
+
+    /**
+     * Record that the as-of pointer index is maintained from genesis. Only valid on an empty
+     * chainstate; the store rejects it otherwise.
+     */
+    default boolean markPointerIndexFromGenesis() {
+        return false;
+    }
+
+    /**
+     * Authoritative pointer-address resolution, owned by the account-state contributor.
+     * Empty when this runtime has no such store; callers then treat every pointer as
+     * unresolved rather than failing.
+     */
+    default com.bloxbean.cardano.yano.api.archive.PointerCredentialSource pointerCredentialSource() {
+        return com.bloxbean.cardano.yano.api.archive.PointerCredentialSource.NONE;
+    }
+
+    /**
+     * Install the ADR-039 projection contributor so block projection sections are staged
+     * inside the contributing subsystem's existing write batch. Returns false when this
+     * runtime has no contributing store.
+     */
+    default boolean installProjectionContributor(
+            com.bloxbean.cardano.yano.api.archive.CanonicalProjectionContributor contributor) {
+        return false;
+    }
+
     default Optional<RuntimeMaintenanceGate> maintenanceGate() {
         return Optional.empty();
     }

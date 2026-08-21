@@ -123,6 +123,38 @@ final class RuntimeYano implements Yano, DevnetRuntimeProvider {
     }
 
     @Override
+    public boolean installArchiveIngestHold(java.util.function.BooleanSupplier hold, String reason) {
+        return chainQuery instanceof com.bloxbean.cardano.yano.runtime.internal.RuntimeNode node
+                && node.installArchiveIngestHold(hold, reason);
+    }
+
+    @Override
+    public boolean markPointerIndexFromGenesis() {
+        return chainQuery instanceof com.bloxbean.cardano.yano.runtime.internal.RuntimeNode node
+                && node.markPointerIndexFromGenesis();
+    }
+
+    @Override
+    public com.bloxbean.cardano.yano.api.archive.PointerCredentialSource pointerCredentialSource() {
+        return chainQuery instanceof com.bloxbean.cardano.yano.runtime.internal.RuntimeNode node
+                ? node.pointerCredentialSource()
+                : com.bloxbean.cardano.yano.api.archive.PointerCredentialSource.NONE;
+    }
+
+    @Override
+    public boolean installProjectionContributor(
+            com.bloxbean.cardano.yano.api.archive.CanonicalProjectionContributor contributor) {
+        return chainQuery instanceof com.bloxbean.cardano.yano.runtime.internal.RuntimeNode node
+                && node.installProjectionContributor(contributor);
+    }
+
+    @Override
+    public java.util.Optional<com.bloxbean.cardano.yano.api.db.RocksDbAccess> chainstateRocksAccess() {
+        return chainQuery instanceof com.bloxbean.cardano.yano.runtime.internal.RuntimeNode node
+                ? node.chainstateRocksAccess() : java.util.Optional.empty();
+    }
+
+    @Override
     public LedgerQuery ledger() {
         return ledgerQuery;
     }

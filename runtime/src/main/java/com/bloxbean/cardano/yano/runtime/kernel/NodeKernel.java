@@ -218,6 +218,14 @@ public final class NodeKernel implements AutoCloseable {
         return List.copyOf(result);
     }
 
+    /**
+     * Shared subsystem context. Exposed so optional host-side components (ADR-039
+     * projection history) can reach the event bus without a second bus being created.
+     */
+    public SubsystemContext context() {
+        return context;
+    }
+
     public <T extends Subsystem> Optional<T> subsystem(Class<T> type) {
         for (Subsystem subsystem : subsystems) {
             if (type.isInstance(subsystem)) {

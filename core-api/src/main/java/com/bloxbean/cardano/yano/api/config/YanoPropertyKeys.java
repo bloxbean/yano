@@ -312,6 +312,81 @@ public final class YanoPropertyKeys {
         public static final String DUCKDB_BULK_THREADS = PREFIX + "duckdb.bulk-catch-up.threads";
         public static final String DUCKDB_BULK_JOBS = PREFIX + "duckdb.bulk-catch-up.max-concurrent-jobs";
 
+        // --- ADR-039 canonical projection outbox -------------------------------
+        /** Enable projection-outbox history. Must be set from genesis; mid-chain activation is rejected. */
+        public static final String PROJECTION_ENABLED = PREFIX + "projection.enabled";
+        /** Primary sink: ducklake | sqlite | none. "none" measures producer cost without a sink. */
+        public static final String PROJECTION_SINK = PREFIX + "projection.sink";
+        /** Deterministic split bound for one physical section value. */
+        public static final String PROJECTION_CHUNK_BYTES = PREFIX + "projection.chunk-bytes";
+        public static final String PROJECTION_MAX_BLOCKS_PER_BATCH = PREFIX + "projection.batch.max-blocks";
+        public static final String PROJECTION_MAX_BYTES_PER_BATCH = PREFIX + "projection.batch.max-bytes";
+        public static final String PROJECTION_SOFT_BACKLOG_BLOCKS = PREFIX + "projection.backlog.soft-blocks";
+        public static final String PROJECTION_HARD_BACKLOG_BLOCKS = PREFIX + "projection.backlog.hard-blocks";
+        public static final String PROJECTION_SOFT_BACKLOG_BYTES = PREFIX + "projection.backlog.soft-bytes";
+        public static final String PROJECTION_HARD_BACKLOG_BYTES = PREFIX + "projection.backlog.hard-bytes";
+        public static final String PROJECTION_DRAIN_INTERVAL_MILLIS = PREFIX + "projection.drain-interval-millis";
+        /**
+         * Comma-separated wire names of the sections this node projects. <strong>Defaults to
+         * every shipped block dataset</strong>; set it only to deliberately project fewer, which
+         * is a legacy or testing configuration rather than a tuning knob.
+         *
+         * <p>Part of the projection identity, so changing it changes the fingerprint and requires
+         * a fresh sync — intended, because a section added mid-chain would be missing for every
+         * earlier block. The corollary is that a dataset omitted here can only be added by
+         * resyncing from genesis.
+         *
+         * <p>Example legacy value: {@code transaction:v2,utxo-history:v5}.
+         */
+        public static final String PROJECTION_SECTIONS = PREFIX + "projection.sections";
+        /** Wall-clock spacing between housekeeping passes; housekeeping also runs during bootstrap. */
+        public static final String PROJECTION_HOUSEKEEPING_INTERVAL_MINUTES =
+                PREFIX + "projection.maintenance.housekeeping-interval-minutes";
+        /** Wall-clock spacing between compaction passes, which additionally require a caught-up sink. */
+        public static final String PROJECTION_COMPACTION_INTERVAL_MINUTES =
+                PREFIX + "projection.maintenance.compaction-interval-minutes";
+        /** Time budget for one housekeeping pass. */
+        public static final String PROJECTION_HOUSEKEEPING_BUDGET_SECONDS =
+                PREFIX + "projection.maintenance.housekeeping-budget-seconds";
+        /** Time budget for one compaction pass. */
+        public static final String PROJECTION_COMPACTION_BUDGET_SECONDS =
+                PREFIX + "projection.maintenance.compaction-budget-seconds";
+        /** Upper bound on bytes one compaction pass may rewrite. */
+        public static final String PROJECTION_COMPACTION_REWRITE_BYTES =
+                PREFIX + "projection.maintenance.compaction-rewrite-bytes";
+        /** Compaction output target size for the primary sink, in bytes. */
+        public static final String PROJECTION_SINK_TARGET_FILE_SIZE_BYTES =
+                PREFIX + "projection.sink-options.target-file-size-bytes";
+        /** Parquet row-group size for the primary sink. */
+        public static final String PROJECTION_SINK_ROW_GROUP_SIZE =
+                PREFIX + "projection.sink-options.row-group-size";
+        /**
+         * How long sink snapshots are retained before housekeeping may expire them.
+         *
+         * <p>Independent of the legacy archive setting: the projection path has one writer
+         * and short-lived readers, so it does not need the replay worker's window. Until a
+         * snapshot expires, the files it references cannot be reclaimed.
+         */
+        public static final String PROJECTION_SINK_SNAPSHOT_RETENTION_HOURS =
+                PREFIX + "projection.sink-options.snapshot-retention-hours";
+        /**
+         * Grace period before files that a newer snapshot superseded are deleted from disk.
+         *
+         * <p>This bounds how long compaction's rewritten inputs stay on disk alongside their
+         * replacements, so peak sink footprint is roughly doubled for this long after a
+         * compaction pass.
+         */
+        public static final String PROJECTION_SINK_CLEANUP_GRACE_HOURS =
+                PREFIX + "projection.sink-options.cleanup-grace-hours";
+        // Aggregate archive-retained disk budget (ADR-039 disk backpressure). Canonical sync
+        // stays asynchronous until one of these is reached; it is never paced by sink speed.
+        public static final String PROJECTION_DISK_SOFT_BYTES = PREFIX + "projection.disk.soft-bytes";
+        public static final String PROJECTION_DISK_HARD_BYTES = PREFIX + "projection.disk.hard-bytes";
+        public static final String PROJECTION_DISK_LOW_WATER_BYTES = PREFIX + "projection.disk.low-water-bytes";
+        public static final String PROJECTION_DISK_FREE_RESERVE_BYTES = PREFIX + "projection.disk.free-space-reserve-bytes";
+        /** Measured logical-to-physical factor for outbox bytes; the first slice observed ~1.4. */
+        public static final String PROJECTION_DISK_AMPLIFICATION = PREFIX + "projection.disk.amplification-factor";
+
         private History() { }
     }
 
