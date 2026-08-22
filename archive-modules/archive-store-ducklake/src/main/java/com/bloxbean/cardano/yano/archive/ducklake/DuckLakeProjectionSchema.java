@@ -17,6 +17,15 @@ final class DuckLakeProjectionSchema {
     /** The sink's own receipt table; written on every commit, so it must be compacted too. */
     static final String RECEIPTS_TABLE = "projection_receipts";
 
+    /**
+     * Genesis bootstrap receipt and completion marker, one row at most.
+     *
+     * <p>Separate from the block receipt log because genesis belongs to no block range, and
+     * because block receipts are keyed by first block - a genesis receipt at block 0 would
+     * collide with the real block-0 batch.
+     */
+    static final String GENESIS_TABLE = "projection_genesis";
+
     private DuckLakeProjectionSchema() {}
 
     static void initialize(Connection connection) throws SQLException {
@@ -28,6 +37,9 @@ final class DuckLakeProjectionSchema {
                     + "identity_fingerprint VARCHAR NOT NULL, first_envelope_id VARCHAR NOT NULL, "
                     + "last_envelope_id VARCHAR NOT NULL, ordered_digest VARCHAR NOT NULL, "
                     + "row_counts VARCHAR NOT NULL, committed_at TIMESTAMP NOT NULL)");
+            sql.execute("CREATE TABLE IF NOT EXISTS history_lake." + GENESIS_TABLE + " ("
+                    + "identity VARCHAR NOT NULL, row_digest VARCHAR NOT NULL, row_count BIGINT NOT NULL, "
+                    + "total_lovelace VARCHAR NOT NULL, committed_at TIMESTAMP NOT NULL)");
         }
     }
 }

@@ -356,6 +356,60 @@ public final class YaciUtxoHistoryDecoder implements CanonicalBlockDecoder<UtxoH
         }
     }
 
+    /**
+     * Genesis outputs as facts, from the shared normalised distribution.
+     *
+     * <p>Genesis funds are not produced by any block, so they cannot arrive through
+     * {@link #decode}. This is the ADR-039 projection's entry point, and it deliberately reuses
+     * the same address decomposition every other output row goes through - address key, payment
+     * and delegation credentials, address type - so a genesis row differs from a regular one only
+     * where it genuinely should.
+     *
+     * <p>The transaction hash comes from the caller and is <strong>not</strong> re-derived. It was
+     * already normalised once, and hashing it again here would recreate the second derivation this
+     * exists to remove. {@code tx_index} is -1, matching what the replay worker writes, because a
+     * genesis output belongs to no transaction.
+     *
+     * <p>Outputs sharing an outpoint are merged by summing, which is what the block-driven genesis
+     * path above does and what {@code ByronGenesisData} already does for AVVM against non-AVVM.
+     */
+    public UtxoHistoryFact genesisFact(java.util.List<com.bloxbean.cardano.yano.api.genesis.GenesisUtxo> genesisUtxos) {
+        Objects.requireNonNull(genesisUtxos, "genesisUtxos");
+        BoundedDecodeCache<AddressInfo> addressCache = new BoundedDecodeCache<>(addressCacheMaxEntries);
+        LinkedHashMap<String, com.bloxbean.cardano.yano.api.genesis.GenesisUtxo> unique = new LinkedHashMap<>();
+        for (var utxo : genesisUtxos) {
+            String outpoint = utxo.txHash() + '#' + utxo.outputIndex();
+            var previous = unique.get(outpoint);
+            if (previous == null) {
+                unique.put(outpoint, utxo);
+            } else if (!previous.address().equals(utxo.address())
+                    || !previous.originType().equals(utxo.originType())) {
+                throw new ArchiveStoreException("conflicting genesis output " + outpoint);
+            } else {
+                unique.put(outpoint, new com.bloxbean.cardano.yano.api.genesis.GenesisUtxo(
+                        previous.address(), previous.amount().add(utxo.amount()), previous.txHash(),
+                        previous.outputIndex(), previous.originType(), previous.blockNumber(),
+                        previous.slot(), previous.blockHash()));
+            }
+        }
+
+        List<UtxoHistoryFact.Address> addresses = new ArrayList<>();
+        List<UtxoHistoryFact.Output> outputs = new ArrayList<>();
+        Set<String> seenAddresses = new LinkedHashSet<>();
+        for (var utxo : unique.values()) {
+            AddressInfo address = address(utxo.address(), addressCache);
+            String addressId = HexUtil.encodeHexString(address.key());
+            if (seenAddresses.add(addressId)) addresses.add(address.fact());
+            outputs.add(new UtxoHistoryFact.Output(
+                    hex(utxo.txHash(), "genesis transaction hash"), utxo.outputIndex(), -1,
+                    utxo.originType(), address.key(), address.paymentCredential(), address.stakeCredential(),
+                    exactLong(utxo.amount(), "genesis lovelace"), "none", null, null,
+                    null, null, null, false));
+        }
+        return new UtxoHistoryFact(0, List.of(), List.of(), addresses, outputs,
+                List.of(), List.of(), List.of(), List.of());
+    }
+
     private AddressInfo address(String display, BoundedDecodeCache<AddressInfo> cache) {
         AddressInfo cached = cache.get(display);
         if (cached != null) return cached;

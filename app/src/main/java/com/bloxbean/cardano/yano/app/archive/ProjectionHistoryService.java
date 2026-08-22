@@ -102,6 +102,9 @@ public class ProjectionHistoryService implements AutoCloseable {
     /** Held so published coordinates can be resolved canonically rather than reported as stored. */
     private volatile ChainQuery chainQuery;
 
+    /** Held for the genesis coordinate's block time. */
+    private volatile LedgerQuery ledgerQuery;
+
     /**
      * The identity the sink was opened with.
      *
@@ -118,6 +121,12 @@ public class ProjectionHistoryService implements AutoCloseable {
 
     /** Held so the retention check can ask the runtime for its live common rollback floor. */
     private volatile Yano runtimeYano;
+    /** Captures the genesis distribution once; block sections never produce it. */
+    private volatile ProjectionGenesisBootstrap genesisBootstrap;
+
+    /** Whether this archive has durably recorded its genesis distribution. */
+    private volatile boolean genesisComplete;
+
     /** Serves epoch artifacts to the sink; block sections never touch it. */
     private volatile com.bloxbean.cardano.yano.archive.api.projection.ArchiveArtifactReader artifactReader =
             new NoArtifactReader();
@@ -191,6 +200,7 @@ public class ProjectionHistoryService implements AutoCloseable {
         runtimeYano = yano;
         chainTip = () -> chain.getLocalTip() == null ? -1 : chain.getLocalTip().getBlockNumber();
         chainQuery = chain;
+        ledgerQuery = ledger;
         // Must be resolved before openSink(): the sink is opened against this directory, and the
         // guard reordering that moved openSink() ahead of the rest of initialisation left this
         // assignment behind it.
@@ -411,6 +421,12 @@ public class ProjectionHistoryService implements AutoCloseable {
             }
         };
 
+        // Genesis is captured by an explicit bootstrap, not by a block section: it belongs to no
+        // block, and forcing it into block 0 would collide with that block's own sections.
+        genesisBootstrap = new ProjectionGenesisBootstrap(identity, yano.genesisUtxoProvider(),
+                new com.bloxbean.cardano.yano.archive.core.source.YaciUtxoHistoryDecoder(
+                        ledger::slotToEpoch, ledger::slotToUnixTime));
+
         artifactReader = new RoutingArtifactReader(java.util.Map.of(
                 com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.EPOCH_STAKE,
                 new EpochSnapshotArtifactReader(store, clamp, pageSize, networkMagic, boundaryFacts),
@@ -438,6 +454,79 @@ public class ProjectionHistoryService implements AutoCloseable {
                         .shipped().wireForm(), pageSize);
     }
 
+
+    /**
+     * Complete an interrupted genesis bootstrap before ordinary draining begins.
+     *
+     * <p>The genesis-block event fires once, for the first block of a fresh chain. A crash after
+     * that block is stored but before the projection recorded genesis would otherwise leave the
+     * archive permanently short with no second trigger, so relying on event delivery alone is not
+     * enough - startup has to check.
+     *
+     * <p>A populated archive with no genesis marker fails closed. The distribution could be
+     * re-derived, but the blocks already committed were projected against an archive missing it,
+     * and quietly appending genesis now would produce an archive that never existed as a whole.
+     */
+    private void reconcileGenesis(ChainQuery chain) {
+        if (projectionSink == null || genesisBootstrap == null) return;
+
+        var receipt = projectionSink.genesisReceipt();
+        if (receipt.isPresent()) {
+            genesisComplete = true;
+            log.info("ADR-039 genesis already captured: {} rows, {} lovelace, identity {}",
+                    receipt.get().rowCount(), receipt.get().totalLovelace(), receipt.get().identity());
+            return;
+        }
+
+        var coordinate = projectionSink.coordinate();
+        if (coordinate.isPresent()) {
+            throw new IllegalStateException("this projection archive holds blocks through "
+                    + coordinate.blockNumber() + " but never recorded a genesis distribution;"
+                    + " it cannot be completed in place and requires a fresh sync");
+        }
+
+        // Nothing committed yet. If the chain already has its first block, the trigger may have
+        // been missed or interrupted; complete it now. Otherwise the event will do it.
+        var tip = chain.getLocalTip();
+        if (tip == null) return;
+        var canonical = chain.getCanonicalBlockReference(0).or(() ->
+                chain.getCanonicalBlockReference(tip.getBlockNumber()));
+        if (canonical.isEmpty()) return;
+
+        log.info("ADR-039 genesis was not recorded; completing the interrupted bootstrap before draining");
+        captureGenesis(canonical.get().blockNumber(), canonical.get().slot(),
+                canonical.get().blockHash(), null, java.util.Map.of());
+    }
+
+    /** Capture genesis, cross-checking any Shelley funds the trigger carried. */
+    private synchronized void captureGenesis(long blockNumber, long slot, byte[] blockHash,
+                                             byte[] parentHash,
+                                             java.util.Map<String, java.math.BigInteger> eventFunds) {
+        if (genesisComplete || projectionSink == null || genesisBootstrap == null) return;
+        String blockHashHex = blockHash == null ? "00".repeat(32)
+                : java.util.HexFormat.of().formatHex(blockHash);
+
+        var distribution = genesisBootstrap.distribution(blockNumber, slot, blockHashHex);
+        // The event is the trigger, not the source. Where it also carries Shelley funds, a
+        // disagreement means the archive would be built from a different distribution than the
+        // ledger initialised from.
+        genesisBootstrap.verifyEventAgreesWithProvider(eventFunds, distribution,
+                identity.networkIdentity().networkMagic());
+
+        long blockTime = 0;
+        try {
+            blockTime = ledgerQuery == null ? 0 : ledgerQuery.slotToUnixTime(slot);
+        } catch (RuntimeException ignored) {
+            // A genesis coordinate outside the slot schedule still gets a deterministic row.
+        }
+        var receipt = genesisBootstrap.bootstrap(projectionSink, blockNumber, slot,
+                0, blockTime, blockHash == null ? new byte[32] : blockHash,
+                parentHash == null ? new byte[32] : parentHash, blockHashHex);
+        genesisComplete = true;
+        log.info("ADR-039 genesis captured: {} rows, {} lovelace, digest {}",
+                receipt.rowCount(), receipt.totalLovelace(), receipt.rowDigest());
+    }
+
     /** Start the ordered drain, once the guard has accepted the sink. */
     private void startConsumerAndDrain(ChainQuery chain) {
         if (projectionSink == null) return;
@@ -446,6 +535,8 @@ public class ProjectionHistoryService implements AutoCloseable {
                 artifactReader,
                 () -> chain.getLocalTip() == null ? -1 : chain.getLocalTip().getBlockNumber(),
                 this::commonRollbackFloorSlot);
+
+        reconcileGenesis(chain);
 
         // Durable lease reconciliation, before any drain or prune can run. Leases live in memory;
         // the outbox's surviving artifact references are what actually survives a crash.
@@ -679,6 +770,30 @@ public class ProjectionHistoryService implements AutoCloseable {
         // the rollback event's own slot, not from a live tip read: listener order relative
         // to chain-state rollback is unspecified, and a tip read too early would leave
         // stale envelopes above the surviving tip.
+        // The genesis-block event is the lifecycle TRIGGER and the source of the first-block
+        // coordinate. The distribution itself always comes from the provider - see
+        // ProjectionGenesisBootstrap - so the two cannot drift.
+        bus.subscribe(com.bloxbean.cardano.yano.api.events.GenesisBlockEvent.class, ctx -> {
+            var event = ctx.event();
+            try {
+                captureGenesis(event.blockNumber(), event.slot(),
+                        event.blockHash() == null ? null
+                                : com.bloxbean.cardano.yaci.core.util.HexUtil.decodeHexString(event.blockHash()),
+                        null,
+                        event.bootstrapData() == null || event.bootstrapData().shelley() == null
+                                ? java.util.Map.of()
+                                : event.bootstrapData().shelley().initialFunds());
+            } catch (RuntimeException e) {
+                // Never swallow: an archive that missed genesis reports itself complete, and the
+                // coverage gate below is the only other thing standing between that and a query
+                // returning a wrong answer.
+                drainFailures.increment();
+                lastDrainFailure = "genesis bootstrap failed: " + e;
+                log.error("ADR-039 genesis bootstrap failed", e);
+                throw e;
+            }
+        }, SubscriptionOptions.builder().build());
+
         bus.subscribe(RollbackEvent.class, ctx -> {
             var target = ctx.event().target();
             if (target == null) return;
@@ -847,6 +962,7 @@ public class ProjectionHistoryService implements AutoCloseable {
         status.put("contributorStatus", health.status().name());
         status.put("contributorCursors", health.contributorCursors());
         health.detail().ifPresent(detail -> status.put("contributorDetail", detail));
+        status.put("genesisCaptured", genesisComplete);
         status.putAll(artifactStatus());
         return status;
     }
@@ -940,6 +1056,15 @@ public class ProjectionHistoryService implements AutoCloseable {
             return Optional.of(value);
         }
 
+        if (!genesisComplete) {
+            // A fresh archive must not claim complete block coverage before its genesis
+            // distribution is durable, or a balance query over a genesis-funded address that
+            // never moved would answer "nothing" instead of "not yet".
+            value.put("available", false);
+            value.put("reason", "the genesis distribution has not been captured yet");
+            return Optional.of(value);
+        }
+
         value.put("available", true);
         value.put("generation", identity.fingerprint());
         value.put("fromBlock", 0L);
@@ -994,8 +1119,10 @@ public class ProjectionHistoryService implements AutoCloseable {
         }
         // The queryable floor is genesis: ADR-039 archives are fresh-sync only, so there is no
         // partial lower bound to report.
-        coverage.put("queryableFromBlock", committedThrough < 0 ? -1 : 0);
-        coverage.put("queryableThroughBlock", committedThrough);
+        coverage.put("genesisCaptured", genesisComplete);
+        // Coverage is only claimable from genesis once genesis itself is durable.
+        coverage.put("queryableFromBlock", committedThrough < 0 || !genesisComplete ? -1 : 0);
+        coverage.put("queryableThroughBlock", genesisComplete ? committedThrough : -1);
 
         var tip = chainTip == null ? -1 : chainTip.getAsLong();
         coverage.put("tipBlock", tip);

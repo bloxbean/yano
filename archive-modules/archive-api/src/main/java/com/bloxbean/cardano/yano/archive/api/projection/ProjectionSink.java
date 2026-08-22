@@ -37,6 +37,32 @@ public interface ProjectionSink extends AutoCloseable {
     ProjectionReceipt append(ProjectionRowBatch batch, ArchiveArtifactReader artifacts);
 
     /**
+     * The genesis bootstrap this archive recorded, if any.
+     *
+     * <p>Empty on an archive that never seeded genesis. On a populated archive that is a fatal
+     * state, not a recoverable one: the distribution can still be re-derived, but the blocks
+     * already committed were projected against an archive missing it.
+     */
+    default Optional<ProjectionGenesisReceipt> genesisReceipt() {
+        return Optional.empty();
+    }
+
+    /**
+     * Commit the genesis rows and their receipt in ONE sink transaction.
+     *
+     * <p>Atomic by construction rather than by recovery: there is no window in which the rows are
+     * durable but unrecorded. A matching receipt already present returns without duplicate
+     * effect, which is what makes replay after a crash safe; a receipt describing a different
+     * distribution raises rather than appending a second genesis.
+     *
+     * <p>An empty distribution still commits a receipt. "Nothing to distribute" and "never
+     * bootstrapped" must not look alike.
+     */
+    default ProjectionGenesisReceipt commitGenesis(ProjectionGenesisBatch batch) {
+        throw new UnsupportedOperationException("sink does not support genesis bootstrap");
+    }
+
+    /**
      * Run one bounded maintenance pass.
      *
      * <p>Called by the single projection coordinator when it is caught up and idle — never on

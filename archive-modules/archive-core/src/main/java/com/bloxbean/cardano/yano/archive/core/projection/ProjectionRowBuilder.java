@@ -122,6 +122,33 @@ public final class ProjectionRowBuilder {
      * configured memory ceiling a real bound and lets an oversized single envelope be
      * processed rather than deadlocking the consumer.
      */
+    /**
+     * Genesis distribution rows, through the same dataset derivation ordinary outputs use.
+     *
+     * <p>Genesis funds belong to no block, so they cannot arrive as an envelope section - but
+     * they must not become a second row derivation either. This routes the normalised genesis
+     * fact through {@link UtxoHistoryDataset}, so address decomposition, column order and schema
+     * semantics are shared with every other output row by construction.
+     *
+     * <p>The job identity is deterministic over the genesis coordinate, so a bootstrap replayed
+     * after a crash reproduces the same {@code archive_job_id} rather than a fresh one.
+     */
+    public static List<ArchiveRow> genesisRows(com.bloxbean.cardano.yano.archive.api.ArchiveNetworkIdentity network, int projectionVersion,
+                                               long blockNumber, long slot, int epoch, long blockTime,
+                                               byte[] blockHash, byte[] parentHash,
+                                               UtxoHistoryFact fact) {
+        List<ArchiveRow> rows = new ArrayList<>();
+        if (fact.outputs().isEmpty() && fact.newAddresses().isEmpty()) return rows;
+        ArchiveJob job = ArchiveJob.deterministic(network, ArchiveDatasetId.UTXO_HISTORY,
+                projectionVersion, new BlockRange(blockNumber, blockNumber),
+                new ArchiveRangeAnchor(slot, blockHash, slot, blockHash), "genesis");
+        new UtxoHistoryDataset().derive(job,
+                new BlockSourceContext<>(blockNumber, slot, epoch, Instant.ofEpochSecond(blockTime),
+                        blockHash, parentHash, fact),
+                rows::add);
+        return rows;
+    }
+
     private static void appendRows(ProjectionEnvelope envelope, List<ArchiveRow> rows) {
         var header = envelope.header();
         long blockNumber = header.blockNumber();

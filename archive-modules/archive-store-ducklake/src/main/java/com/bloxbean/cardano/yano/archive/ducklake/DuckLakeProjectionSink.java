@@ -276,6 +276,130 @@ public final class DuckLakeProjectionSink implements ProjectionSink {
         }
     }
 
+    @Override
+    public Optional<com.bloxbean.cardano.yano.archive.api.projection.ProjectionGenesisReceipt> genesisReceipt() {
+        try (DuckDbLease lease = manager.acquire(DuckDbWorkload.STEADY, config.acquireTimeout())) {
+            Connection connection = lease.connection();
+            DuckLakeSql.attach(connection, config, null, true);
+            try {
+                return readGenesisReceipt(connection);
+            } finally {
+                DuckLakeSql.detach(connection);
+            }
+        } catch (SQLException e) {
+            throw new ProjectionSinkException("failed to read the DuckLake genesis receipt", e);
+        }
+    }
+
+    private Optional<com.bloxbean.cardano.yano.archive.api.projection.ProjectionGenesisReceipt>
+            readGenesisReceipt(Connection connection) throws SQLException {
+        try (Statement sql = connection.createStatement();
+             ResultSet rows = sql.executeQuery("SELECT identity, row_digest, row_count, total_lovelace,"
+                     + " committed_at FROM history_lake." + DuckLakeProjectionSchema.GENESIS_TABLE)) {
+            if (!rows.next()) return Optional.empty();
+            return Optional.of(new com.bloxbean.cardano.yano.archive.api.projection.ProjectionGenesisReceipt(
+                    rows.getString(1), rows.getString(2), rows.getLong(3),
+                    new java.math.BigInteger(rows.getString(4)), rows.getTimestamp(5).toInstant()));
+        }
+    }
+
+    @Override
+    public com.bloxbean.cardano.yano.archive.api.projection.ProjectionGenesisReceipt commitGenesis(
+            com.bloxbean.cardano.yano.archive.api.projection.ProjectionGenesisBatch batch) {
+        Objects.requireNonNull(batch, "batch");
+        if (identity == null) throw new ProjectionSinkException("DuckLake projection sink is not initialized");
+        if (!identity.matches(batch.projectionIdentity())) {
+            throw new ProjectionSinkException("genesis batch identity " + batch.projectionIdentity().fingerprint()
+                    + " does not match the sink identity " + identity.fingerprint());
+        }
+
+        try (DuckDbLease lease = manager.acquire(DuckDbWorkload.BULK_CATCH_UP, config.acquireTimeout())) {
+            Connection connection = lease.connection();
+            DuckLakeSql.attach(connection, config, null, false);
+            try {
+                // Replay after a crash must be a no-op, not a second genesis.
+                var existing = readGenesisReceipt(connection);
+                if (existing.isPresent()) {
+                    if (!existing.get().matches(batch.identity())) {
+                        throw new ProjectionSinkException("this archive already recorded genesis "
+                                + existing.get().identity() + " but this node is configured for "
+                                + batch.identity() + "; a different network or genesis configuration"
+                                + " cannot be projected into an existing archive");
+                    }
+                    return existing.get();
+                }
+                return commitGenesisRows(connection, batch);
+            } finally {
+                DuckLakeSql.detach(connection);
+            }
+        } catch (SQLException e) {
+            health = ProjectionSinkHealth.unavailable(e.toString());
+            throw new ProjectionSinkException("DuckLake genesis commit failed", e);
+        }
+    }
+
+    private com.bloxbean.cardano.yano.archive.api.projection.ProjectionGenesisReceipt commitGenesisRows(
+            Connection connection,
+            com.bloxbean.cardano.yano.archive.api.projection.ProjectionGenesisBatch batch) throws SQLException {
+        Set<String> staged = new LinkedHashSet<>();
+        Map<String, DuckDBAppender> appenders = new LinkedHashMap<>();
+        Instant committedAt = Instant.now();
+
+        try (Statement sql = connection.createStatement()) {
+            sql.execute("BEGIN TRANSACTION");
+        }
+        try {
+            for (ArchiveRow row : batch.rows()) {
+                ArchiveTableSchema table = tables.get(row.table());
+                if (table == null) {
+                    throw new ArchiveStoreException("unknown archive table in genesis batch: " + row.table());
+                }
+                if (staged.add(table.physicalName())) createStaging(connection, table);
+                appendRow(connection, appenders, table, row.values());
+            }
+            for (DuckDBAppender appender : appenders.values()) {
+                appender.flush();
+                appender.close();
+            }
+            appenders.clear();
+            for (String table : staged) {
+                try (Statement sql = connection.createStatement()) {
+                    sql.execute("INSERT INTO history_lake." + DuckLakeSql.name(table)
+                            + " SELECT * FROM " + stagingName(table));
+                }
+            }
+
+            // The marker commits WITH the rows. There is no window in which the distribution is
+            // durable but unrecorded, so recovery never has to guess.
+            try (PreparedStatement insert = connection.prepareStatement(
+                    "INSERT INTO history_lake." + DuckLakeProjectionSchema.GENESIS_TABLE
+                            + " VALUES (?, ?, ?, ?, ?)")) {
+                insert.setString(1, batch.identity());
+                insert.setString(2, batch.rowDigest());
+                insert.setLong(3, batch.rows().size());
+                insert.setString(4, batch.totalLovelace().toString());
+                insert.setTimestamp(5, Timestamp.from(committedAt));
+                insert.executeUpdate();
+            }
+
+            try (Statement sql = connection.createStatement()) {
+                sql.execute("COMMIT");
+            }
+        } catch (RuntimeException | SQLException e) {
+            for (DuckDBAppender appender : appenders.values()) {
+                try { appender.close(); } catch (Exception ignored) { }
+            }
+            try (Statement sql = connection.createStatement()) {
+                sql.execute("ROLLBACK");
+            } catch (SQLException ignored) { }
+            throw e;
+        }
+
+        return new com.bloxbean.cardano.yano.archive.api.projection.ProjectionGenesisReceipt(
+                batch.identity(), batch.rowDigest(), batch.rows().size(),
+                batch.totalLovelace(), committedAt);
+    }
+
     private ProjectionReceipt commitBatch(Connection connection, ProjectionRowBatch batch,
                                           ArchiveArtifactReader artifacts) throws SQLException {
         Map<String, Long> rowCounts = new LinkedHashMap<>();
