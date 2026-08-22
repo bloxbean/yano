@@ -76,3 +76,72 @@ It records no artifact contract. Under rule 1 it is complete for its four block 
 Phase 5 archive for rewards or governance status, and the final production validation therefore
 needs a fresh sync with the artifact set enabled from genesis. That is the intended cost of
 fail-closed, and it is better paid knowingly now than discovered at the first query.
+
+## Corrections after review (2026-08-21)
+
+Three of the classifications above were wrong or incomplete. Recorded rather than silently
+edited, because the reasoning that produced them is the part worth not repeating.
+
+### ADA_POT is RECONSTRUCTIBLE, not BOUNDARY_INPUTS_ONLY
+
+The original reasoning was that ada pots are the transition's *output*, so recomputing them would
+need the pre-transition pots plus that epoch's fees and deposits — inputs the node does not keep.
+That reasoning is sound and irrelevant: **the computed pot is persisted per epoch under its own
+key and no code path deletes it**, verified by searching every use of `adaPotKey`. There is
+nothing to recompute, because the value is still there.
+
+The lesson generalises: reconstructibility is a question about what the node *retains*, and the
+answer lives in the storage layer, not in the derivation's shape.
+
+### RECONSTRUCTIBLE does not license adding an artifact to an existing archive
+
+The first implementation let any artifact classed `RECONSTRUCTIBLE` be added to an archive that
+lacked it. That conflates two questions:
+
+- **is this kind derivable from retained state?** — a property of the dataset;
+- **does *this node, today* still hold the sources for the epochs that are missing?** — a
+  property of the deployment.
+
+Epoch stake separates them sharply: it is a function of the delegation snapshot, and those
+generations are **pruned unless an archive lease has protected them since genesis**. On a normal
+node it is derivable in principle and unavailable in practice. Deciding from the class alone
+would produce an archive that claims epochs it can never fill — discovered only when someone asks
+for one.
+
+Coverage is now proved separately through `ProjectionArtifactCoverage`, defaulting to `NONE`.
+Being wrong in that direction costs a rebuild that may not have been needed; being wrong the
+other way is undetectable until it matters.
+
+### DREP_DISTRIBUTION: whole dataset at its strictest class
+
+Its provenance is genuinely mixed — `amount` is reconstructible, while `storedExpiry`,
+`dormantEpochs`, `effectiveExpiry` and `active` are boundary state that later state overwrites.
+One contract per dataset cannot express that.
+
+**Decision: capture the whole dataset together, classed at its strictest column.** Composite
+components with independently versioned representations were considered and rejected as the
+default: they double the identity surface and make partial capture *expressible*, which invites
+an archive holding amounts without state columns — a row that cannot be emitted at all. Splitting
+remains available if measurement shows capturing the reconstructible half separately is
+materially cheaper; it is not being paid for speculatively.
+
+### ATOMIC_EVIDENCE added
+
+The representation set lacked the case the design actually relies on for small irreproducible
+boundary observations: facts written atomically into the contributor's own batch, with no staged
+file and no retained generation behind them. Governance proposal status is the clearest example —
+there is nothing to reference later, so the evidence *is* the artifact, and it is durable only
+because it committed with the canonical state it describes.
+
+## Measurements this phase must produce
+
+Recorded here so they are collected with the slice rather than reconstructed afterwards:
+
+- **DuckLake write throughput for EPOCH_STAKE and ADA_POT** — rows/s and bytes/s into the sink,
+  separately from block-section throughput, since an epoch artifact arrives as one large burst at
+  a boundary rather than as a steady stream.
+- Epoch transition latency with and without artifact capture, to show capture does not delay the
+  authoritative transition.
+- Retained bytes per artifact and the resulting lease/clamp footprint.
+- The persisted-generation versus staged-file A/B the ADR requires before choosing a
+  representation for epoch stake.

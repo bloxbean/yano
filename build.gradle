@@ -1,3 +1,5 @@
+import java.time.Duration
+
 plugins {
     id 'java-library'
     id 'maven-publish'
@@ -735,6 +737,24 @@ subprojects {
     tasks.withType(Test) {
         useJUnitPlatform()
         jvmArgs '--add-opens=java.base/java.lang=ALL-UNNAMED'
+
+        // A deadlocked test blocks forever, and a blocked build is indistinguishable from a slow
+        // one: an inherited PluginOperationsRegistry deadlock sat in awaitNoActiveSamplesLocked
+        // for roughly 21 hours while the suite appeared to be "still running". A per-test
+        // deadline turns that into a failure with a stack trace instead of silence.
+        //
+        // Applied through JUnit's global timeout so it covers every test without annotating each
+        // one, and set well above the slowest legitimate test (DuckLake maintenance passes take
+        // tens of seconds) so it never fires on a merely slow one.
+        systemProperty 'junit.jupiter.execution.timeout.default',
+                rootProject.providers.gradleProperty('junitTestTimeout').getOrElse('10m')
+        systemProperty 'junit.jupiter.execution.timeout.thread.mode.default', 'SEPARATE_THREAD'
+
+        // Backstop for a worker that hangs outside a test method, which the JUnit timeout cannot
+        // interrupt - the Gradle daemon reclaims it rather than waiting indefinitely.
+        timeout = Duration.ofMinutes(
+                Integer.parseInt(rootProject.providers.gradleProperty('junitTaskTimeoutMinutes')
+                        .getOrElse('45')))
         testLogging {
             def verbose = rootProject.providers.gradleProperty('verboseTests')
                     .map { it.toBoolean() }
