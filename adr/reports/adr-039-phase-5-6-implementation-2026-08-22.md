@@ -394,18 +394,31 @@ boundary. At the transition from 307 to 308 the delegation snapshot is written f
 finalised for the **incoming** one (`contributeAdaPotArtifact(newEpoch)`). A one-epoch
 difference at tip is therefore the expected steady state, not a missing row.
 
-## Not validated: disk backpressure
+## Disk backpressure — validated
 
-`ingestState` read `RUNNING` for the entire run and was never driven to `PAUSED`. The
-mechanism is wired and its limits are reported in status
-(`retainedPhysicalBytes`, `retainedLimitBytes`, `filesystemFreeBytes`), but **it was
-not exercised**, and a one-way pause would be a hang, so the resume is the half that
-needs proving. Forcing it needs
-`yano.history.projection.backlog.hard-bytes` (or the retained-bytes limit) set low
-enough to trip during a sync, then confirming ingest pauses **and resumes** once the
-drain catches up. Everything else on the validation list — finality window, retention
-leases, maintenance, both restart paths, graceful shutdown, contributor lockstep,
-acknowledgement contiguity — has evidence above.
+The main run never approached its disk limits, so backpressure was exercised
+separately on an isolated deployment with the bounds set deliberately low
+(`projection.disk.soft-bytes` 16 MB, `hard-bytes` 32 MB, `low-water-bytes` 8 MB), on
+a fresh genesis sync. A one-way pause would be a hang, so what needed proving was the
+resume.
+
+| time | state | retained | evidence |
+|---|---|---|---|
+| 11:36:10 | `DEGRADED` | 23.8 MB | crossed the 16 MB soft bound |
+| 11:36:13 | **`PAUSED`** | 50.6 MB | reached the 32 MB hard limit; "canonical ingestion paused until the sink drains" |
+| 11:36:58 | **`RUNNING`** | 6.7 MB | drain caught up below the low-water mark |
+| 11:37:05 | `PAUSED` | 37.2 MB | second cycle, now reporting the low-water resume target and free space |
+| 11:37:28 | `RUNNING` | 7.3 MB | resumed again |
+
+Eight transitions in total. The important property is that it **throttles rather than
+hangs**: across the cycles the chain advanced 419,337 → 471,214 and acknowledgement
+advanced 413,879 → 465,408, with **0 drain failures**. The pause reason is specific
+enough to act on, naming the retained bytes, the limit that was hit, the resume
+threshold and the free space.
+
+With this, every item on the validation list has evidence — finality window, disk
+backpressure, retention leases, maintenance, both restart paths, graceful shutdown,
+contributor lockstep, and acknowledgement contiguity.
 
 ## Contributor lockstep at tip
 
