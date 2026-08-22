@@ -121,6 +121,45 @@ public class ProjectionHistoryService implements AutoCloseable {
 
     /** Held so the retention check can ask the runtime for its live common rollback floor. */
     private volatile Yano runtimeYano;
+    /**
+     * Epoch staging for artifacts the projection has not yet migrated.
+     *
+     * <p>Owned here rather than by the legacy service because Phase 7a deletes that service's
+     * block machinery. REWARD, DREP_DISTRIBUTION and GOVERNANCE_PROPOSAL_STATUS still depend on
+     * staged epoch files, so their lifecycle has to move before the old owner is reduced -
+     * otherwise deleting it silently disables three datasets, which is the same shape of failure
+     * as the missing genesis distribution and just as invisible.
+     *
+     * <p>Retired dataset by dataset: each entry disappears from {@code UNMIGRATED} as its
+     * projection artifact lands, and the whole field goes with Phase 7b when the set empties.
+     */
+    private volatile EpochArchiveStagingService epochStaging;
+
+    /**
+     * Epoch datasets still served by staged files rather than by a projection artifact.
+     *
+     * <p>Derived from the shipped artifact contracts, so it cannot drift: an artifact that ships
+     * removes itself from this set automatically.
+     */
+    private static java.util.Set<com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset>
+            unmigratedEpochDatasets() {
+        var migrated = com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactContracts
+                .shipped().contracts().keySet();
+        var pending = java.util.EnumSet.noneOf(
+                com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset.class);
+        for (var dataset : com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.values()) {
+            if (dataset.sourceKind() != com.bloxbean.cardano.yano.archive.api.SourceKind.EPOCH) continue;
+            if (migrated.contains(dataset)) continue;
+            try {
+                pending.add(com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset
+                        .valueOf(dataset.name()));
+            } catch (IllegalArgumentException noStagingCounterpart) {
+                // An epoch dataset with no staging counterpart cannot be served that way at all.
+            }
+        }
+        return pending;
+    }
+
     /** Captures the genesis distribution once; block sections never produce it. */
     private volatile ProjectionGenesisBootstrap genesisBootstrap;
 
@@ -241,6 +280,7 @@ public class ProjectionHistoryService implements AutoCloseable {
         verifyArtifactContracts(sinkEmpty && acknowledgedThrough < 0, chain, ledger);
 
         installEpochArtifacts(yano, chain, ledger, network.networkMagic());
+        installEpochStagingForUnmigratedDatasets(chain, ledger, network);
 
         safetyWindows = ArchiveSafetyWindows.resolve(genesis.getSecurityParam(),
                 autoLong(YanoPropertyKeys.History.ROLLBACK_RETENTION_BLOCKS),
@@ -561,6 +601,28 @@ public class ProjectionHistoryService implements AutoCloseable {
                 receipt.rowCount(), receipt.totalLovelace(), receipt.rowDigest());
     }
 
+
+    /**
+     * Keep staged epoch files flowing for datasets the projection cannot yet serve.
+     *
+     * <p>Strictly transitional. Every dataset here is one the projection has not migrated, and
+     * the whole method disappears in Phase 7b once the set is empty.
+     */
+    private void installEpochStagingForUnmigratedDatasets(ChainQuery chain, LedgerQuery ledger,
+                                                          ArchiveNetworkIdentity network) {
+        var pending = unmigratedEpochDatasets();
+        if (pending.isEmpty()) {
+            log.info("ADR-039 every epoch dataset is served by a projection artifact;"
+                    + " no staged epoch files are produced");
+            return;
+        }
+        epochStaging = new EpochArchiveStagingService(chain, ledger, network,
+                historyDirectory.resolve("epoch-source"), pending);
+        ledger.setEpochArchiveStagingSink(epochStaging);
+        log.info("ADR-039 epoch staging retained for {} unmigrated dataset(s): {}",
+                pending.size(), pending);
+    }
+
     /** Start the ordered drain, once the guard has accepted the sink. */
     private void startConsumerAndDrain(ChainQuery chain) {
         if (projectionSink == null) return;
@@ -848,6 +910,13 @@ public class ProjectionHistoryService implements AutoCloseable {
                 // protection from what actually survives, or the reader would keep a source pinned
                 // for an artifact that no longer exists and pruning would never resume.
                 artifactReader.reconcileAfterRestart(outbox.pendingArtifacts());
+                // Staged epoch files above the rollback point describe a discarded fork. The
+                // cutoff is derived from the surviving tip, since the rollback point is a slot.
+                var staging = epochStaging;
+                if (staging != null) {
+                    var tip = chainQuery == null ? null : chainQuery.getLocalTip();
+                    if (tip != null) staging.discardAfterBlock(tip.getBlockNumber());
+                }
                 log.info("ADR-039 rollback to slot {} removed {} pending projection envelope(s)",
                         target.getSlot(), removed);
             }
