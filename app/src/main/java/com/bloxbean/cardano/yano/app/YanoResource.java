@@ -63,7 +63,7 @@ public class YanoResource {
 
         try {
             nodeLifecycle.start();
-            historyArchive.start();
+            // ADR-039: the projection drain starts with the node; there is no archive worker.
             return Response.ok(Map.of("message", "Node started successfully")).build();
         } catch (Exception e) {
             return Response.serverError()

@@ -18,7 +18,7 @@ import static org.mockito.Mockito.when;
 class ArchiveAccountHistoryProviderTest {
 
     @Test
-    void rewardQueriesNeverConsultTheBlockHotStore() {
+    void anEmptyCoverageIsReportedRatherThanAnsweredAsAbsent() {
         HistoryArchiveService service = mock(HistoryArchiveService.class);
         ArchiveBackend backend = mock(ArchiveBackend.class);
         ArchiveReadSession read = mock(ArchiveReadSession.class);
@@ -29,13 +29,12 @@ class ArchiveAccountHistoryProviderTest {
         when(backend.openReadSession()).thenReturn(read);
         when(backend.coverage(read, ArchiveDatasetId.REWARD)).thenReturn(
                 new ArchiveCoverage(ArchiveDatasetId.REWARD, 4, 1, List.of()));
-        when(service.liveCoverage(ArchiveDatasetId.REWARD)).thenReturn(Optional.empty());
-
         ArchiveAccountHistoryProvider provider = new ArchiveAccountHistoryProvider(service);
 
         assertThatThrownBy(() -> provider.getRewards(0, "00".repeat(28), 1, 20, "asc"))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("history coverage is incomplete");
-        verify(service, never()).openHotSnapshot();
+        // ADR-039 Phase 7a removed hot-history promotion. There is no near-tip buffer to
+        // consult, so an uncovered range must surface as "incomplete" rather than as no rows.
     }
 }

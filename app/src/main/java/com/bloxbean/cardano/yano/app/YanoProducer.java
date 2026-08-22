@@ -996,9 +996,8 @@ public class YanoProducer {
                 log.info("Auto-sync is disabled. Start manually via: curl -X POST {}/start", nodeApiBaseUrl());
                 log.info("REST API available at {}/", nodeApiBaseUrl());
             }
-            // Archive work is optional and starts only after authoritative startup
-            // recovery completed. Manual-start mode starts it from YanoResource.
-            if (assembledYano.lifecycle().isRunning()) historyArchive.start();
+            // ADR-039: there is no separate archive worker to start. The projection drain runs
+            // with the node, and historical reads are served from the archive it writes.
         } catch (Throwable e) {
             // Do not inspect or allocate diagnostics around a process-fatal
             // root. Runtime layers preserve the same terminal distinction.

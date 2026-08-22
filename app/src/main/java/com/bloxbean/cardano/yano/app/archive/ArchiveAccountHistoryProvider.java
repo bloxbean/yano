@@ -131,31 +131,14 @@ final class ArchiveAccountHistoryProvider implements AccountHistoryProvider {
                 case REWARD -> "rewards";
                 default -> throw new IllegalArgumentException("unsupported compatibility dataset");
             };
-            // Epoch datasets are committed directly to the durable backend and never have a
-            // near-tip hot table. Opening the hot snapshot for rewards would incorrectly try to
-            // query a non-existent hot_rewards table in the SQLite hot store.
-            var hotSnapshot = dataset.sourceKind() == SourceKind.BLOCK
-                    ? service.openHotSnapshot()
-                    : null;
+            // No hot merge. Hot-history buffered rows ahead of the durable archive; the
+            // projection has no equivalent, because a block range becomes visible exactly when
+            // it commits. Anything above the committed coordinate is honestly "not yet", which
+            // /history/coverage reports rather than this path guessing.
             try (ArchiveReadSession read = backend.openReadSession()) {
-                List<ArchiveRecord> hot = hotSnapshot == null ? List.of()
-                        : com.bloxbean.cardano.yano.archive.core.hot.HotArchiveRows.read(
-                                hotSnapshot, dataset, table, filters);
                 ArchiveCoverage coverage = backend.coverage(read, dataset);
-                Optional<BlockRange> liveCoverage = service.liveCoverage(dataset);
                 if (coverage.completeRanges().isEmpty()) {
-                    if (liveCoverage.isEmpty()) throw new IllegalStateException("history coverage is incomplete");
-                    Comparator<ArchiveRecord> comparator = comparator(dataset);
-                    if (!"asc".equalsIgnoreCase(order)) comparator = comparator.reversed();
-                    return hot.stream().sorted(comparator)
-                            .skip(offset).limit(count).toList();
-                }
-                if (liveCoverage.isPresent()) {
-                    long coldEnd = coverage.completeRanges().getLast().endInclusive();
-                    long liveStart = liveCoverage.orElseThrow().startInclusive();
-                    if (liveStart > Math.addExact(coldEnd, 1)) {
-                        throw new IllegalStateException("history coverage has a cold/live gap");
-                    }
+                    throw new IllegalStateException("history coverage is incomplete");
                 }
                 ArchiveRange range = newRange(dataset, coverage.completeRanges().getFirst().startInclusive(),
                         coverage.completeRanges().getLast().endInclusive());
@@ -163,7 +146,7 @@ final class ArchiveAccountHistoryProvider implements AccountHistoryProvider {
                 if (!"asc".equalsIgnoreCase(order)) comparator = comparator.reversed();
                 ArchivePageCursor.Order selectedOrder = "asc".equalsIgnoreCase(order)
                         ? ArchivePageCursor.Order.ASC : ArchivePageCursor.Order.DESC;
-                int coldTarget = Math.toIntExact(Math.min(Integer.MAX_VALUE, target + hot.size()));
+                int coldTarget = Math.toIntExact(Math.min(Integer.MAX_VALUE, target));
                 List<ArchiveRecord> merged = new ArrayList<>();
                 Optional<ArchivePageCursor> cursor = Optional.empty();
                 do {
@@ -175,13 +158,10 @@ final class ArchiveAccountHistoryProvider implements AccountHistoryProvider {
                     merged.addAll(result.rows());
                     cursor = result.nextCursor();
                 } while (cursor.isPresent());
-                merged.addAll(hot);
                 merged.sort(comparator);
                 LinkedHashMap<String, ArchiveRecord> unique = new LinkedHashMap<>();
                 for (ArchiveRecord row : merged) unique.putIfAbsent(identity(dataset, row), row);
                 return unique.values().stream().skip(offset).limit(count).toList();
-            } finally {
-                if (hotSnapshot != null) hotSnapshot.close();
             }
         }
     }
