@@ -224,16 +224,14 @@ yano:
   # rollback-retention-epochs: 20
   account:
     stake-balance-index-enabled: true
-  # ADR-034 archive is fully optional. Disabled means no archive driver,
-  # Flyway, worker thread, history RocksDB, or archive write is initialized.
+  # ADR-039: history is written by the canonical projection outbox. The replay-worker
+  # archive was removed in Phase 7a, and with it the backfill workers, per-dataset
+  # start modes, hot store and dataset toggles that tuned it. Those keys are now
+  # rejected rather than ignored, so a stale setting fails loudly instead of reading
+  # as configuration that nothing consumes.
   history:
     enabled: false
     dir: ./history
-    start-mode: full-required
-    hot-store:
-      engine: sqlite
-      sqlite:
-        path: ./history/hot-history.sqlite
     archive:
       engine: ducklake
       finality-blocks: auto
@@ -249,46 +247,6 @@ yano:
         cleanup-grace-hours: 24
     rollback:
       retention-blocks: auto
-    worker:
-      poll-interval-millis: 1000
-      # Adaptive workers start at 100 and grow after successful batches.
-      max-blocks-per-batch: 1000
-      max-rows-per-batch: 250000
-      # Core sync and history backfill run concurrently by default. Constrained
-      # machines may enable this to prioritize core catch-up.
-      pause-backfill-during-core-catchup: false
-      bulk-pause-core-lag-blocks: 100
-      # auto = min(enabled block projections, 4, max(1, available processors / 2))
-      projection-parallelism: auto
-    datasets:
-      account-events: { enabled: true, retention-epochs: 0 }
-      transactions: { enabled: true, retention-epochs: 0 }
-      address-transactions:
-        enabled: false
-        retention-epochs: 0
-        subjects:
-          address: true
-          payment-credential: true
-          stake-credential: true
-      utxo-history:
-        enabled: false
-        retention-epochs: 0
-        tables:
-          transaction-outputs:
-            enabled: true
-          transaction-output-assets:
-            enabled: true
-          transaction-inputs:
-            enabled: true
-          transaction-datums:
-            enabled: true
-          transaction-redeemers:
-            enabled: true
-      rewards: { enabled: false, retention-epochs: 0 }
-      epoch-stake: { enabled: false, start-mode: earliest-available, retention-epochs: 0 }
-      drep-distribution: { enabled: false, start-mode: earliest-available, retention-epochs: 0 }
-      ada-pots: { enabled: false, start-mode: earliest-available, retention-epochs: 0 }
-      governance-proposal-status: { enabled: false, start-mode: earliest-available, retention-epochs: 0 }
     duckdb:
       max-total-memory: 256MB
       max-concurrent-queries: 2
@@ -371,16 +329,14 @@ yano:
       protocol-parameters-file: config/network/devnet/protocol-param.json
     account-state:
       enabled: true
-    # Exercise the isolated SQLite archive in devnet without requiring retained genesis bodies.
+    # ADR-039: devnet exercises the projection outbox, like every other network. The
+    # replay-worker archive it used to enable no longer exists, and its per-dataset
+    # start modes described backfill that the projection does not do.
     history:
-      enabled: true
-      archive:
-        engine: sqlite
-      start-mode: tip
-      datasets:
-        account-events: { enabled: true, start-mode: tip }
-        transactions: { enabled: true, start-mode: tip }
-        address-transactions: { enabled: true, start-mode: tip }
+      enabled: false
+      projection:
+        enabled: true
+        sink: ducklake
     epoch-snapshot:
       amounts-enabled: true           # UTXO balance aggregation in snapshots
     adapot:

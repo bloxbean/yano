@@ -201,4 +201,28 @@ class ProjectionArtifactIdentityTest {
         assertThat(reason).isPresent();
         assertThat(reason.get()).contains("no longer retained");
     }
+
+    @Test
+    void aFreshArchiveMayBeOpenedWithIrreproducibleArtifacts() {
+        // Every fresh sync starts here. An archive with no epochs behind it cannot be
+        // "incomplete" for one, so refusing would make an irreproducible artifact impossible to
+        // adopt at all - which is what happened on the first post-migration start.
+        var shipped = ProjectionArtifactContracts.shipped();
+
+        assertThat(shipped.refuseToOpen(ProjectionArtifactIdentity.NONE,
+                ProjectionArtifactCoverage.NONE, 0, -1))
+                .as("fromEpoch 0, throughEpoch -1 is an empty archive")
+                .isEmpty();
+    }
+
+    @Test
+    void apopulatedArchiveStillRefusesAnIrreproducibleArtifactItNeverCaptured() {
+        // The rule still bites where it matters: epochs have passed, and rewards for them can
+        // never be produced now.
+        var reason = ProjectionArtifactContracts.shipped()
+                .refuseToOpen(ProjectionArtifactIdentity.NONE, ProjectionArtifactCoverage.NONE, 0, 300);
+
+        assertThat(reason).isPresent();
+        assertThat(reason.get()).contains("IRREPRODUCIBLE");
+    }
 }

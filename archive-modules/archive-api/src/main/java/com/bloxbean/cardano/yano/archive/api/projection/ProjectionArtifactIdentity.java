@@ -137,15 +137,21 @@ public record ProjectionArtifactIdentity(Map<ArchiveDatasetId, ProjectionArtifac
             }
         }
 
+        // An archive with no epochs behind it can gain any artifact: there is nothing that has
+        // already passed for it to be incomplete for. Both rules below are about EXISTING
+        // archives, so a fresh one skips them entirely - otherwise a brand-new archive could
+        // never be opened with an irreproducible artifact at all, which is every fresh sync.
+        boolean archiveHasEpochs = throughEpoch >= fromEpoch;
+
         for (var entry : contracts.entrySet()) {
             if (stored.contracts().containsKey(entry.getKey())) continue;
+            if (!archiveHasEpochs) continue;
             var contract = entry.getValue();
             if (!contract.addableToAnExistingArchive()) {
                 problems.add(contract.wireName() + " is " + contract.reconstructibility()
                         + " and the archive does not hold it; it cannot be produced for epochs that"
                         + " have already passed, so this archive can never be complete for it");
-            } else if (throughEpoch >= fromEpoch
-                    && !coverage.covers(contract.dataset(), fromEpoch, throughEpoch)) {
+            } else if (!coverage.covers(contract.dataset(), fromEpoch, throughEpoch)) {
                 // Reconstructible in kind, but not from what this node still has.
                 problems.add(contract.wireName() + " is reconstructible, but the sources for epochs "
                         + fromEpoch + ".." + throughEpoch + " are no longer retained on this node -"
