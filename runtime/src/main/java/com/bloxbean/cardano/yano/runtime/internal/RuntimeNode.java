@@ -683,14 +683,23 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
      * output is spent.
      */
     public com.bloxbean.cardano.yano.api.genesis.GenesisUtxoProvider genesisUtxoProvider() {
-        var genesis = genesisConfig;
-        if (genesis == null) return com.bloxbean.cardano.yano.api.genesis.GenesisUtxoProvider.EMPTY;
-        long magic = config.getProtocolMagic();
-        return (blockNumber, slot, blockHash) ->
-                com.bloxbean.cardano.yano.api.genesis.GenesisUtxos.of(
-                        genesis.hasInitialFunds() ? genesis.getInitialFunds() : java.util.Map.of(),
-                        genesis.hasByronBalances() ? genesis.getByronBalances() : java.util.Map.of(),
-                        magic, blockNumber, slot, blockHash);
+        // Resolved when INVOKED, not when handed out. The projection asks for this during
+        // initialize(), which runs before the genesis configuration is loaded, so capturing the
+        // field here closed over null and produced a silently empty distribution - the exact
+        // failure this whole path exists to prevent.
+        return (blockNumber, slot, blockHash) -> {
+            var genesis = genesisConfig;
+            if (genesis == null) {
+                // Loud, not empty. An empty distribution is legitimate only when the
+                // configuration says so; "not loaded yet" must never be recorded as "none".
+                throw new IllegalStateException("genesis configuration is not loaded; refusing to"
+                        + " record an empty genesis distribution for this archive");
+            }
+            return com.bloxbean.cardano.yano.api.genesis.GenesisUtxos.of(
+                    genesis.hasInitialFunds() ? genesis.getInitialFunds() : java.util.Map.of(),
+                    genesis.hasByronBalances() ? genesis.getByronBalances() : java.util.Map.of(),
+                    config.getProtocolMagic(), blockNumber, slot, blockHash);
+        };
     }
 
     /**
