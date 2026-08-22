@@ -146,7 +146,8 @@ public final class ProjectionOutboxStore {
     public void putArtifact(ProjectionStagingWriter writer, long blockNumber,
                             com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef ref) {
         writer.put(ProjectionCfNames.PROJ_ARTIFACT,
-                ProjectionOutboxKeys.artifactKey(blockNumber, ref.dataset().name(), ref.semanticEpoch()),
+                ProjectionOutboxKeys.artifactKey(blockNumber, ref.dataset().name(), ref.semanticEpoch(),
+                        ref.sourceGeneration()),
                 ProjectionSectionCodec.encodeArtifact(ref));
     }
 
@@ -311,7 +312,8 @@ public final class ProjectionOutboxStore {
             com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef ref) {
         try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions().setSync(true)) {
             batch.put(artifactCf,
-                    ProjectionOutboxKeys.artifactKey(blockNumber, ref.dataset().name(), ref.semanticEpoch()),
+                    ProjectionOutboxKeys.artifactKey(blockNumber, ref.dataset().name(), ref.semanticEpoch(),
+                            ref.sourceGeneration()),
                     ProjectionSectionCodec.encodeArtifact(ref));
             db.write(options, batch);
         } catch (RocksDBException e) {

@@ -54,10 +54,20 @@ final class ProjectionOutboxKeys {
         return (CURSOR_PREFIX + type.wireName()).getBytes(StandardCharsets.UTF_8);
     }
 
-    static byte[] artifactKey(long blockNumber, String dataset, int semanticEpoch) {
+    /**
+     * Key one artifact reference.
+     *
+     * <p>The source generation is part of the key, not decoration. A dataset can stage several
+     * artifacts for the SAME epoch at the same boundary - rewards alone produce separate parts
+     * for the calculator, MIR certificates and governance withdrawals - and keying only by
+     * (block, dataset, epoch) silently overwrote every part but the last. That is invisible loss:
+     * the surviving reference looks like a complete epoch.
+     */
+    static byte[] artifactKey(long blockNumber, String dataset, int semanticEpoch, String generation) {
         byte[] name = dataset.getBytes(StandardCharsets.UTF_8);
-        return ByteBuffer.allocate(12 + name.length).order(ByteOrder.BIG_ENDIAN)
-                .putLong(blockNumber).putInt(semanticEpoch).put(name).array();
+        byte[] gen = generation.getBytes(StandardCharsets.UTF_8);
+        return ByteBuffer.allocate(12 + 1 + name.length + gen.length).order(ByteOrder.BIG_ENDIAN)
+                .putLong(blockNumber).putInt(semanticEpoch).put(name).put((byte) 0).put(gen).array();
     }
 
     static byte[] encodeLong(long value) {

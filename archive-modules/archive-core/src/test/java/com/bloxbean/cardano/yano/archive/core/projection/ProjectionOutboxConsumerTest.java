@@ -351,7 +351,7 @@ class ProjectionOutboxConsumerTest {
                                     new com.bloxbean.cardano.yano.archive.core.dataset.UtxoHistoryFact(
                                             6, List.of(), List.of(), List.of(), List.of(), List.of(),
                                             List.of(), List.of(), List.of()))), 0));
-            batch.put(handles.get(4), ProjectionOutboxKeys.artifactKey(0, "EPOCH_STAKE", 7),
+            batch.put(handles.get(4), ProjectionOutboxKeys.artifactKey(0, "EPOCH_STAKE", 7, artifact.sourceGeneration()),
                     ProjectionSectionCodec.encodeArtifact(artifact));
             db.write(options, batch);
         } catch (Exception e) {

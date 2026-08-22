@@ -192,4 +192,39 @@ class EpochArtifactCollectorTest {
         assertThat(store.readArtifacts(4_900_000L).get(0).sourceStateVersion())
                 .isEqualTo("ledger-boundary-v1/final");
     }
+
+    @Test
+    void severalArtifactsForOneEpochAtOneBoundaryAllSurvive() {
+        // Rewards alone stage separate parts for the calculator, MIR certificates and governance
+        // withdrawals - same dataset, same epoch, same boundary block. Keying without the source
+        // generation kept only the last, which looks like a complete epoch and is not.
+        var refs = java.util.List.of(
+                stagedRef("reward-calc", 4_887),
+                stagedRef("reward-mir", 1),
+                stagedRef("reward-governance", 12));
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
+            var writer = ProjectionOutboxStore.batchWriter(batch, store.handles());
+            refs.forEach(ref -> store.putArtifact(writer, 4_800_000L, ref));
+            db.write(options, batch);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+
+        var stored = store.readArtifacts(4_800_000L);
+
+        assertThat(stored).hasSize(3);
+        assertThat(stored).extracting(r -> r.expectedRowCount().orElseThrow())
+                .containsExactlyInAnyOrder(4_887L, 1L, 12L);
+        assertThat(stored).extracting(
+                com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef::sourceGeneration)
+                .containsExactlyInAnyOrder("reward-calc", "reward-mir", "reward-governance");
+    }
+
+    private static com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef stagedRef(
+            String generation, long rows) {
+        return new com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef(
+                ArchiveDatasetId.REWARD, 83, 4_800_000L, 100_000L,
+                ProjectionArtifactRepresentation.STAGED_FILE, generation, 1,
+                "ledger-boundary-v1/reward", java.util.OptionalLong.of(rows), "ab".repeat(32), -1L);
+    }
 }
