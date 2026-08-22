@@ -6,7 +6,12 @@ import com.bloxbean.cardano.yano.archive.api.ArchiveStoreException;
 import com.bloxbean.cardano.yano.archive.api.schema.ArchiveColumn;
 import com.bloxbean.cardano.yano.archive.api.schema.ArchiveTableSchema;
 import com.bloxbean.cardano.yano.archive.api.schema.ArchiveValueType;
+import com.bloxbean.cardano.yano.archive.api.ArchiveRowCodec;
 import com.bloxbean.cardano.yano.archive.api.projection.ArchiveArtifactReader;
+import com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef;
+import com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas;
+import java.time.Duration;
+import java.util.Comparator;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionCoordinate;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionIdentity;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionMaintenance;
@@ -60,6 +65,15 @@ public final class DuckLakeProjectionSink implements ProjectionSink {
 
     private final DuckDbManager manager;
     private final DuckLakeArchiveConfig config;
+    /** Rows per artifact read. Large enough to amortise the page call, small enough to bound heap. */
+    private static final int ARTIFACT_PAGE_ROWS = 50_000;
+
+    /**
+     * Lease horizon for one artifact read. Generous relative to a read that runs at memory speed,
+     * because expiry mid-read would abort a commit that is otherwise healthy.
+     */
+    private static final Duration ARTIFACT_LEASE = Duration.ofMinutes(30);
+
     private final Map<String, ArchiveTableSchema> tables;
 
     private volatile ProjectionIdentity identity;
@@ -184,7 +198,7 @@ public final class DuckLakeProjectionSink implements ProjectionSink {
                     }
                     return replay.get();
                 }
-                return commitBatch(connection, batch);
+                return commitBatch(connection, batch, artifacts);
             } finally {
                 DuckLakeSql.detach(connection);
             }
@@ -195,7 +209,75 @@ public final class DuckLakeProjectionSink implements ProjectionSink {
         }
     }
 
-    private ProjectionReceipt commitBatch(Connection connection, ProjectionRowBatch batch) throws SQLException {
+
+    /**
+     * Stream every artifact referenced by this batch into the staging tables.
+     *
+     * <p>Order is fixed - producing block, then dataset, then epoch - because replay must
+     * reproduce the same row order to reproduce the same files. Rows arrive already materialised
+     * from the reader; this side never interprets ledger state.
+     */
+    private void appendArtifacts(Connection connection, ProjectionRowBatch batch,
+                                 ArchiveArtifactReader artifacts,
+                                 Map<String, DuckDBAppender> appenders, Set<String> staged,
+                                 Map<String, Long> rowCounts) throws SQLException {
+        if (batch.artifacts().isEmpty()) return;
+        if (artifacts == null) {
+            throw new ProjectionSinkException("batch references " + batch.artifacts().size()
+                    + " artifacts but no artifact reader was supplied");
+        }
+
+        List<ProjectionArtifactRef> ordered = new java.util.ArrayList<>(batch.artifacts());
+        ordered.sort(Comparator.comparingLong(ProjectionArtifactRef::producingBlockNumber)
+                .thenComparing(ref -> ref.dataset().name())
+                .thenComparingInt(ProjectionArtifactRef::semanticEpoch));
+
+        for (ProjectionArtifactRef ref : ordered) {
+            // An artifact with no declared row count cannot be verified at all: a truncated read
+            // would commit silently and the epoch would be permanently short. Refuse it.
+            if (ref.expectedRowCount().isEmpty()) {
+                throw new ProjectionSinkException("artifact " + ref.dataset() + " epoch "
+                        + ref.semanticEpoch() + " declares no expected row count");
+            }
+            Set<String> allowed = ArchiveSchemas.schema(ref.dataset()).tables().stream()
+                    .map(ArchiveTableSchema::physicalName).collect(java.util.stream.Collectors.toSet());
+
+            long seen = 0;
+            try (ArchiveArtifactReader.ArtifactLease lease =
+                         artifacts.acquire(ref, Instant.now().plus(ARTIFACT_LEASE))) {
+                Optional<String> cursor = Optional.empty();
+                do {
+                    ArchiveArtifactReader.ArtifactPage page =
+                            artifacts.read(ref, lease, cursor, ARTIFACT_PAGE_ROWS);
+                    for (byte[] encoded : page.rows()) {
+                        ArchiveRow row = ArchiveRowCodec.decode(encoded);
+                        if (!allowed.contains(row.table())) {
+                            throw new ProjectionSinkException("artifact for " + ref.dataset()
+                                    + " produced a row for unrelated table " + row.table());
+                        }
+                        ArchiveTableSchema table = tables.get(row.table());
+                        if (table == null) {
+                            throw new ArchiveStoreException("unknown archive table in artifact: " + row.table());
+                        }
+                        if (staged.add(table.physicalName())) createStaging(connection, table);
+                        appendRow(connection, appenders, table, row.values());
+                        rowCounts.merge(table.physicalName(), 1L, Long::sum);
+                        seen++;
+                    }
+                    cursor = page.nextCursor();
+                } while (cursor.isPresent());
+            }
+
+            long expected = ref.expectedRowCount().orElseThrow();
+            if (seen != expected) {
+                throw new ProjectionSinkException("artifact " + ref.dataset() + " epoch "
+                        + ref.semanticEpoch() + " yielded " + seen + " rows but declares " + expected);
+            }
+        }
+    }
+
+    private ProjectionReceipt commitBatch(Connection connection, ProjectionRowBatch batch,
+                                          ArchiveArtifactReader artifacts) throws SQLException {
         Map<String, Long> rowCounts = new LinkedHashMap<>();
         Set<String> staged = new LinkedHashSet<>();
         Map<String, DuckDBAppender> appenders = new LinkedHashMap<>();
@@ -214,6 +296,12 @@ public final class DuckLakeProjectionSink implements ProjectionSink {
                 appendRow(connection, appenders, table, row.values());
                 rowCounts.merge(table.physicalName(), 1L, Long::sum);
             }
+
+            // Artifact rows join the SAME transaction as the block rows above. An epoch artifact
+            // committed separately could survive a rollback of the blocks that produced it, or be
+            // lost while its acknowledgement stood - either way the archive would be internally
+            // inconsistent with no record of it.
+            appendArtifacts(connection, batch, artifacts, appenders, staged, rowCounts);
 
             for (DuckDBAppender appender : appenders.values()) {
                 appender.flush();

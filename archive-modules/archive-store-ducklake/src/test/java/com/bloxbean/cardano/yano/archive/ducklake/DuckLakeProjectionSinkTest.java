@@ -133,6 +133,151 @@ class DuckLakeProjectionSinkTest {
         @Override public void acknowledge(ProjectionArtifactRef ref) { }
     };
 
+
+    // --------------------------------------------------------- epoch artifacts
+
+    private static ProjectionArtifactRef stakeArtifact(int epoch, long block, long expectedRows) {
+        return new ProjectionArtifactRef(
+                com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.EPOCH_STAKE, epoch, block, block,
+                com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRepresentation
+                        .IMMUTABLE_GENERATION,
+                "epoch-deleg-snapshot:" + epoch, 1, "ledger-boundary-v1/snapshot",
+                expectedRows < 0 ? java.util.OptionalLong.empty() : java.util.OptionalLong.of(expectedRows),
+                "", block);
+    }
+
+    private static ProjectionRowBatch batchWith(long firstBlock, long lastBlock, Iterable<ArchiveRow> rows,
+                                                List<ProjectionArtifactRef> artifacts) {
+        return new ProjectionRowBatch(IDENTITY, firstBlock, lastBlock, lastBlock - firstBlock + 1,
+                "aa".repeat(32), "bb".repeat(32), "cc".repeat(32), rows, artifacts);
+    }
+
+    /** One already-materialised epoch_stakes row, exactly as the real reader emits it. */
+    private static byte[] stakeRow(int epoch, long block, int index) {
+        return com.bloxbean.cardano.yano.archive.api.ArchiveRowCodec.encode(new ArchiveRow("epoch_stakes",
+                java.util.Arrays.asList(epoch, "key", new byte[]{(byte) index},
+                        "stake_test_fixture_" + index, new byte[]{1}, 1_000L + index,
+                        new byte[]{9, 9}, block, block, 1_600_000_000L, "ledger-boundary-v1/snapshot",
+                        UUID.nameUUIDFromBytes(("fixture" + epoch).getBytes()))));
+    }
+
+    /** Serves a fixed set of rows per artifact, and records lease discipline. */
+    private static final class FakeArtifacts implements ArchiveArtifactReader {
+        private final List<byte[]> rows;
+        int leasesOpened;
+        int leasesClosed;
+        int acknowledged;
+
+        FakeArtifacts(List<byte[]> rows) { this.rows = rows; }
+
+        @Override public ArtifactLease acquire(ProjectionArtifactRef ref, Instant expiresAt) {
+            leasesOpened++;
+            return new ArtifactLease() {
+                private boolean open = true;
+                @Override public UUID leaseId() { return UUID.randomUUID(); }
+                @Override public String ownerFence() { return "test"; }
+                @Override public Instant expiresAt() { return expiresAt; }
+                @Override public ArtifactLease renew(Instant newExpiry) { return this; }
+                @Override public boolean isOpen() { return open; }
+                @Override public void close() { if (open) { open = false; leasesClosed++; } }
+            };
+        }
+
+        @Override public ArtifactPage read(ProjectionArtifactRef ref, ArtifactLease lease,
+                                           Optional<String> cursor, int limit) {
+            if (cursor.isPresent()) return new ArtifactPage(List.of(), Optional.empty());
+            return new ArtifactPage(rows, Optional.empty());
+        }
+
+        @Override public void acknowledge(ProjectionArtifactRef ref) { acknowledged++; }
+    }
+
+    @Test
+    void anArtifactCommitsItsRowsInTheSameTransactionAsTheBlocks() throws Exception {
+        try (var sink = open("artifact-commit")) {
+            var artifacts = new FakeArtifacts(List.of(stakeRow(250, 4, 0), stakeRow(250, 4, 1)));
+            var batch = batchWith(0, 4, simpleBatch(0, 4).rows(), List.of(stakeArtifact(250, 4, 2)));
+
+            ProjectionReceipt receipt = sink.append(batch, artifacts);
+
+            assertThat(count("epoch_stakes")).as("artifact rows land in the archive").isEqualTo(2);
+            assertThat(receipt.rowCounts()).containsEntry("epoch_stakes", 2L);
+            assertThat(artifacts.leasesOpened).isEqualTo(1);
+            assertThat(artifacts.leasesClosed).as("the lease is released even on success").isEqualTo(1);
+        }
+    }
+
+    @Test
+    void anArtifactShortOfItsDeclaredRowsAbortsTheWholeCommit() throws Exception {
+        try (var sink = open("artifact-short")) {
+            // Declares two rows, yields one: a truncated read would otherwise leave the epoch
+            // permanently short with a receipt claiming it was complete.
+            var artifacts = new FakeArtifacts(List.of(stakeRow(250, 4, 0)));
+            var batch = batchWith(0, 4, simpleBatch(0, 4).rows(), List.of(stakeArtifact(250, 4, 2)));
+
+            assertThatThrownBy(() -> sink.append(batch, artifacts))
+                    .isInstanceOf(ProjectionSinkException.class)
+                    .hasMessageContaining("yielded 1 rows but declares 2");
+
+            assertThat(count("epoch_stakes")).isZero();
+            assertThat(count("transactions")).as("the block rows roll back with the artifact").isZero();
+            assertThat(sink.coordinate()).isEqualTo(ProjectionCoordinate.NONE);
+            assertThat(artifacts.leasesClosed).as("the lease is released on failure too").isEqualTo(1);
+        }
+    }
+
+    @Test
+    void anArtifactWithNoDeclaredRowCountIsRefused() throws Exception {
+        try (var sink = open("artifact-uncounted")) {
+            var batch = batchWith(0, 4, simpleBatch(0, 4).rows(), List.of(stakeArtifact(250, 4, -1)));
+
+            assertThatThrownBy(() -> sink.append(batch, new FakeArtifacts(List.of())))
+                    .isInstanceOf(ProjectionSinkException.class)
+                    .hasMessageContaining("declares no expected row count");
+
+            assertThat(count("transactions")).isZero();
+        }
+    }
+
+    @Test
+    void anArtifactRowForAnUnrelatedTableIsRefused() throws Exception {
+        try (var sink = open("artifact-misrouted")) {
+            // A reader that emitted rows for another dataset's table would corrupt it silently.
+            var stray = com.bloxbean.cardano.yano.archive.api.ArchiveRowCodec.encode(
+                    new ArchiveRow("transactions", simpleBatch(0, 0).rows().iterator().next().values()));
+            var batch = batchWith(0, 4, simpleBatch(0, 4).rows(), List.of(stakeArtifact(250, 4, 1)));
+
+            assertThatThrownBy(() -> sink.append(batch, new FakeArtifacts(List.of(stray))))
+                    .isInstanceOf(ProjectionSinkException.class)
+                    .hasMessageContaining("unrelated table transactions");
+
+            assertThat(count("transactions")).isZero();
+        }
+    }
+
+    @Test
+    void anInlineEvidenceArtifactCommitsItsSingleRow() throws Exception {
+        // The ada pot carries its values on the reference rather than pointing at a source, so
+        // this proves the sink treats a dataset with no protected generation the same way.
+        try (var sink = open("artifact-inline")) {
+            var potRow = com.bloxbean.cardano.yano.archive.api.ArchiveRowCodec.encode(
+                    new ArchiveRow("ada_pots", java.util.Arrays.asList(250L, 1L, 2L, 3L, 4L, 5L, 6L,
+                            7L, 8L, new byte[]{9}, 4L, 4L, 1_600_000_000L, "ledger-boundary-v1/final",
+                            UUID.nameUUIDFromBytes("pot".getBytes()))));
+            var artifact = new ProjectionArtifactRef(
+                    com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.ADA_POT, 250, 4, 4,
+                    com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRepresentation
+                            .ATOMIC_EVIDENCE, "ada-pot:250", 1, "ledger-boundary-v1/final",
+                    java.util.OptionalLong.of(1), "", -1L, new byte[8 * Long.BYTES]);
+            var artifacts = new FakeArtifacts(List.of(potRow));
+
+            sink.append(batchWith(0, 4, simpleBatch(0, 4).rows(), List.of(artifact)), artifacts);
+
+            assertThat(count("ada_pots")).isEqualTo(1);
+            assertThat(artifacts.leasesClosed).isEqualTo(1);
+        }
+    }
+
     // ------------------------------------------------------------------- cases
 
     @Test

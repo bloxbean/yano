@@ -340,10 +340,17 @@ public final class ProjectionOutboxConsumer {
         return accumulator.stats();
     }
 
-    /** Oldest slot this batch still requires; -1 when it requires nothing retained. */
+    /**
+     * Oldest slot this batch still requires; -1 when it requires nothing retained.
+     *
+     * <p>Artifacts that require nothing report -1, and those must be excluded rather than
+     * minimised over: an inline-evidence artifact batched together with a generation reference
+     * would otherwise drag the floor to -1 and report that the generation may be pruned.
+     */
     private static long oldestRequiredSlot(ProjectionBatch batch) {
         return batch.artifacts().stream()
                 .mapToLong(ref -> ref.oldestRequiredSlot())
+                .filter(slot -> slot >= 0)
                 .min()
                 .orElse(-1L);
     }
