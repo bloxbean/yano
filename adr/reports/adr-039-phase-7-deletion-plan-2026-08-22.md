@@ -47,7 +47,49 @@ Either way the acceptance criterion is a row-level diff of `transactions`,
 `address_transactions` over the whole chain, with Byron included, and an explicit
 sign-off recorded — the ADR says "accepted", not "measured".
 
-## The deletion set, once authorised
+## Scope correction (2026-08-22): Phase 7 splits into 7a and 7b
+
+An earlier draft of this plan listed `DurableEpochFileSource`, `EpochArchiveStagingService`
+and the epoch codec/manifest/lease machinery as removable because the projection has
+no caller for them. **That inference was wrong.** Phase 5 shipped only `EPOCH_STAKE`
+and `ADA_POT`; `REWARD`, `DREP_DISTRIBUTION` and `GOVERNANCE_PROPOSAL_STATUS` are
+explicitly deferred. The absence of a projection caller therefore reflects
+**incomplete artifact wiring, not architectural obsolescence** - deleting that
+foundation would remove the only working path for three datasets before their
+replacement exists.
+
+Static absence of callers is a necessary condition for deletion, never a sufficient
+one. Where a required Phase 5 path is still unwired, "no caller" means "not yet
+migrated".
+
+| | scope | gate |
+|---|---|---|
+| **7a** | the block replay pipeline only: block replay workers and sources, per-dataset catch-up/live cursors, hot-history promotion, replay-only prefetch and caches, legacy block orchestration and configuration | block-dataset differential parity |
+| **7b** | the epoch staging foundation | every epoch artifact migrated to a proven projection representation, **or** explicitly retired by product decision |
+
+`HistoryArchiveService` spans both. It cannot be deleted in 7a: it carries epoch
+staging initialisation and lifecycle wiring that the remaining artifacts still need.
+Any such wiring must be **extracted into the projection service first**, or removing
+the service silently disables the epoch artifacts that still depend on it — a failure
+with exactly the shape of the genesis omission, and just as invisible.
+
+### Remaining Phase 5 artifact decisions, required before 7b
+
+- **REWARD** — prove and retain the complete deterministic calculation closure, or
+  capture it as non-reconstructible durable evidence.
+- **DREP_DISTRIBUTION** — whole-dataset strictest representation, as already decided.
+  Capture the amount together with the boundary-time expiry, dormancy and active
+  fields as durable evidence, unless a simpler complete immutable source is proven.
+- **GOVERNANCE_PROPOSAL_STATUS** — capture the boundary observation and decision
+  semantics as durable evidence. Later mutable governance state is **not** an
+  equivalent source: it records the outcome, not the observation that produced it.
+
+Where the staged-artifact mechanism is the simplest correct representation it should
+be reused and hardened, not replaced. Required irreproducible evidence must be
+power-loss durable, checksummed, restartable, lease-safe and fail-closed; the current
+flush-only, fail-open behaviour is not acceptable for it.
+
+## The 7a deletion set, once block parity is authorised
 
 Enumerated now so the authorised commit is mechanical rather than exploratory.
 
@@ -92,3 +134,30 @@ it, after confirming no deployment still sets them.
    hot package → coverage tables → configuration.
 4. Re-run the full suite and `:app:quarkusBuild`, then verify the console-ui History
    tab against the projection APIs.
+
+## Caller proofs (2026-08-22)
+
+Required before any deletion: prove the type has no non-legacy caller. Static analysis
+over main sources, excluding the legacy set itself:
+
+**No non-legacy caller — safe to delete once the gate opens**
+`BlockArchiveWorker`, `EpochArchiveWorker`, `ArchiveProgressStore`, `CoreSyncView`,
+`CycleScopedCoverageCache`, `RocksDbHotHistoryStore`, `ChainBlockArchiveSource`,
+`OrderedPrefetchingBlockArchiveSource`, `DurableEpochFileSource`.
+
+**Has non-legacy callers — must NOT be deleted as-is**
+
+| type | reached from | disposition |
+|---|---|---|
+| `ArchiveTrack` | `AddressTransactionDataset`, `UtxoHistoryDataset` | **retain** — those datasets are shared; the projection builds its rows through `UtxoHistoryDataset` |
+| `HotHistoryStore` | same two datasets, plus the SQLite store | **retain** or narrow; not a pure legacy type |
+| `HotArchiveRows` | `ArchiveAccountHistoryProvider` | the provider is retained for projection reads, so its hot-rows usage must be removed *before* this can go |
+| `CycleCachingBlockArchiveSource` | only `OrderedPrefetchingBlockArchiveSource` | transitively safe — becomes unreferenced once that is deleted |
+
+Two lessons for the deletion commit. First, the safe set is not a flat list: it has to
+be computed as a **closure**, re-running the proof after each removal, because types
+like `CycleCachingBlockArchiveSource` only become unreferenced once their sole caller
+goes. Second, the hot-history package is **not** cleanly legacy — `ArchiveTrack` and
+`HotHistoryStore` are reached from `UtxoHistoryDataset`, which the projection itself
+depends on. Deleting the package wholesale, as the original plan implied, would break
+the projection's own row derivation.
