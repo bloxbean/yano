@@ -158,6 +158,10 @@ public final class DurableEpochFileSource<T> implements EpochArchiveSource<T> {
                                    ArchiveSourceLease lease) {
         requireJob(job);
         if (limit < 1 || !lease.expiresAt().isAfter(Instant.now())) throw new ArchiveStoreException("invalid epoch read lease");
+        // Verify before serving a single row. Boundary evidence is irreproducible, so a
+        // truncated file must fail loudly rather than present as a complete epoch with fewer
+        // rows - which is exactly what the row loop below would otherwise do at EOF.
+        verifyEvidence(job);
         long skip = cursor.map(Long::parseLong).orElse(0L);
         List<T> result = new ArrayList<>(limit);
         long position = 0;
@@ -207,6 +211,35 @@ public final class DurableEpochFileSource<T> implements EpochArchiveSource<T> {
                     Instant.ofEpochMilli(Long.parseLong(p.getProperty("created"))));
         } catch (Exception e) { throw new ArchiveStoreException("invalid epoch source manifest " + path, e); }
     }
+
+    /**
+     * Check staged evidence against the size and digest its manifest recorded.
+     *
+     * <p>Only checked once per job: the digest costs a full pass over the file, and a page read
+     * happens many times per job. A manifest without integrity fields predates hardening and is
+     * refused rather than trusted - accepting it would defeat the guarantee for exactly the files
+     * most likely to be damaged.
+     */
+    private void verifyEvidence(EpochArchiveJob job) {
+        if (!verifiedJobs.add(job.jobId())) return;
+        Properties p;
+        try (var in = Files.newInputStream(manifest(job.jobId()))) {
+            p = new Properties(); p.load(in);
+        } catch (Exception e) {
+            throw new ArchiveStoreException("cannot read epoch source manifest for " + job.jobId(), e);
+        }
+        String checksum = p.getProperty("rowChecksum");
+        if (checksum == null || checksum.isBlank()) {
+            throw new ArchiveStoreException("epoch source " + job.jobId() + " has no recorded"
+                    + " checksum; it was staged before integrity hardening and cannot be trusted"
+                    + " as irreproducible boundary evidence");
+        }
+        long bytes = Long.parseLong(p.getProperty("rowBytes", "-1"));
+        DurableFiles.verify(rows(job.jobId()), checksum, bytes);
+    }
+
+    /** Jobs whose evidence has already been verified in this process. */
+    private final java.util.Set<UUID> verifiedJobs = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     private Path rows(UUID id) { return directory.resolve(id + ".rows"); }
     private Path manifest(UUID id) { return directory.resolve(id + ".properties"); }
@@ -281,12 +314,25 @@ public final class DurableEpochFileSource<T> implements EpochArchiveSource<T> {
             try {
                 output.flush();
                 output.close();
+
+                // Checksum and size are taken from the file as written, then recorded in the
+                // manifest. Boundary evidence is irreproducible: once the epoch has passed there
+                // is nothing to recompute from, so a truncated or corrupt file has to be
+                // detectable rather than served as a short epoch.
                 Properties p = properties(job);
                 p.setProperty("rowCount", Long.toString(count));
+                p.setProperty("rowBytes", Long.toString(Files.size(temporary)));
+                p.setProperty("rowChecksum", DurableFiles.checksum(temporary));
+
                 Path temporaryManifest = Files.createTempFile(directory, job.jobId().toString(), ".manifest.tmp");
                 try (var out = Files.newOutputStream(temporaryManifest)) { p.store(out, "yano epoch source"); }
-                move(temporary, rows(job.jobId()));
-                move(temporaryManifest, manifest(job.jobId()));
+
+                // Rows first, then the manifest. The manifest is what makes a job discoverable,
+                // so publishing it second means a crash in between leaves an orphaned rows file -
+                // which cleanInterruptedWrites removes - rather than a discoverable job whose
+                // evidence is not yet durable.
+                DurableFiles.publish(temporary, rows(job.jobId()));
+                DurableFiles.publish(temporaryManifest, manifest(job.jobId()));
                 committed = true;
             } catch (Exception e) {
                 throw new ArchiveStoreException("cannot commit epoch source " + job.jobId(), e);
