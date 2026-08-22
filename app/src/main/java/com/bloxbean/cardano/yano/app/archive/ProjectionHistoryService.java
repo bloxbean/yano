@@ -127,6 +127,22 @@ public class ProjectionHistoryService implements AutoCloseable {
     /** Whether this archive has durably recorded its genesis distribution. */
     private volatile boolean genesisComplete;
 
+    /**
+     * First block of the canonical chain, which genesis funds are attributed to.
+     *
+     * <p>Byron networks number the first canonical chain block 1; block 0 is the epoch boundary
+     * block, which is not a canonical chain block. Shelley-only and devnet chains begin at 0.
+     * This mirrors {@code HistoryArchiveService.firstCanonicalBlockNumber} exactly - the two
+     * pipelines must attribute genesis to the same coordinate or every genesis row differs.
+     */
+    private volatile long firstCanonicalBlock;
+
+    /** Shelley funds the trigger carried, held until the canonical block is available. */
+    private volatile java.util.Map<String, java.math.BigInteger> pendingGenesisEventFunds;
+
+    /** Set once the trigger has fired, so the capture can be retried until it can complete. */
+    private volatile boolean genesisPending;
+
     /** Serves epoch artifacts to the sink; block sections never touch it. */
     private volatile com.bloxbean.cardano.yano.archive.api.projection.ArchiveArtifactReader artifactReader =
             new NoArtifactReader();
@@ -176,6 +192,7 @@ public class ProjectionHistoryService implements AutoCloseable {
         }
         var network = new ArchiveNetworkIdentity(Math.toIntExact(genesis.getNetworkMagic()),
                 genesisHash(nodeConfig));
+        firstCanonicalBlock = genesis.hasByronGenesis() ? 1L : 0L;
         // Which datasets this node projects. The default is every shipped block dataset:
         // a fresh sync that silently omitted one would produce an archive that looks healthy
         // while a whole dataset is missing, and the omission is undiscoverable later because
@@ -494,8 +511,25 @@ public class ProjectionHistoryService implements AutoCloseable {
         if (canonical.isEmpty()) return;
 
         log.info("ADR-039 genesis was not recorded; completing the interrupted bootstrap before draining");
+        genesisPending = true;
+        captureGenesisIfPossible();
+    }
+
+    /**
+     * Capture genesis once the canonical first block is resolvable.
+     *
+     * <p>Retried rather than done once, because the trigger can fire on the epoch boundary block
+     * before the canonical block exists. Cheap to call repeatedly: it returns immediately once
+     * complete, and the first drain is thousands of blocks away.
+     */
+    private synchronized void captureGenesisIfPossible() {
+        if (genesisComplete || !genesisPending || projectionSink == null || chainQuery == null) return;
+        var canonical = chainQuery.getCanonicalBlockReference(firstCanonicalBlock);
+        if (canonical.isEmpty()) return;
         captureGenesis(canonical.get().blockNumber(), canonical.get().slot(),
-                canonical.get().blockHash(), null, java.util.Map.of());
+                canonical.get().blockHash(), null,
+                pendingGenesisEventFunds == null ? java.util.Map.of() : pendingGenesisEventFunds);
+        genesisPending = false;
     }
 
     /** Capture genesis, cross-checking any Shelley funds the trigger carried. */
@@ -666,6 +700,10 @@ public class ProjectionHistoryService implements AutoCloseable {
     private void drainLoop(long idleIntervalMillis) {
         while (draining) {
             try {
+                // Genesis must be durable before any block range is committed, or the archive
+                // would hold blocks against a distribution it never captured.
+                captureGenesisIfPossible();
+
                 ProjectionSinkLifecycle lifecycle = sinkLifecycle;
                 if (lifecycle == null || lifecycle.isClosed()) {
                     Thread.sleep(idleIntervalMillis);
@@ -776,13 +814,15 @@ public class ProjectionHistoryService implements AutoCloseable {
         bus.subscribe(com.bloxbean.cardano.yano.api.events.GenesisBlockEvent.class, ctx -> {
             var event = ctx.event();
             try {
-                captureGenesis(event.blockNumber(), event.slot(),
-                        event.blockHash() == null ? null
-                                : com.bloxbean.cardano.yaci.core.util.HexUtil.decodeHexString(event.blockHash()),
-                        null,
+                // The event fires for the first block applied, which on a Byron network is the
+                // epoch boundary block - not the coordinate genesis is attributed to. Record the
+                // trigger and complete the capture once the canonical block is available.
+                pendingGenesisEventFunds =
                         event.bootstrapData() == null || event.bootstrapData().shelley() == null
                                 ? java.util.Map.of()
-                                : event.bootstrapData().shelley().initialFunds());
+                                : event.bootstrapData().shelley().initialFunds();
+                genesisPending = true;
+                captureGenesisIfPossible();
             } catch (RuntimeException e) {
                 // Never swallow: an archive that missed genesis reports itself complete, and the
                 // coverage gate below is the only other thing standing between that and a query
