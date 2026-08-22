@@ -1124,18 +1124,16 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                 String hexAddr = entry.getKey();
                 BigInteger lovelace = entry.getValue();
 
-                // Derive genesis tx hash: blake2b-256(address_hex_bytes) — matches yaci-store convention
-                byte[] addrBytes = HexUtil.decodeHexString(hexAddr);
-                String txHash = HexUtil.encodeHexString(Blake2bUtil.blake2bHash256(addrBytes));
-                int outputIndex = 0;
-
-                // Convert hex address to bech32
-                String bech32Addr;
-                try {
-                    bech32Addr = new Address(addrPrefix, addrBytes).toBech32();
-                } catch (Exception e) {
+                // Normalised once, shared. The tx-hash convention, the bech32 form and the
+                // output index live in GenesisUtxos so the ADR-039 projection derives exactly
+                // the same outputs rather than reimplementing them.
+                var genesisUtxo = com.bloxbean.cardano.yano.api.genesis.GenesisUtxos.shelley(
+                        hexAddr, lovelace, networkMagic, blockNumber, slot, blockHash);
+                String txHash = genesisUtxo.txHash();
+                int outputIndex = genesisUtxo.outputIndex();
+                String bech32Addr = genesisUtxo.address();
+                if (bech32Addr.equals(hexAddr)) {
                     log.warn("Could not convert genesis address to bech32: {}", hexAddr);
-                    bech32Addr = hexAddr; // fallback to hex
                 }
 
                 // Encode UTXO record
@@ -1195,10 +1193,11 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                 String byronAddress = entry.getKey();
                 BigInteger lovelace = entry.getValue();
 
-                // Derive genesis tx hash: blake2b-256(Base58.decode(address)) — matches yaci-store convention
-                byte[] addrBytes = Base58.decode(byronAddress);
-                String txHash = HexUtil.encodeHexString(Blake2bUtil.blake2bHash256(addrBytes));
-                int outputIndex = 0;
+                // Same shared normalisation as the Shelley branch above.
+                var genesisUtxo = com.bloxbean.cardano.yano.api.genesis.GenesisUtxos.byron(
+                        byronAddress, lovelace, blockNumber, slot, blockHash);
+                String txHash = genesisUtxo.txHash();
+                int outputIndex = genesisUtxo.outputIndex();
 
                 // Store address as-is (base58 string, no bech32 conversion for Byron)
                 byte[] val = UtxoCborCodec.encodeUtxoRecord(byronAddress, lovelace, null, null, null, null, false, slot, blockNumber, blockHash);

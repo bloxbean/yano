@@ -135,6 +135,13 @@ final class RuntimeYano implements Yano, DevnetRuntimeProvider {
     }
 
     @Override
+    public com.bloxbean.cardano.yano.api.genesis.GenesisUtxoProvider genesisUtxoProvider() {
+        return chainQuery instanceof com.bloxbean.cardano.yano.runtime.internal.RuntimeNode node
+                ? node.genesisUtxoProvider()
+                : com.bloxbean.cardano.yano.api.genesis.GenesisUtxoProvider.EMPTY;
+    }
+
+    @Override
     public boolean installEpochArtifactContributor(
             com.bloxbean.cardano.yano.api.archive.EpochArtifactContributor contributor) {
         return chainQuery instanceof com.bloxbean.cardano.yano.runtime.internal.RuntimeNode node

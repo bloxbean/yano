@@ -100,6 +100,11 @@ public interface Yano extends AutoCloseable {
         return -1L;
     }
 
+    /** The complete normalised genesis distribution; empty when this node has none. */
+    default com.bloxbean.cardano.yano.api.genesis.GenesisUtxoProvider genesisUtxoProvider() {
+        return com.bloxbean.cardano.yano.api.genesis.GenesisUtxoProvider.EMPTY;
+    }
+
     /** Install the ADR-039 epoch artifact hook; false when no account-state store is present. */
     default boolean installEpochArtifactContributor(
             com.bloxbean.cardano.yano.api.archive.EpochArtifactContributor contributor) {

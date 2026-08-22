@@ -675,6 +675,25 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     }
 
     /**
+     * The complete genesis distribution, normalised once.
+     *
+     * <p>Reads the genesis configuration this node already loaded rather than re-parsing the
+     * files, and never the live UTXO column family - that is mutable and reflects spends, so
+     * reconstructing the original distribution from it would be wrong the moment a genesis
+     * output is spent.
+     */
+    public com.bloxbean.cardano.yano.api.genesis.GenesisUtxoProvider genesisUtxoProvider() {
+        var genesis = genesisConfig;
+        if (genesis == null) return com.bloxbean.cardano.yano.api.genesis.GenesisUtxoProvider.EMPTY;
+        long magic = config.getProtocolMagic();
+        return (blockNumber, slot, blockHash) ->
+                com.bloxbean.cardano.yano.api.genesis.GenesisUtxos.of(
+                        genesis.hasInitialFunds() ? genesis.getInitialFunds() : java.util.Map.of(),
+                        genesis.hasByronBalances() ? genesis.getByronBalances() : java.util.Map.of(),
+                        magic, blockNumber, slot, blockHash);
+    }
+
+    /**
      * Install the ADR-039 epoch artifact hook on the account-state store.
      *
      * <p>Returns false rather than silently doing nothing when the store is absent: a projection
