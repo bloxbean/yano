@@ -339,6 +339,9 @@ public final class YanoPropertyKeys {
          * <p>Example legacy value: {@code transaction:v2,utxo-history:v5}.
          */
         public static final String PROJECTION_SECTIONS = PREFIX + "projection.sections";
+
+        /** Rows read per epoch-artifact page. Bounds the drain's working set, not what is written. */
+        public static final String PROJECTION_ARTIFACT_PAGE_ROWS = PREFIX + "projection.artifact.page-rows";
         /** Wall-clock spacing between housekeeping passes; housekeeping also runs during bootstrap. */
         public static final String PROJECTION_HOUSEKEEPING_INTERVAL_MINUTES =
                 PREFIX + "projection.maintenance.housekeeping-interval-minutes";

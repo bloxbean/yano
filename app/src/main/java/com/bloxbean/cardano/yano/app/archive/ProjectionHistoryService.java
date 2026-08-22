@@ -96,6 +96,31 @@ public class ProjectionHistoryService implements AutoCloseable {
             new java.util.concurrent.atomic.LongAdder();
     private volatile String lastMaintenanceOutcome;
     private volatile boolean diskBackpressureInstalled;
+    /** Live chain tip, for reporting how far behind tip the archive's coverage is. */
+    private volatile java.util.function.LongSupplier chainTip;
+
+    /** Held so published coordinates can be resolved canonically rather than reported as stored. */
+    private volatile ChainQuery chainQuery;
+
+    /**
+     * The identity the sink was opened with.
+     *
+     * <p>Published because anything else reading this archive must present the same one. The
+     * projection derives it from the projection fingerprint, whereas the legacy path derives it
+     * from network, genesis, engine and directory - so a reader that recomputed it the legacy way
+     * is refused for an identity mismatch over an archive it should be able to read.
+     */
+    private volatile ArchiveIdentity sinkArchiveIdentity;
+
+    public java.util.Optional<ArchiveIdentity> archiveIdentity() {
+        return java.util.Optional.ofNullable(sinkArchiveIdentity);
+    }
+
+    /** Held so the retention check can ask the runtime for its live common rollback floor. */
+    private volatile Yano runtimeYano;
+    /** Serves epoch artifacts to the sink; block sections never touch it. */
+    private volatile com.bloxbean.cardano.yano.archive.api.projection.ArchiveArtifactReader artifactReader =
+            new NoArtifactReader();
 
     /**
      * How long shutdown waits for an in-flight sink commit. Bounded rather than unbounded: a
@@ -163,6 +188,15 @@ public class ProjectionHistoryService implements AutoCloseable {
         // history directory that was deleted or repointed would have been accepted, a fresh
         // empty archive created, and every block below the acknowledgement lost with the archive
         // reporting itself healthy.
+        runtimeYano = yano;
+        chainTip = () -> chain.getLocalTip() == null ? -1 : chain.getLocalTip().getBlockNumber();
+        chainQuery = chain;
+        // Must be resolved before openSink(): the sink is opened against this directory, and the
+        // guard reordering that moved openSink() ahead of the rest of initialisation left this
+        // assignment behind it.
+        historyDirectory = java.nio.file.Path.of(
+                config.getOptionalValue(YanoPropertyKeys.History.DIR, String.class).orElse("./history"))
+                .toAbsolutePath().normalize();
         openSink();
 
         // Real observed sink state, not an assumption about it.
@@ -177,6 +211,9 @@ public class ProjectionHistoryService implements AutoCloseable {
                 sinkEmpty, sinkIdentity, sinkCoordinate, required, acknowledgedThrough));
 
         outbox.putIdentity(identity);
+        verifyArtifactContracts(sinkEmpty && acknowledgedThrough < 0, chain, ledger);
+
+        installEpochArtifacts(yano, chain, ledger, network.networkMagic());
 
         safetyWindows = ArchiveSafetyWindows.resolve(genesis.getSecurityParam(),
                 autoLong(YanoPropertyKeys.History.ROLLBACK_RETENTION_BLOCKS),
@@ -226,9 +263,6 @@ public class ProjectionHistoryService implements AutoCloseable {
         ingestGate = new ArchiveIngestGate(diskLimits);
         diskAmplification = config.getOptionalValue(
                 YanoPropertyKeys.History.PROJECTION_DISK_AMPLIFICATION, Double.class).orElse(1.4);
-        historyDirectory = java.nio.file.Path.of(
-                config.getOptionalValue(YanoPropertyKeys.History.DIR, String.class).orElse("./history"))
-                .toAbsolutePath().normalize();
 
         startConsumerAndDrain(chain);
 
@@ -291,6 +325,7 @@ public class ProjectionHistoryService implements AutoCloseable {
                 sink, 1, identity.networkIdentity().networkMagic(),
                 identity.networkIdentity().genesisHash());
 
+        sinkArchiveIdentity = archiveIdentity;
         projectionSink = provider.openProjectionSink(archiveIdentity, historyDirectory, sinkProperties());
         projectionSink.initialize(identity);
         // Every later use of the sink goes through this, so shutdown can guarantee it is never
@@ -298,14 +333,128 @@ public class ProjectionHistoryService implements AutoCloseable {
         sinkLifecycle = new ProjectionSinkLifecycle(projectionSink);
     }
 
+
+
+    /**
+     * Refuse an archive whose epoch artifacts differ from what this build captures.
+     *
+     * <p>The section fingerprint cannot carry this: artifacts are referenced from envelopes, not
+     * named in the identity, so two nodes capturing different artifact sets produce the same
+     * fingerprint. Without this check the archive would keep reporting an artifact nobody was
+     * still maintaining, or claim one it never captured.
+     */
+    private void verifyArtifactContracts(boolean freshArchive, ChainQuery chain, LedgerQuery ledger) {
+        var shipped = com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactContracts.shipped();
+        var stored = com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactIdentity
+                .parse(outbox.artifactIdentityWire().orElse(""));
+
+        if (outbox.artifactIdentityWire().isEmpty() && !freshArchive) {
+            // An archive written before artifacts existed. Adding them mid-archive would leave
+            // every earlier epoch permanently missing, so it is a rebuild, not an upgrade.
+            throw new IllegalStateException("this archive predates epoch artifacts and holds blocks"
+                    + " already; enabling " + shipped.wireForm() + " requires a fresh sync");
+        }
+
+        // An empty archive has no epochs to cover, so the coverage rule is vacuous there. A
+        // populated one must prove the sources still exist, and the default coverage proves nothing.
+        int throughEpoch = freshArchive ? -1 : currentEpoch(chain, ledger);
+        shipped.refuseToOpen(stored,
+                        com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactCoverage.NONE,
+                        0, throughEpoch)
+                .ifPresent(reason -> { throw new IllegalStateException(
+                        "projection artifacts do not match this archive: " + reason); });
+
+        outbox.putArtifactIdentity(shipped.wireForm());
+    }
+
+    /** Current epoch, or a value that keeps the coverage rule engaged when it cannot be read. */
+    private int currentEpoch(ChainQuery chain, LedgerQuery ledger) {
+        try {
+            var tip = chain.getLocalTip();
+            if (tip == null) return Integer.MAX_VALUE;
+            return Math.toIntExact(ledger.slotToEpoch(tip.getSlot()));
+        } catch (RuntimeException e) {
+            // Fail closed: returning 0 would make the range empty and skip the coverage check.
+            log.warn("ADR-039 could not read the current epoch; treating artifact coverage as unproven");
+            return Integer.MAX_VALUE;
+        }
+    }
+
+    /**
+     * Install the epoch-artifact contributor and the reader that serves it.
+     *
+     * <p>Deliberately not configurable. Artifact datasets are not sections, so they do not enter
+     * the projection fingerprint: a node that ran with epoch artifacts disabled and was later
+     * restarted with them enabled would present the same fingerprint while its {@code epoch_stakes}
+     * table had a hole, and the startup guard could not see it. Always-on removes the failure mode
+     * rather than detecting it.
+     */
+    private void installEpochArtifacts(Yano yano, ChainQuery chain, LedgerQuery ledger, long networkMagic) {
+        var clamp = yano.snapshotRetentionClamp();
+        var store = yano.accountStateStoreForArtifacts().orElseThrow(() -> new IllegalStateException(
+                "projection history requires an account-state store: epoch artifacts are read from the"
+                        + " delegation snapshot the epoch boundary persists"));
+
+        int pageSize = config.getOptionalValue(
+                YanoPropertyKeys.History.PROJECTION_ARTIFACT_PAGE_ROWS, Integer.class).orElse(50_000);
+
+        var boundaryFacts = new ArtifactBoundaryFacts() {
+            @Override
+            public java.util.Optional<byte[]> blockHash(long blockNumber) {
+                return chain.getCanonicalBlockReference(blockNumber)
+                        .map(com.bloxbean.cardano.yano.api.CanonicalBlockReference::blockHash);
+            }
+
+            @Override
+            public long blockTimeSeconds(long slot) {
+                return ledger.slotToUnixTime(slot);
+            }
+        };
+
+        artifactReader = new RoutingArtifactReader(java.util.Map.of(
+                com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.EPOCH_STAKE,
+                new EpochSnapshotArtifactReader(store, clamp, pageSize, networkMagic, boundaryFacts),
+                com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.ADA_POT,
+                new AdaPotArtifactReader(networkMagic, boundaryFacts)));
+
+        // The state version must match the replay worker's exactly. Both write it into
+        // source_state_version, and a mismatch would make identical data look like it came from
+        // different producers.
+        var collector = new com.bloxbean.cardano.yano.archive.core.projection.EpochArtifactCollector(
+                outbox, clamp, true,
+                com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas
+                        .schema(com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.EPOCH_STAKE)
+                        .projectionVersion(),
+                // Base only: the collector appends the per-dataset part, matching the replay
+                // worker's "snapshot" for epoch stake and "final" for the ada pot.
+                "ledger-boundary-v1");
+
+        if (!yano.installEpochArtifactContributor(collector)) {
+            throw new IllegalStateException("could not install the epoch artifact contributor;"
+                    + " epoch datasets would be silently missing from the archive");
+        }
+        log.info("ADR-039 epoch artifacts enabled ({}, {} rows per artifact page)",
+                com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactContracts
+                        .shipped().wireForm(), pageSize);
+    }
+
     /** Start the ordered drain, once the guard has accepted the sink. */
     private void startConsumerAndDrain(ChainQuery chain) {
         if (projectionSink == null) return;
         consumer = new ProjectionOutboxConsumer(outbox, projectionSink, identity,
                 new ProjectionFinalityGate(safetyWindows), consumerBounds(),
-                new com.bloxbean.cardano.yano.app.archive.NoArtifactReader(),
+                artifactReader,
                 () -> chain.getLocalTip() == null ? -1 : chain.getLocalTip().getBlockNumber(),
-                () -> 0L);
+                this::commonRollbackFloorSlot);
+
+        // Durable lease reconciliation, before any drain or prune can run. Leases live in memory;
+        // the outbox's surviving artifact references are what actually survives a crash.
+        var pending = outbox.pendingArtifacts();
+        artifactReader.reconcileAfterRestart(pending);
+        if (!pending.isEmpty()) {
+            log.info("ADR-039 re-established source protection for {} pending epoch artifact(s)",
+                    pending.size());
+        }
 
         configureMaintenance();
 
@@ -540,6 +689,10 @@ public class ProjectionHistoryService implements AutoCloseable {
             ProjectionOutboxConsumer active = consumer;
             if (active != null) active.discardPendingBatch();
             if (removed > 0) {
+                // The rollback deleted artifact references along with their envelopes. Re-derive
+                // protection from what actually survives, or the reader would keep a source pinned
+                // for an artifact that no longer exists and pruning would never resume.
+                artifactReader.reconcileAfterRestart(outbox.pendingArtifacts());
                 log.info("ADR-039 rollback to slot {} removed {} pending projection envelope(s)",
                         target.getSlot(), removed);
             }
@@ -586,6 +739,21 @@ public class ProjectionHistoryService implements AutoCloseable {
             // An unreadable free-space probe must not itself stop ingestion.
         }
         return new ArchiveRetainedFootprint(outboxBytes, 0, 0, diskAmplification, free);
+    }
+
+    /**
+     * The runtime's common rollback floor, or {@link Long#MAX_VALUE} when it cannot be determined.
+     *
+     * <p>An unknown floor is deliberately mapped to the most restrictive value rather than to
+     * zero. Zero asserts that rollback all the way to genesis is possible, which would let the
+     * retention check pass for any artifact; {@code MAX_VALUE} makes it fail, which is what "we
+     * cannot prove this is safe" should do. The placeholder this replaces returned zero.
+     */
+    private long commonRollbackFloorSlot() {
+        Yano node = runtimeYano;
+        if (node == null) return Long.MAX_VALUE;
+        long floor = node.commonRollbackFloorSlot();
+        return floor < 0 ? Long.MAX_VALUE : floor;
     }
 
     /** Whether canonical ingestion may continue. Re-evaluated against the live footprint. */
@@ -679,7 +847,179 @@ public class ProjectionHistoryService implements AutoCloseable {
         status.put("contributorStatus", health.status().name());
         status.put("contributorCursors", health.contributorCursors());
         health.detail().ifPresent(detail -> status.put("contributorDetail", detail));
+        status.putAll(artifactStatus());
         return status;
+    }
+
+    /**
+     * Epoch-artifact identity and the pruning protection currently outstanding.
+     *
+     * <p>Exposed because the artifact contracts are not part of the section fingerprint, so
+     * without this an operator has no way to see which epoch datasets an archive is actually
+     * being maintained under - and no way to see a lease that is holding retention open.
+     */
+    private Map<String, Object> artifactStatus() {
+        Map<String, Object> status = new LinkedHashMap<>();
+        status.put("artifactContracts",
+                com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactContracts
+                        .shipped().wireForm());
+        var pending = outbox.pendingArtifacts();
+        status.put("pendingArtifacts", pending.size());
+        status.put("oldestPendingArtifactEpoch", pending.stream()
+                .mapToInt(com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef::semanticEpoch)
+                .min().orElse(-1));
+        // What retention is actually being held open on this node's behalf.
+        Yano node = runtimeYano;
+        status.put("protectedSnapshotFloorEpoch", node == null ? -1
+                : node.snapshotRetentionClamp().protectedSnapshotFloorEpoch());
+        return status;
+    }
+
+    /**
+     * Datasets this archive can answer for: every projected section plus every captured artifact.
+     *
+     * <p>Used to route historical reads. Deliberately not "all datasets" - a query for something
+     * the projection does not maintain must be refused rather than answered from an empty table.
+     */
+    public Set<com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId> coveredDatasets() {
+        if (!enabled || identity == null) return Set.of();
+        var covered = new java.util.LinkedHashSet<com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId>();
+        identity.requiredSections().forEach(section -> covered.add(section.dataset()));
+        com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactContracts.shipped()
+                .contracts().keySet().forEach(covered::add);
+        return Set.copyOf(covered);
+    }
+
+    /** Greatest durably committed block, or -1 before the first batch. */
+    public long committedThroughBlock() {
+        var sink = projectionSink;
+        if (sink == null) return -1L;
+        var coordinate = sink.coordinate();
+        return coordinate.isPresent() ? coordinate.blockNumber() : -1L;
+    }
+
+    /**
+     * Cross-dataset consistency point, derived from the projection's own receipts.
+     *
+     * <p>The legacy watermark is computed from {@code archive_coverage}, which the projection
+     * never writes. Reporting that here once the projection is the primary writer would say
+     * "nothing is archived" over a complete archive - the false absence the ADR forbids.
+     *
+     * <p>The projection's answer is also stronger: every required section for a block range
+     * commits in one transaction with its receipt, so the committed coordinate is a consistency
+     * point across all datasets by construction rather than by intersection.
+     *
+     * @return empty when the projection is not the primary writer, so the caller can fall back
+     */
+    public Optional<Map<String, Object>> consistencyPoint(Set<com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId> requested) {
+        if (!enabled || projectionSink == null) return Optional.empty();
+
+        var coordinate = projectionSink.coordinate();
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("source", "projection");
+        if (!coordinate.isPresent()) {
+            // Explicitly not "unavailable": the archive exists and is healthy, it simply has no
+            // committed range yet. A caller must not read this as a missing archive.
+            value.put("available", false);
+            value.put("reason", "no projection batch has committed yet");
+            return Optional.of(value);
+        }
+
+        // Every required section is committed for the same range, so a dataset the caller asked
+        // for is either covered by that range or not projected at all.
+        var missing = requested.stream()
+                .filter(dataset -> dataset.sourceKind() == com.bloxbean.cardano.yano.archive.api.SourceKind.BLOCK)
+                .filter(dataset -> identity.requiredSections().stream()
+                        .noneMatch(section -> section.dataset() == dataset))
+                .map(com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId::logicalName)
+                .sorted()
+                .toList();
+        if (!missing.isEmpty()) {
+            value.put("available", false);
+            value.put("reason", "not projected by this archive: " + String.join(", ", missing));
+            return Optional.of(value);
+        }
+
+        value.put("available", true);
+        value.put("generation", identity.fingerprint());
+        value.put("fromBlock", 0L);
+        value.put("toBlock", coordinate.blockNumber());
+
+        // Resolve the coordinate canonically instead of publishing what the sink stored. A sink
+        // only needs the block number to recognise a committed range, so it is free to store a
+        // placeholder slot and hash - and DuckLake does. Publishing those would put fabricated
+        // values in an API that callers use to pin a consistency point. If the chain cannot
+        // resolve it, asOf is omitted rather than invented.
+        ChainQuery chain = chainQuery;
+        if (chain != null) {
+            chain.getCanonicalBlockReference(coordinate.blockNumber()).ifPresent(canonical ->
+                    value.put("asOf", Map.of(
+                            "blockNumber", canonical.blockNumber(),
+                            "slot", canonical.slot(),
+                            "blockHash", java.util.HexFormat.of().formatHex(canonical.blockHash()))));
+        }
+        Map<String, Integer> versions = new java.util.TreeMap<>();
+        identity.requiredSections().forEach(section -> versions.put(section.dataset().logicalName(),
+                com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas
+                        .schema(section.dataset()).projectionVersion()));
+        value.put("projectionVersions", versions);
+        return Optional.of(value);
+    }
+
+    /**
+     * What this archive can answer for, stated so a caller never mistakes lag for absence.
+     *
+     * <p>Near tip a block can be final and durable in the outbox but not yet committed to the
+     * sink, for up to the batch linger plus one maintenance budget. A query for that range must
+     * be told the range is not yet covered rather than returned an empty result, which is
+     * indistinguishable from "this never happened".
+     */
+    public Map<String, Object> coverage() {
+        Map<String, Object> coverage = new LinkedHashMap<>();
+        coverage.put("enabled", enabled);
+        if (!enabled || outbox == null) return coverage;
+
+        coverage.put("identity", identity.fingerprint());
+        coverage.put("sections", identity.requiredSections().stream()
+                .map(ProjectionSectionType::wireName).sorted().toList());
+        coverage.put("artifactContracts",
+                com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactContracts
+                        .shipped().wireForm());
+
+        long committedThrough = -1;
+        if (projectionSink != null) {
+            var coordinate = projectionSink.coordinate();
+            committedThrough = coordinate.isPresent() ? coordinate.blockNumber() : -1;
+            coverage.put("sinkHealth", projectionSink.health().state().name());
+        }
+        // The queryable floor is genesis: ADR-039 archives are fresh-sync only, so there is no
+        // partial lower bound to report.
+        coverage.put("queryableFromBlock", committedThrough < 0 ? -1 : 0);
+        coverage.put("queryableThroughBlock", committedThrough);
+
+        var tip = chainTip == null ? -1 : chainTip.getAsLong();
+        coverage.put("tipBlock", tip);
+        coverage.put("blocksBehindTip", tip < 0 || committedThrough < 0 ? -1 : tip - committedThrough);
+
+        ProjectionOutboxConsumer active = consumer;
+        if (active != null) {
+            var policy = active.batchPolicy();
+            // The honest upper bound on how long a final block can take to become queryable.
+            coverage.put("maxCommitLatency", policy.maxLinger(active.nearTip()).toString());
+        }
+        // ADR-039 Phase 6 requires this to be stated rather than discovered. The projection does
+        // not build the replay worker's SQLite tx-hash locator, so a lookup by transaction hash
+        // falls back to a full-range scan of the transactions table. The result is correct - the
+        // locator was only ever an accelerator, and the fallback query is the authoritative one -
+        // but it is O(archive), not O(1), until a derived index exists.
+        coverage.put("transactionHashLookup", Map.of(
+                "mode", "full-scan",
+                "correct", true,
+                "note", "no derived tx-hash index is built for projection archives; lookup by hash"
+                        + " scans the transactions table and is not suitable for hot paths"));
+        coverage.put("note", "blocks above queryableThroughBlock are not yet committed to the"
+                + " archive; treat them as unknown rather than absent");
+        return coverage;
     }
 
     @Override
