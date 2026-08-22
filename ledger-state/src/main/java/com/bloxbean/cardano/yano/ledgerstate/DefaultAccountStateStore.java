@@ -51,7 +51,7 @@ import java.util.*;
 public class DefaultAccountStateStore implements AccountStateStore, AccountStateReadStore,
         com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore,
         com.bloxbean.cardano.yano.api.archive.PointerCredentialSource,
-        com.bloxbean.cardano.yano.api.archive.PointerIndexMaintenance {
+        com.bloxbean.cardano.yano.api.archive.PointerIndexMaintenance, com.bloxbean.cardano.yano.api.archive.SnapshotRetentionClamp {
 
     // Key prefixes
     public static final byte PREFIX_ACCT = 0x01;
@@ -178,6 +178,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     private final EpochParamProvider epochParamProvider;
 
     private RocksDB db;
+    /** Retained so ADR-039 can stage projection records into the boundary's own batch. */
+    private CfSupplier rocksHandles;
     private ColumnFamilyHandle cfState;
     private ColumnFamilyHandle cfDelta;
     private ColumnFamilyHandle cfBoundaryDelta;
@@ -309,6 +311,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         this.log = log;
         this.enabled = enabled;
         this.epochParamProvider = epochParamProvider != null ? epochParamProvider : ZERO_PROVIDER;
+        this.rocksHandles = supplier;
         this.cfState = supplier.handle(AccountStateCfNames.ACCT_STATE);
         this.cfDelta = supplier.handle(AccountStateCfNames.ACCT_DELTA);
         this.cfBoundaryDelta = supplier.handle(AccountStateCfNames.ACCT_BOUNDARY_DELTA);
@@ -1548,6 +1551,59 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             }
         }
         return snapshot;
+    }
+
+    /**
+     * Stream one epoch's delegation snapshot in key order, for ADR-039 artifact reads.
+     *
+     * <p>Paged by an opaque cursor rather than returned whole: a mainnet epoch holds on the order
+     * of a million delegators, and the projection's memory bound is the reason the artifact is a
+     * reference rather than a copy in the first place. Materialising it here would give the bound
+     * back.
+     *
+     * @param afterKey exclusive start, or null to begin at the epoch
+     * @return rows up to {@code limit}, and the key to continue from, or null when exhausted
+     */
+    public EpochSnapshotPage readEpochDelegSnapshotPage(int epoch, byte[] afterKey, int limit) {
+        List<EpochSnapshotRow> rows = new ArrayList<>(Math.min(limit, 1024));
+        byte[] nextKey = null;
+        byte[] lastIncluded = null;
+        byte[] epochPrefix = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(epoch).array();
+        try (RocksIterator it = db.newIterator(cfEpochSnapshot)) {
+            if (afterKey != null) {
+                it.seek(afterKey);
+                if (it.isValid() && java.util.Arrays.equals(it.key(), afterKey)) it.next();
+            } else {
+                it.seek(epochPrefix);
+            }
+            while (it.isValid()) {
+                byte[] key = it.key();
+                if (key.length < 5) break;
+                int keyEpoch = ByteBuffer.wrap(key, 0, 4).order(ByteOrder.BIG_ENDIAN).getInt();
+                if (keyEpoch != epoch) break;
+                // The cursor is the last row INCLUDED, because resuming skips the key it is
+                // given. Handing back the first unread row instead would skip exactly one row
+                // per page - invisible whenever an epoch fits in a single page, and silently
+                // lossy on any epoch that does not.
+                if (rows.size() >= limit) { nextKey = lastIncluded; break; }
+                var snapshot = AccountStateCborCodec.decodeEpochDelegSnapshot(it.value());
+                rows.add(new EpochSnapshotRow(key[4] & 0xFF,
+                        java.util.Arrays.copyOfRange(key, 5, key.length),
+                        snapshot.poolHash(), snapshot.amount()));
+                lastIncluded = key;
+                it.next();
+            }
+        }
+        return new EpochSnapshotPage(List.copyOf(rows), nextKey);
+    }
+
+    /** One delegator's stake in an epoch snapshot. */
+    public record EpochSnapshotRow(int credentialType, byte[] credentialHash, String poolHash,
+                                   java.math.BigInteger amount) { }
+
+    /** A bounded page of snapshot rows plus the key to resume from. */
+    public record EpochSnapshotPage(List<EpochSnapshotRow> rows, byte[] nextKey) {
+        public boolean hasMore() { return nextKey != null; }
     }
 
     // --- Epoch Delegation Snapshot queries ---
@@ -4026,6 +4082,24 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             }
         }
 
+        // ADR-039: stage the artifact reference in the SAME batch as the snapshot it points at,
+        // so neither can become durable without the other.
+        if (epochArtifacts.enabled()) {
+            var boundary = archiveBoundary;
+            if (boundary == null) {
+                throw new IllegalStateException("epoch boundary was not prepared before the delegation"
+                        + " snapshot for epoch " + epoch + "; the artifact would have no coordinate");
+            }
+            epochArtifacts.contributeEpochStake(epoch, boundary.slot(), boundary.blockNumber(),
+                    count, (cfName, key, value) -> {
+                        try {
+                            batch.put(rocksHandles.handle(cfName), key, value);
+                        } catch (RocksDBException e) {
+                            throw new RuntimeException("failed to stage epoch artifact reference", e);
+                        }
+                    });
+        }
+
         byte[] epochMeta = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(epoch).array();
         batch.put(cfState, META_LAST_SNAPSHOT_EPOCH, epochMeta);
         log.info("Created delegation snapshot for epoch {} ({} delegations, amounts={}, skipped: {} unregistered, {} zero-balance, {} retired-pool, {} stale-delegation, {} dereg-after-deleg)",
@@ -4034,8 +4108,90 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         return utxoBalances;
     }
 
+    /**
+     * Epoch below which snapshots may not be pruned, because an archive still references them.
+     *
+     * <p>ADR-039 projects epoch stake by *referencing* the delegation snapshot rather than copying
+     * it, so a snapshot must survive until the sink has durably committed the rows derived from
+     * it. Without this clamp the normal retention window would delete a generation an
+     * unacknowledged artifact still points at, and the reference would resolve to nothing.
+     *
+     * <p>{@link Integer#MAX_VALUE} would freeze pruning entirely, so the clamp only ever holds
+     * back epochs an archive has actually claimed; it is released as soon as the sink acknowledges.
+     */
+    private volatile int protectedSnapshotFloorEpoch = -1;
+
+    /**
+     * Stage the ADA-pot artifact together with the pot value it describes.
+     *
+     * <p>The pot is stored directly rather than through the boundary's batch, and it is re-stored
+     * as rewards and then governance adjust it, so there is no existing batch to join. Writing the
+     * final value again alongside the reference is what makes the pair atomic: after this returns,
+     * either both the final pot and its artifact are durable or neither is. Re-writing identical
+     * bytes is a no-op semantically and costs one small record per epoch.
+     */
+    public void contributeAdaPotArtifact(int epoch, AccountStateCborCodec.AdaPot pot) {
+        if (!epochArtifacts.enabled()) return;
+        var boundary = archiveBoundary;
+        if (boundary == null) {
+            throw new IllegalStateException("epoch boundary was not prepared before the ada pot for"
+                    + " epoch " + epoch + "; the artifact would have no coordinate");
+        }
+
+        long[] values = {
+                pot.treasury().longValueExact(), pot.reserves().longValueExact(),
+                pot.deposits().longValueExact(), pot.fees().longValueExact(),
+                pot.distributed().longValueExact(), pot.undistributed().longValueExact(),
+                pot.rewardsPot().longValueExact(), pot.poolRewardsPot().longValueExact()};
+
+        try (WriteBatch batch = new WriteBatch();
+             WriteOptions options = new WriteOptions().setSync(true)) {
+            batch.put(cfState, adaPotKey(epoch), AccountStateCborCodec.encodeAdaPot(pot));
+            epochArtifacts.contributeAdaPot(epoch, boundary.slot(), boundary.blockNumber(), values,
+                    (cfName, key, value) -> {
+                        try {
+                            batch.put(rocksHandles.handle(cfName), key, value);
+                        } catch (RocksDBException e) {
+                            throw new RuntimeException("failed to stage ada pot artifact", e);
+                        }
+                    });
+            db.write(options, batch);
+        } catch (RocksDBException e) {
+            throw new RuntimeException("failed to commit ada pot artifact for epoch " + epoch, e);
+        }
+    }
+
+    /** ADR-039 epoch artifact hook; NOOP unless projection history is enabled. */
+    private volatile com.bloxbean.cardano.yano.api.archive.EpochArtifactContributor epochArtifacts =
+            com.bloxbean.cardano.yano.api.archive.EpochArtifactContributor.NOOP;
+
+    public void setEpochArtifactContributor(
+            com.bloxbean.cardano.yano.api.archive.EpochArtifactContributor contributor) {
+        this.epochArtifacts = contributor == null
+                ? com.bloxbean.cardano.yano.api.archive.EpochArtifactContributor.NOOP : contributor;
+    }
+
+    /** Protect snapshots from {@code epoch} upward, or pass {@code -1} to release the clamp. */
+    @Override
+    public void protectSnapshotsFrom(int epoch) {
+        this.protectedSnapshotFloorEpoch = epoch;
+    }
+
+    @Override
+    public int protectedSnapshotFloorEpoch() {
+        return protectedSnapshotFloorEpoch;
+    }
+
     private void pruneOldSnapshots(int oldestToKeep, WriteBatch batch) throws RocksDBException {
         if (oldestToKeep <= 0) return;
+
+        // Never prune past what an archive still references. Retention shrinks the window;
+        // the clamp is the floor it may not cross.
+        int floor = protectedSnapshotFloorEpoch;
+        if (floor >= 0 && floor < oldestToKeep) {
+            oldestToKeep = floor;
+            if (oldestToKeep <= 0) return;
+        }
 
         try (RocksIterator it = db.newIterator(cfEpochSnapshot)) {
             it.seekToFirst();

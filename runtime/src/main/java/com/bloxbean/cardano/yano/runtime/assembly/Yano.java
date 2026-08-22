@@ -87,6 +87,42 @@ public interface Yano extends AutoCloseable {
      * Empty when this runtime has no such store; callers then treat every pointer as
      * unresolved rather than failing.
      */
+    /**
+     * Highest slot below which no rollback-capable store can restore state, or {@code -1} when the
+     * runtime cannot answer.
+     *
+     * <p>ADR-039 compares this against the oldest slot an artifact still requires, and pauses
+     * rather than acknowledging when the margin is gone. {@code -1} means unknown, which callers
+     * must treat as "cannot prove it is safe" rather than as zero - a floor of zero asserts that
+     * rollback to genesis is possible, which is the opposite of not knowing.
+     */
+    default long commonRollbackFloorSlot() {
+        return -1L;
+    }
+
+    /** Install the ADR-039 epoch artifact hook; false when no account-state store is present. */
+    default boolean installEpochArtifactContributor(
+            com.bloxbean.cardano.yano.api.archive.EpochArtifactContributor contributor) {
+        return false;
+    }
+
+    /**
+     * The account-state store, for reading an epoch delegation generation under lease.
+     *
+     * <p>Exposed concretely rather than behind a narrow interface because the only consumer
+     * ({@code EpochSnapshotArtifactReader}) already lives in a module that depends on ledger
+     * state; a new interface here would buy no decoupling.
+     */
+    default java.util.Optional<com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore>
+            accountStateStoreForArtifacts() {
+        return java.util.Optional.empty();
+    }
+
+    /** Snapshot retention clamp, so a referenced generation is not pruned while in use. */
+    default com.bloxbean.cardano.yano.api.archive.SnapshotRetentionClamp snapshotRetentionClamp() {
+        return com.bloxbean.cardano.yano.api.archive.SnapshotRetentionClamp.NONE;
+    }
+
     default com.bloxbean.cardano.yano.api.archive.PointerCredentialSource pointerCredentialSource() {
         return com.bloxbean.cardano.yano.api.archive.PointerCredentialSource.NONE;
     }

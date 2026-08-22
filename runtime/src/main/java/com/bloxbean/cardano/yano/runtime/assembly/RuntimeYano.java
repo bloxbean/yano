@@ -135,6 +135,35 @@ final class RuntimeYano implements Yano, DevnetRuntimeProvider {
     }
 
     @Override
+    public boolean installEpochArtifactContributor(
+            com.bloxbean.cardano.yano.api.archive.EpochArtifactContributor contributor) {
+        return chainQuery instanceof com.bloxbean.cardano.yano.runtime.internal.RuntimeNode node
+                && node.installEpochArtifactContributor(contributor);
+    }
+
+    @Override
+    public java.util.Optional<com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore>
+            accountStateStoreForArtifacts() {
+        return chainQuery instanceof com.bloxbean.cardano.yano.runtime.internal.RuntimeNode node
+                ? node.accountStateStoreForArtifacts()
+                : java.util.Optional.empty();
+    }
+
+    @Override
+    public com.bloxbean.cardano.yano.api.archive.SnapshotRetentionClamp snapshotRetentionClamp() {
+        return chainQuery instanceof com.bloxbean.cardano.yano.runtime.internal.RuntimeNode node
+                ? node.snapshotRetentionClamp()
+                : com.bloxbean.cardano.yano.api.archive.SnapshotRetentionClamp.NONE;
+    }
+
+    @Override
+    public long commonRollbackFloorSlot() {
+        return chainQuery instanceof com.bloxbean.cardano.yano.runtime.internal.RuntimeNode node
+                ? node.commonRollbackFloorSlot()
+                : -1L;
+    }
+
+    @Override
     public com.bloxbean.cardano.yano.api.archive.PointerCredentialSource pointerCredentialSource() {
         return chainQuery instanceof com.bloxbean.cardano.yano.runtime.internal.RuntimeNode node
                 ? node.pointerCredentialSource()

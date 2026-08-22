@@ -674,6 +674,34 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         return true;
     }
 
+    /**
+     * Install the ADR-039 epoch artifact hook on the account-state store.
+     *
+     * <p>Returns false rather than silently doing nothing when the store is absent: a projection
+     * that believed it was capturing epoch artifacts and was not would produce an archive claiming
+     * epochs it never captured.
+     */
+    public boolean installEpochArtifactContributor(
+            com.bloxbean.cardano.yano.api.archive.EpochArtifactContributor contributor) {
+        var store = getDefaultAccountStateStore();
+        if (store.isEmpty()) return false;
+        store.get().setEpochArtifactContributor(contributor);
+        return true;
+    }
+
+    /** The account-state store as a snapshot retention clamp, for artifact protection. */
+    public com.bloxbean.cardano.yano.api.archive.SnapshotRetentionClamp snapshotRetentionClamp() {
+        return getDefaultAccountStateStore()
+                .map(store -> (com.bloxbean.cardano.yano.api.archive.SnapshotRetentionClamp) store)
+                .orElse(com.bloxbean.cardano.yano.api.archive.SnapshotRetentionClamp.NONE);
+    }
+
+    /** The account-state store itself, for reading epoch generations under lease. */
+    public java.util.Optional<com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore>
+            accountStateStoreForArtifacts() {
+        return getDefaultAccountStateStore();
+    }
+
     public com.bloxbean.cardano.yano.api.archive.PointerCredentialSource pointerCredentialSource() {
         return getDefaultAccountStateStore()
                 .map(store -> (com.bloxbean.cardano.yano.api.archive.PointerCredentialSource) store)
@@ -2961,12 +2989,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
         var stores = ledgerStateSubsystem.rollbackCapableStores(utxoStore);
 
-        // Compute common rollback floor from ALL stores
-        long commonFloor = 0;
-        for (var store : stores) {
-            long floor = store.getRollbackFloorSlot();
-            if (floor > commonFloor) commonFloor = floor;
-        }
+        long commonFloor = commonRollbackFloorSlot();
 
         // Log per-store status
         log.info("=== Adhoc Rollback ===");
@@ -4683,5 +4706,27 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         }
         String str = String.valueOf(val).trim();
         return str.isEmpty() ? def : str;
+    }
+
+    /**
+     * Highest slot below which no rollback-capable store can restore state.
+     *
+     * <p>The maximum across every store, because a rollback is only safe where <em>all</em> of
+     * them can go: one store that pruned further than the rest sets the limit for everyone.
+     *
+     * <p>ADR-039 compares this against the oldest slot an artifact still requires. A projection
+     * that referenced a source below this floor would be holding a reference to state that can no
+     * longer be restored, so the retention check pauses rather than acknowledging.
+     */
+    public long commonRollbackFloorSlot() {
+        var stores = ledgerStateSubsystem == null
+                ? java.util.List.<com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore>of()
+                : ledgerStateSubsystem.rollbackCapableStores(utxoStore);
+        long commonFloor = 0;
+        for (var store : stores) {
+            long floor = store.getRollbackFloorSlot();
+            if (floor > commonFloor) commonFloor = floor;
+        }
+        return commonFloor;
     }
 }

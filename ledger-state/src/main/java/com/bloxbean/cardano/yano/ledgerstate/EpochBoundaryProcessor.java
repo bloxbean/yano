@@ -440,6 +440,12 @@ public class EpochBoundaryProcessor {
             if (finalPot.isPresent()) {
                 verifyAdaPot(newEpoch, finalPot.get().treasury(), finalPot.get().reserves());
 
+                // ADR-039: record the artifact against the same final value the legacy staging
+                // path below writes, so both pipelines describe the identical pot.
+                if (snapshotCreator != null) {
+                    snapshotCreator.contributeAdaPotArtifact(newEpoch, finalPot.get());
+                }
+
                 if (archiveStaging.enabled(EpochArchiveStagingSink.Dataset.ADA_POT)) {
                     var p = finalPot.get();
                     try (var writer = archiveStaging.openAdaPot(newEpoch)) {
