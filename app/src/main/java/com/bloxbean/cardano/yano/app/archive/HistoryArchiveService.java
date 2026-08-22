@@ -350,8 +350,68 @@ public class HistoryArchiveService implements AutoCloseable {
         if (subsystem != null) subsystem.start();
     }
 
+    /**
+     * Open a read-only backend over an archive the projection wrote.
+     *
+     * <p>Called only when the legacy writer is disabled. It opens the backend and nothing else -
+     * no workers, no staging, no activations, no retention boundaries - because none of those
+     * describe how this archive was produced. The row tables are physically the same, so every
+     * existing repository query works unchanged once a backend exists to read through.
+     *
+     * @param covered the datasets the projection maintains; nothing outside this may be served
+     * @param committedThrough greatest durably committed block, or -1 before the first batch
+     */
+    public synchronized void initializeProjectionReads(YanoConfig nodeConfig,
+                                                       ArchiveIdentity identity,
+                                                       Set<ArchiveDatasetId> covered,
+                                                       java.util.function.LongSupplier committedThrough) {
+        if (configuredEnabled || backend != null) return;
+        try {
+            ArchiveEngine engine = enumValue(YanoPropertyKeys.History.ENGINE, "ducklake", ArchiveEngine.class);
+            String engineName = engine.name().toLowerCase(Locale.ROOT);
+            Path directory = Path.of(string(YanoPropertyKeys.History.DIR, "./history"))
+                    .toAbsolutePath().normalize();
+
+            // The caller supplies the identity the sink was opened with. Recomputing it the legacy
+            // way - from network, genesis, engine and directory - yields a different archiveId and
+            // the backend refuses the archive it is meant to read.
+            ArchiveBackendProvider provider = ServiceLoader.load(ArchiveBackendProvider.class).stream()
+                    .map(ServiceLoader.Provider::get)
+                    .filter(candidate -> candidate.engine().equals(engineName))
+                    .findFirst().orElseThrow(() -> new IllegalStateException(
+                            "archive backend provider not packaged for engine " + engineName));
+
+            backend = provider.open(identity, directory, backendProperties(directory, engine));
+            projectionDatasets = Set.copyOf(covered);
+            projectionCommittedThrough = committedThrough;
+            projectionBackedReads = true;
+            log.info("ADR-039 historical reads routed to the projection archive ({} datasets: {})",
+                    covered.size(), covered.stream().map(ArchiveDatasetId::logicalName).sorted().toList());
+        } catch (Exception e) {
+            // Fail loudly rather than silently answering "history disabled" over a full archive.
+            throw new IllegalStateException("could not open the projection archive for reading", e);
+        }
+    }
+
+    /**
+     * Reads are served from an archive the projection wrote, with no legacy writer running.
+     *
+     * <p>Phase 6 requires historical queries to be routed to the primary archive. The row tables
+     * are shared, so the query code needs no change - but the read path's <em>lifecycle</em> was
+     * owned by this service, and it returns early when the legacy writer is disabled. That left
+     * every address-transaction query answering "history disabled" over an archive holding
+     * 39 million of those rows, which is the false absence the ADR forbids.
+     */
+    private volatile boolean projectionBackedReads;
+
+    /** Datasets the projection actually covers; nothing else may be served. */
+    private volatile Set<ArchiveDatasetId> projectionDatasets = Set.of();
+
+    /** Greatest block the sink has committed, or -1 before the first batch. */
+    private volatile java.util.function.LongSupplier projectionCommittedThrough = () -> -1L;
+
     public boolean enabled() {
-        return configuredEnabled;
+        return configuredEnabled || projectionBackedReads;
     }
 
     public boolean available() {
@@ -372,6 +432,13 @@ public class HistoryArchiveService implements AutoCloseable {
     public AccountHistoryProvider accountHistoryProvider() { return archiveAccountHistory; }
 
     boolean datasetAvailable(ArchiveDatasetId dataset) {
+        if (projectionBackedReads) {
+            // Legacy notions of "operational" and "live phase" describe replay-worker progress
+            // that never ran here. What makes a dataset answerable is that the projection covers
+            // it and the sink has durably committed at least one range.
+            return available() && projectionDatasets.contains(dataset)
+                    && projectionCommittedThrough.getAsLong() >= 0;
+        }
         lifecycleLock.readLock().lock();
         try {
             return available() && datasetEnabled(dataset) && datasetOperational(dataset)

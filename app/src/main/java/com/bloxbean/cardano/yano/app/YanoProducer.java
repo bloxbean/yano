@@ -975,6 +975,18 @@ public class YanoProducer {
                     assembledYano.chain(),
                     assembledYano.ledger(),
                     (YanoConfig) assembledYano.lifecycle().getConfig());
+            // ADR-039 Phase 6: route historical reads at the primary archive. When the legacy
+            // writer is off, this service holds no backend, so every archive-backed query would
+            // answer "history disabled" over an archive the projection had fully populated.
+            if (projectionHistory.isEnabled() && !historyArchive.enabled()) {
+                projectionHistory.archiveIdentity().ifPresent(identity ->
+                        historyArchive.initializeProjectionReads(
+                                (YanoConfig) assembledYano.lifecycle().getConfig(),
+                                identity,
+                                projectionHistory.coveredDatasets(),
+                                projectionHistory::committedThroughBlock));
+            }
+
             if (autoSyncStart) {
                 log.info("Auto-starting Yano synchronization...");
                 assembledYano.start();

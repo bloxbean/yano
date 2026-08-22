@@ -21,8 +21,25 @@ public final class JdbcArchiveRepositorySet implements ArchiveRepositorySet {
     private final String tablePrefix;
     private final String coverageTable;
 
+    /**
+     * Table holding ADR-039 projection receipts, when this archive was written by the projection.
+     *
+     * <p>The projection never writes {@code archive_coverage} — that table describes replay-worker
+     * jobs. Its equivalent truth is the receipt log, where every required section for a block
+     * range committed in one transaction, so a committed range covers every projected dataset
+     * uniformly. Without this, coverage over a projection archive reads as empty and every query
+     * fails "history coverage is incomplete" over data that is fully present.
+     */
+    private final String receiptsTable;
+
     public JdbcArchiveRepositorySet(Function<ArchiveReadSession, Connection> connections,
                                     String tablePrefix, String coverageTable) {
+        this(connections, tablePrefix, coverageTable, null);
+    }
+
+    public JdbcArchiveRepositorySet(Function<ArchiveReadSession, Connection> connections,
+                                    String tablePrefix, String coverageTable, String receiptsTable) {
+        this.receiptsTable = receiptsTable;
         this.connections = Objects.requireNonNull(connections, "connections");
         this.tablePrefix = Objects.requireNonNull(tablePrefix, "tablePrefix");
         this.coverageTable = Objects.requireNonNull(coverageTable, "coverageTable");
@@ -139,7 +156,42 @@ public final class JdbcArchiveRepositorySet implements ArchiveRepositorySet {
                     }
                 }
             }
+            // Fall back to the receipt log only when the worker wrote nothing. Preferring
+            // receipts unconditionally would mask a genuinely incomplete legacy archive; falling
+            // back only on an empty result keeps the legacy answer authoritative wherever it
+            // exists, which the Phase 7 oracle run depends on.
+            // Receipts prove BLOCK ranges. An epoch dataset is asked about in epoch terms, and a
+            // receipt cannot say which epochs a block range contains, so epoch coverage is left
+            // empty rather than fabricated - those reads fail closed instead of answering from
+            // coverage nobody proved.
+            if (ranges.isEmpty() && receiptsTable != null && dataset.sourceKind() == SourceKind.BLOCK) {
+                ranges.addAll(receiptCoverage(connection));
+            }
             return new ArchiveCoverage(dataset, projectionVersion, generation, merge(ranges));
+        }
+
+        /** Contiguous block ranges the projection has durably committed. */
+        private List<ArchiveRange> receiptCoverage(Connection connection) throws SQLException {
+            List<ArchiveRange> ranges = new ArrayList<>();
+            // Absent on any archive the legacy worker wrote, which is the normal case.
+            String unqualified = receiptsTable.substring(receiptsTable.lastIndexOf('.') + 1);
+            try (PreparedStatement exists = connection.prepareStatement(
+                    "SELECT 1 FROM information_schema.tables WHERE table_name = ? LIMIT 1")) {
+                exists.setString(1, unqualified);
+                try (ResultSet found = exists.executeQuery()) {
+                    if (!found.next()) return ranges;
+                }
+            }
+            String sql = "SELECT first_block,last_block FROM " + receiptsTable + " ORDER BY first_block";
+            try (PreparedStatement statement = connection.prepareStatement(sql);
+                 ResultSet result = statement.executeQuery()) {
+                while (result.next()) {
+                    long first = result.getLong(1);
+                    long last = result.getLong(2);
+                    ranges.add(new BlockRange(first, last));
+                }
+            }
+            return ranges;
         }
 
         private ArchiveTableSchema selectedTable(Map<String, Object> filters) {

@@ -99,7 +99,10 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
                     throw new IllegalArgumentException("read session does not belong to DuckLake backend");
                 }
                 return duckLake.connection();
-            }, "history_lake.", "history_lake.archive_coverage");
+            }, "history_lake.", "history_lake.archive_coverage",
+            // ADR-039: when the replay worker wrote no coverage, the projection's receipt log is
+            // the equivalent proof of what is durably present.
+            "history_lake." + DuckLakeProjectionSchema.RECEIPTS_TABLE);
 
     public DuckLakeHistoryArchiveBackend(ArchiveIdentity identity, DuckLakeArchiveConfig config,
                                          DuckDbManager manager) {
@@ -929,7 +932,50 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
                     ranges.add(kind == SourceKind.BLOCK ? new BlockRange(start, end) : new EpochRange(start, end));
                 }
             }
+            // ADR-039: the projection never writes archive_coverage - that table describes
+            // replay-worker jobs. Its equivalent proof is the receipt log, where every required
+            // section for a block range committed in one transaction. Fall back only when the
+            // worker wrote nothing, so a genuinely incomplete legacy archive still reads as
+            // incomplete; that keeps the legacy answer authoritative for the Phase 7 oracle run.
+            //
+            // Receipts prove BLOCK ranges only. An epoch dataset is asked about in epoch terms and
+            // a receipt cannot say which epochs a block range spans, so epoch coverage stays empty
+            // rather than being fabricated - those reads fail closed instead.
+            if (ranges.isEmpty() && dataset.sourceKind() == SourceKind.BLOCK) {
+                ranges.addAll(receiptRanges(connection));
+            }
             return new ArchiveCoverage(dataset, projectionVersion, revision, mergeAdjacent(ranges));
+        }
+    }
+
+    /**
+     * Contiguous block ranges the ADR-039 projection has durably committed.
+     *
+     * <p>Returns nothing when the receipt table is absent, which is the normal state of an
+     * archive the legacy worker wrote. Checked rather than caught, and never created from here:
+     * a read path must not mutate the archive's schema.
+     */
+    private List<ArchiveRange> receiptRanges(Connection connection) throws SQLException {
+        List<ArchiveRange> ranges = new ArrayList<>();
+        if (!tableExists(connection, DuckLakeProjectionSchema.RECEIPTS_TABLE)) return ranges;
+        try (PreparedStatement query = connection.prepareStatement(
+                "SELECT first_block, last_block FROM history_lake."
+                        + DuckLakeProjectionSchema.RECEIPTS_TABLE + " ORDER BY first_block");
+             ResultSet rows = query.executeQuery()) {
+            while (rows.next()) {
+                ranges.add(new BlockRange(rows.getLong(1), rows.getLong(2)));
+            }
+        }
+        return ranges;
+    }
+
+    private static boolean tableExists(Connection connection, String table) throws SQLException {
+        try (PreparedStatement query = connection.prepareStatement(
+                "SELECT 1 FROM information_schema.tables WHERE table_name = ? LIMIT 1")) {
+            query.setString(1, table);
+            try (ResultSet rows = query.executeQuery()) {
+                return rows.next();
+            }
         }
     }
 
