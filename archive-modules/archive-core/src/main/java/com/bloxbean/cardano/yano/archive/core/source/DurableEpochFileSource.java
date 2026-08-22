@@ -213,6 +213,38 @@ public final class DurableEpochFileSource<T> implements EpochArchiveSource<T> {
     }
 
     /**
+     * What a committed job's evidence contains, for the artifact reference that will point at it.
+     *
+     * @param rowCount rows staged, so the sink can verify the commit was complete
+     * @param checksum SHA-256 of the rows file, binding the reference to these exact bytes
+     * @param bytes    size of the rows file
+     */
+    public record StagedEvidence(long rowCount, String checksum, long bytes) { }
+
+    /**
+     * Read the integrity metadata of an already-committed job.
+     *
+     * <p>Called after {@code commit()} so the projection can record a reference bound to the
+     * exact evidence on disk. A job without integrity fields is refused here for the same reason
+     * it is refused on read.
+     */
+    public StagedEvidence evidenceOf(EpochArchiveJob job) {
+        requireJob(job);
+        Properties p;
+        try (var in = Files.newInputStream(manifest(job.jobId()))) {
+            p = new Properties(); p.load(in);
+        } catch (Exception e) {
+            throw new ArchiveStoreException("cannot read epoch source manifest for " + job.jobId(), e);
+        }
+        String checksum = p.getProperty("rowChecksum");
+        if (checksum == null || checksum.isBlank()) {
+            throw new ArchiveStoreException("epoch source " + job.jobId() + " has no recorded checksum");
+        }
+        return new StagedEvidence(Long.parseLong(p.getProperty("rowCount", "-1")), checksum,
+                Long.parseLong(p.getProperty("rowBytes", "-1")));
+    }
+
+    /**
      * Check staged evidence against the size and digest its manifest recorded.
      *
      * <p>Only checked once per job: the digest costs a full pass over the file, and a page read

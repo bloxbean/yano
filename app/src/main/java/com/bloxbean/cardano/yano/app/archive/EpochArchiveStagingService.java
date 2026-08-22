@@ -184,7 +184,11 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
                     if (done) return;
                     done = true;
                     if (failed) { output.close(); return; }
-                    try { output.commit(); }
+                    try {
+                        output.commit();
+                        // Only now is the evidence durable, so only now may anything reference it.
+                        announceStaged(binding, job);
+                    }
                     catch (Exception e) { output.close(); fail(e); }
                 }
                 public void abort() { if (!done) { done = true; output.close(); } }
@@ -192,6 +196,115 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
         } catch (Exception e) {
             fail(e); return noop();
         }
+    }
+
+    /**
+     * Notified once a job's evidence is durable on disk.
+     *
+     * <p>Ordering is the whole safety argument: the rows are fsynced and published before this
+     * fires, so a reference recorded here implies durable evidence. A crash in the gap leaves an
+     * orphaned staged file, which cleanup removes - never a reference to evidence that is not
+     * there.
+     */
+    @FunctionalInterface
+    interface StagedArtifactListener {
+        void staged(EpochArchiveJob job, DurableEpochFileSource.StagedEvidence evidence);
+    }
+
+    private volatile StagedArtifactListener stagedArtifactListener;
+
+    void setStagedArtifactListener(StagedArtifactListener listener) {
+        this.stagedArtifactListener = listener;
+    }
+
+    /** Announce durable evidence, after commit and never before. */
+    private void announceStaged(SourceBinding<?> binding, EpochArchiveJob job) {
+        var listener = stagedArtifactListener;
+        if (listener == null) return;
+        if (!(binding.source() instanceof DurableEpochFileSource<?> durable)) return;
+        listener.staged(job, durable.evidenceOf(job));
+    }
+
+    /**
+     * Materialise a staged job's rows, through the same dataset derivation the replay worker used.
+     *
+     * <p>Evidence is verified before the first row - a truncated or corrupt file raises rather
+     * than yielding a short epoch - and the archive job identity is deterministic over the staged
+     * job, so a replay after a crash reproduces the same {@code archive_job_id}.
+     */
+    List<com.bloxbean.cardano.yano.archive.api.ArchiveRow> materialise(ArchiveDatasetId dataset,
+                                                                       java.util.UUID jobId) {
+        SourceBinding<?> binding = bindingFor(dataset);
+        EpochArchiveJob job = jobOf(binding, jobId);
+        return materialise(binding, job);
+    }
+
+    private <T> List<com.bloxbean.cardano.yano.archive.api.ArchiveRow> materialise(
+            SourceBinding<T> binding, EpochArchiveJob job) {
+        List<com.bloxbean.cardano.yano.archive.api.ArchiveRow> rows = new ArrayList<>();
+        var lease = binding.source().acquire(job, Instant.now().plus(java.time.Duration.ofMinutes(30)));
+        try {
+            java.util.Optional<String> cursor = java.util.Optional.empty();
+            do {
+                var page = binding.source().read(job, cursor, 50_000, lease);
+                binding.projection().derive(
+                        com.bloxbean.cardano.yano.archive.api.ArchiveJob.deterministic(
+                                job.networkIdentity(), job.dataset(), job.projectionVersion(),
+                                new com.bloxbean.cardano.yano.archive.api.EpochRange(job.epoch(), job.epoch()),
+                                new com.bloxbean.cardano.yano.archive.api.ArchiveRangeAnchor(
+                                        job.boundarySlot(), job.boundaryBlockHash(),
+                                        job.boundarySlot(), job.boundaryBlockHash()),
+                                job.sourceStateVersion()),
+                        page, rows::add);
+                cursor = page.nextCursor();
+            } while (cursor.isPresent());
+        } finally {
+            lease.close();
+        }
+        return rows;
+    }
+
+    /** Whether a staged job's evidence is still present and intact. */
+    boolean present(ArchiveDatasetId dataset, java.util.UUID jobId) {
+        try {
+            SourceBinding<?> binding = bindingFor(dataset);
+            EpochArchiveJob job = jobOf(binding, jobId);
+            binding.source().evidenceOf(job);
+            return true;
+        } catch (RuntimeException missing) {
+            return false;
+        }
+    }
+
+    /**
+     * Release staged evidence once the sink has durably committed its rows.
+     *
+     * <p>Acknowledgement is what permits cleanup - never the reverse. Deleting before a receipt
+     * exists would destroy evidence that cannot be recomputed.
+     */
+    void release(ArchiveDatasetId dataset, java.util.UUID jobId) {
+        SourceBinding<?> binding = bindingFor(dataset);
+        for (EpochArchiveJob job : binding.source().pending(Integer.MAX_VALUE)) {
+            if (job.jobId().equals(jobId)) {
+                binding.source().acknowledge(job);
+                return;
+            }
+        }
+        // Already released: acknowledgement is replayed after a crash, so this is not an error.
+    }
+
+    private SourceBinding<?> bindingFor(ArchiveDatasetId dataset) {
+        for (SourceBinding<?> binding : sources()) {
+            if (binding.dataset() == dataset) return binding;
+        }
+        throw new IllegalStateException("no staged epoch source for " + dataset);
+    }
+
+    private EpochArchiveJob jobOf(SourceBinding<?> binding, java.util.UUID jobId) {
+        for (EpochArchiveJob job : binding.source().pending(Integer.MAX_VALUE)) {
+            if (job.jobId().equals(jobId)) return job;
+        }
+        throw new IllegalStateException("staged epoch job " + jobId + " is no longer present");
     }
 
     private void fail(Exception e) {

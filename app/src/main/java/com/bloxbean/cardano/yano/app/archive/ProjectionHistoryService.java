@@ -124,40 +124,44 @@ public class ProjectionHistoryService implements AutoCloseable {
     /**
      * Epoch staging for artifacts the projection has not yet migrated.
      *
-     * <p>Owned here rather than by the legacy service because Phase 7a deletes that service's
-     * block machinery. REWARD, DREP_DISTRIBUTION and GOVERNANCE_PROPOSAL_STATUS still depend on
-     * staged epoch files, so their lifecycle has to move before the old owner is reduced -
-     * otherwise deleting it silently disables three datasets, which is the same shape of failure
-     * as the missing genesis distribution and just as invisible.
-     *
-     * <p>Retired dataset by dataset: each entry disappears from {@code UNMIGRATED} as its
-     * projection artifact lands, and the whole field goes with Phase 7b when the set empties.
+     * <p>Owned here, not by the legacy service: staged files are the projection's own write path
+     * for REWARD, DREP_DISTRIBUTION and GOVERNANCE_PROPOSAL_STATUS, whose evidence is
+     * irreproducible once the boundary has passed. Staging captures it, the projection references
+     * it, the sink commits it, and only an acknowledged receipt releases it.
      */
     private volatile EpochArchiveStagingService epochStaging;
 
     /**
-     * Epoch datasets still served by staged files rather than by a projection artifact.
+     * Epoch datasets whose artifact evidence is a staged file.
      *
-     * <p>Derived from the shipped artifact contracts, so it cannot drift: an artifact that ships
-     * removes itself from this set automatically.
+     * <p>Derived from the shipped contracts rather than hard-coded, so it cannot drift: change a
+     * dataset's representation away from STAGED_FILE and it leaves this set automatically, and
+     * when the set empties the staging machinery has no remaining caller.
+     *
+     * <p>Not "unmigrated". These datasets ARE migrated - a staged file is their artifact
+     * representation, chosen because rewards, DRep boundary state and governance decisions are
+     * irreproducible once the boundary has passed. Staging is part of the projection's write
+     * path for them, not a legacy remnant.
      */
     private static java.util.Set<com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset>
-            unmigratedEpochDatasets() {
-        var migrated = com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactContracts
-                .shipped().contracts().keySet();
-        var pending = java.util.EnumSet.noneOf(
+            stagedFileDatasets() {
+        var staged = java.util.EnumSet.noneOf(
                 com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset.class);
-        for (var dataset : com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.values()) {
-            if (dataset.sourceKind() != com.bloxbean.cardano.yano.archive.api.SourceKind.EPOCH) continue;
-            if (migrated.contains(dataset)) continue;
-            try {
-                pending.add(com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset
-                        .valueOf(dataset.name()));
-            } catch (IllegalArgumentException noStagingCounterpart) {
-                // An epoch dataset with no staging counterpart cannot be served that way at all.
-            }
-        }
-        return pending;
+        com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactContracts.shipped()
+                .contracts().values().stream()
+                .filter(contract -> contract.representation()
+                        == com.bloxbean.cardano.yano.archive.api.projection
+                                .ProjectionArtifactRepresentation.STAGED_FILE)
+                .forEach(contract -> {
+                    try {
+                        staged.add(com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset
+                                .valueOf(contract.dataset().name()));
+                    } catch (IllegalArgumentException noStagingCounterpart) {
+                        throw new IllegalStateException(contract.dataset() + " declares STAGED_FILE"
+                                + " evidence but has no staging counterpart to produce it");
+                    }
+                });
+        return staged;
     }
 
     /** Captures the genesis distribution once; block sections never produce it. */
@@ -484,11 +488,28 @@ public class ProjectionHistoryService implements AutoCloseable {
                 new com.bloxbean.cardano.yano.archive.core.source.YaciUtxoHistoryDecoder(
                         ledger::slotToEpoch, ledger::slotToUnixTime));
 
-        artifactReader = new RoutingArtifactReader(java.util.Map.of(
-                com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.EPOCH_STAKE,
-                new EpochSnapshotArtifactReader(store, clamp, pageSize, networkMagic, boundaryFacts),
-                com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.ADA_POT,
-                new AdaPotArtifactReader(networkMagic, boundaryFacts)));
+        var readers = new java.util.LinkedHashMap<com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId,
+                com.bloxbean.cardano.yano.archive.api.projection.ArchiveArtifactReader>();
+        readers.put(com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.EPOCH_STAKE,
+                new EpochSnapshotArtifactReader(store, clamp, pageSize, networkMagic, boundaryFacts));
+        readers.put(com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.ADA_POT,
+                new AdaPotArtifactReader(networkMagic, boundaryFacts));
+
+        // Datasets whose evidence is a staged file share one reader; each is bound to its own
+        // source so a reference can only ever be served from the dataset that produced it.
+        var stagedSources = new java.util.LinkedHashMap<
+                com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId,
+                StagedEpochArtifactReader.StagedEvidenceSource>();
+        for (var dataset : java.util.List.of(
+                com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.REWARD,
+                com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.DREP_DISTRIBUTION,
+                com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.GOVERNANCE_PROPOSAL_STATUS)) {
+            stagedSources.put(dataset, stagedEvidenceSource(dataset));
+        }
+        var stagedReader = new StagedEpochArtifactReader(stagedSources);
+        stagedSources.keySet().forEach(dataset -> readers.put(dataset, stagedReader));
+
+        artifactReader = new RoutingArtifactReader(readers);
 
         // The state version must match the replay worker's exactly. Both write it into
         // source_state_version, and a mismatch would make identical data look like it came from
@@ -610,17 +631,100 @@ public class ProjectionHistoryService implements AutoCloseable {
      */
     private void installEpochStagingForUnmigratedDatasets(ChainQuery chain, LedgerQuery ledger,
                                                           ArchiveNetworkIdentity network) {
-        var pending = unmigratedEpochDatasets();
+        var pending = stagedFileDatasets();
         if (pending.isEmpty()) {
-            log.info("ADR-039 every epoch dataset is served by a projection artifact;"
-                    + " no staged epoch files are produced");
+            log.info("ADR-039 no epoch dataset uses staged-file evidence; staging is not installed");
             return;
         }
         epochStaging = new EpochArchiveStagingService(chain, ledger, network,
                 historyDirectory.resolve("epoch-source"), pending);
+
+        // The other half of the migration. A staging class that writes files nobody references
+        // is not a migration: durable evidence has to become an outbox reference, get committed
+        // by the sink, and only then be released. This is where the first link is made, and it
+        // fires strictly AFTER the evidence is fsynced, so a reference always implies durability.
+        epochStaging.setStagedArtifactListener((job, evidence) -> {
+            try {
+                stageStagedFileArtifact(job, evidence);
+            } catch (RuntimeException e) {
+                // Never swallow: an unreferenced staged file is invisible to the archive, which
+                // is exactly the failure mode the genesis omission had.
+                drainFailures.increment();
+                lastDrainFailure = "staged artifact reference failed: " + e;
+                log.error("ADR-039 could not reference staged evidence for {} epoch {}",
+                        job.dataset(), job.epoch(), e);
+                throw e;
+            }
+        });
+
         ledger.setEpochArchiveStagingSink(epochStaging);
-        log.info("ADR-039 epoch staging retained for {} unmigrated dataset(s): {}",
-                pending.size(), pending);
+        log.info("ADR-039 staged-file evidence enabled for {} dataset(s): {}", pending.size(), pending);
+    }
+
+
+    /** Bind one dataset's staged evidence to the reader, through the staging service. */
+    private StagedEpochArtifactReader.StagedEvidenceSource stagedEvidenceSource(
+            com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId dataset) {
+        return new StagedEpochArtifactReader.StagedEvidenceSource() {
+            @Override
+            public java.util.List<com.bloxbean.cardano.yano.archive.api.ArchiveRow> rows(
+                    com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef ref) {
+                var staging = requireStaging(dataset);
+                return staging.materialise(dataset, java.util.UUID.fromString(ref.sourceGeneration()));
+            }
+
+            @Override
+            public void release(com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef ref) {
+                var staging = epochStaging;
+                if (staging != null) {
+                    staging.release(dataset, java.util.UUID.fromString(ref.sourceGeneration()));
+                }
+            }
+
+            @Override
+            public boolean present(com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef ref) {
+                var staging = epochStaging;
+                return staging != null
+                        && staging.present(dataset, java.util.UUID.fromString(ref.sourceGeneration()));
+            }
+        };
+    }
+
+    private EpochArchiveStagingService requireStaging(
+            com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId dataset) {
+        var staging = epochStaging;
+        if (staging == null) {
+            throw new IllegalStateException("staged evidence for " + dataset + " is referenced but"
+                    + " epoch staging is not installed; the archive cannot serve it");
+        }
+        return staging;
+    }
+
+    /**
+     * Record a reference to durable staged evidence, in its own synced write.
+     *
+     * <p>Ordering carries the safety argument: the rows were fsynced and published before this
+     * runs, so a reference that exists implies evidence that exists. A crash in the gap leaves an
+     * orphaned staged file, which cleanup removes — never a reference to evidence that is gone.
+     *
+     * <p>The reference carries the file's own checksum, so the sink is bound to those exact
+     * bytes, and the row count, so a truncated read cannot commit as a complete epoch.
+     */
+    private void stageStagedFileArtifact(com.bloxbean.cardano.yano.archive.core.source.EpochArchiveJob job,
+            com.bloxbean.cardano.yano.archive.core.source.DurableEpochFileSource.StagedEvidence evidence) {
+        if (outbox == null) return;
+        var ref = new com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef(
+                job.dataset(), Math.toIntExact(job.epoch()), job.boundaryBlockNumber(), job.boundarySlot(),
+                com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRepresentation.STAGED_FILE,
+                job.jobId().toString(), 1, job.sourceStateVersion(),
+                java.util.OptionalLong.of(evidence.rowCount()), evidence.checksum(),
+                // A staged file is independent of chain retention: it is its own copy, so nothing
+                // about block-body pruning can take it away.
+                -1L);
+        outbox.putArtifactDirect(job.boundaryBlockNumber(), ref);
+        log.info("ADR-039 staged evidence referenced: {} epoch {} ({} rows, digest {})",
+                job.dataset().logicalName(), job.epoch(), evidence.rowCount(),
+                evidence.checksum().substring(0, 16));
     }
 
     /** Start the ordered drain, once the guard has accepted the sink. */

@@ -301,6 +301,26 @@ public final class ProjectionOutboxStore {
     }
 
     /**
+     * Record an artifact reference in its own synced write.
+     *
+     * <p>For evidence that became durable outside any RocksDB batch - a staged file, fsynced and
+     * published before this is called. There is no batch to join, and joining one would be worse:
+     * the reference must not become durable before the evidence it points at.
+     */
+    public void putArtifactDirect(long blockNumber,
+            com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef ref) {
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions().setSync(true)) {
+            batch.put(artifactCf,
+                    ProjectionOutboxKeys.artifactKey(blockNumber, ref.dataset().name(), ref.semanticEpoch()),
+                    ProjectionSectionCodec.encodeArtifact(ref));
+            db.write(options, batch);
+        } catch (RocksDBException e) {
+            throw new ProjectionOutboxException("failed to record staged artifact reference for "
+                    + ref.dataset() + " epoch " + ref.semanticEpoch(), e);
+        }
+    }
+
+    /**
      * Every artifact reference the outbox still holds.
      *
      * <p>This is the durable pruning contract. In-memory leases do not survive a restart, but

@@ -48,8 +48,57 @@ public final class ProjectionArtifactContracts {
                 ProjectionArtifactReconstructibility.RECONSTRUCTIBLE);
     }
 
+    /**
+     * Rewards, captured as staged evidence.
+     *
+     * <p>IRREPRODUCIBLE, and deliberately not claimed otherwise. Reconstructing rewards would
+     * require the complete deterministic input closure - every stake and pool input at the
+     * boundary plus the exact calculation version - and that closure is not proven. Capturing the
+     * final calculated rows is the honest representation: all components are preserved as
+     * computed, with the calculation's own state version recorded alongside them.
+     */
+    public static ProjectionArtifactContract reward() {
+        return new ProjectionArtifactContract(ArchiveDatasetId.REWARD,
+                ArchiveSchemas.schema(ArchiveDatasetId.REWARD).projectionVersion(), 1,
+                ProjectionArtifactRepresentation.STAGED_FILE,
+                ProjectionArtifactReconstructibility.IRREPRODUCIBLE);
+    }
+
+    /**
+     * DRep distribution, captured whole at the strictest class any column requires.
+     *
+     * <p>The {@code amount} column is a distribution over the same stake inputs epoch stake uses
+     * and would be reconstructible on its own. {@code storedExpiry}, {@code dormantEpochs},
+     * {@code effectiveExpiry} and {@code active} are boundary state that later governance
+     * activity overwrites, and are not. Capturing the halves separately would let the persisted
+     * amounts and the boundary-time state diverge - one re-derived, one recorded - so the whole
+     * dataset is captured together as evidence.
+     */
+    public static ProjectionArtifactContract drepDistribution() {
+        return new ProjectionArtifactContract(ArchiveDatasetId.DREP_DISTRIBUTION,
+                ArchiveSchemas.schema(ArchiveDatasetId.DREP_DISTRIBUTION).projectionVersion(), 1,
+                ProjectionArtifactRepresentation.STAGED_FILE,
+                ProjectionArtifactReconstructibility.IRREPRODUCIBLE);
+    }
+
+    /**
+     * Governance proposal status, captured as the observation it is.
+     *
+     * <p>{@code observationPhase}, {@code statusCode} and {@code decisionReason} describe a
+     * decision taken AT a boundary. The governance state that follows records the outcome, not
+     * the observation that produced it, so it is not an equivalent source: by the time it is
+     * read, the reason a proposal was ratified or expired at that boundary is gone.
+     */
+    public static ProjectionArtifactContract governanceProposalStatus() {
+        return new ProjectionArtifactContract(ArchiveDatasetId.GOVERNANCE_PROPOSAL_STATUS,
+                ArchiveSchemas.schema(ArchiveDatasetId.GOVERNANCE_PROPOSAL_STATUS).projectionVersion(), 1,
+                ProjectionArtifactRepresentation.STAGED_FILE,
+                ProjectionArtifactReconstructibility.IRREPRODUCIBLE);
+    }
+
     /** Every contract this build maintains, in wire-name order. */
     public static ProjectionArtifactIdentity shipped() {
-        return ProjectionArtifactIdentity.of(List.of(epochStake(), adaPot()));
+        return ProjectionArtifactIdentity.of(List.of(epochStake(), adaPot(),
+                reward(), drepDistribution(), governanceProposalStatus()));
     }
 }
