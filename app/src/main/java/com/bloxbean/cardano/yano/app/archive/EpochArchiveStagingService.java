@@ -234,9 +234,12 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
      */
     List<com.bloxbean.cardano.yano.archive.api.ArchiveRow> materialise(ArchiveDatasetId dataset,
                                                                        java.util.UUID jobId) {
-        SourceBinding<?> binding = bindingFor(dataset);
-        EpochArchiveJob job = jobOf(binding, jobId);
-        return materialise(binding, job);
+        for (SourceBinding<?> binding : bindingsFor(dataset)) {
+            EpochArchiveJob job = jobIn(binding, jobId);
+            if (job != null) return materialise(binding, job);
+        }
+        throw new IllegalStateException("staged epoch job " + jobId + " for " + dataset
+                + " is no longer present in any source");
     }
 
     private <T> List<com.bloxbean.cardano.yano.archive.api.ArchiveRow> materialise(
@@ -266,14 +269,17 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
 
     /** Whether a staged job's evidence is still present and intact. */
     boolean present(ArchiveDatasetId dataset, java.util.UUID jobId) {
-        try {
-            SourceBinding<?> binding = bindingFor(dataset);
-            EpochArchiveJob job = jobOf(binding, jobId);
-            binding.source().evidenceOf(job);
-            return true;
-        } catch (RuntimeException missing) {
-            return false;
+        for (SourceBinding<?> binding : bindingsFor(dataset)) {
+            EpochArchiveJob job = jobIn(binding, jobId);
+            if (job == null) continue;
+            try {
+                binding.source().evidenceOf(job);
+                return true;
+            } catch (RuntimeException damaged) {
+                return false;
+            }
         }
+        return false;
     }
 
     /**
@@ -283,9 +289,9 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
      * exists would destroy evidence that cannot be recomputed.
      */
     void release(ArchiveDatasetId dataset, java.util.UUID jobId) {
-        SourceBinding<?> binding = bindingFor(dataset);
-        for (EpochArchiveJob job : binding.source().pending(Integer.MAX_VALUE)) {
-            if (job.jobId().equals(jobId)) {
+        for (SourceBinding<?> binding : bindingsFor(dataset)) {
+            EpochArchiveJob job = jobIn(binding, jobId);
+            if (job != null) {
                 binding.source().acknowledge(job);
                 return;
             }
@@ -293,18 +299,29 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
         // Already released: acknowledgement is replayed after a crash, so this is not an error.
     }
 
-    private SourceBinding<?> bindingFor(ArchiveDatasetId dataset) {
+    /**
+     * Every source for a dataset, not just the first.
+     *
+     * <p>Bindings are keyed by dataset AND part: rewards alone have separate sources for the
+     * calculator, MIR certificates and governance withdrawals. Looking only at the first meant a
+     * job staged under one part was invisible when asked for through another, and the drain read
+     * that as evidence that had gone missing.
+     */
+    private List<SourceBinding<?>> bindingsFor(ArchiveDatasetId dataset) {
+        List<SourceBinding<?>> matching = new ArrayList<>();
         for (SourceBinding<?> binding : sources()) {
-            if (binding.dataset() == dataset) return binding;
+            if (binding.dataset() == dataset) matching.add(binding);
         }
-        throw new IllegalStateException("no staged epoch source for " + dataset);
+        if (matching.isEmpty()) throw new IllegalStateException("no staged epoch source for " + dataset);
+        return matching;
     }
 
-    private EpochArchiveJob jobOf(SourceBinding<?> binding, java.util.UUID jobId) {
+    /** The job in this source, or null when it belongs to a different part. */
+    private EpochArchiveJob jobIn(SourceBinding<?> binding, java.util.UUID jobId) {
         for (EpochArchiveJob job : binding.source().pending(Integer.MAX_VALUE)) {
             if (job.jobId().equals(jobId)) return job;
         }
-        throw new IllegalStateException("staged epoch job " + jobId + " is no longer present");
+        return null;
     }
 
     private void fail(Exception e) {
