@@ -54,13 +54,17 @@ class ProjectionEnvelopeCodecTest {
     /**
      * Golden fixture. A change to this digest means the persisted outbox format changed;
      * that requires a format-version bump and a migration decision, not a test update.
+     *
+     * <p>Last changed for v2, which added the inline-evidence payload to artifact references.
+     * The migration decision is recorded on {@code ProjectionEnvelopeCodec.FORMAT_VERSION}:
+     * none is offered, because the only outboxes v2 rejects already required a fresh sync.
      */
     @Test
     void encodedHeaderMatchesItsGoldenDigest() {
         String digest = ProjectionDigest.ofChunks(List.of(ProjectionEnvelopeCodec.encodeHeader(sampleHeader())));
         assertThat(digest)
                 .as("projection envelope header wire format v%d", ProjectionEnvelopeCodec.FORMAT_VERSION)
-                .isEqualTo("4d41e29892b91f4c01982d0f4b0c30e6072ea99103cd32b8374e3fd6d824c848");
+                .isEqualTo("a4d4fafbcf5e25100237f310c0d29b8548e95c5547a3955e4a44d2f18b231148");
     }
 
     @Test

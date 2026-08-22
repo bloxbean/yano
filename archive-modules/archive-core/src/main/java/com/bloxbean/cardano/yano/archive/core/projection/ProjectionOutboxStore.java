@@ -76,6 +76,29 @@ public final class ProjectionOutboxStore {
                 .map(value -> new String(value, java.nio.charset.StandardCharsets.UTF_8));
     }
 
+    /**
+     * Persist the artifact contracts this archive is maintained under.
+     *
+     * <p>Kept separate from the section fingerprint because artifacts are referenced from
+     * envelopes rather than named in the identity string: without this, a node capturing epoch
+     * stake and a node capturing nothing would present the same fingerprint, and the second would
+     * report itself complete for artifacts it never captured.
+     */
+    public void putArtifactIdentity(String wireForm) {
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions().setSync(true)) {
+            batch.put(metaCf, ProjectionOutboxKeys.META_ARTIFACTS,
+                    wireForm.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            db.write(options, batch);
+        } catch (RocksDBException e) {
+            throw new ProjectionOutboxException("failed to persist artifact contracts", e);
+        }
+    }
+
+    public Optional<String> artifactIdentityWire() {
+        return get(metaCf, ProjectionOutboxKeys.META_ARTIFACTS)
+                .map(value -> new String(value, java.nio.charset.StandardCharsets.UTF_8));
+    }
+
     // ------------------------------------------------------------------- writing
 
     /**
@@ -263,7 +286,7 @@ public final class ProjectionOutboxStore {
         }
     }
 
-    private List<com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef> readArtifacts(long blockNumber) {
+    public List<com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef> readArtifacts(long blockNumber) {
         List<com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef> refs = new ArrayList<>();
         byte[] lower = ProjectionOutboxKeys.blockKey(blockNumber);
         byte[] upper = ProjectionOutboxKeys.blockKey(blockNumber + 1);
@@ -271,6 +294,24 @@ public final class ProjectionOutboxStore {
              ReadOptions options = new ReadOptions().setIterateUpperBound(upperSlice);
              RocksIterator it = db.newIterator(artifactCf, options)) {
             for (it.seek(lower); it.isValid(); it.next()) {
+                refs.add(ProjectionSectionCodec.decodeArtifact(it.value()));
+            }
+        }
+        return refs;
+    }
+
+    /**
+     * Every artifact reference the outbox still holds.
+     *
+     * <p>This is the durable pruning contract. In-memory leases do not survive a restart, but
+     * acknowledging a range deletes its artifact references, so what remains here is exactly the
+     * set whose sources must stay retained. Startup replays this to re-establish protection
+     * before anything can prune.
+     */
+    public List<com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef> pendingArtifacts() {
+        List<com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef> refs = new ArrayList<>();
+        try (RocksIterator it = db.newIterator(artifactCf)) {
+            for (it.seekToFirst(); it.isValid(); it.next()) {
                 refs.add(ProjectionSectionCodec.decodeArtifact(it.value()));
             }
         }

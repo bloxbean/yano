@@ -17,7 +17,7 @@ import java.util.OptionalLong;
 /** Deterministic encoding for per-section manifests and artifact references. */
 final class ProjectionSectionCodec {
     private static final int MANIFEST_FORMAT = 1;
-    private static final int ARTIFACT_FORMAT = 1;
+    private static final int ARTIFACT_FORMAT = 2;
 
     private ProjectionSectionCodec() {}
 
@@ -67,6 +67,9 @@ final class ProjectionSectionCodec {
             out.writeLong(ref.expectedRowCount().orElse(0L));
             out.writeUTF(ref.contentDigest());
             out.writeLong(ref.oldestRequiredSlot());
+            byte[] payload = ref.inlinePayload();
+            out.writeInt(payload.length);
+            out.write(payload);
         } catch (IOException e) {
             throw new UncheckedIOException("failed to encode artifact reference", e);
         }
@@ -91,9 +94,12 @@ final class ProjectionSectionCodec {
             long rowCount = in.readLong();
             String digest = in.readUTF();
             long oldestRequiredSlot = in.readLong();
+            byte[] payload = new byte[in.readInt()];
+            in.readFully(payload);
             return new ProjectionArtifactRef(dataset, semanticEpoch, producingBlock, producingSlot,
                     representation, generation, codecVersion, stateVersion,
-                    hasRowCount ? OptionalLong.of(rowCount) : OptionalLong.empty(), digest, oldestRequiredSlot);
+                    hasRowCount ? OptionalLong.of(rowCount) : OptionalLong.empty(), digest,
+                    oldestRequiredSlot, payload);
         } catch (IOException e) {
             throw new UncheckedIOException("failed to decode artifact reference", e);
         }

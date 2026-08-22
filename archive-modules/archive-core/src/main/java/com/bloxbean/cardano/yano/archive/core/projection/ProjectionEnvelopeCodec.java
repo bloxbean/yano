@@ -32,7 +32,15 @@ import java.util.OptionalLong;
  */
 public final class ProjectionEnvelopeCodec {
     private static final byte[] MAGIC = {'Y', 'P', 'E', 'H'};
-    static final int FORMAT_VERSION = 1;
+    /**
+     * v2 adds the inline-evidence payload to each artifact reference.
+     *
+     * <p>Migration decision: none is offered. With zero artifacts the encoding is byte-identical
+     * to v1, and any archive that already holds blocks is refused at startup anyway - epoch
+     * artifacts cannot be added to an archive whose earlier epochs never captured them. So the
+     * only outbox this rejects is one that a fresh sync was already required for.
+     */
+    static final int FORMAT_VERSION = 2;
 
     private ProjectionEnvelopeCodec() {}
 
@@ -76,6 +84,9 @@ public final class ProjectionEnvelopeCodec {
                 out.writeLong(artifact.expectedRowCount().orElse(0L));
                 out.writeUTF(artifact.contentDigest());
                 out.writeLong(artifact.oldestRequiredSlot());
+                byte[] payload = artifact.inlinePayload();
+                out.writeInt(payload.length);
+                out.write(payload);
             }
         } catch (IOException e) {
             throw new UncheckedIOException("failed to encode projection envelope header", e);
@@ -128,9 +139,12 @@ public final class ProjectionEnvelopeCodec {
                 long rowCount = in.readLong();
                 String digest = in.readUTF();
                 long oldestRequiredSlot = in.readLong();
+                byte[] payload = new byte[in.readInt()];
+                in.readFully(payload);
                 artifacts.add(new ProjectionArtifactRef(dataset, semanticEpoch, producingBlock, producingSlot,
                         representation, generation, codecVersion, stateVersion,
-                        hasRowCount ? OptionalLong.of(rowCount) : OptionalLong.empty(), digest, oldestRequiredSlot));
+                        hasRowCount ? OptionalLong.of(rowCount) : OptionalLong.empty(), digest,
+                        oldestRequiredSlot, payload));
             }
 
             if (in.available() != 0) {

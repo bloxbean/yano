@@ -56,6 +56,16 @@ public interface ArchiveArtifactReader {
      */
     ArtifactLease acquire(ProjectionArtifactRef ref, Instant expiresAt);
 
+    /**
+     * Re-establish source protection for artifacts still pending after a restart.
+     *
+     * <p>Leases are in-memory; the outbox's surviving references are the durable contract.
+     * Without this, a restart between staging an artifact and acknowledging it would leave the
+     * source unprotected and pruning could delete a generation the archive still needs. Called
+     * once at startup, before the drain begins, with everything the outbox still holds.
+     */
+    default void reconcileAfterRestart(java.util.Collection<ProjectionArtifactRef> pending) { }
+
     /** Read one bounded page. The lease must be open; an expired lease is rejected. */
     ArtifactPage read(ProjectionArtifactRef ref, ArtifactLease lease, Optional<String> cursor, int limit);
 

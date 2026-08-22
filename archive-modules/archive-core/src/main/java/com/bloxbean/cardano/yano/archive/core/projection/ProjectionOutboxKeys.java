@@ -20,6 +20,8 @@ final class ProjectionOutboxKeys {
 
     static final byte[] META_IDENTITY = "identity".getBytes(StandardCharsets.UTF_8);
     static final byte[] META_ACK = "ack".getBytes(StandardCharsets.UTF_8);
+    /** Artifact contracts, kept apart from the section fingerprint they cannot be part of. */
+    static final byte[] META_ARTIFACTS = "artifacts".getBytes(StandardCharsets.UTF_8);
     private static final String CURSOR_PREFIX = "cursor/";
 
     /** Cursor for the contributor that writes canonical block identity. */
