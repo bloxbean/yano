@@ -71,6 +71,16 @@ public class ProjectionHistoryService implements AutoCloseable {
     private volatile ProjectionOutboxStore outbox;
     private volatile CanonicalProjectionCollector collector;
     private volatile ProjectionIdentity identity;
+
+    /**
+     * Why initialisation stopped, when it did.
+     *
+     * <p>{@link #initialize} can fail after the outbox is open - a configured section that no
+     * longer exists, for instance - leaving this service half-built with a null identity. The
+     * node keeps running, so the status endpoints must be able to say what happened instead of
+     * dereferencing an identity that was never assigned.
+     */
+    private volatile String initializationError;
     private volatile ArchiveSafetyWindows safetyWindows;
     private volatile ProjectionContributorHealth.Monitor contributorMonitor;
     private volatile ArchiveIngestGate ingestGate;
@@ -240,8 +250,17 @@ public class ProjectionHistoryService implements AutoCloseable {
         // a fresh sync that silently omitted one would produce an archive that looks healthy
         // while a whole dataset is missing, and the omission is undiscoverable later because
         // the sections cannot be added without resyncing.
-        Set<ProjectionSectionType> required = configuredSections();
+        Set<ProjectionSectionType> required;
+        try {
+            required = configuredSections();
+        } catch (RuntimeException e) {
+            // Fail closed as before, but leave a reportable reason behind: this is the failure
+            // an operator meets after renaming or renumbering a section in configuration.
+            initializationError = e.getMessage();
+            throw e;
+        }
         identity = new ProjectionIdentity(network, sink, 1, required);
+        initializationError = null;
 
         long tipBlock = chain.getLocalTip() == null ? 0 : chain.getLocalTip().getBlockNumber();
         Optional<ProjectionIdentity> storedIdentity = outbox.identityFingerprint()
@@ -1114,7 +1133,11 @@ public class ProjectionHistoryService implements AutoCloseable {
     public Map<String, Object> status() {
         Map<String, Object> status = new LinkedHashMap<>();
         status.put("enabled", enabled);
-        if (!enabled || outbox == null) return status;
+        if (!enabled || outbox == null || identity == null) {
+            // Half-initialised is a state this must be able to describe, not one it dies on.
+            if (enabled && initializationError != null) status.put("error", initializationError);
+            return status;
+        }
         status.put("sink", sink);
         status.put("drainedBatches", drainedBatches.sum());
         status.put("drainedBlocks", drainedBlocks.sum());
@@ -1315,7 +1338,12 @@ public class ProjectionHistoryService implements AutoCloseable {
     public Map<String, Object> coverage() {
         Map<String, Object> coverage = new LinkedHashMap<>();
         coverage.put("enabled", enabled);
-        if (!enabled || outbox == null) return coverage;
+        if (!enabled || outbox == null || identity == null) {
+            // Throwing here would turn a diagnosable misconfiguration into an opaque 500 on the
+            // page an operator opens to diagnose it.
+            if (enabled && initializationError != null) coverage.put("error", initializationError);
+            return coverage;
+        }
 
         coverage.put("identity", identity.fingerprint());
         coverage.put("sections", identity.requiredSections().stream()

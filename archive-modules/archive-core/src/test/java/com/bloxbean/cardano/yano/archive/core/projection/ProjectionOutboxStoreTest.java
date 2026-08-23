@@ -441,7 +441,7 @@ class ProjectionOutboxStoreTest {
         commitCompleteBlock(100);
         var health = monitor.evaluate(store, REQUIRED, java.time.Instant.EPOCH.plusSeconds(600));
         assertThat(health.status()).isEqualTo(ProjectionContributorHealth.Status.HEALTHY);
-        assertThat(health.contributorCursors()).containsEntry("transaction:v2", 100L);
+        assertThat(health.contributorCursors()).containsEntry("transaction:v1", 100L);
     }
 
     // ------------------------------------------------- slot-based rollback

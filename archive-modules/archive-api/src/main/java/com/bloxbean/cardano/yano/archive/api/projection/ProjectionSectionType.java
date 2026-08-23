@@ -55,7 +55,7 @@ public enum ProjectionSectionType {
         return ArchiveSchemas.schema(dataset).projectionVersion();
     }
 
-    /** Stable wire name, e.g. {@code utxo-history:v5}. */
+    /** Stable wire name, e.g. {@code utxo-history:v1}. */
     public String wireName() {
         return wirePrefix + ":v" + version();
     }

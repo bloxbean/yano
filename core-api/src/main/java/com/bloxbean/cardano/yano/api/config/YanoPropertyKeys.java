@@ -336,7 +336,7 @@ public final class YanoPropertyKeys {
          * earlier block. The corollary is that a dataset omitted here can only be added by
          * resyncing from genesis.
          *
-         * <p>Example legacy value: {@code transaction:v2,utxo-history:v5}.
+         * <p>Example legacy value: {@code transaction:v1,utxo-history:v1}.
          */
         public static final String PROJECTION_SECTIONS = PREFIX + "projection.sections";
 

@@ -19,13 +19,13 @@ class ArchiveContractsTest {
             assertThat(schema.tables()).isNotEmpty();
             assertThat(schema.paginationOrder()).isNotEmpty();
         });
-        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.TRANSACTION).projectionVersion()).isEqualTo(2);
-        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.ACCOUNT_EVENT).projectionVersion()).isEqualTo(3);
-        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.ADDRESS_TRANSACTION).projectionVersion()).isEqualTo(3);
-        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.UTXO_HISTORY).projectionVersion()).isEqualTo(5);
-        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.REWARD).projectionVersion()).isEqualTo(4);
-        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.EPOCH_STAKE).projectionVersion()).isEqualTo(2);
-        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.DREP_DISTRIBUTION).projectionVersion()).isEqualTo(2);
+        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.TRANSACTION).projectionVersion()).isEqualTo(1);
+        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.ACCOUNT_EVENT).projectionVersion()).isEqualTo(1);
+        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.ADDRESS_TRANSACTION).projectionVersion()).isEqualTo(1);
+        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.UTXO_HISTORY).projectionVersion()).isEqualTo(1);
+        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.REWARD).projectionVersion()).isEqualTo(1);
+        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.EPOCH_STAKE).projectionVersion()).isEqualTo(1);
+        assertThat(ArchiveSchemas.schema(ArchiveDatasetId.DREP_DISTRIBUTION).projectionVersion()).isEqualTo(1);
     }
 
     @Test

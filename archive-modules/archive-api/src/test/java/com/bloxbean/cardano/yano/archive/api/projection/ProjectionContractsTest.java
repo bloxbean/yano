@@ -35,10 +35,10 @@ class ProjectionContractsTest {
 
     @Test
     void sectionVersionsTrackTheShippedDatasetProjectionVersion() {
-        assertThat(ProjectionSectionType.TRANSACTION.wireName()).isEqualTo("transaction:v2");
-        assertThat(ProjectionSectionType.UTXO_HISTORY.wireName()).isEqualTo("utxo-history:v5");
-        assertThat(ProjectionSectionType.ACCOUNT_EVENT.wireName()).isEqualTo("account-events:v3");
-        assertThat(ProjectionSectionType.ADDRESS_TRANSACTION.wireName()).isEqualTo("address-transaction:v3");
+        assertThat(ProjectionSectionType.TRANSACTION.wireName()).isEqualTo("transaction:v1");
+        assertThat(ProjectionSectionType.UTXO_HISTORY.wireName()).isEqualTo("utxo-history:v1");
+        assertThat(ProjectionSectionType.ACCOUNT_EVENT.wireName()).isEqualTo("account-events:v1");
+        assertThat(ProjectionSectionType.ADDRESS_TRANSACTION.wireName()).isEqualTo("address-transaction:v1");
 
         for (ProjectionSectionType type : ProjectionSectionType.values()) {
             assertThat(type.version())
@@ -262,7 +262,7 @@ class ProjectionContractsTest {
         assertThat(a.matches(b)).isTrue();
         assertThat(a.matches(c)).isFalse();
         assertThat(a.matches(d)).isFalse();
-        assertThat(a.fingerprint()).contains("transaction:v2", "utxo-history:v5", "ducklake");
+        assertThat(a.fingerprint()).contains("transaction:v1", "utxo-history:v1", "ducklake");
     }
 
     @Test

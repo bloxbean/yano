@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.archive.ducklake;
 import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import com.bloxbean.cardano.yano.archive.api.ArchiveIdentity;
 import com.bloxbean.cardano.yano.archive.api.ArchiveJob;
+import com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas;
 import com.bloxbean.cardano.yano.archive.api.ArchiveNetworkIdentity;
 import com.bloxbean.cardano.yano.archive.api.ArchiveRangeAnchor;
 import com.bloxbean.cardano.yano.archive.api.ArchiveRow;
@@ -54,7 +55,9 @@ class DuckLakeWriteSessionBenchmarkTest {
         byte[] hash = new byte[32];
         Arrays.fill(hash, (byte) 3);
         return ArchiveJob.deterministic(new ArchiveNetworkIdentity(1, "fixture-genesis"),
-                ArchiveDatasetId.TRANSACTION, 2, new BlockRange(from, to),
+                ArchiveDatasetId.TRANSACTION,
+                ArchiveSchemas.schema(ArchiveDatasetId.TRANSACTION).projectionVersion(),
+                new BlockRange(from, to),
                 new ArchiveRangeAnchor(from * 10, hash, to * 10, hash), "canonical-block-v1");
     }
 

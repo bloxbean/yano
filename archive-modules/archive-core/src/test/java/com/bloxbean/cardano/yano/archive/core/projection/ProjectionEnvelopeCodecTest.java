@@ -58,13 +58,20 @@ class ProjectionEnvelopeCodecTest {
      * <p>Last changed for v2, which added the inline-evidence payload to artifact references.
      * The migration decision is recorded on {@code ProjectionEnvelopeCodec.FORMAT_VERSION}:
      * none is offered, because the only outboxes v2 rejects already required a fresh sync.
+     *
+     * <p>The digest also moved when every dataset was renumbered to v1 before release. That is
+     * not a structural change - the header still writes the same fields in the same order - but
+     * the encoding embeds each section's wire name, so {@code transaction:v2} became
+     * {@code transaction:v1} in the bytes. An outbox written before the renumber therefore fails
+     * to decode, which is the same consequence as a format bump and carries the same decision:
+     * no migration, because nothing was released and ADR-039 archives are fresh-sync-only.
      */
     @Test
     void encodedHeaderMatchesItsGoldenDigest() {
         String digest = ProjectionDigest.ofChunks(List.of(ProjectionEnvelopeCodec.encodeHeader(sampleHeader())));
         assertThat(digest)
                 .as("projection envelope header wire format v%d", ProjectionEnvelopeCodec.FORMAT_VERSION)
-                .isEqualTo("a4d4fafbcf5e25100237f310c0d29b8548e95c5547a3955e4a44d2f18b231148");
+                .isEqualTo("aabd2b2fe18fb594d2cc86dd138829e900844242e26445fe8ee4c96b18623ae7");
     }
 
     @Test
