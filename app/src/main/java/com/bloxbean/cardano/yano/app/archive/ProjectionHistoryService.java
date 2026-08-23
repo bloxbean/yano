@@ -706,10 +706,13 @@ public class ProjectionHistoryService implements AutoCloseable {
             com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId dataset) {
         return new StagedEpochArtifactReader.StagedEvidenceSource() {
             @Override
-            public java.util.List<com.bloxbean.cardano.yano.archive.api.ArchiveRow> rows(
-                    com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef ref) {
+            public StagedEpochArtifactReader.EvidencePage rows(
+                    com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef ref,
+                    java.util.Optional<String> cursor, int limit) {
                 var staging = requireStaging(dataset);
-                return staging.materialise(dataset, java.util.UUID.fromString(ref.sourceGeneration()));
+                var page = staging.materialisePage(dataset,
+                        java.util.UUID.fromString(ref.sourceGeneration()), cursor, limit);
+                return new StagedEpochArtifactReader.EvidencePage(page.rows(), page.nextCursor());
             }
 
             @Override
