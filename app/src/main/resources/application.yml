@@ -343,7 +343,7 @@ yano:
     #
     # Enabling it here would therefore be a claim the code cannot honour. Forward those
     # methods in the decorator before turning this on, and add a test that fails when a
-    # new Yano method goes unforwarded.
+    # new Yano method goes unforwarded. Tracked as issue #80.
     history:
       enabled: false
       projection:
