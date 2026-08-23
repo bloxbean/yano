@@ -1334,6 +1334,9 @@ public class ProjectionHistoryService implements AutoCloseable {
                         .shipped().wireForm());
         var pending = outbox.pendingArtifacts();
         status.put("pendingArtifacts", pending.size());
+        // Named rather than implied: the disk budget excludes pinned generations, and a bare
+        // zero in the footprint would read as "nothing pinned" when it means "not measured".
+        status.put("pinnedGenerationBytesMeasured", footprint().pinnedGenerationsMeasured());
         status.put("oldestPendingArtifactEpoch", pending.stream()
                 .mapToInt(com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef::semanticEpoch)
                 .min().orElse(-1));
