@@ -1366,6 +1366,11 @@ public class ProjectionHistoryService implements AutoCloseable {
                         .shipped().wireForm());
         var pending = outbox.pendingArtifacts();
         status.put("pendingArtifacts", pending.size());
+        // A staging failure disables every epoch dataset and persists across restarts, so it
+        // cannot be left to the log. Unreported, it is indistinguishable from an archive that
+        // simply has not reached a boundary yet.
+        var staging = epochStaging;
+        if (staging != null) staging.failure().ifPresent(detail -> status.put("epochStagingError", detail));
         // Named rather than implied: the disk budget excludes pinned generations, and a bare
         // zero in the footprint would read as "nothing pinned" when it means "not measured".
         status.put("pinnedGenerationBytesMeasured", footprint().pinnedGenerationsMeasured());
@@ -1537,6 +1542,12 @@ public class ProjectionHistoryService implements AutoCloseable {
                 "correct", true,
                 "note", "no derived tx-hash index is built for projection archives; lookup by hash"
                         + " scans the transactions table and is not suitable for hot paths"));
+        var stagingService = epochStaging;
+        if (stagingService != null) {
+            // Surfaced beside coverage because it bounds what the archive will ever hold: no
+            // further epoch artifacts are produced once staging has failed.
+            stagingService.failure().ifPresent(detail -> coverage.put("epochStagingError", detail));
+        }
         coverage.put("note", "blocks above queryableThroughBlock are not yet committed to the"
                 + " archive; treat them as unknown rather than absent");
         return coverage;

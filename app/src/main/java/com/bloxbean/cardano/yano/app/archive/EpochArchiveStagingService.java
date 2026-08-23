@@ -46,6 +46,17 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
     }
 
     public boolean enabled(Dataset dataset) { return enabled.contains(dataset) && error == null; }
+
+    /**
+     * Why staging stopped, when it has.
+     *
+     * <p>A failure here disables staging for every dataset and is written to a marker file that
+     * is re-read on startup, so it survives a restart. That makes it exactly the kind of state
+     * that must be reportable: without it the node runs on, produces no further epoch artifacts,
+     * and looks entirely healthy while every reward, DRep and governance boundary after the
+     * failure is missing from the archive.
+     */
+    public java.util.Optional<String> failure() { return java.util.Optional.ofNullable(error); }
     public void beginBoundary(Boundary value) { boundary = value; }
     public void completeBoundary(Boundary value) {
         if (!Objects.equals(boundary, value)) return;
