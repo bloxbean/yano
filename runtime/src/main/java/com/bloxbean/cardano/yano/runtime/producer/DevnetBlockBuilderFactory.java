@@ -7,6 +7,7 @@ import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.ledgerstate.EpochParamTracker;
 import com.bloxbean.cardano.yano.runtime.blockproducer.DevnetBlockBuilder;
+import com.bloxbean.cardano.yano.runtime.blockproducer.BlockBodySizeLimitSupplier;
 import com.bloxbean.cardano.yano.runtime.blockproducer.EpochNonceEvolver;
 import com.bloxbean.cardano.yano.runtime.blockproducer.EpochNonceState;
 import com.bloxbean.cardano.yano.runtime.blockproducer.GenesisConfig;
@@ -44,7 +45,9 @@ public final class DevnetBlockBuilderFactory {
         }
 
         log.info("Using DevnetBlockBuilder with dummy signatures (no key files configured)");
-        return new DevnetBlockBuilder(dependencies.protocolVersionSupplier().get());
+        return new DevnetBlockBuilder(
+                dependencies.protocolVersionSupplier().get(),
+                BlockBodySizeLimitSupplier.fromEpochParams(dependencies.effectiveEpochParamProvider()));
     }
 
     public static boolean hasConfiguredProducerKeys(YanoConfig config) {
@@ -102,7 +105,8 @@ public final class DevnetBlockBuilderFactory {
                     maxKESEvolutions,
                     nonceState,
                     nonceStore,
-                    dependencies.protocolVersionSupplier().get());
+                    dependencies.protocolVersionSupplier().get(),
+                    BlockBodySizeLimitSupplier.fromEpochParams(dependencies.effectiveEpochParamProvider()));
         } catch (Exception e) {
             throw new IllegalStateException("Failed to initialize SignedBlockBuilder with configured producer keys", e);
         }

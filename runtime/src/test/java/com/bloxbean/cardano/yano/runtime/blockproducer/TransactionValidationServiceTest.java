@@ -4,6 +4,8 @@ import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
 import com.bloxbean.cardano.yano.ledgerrules.TransactionValidator;
 import com.bloxbean.cardano.yano.ledgerrules.ValidationResult;
+import com.bloxbean.cardano.yano.ledgerrules.impl.YaciScriptSupplier;
+import com.bloxbean.cardano.client.plutus.spec.PlutusV2Script;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -94,6 +96,44 @@ class TransactionValidationServiceTest {
 
         assertThat(result.valid()).isFalse();
         assertThat(result.errors().get(0).rule()).isEqualTo("UtxoNotFound");
+    }
+
+    @Test
+    void validate_exposesReferenceScriptsFromCustomResolverToScriptSupplier() throws Exception {
+        String inputHash = "cc".repeat(32);
+        var input = com.bloxbean.cardano.client.transaction.spec.TransactionInput.builder()
+                .transactionId(inputHash).index(0).build();
+        var output = com.bloxbean.cardano.client.transaction.spec.TransactionOutput.builder()
+                .address("addr_test1qz2fxv2umyhttkxyxp8x0dlpdt3k6cwng5pxj3jhsydzer3jcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwq2ytjqp")
+                .value(new com.bloxbean.cardano.client.transaction.spec.Value(
+                        BigInteger.valueOf(1_000_000), null)).build();
+        byte[] txCbor = com.bloxbean.cardano.client.transaction.spec.Transaction.builder()
+                .body(com.bloxbean.cardano.client.transaction.spec.TransactionBody.builder()
+                        .inputs(List.of(input)).outputs(List.of(output))
+                        .fee(BigInteger.valueOf(200_000)).build())
+                .build().serialize();
+        PlutusV2Script script = PlutusV2Script.builder()
+                .cborHex("49480100002221200101").build();
+        String scriptHash = java.util.HexFormat.of().formatHex(script.getScriptHash());
+        var scriptOutput = com.bloxbean.cardano.client.transaction.spec.TransactionOutput.builder()
+                .address("00")
+                .value(new com.bloxbean.cardano.client.transaction.spec.Value(BigInteger.ONE, null))
+                .scriptRef(script).build();
+        var resolved = new com.bloxbean.cardano.yano.api.utxo.model.Utxo(
+                new Outpoint(inputHash, 0), "00", BigInteger.ONE, List.of(),
+                null, null, java.util.HexFormat.of().formatHex(scriptOutput.getScriptRef()),
+                scriptHash, false, 0, 0, null);
+        YaciScriptSupplier supplier = new YaciScriptSupplier(utxoState);
+        TransactionValidationService overlayService = new TransactionValidationService(
+                (bytes, inputs) -> supplier.getScript(scriptHash).isPresent()
+                        ? ValidationResult.success()
+                        : ValidationResult.failure(new com.bloxbean.cardano.yano.ledgerrules.ValidationError(
+                                "ReferenceScript", "not found",
+                                com.bloxbean.cardano.yano.ledgerrules.ValidationError.Phase.PHASE_2)),
+                utxoState);
+
+        assertThat(overlayService.validate(txCbor, ignored -> resolved).valid()).isTrue();
+        assertThat(supplier.getScript(scriptHash)).isEmpty();
     }
 
     /**

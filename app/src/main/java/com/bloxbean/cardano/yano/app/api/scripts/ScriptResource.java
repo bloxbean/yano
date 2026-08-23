@@ -4,6 +4,7 @@ import com.bloxbean.cardano.client.api.util.ReferenceScriptUtil;
 import com.bloxbean.cardano.client.exception.CborSerializationException;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.LedgerQuery;
+import com.bloxbean.cardano.yano.api.MempoolQueryGateway;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.app.api.scripts.dto.ScriptCborDto;
 import jakarta.inject.Inject;
@@ -11,6 +12,8 @@ import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.QueryParam;
+import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 
@@ -21,9 +24,14 @@ public class ScriptResource {
     @Inject
     LedgerQuery ledgerQuery;
 
+    @Inject
+    MempoolQueryGateway mempoolQueryGateway;
+
     @GET
     @Path("/{script_hash}/cbor")
-    public Response getScriptCbor(@PathParam("script_hash") String scriptHash) {
+    public Response getScriptCbor(@PathParam("script_hash") String scriptHash,
+                                  @QueryParam("include_mempool")
+                                  @DefaultValue("false") boolean includeMempool) {
         UtxoState u = ledgerQuery.getUtxoState();
         if (u == null || !u.isEnabled()) {
             return Response.status(Response.Status.SERVICE_UNAVAILABLE)
@@ -31,7 +39,10 @@ public class ScriptResource {
                     .build();
         }
 
-        return u.getScriptRefBytesByHash(scriptHash)
+        var scriptRef = includeMempool
+                ? mempoolQueryGateway.getScriptRefBytesByHash(scriptHash)
+                : u.getScriptRefBytesByHash(scriptHash);
+        return scriptRef
                 .map(ReferenceScriptUtil::deserializeScriptRef)
                 .map(script -> {
                     try {

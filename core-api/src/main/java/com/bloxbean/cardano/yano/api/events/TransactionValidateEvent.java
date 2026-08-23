@@ -5,6 +5,10 @@ import com.bloxbean.cardano.yaci.events.api.VetoableEvent;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.function.Function;
+
+import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
+import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
 
 /**
  * Published before a transaction is admitted to the mempool.
@@ -29,6 +33,7 @@ public final class TransactionValidateEvent implements VetoableEvent {
     private final byte[] txCbor;
     private final String txHash;
     private final String origin;
+    private final Function<Outpoint, Utxo> utxoResolver;
     private final List<Rejection> rejections = new ArrayList<>();
 
     /**
@@ -37,14 +42,27 @@ public final class TransactionValidateEvent implements VetoableEvent {
      * @param origin submission path identifier ("rest-api", "txsubmission", etc.)
      */
     public TransactionValidateEvent(byte[] txCbor, String txHash, String origin) {
+        this(txCbor, txHash, origin, null);
+    }
+
+    /**
+     * Creates an admission-scoped validation event.
+     *
+     * @param utxoResolver resolver for the stable mempool-plus-canonical UTXO
+     *                     view, or {@code null} for callers outside admission
+     */
+    public TransactionValidateEvent(byte[] txCbor, String txHash, String origin,
+                                    Function<Outpoint, Utxo> utxoResolver) {
         this.txCbor = txCbor;
         this.txHash = txHash;
         this.origin = origin;
+        this.utxoResolver = utxoResolver;
     }
 
     public byte[] txCbor() { return txCbor; }
     public String txHash() { return txHash; }
     public String origin() { return origin; }
+    public Function<Outpoint, Utxo> utxoResolver() { return utxoResolver; }
 
     @Override
     public void reject(String source, String reason) {

@@ -200,7 +200,10 @@ public final class BlockProducerHelper {
     public static List<byte[]> drainMempool(MemPool memPool,
                                       TransactionValidationService validatorService,
                                       UtxoState utxoState) {
-        return transactionSelector(memPool, validatorService, utxoState).drainForBlock();
+        BlockTransactionSelector selector = transactionSelector(memPool, validatorService, utxoState);
+        List<byte[]> selected = selector.drainForBlock();
+        selector.blockCandidatePublished();
+        return selected;
     }
 
     public static void prepareEpochTransitionBeforeBlock(EventBus eventBus, long slot, long blockNumber,

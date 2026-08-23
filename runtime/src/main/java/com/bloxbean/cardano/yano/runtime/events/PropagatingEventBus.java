@@ -9,6 +9,9 @@ import com.bloxbean.cardano.yaci.events.api.EventMetadata;
 import com.bloxbean.cardano.yaci.events.api.PublishOptions;
 import com.bloxbean.cardano.yaci.events.api.SubscriptionHandle;
 import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
+import com.bloxbean.cardano.yano.api.events.TransactionValidateEvent;
+import com.bloxbean.cardano.yano.api.events.UtxoStateAppliedEvent;
+import com.bloxbean.cardano.yano.api.events.UtxoStateRolledBackEvent;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
@@ -65,8 +68,12 @@ public final class PropagatingEventBus implements EventBus {
         if (closed.get()) {
             throw new IllegalStateException("EventBus is closed");
         }
-        CopyOnWriteArrayList<Sub<?>> list = subs.computeIfAbsent(type, ignored -> new CopyOnWriteArrayList<>());
         SubscriptionOptions effective = options != null ? options : SubscriptionOptions.builder().build();
+        if (requiresSynchronousDelivery(type) && effective.executor() != null) {
+            throw new IllegalArgumentException(
+                    type.getSimpleName() + " listeners must be synchronous");
+        }
+        CopyOnWriteArrayList<Sub<?>> list = subs.computeIfAbsent(type, ignored -> new CopyOnWriteArrayList<>());
         Sub<E> sub = new Sub<>(listener, effective, sequence.incrementAndGet());
         int index = 0;
         for (; index < list.size(); index++) {
@@ -94,6 +101,12 @@ public final class PropagatingEventBus implements EventBus {
                 return sub.active.get();
             }
         };
+    }
+
+    private static boolean requiresSynchronousDelivery(Class<?> type) {
+        return type == TransactionValidateEvent.class
+                || type == UtxoStateAppliedEvent.class
+                || type == UtxoStateRolledBackEvent.class;
     }
 
     /**

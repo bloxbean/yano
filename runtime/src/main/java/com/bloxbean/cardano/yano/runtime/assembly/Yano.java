@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.runtime.assembly;
 import com.bloxbean.cardano.yano.api.ChainQuery;
 import com.bloxbean.cardano.yano.api.DevnetControl;
 import com.bloxbean.cardano.yano.api.LedgerQuery;
+import com.bloxbean.cardano.yano.api.MempoolQueryGateway;
 import com.bloxbean.cardano.yano.api.NodeLifecycle;
 import com.bloxbean.cardano.yano.api.ProducerControl;
 import com.bloxbean.cardano.yano.api.TxEvaluationGateway;
@@ -26,6 +27,10 @@ public interface Yano extends AutoCloseable {
     TxGateway txGateway();
 
     TxEvaluationGateway txEvaluationGateway();
+
+    default MempoolQueryGateway mempoolQueryGateway() {
+        return MempoolQueryGateway.UNAVAILABLE;
+    }
 
     Optional<ProducerControl> producerControl();
 

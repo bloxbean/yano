@@ -262,6 +262,52 @@ class PluginIndexGeneratorTest {
                 .isEqualTo(CatalogDigests.artifactClosure(List.of(secondArtifact)));
     }
 
+    @Test
+    void argumentsFileDrivesTheSameCommandAsInlineArguments() throws Exception {
+        Path bundle = manifestedArtifact(
+                "args-file-bundle", "com.example.argsfile", "sink",
+                "com.example.ArgsFileProvider");
+        Path inlineOutput = temporary.resolve("inline").resolve(PluginIndex.RESOURCE_PATH);
+        Path fileOutput = temporary.resolve("from-file").resolve(PluginIndex.RESOURCE_PATH);
+        Files.createDirectories(inlineOutput.getParent());
+        Files.createDirectories(fileOutput.getParent());
+
+        PluginIndexGenerator.main(new String[]{
+                "--output", inlineOutput.toString(),
+                "--bundle-closure", "com.example.argsfile", bundle.toString(),
+                "--", bundle.toString()});
+
+        Path argumentsFile = temporary.resolve("arguments.txt");
+        Files.writeString(argumentsFile, String.join("\n", List.of(
+                "--output", fileOutput.toString(),
+                "--bundle-closure", "com.example.argsfile", bundle.toString(),
+                "--", bundle.toString())) + "\n", StandardCharsets.UTF_8);
+
+        PluginIndexGenerator.main(new String[]{"--args-file", argumentsFile.toString()});
+
+        assertThat(Files.readAllBytes(fileOutput))
+                .isEqualTo(Files.readAllBytes(inlineOutput));
+        assertThat(codec.read(Files.newInputStream(fileOutput)).bundles())
+                .extracting(indexed -> indexed.manifest().id())
+                .containsExactly("com.example.argsfile");
+    }
+
+    @Test
+    void rejectsAnArgumentsFileThatIsMissingOrCombinedWithOtherArguments() throws Exception {
+        Path missing = temporary.resolve("absent-arguments.txt");
+        assertThatThrownBy(() -> PluginIndexGenerator.main(
+                        new String[]{"--args-file", missing.toString()}))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("not a readable file");
+
+        Path argumentsFile = temporary.resolve("combined-arguments.txt");
+        Files.writeString(argumentsFile, "--output\n", StandardCharsets.UTF_8);
+        assertThatThrownBy(() -> PluginIndexGenerator.main(
+                        new String[]{"--args-file", argumentsFile.toString(), "--output"}))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("cannot be combined");
+    }
+
     private static String digest(PluginIndex index, String id) {
         return index.bundles().stream()
                 .filter(bundle -> bundle.manifest().id().equals(id))
