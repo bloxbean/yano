@@ -93,6 +93,20 @@ public class ProjectionHistoryService implements AutoCloseable {
      * for; a list of null checks silently can, every time a field is added.
      */
     private volatile boolean initialized;
+
+    /**
+     * Cached staged-evidence measurement, and when it was taken.
+     *
+     * <p>The disk gate is polled once per header, so measuring on every call put a full walk of
+     * the staging tree on the per-block path. Staged evidence changes at epoch boundaries, not
+     * per block, so the walk is cached and invalidated when evidence is actually staged or
+     * released - with a short ceiling so an unnoticed change cannot go unmeasured indefinitely.
+     */
+    private volatile long stagedBytesCached;
+
+    private volatile long stagedBytesMeasuredAt;
+
+    private static final long STAGED_BYTES_TTL_NANOS = java.time.Duration.ofSeconds(5).toNanos();
     private volatile ArchiveSafetyWindows safetyWindows;
     private volatile ProjectionContributorHealth.Monitor contributorMonitor;
     private volatile ArchiveIngestGate ingestGate;
@@ -243,7 +257,11 @@ public class ProjectionHistoryService implements AutoCloseable {
 
     private void initializeInternal(Yano yano, ChainQuery chain, LedgerQuery ledger,
                                     YanoConfig nodeConfig) {
-        if (outbox != null) return;
+        // Idempotence keys off completion, not off the first field assigned. outbox is set early,
+        // so guarding on it meant a second call after a partial failure returned immediately -
+        // and the caller then recorded success and cleared the error for an archive that never
+        // finished starting.
+        if (initialized) return;
         enabled = config.getOptionalValue(YanoPropertyKeys.History.PROJECTION_ENABLED, Boolean.class).orElse(false);
         if (!enabled) {
             log.info("ADR-039 projection history is disabled");
@@ -720,6 +738,7 @@ public class ProjectionHistoryService implements AutoCloseable {
                 var staging = epochStaging;
                 if (staging != null) {
                     staging.release(dataset, java.util.UUID.fromString(ref.sourceGeneration()));
+                    stagedBytesChanged();
                 }
             }
 
@@ -781,6 +800,7 @@ public class ProjectionHistoryService implements AutoCloseable {
                     + job.jobId() + " and must be replayed into a fresh archive rather than dropped");
         }
         outbox.putArtifactDirect(job.boundaryBlockNumber(), ref);
+        stagedBytesChanged();
         log.info("ADR-039 staged evidence referenced: {} epoch {} ({} rows, digest {})",
                 job.dataset().logicalName(), job.epoch(), evidence.rowCount(),
                 evidence.checksum().substring(0, 16));
@@ -1147,6 +1167,28 @@ public class ProjectionHistoryService implements AutoCloseable {
      * never propagates, because an unreadable directory must not stop ingestion.
      */
     private long stagedArtifactBytes() {
+        long now = System.nanoTime();
+        long measuredAt = stagedBytesMeasuredAt;
+        if (measuredAt != 0 && now - measuredAt < STAGED_BYTES_TTL_NANOS) return stagedBytesCached;
+
+        long measured = measureStagedArtifactBytes();
+        if (measured >= 0) {
+            stagedBytesCached = measured;
+            stagedBytesMeasuredAt = now;
+        }
+        // A failed probe keeps the last known figure rather than reporting zero. Zero is a
+        // measurement meaning "nothing staged", and reporting it because a directory could not
+        // be read would lift the hard limit at exactly the moment the disk is least healthy.
+        return stagedBytesCached;
+    }
+
+    /** Invalidate the cached measurement, so the next probe reflects a stage or release. */
+    private void stagedBytesChanged() {
+        stagedBytesMeasuredAt = 0;
+    }
+
+    /** Walk the staging tree. Returns -1 when the measurement could not be taken. */
+    private long measureStagedArtifactBytes() {
         if (historyDirectory == null) return 0;
         java.nio.file.Path staged = historyDirectory.resolve("epoch-source");
         if (!java.nio.file.Files.isDirectory(staged)) return 0;
@@ -1159,7 +1201,7 @@ public class ProjectionHistoryService implements AutoCloseable {
                 }
             }).sum();
         } catch (java.io.IOException | RuntimeException e) {
-            return 0;
+            return -1;
         }
     }
 
@@ -1292,6 +1334,9 @@ public class ProjectionHistoryService implements AutoCloseable {
                         .shipped().wireForm());
         var pending = outbox.pendingArtifacts();
         status.put("pendingArtifacts", pending.size());
+        // Named rather than implied: the disk budget excludes pinned generations, and a bare
+        // zero in the footprint would read as "nothing pinned" when it means "not measured".
+        status.put("pinnedGenerationBytesMeasured", footprint().pinnedGenerationsMeasured());
         status.put("oldestPendingArtifactEpoch", pending.stream()
                 .mapToInt(com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef::semanticEpoch)
                 .min().orElse(-1));

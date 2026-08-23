@@ -32,7 +32,30 @@ public record ArchiveRetainedFootprint(long logicalOutboxBytes,
         if (filesystemFreeBytes < 0) throw new IllegalArgumentException("free space must not be negative");
     }
 
-    /** Physical bytes the archive is responsible for keeping on disk. */
+    /**
+     * Whether pinned generations were actually measured.
+     *
+     * <p>A byte count of zero is a measurement meaning "nothing pinned", and for pinned
+     * generations that is not what zero currently means: epoch-stake artifacts always ship, so
+     * generations are always pinned, and the runtime cannot yet size ledger state this component
+     * does not own. Distinguishing "none" from "not measured" keeps a reader from concluding the
+     * budget is complete when a term is missing from it.
+     *
+     * <p>The unmeasured term is excluded from {@link #estimatedPhysicalBytes()} rather than
+     * guessed. Treating unknown as unbounded would pause ingestion on every node; treating it as
+     * zero at least keeps the other terms enforceable. The gap is real and is reported, not
+     * papered over.
+     */
+    public boolean pinnedGenerationsMeasured() {
+        return pinnedGenerationBytes > 0;
+    }
+
+    /**
+     * Physical bytes the archive is responsible for keeping on disk.
+     *
+     * <p>Under-counts by whatever pinned generations hold while
+     * {@link #pinnedGenerationsMeasured()} is false.
+     */
     public long estimatedPhysicalBytes() {
         return Math.round(logicalOutboxBytes * amplificationFactor) + stagedArtifactBytes + pinnedGenerationBytes;
     }
