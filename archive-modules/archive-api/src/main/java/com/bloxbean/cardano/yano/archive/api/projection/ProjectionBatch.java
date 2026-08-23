@@ -68,12 +68,23 @@ public record ProjectionBatch(ProjectionIdentity identity, List<ProjectionEnvelo
         return envelopes.stream().flatMap(e -> e.header().artifacts().stream()).toList();
     }
 
-    /** Ordered digest over every envelope identity and section digest in canonical order. */
+    /**
+     * Ordered digest over every envelope identity, section digest and artifact reference.
+     *
+     * <p>Artifacts have to participate. envelopeId derives from the block coordinate, hash and
+     * parent - not from what the envelope carries - so without them two batches over the same
+     * blocks with different artifact sets produce the same digest. A receipt written for one
+     * would then match the other on replay, and the consumer would skip the sink append while
+     * still acknowledging the artifacts, deleting staged reward, DRep and governance evidence
+     * that was never committed and cannot be recomputed.
+     */
     public String orderedDigest() {
         return ProjectionDigest.ofDigests(envelopes.stream()
                 .flatMap(e -> java.util.stream.Stream.concat(
-                        java.util.stream.Stream.of(e.envelopeId()),
-                        e.header().sections().stream().map(ProjectionSectionManifest::digest)))
+                        java.util.stream.Stream.concat(
+                                java.util.stream.Stream.of(e.envelopeId()),
+                                e.header().sections().stream().map(ProjectionSectionManifest::digest)),
+                        e.header().artifacts().stream().map(ProjectionArtifactRef::canonicalForm)))
                 .toList());
     }
 }

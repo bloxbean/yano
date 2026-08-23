@@ -760,6 +760,23 @@ public class ProjectionHistoryService implements AutoCloseable {
                 // A staged file is independent of chain retention: it is its own copy, so nothing
                 // about block-body pruning can take it away.
                 -1L);
+        // The reference must reach the outbox while its boundary block is still pending, or the
+        // batch that carries it has already been committed and this becomes an artifact the sink
+        // will never receive. Binding artifacts into the receipt digest turns that into a loud
+        // mismatch instead of the silent deletion it used to be - but loud-and-stuck is not the
+        // outcome to aim for, so the race is refused here, before it can be created.
+        //
+        // The staged file is deliberately left on disk. It is irreproducible once the boundary
+        // has passed, so an operator needs it to still be there.
+        var sinkNow = projectionSink == null ? null : projectionSink.coordinate();
+        if (sinkNow != null && sinkNow.isPresent() && job.boundaryBlockNumber() <= sinkNow.blockNumber()) {
+            throw new IllegalStateException("staged evidence for " + job.dataset().logicalName()
+                    + " epoch " + job.epoch() + " became durable only after its boundary block "
+                    + job.boundaryBlockNumber() + " was committed to the sink (committed through "
+                    + sinkNow.blockNumber() + "); the archive cannot reference it without"
+                    + " contradicting a receipt. The staged file is preserved at generation "
+                    + job.jobId() + " and must be replayed into a fresh archive rather than dropped");
+        }
         outbox.putArtifactDirect(job.boundaryBlockNumber(), ref);
         log.info("ADR-039 staged evidence referenced: {} epoch {} ({} rows, digest {})",
                 job.dataset().logicalName(), job.epoch(), evidence.rowCount(),

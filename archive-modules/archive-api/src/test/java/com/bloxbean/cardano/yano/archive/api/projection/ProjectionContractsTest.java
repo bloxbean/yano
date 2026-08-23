@@ -14,6 +14,61 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ProjectionContractsTest {
 
+    private static ProjectionArtifactRef reward(int epoch, String generation, String contentDigest) {
+        return new ProjectionArtifactRef(ArchiveDatasetId.REWARD, epoch, 100, 2_000,
+                ProjectionArtifactRepresentation.STAGED_FILE, generation, 1,
+                "ledger-boundary-v1/reward", java.util.OptionalLong.of(4_887), contentDigest, -1L);
+    }
+
+    private static ProjectionEnvelope withArtifacts(long blockNumber, List<ProjectionArtifactRef> artifacts) {
+        var header = new ProjectionEnvelopeHeader(PREPROD, ProjectionBlockKind.SHELLEY_PLUS, blockNumber,
+                new byte[]{(byte) blockNumber, 1, 2}, new byte[]{(byte) (blockNumber - 1), 1, 2},
+                blockNumber * 20, 5, 1_600_000_000L + blockNumber, 1, List.of(), artifacts);
+        return new ProjectionEnvelope(header, List.of());
+    }
+
+    /**
+     * The batch digest has to bind artifacts, because a receipt authorises deleting them.
+     *
+     * <p>envelopeId derives from the block coordinate, hash and parent - never from what the
+     * envelope carries. Without artifacts in the digest, a batch whose staged reward evidence
+     * arrived late matches the receipt written before it, and the consumer skips the sink append
+     * while still acknowledging the artifact: evidence deleted, never committed, unrecoverable.
+     */
+    @Test
+    void aDifferentArtifactSetOverTheSameBlocksIsADifferentBatch() {
+        var none = new ProjectionBatch(identity(), List.of(withArtifacts(100, List.of())));
+        var one = new ProjectionBatch(identity(),
+                List.of(withArtifacts(100, List.of(reward(42, "gen-a", "aa".repeat(32))))));
+
+        assertThat(none.orderedDigest())
+                .as("a late artifact must not be mistaken for the batch committed without it")
+                .isNotEqualTo(one.orderedDigest());
+    }
+
+    @Test
+    void sameArtifactIdentityWithDifferentRowsIsADifferentBatch() {
+        // Identity alone would let a truncated or rebuilt file pass as the committed one.
+        var a = new ProjectionBatch(identity(),
+                List.of(withArtifacts(100, List.of(reward(42, "gen-a", "aa".repeat(32))))));
+        var b = new ProjectionBatch(identity(),
+                List.of(withArtifacts(100, List.of(reward(42, "gen-a", "bb".repeat(32))))));
+
+        assertThat(a.orderedDigest()).isNotEqualTo(b.orderedDigest());
+    }
+
+    @Test
+    void theSameArtifactSetStillReplaysAsTheSameBatch() {
+        // Crash recovery depends on this: an unchanged batch must still be recognised, or every
+        // restart would re-run row derivation the committed batch already proved.
+        var first = new ProjectionBatch(identity(),
+                List.of(withArtifacts(100, List.of(reward(42, "gen-a", "aa".repeat(32))))));
+        var replay = new ProjectionBatch(identity(),
+                List.of(withArtifacts(100, List.of(reward(42, "gen-a", "aa".repeat(32))))));
+
+        assertThat(first.orderedDigest()).isEqualTo(replay.orderedDigest());
+    }
+
     static final ArchiveNetworkIdentity PREPROD = new ArchiveNetworkIdentity(1, "162d29c4e1cf6b8a");
 
     static ProjectionSection section(ProjectionSectionType type, long rows, byte[]... chunks) {
