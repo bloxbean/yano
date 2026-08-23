@@ -81,6 +81,18 @@ public class ProjectionHistoryService implements AutoCloseable {
      * dereferencing an identity that was never assigned.
      */
     private volatile String initializationError;
+
+    /**
+     * Whether initialisation ran to completion.
+     *
+     * <p>Set as the last statement of a successful {@link #initialize}, and the only thing the
+     * status surfaces are allowed to test. Guarding on individual fields is what broke before:
+     * identity is assigned early and contributorMonitor eighty lines later, so any failure
+     * between them left a service that passed an {@code identity != null} check and then
+     * dereferenced a null monitor. One flag cannot drift out of step with the fields it stands
+     * for; a list of null checks silently can, every time a field is added.
+     */
+    private volatile boolean initialized;
     private volatile ArchiveSafetyWindows safetyWindows;
     private volatile ProjectionContributorHealth.Monitor contributorMonitor;
     private volatile ArchiveIngestGate ingestGate;
@@ -214,6 +226,23 @@ public class ProjectionHistoryService implements AutoCloseable {
 
     public synchronized void initialize(Yano yano, ChainQuery chain, LedgerQuery ledger,
                                        YanoConfig nodeConfig) {
+        // Any failure anywhere in initialisation must leave a reportable reason. Scoping this to
+        // one call was the earlier mistake: sink opening, the startup guard, artifact installation
+        // and contributor installation can all fail after identity is assigned, and each left the
+        // status endpoints to dereference fields that were never set.
+        try {
+            initializeInternal(yano, chain, ledger, nodeConfig);
+            initialized = true;
+            initializationError = null;
+        } catch (RuntimeException e) {
+            // Fail closed exactly as before; only the reporting changes.
+            initializationError = e.getMessage() == null ? e.toString() : e.getMessage();
+            throw e;
+        }
+    }
+
+    private void initializeInternal(Yano yano, ChainQuery chain, LedgerQuery ledger,
+                                    YanoConfig nodeConfig) {
         if (outbox != null) return;
         enabled = config.getOptionalValue(YanoPropertyKeys.History.PROJECTION_ENABLED, Boolean.class).orElse(false);
         if (!enabled) {
@@ -250,17 +279,8 @@ public class ProjectionHistoryService implements AutoCloseable {
         // a fresh sync that silently omitted one would produce an archive that looks healthy
         // while a whole dataset is missing, and the omission is undiscoverable later because
         // the sections cannot be added without resyncing.
-        Set<ProjectionSectionType> required;
-        try {
-            required = configuredSections();
-        } catch (RuntimeException e) {
-            // Fail closed as before, but leave a reportable reason behind: this is the failure
-            // an operator meets after renaming or renumbering a section in configuration.
-            initializationError = e.getMessage();
-            throw e;
-        }
+        Set<ProjectionSectionType> required = configuredSections();
         identity = new ProjectionIdentity(network, sink, 1, required);
-        initializationError = null;
 
         long tipBlock = chain.getLocalTip() == null ? 0 : chain.getLocalTip().getBlockNumber();
         Optional<ProjectionIdentity> storedIdentity = outbox.identityFingerprint()
@@ -1133,7 +1153,7 @@ public class ProjectionHistoryService implements AutoCloseable {
     public Map<String, Object> status() {
         Map<String, Object> status = new LinkedHashMap<>();
         status.put("enabled", enabled);
-        if (!enabled || outbox == null || identity == null) {
+        if (!enabled || !initialized) {
             // Half-initialised is a state this must be able to describe, not one it dies on.
             if (enabled && initializationError != null) status.put("error", initializationError);
             return status;
@@ -1338,7 +1358,7 @@ public class ProjectionHistoryService implements AutoCloseable {
     public Map<String, Object> coverage() {
         Map<String, Object> coverage = new LinkedHashMap<>();
         coverage.put("enabled", enabled);
-        if (!enabled || outbox == null || identity == null) {
+        if (!enabled || !initialized) {
             // Throwing here would turn a diagnosable misconfiguration into an opaque 500 on the
             // page an operator opens to diagnose it.
             if (enabled && initializationError != null) coverage.put("error", initializationError);
