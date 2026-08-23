@@ -125,6 +125,7 @@ yano:
     mempool:
       max-txs: 10000
       max-bytes: 134217728
+      max-utxo-index-entries: 100000
       ttl-seconds: 10800
     diffusion:
       # Simple relay MVP switch. true maps to all-hot transaction diffusion.
@@ -329,13 +330,24 @@ yano:
       protocol-parameters-file: config/network/devnet/protocol-param.json
     account-state:
       enabled: true
-    # ADR-039: devnet exercises the projection outbox, like every other network. The
-    # replay-worker archive it used to enable no longer exists, and its per-dataset
-    # start modes described backfill that the projection does not do.
+    # ADR-039: the projection archive is OFF for devnet, and that is a statement about
+    # what the devnet assembly can currently support rather than a preference.
+    #
+    # YanoDevnetAssembly.DevnetYano is a delegating decorator that does not forward the
+    # archive surface of Yano - chainstateRocksAccess, installProjectionContributor,
+    # installEpochArtifactContributor, genesisUtxoProvider and installArchiveIngestHold
+    # all fall through to interface defaults. The first throws, which is why enabling
+    # this failed startup; the rest degrade silently, which is worse: contributors that
+    # never install and a genesis provider that returns EMPTY would produce an archive
+    # that looks healthy and is empty.
+    #
+    # Enabling it here would therefore be a claim the code cannot honour. Forward those
+    # methods in the decorator before turning this on, and add a test that fails when a
+    # new Yano method goes unforwarded.
     history:
       enabled: false
       projection:
-        enabled: true
+        enabled: false
         sink: ducklake
     epoch-snapshot:
       amounts-enabled: true           # UTXO balance aggregation in snapshots
@@ -347,6 +359,8 @@ yano:
       tracking-enabled: true          # Protocol param tracking from blocks
     governance:
       enabled: true                   # Governance state tracking
+    utxo:
+      enabled: true                   # Required by devnet faucet, queries, and transaction validation
     block-producer:
       enabled: true
       block-time-millis: 0
@@ -386,6 +400,8 @@ yano:
       tracking-enabled: true          # Protocol param tracking from blocks
     governance:
       enabled: true                   # Governance state tracking
+    utxo:
+      enabled: true                   # Required by devnet faucet, queries, and transaction validation
     block-producer:
       enabled: true
       slot-leader-mode: true

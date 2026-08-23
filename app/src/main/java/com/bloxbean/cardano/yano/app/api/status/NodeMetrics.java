@@ -36,6 +36,15 @@ public class NodeMetrics {
             "yano.node.mempool.bytes",
             "yano.node.mempool.capacity.transactions",
             "yano.node.mempool.capacity.bytes",
+            "yano.node.mempool.index.entries",
+            "yano.node.mempool.dependency.edges",
+            "yano.node.mempool.capacity.index.entries",
+            "yano.node.mempool.index.estimated.bytes",
+            "yano.node.mempool.rejections.total",
+            "yano.node.mempool.cascaded.removals.total",
+            "yano.node.mempool.admission.queue",
+            "yano.node.mempool.admission.duration.seconds",
+            "yano.node.mempool.validation.slow.total",
             "yano.node.tx.diffusion.total",
             "yano.node.tx.diffusion.inflight.transactions",
             "yano.node.tx.diffusion.inflight.bytes",
@@ -98,6 +107,40 @@ public class NodeMetrics {
                 "Configured mempool transaction capacity");
         gauge("yano.node.mempool.capacity.bytes", Snapshot::mempoolMaxBytes,
                 "Configured mempool byte capacity");
+        taggedGauge("yano.node.mempool.index.entries", "type", "total",
+                Snapshot::mempoolUtxoIndexEntries, "Current mempool index records by bounded type");
+        taggedGauge("yano.node.mempool.index.entries", "type", "produced",
+                Snapshot::mempoolProducedOutputs, "Current mempool index records by bounded type");
+        taggedGauge("yano.node.mempool.index.entries", "type", "spent",
+                Snapshot::mempoolSpentOutpoints, "Current mempool index records by bounded type");
+        taggedGauge("yano.node.mempool.index.entries", "type", "reference_script",
+                Snapshot::mempoolReferenceScripts, "Current mempool index records by bounded type");
+        gauge("yano.node.mempool.dependency.edges", Snapshot::mempoolDependencyEdges,
+                "Current parent-to-child mempool dependency edges");
+        gauge("yano.node.mempool.capacity.index.entries", Snapshot::mempoolMaxUtxoIndexEntries,
+                "Configured mempool UTXO and dependency index capacity");
+        gauge("yano.node.mempool.index.estimated.bytes", Snapshot::mempoolEstimatedIndexBytes,
+                "Structural byte estimate for mempool indexes, not a retained-heap forecast");
+
+        taggedFunctionCounter("yano.node.mempool.rejections.total", "reason", "duplicate",
+                Snapshot::mempoolDuplicateRejections, "Process-lifetime mempool rejections by bounded reason");
+        taggedFunctionCounter("yano.node.mempool.rejections.total", "reason", "conflict",
+                Snapshot::mempoolConflictRejections, "Process-lifetime mempool rejections by bounded reason");
+        taggedFunctionCounter("yano.node.mempool.rejections.total", "reason", "capacity",
+                Snapshot::mempoolCapacityRejections, "Process-lifetime mempool rejections by bounded reason");
+        taggedFunctionCounter("yano.node.mempool.rejections.total", "reason", "malformed",
+                Snapshot::mempoolMalformedRejections, "Process-lifetime mempool rejections by bounded reason");
+        taggedFunctionCounter("yano.node.mempool.rejections.total", "reason", "ledger",
+                Snapshot::mempoolLedgerRejections, "Process-lifetime mempool rejections by bounded reason");
+        functionCounter("yano.node.mempool.cascaded.removals.total", Snapshot::mempoolCascadedRemovals,
+                "Process-lifetime descendant removals caused by cascading eviction");
+        gauge("yano.node.mempool.admission.queue", Snapshot::mempoolAdmissionQueueLength,
+                "Current threads queued for the serialized mempool admission lane");
+        taggedDurationCounter("wait", Snapshot::mempoolAdmissionWaitNanos);
+        taggedDurationCounter("hold", Snapshot::mempoolAdmissionHoldNanos);
+        taggedDurationCounter("validation", Snapshot::mempoolValidationNanos);
+        functionCounter("yano.node.mempool.validation.slow.total", Snapshot::mempoolSlowValidations,
+                "Process-lifetime slow mempool validation listener dispatches");
 
         functionCounter("outbound_forwarded", Snapshot::outboundForwarded);
         functionCounter("outbound_suppressed", Snapshot::outboundSuppressed);
@@ -137,6 +180,29 @@ public class NodeMetrics {
                         metrics -> value.applyAsDouble(metrics.current()))
                 .tag("outcome", outcome)
                 .description("Process-lifetime transaction diffusion outcomes")
+                .register(registry);
+    }
+
+    private void functionCounter(String name, ToDoubleFunction<Snapshot> value, String description) {
+        FunctionCounter.builder(name, this, metrics -> value.applyAsDouble(metrics.current()))
+                .description(description)
+                .register(registry);
+    }
+
+    private void taggedFunctionCounter(String name, String tagName, String tagValue,
+                                       ToDoubleFunction<Snapshot> value, String description) {
+        FunctionCounter.builder(name, this, metrics -> value.applyAsDouble(metrics.current()))
+                .tag(tagName, tagValue)
+                .description(description)
+                .register(registry);
+    }
+
+    private void taggedDurationCounter(String phase, ToDoubleFunction<Snapshot> nanos) {
+        FunctionCounter.builder("yano.node.mempool.admission.duration.seconds", this,
+                        metrics -> nanos.applyAsDouble(metrics.current()) / 1_000_000_000d)
+                .tag("phase", phase)
+                .description("Process-lifetime mempool admission duration by bounded phase")
+                .baseUnit("seconds")
                 .register(registry);
     }
 
@@ -184,6 +250,24 @@ public class NodeMetrics {
                 number(status.getMempoolBytes()),
                 number(status.getMempoolMaxTxs()),
                 number(status.getMempoolMaxBytes()),
+                number(status.getMempoolUtxoIndexEntries()),
+                number(status.getMempoolMaxUtxoIndexEntries()),
+                number(status.getMempoolProducedOutputs()),
+                number(status.getMempoolSpentOutpoints()),
+                number(status.getMempoolReferenceScripts()),
+                number(status.getMempoolDependencyEdges()),
+                number(status.getMempoolEstimatedIndexBytes()),
+                number(status.getMempoolDuplicateRejections()),
+                number(status.getMempoolConflictRejections()),
+                number(status.getMempoolCapacityRejections()),
+                number(status.getMempoolMalformedRejections()),
+                number(status.getMempoolLedgerRejections()),
+                number(status.getMempoolCascadedRemovals()),
+                number(status.getMempoolAdmissionQueueLength()),
+                number(status.getMempoolAdmissionWaitNanos()),
+                number(status.getMempoolAdmissionHoldNanos()),
+                number(status.getMempoolValidationNanos()),
+                number(status.getMempoolSlowValidations()),
                 number(status.getTxDiffusionOutboundForwarded()),
                 number(status.getTxDiffusionOutboundSuppressed()),
                 number(status.getTxDiffusionInboundTxBodiesAccepted()),
@@ -218,6 +302,24 @@ public class NodeMetrics {
             double mempoolBytes,
             double mempoolMaxTransactions,
             double mempoolMaxBytes,
+            double mempoolUtxoIndexEntries,
+            double mempoolMaxUtxoIndexEntries,
+            double mempoolProducedOutputs,
+            double mempoolSpentOutpoints,
+            double mempoolReferenceScripts,
+            double mempoolDependencyEdges,
+            double mempoolEstimatedIndexBytes,
+            double mempoolDuplicateRejections,
+            double mempoolConflictRejections,
+            double mempoolCapacityRejections,
+            double mempoolMalformedRejections,
+            double mempoolLedgerRejections,
+            double mempoolCascadedRemovals,
+            double mempoolAdmissionQueueLength,
+            double mempoolAdmissionWaitNanos,
+            double mempoolAdmissionHoldNanos,
+            double mempoolValidationNanos,
+            double mempoolSlowValidations,
             double outboundForwarded,
             double outboundSuppressed,
             double inboundAccepted,

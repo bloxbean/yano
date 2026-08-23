@@ -81,6 +81,18 @@ public class ProjectionHistoryService implements AutoCloseable {
      * dereferencing an identity that was never assigned.
      */
     private volatile String initializationError;
+
+    /**
+     * Whether initialisation ran to completion.
+     *
+     * <p>Set as the last statement of a successful {@link #initialize}, and the only thing the
+     * status surfaces are allowed to test. Guarding on individual fields is what broke before:
+     * identity is assigned early and contributorMonitor eighty lines later, so any failure
+     * between them left a service that passed an {@code identity != null} check and then
+     * dereferenced a null monitor. One flag cannot drift out of step with the fields it stands
+     * for; a list of null checks silently can, every time a field is added.
+     */
+    private volatile boolean initialized;
     private volatile ArchiveSafetyWindows safetyWindows;
     private volatile ProjectionContributorHealth.Monitor contributorMonitor;
     private volatile ArchiveIngestGate ingestGate;
@@ -214,6 +226,23 @@ public class ProjectionHistoryService implements AutoCloseable {
 
     public synchronized void initialize(Yano yano, ChainQuery chain, LedgerQuery ledger,
                                        YanoConfig nodeConfig) {
+        // Any failure anywhere in initialisation must leave a reportable reason. Scoping this to
+        // one call was the earlier mistake: sink opening, the startup guard, artifact installation
+        // and contributor installation can all fail after identity is assigned, and each left the
+        // status endpoints to dereference fields that were never set.
+        try {
+            initializeInternal(yano, chain, ledger, nodeConfig);
+            initialized = true;
+            initializationError = null;
+        } catch (RuntimeException e) {
+            // Fail closed exactly as before; only the reporting changes.
+            initializationError = e.getMessage() == null ? e.toString() : e.getMessage();
+            throw e;
+        }
+    }
+
+    private void initializeInternal(Yano yano, ChainQuery chain, LedgerQuery ledger,
+                                    YanoConfig nodeConfig) {
         if (outbox != null) return;
         enabled = config.getOptionalValue(YanoPropertyKeys.History.PROJECTION_ENABLED, Boolean.class).orElse(false);
         if (!enabled) {
@@ -250,17 +279,8 @@ public class ProjectionHistoryService implements AutoCloseable {
         // a fresh sync that silently omitted one would produce an archive that looks healthy
         // while a whole dataset is missing, and the omission is undiscoverable later because
         // the sections cannot be added without resyncing.
-        Set<ProjectionSectionType> required;
-        try {
-            required = configuredSections();
-        } catch (RuntimeException e) {
-            // Fail closed as before, but leave a reportable reason behind: this is the failure
-            // an operator meets after renaming or renumbering a section in configuration.
-            initializationError = e.getMessage();
-            throw e;
-        }
+        Set<ProjectionSectionType> required = configuredSections();
         identity = new ProjectionIdentity(network, sink, 1, required);
-        initializationError = null;
 
         long tipBlock = chain.getLocalTip() == null ? 0 : chain.getLocalTip().getBlockNumber();
         Optional<ProjectionIdentity> storedIdentity = outbox.identityFingerprint()
@@ -686,10 +706,13 @@ public class ProjectionHistoryService implements AutoCloseable {
             com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId dataset) {
         return new StagedEpochArtifactReader.StagedEvidenceSource() {
             @Override
-            public java.util.List<com.bloxbean.cardano.yano.archive.api.ArchiveRow> rows(
-                    com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef ref) {
+            public StagedEpochArtifactReader.EvidencePage rows(
+                    com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef ref,
+                    java.util.Optional<String> cursor, int limit) {
                 var staging = requireStaging(dataset);
-                return staging.materialise(dataset, java.util.UUID.fromString(ref.sourceGeneration()));
+                var page = staging.materialisePage(dataset,
+                        java.util.UUID.fromString(ref.sourceGeneration()), cursor, limit);
+                return new StagedEpochArtifactReader.EvidencePage(page.rows(), page.nextCursor());
             }
 
             @Override
@@ -740,6 +763,23 @@ public class ProjectionHistoryService implements AutoCloseable {
                 // A staged file is independent of chain retention: it is its own copy, so nothing
                 // about block-body pruning can take it away.
                 -1L);
+        // The reference must reach the outbox while its boundary block is still pending, or the
+        // batch that carries it has already been committed and this becomes an artifact the sink
+        // will never receive. Binding artifacts into the receipt digest turns that into a loud
+        // mismatch instead of the silent deletion it used to be - but loud-and-stuck is not the
+        // outcome to aim for, so the race is refused here, before it can be created.
+        //
+        // The staged file is deliberately left on disk. It is irreproducible once the boundary
+        // has passed, so an operator needs it to still be there.
+        var sinkNow = projectionSink == null ? null : projectionSink.coordinate();
+        if (sinkNow != null && sinkNow.isPresent() && job.boundaryBlockNumber() <= sinkNow.blockNumber()) {
+            throw new IllegalStateException("staged evidence for " + job.dataset().logicalName()
+                    + " epoch " + job.epoch() + " became durable only after its boundary block "
+                    + job.boundaryBlockNumber() + " was committed to the sink (committed through "
+                    + sinkNow.blockNumber() + "); the archive cannot reference it without"
+                    + " contradicting a receipt. The staged file is preserved at generation "
+                    + job.jobId() + " and must be replayed into a fresh archive rather than dropped");
+        }
         outbox.putArtifactDirect(job.boundaryBlockNumber(), ref);
         log.info("ADR-039 staged evidence referenced: {} epoch {} ({} rows, digest {})",
                 job.dataset().logicalName(), job.epoch(), evidence.rowCount(),
@@ -1072,9 +1112,18 @@ public class ProjectionHistoryService implements AutoCloseable {
     }
 
     /**
-     * Current aggregate archive-retained footprint. Staged-artifact and pinned-generation
-     * bytes are zero until Phase 5 produces artifacts; they are part of the budget from the
-     * start so enabling artifacts cannot silently exceed a limit sized without them.
+     * Current aggregate archive-retained footprint.
+     *
+     * <p>Staged-artifact bytes are measured, not assumed. They were a literal zero while Phase 5
+     * produced no artifacts; leaving that in once it did meant the soft and hard archive limits
+     * under-counted by exactly the evidence the phase added, and on mainnet a reward epoch is the
+     * largest single thing the archive retains.
+     *
+     * <p>Pinned-generation bytes remain zero, and that is a statement rather than a placeholder:
+     * the only IMMUTABLE_GENERATION artifact shipped is epoch stake, whose generations live in
+     * ledger state that this service does not own and cannot size without walking column families
+     * it has no handle to. Reporting a fabricated number would be worse than reporting none, so
+     * the gap is named here instead.
      */
     public ArchiveRetainedFootprint footprint() {
         long outboxBytes = outbox == null ? 0 : outbox.stats(identity.requiredSections()).pendingBytes();
@@ -1085,7 +1134,33 @@ public class ProjectionHistoryService implements AutoCloseable {
         } catch (Exception ignored) {
             // An unreadable free-space probe must not itself stop ingestion.
         }
-        return new ArchiveRetainedFootprint(outboxBytes, 0, 0, diskAmplification, free);
+        return new ArchiveRetainedFootprint(outboxBytes, stagedArtifactBytes(), 0,
+                diskAmplification, free);
+    }
+
+    /**
+     * Bytes currently held by staged epoch evidence.
+     *
+     * <p>Measured by walking the staging tree rather than tracked incrementally: evidence is
+     * released by a different path than it is written, and a counter that drifts would silently
+     * mis-size the budget in whichever direction it drifted. A probe failure reports zero and
+     * never propagates, because an unreadable directory must not stop ingestion.
+     */
+    private long stagedArtifactBytes() {
+        if (historyDirectory == null) return 0;
+        java.nio.file.Path staged = historyDirectory.resolve("epoch-source");
+        if (!java.nio.file.Files.isDirectory(staged)) return 0;
+        try (var paths = java.nio.file.Files.walk(staged)) {
+            return paths.filter(java.nio.file.Files::isRegularFile).mapToLong(path -> {
+                try {
+                    return java.nio.file.Files.size(path);
+                } catch (java.io.IOException unreadable) {
+                    return 0L;
+                }
+            }).sum();
+        } catch (java.io.IOException | RuntimeException e) {
+            return 0;
+        }
     }
 
     /**
@@ -1133,7 +1208,7 @@ public class ProjectionHistoryService implements AutoCloseable {
     public Map<String, Object> status() {
         Map<String, Object> status = new LinkedHashMap<>();
         status.put("enabled", enabled);
-        if (!enabled || outbox == null || identity == null) {
+        if (!enabled || !initialized) {
             // Half-initialised is a state this must be able to describe, not one it dies on.
             if (enabled && initializationError != null) status.put("error", initializationError);
             return status;
@@ -1338,7 +1413,7 @@ public class ProjectionHistoryService implements AutoCloseable {
     public Map<String, Object> coverage() {
         Map<String, Object> coverage = new LinkedHashMap<>();
         coverage.put("enabled", enabled);
-        if (!enabled || outbox == null || identity == null) {
+        if (!enabled || !initialized) {
             // Throwing here would turn a diagnosable misconfiguration into an opaque 500 on the
             // page an operator opens to diagnose it.
             if (enabled && initializationError != null) coverage.put("error", initializationError);

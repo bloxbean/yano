@@ -7,24 +7,26 @@ import com.bloxbean.cardano.yano.ledgerrules.ValidationResult;
 import com.bloxbean.cardano.yano.runtime.blockproducer.BlockBuildUtxoOverlay;
 import com.bloxbean.cardano.yano.runtime.blockproducer.TransactionValidationService;
 import com.bloxbean.cardano.yano.runtime.chain.MemPool;
+import com.bloxbean.cardano.client.transaction.util.TransactionUtil;
 import org.slf4j.Logger;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 
-/**
- * Factory methods for block transaction selection strategies.
- */
+/** Factory methods for block transaction selection strategies. */
 public final class BlockTransactionSelectors {
     private BlockTransactionSelectors() {
     }
 
-    public static BlockTransactionSelector fromMemPool(MemPool memPool,
-                                                       Supplier<TransactionValidationService> validatorServiceSupplier,
-                                                       Supplier<UtxoState> utxoStateSupplier,
-                                                       Logger log) {
+    public static BlockTransactionSelector fromMemPool(
+            MemPool memPool,
+            Supplier<TransactionValidationService> validatorServiceSupplier,
+            Supplier<UtxoState> utxoStateSupplier,
+            Logger log) {
         return new MempoolBlockTransactionSelector(
                 Objects.requireNonNull(memPool, "memPool"),
                 Objects.requireNonNull(validatorServiceSupplier, "validatorServiceSupplier"),
@@ -33,14 +35,29 @@ public final class BlockTransactionSelectors {
     }
 
     /**
-     * Mempool-backed selector that optionally validates transactions against a
-     * block-local UTXO overlay before inclusion.
+     * Selection uses an insertion-ordered immutable snapshot. It never removes
+     * selected transactions; confirmation cleanup happens after canonical UTXO
+     * apply. One selection may be in flight at a time.
      */
-    private record MempoolBlockTransactionSelector(MemPool memPool,
-                                                   Supplier<TransactionValidationService> validatorServiceSupplier,
-                                                   Supplier<UtxoState> utxoStateSupplier,
-                                                   Logger log)
-            implements BlockTransactionSelector {
+    private static final class MempoolBlockTransactionSelector implements BlockTransactionSelector {
+        private final MemPool memPool;
+        private final Supplier<TransactionValidationService> validatorServiceSupplier;
+        private final Supplier<UtxoState> utxoStateSupplier;
+        private final Logger log;
+        private final AtomicBoolean selectionInFlight = new AtomicBoolean();
+        private volatile Set<String> selectedHashes = Set.of();
+
+        private MempoolBlockTransactionSelector(
+                MemPool memPool,
+                Supplier<TransactionValidationService> validatorServiceSupplier,
+                Supplier<UtxoState> utxoStateSupplier,
+                Logger log) {
+            this.memPool = memPool;
+            this.validatorServiceSupplier = validatorServiceSupplier;
+            this.utxoStateSupplier = utxoStateSupplier;
+            this.log = log;
+        }
+
         @Override
         public boolean hasPendingTransactions() {
             return !memPool.isEmpty();
@@ -48,38 +65,74 @@ public final class BlockTransactionSelectors {
 
         @Override
         public List<byte[]> drainForBlock() {
-            return drainMempool(validatorServiceSupplier.get(), utxoStateSupplier.get());
+            if (!selectionInFlight.compareAndSet(false, true)) {
+                throw new IllegalStateException("a block transaction selection is already in flight");
+            }
+            try {
+                List<byte[]> selected = selectMempool(
+                        validatorServiceSupplier.get(), utxoStateSupplier.get());
+                if (selected.isEmpty()) {
+                    selectionInFlight.set(false);
+                } else {
+                    selectedHashes = selected.stream()
+                            .map(TransactionUtil::getTxHash).collect(java.util.stream.Collectors.toUnmodifiableSet());
+                }
+                return selected;
+            } catch (RuntimeException | Error e) {
+                selectionInFlight.set(false);
+                throw e;
+            }
         }
 
-        private List<byte[]> drainMempool(TransactionValidationService validatorService,
-                                          UtxoState utxoState) {
+        @Override
+        public void blockSelectionCompleted() {
+            selectedHashes = Set.of();
+            selectionInFlight.set(false);
+        }
+
+        @Override
+        public void blockSelectionFailed() {
+            selectedHashes = Set.of();
+            selectionInFlight.set(false);
+        }
+
+        @Override
+        public int invalidateSelectedTransaction(String txHash) {
+            return memPool.removeInvalidated(Set.of(txHash));
+        }
+
+        @Override
+        public void blockCandidatePublished() {
+            Set<String> published = selectedHashes;
+            if (!published.isEmpty()) memPool.removeByTxHashes(published);
+            blockSelectionCompleted();
+        }
+
+        private List<byte[]> selectMempool(TransactionValidationService validatorService,
+                                           UtxoState utxoState) {
+            List<MemPoolTransaction> snapshot = memPool.snapshotTransactions(
+                    Integer.MAX_VALUE, Long.MAX_VALUE);
             if (validatorService == null || utxoState == null) {
-                List<byte[]> txList = new ArrayList<>();
-                while (!memPool.isEmpty()) {
-                    MemPoolTransaction mpt = memPool.getNextTransaction();
-                    if (mpt == null) break;
-                    txList.add(mpt.txBytes());
-                }
-                return txList;
+                return snapshot.stream().map(MemPoolTransaction::txBytes).toList();
             }
 
             BlockBuildUtxoOverlay overlay = new BlockBuildUtxoOverlay(utxoState);
-            List<byte[]> txList = new ArrayList<>();
-            while (!memPool.isEmpty()) {
-                MemPoolTransaction mpt = memPool.getNextTransaction();
-                if (mpt == null) break;
+            List<byte[]> selected = new ArrayList<>();
+            for (MemPoolTransaction candidate : snapshot) {
+                String txHash = HexUtil.encodeHexString(candidate.txHash());
+                if (!memPool.contains(txHash)) continue;
 
-                ValidationResult result = validatorService.validate(mpt.txBytes(), overlay.resolver());
+                ValidationResult result = validatorService.validate(candidate.txBytes(), overlay.resolver());
                 if (result.valid()) {
-                    txList.add(mpt.txBytes());
-                    overlay.markSpent(mpt.txBytes());
+                    selected.add(candidate.txBytes());
+                    overlay.applyTransaction(candidate.txBytes());
                 } else {
-                    String txHashHex = HexUtil.encodeHexString(mpt.txHash());
                     log.warn("Dropping invalid tx {} during block production: {}",
-                            txHashHex, result.firstErrorMessage("unknown error"));
+                            txHash, result.firstErrorMessage("unknown error"));
+                    memPool.removeInvalidated(Set.of(txHash));
                 }
             }
-            return txList;
+            return List.copyOf(selected);
         }
     }
 }

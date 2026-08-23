@@ -34,10 +34,13 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class StagedEpochArtifactReader implements ArchiveArtifactReader {
 
+    /** One page of a staged artifact's rows, with the cursor that continues it. */
+    public record EvidencePage(List<ArchiveRow> rows, Optional<String> nextCursor) { }
+
     /** Supplies rows for a staged job, and can release it once acknowledged. */
     public interface StagedEvidenceSource {
-        /** Materialised archive rows for one artifact, verified before the first row. */
-        List<ArchiveRow> rows(ProjectionArtifactRef ref);
+        /** One page of materialised archive rows, verified before the first row. */
+        EvidencePage rows(ProjectionArtifactRef ref, Optional<String> cursor, int limit);
 
         /** Release the staged evidence; called only after a durable receipt. */
         void release(ProjectionArtifactRef ref);
@@ -82,22 +85,39 @@ public final class StagedEpochArtifactReader implements ArchiveArtifactReader {
         return new StagedLease(key(ref), expiresAt);
     }
 
+    /**
+     * One page of a staged artifact, not the whole thing.
+     *
+     * <p>This used to ignore {@code limit}, materialise the complete artifact and then encode it
+     * into a second list. A mainnet reward epoch is over a million rows, so peak heap tracked the
+     * largest epoch the chain has ever produced - and an OOM here kills the drain while it holds
+     * evidence that cannot be recomputed.
+     *
+     * <p>The declared row count is still enforced, on the last page rather than the only one. The
+     * lease carries the running total, so a truncated artifact is refused before its epoch can be
+     * committed as complete, exactly as before.
+     */
     @Override
     public ArtifactPage read(ProjectionArtifactRef ref, ArtifactLease lease, Optional<String> cursor,
                              int limit) {
         if (!lease.isOpen()) throw new IllegalStateException("artifact lease is closed");
-        if (cursor.isPresent()) return new ArtifactPage(List.of(), Optional.empty());
+        if (limit <= 0) throw new IllegalArgumentException("artifact page limit must be positive");
 
-        List<ArchiveRow> rows = sourceFor(ref).rows(ref);
-        long expected = ref.expectedRowCount().orElse(-1);
-        if (expected >= 0 && rows.size() != expected) {
-            throw new IllegalStateException("staged evidence for " + ref.dataset() + " epoch "
-                    + ref.semanticEpoch() + " yielded " + rows.size() + " rows but the reference"
-                    + " declares " + expected);
+        EvidencePage page = sourceFor(ref).rows(ref, cursor, limit);
+        long total = lease instanceof StagedLease staged ? staged.observe(page.rows().size())
+                : page.rows().size();
+
+        if (page.nextCursor().isEmpty()) {
+            long expected = ref.expectedRowCount().orElse(-1);
+            if (expected >= 0 && total != expected) {
+                throw new IllegalStateException("staged evidence for " + ref.dataset() + " epoch "
+                        + ref.semanticEpoch() + " yielded " + total + " rows but the reference"
+                        + " declares " + expected);
+            }
         }
-        List<byte[]> encoded = new ArrayList<>(rows.size());
-        for (ArchiveRow row : rows) encoded.add(ArchiveRowCodec.encode(row));
-        return new ArtifactPage(encoded, Optional.empty());
+        List<byte[]> encoded = new ArrayList<>(page.rows().size());
+        for (ArchiveRow row : page.rows()) encoded.add(ArchiveRowCodec.encode(row));
+        return new ArtifactPage(encoded, page.nextCursor());
     }
 
     @Override
@@ -126,6 +146,13 @@ public final class StagedEpochArtifactReader implements ArchiveArtifactReader {
         private final String artifact;
         private Instant expiry;
         private boolean open = true;
+        private long rowsSeen;
+
+        /** Accumulate this page into the lease's running total. */
+        long observe(int rows) {
+            rowsSeen += rows;
+            return rowsSeen;
+        }
 
         StagedLease(String artifact, Instant expiry) {
             this.artifact = artifact;

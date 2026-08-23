@@ -41,10 +41,18 @@ class StagedEpochArtifactReaderTest {
         List<ArchiveRow> rows = new ArrayList<>();
         boolean present = true;
         int released;
+        int pagesServed;
 
-        @Override public List<ArchiveRow> rows(ProjectionArtifactRef ref) {
+        /** Serves real pages, so the reader's cursor handling is exercised rather than assumed. */
+        @Override public StagedEpochArtifactReader.EvidencePage rows(
+                ProjectionArtifactRef ref, Optional<String> cursor, int limit) {
             if (!present) throw new IllegalStateException("evidence gone");
-            return rows;
+            int from = cursor.map(Integer::parseInt).orElse(0);
+            int to = Math.min(rows.size(), from + limit);
+            pagesServed++;
+            return new StagedEpochArtifactReader.EvidencePage(
+                    List.copyOf(rows.subList(from, to)),
+                    to >= rows.size() ? Optional.empty() : Optional.of(Integer.toString(to)));
         }
         @Override public void release(ProjectionArtifactRef ref) { released++; present = false; }
         @Override public boolean present(ProjectionArtifactRef ref) { return present; }
@@ -172,6 +180,48 @@ class StagedEpochArtifactReaderTest {
         assertThat(evidence.present).isTrue();
         try (var lease = reader.acquire(artifact, Instant.now().plusSeconds(60))) {
             assertThat(reader.read(artifact, lease, Optional.empty(), 10).rows()).hasSize(1);
+        }
+    }
+
+    @Test
+    void aLargeArtifactIsServedInPagesRatherThanWholesale() {
+        // The regression this guards: read() used to ignore limit and materialise the entire
+        // artifact, so peak heap tracked the largest reward epoch on the chain.
+        var evidence = new FakeEvidence();
+        var rows = new ArrayList<ArchiveRow>();
+        for (int i = 0; i < 250; i++) rows.add(rewardRow(i));
+        evidence.rows = rows;
+        var reader = reader(evidence);
+        var artifact = ref(ArchiveDatasetId.REWARD, 250);
+
+        int seen = 0;
+        try (var lease = reader.acquire(artifact, Instant.now().plusSeconds(60))) {
+            Optional<String> cursor = Optional.empty();
+            do {
+                var page = reader.read(artifact, lease, cursor, 100);
+                assertThat(page.rows().size()).isLessThanOrEqualTo(100);
+                seen += page.rows().size();
+                cursor = page.nextCursor();
+            } while (cursor.isPresent());
+        }
+
+        assertThat(seen).isEqualTo(250);
+        assertThat(evidence.pagesServed).as("three pages of 100, 100 and 50").isEqualTo(3);
+    }
+
+    @Test
+    void aTruncatedArtifactIsStillRefusedWhenPaged() {
+        // The count is now checked on the last page instead of the only one; a short artifact
+        // must still be refused rather than committed as a complete epoch.
+        var evidence = new FakeEvidence();
+        evidence.rows = List.of(rewardRow(1), rewardRow(2));
+        var reader = reader(evidence);
+        var artifact = ref(ArchiveDatasetId.REWARD, 9);
+
+        try (var lease = reader.acquire(artifact, Instant.now().plusSeconds(60))) {
+            assertThatThrownBy(() -> reader.read(artifact, lease, Optional.empty(), 100))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("yielded 2 rows but the reference declares 9");
         }
     }
 }

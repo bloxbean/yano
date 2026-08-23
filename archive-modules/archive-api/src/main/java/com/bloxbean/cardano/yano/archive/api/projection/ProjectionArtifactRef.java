@@ -22,6 +22,19 @@ public record ProjectionArtifactRef(ArchiveDatasetId dataset, int semanticEpoch,
                                     String sourceStateVersion,
                                     OptionalLong expectedRowCount, String contentDigest,
                                     long oldestRequiredSlot, byte[] inlinePayload) {
+    /**
+     * Canonical identity of this reference, for binding into a receipt digest.
+     *
+     * <p>Content is part of it, not just identity. Two references naming the same dataset,
+     * epoch and generation but carrying different rows must not be interchangeable, or a
+     * receipt could authorise releasing evidence it never committed.
+     */
+    public String canonicalForm() {
+        return dataset.logicalName() + ':' + semanticEpoch + ':' + sourceGeneration
+                + ':' + sourceCodecVersion + ':' + representation.name()
+                + ':' + expectedRowCount.orElse(-1L) + ':' + contentDigest;
+    }
+
     public ProjectionArtifactRef {
         Objects.requireNonNull(dataset, "dataset");
         // Block datasets travel as sections inside the envelope, not as artifacts referenced from

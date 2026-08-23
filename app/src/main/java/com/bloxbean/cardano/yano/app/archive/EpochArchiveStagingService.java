@@ -242,6 +242,48 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
                 + " is no longer present in any source");
     }
 
+    /** One page of a staged job's archive rows, with the cursor that continues it. */
+    record MaterialisedPage(List<com.bloxbean.cardano.yano.archive.api.ArchiveRow> rows,
+                            java.util.Optional<String> nextCursor) { }
+
+    /**
+     * Derive a single page of archive rows, instead of an entire epoch.
+     *
+     * <p>A mainnet reward epoch is over a million rows. Accumulating all of them, then encoding
+     * them into a second list, makes peak heap proportional to the largest epoch the chain has
+     * ever had - for evidence that cannot be recomputed if the drain dies holding it.
+     */
+    MaterialisedPage materialisePage(ArchiveDatasetId dataset, java.util.UUID jobId,
+                                     java.util.Optional<String> cursor, int limit) {
+        for (SourceBinding<?> binding : bindingsFor(dataset)) {
+            EpochArchiveJob job = jobIn(binding, jobId);
+            if (job != null) return materialisePage(binding, job, cursor, limit);
+        }
+        throw new IllegalStateException("staged epoch job " + jobId + " for " + dataset
+                + " is no longer present in any source");
+    }
+
+    private <T> MaterialisedPage materialisePage(SourceBinding<T> binding, EpochArchiveJob job,
+                                                 java.util.Optional<String> cursor, int limit) {
+        List<com.bloxbean.cardano.yano.archive.api.ArchiveRow> rows = new ArrayList<>();
+        var lease = binding.source().acquire(job, Instant.now().plus(java.time.Duration.ofMinutes(30)));
+        try {
+            var page = binding.source().read(job, cursor, limit, lease);
+            binding.projection().derive(
+                    com.bloxbean.cardano.yano.archive.api.ArchiveJob.deterministic(
+                            job.networkIdentity(), job.dataset(), job.projectionVersion(),
+                            new com.bloxbean.cardano.yano.archive.api.EpochRange(job.epoch(), job.epoch()),
+                            new com.bloxbean.cardano.yano.archive.api.ArchiveRangeAnchor(
+                                    job.boundarySlot(), job.boundaryBlockHash(),
+                                    job.boundarySlot(), job.boundaryBlockHash()),
+                            job.sourceStateVersion()),
+                    page, rows::add);
+            return new MaterialisedPage(rows, page.nextCursor());
+        } finally {
+            lease.close();
+        }
+    }
+
     private <T> List<com.bloxbean.cardano.yano.archive.api.ArchiveRow> materialise(
             SourceBinding<T> binding, EpochArchiveJob job) {
         List<com.bloxbean.cardano.yano.archive.api.ArchiveRow> rows = new ArrayList<>();

@@ -46,7 +46,9 @@ public class DefaultTransactionValidatorListener {
             return;
         }
 
-        ValidationResult result = validationService.validate(event.txCbor());
+        ValidationResult result = event.utxoResolver() != null
+                ? validationService.validate(event.txCbor(), event.utxoResolver())
+                : validationService.validate(event.txCbor());
         if (!result.valid()) {
             for (ValidationError err : result.errors()) {
                 event.reject(err.rule(), err.message());

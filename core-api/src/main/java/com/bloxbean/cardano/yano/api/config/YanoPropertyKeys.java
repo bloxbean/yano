@@ -235,6 +235,8 @@ public final class YanoPropertyKeys {
         public static final String MEMPOOL_MAX_TXS = "yano.tx.mempool.max-txs";
         public static final String MEMPOOL_MAX_BYTES = "yano.tx.mempool.max-bytes";
         public static final String MEMPOOL_TTL_SECONDS = "yano.tx.mempool.ttl-seconds";
+        public static final String MEMPOOL_MAX_UTXO_INDEX_ENTRIES =
+                "yano.tx.mempool.max-utxo-index-entries";
         public static final String DIFFUSION_ENABLED = "yano.tx.diffusion.enabled";
         public static final String DIFFUSION_MODE = "yano.tx.diffusion.mode";
         public static final String DIFFUSION_MAX_IN_FLIGHT_TXS_PER_PEER =

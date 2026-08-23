@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yaci.core.model.Era;
 import com.bloxbean.cardano.yano.api.ChainQuery;
 import com.bloxbean.cardano.yano.api.LedgerQuery;
+import com.bloxbean.cardano.yano.api.MempoolQueryGateway;
 import com.bloxbean.cardano.yano.api.NodeLifecycle;
 import com.bloxbean.cardano.yano.api.ProducerControl;
 import com.bloxbean.cardano.yano.api.TxEvaluationGateway;
@@ -40,6 +41,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -130,6 +132,7 @@ class YanoAssemblyTest {
             assertNotNull(node.ledger());
             assertNotNull(node.txGateway());
             assertNotNull(node.txEvaluationGateway());
+            assertNotSame(MempoolQueryGateway.UNAVAILABLE, node.mempoolQueryGateway());
             assertTrue(node.maintenanceGate().isPresent());
             assertTrue(node.debugLedgerStateAccess().isPresent());
             assertTrue(node.kernel().isPresent());

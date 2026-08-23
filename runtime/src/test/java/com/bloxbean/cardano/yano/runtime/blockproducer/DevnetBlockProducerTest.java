@@ -39,6 +39,8 @@ import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -164,6 +166,83 @@ class DevnetBlockProducerTest {
 
         assertThat(drained).isTrue();
         assertThat(chainState.getTip().getBlockNumber()).isGreaterThanOrEqualTo(1);
+    }
+
+    @Test
+    void producerLimitsSelectedTransactionsToEffectiveMaxBlockSize() {
+        byte[] tx = buildSampleTxCbor();
+        DevnetBlockBuilder sizingBuilder = new DevnetBlockBuilder();
+        long oneTransactionBodySize = sizingBuilder.computeBlockBody(List.of(tx)).bodySize();
+        DevnetBlockBuilder limitedBuilder = new DevnetBlockBuilder(
+                ProtocolVersionSupplier.fixed(10, 2), slot -> oneTransactionBodySize);
+        BlockTransactionSelector selector = new BlockTransactionSelector() {
+            @Override
+            public boolean hasPendingTransactions() {
+                return true;
+            }
+
+            @Override
+            public List<byte[]> drainForBlock() {
+                return List.of(tx, tx);
+            }
+        };
+        blockProducer = DevnetBlockProducer.withTransactionSelector(
+                chainState, selector, () -> null, new NoopEventBus(), scheduler, limitedBuilder,
+                2_000, false, System.currentTimeMillis(), 1_000, null);
+        blockProducer.start();
+        blockProducer.setForceSequentialSlots(true);
+
+        blockProducer.produceBlock();
+
+        ChainTip tip = chainState.getTip();
+        var block = com.bloxbean.cardano.yaci.core.model.serializers.BlockSerializer.INSTANCE
+                .deserialize(chainState.getBlock(tip.getBlockHash()));
+        assertThat(block.getTransactionBodies()).hasSize(1);
+    }
+
+    @Test
+    void producerInvalidatesFirstTransactionThatCannotFitEmptyBlock() {
+        byte[] tx = buildSampleTxCbor();
+        String txHash = com.bloxbean.cardano.client.transaction.util.TransactionUtil.getTxHash(tx);
+        AtomicReference<String> invalidated = new AtomicReference<>();
+        AtomicInteger failedSelections = new AtomicInteger();
+        BlockTransactionSelector selector = new BlockTransactionSelector() {
+            @Override
+            public boolean hasPendingTransactions() {
+                return true;
+            }
+
+            @Override
+            public List<byte[]> drainForBlock() {
+                return List.of(tx);
+            }
+
+            @Override
+            public int invalidateSelectedTransaction(String candidateHash) {
+                invalidated.set(candidateHash);
+                return 1;
+            }
+
+            @Override
+            public void blockSelectionFailed() {
+                failedSelections.incrementAndGet();
+            }
+        };
+        DevnetBlockBuilder sizingBuilder = new DevnetBlockBuilder();
+        long emptyBlockBodySize = sizingBuilder.computeBlockBody(List.of()).bodySize();
+        DevnetBlockBuilder limitedBuilder = new DevnetBlockBuilder(
+                ProtocolVersionSupplier.fixed(10, 2), slot -> emptyBlockBodySize);
+        blockProducer = DevnetBlockProducer.withTransactionSelector(
+                chainState, selector, () -> null, new NoopEventBus(), scheduler, limitedBuilder,
+                2_000, false, System.currentTimeMillis(), 1_000, null);
+        blockProducer.start();
+        blockProducer.setForceSequentialSlots(true);
+
+        blockProducer.produceBlock();
+
+        assertThat(invalidated).hasValue(txHash);
+        assertThat(failedSelections).hasValue(1);
+        assertThat(chainState.getTip().getBlockNumber()).isZero();
     }
 
     @Test

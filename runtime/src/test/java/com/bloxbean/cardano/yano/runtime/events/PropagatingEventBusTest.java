@@ -4,6 +4,8 @@ import com.bloxbean.cardano.yaci.events.api.Event;
 import com.bloxbean.cardano.yaci.events.api.EventMetadata;
 import com.bloxbean.cardano.yaci.events.api.PublishOptions;
 import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
+import com.bloxbean.cardano.yano.api.events.TransactionValidateEvent;
+import com.bloxbean.cardano.yano.api.events.UtxoStateAppliedEvent;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -81,6 +83,36 @@ class PropagatingEventBusTest {
                             EventMetadata.builder().build(),
                             PublishOptions.builder().build()));
             assertEquals("Event listener failed for TestEvent", failure.getMessage());
+        } finally {
+            bus.close();
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void transactionValidationListenersCannotBeAsynchronous() {
+        PropagatingEventBus bus = new PropagatingEventBus();
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            assertThrows(IllegalArgumentException.class,
+                    () -> bus.subscribe(TransactionValidateEvent.class,
+                            ignored -> { },
+                            SubscriptionOptions.builder().executor(executor).build()));
+        } finally {
+            bus.close();
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void canonicalUtxoAcknowledgementListenersCannotBeAsynchronous() {
+        PropagatingEventBus bus = new PropagatingEventBus();
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            assertThrows(IllegalArgumentException.class,
+                    () -> bus.subscribe(UtxoStateAppliedEvent.class,
+                            ignored -> { },
+                            SubscriptionOptions.builder().executor(executor).build()));
         } finally {
             bus.close();
             executor.shutdownNow();
