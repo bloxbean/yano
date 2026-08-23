@@ -14,7 +14,7 @@ import java.util.Objects;
  * second would report itself complete for artifacts it never captured and, for rewards and
  * governance status, could never reconstruct.
  *
- * <p>It records capture semantics, not just names. {@code epoch-stake:v2} is not enough: a staged
+ * <p>It records capture semantics, not just names. {@code epoch-stake:v1} is not enough: a staged
  * file and an immutable generation reference have different recovery classes, so changing between
  * them changes what the archive can promise after a crash.
  *
@@ -64,7 +64,7 @@ public record ProjectionArtifactContract(ArchiveDatasetId dataset,
         return reconstructibility;
     }
 
-    /** Stable comparable form, e.g. {@code epoch-stake:s2:c1:IMMUTABLE_GENERATION:RECONSTRUCTIBLE}. */
+    /** Stable comparable form, e.g. {@code epoch-stake:s1:c1:IMMUTABLE_GENERATION:RECONSTRUCTIBLE}. */
     public String wireForm() {
         return wireName() + ":s" + schemaVersion + ":c" + codecVersion
                 + ':' + representation.name() + ':' + reconstructibility.name();

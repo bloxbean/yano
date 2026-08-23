@@ -144,7 +144,7 @@ class ProjectionStartupGuardTest {
         assertThatThrownBy(() -> ProjectionStartupGuard.verify(expected(), observed))
                 .isInstanceOf(ProjectionActivationException.class)
                 .hasMessageContaining("cannot serve required projection section")
-                .hasMessageContaining("utxo-history:v5");
+                .hasMessageContaining("utxo-history:v1");
     }
 
     // --- incoherent observations ------------------------------------------------

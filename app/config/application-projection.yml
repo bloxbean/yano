@@ -32,13 +32,13 @@ yano:
       sink: ${YANO_PROJECTION_SINK:ducklake}
 
       # Datasets to project. Defaults to every shipped block dataset:
-      #   transaction:v2, utxo-history:v5, account-events:v3, address-transaction:v3
+      #   transaction:v1, utxo-history:v1, account-events:v1, address-transaction:v1
       #
       # Set this ONLY to deliberately project fewer, which is a legacy or testing
       # configuration. A dataset omitted here can be added back only by resyncing
       # from genesis, and an archive missing one looks healthy until a query
       # returns nothing.
-      # sections: transaction:v2,utxo-history:v5
+      # sections: transaction:v1,utxo-history:v1
 
       # How often the drain loop polls when it has nothing eligible to commit.
       drain-interval-millis: ${YANO_PROJECTION_DRAIN_INTERVAL_MILLIS:250}

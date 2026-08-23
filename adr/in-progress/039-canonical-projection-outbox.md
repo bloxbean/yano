@@ -100,9 +100,12 @@ on a network whose pre-Conway range contains them.
 
 ### Corrections to this ADR made during implementation
 
-- §4's illustrative `account-events:v1` is wrong for the shipped dataset: `ACCOUNT_EVENT`
-  is at projectionVersion 3, so its section is `account-events:v3`. Section versions are
-  now *derived* from `ArchiveSchemas`, so they cannot drift from dataset identity.
+- Section versions are *derived* from `ArchiveSchemas`, so they cannot drift from dataset
+  identity. Every shipped dataset was renumbered to projectionVersion 1 before release: the
+  earlier numbers (`transaction:v2`, `utxo-history:v5`, `account-events:v3`) recorded this
+  ADR's own iteration, not schema evolution an operator ever saw, and shipping them would
+  imply prior public schemas that never existed. Dated reports under `adr/reports/` keep the
+  numbers that were live when they ran.
 - §11's crash-boundary case 9 has a concrete failure mode the text does not name:
   acknowledging the outbox range deletes artifact *references*, so a crash before lease
   release orphans the lease. Startup lease reconciliation is required with the first
@@ -500,10 +503,10 @@ dataset-to-table identity and projection versions; it does not silently move
 datum/redeemer coverage from `UTXO_HISTORY` to `TRANSACTION`:
 
 ```text
-transaction:v2
+transaction:v1
   -> chain_transaction
 
-utxo-history:v5
+utxo-history:v1
   -> transaction_outputs
   -> transaction_output_assets
   -> transaction_inputs
@@ -517,7 +520,7 @@ datasets requires an explicit projection-version transition, coverage
 reconciliation rules, conformance-fixture updates, and query compatibility
 decision.
 
-`utxo-history:v5` records output creation when the output is created, even when it
+`utxo-history:v1` records output creation when the output is created, even when it
 remains unspent indefinitely. A later consuming input is a separate immutable
 event. The output row is not moved or deleted from the archive.
 
@@ -1568,7 +1571,7 @@ lost/duplicated envelope identities.
 
 ### Phase 3 — transaction and UTXO vertical slice
 
-Capture `transaction:v2` and `utxo-history:v5` from canonical apply while
+Capture `transaction:v1` and `utxo-history:v1` from canonical apply while
 preserving the current dataset/table mapping.
 Cover valid/invalid transactions, ordinary/collateral/reference inputs,
 collateral return, same-block parent/child spends, multi-asset outputs, datum
