@@ -762,7 +762,12 @@ subprojects {
             events(*(verbose
                     ? ['started', 'passed', 'skipped', 'failed']
                     : ['skipped', 'failed']))
-            exceptionFormat verbose ? 'full' : 'short'
+            // Always full. This prints only for a failing test, and the short form gives the
+            // exception class and line without its message - which is precisely the part needed
+            // to tell a lock conflict from a corrupt file from a missing column family. Gating it
+            // behind a flag means the one run that failed is the one run that cannot be
+            // diagnosed, and on CI there is no opportunity to re-run it verbosely by hand.
+            exceptionFormat 'full'
             showStandardStreams = verbose
         }
 
