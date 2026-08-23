@@ -7,8 +7,10 @@ import com.bloxbean.cardano.yano.archive.api.projection.ProjectionIdentity;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionReceipt;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionReceiptMismatchException;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionMaintenance;
+import com.bloxbean.cardano.yano.archive.api.projection.ProjectionEnvelopeHeader;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionSink;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -185,7 +187,7 @@ public final class ProjectionOutboxConsumer {
             return ProjectionConsumerResult.idle();
         }
 
-        ProjectionBatch batch = new ProjectionBatch(identity, accumulator.envelopes());
+        ProjectionBatch batch = new ProjectionBatch(identity, withCurrentArtifacts(accumulator.envelopes()));
         verifyContiguity(batch, acknowledged);
 
         // Retention health is checked against what this batch actually requires, before
@@ -246,6 +248,38 @@ public final class ProjectionOutboxConsumer {
                 replayed ? ProjectionConsumerResult.Outcome.REPLAYED : ProjectionConsumerResult.Outcome.COMMITTED,
                 batch.firstBlock(), batch.lastBlock(), Optional.empty(),
                 eligible > batch.lastBlock());
+    }
+
+    /**
+     * Re-read each buffered envelope's artifact references immediately before committing.
+     *
+     * <p>The accumulator holds envelopes across drain passes, and staged evidence becomes durable
+     * outside any batch - so a reference can be recorded while its block is already buffered. The
+     * buffered copy would not have it, the batch would commit without it, and acknowledgeThrough
+     * would then delete a reference that was never written to the sink. That evidence is reward,
+     * DRep and governance state, which cannot be recomputed once the boundary has passed.
+     *
+     * <p>Re-reading here is what makes the batch describe the outbox as it is at commit time
+     * rather than as it was when buffering started. Checking a coordinate cannot substitute for
+     * it: the sink lags the accumulator, so a reference inserted against a still-behind sink is
+     * exactly the case that slips through.
+     */
+    private List<ProjectionEnvelope> withCurrentArtifacts(List<ProjectionEnvelope> buffered) {
+        List<ProjectionEnvelope> refreshed = new ArrayList<>(buffered.size());
+        for (ProjectionEnvelope envelope : buffered) {
+            var header = envelope.header();
+            var current = store.readArtifacts(header.blockNumber());
+            if (current.equals(header.artifacts())) {
+                refreshed.add(envelope);
+                continue;
+            }
+            refreshed.add(new ProjectionEnvelope(new ProjectionEnvelopeHeader(
+                    header.networkIdentity(), header.blockKind(), header.blockNumber(),
+                    header.blockHash(), header.parentHash(), header.slot(), header.epoch(),
+                    header.blockTime(), header.canonicalProjectionVersion(),
+                    header.sections(), current), envelope.sections()));
+        }
+        return refreshed;
     }
 
     /**

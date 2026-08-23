@@ -547,6 +547,49 @@ class ProjectionOutboxConsumerTest {
                 "gen-" + epoch, 1, "state-1", java.util.OptionalLong.of(10), "", block * 20);
     }
 
+    /**
+     * The interleaving that a sink-coordinate check cannot see.
+     *
+     * <p>Staged evidence becomes durable outside any batch, so its reference can be written while
+     * its block is already sitting in the accumulator. The accumulator holds envelopes across
+     * drain passes, and the sink lags it - so the reference is inserted against a sink that is
+     * legitimately still behind, and the buffered envelope that later commits does not carry it.
+     * acknowledgeThrough then deletes a reference the sink never received, destroying reward,
+     * DRep or governance evidence that cannot be recomputed.
+     *
+     * <p>The fix is to re-read artifacts at flush rather than trust the buffered copy, so this
+     * asserts the late reference is committed and acknowledged rather than silently dropped.
+     */
+    @Test
+    void anArtifactStagedWhileItsBlockIsBufferedIsStillCommitted() {
+        tip.set(10_000);
+        commitBlock(0);
+        commitBlock(1);
+
+        // A policy that will not flush yet, so block 1 and 2 sit buffered in the accumulator.
+        var consumer = consumer(ProjectionConsumerBounds.defaults(), NEAR_TIP);
+        var buffering = consumer.drainOnce(Instant.EPOCH);
+        assertThat(buffering.outcome())
+                .as("the envelopes must still be buffered for this to be the race under test")
+                .isEqualTo(ProjectionConsumerResult.Outcome.ACCUMULATING);
+
+        // Staging completes now: the evidence is durable and its reference is written directly,
+        // against a sink that has committed nothing at all.
+        var late = artifactAt(1, 77);
+        store.putArtifactDirect(1, late);
+
+        // Flush the buffered range.
+        var committed = consumer.drainOnce(Instant.EPOCH.plus(java.time.Duration.ofMinutes(20)));
+
+        assertThat(committed.outcome()).isEqualTo(ProjectionConsumerResult.Outcome.COMMITTED);
+        assertThat(artifacts.acknowledged())
+                .as("the late artifact must be committed and released, not deleted unwritten")
+                .contains(late);
+        assertThat(store.readArtifacts(1))
+                .as("and its outbox reference is gone only because it was acknowledged")
+                .isEmpty();
+    }
+
     /** Stage an artifact reference against a block, the way an epoch transition would. */
     private void commitArtifact(long blockNumber, ProjectionArtifactRef ref) {
         try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
