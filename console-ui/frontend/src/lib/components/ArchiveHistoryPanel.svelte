@@ -2,192 +2,171 @@
   import MetricCard from './MetricCard.svelte';
   import MetricRow from './MetricRow.svelte';
   import CopyValue from './CopyValue.svelte';
-  import type { ArchiveHistoryStatus, ArchiveWorkerStatus } from '$lib/api/types';
-  import { archiveDatasets, archiveState, coverageLabel, failedWorker, failedWorkerStates } from '$lib/status/archive';
+  import type { ArchiveHistoryStatus, ProjectionCoverage, ProjectionWatermark } from '$lib/api/types';
+  import { count, datasetRows, humanizeDuration, parseArtifactContracts,
+    projectionState, queryableRange } from '$lib/status/projection';
 
-  let { history } = $props<{ history?: ArchiveHistoryStatus }>();
+  let { history, coverage, watermark, error = '' } = $props<{
+    history?: ArchiveHistoryStatus;
+    coverage?: ProjectionCoverage;
+    watermark?: ProjectionWatermark;
+    error?: string;
+  }>();
 
-  const failedDatasets = $derived(
-    archiveDatasets(history).filter(([, dataset]) => dataset.enabled && failedWorker(dataset))
-  );
-  const stageErrorEntries = $derived(Object.entries(history?.stageErrors ?? {}));
-  const gates = $derived(history?.resources?.gates ?? []);
+  const state = $derived(projectionState(history, coverage));
+  const range = $derived(queryableRange(coverage));
+  const datasets = $derived(datasetRows(history, coverage, watermark));
+  const contracts = $derived(parseArtifactContracts(coverage?.artifactContracts));
 
-  const n = (value: unknown) => Number.isFinite(Number(value)) ? Number(value) : 0;
-  const fmt = (value: unknown) => value === null || value === undefined ? '-' : n(value).toLocaleString();
-  const when = (value: string | undefined) => {
-    if (!value) return '-';
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  const stateTone = (value: string) => value === 'READY' ? 'badge-ok'
+    : value === 'CATCHING_UP' || value === 'AWAITING_GENESIS' ? 'badge-warn'
+    : value === 'DISABLED' ? '' : 'badge-bad';
+
+  // Irreproducible artifacts are the ones an operator must not lose; that has to read
+  // differently from an artifact the node could rebuild.
+  const durabilityTone = (value: string) => value === 'IRREPRODUCIBLE' ? 'badge-warn'
+    : value === 'RECONSTRUCTIBLE' ? 'badge-ok' : '';
+
+  const stateNarrative: Record<string, string> = {
+    DISABLED: 'The archive is not enabled on this node.',
+    UNAVAILABLE: 'The archive is enabled but its sink cannot serve reads right now.',
+    UNHEALTHY: 'The sink is degraded. Commits may be failing; check the node log.',
+    AWAITING_GENESIS: 'The genesis distribution is not durable yet, so no range can be claimed.',
+    CATCHING_UP: 'No batch has committed yet. The archive exists but cannot answer queries.',
+    READY: 'The archive can answer queries over its committed range.'
   };
-  const bytes = (value: unknown) => {
-    const amount = n(value);
-    if (amount >= 1024 * 1024 * 1024) return `${(amount / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
-    if (amount >= 1024 * 1024) return `${(amount / (1024 * 1024)).toFixed(1)} MiB`;
-    if (amount >= 1024) return `${(amount / 1024).toFixed(1)} KiB`;
-    return `${amount.toLocaleString()} B`;
-  };
-  const stateTone = (state: string) => state === 'READY' ? 'badge-ok'
-    : state === 'CATCHING_UP' ? 'badge-warn' : state === 'DISABLED' ? '' : 'badge-bad';
-  const workerRows = (workers: Record<string, ArchiveWorkerStatus> | undefined) => Object.entries(workers ?? {});
 </script>
 
-{#if !history}
-  <section class="card p-5">
-    <h2 class="m-0 text-base font-semibold">History status unavailable</h2>
-    <p class="mb-0 mt-2 text-sm text-slate-400">This node does not expose archive status. Upgrade the node or verify the API base.</p>
-  </section>
-{:else}
-  {@const state = archiveState(history)}
-  <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-    <div>
-      <p class="m-0 text-xs font-semibold uppercase tracking-[.18em] text-blue-400">Optional archive</p>
-      <h2 class="mt-1 text-xl font-bold">History archive</h2>
-      <p class="mb-0 mt-1 text-sm text-slate-400">Read-only archive and projection health.</p>
-    </div>
-    <span class="badge {stateTone(state)}">{state}</span>
+<div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+  <div>
+    <p class="m-0 text-xs font-semibold uppercase tracking-[.18em] text-blue-400">Optional archive</p>
+    <h2 class="mt-1 text-xl font-bold">History archive</h2>
+    <p class="mb-0 mt-1 text-sm text-slate-400">Canonical projection outbox · read-only.</p>
   </div>
+  <span class="badge {stateTone(state)}">{state.replace('_', ' ')}</span>
+</div>
 
-  {#if history.error || history.epochStagingError || history.maintenance?.error || history.cycleError || history.shutdownError || history.datasetsUnavailable || stageErrorEntries.length > 0 || failedDatasets.length > 0}
-    <section class="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200">
-      <h3 class="m-0 text-sm font-semibold">Archive attention required</h3>
-      {#if history.error}<p class="mb-0 mt-2"><strong>Archive:</strong> {history.error}</p>{/if}
-      {#if history.epochStagingError}<p class="mb-0 mt-2"><strong>Epoch staging:</strong> {history.epochStagingError}</p>{/if}
-      {#if history.maintenance?.error}<p class="mb-0 mt-2"><strong>Maintenance:</strong> {history.maintenance.error}</p>{/if}
-      {#if history.cycleError}<p class="mb-0 mt-2"><strong>Cycle:</strong> {history.cycleError}</p>{/if}
-      {#if history.shutdownError}<p class="mb-0 mt-2"><strong>Shutdown:</strong> {history.shutdownError}</p>{/if}
-      {#if history.datasetsUnavailable}<p class="mb-0 mt-2"><strong>Datasets:</strong> {history.datasetsUnavailable}</p>{/if}
-      {#each stageErrorEntries as [stage, detail]}
-        <p class="mb-0 mt-2"><strong>Cycle stage {stage}:</strong> {detail}</p>
-      {/each}
-      {#each failedDatasets as [name, dataset]}
-        <p class="mb-0 mt-2"><strong>Dataset {name}:</strong> {failedWorkerStates(dataset).join(', ')}</p>
-      {/each}
-    </section>
-  {/if}
+{#if error}
+  <section class="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200">
+    <h3 class="m-0 text-sm font-semibold">Archive status could not be read</h3>
+    <p class="mb-0 mt-2">{error}</p>
+  </section>
+{/if}
 
+<p class="mb-4 text-sm text-slate-400">{stateNarrative[state]}</p>
+
+{#if state !== 'DISABLED'}
   <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-    <MetricCard title="Archive state" subtitle="Backend and safety windows">
-      <MetricRow label="Enabled / available" value={`${history.enabled ? 'yes' : 'no'} / ${history.available ? 'yes' : 'no'}`} />
-      <MetricRow label="Engine / hot store" value={`${history.engine ?? '-'} / ${history.hotStoreEngine ?? '-'}`} />
-      <MetricRow label="Backend health" value={history.health?.status ?? '-'} />
-      <MetricRow label="Observed" value={when(history.health?.observedAt)} />
-      <MetricRow label="Finality / rollback" value={`${fmt(history.finalityBlocks)} / ${fmt(history.rollbackRetentionBlocks)} blocks`} />
-      <MetricRow label="Generation" value={fmt(history.generation)} />
+    <MetricCard title="Coverage" subtitle="What the archive can answer for">
+      <MetricRow label="Queryable blocks" value={range ?? 'nothing committed yet'} />
+      <MetricRow label="Committed through" value={count(coverage?.queryableThroughBlock)} />
+      <MetricRow label="Chain tip" value={count(coverage?.tipBlock)} />
+      <MetricRow label="Behind tip" value={`${count(coverage?.blocksBehindTip)} blocks`} />
+      <MetricRow label="Genesis captured"
+                 value={coverage?.genesisCaptured === undefined ? '—' : coverage.genesisCaptured ? 'yes' : 'not yet'} />
+      <MetricRow label="Sink health" value={coverage?.sinkHealth ?? '—'} />
     </MetricCard>
 
-    <MetricCard title="Worker" subtitle="Projection and decode settings">
-      <MetricRow label="Parallelism" value={`${history.worker?.projectionParallelismEffective ?? '-'} (${history.worker?.projectionParallelismRequested ?? '-'})`} />
-      <MetricRow label="Batch limits" value={`${fmt(history.worker?.maxBlocksPerBatch)} blocks / ${fmt(history.worker?.maxRowsPerBatch)} rows`} />
-      <MetricRow label="Core catch-up pause" value={history.worker?.pauseBackfillDuringCoreCatchup ? 'enabled' : 'disabled'} />
-      <MetricRow label="Pause lag threshold" value={`${fmt(history.worker?.bulkPauseCoreLagBlocks)} blocks`} />
-      <MetricRow label="Decoded blocks" value={fmt(history.worker?.decodedBlocks)} />
-      <MetricRow label="Decode cache hits" value={fmt(history.worker?.decodedBlockCacheHits)} />
+    <MetricCard title="Freshness" subtitle="How long finality takes to become queryable">
+      <MetricRow label="Max commit latency" value={humanizeDuration(coverage?.maxCommitLatency)} />
+      <MetricRow label="Source" value={history?.source ?? '—'} />
+      <MetricRow label="Sections projected" value={count(coverage?.sections?.length)} />
+      <MetricRow label="Datasets held" value={count(datasets.length)} />
+      <MetricRow label="Artifact contracts" value={count(contracts.length)} />
     </MetricCard>
 
-    <MetricCard title="Maintenance" subtitle="Bounded archive housekeeping">
-      <MetricRow label="Interval" value={`${fmt(history.maintenance?.intervalSeconds)} seconds`} />
-      <MetricRow label="Time limit" value={`${fmt(history.maintenance?.timeLimitSeconds)} seconds`} />
-      <MetricRow label="Rewrite budget" value={bytes(history.maintenance?.maxBytesToRewrite)} />
-      <MetricRow label="Last completed" value={when(history.maintenance?.lastCompletedAt)} />
-      <MetricRow label="Deferred because" value={history.maintenance?.deferredReason ?? 'not deferred'} />
+    <MetricCard title="Consistency point" subtitle="Cross-dataset watermark">
+      <MetricRow label="Available" value={watermark?.available ? 'yes' : 'no'} />
+      {#if watermark?.available}
+        <MetricRow label="Complete range"
+                   value={`${count(watermark.fromBlock)}–${count(watermark.toBlock)}`} />
+        <MetricRow label="As-of block"
+                   value={watermark.asOf ? count(watermark.asOf.blockNumber) : 'not resolvable'} />
+        <MetricRow label="As-of slot"
+                   value={watermark.asOf ? count(watermark.asOf.slot) : '—'} />
+      {:else}
+        <MetricRow label="Reason" value={watermark?.reason ?? '—'} />
+      {/if}
     </MetricCard>
   </div>
 
-  <section class="card mt-4 overflow-hidden">
-    <div class="border-b border-slate-700/40 px-4 py-3">
-      <h2 class="m-0 text-sm font-semibold">Writer and capacity contention</h2>
-      <p class="mb-0 mt-1 text-xs text-slate-500">
-        Waiting for the single writer or bounded DuckDB capacity is normal scheduling, not a failure.
+  <section class="mt-4 rounded-xl border border-blue-500/25 bg-blue-500/5 p-4 text-sm text-slate-300">
+    <h3 class="m-0 text-sm font-semibold text-slate-100">Reading this archive honestly</h3>
+    <p class="mb-0 mt-2">
+      Blocks above the committed range are <strong>unknown, not absent</strong>. A block can be
+      final and durable and still be up to one batch linger plus one maintenance budget away from
+      being queryable, so an empty result near tip does not mean there is no history. The archive
+      drains only finalized blocks, so trailing the chain tip is by design.
+    </p>
+    {#if coverage?.transactionHashLookup?.mode === 'full-scan'}
+      <p class="mb-0 mt-3 text-amber-300">
+        <strong>Lookup by transaction hash is a full scan.</strong>
+        {coverage.transactionHashLookup.note ?? ''}
       </p>
-    </div>
-    {#if gates.length > 0}
-      <table class="w-full text-sm">
-        <thead class="text-left text-xs uppercase tracking-wide text-slate-500">
-          <tr><th class="px-4 py-2">Gate</th><th class="px-4 py-2">In use</th>
-            <th class="px-4 py-2">Waiters</th><th class="px-4 py-2">Holder</th>
-            <th class="px-4 py-2">Held for</th></tr>
-        </thead>
-        <tbody>
-          {#each gates as gate}
-            <tr class="border-t border-slate-800/60">
-              <td class="px-4 py-2 font-mono text-xs">{gate.name}</td>
-              <td class="px-4 py-2">{gate.inUse} / {gate.totalPermits}</td>
-              <td class="px-4 py-2">{gate.waiters}</td>
-              <td class="px-4 py-2 font-mono text-xs">{gate.holder || 'idle'}</td>
-              <td class="px-4 py-2">{gate.holderSeconds ?? 0}s</td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-      {#if history.resources?.lastWaitWarning}
-        <p class="mb-0 border-t border-slate-800/60 px-4 py-3 text-xs text-amber-300">
-          Last wait warning: {history.resources.lastWaitWarning.operation} waited
-          {history.resources.lastWaitWarning.waitedSeconds}s on
-          {history.resources.lastWaitWarning.gate} — {history.resources.lastWaitWarning.holder}
-        </p>
-      {/if}
-      {#if history.resources?.lastMutationFailure}
-        <p class="mb-0 border-t border-slate-800/60 px-4 py-3 text-xs text-rose-300">
-          Last mutation failure: {history.resources.lastMutationFailure.operation} —
-          {history.resources.lastMutationFailure.detail}
-        </p>
-      {/if}
-    {:else}
-      <p class="mb-0 px-4 py-3 text-sm text-slate-400">No archive resource activity recorded.</p>
-    {/if}
-  </section>
-
-  <section class="card mt-4 overflow-hidden">
-    <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-700/40 px-4 py-3">
-      <div><h2 class="m-0 text-sm font-semibold">Finalized consistency watermark</h2>
-        <p class="mb-0 mt-1 text-xs text-slate-500">Safe common range across enabled block datasets.</p></div>
-      <span class="badge {history.finalizedConsistency?.available ? 'badge-ok' : 'badge-warn'}">
-        {history.finalizedConsistency?.available ? 'AVAILABLE' : 'UNAVAILABLE'}
-      </span>
-    </div>
-    {#if history.finalizedConsistency?.available}
-      <div class="grid gap-3 p-4 text-sm md:grid-cols-2 xl:grid-cols-4">
-        <div><div class="text-xs text-slate-500">Complete range</div><div class="mt-1 font-mono">{fmt(history.finalizedConsistency.fromBlock)}–{fmt(history.finalizedConsistency.toBlock)}</div></div>
-        <div><div class="text-xs text-slate-500">As-of block / slot</div><div class="mt-1 font-mono">{fmt(history.finalizedConsistency.asOf?.blockNumber)} / {fmt(history.finalizedConsistency.asOf?.slot)}</div></div>
-        <div><div class="text-xs text-slate-500">Generation</div><div class="mt-1 font-mono">{fmt(history.finalizedConsistency.generation)}</div></div>
-        <div><div class="text-xs text-slate-500">Projection versions</div><div class="mt-1 font-mono">{Object.entries(history.finalizedConsistency.projectionVersions ?? {}).map(([name, version]) => `${name} v${version}`).join(', ') || '-'}</div></div>
-      </div>
-    {:else}
-      <p class="m-0 p-4 text-sm text-slate-400">{history.finalizedConsistency?.detail ?? 'No common finalized range is currently available.'}</p>
     {/if}
   </section>
 
   <section class="card mt-4 overflow-hidden">
     <div class="border-b border-slate-700/40 px-4 py-3">
       <h2 class="m-0 text-sm font-semibold">Datasets</h2>
-      <p class="mb-0 mt-1 text-xs text-slate-500">Coverage is committed cold/archive coverage; LIVE is the near-tip projection.</p>
+      <p class="mb-0 mt-1 text-xs text-slate-500">
+        Every section commits for the same range, so a projected dataset is covered by the
+        consistency point above or not projected at all.
+      </p>
     </div>
     <div class="overflow-x-auto">
-      <table class="w-full min-w-[1120px] text-left text-xs">
-        <thead class="bg-slate-950/50 text-slate-500"><tr>
-          <th class="p-3">Dataset</th><th class="p-3">State</th><th class="p-3">Start / retention</th>
-          <th class="p-3">Coverage</th><th class="p-3">Projection</th><th class="p-3">Workers</th><th class="p-3">Subjects</th>
-        </tr></thead>
+      <table class="w-full min-w-[420px] text-left text-xs">
+        <thead class="bg-slate-950/50 text-slate-500">
+          <tr><th class="p-3">Dataset</th><th class="p-3">Kind</th>
+            <th class="p-3">Projection version</th></tr>
+        </thead>
         <tbody class="divide-y divide-slate-800">
-          {#each archiveDatasets(history) as [name, dataset]}
+          {#each datasets as row}
             <tr>
-              <td class="p-3 font-mono text-slate-200">{name}</td>
-              <td class="p-3"><span class="badge {dataset.enabled ? dataset.ready ? 'badge-ok' : 'badge-warn' : ''}">
-                {dataset.enabled ? dataset.ready ? 'LIVE' : dataset.phase === 'catching_up' ? 'CATCHING UP' : 'ENABLED' : 'DISABLED'}
-              </span></td>
-              <td class="p-3">{dataset.startMode ?? '-'} / {dataset.retentionEpochs ?? '-'} epochs</td>
-              <td class="p-3 font-mono">{dataset.enabled ? coverageLabel(dataset) : '-'}</td>
-              <td class="p-3">{dataset.coverage?.projectionVersion == null ? '-' : `v${dataset.coverage.projectionVersion} · r${dataset.coverage.revision ?? '-'}`}</td>
-              <td class="p-3">
-                {#each workerRows(dataset.workers) as [track, worker]}
-                  <div class="mb-1 last:mb-0"><span class="font-semibold text-slate-300">{track}</span> {worker.state ?? '-'} · #{fmt(worker.coordinate)} · lag {fmt(worker.lag)}<br />
-                    <span class="text-slate-500">{worker.detail ?? ''}</span></div>
-                {:else}<span class="text-slate-500">-</span>{/each}
-              </td>
-              <td class="p-3">{Object.entries(dataset.subjects ?? {}).filter(([, enabled]) => enabled).map(([subject]) => subject).join(', ') || '-'}</td>
+              <td class="p-3 font-mono text-slate-200">{row.name}</td>
+              <td class="p-3 text-slate-400">{row.kind}</td>
+              <td class="p-3">{row.version === null ? '—' : `v${row.version}`}</td>
             </tr>
-          {:else}<tr><td colspan="7" class="p-8 text-center text-slate-500">No archive datasets reported.</td></tr>{/each}
+          {:else}
+            <tr><td colspan="3" class="p-8 text-center text-slate-500">No datasets reported.</td></tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card mt-4 overflow-hidden">
+    <div class="border-b border-slate-700/40 px-4 py-3">
+      <h2 class="m-0 text-sm font-semibold">Epoch artifact contracts</h2>
+      <p class="mb-0 mt-1 text-xs text-slate-500">
+        Not derivable from the section fingerprint, so it is stated here. Irreproducible artifacts
+        cannot be rebuilt once their boundary has passed.
+      </p>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="w-full min-w-[720px] text-left text-xs">
+        <thead class="bg-slate-950/50 text-slate-500">
+          <tr><th class="p-3">Artifact</th><th class="p-3">Schema</th><th class="p-3">Codec</th>
+            <th class="p-3">Representation</th><th class="p-3">If lost</th></tr>
+        </thead>
+        <tbody class="divide-y divide-slate-800">
+          {#each contracts as contract}
+            <tr>
+              <td class="p-3 font-mono text-slate-200">{contract.dataset}</td>
+              <td class="p-3">v{contract.schemaVersion}</td>
+              <td class="p-3">v{contract.codecVersion}</td>
+              <td class="p-3 font-mono text-slate-400">{contract.representation}</td>
+              <td class="p-3">
+                <span class="badge {durabilityTone(contract.reconstructibility)}">
+                  {contract.reconstructibility.replace(/_/g, ' ')}
+                </span>
+              </td>
+            </tr>
+          {:else}
+            <tr><td colspan="5" class="p-8 text-center text-slate-500">
+              This archive holds no epoch artifacts.
+            </td></tr>
+          {/each}
         </tbody>
       </table>
     </div>
@@ -196,8 +175,14 @@
   <details class="card mt-4 p-4">
     <summary class="cursor-pointer text-sm font-semibold text-slate-200">Operator details</summary>
     <div class="mt-4 grid gap-3 text-sm md:grid-cols-2">
-      <div><div class="text-xs text-slate-500">History directory</div><CopyValue value={history.directory} width={58} label="history directory" /></div>
-      <div><div class="text-xs text-slate-500">Finalized block hash</div><CopyValue value={history.finalizedConsistency?.asOf?.blockHash} width={58} label="finalized block hash" /></div>
+      <div>
+        <div class="text-xs text-slate-500">Projection identity</div>
+        <CopyValue value={coverage?.identity} width={58} label="projection identity" />
+      </div>
+      <div>
+        <div class="text-xs text-slate-500">As-of block hash</div>
+        <CopyValue value={watermark?.asOf?.blockHash} width={58} label="as-of block hash" />
+      </div>
     </div>
   </details>
 {/if}

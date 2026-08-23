@@ -82,128 +82,57 @@ export interface StorageStatus {
   history?: ArchiveHistoryStatus;
 }
 
-/** Read-only archive status published by GET /status. */
+/** Read-only projection archive status published by GET /status. */
 export interface ArchiveHistoryStatus {
   enabled?: boolean;
   available?: boolean;
-  error?: string;
-  engine?: string;
-  hotStoreEngine?: string;
-  directory?: string;
-  finalityBlocks?: number;
-  rollbackRetentionBlocks?: number;
-  generation?: number;
-  health?: ArchiveHealth;
-  worker?: ArchiveWorkerConfiguration;
-  datasets?: Record<string, ArchiveDatasetStatus>;
-  finalizedConsistency?: ArchiveConsistencyStatus;
-  maintenance?: ArchiveMaintenanceStatus;
-  resources?: ArchiveResourceStatus;
-  epochStagingError?: string;
-  cycleError?: string;
-  shutdownError?: string;
-  /** Present when dataset state could not be read, e.g. under reader saturation. */
-  datasetsUnavailable?: string;
-  /** Per-stage cycle failures, keyed by stage name; a stage failing no longer skips the rest. */
-  stageErrors?: Record<string, string>;
+  /** 'projection' for an ADR-039 archive; absent when reads are not projection-backed. */
+  source?: string;
+  /** Logical dataset names this archive projects, e.g. 'transaction', 'utxo-history'. */
+  datasets?: string[];
+  /** Highest block committed to the sink, or -1 when nothing has committed yet. */
+  committedThroughBlock?: number;
 }
 
-/** Scheduling-only contention view. Carries no row, address, or transaction data. */
-export interface ArchiveResourceStatus {
-  gates?: ArchiveGateUsage[];
-  lastWaitWarning?: ArchiveWaitWarning;
-  lastMutationFailure?: ArchiveMutationFailure;
-}
-
-export interface ArchiveGateUsage {
-  name?: string;
-  inUse?: number;
-  totalPermits?: number;
-  waiters?: number;
-  holder?: string;
-  holderSeconds?: number;
-}
-
-export interface ArchiveWaitWarning {
-  gate?: string;
-  operation?: string;
-  waitedSeconds?: number;
-  holder?: string;
-  at?: string;
-}
-
-export interface ArchiveMutationFailure {
-  operation?: string;
-  detail?: string;
-  at?: string;
-}
-
-export interface ArchiveHealth {
-  status?: string;
-  detail?: string;
-  observedAt?: string;
-}
-
-export interface ArchiveWorkerConfiguration {
-  projectionParallelismRequested?: string;
-  projectionParallelismEffective?: number;
-  pauseBackfillDuringCoreCatchup?: boolean;
-  bulkPauseCoreLagBlocks?: number;
-  maxBlocksPerBatch?: number;
-  maxRowsPerBatch?: number;
-  decodedBlocks?: number;
-  decodedBlockCacheHits?: number;
-}
-
-export interface ArchiveDatasetStatus {
+/**
+ * GET /history/coverage - what the projection archive can answer for right now.
+ *
+ * Block-number fields carry -1 for "unknown", never 0. Blocks above
+ * queryableThroughBlock are not yet committed: treat them as unknown, not absent.
+ */
+export interface ProjectionCoverage {
   enabled?: boolean;
-  /** Present only for a configured-but-disabled dataset. */
-  state?: string;
-  startMode?: string;
-  retentionEpochs?: number;
-  subjects?: Record<string, boolean>;
-  phase?: string;
-  ready?: boolean;
-  coverage?: ArchiveCoverage;
-  workers?: Record<string, ArchiveWorkerStatus>;
+  /** Projection identity fingerprint: network, sink engine, version, section wire names. */
+  identity?: string;
+  sections?: string[];
+  /** Pipe-separated artifact contract wire forms; parse with parseArtifactContracts(). */
+  artifactContracts?: string;
+  sinkHealth?: 'READY' | 'DEGRADED' | 'UNAVAILABLE' | string;
+  /** A fresh archive cannot claim coverage from block 0 until genesis is durable. */
+  genesisCaptured?: boolean;
+  queryableFromBlock?: number;
+  queryableThroughBlock?: number;
+  tipBlock?: number;
+  blocksBehindTip?: number;
+  /** ISO-8601 duration, e.g. 'PT2S': upper bound for a final block to become queryable. */
+  maxCommitLatency?: string;
+  transactionHashLookup?: { mode?: string; correct?: boolean; note?: string };
+  note?: string;
 }
 
-export interface ArchiveCoverage {
-  dataset?: string;
-  projectionVersion?: number;
-  revision?: number;
-  completeRanges?: Array<{ startInclusive?: number; endInclusive?: number }>;
-}
-
-export interface ArchiveWorkerStatus {
-  dataset?: string;
-  track?: string;
-  state?: string;
-  coordinate?: number;
-  slot?: number;
-  lag?: number;
-  detail?: string;
-  observedAt?: string;
-}
-
-export interface ArchiveConsistencyStatus {
+/** GET /history/watermark - cross-dataset consistency point. */
+export interface ProjectionWatermark {
+  source?: string;
   available?: boolean;
-  detail?: string;
-  generation?: number;
+  /** Why no consistency point is available; present only when available is false. */
+  reason?: string;
+  /** The projection identity fingerprint, not a numeric generation. */
+  generation?: string;
   fromBlock?: number;
   toBlock?: number;
-  asOf?: { blockNumber?: number; blockHash?: string; slot?: number };
+  /** Omitted when the chain cannot resolve the coordinate canonically. */
+  asOf?: { blockNumber?: number; slot?: number; blockHash?: string };
   projectionVersions?: Record<string, number>;
-}
-
-export interface ArchiveMaintenanceStatus {
-  intervalSeconds?: number;
-  timeLimitSeconds?: number;
-  maxBytesToRewrite?: number;
-  lastCompletedAt?: string;
-  error?: string;
-  /** Why bounded upkeep did not run: active snapshot, writer wait, time budget, rewrite budget. */
-  deferredReason?: string;
 }
 
 export interface Peer {

@@ -1,0 +1,62 @@
+{
+  "capturedFrom": "preprod, mid fresh sync, 2026-08-23",
+  "status": {
+    "enabled": true,
+    "available": true,
+    "source": "projection",
+    "datasets": [
+      "account_event",
+      "ada_pot",
+      "address_transaction",
+      "drep_distribution",
+      "epoch_stake",
+      "governance_proposal_status",
+      "reward",
+      "transaction",
+      "utxo_history"
+    ],
+    "committedThroughBlock": 409313
+  },
+  "coverage": {
+    "enabled": true,
+    "identity": "1:162d29c4e1cf6b8a84f2d692e67a3ac6bc7851bc3e6e4afe64d15778bed8bd86|ducklake|v1|account-events:v3,address-transaction:v3,transaction:v2,utxo-history:v5",
+    "sections": [
+      "account-events:v3",
+      "address-transaction:v3",
+      "transaction:v2",
+      "utxo-history:v5"
+    ],
+    "artifactContracts": "ada-pot:s1:c1:ATOMIC_EVIDENCE:RECONSTRUCTIBLE|drep-distribution:s2:c1:STAGED_FILE:IRREPRODUCIBLE|epoch-stake:s2:c1:IMMUTABLE_GENERATION:RECONSTRUCTIBLE|governance-proposal-status:s1:c1:STAGED_FILE:IRREPRODUCIBLE|reward:s4:c1:STAGED_FILE:IRREPRODUCIBLE",
+    "sinkHealth": "READY",
+    "genesisCaptured": true,
+    "queryableFromBlock": 0,
+    "queryableThroughBlock": 407304,
+    "tipBlock": 414525,
+    "blocksBehindTip": 7221,
+    "maxCommitLatency": "PT15M",
+    "transactionHashLookup": {
+      "correct": true,
+      "note": "no derived tx-hash index is built for projection archives; lookup by hash scans the transactions table and is not suitable for hot paths",
+      "mode": "full-scan"
+    },
+    "note": "blocks above queryableThroughBlock are not yet committed to the archive; treat them as unknown rather than absent"
+  },
+  "watermark": {
+    "source": "projection",
+    "available": true,
+    "generation": "1:162d29c4e1cf6b8a84f2d692e67a3ac6bc7851bc3e6e4afe64d15778bed8bd86|ducklake|v1|account-events:v3,address-transaction:v3,transaction:v2,utxo-history:v5",
+    "fromBlock": 0,
+    "toBlock": 409313,
+    "asOf": {
+      "blockNumber": 409313,
+      "slot": 15524289,
+      "blockHash": "d692f2f61820479f0847decceef2676c360a8fe8714c8a0b78373c00b07b0aee"
+    },
+    "projectionVersions": {
+      "account_event": 3,
+      "address_transaction": 3,
+      "transaction": 2,
+      "utxo_history": 5
+    }
+  }
+}

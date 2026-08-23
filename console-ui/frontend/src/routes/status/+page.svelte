@@ -6,7 +6,8 @@
   import CopyValue from '$lib/components/CopyValue.svelte';
   import ArchiveHistoryPanel from '$lib/components/ArchiveHistoryPanel.svelte';
   import { apiFailureMessage, resolveApiBase, YanoApi } from '$lib/api/client';
-  import type { NodeConfig, NodePeers, NodeStatus, StorageStatus } from '$lib/api/types';
+  import type { NodeConfig, NodePeers, NodeStatus, ProjectionCoverage, ProjectionWatermark,
+  StorageStatus } from '$lib/api/types';
   import { SessionHistory, type CompactSample } from '$lib/telemetry/history';
   import { columnSamples, mergeSamples } from '$lib/telemetry/durable-history';
   import { PrometheusHistoryProvider, resolveMetricsBase, type PrometheusSeries } from '$lib/telemetry/prometheus';
@@ -28,6 +29,9 @@
   let durableSamples: CompactSample[] = [];
   let historySource = 'browser session';
   let activeTab: 'overview' | 'history' = 'overview';
+  let coverage: ProjectionCoverage | null = null;
+  let watermark: ProjectionWatermark | null = null;
+  let archiveError = '';
 
   const n = (value: unknown) => Number.isFinite(Number(value)) ? Number(value) : 0;
   const fmt = (value: unknown) => value === null || value === undefined ? '-' : n(value).toLocaleString();
@@ -75,6 +79,24 @@
         error = apiFailureMessage(cause, 'Unable to load node identity');
       }
       if (disposed) return;
+      // The archive is optional: a node without it answers 404, and older nodes have no
+      // /history endpoints at all. Neither may blank the rest of the status page.
+      const refreshArchive = async (signal: AbortSignal) => {
+        try {
+          const [nextCoverage, nextWatermark] = await Promise.all([
+            api.historyCoverage(signal), api.historyWatermark(signal)
+          ]);
+          coverage = nextCoverage;
+          watermark = nextWatermark;
+          archiveError = '';
+        } catch (cause) {
+          if (cause instanceof DOMException && cause.name === 'AbortError') return;
+          coverage = null;
+          watermark = null;
+          archiveError = apiFailureMessage(cause, 'Archive status request failed');
+        }
+      };
+
       poller = createPoller(async (signal) => {
         const started = performance.now();
         try {
@@ -88,6 +110,7 @@
           requestMs = Math.round(performance.now() - started);
           lastUpdated = new Date().toLocaleTimeString();
           error = '';
+          await refreshArchive(signal);
         } catch (cause) {
           if (!(cause instanceof DOMException && cause.name === 'AbortError')) {
             error = apiFailureMessage(cause, 'Status request failed');
@@ -339,7 +362,8 @@
   </div>
 </section>
 {:else}
-  <ArchiveHistoryPanel history={storage?.history} />
+  <ArchiveHistoryPanel history={storage?.history} coverage={coverage ?? undefined}
+                       watermark={watermark ?? undefined} error={archiveError} />
 {/if}
 
 <footer class="mt-6 flex flex-wrap gap-2 text-xs text-slate-600">
