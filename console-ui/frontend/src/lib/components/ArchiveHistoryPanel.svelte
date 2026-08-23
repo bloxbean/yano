@@ -3,20 +3,24 @@
   import MetricRow from './MetricRow.svelte';
   import CopyValue from './CopyValue.svelte';
   import type { ArchiveHistoryStatus, ProjectionCoverage, ProjectionWatermark } from '$lib/api/types';
-  import { count, datasetRows, humanizeDuration, parseArtifactContracts,
-    projectionState, queryableRange } from '$lib/status/projection';
+  import { agoLabel, count, cursorStalled, datasetRows, humanizeDuration,
+    NO_CURSOR_PROGRESS, parseArtifactContracts, projectionState, queryableRange,
+    stalledForMillis, type CursorProgress } from '$lib/status/projection';
 
-  let { history, coverage, watermark, error = '' } = $props<{
+  let { history, coverage, watermark, error = '', progress = NO_CURSOR_PROGRESS } = $props<{
     history?: ArchiveHistoryStatus;
     coverage?: ProjectionCoverage;
     watermark?: ProjectionWatermark;
     error?: string;
+    progress?: CursorProgress;
   }>();
 
   const state = $derived(projectionState(history, coverage));
   const range = $derived(queryableRange(coverage));
   const datasets = $derived(datasetRows(history, coverage, watermark));
   const contracts = $derived(parseArtifactContracts(coverage?.artifactContracts));
+  const stillFor = $derived(stalledForMillis(progress));
+  const stalled = $derived(cursorStalled(progress, coverage));
 
   const stateTone = (value: string) => value === 'READY' ? 'badge-ok'
     : value === 'CATCHING_UP' || value === 'AWAITING_GENESIS' ? 'badge-warn'
@@ -55,6 +59,19 @@
 
 <p class="mb-4 text-sm text-slate-400">{stateNarrative[state]}</p>
 
+{#if stalled}
+  <section class="mb-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200">
+    <h3 class="m-0 text-sm font-semibold">The committed cursor has stopped advancing</h3>
+    <p class="mb-0 mt-2">
+      No commit in {agoLabel(stillFor).replace(' ago', '')}, longer than the
+      {humanizeDuration(coverage?.maxCommitLatency)} this archive reports as its own upper bound.
+      The drain fails closed, so a batch it cannot complete is retried rather than skipped —
+      a stall means every dataset is held at this block, not that one fell behind. Check the
+      node log for a repeating failure.
+    </p>
+  </section>
+{/if}
+
 {#if state !== 'DISABLED'}
   <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
     <MetricCard title="Coverage" subtitle="What the archive can answer for">
@@ -65,6 +82,7 @@
       <MetricRow label="Genesis captured"
                  value={coverage?.genesisCaptured === undefined ? '—' : coverage.genesisCaptured ? 'yes' : 'not yet'} />
       <MetricRow label="Sink health" value={coverage?.sinkHealth ?? '—'} />
+      <MetricRow label="Cursor last moved" value={agoLabel(stillFor)} />
     </MetricCard>
 
     <MetricCard title="Freshness" subtitle="How long finality takes to become queryable">

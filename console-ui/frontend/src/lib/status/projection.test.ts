@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  count, datasetKey, datasetRows, humanizeDuration, known, parseArtifactContracts,
-  projectionState, queryableRange
+  agoLabel, count, cursorStalled, datasetKey, datasetRows, durationMillis, humanizeDuration,
+  known, NO_CURSOR_PROGRESS, observeCursor, parseArtifactContracts, projectionState,
+  queryableRange, stalledForMillis
 } from './projection';
 
 /**
@@ -193,5 +194,72 @@ describe('dataset rows', () => {
 
   it('is empty when the node reports no datasets', () => {
     expect(datasetRows(undefined, undefined, undefined)).toEqual([]);
+  });
+});
+
+describe('cursor liveness', () => {
+  const T0 = 1_700_000_000_000;
+
+  it('reads a duration budget the same way it displays one', () => {
+    expect(durationMillis('PT15M')).toBe(900_000);
+    expect(durationMillis('PT2S')).toBe(2_000);
+    expect(durationMillis('PT1M30S')).toBe(90_000);
+    expect(durationMillis('P1D')).toBeNull();
+    expect(durationMillis(undefined)).toBeNull();
+  });
+
+  it('records movement and holds still when the cursor does not move', () => {
+    let progress = observeCursor(NO_CURSOR_PROGRESS, 100, T0);
+    expect(stalledForMillis(progress)).toBe(0);
+
+    progress = observeCursor(progress, 100, T0 + 30_000);
+    expect(stalledForMillis(progress)).toBe(30_000);
+
+    progress = observeCursor(progress, 101, T0 + 40_000);
+    expect(stalledForMillis(progress)).toBe(0);
+  });
+
+  it('counts a rollback as movement, because the drain is alive either way', () => {
+    let progress = observeCursor(NO_CURSOR_PROGRESS, 500, T0);
+    progress = observeCursor(progress, 500, T0 + 60_000);
+    progress = observeCursor(progress, 480, T0 + 70_000);
+
+    expect(stalledForMillis(progress)).toBe(0);
+  });
+
+  it('does not let an unreadable cursor restart the clock', () => {
+    // A transient read failure must not reset the timer, or an ongoing stall would be hidden
+    // by exactly the instability that tends to accompany it.
+    let progress = observeCursor(NO_CURSOR_PROGRESS, 100, T0);
+    progress = observeCursor(progress, null, T0 + 60_000);
+
+    expect(stalledForMillis(progress)).toBe(60_000);
+    expect(progress.block).toBe(100);
+  });
+
+  it('warns only past the budget the node itself reports', () => {
+    let progress = observeCursor(NO_CURSOR_PROGRESS, 100, T0);
+    progress = observeCursor(progress, 100, T0 + 890_000);
+
+    // A finality-gated archive batching on a 15-minute linger is meant to look motionless.
+    expect(cursorStalled(progress, { maxCommitLatency: 'PT15M' })).toBe(false);
+
+    progress = observeCursor(progress, 100, T0 + 901_000);
+    expect(cursorStalled(progress, { maxCommitLatency: 'PT15M' })).toBe(true);
+  });
+
+  it('never warns when there is no budget to judge against', () => {
+    let progress = observeCursor(NO_CURSOR_PROGRESS, 100, T0);
+    progress = observeCursor(progress, 100, T0 + 86_400_000);
+
+    expect(cursorStalled(progress, {})).toBe(false);
+    expect(cursorStalled(NO_CURSOR_PROGRESS, { maxCommitLatency: 'PT15M' })).toBe(false);
+  });
+
+  it('labels elapsed time for a reader', () => {
+    expect(agoLabel(12_000)).toBe('12s ago');
+    expect(agoLabel(272_000)).toBe('4m 32s ago');
+    expect(agoLabel(7_320_000)).toBe('2h 2m ago');
+    expect(agoLabel(null)).toBe('—');
   });
 });

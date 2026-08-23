@@ -13,6 +13,8 @@
   import { PrometheusHistoryProvider, resolveMetricsBase, type PrometheusSeries } from '$lib/telemetry/prometheus';
   import { createPoller, type Poller } from '$lib/telemetry/poller';
   import { isLocalProducer, syncProgress } from '$lib/status/view-model';
+  import { known, NO_CURSOR_PROGRESS, observeCursor, type CursorProgress }
+    from '$lib/status/projection';
 
   let status: NodeStatus | null = null;
   let peers: NodePeers | null = null;
@@ -32,6 +34,7 @@
   let coverage: ProjectionCoverage | null = null;
   let watermark: ProjectionWatermark | null = null;
   let archiveError = '';
+  let cursorProgress: CursorProgress = NO_CURSOR_PROGRESS;
 
   const n = (value: unknown) => Number.isFinite(Number(value)) ? Number(value) : 0;
   const fmt = (value: unknown) => value === null || value === undefined ? '-' : n(value).toLocaleString();
@@ -88,11 +91,17 @@
           ]);
           coverage = nextCoverage;
           watermark = nextWatermark;
+          // Successive samples are the only thing that distinguishes a moving cursor from a
+          // frozen one; a single reading looks identical either way.
+          cursorProgress = observeCursor(cursorProgress,
+            known(nextCoverage?.queryableThroughBlock), Date.now());
           archiveError = '';
         } catch (cause) {
           if (cause instanceof DOMException && cause.name === 'AbortError') return;
           coverage = null;
           watermark = null;
+          // Deliberately not reset: a failed read must not restart the stall clock.
+          cursorProgress = observeCursor(cursorProgress, null, Date.now());
           archiveError = apiFailureMessage(cause, 'Archive status request failed');
         }
       };
@@ -363,7 +372,8 @@
 </section>
 {:else}
   <ArchiveHistoryPanel history={storage?.history} coverage={coverage ?? undefined}
-                       watermark={watermark ?? undefined} error={archiveError} />
+                       watermark={watermark ?? undefined} error={archiveError}
+                       progress={cursorProgress} />
 {/if}
 
 <footer class="mt-6 flex flex-wrap gap-2 text-xs text-slate-600">

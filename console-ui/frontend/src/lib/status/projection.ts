@@ -186,3 +186,82 @@ export function datasetRows(status: ArchiveHistoryStatus | undefined,
       };
     });
 }
+
+/**
+ * An ISO-8601 duration in milliseconds, or null when it cannot be read.
+ *
+ * Shares its grammar with {@link humanizeDuration}: what one can display, the other can measure.
+ */
+export function durationMillis(iso: string | undefined): number | null {
+  if (!iso) return null;
+  const match = /^PT(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?$/.exec(iso.trim());
+  if (!match || (!match[1] && !match[2] && !match[3])) return null;
+  return (Number(match[1] ?? 0) * 3_600 + Number(match[2] ?? 0) * 60 + Number(match[3] ?? 0)) * 1_000;
+}
+
+/**
+ * What the committed cursor has been seen doing.
+ *
+ * A stalled archive and a healthy one look identical in a single sample: "4,458 blocks behind"
+ * reads the same whether the cursor is moving or frozen. Only successive observations can tell
+ * them apart, so the tab keeps this across polls.
+ */
+export interface CursorProgress {
+  /** Last committed block seen, or null while nothing has committed. */
+  block: number | null;
+  /** When the value last changed, in epoch millis; null before the first observation. */
+  movedAt: number | null;
+  /** Most recent observation, in epoch millis. */
+  observedAt: number | null;
+}
+
+export const NO_CURSOR_PROGRESS: CursorProgress = { block: null, movedAt: null, observedAt: null };
+
+/**
+ * Fold one observation into the running progress.
+ *
+ * Any change counts as movement, including a decrease: a rollback moving the cursor backwards
+ * still proves the drain is alive, which is the question being asked. An unknown cursor leaves
+ * the previous timings untouched rather than resetting them, so a transient read failure cannot
+ * silently restart the clock and hide an ongoing stall.
+ */
+export function observeCursor(previous: CursorProgress, block: number | null,
+                              nowMillis: number): CursorProgress {
+  if (block === null) return { ...previous, observedAt: nowMillis };
+  if (previous.block === null || previous.movedAt === null) {
+    return { block, movedAt: nowMillis, observedAt: nowMillis };
+  }
+  if (block !== previous.block) return { block, movedAt: nowMillis, observedAt: nowMillis };
+  return { ...previous, observedAt: nowMillis };
+}
+
+/** How long the cursor has been unchanged, in millis, or null when that is not yet known. */
+export function stalledForMillis(progress: CursorProgress): number | null {
+  if (progress.movedAt === null || progress.observedAt === null) return null;
+  return Math.max(0, progress.observedAt - progress.movedAt);
+}
+
+/**
+ * Whether the cursor has been still for longer than the archive itself says is possible.
+ *
+ * The threshold is the node's own reported bound rather than an invented constant: below
+ * maxCommitLatency a motionless cursor is exactly what a batching, finality-gated archive is
+ * supposed to look like, so warning there would cry wolf on every healthy node.
+ */
+export function cursorStalled(progress: CursorProgress,
+                              coverage: ProjectionCoverage | undefined): boolean {
+  const stalled = stalledForMillis(progress);
+  const budget = durationMillis(coverage?.maxCommitLatency);
+  if (stalled === null || budget === null) return false;
+  return stalled > budget;
+}
+
+/** "12s ago" / "4m ago" for a millisecond gap, or an em dash when it is not known. */
+export function agoLabel(millis: number | null): string {
+  if (millis === null) return '—';
+  const seconds = Math.floor(millis / 1_000);
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s ago`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m ago`;
+}
