@@ -35,6 +35,46 @@ class ProjectionContractsTest {
      * arrived late matches the receipt written before it, and the consumer skips the sink append
      * while still acknowledging the artifact: evidence deleted, never committed, unrecoverable.
      */
+    private static ProjectionArtifactRef adaPot(int epoch, byte[] inline) {
+        // Mirrors EpochArtifactCollector.contributeAdaPot: empty contentDigest, one row, and a
+        // generation fixed by epoch. Everything identifying is identical between two of these.
+        return new ProjectionArtifactRef(ArchiveDatasetId.ADA_POT, epoch, 100, 2_000,
+                ProjectionArtifactRepresentation.ATOMIC_EVIDENCE, "ada-pot:" + epoch, 1,
+                "ledger-boundary-v1/final", java.util.OptionalLong.of(1), "", -1L, inline);
+    }
+
+    /**
+     * Inline evidence has to be bound too, not just contentDigest.
+     *
+     * <p>ATOMIC_EVIDENCE artifacts carry their rows in the payload and leave contentDigest empty.
+     * Two ada-pot artifacts for one epoch therefore agree on dataset, generation, row count and
+     * digest while describing completely different treasury and reserve figures.
+     */
+    @Test
+    void adaPotArtifactsWithDifferentValuesAreDifferentBatches() {
+        var treasury = new ProjectionBatch(identity(),
+                List.of(withArtifacts(100, List.of(adaPot(42, new byte[]{1, 2, 3})))));
+        var different = new ProjectionBatch(identity(),
+                List.of(withArtifacts(100, List.of(adaPot(42, new byte[]{9, 9, 9})))));
+
+        assertThat(treasury.orderedDigest())
+                .as("inline evidence is the only thing distinguishing these")
+                .isNotEqualTo(different.orderedDigest());
+    }
+
+    @Test
+    void anArtifactMovedToADifferentBoundaryIsADifferentBatch() {
+        var here = new ProjectionBatch(identity(),
+                List.of(withArtifacts(100, List.of(reward(42, "gen-a", "aa".repeat(32))))));
+        var moved = new ProjectionBatch(identity(), List.of(withArtifacts(100, List.of(
+                new ProjectionArtifactRef(ArchiveDatasetId.REWARD, 42, 999, 9_999,
+                        ProjectionArtifactRepresentation.STAGED_FILE, "gen-a", 1,
+                        "ledger-boundary-v1/reward", java.util.OptionalLong.of(4_887),
+                        "aa".repeat(32), -1L)))));
+
+        assertThat(here.orderedDigest()).isNotEqualTo(moved.orderedDigest());
+    }
+
     @Test
     void aDifferentArtifactSetOverTheSameBlocksIsADifferentBatch() {
         var none = new ProjectionBatch(identity(), List.of(withArtifacts(100, List.of())));

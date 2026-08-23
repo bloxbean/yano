@@ -32,7 +32,28 @@ public record ProjectionArtifactRef(ArchiveDatasetId dataset, int semanticEpoch,
     public String canonicalForm() {
         return dataset.logicalName() + ':' + semanticEpoch + ':' + sourceGeneration
                 + ':' + sourceCodecVersion + ':' + representation.name()
-                + ':' + expectedRowCount.orElse(-1L) + ':' + contentDigest;
+                + ':' + producingBlockNumber + ':' + producingSlot
+                + ':' + expectedRowCount.orElse(-1L) + ':' + contentDigest
+                + ':' + inlineDigest();
+    }
+
+    /**
+     * Digest of the inline payload, or {@code "-"} when there is none.
+     *
+     * <p>ATOMIC_EVIDENCE artifacts carry their rows here and leave contentDigest empty, so
+     * without this an ada-pot artifact is indistinguishable from any other ada-pot artifact for
+     * the same epoch: same dataset, same generation, same single row, same empty digest. Two
+     * different treasury and reserve figures would share a canonical form, which is precisely
+     * the collision the canonical form exists to prevent.
+     */
+    private String inlineDigest() {
+        if (inlinePayload == null || inlinePayload.length == 0) return "-";
+        try {
+            return java.util.HexFormat.of().formatHex(
+                    java.security.MessageDigest.getInstance("SHA-256").digest(inlinePayload));
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
+        }
     }
 
     public ProjectionArtifactRef {
