@@ -57,6 +57,17 @@
   </section>
 {/if}
 
+{#if coverage?.error}
+  <section class="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200">
+    <h3 class="m-0 text-sm font-semibold">The archive failed to start</h3>
+    <p class="mb-0 mt-2 font-mono text-xs">{coverage.error}</p>
+    <p class="mb-0 mt-2">
+      The node is still serving; only the archive is down. Nothing is being committed, so the
+      coverage below is not merely stale — it is absent.
+    </p>
+  </section>
+{/if}
+
 <p class="mb-4 text-sm text-slate-400">{stateNarrative[state]}</p>
 
 {#if stalled}

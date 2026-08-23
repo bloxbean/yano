@@ -102,6 +102,13 @@ export interface ArchiveHistoryStatus {
  */
 export interface ProjectionCoverage {
   enabled?: boolean;
+  /**
+   * Why the archive could not initialise, when it could not.
+   *
+   * Present instead of the fields below, not alongside them: a node whose projection failed to
+   * start keeps serving, so this endpoint reports the reason rather than throwing.
+   */
+  error?: string;
   /** Projection identity fingerprint: network, sink engine, version, section wire names. */
   identity?: string;
   sections?: string[];

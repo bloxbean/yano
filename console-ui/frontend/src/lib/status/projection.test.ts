@@ -13,18 +13,24 @@ import {
 /** Captured verbatim from a live preprod node on 2026-08-23. */
 const SHIPPED_CONTRACTS =
   'ada-pot:s1:c1:ATOMIC_EVIDENCE:RECONSTRUCTIBLE'
-  + '|drep-distribution:s2:c1:STAGED_FILE:IRREPRODUCIBLE'
-  + '|epoch-stake:s2:c1:IMMUTABLE_GENERATION:RECONSTRUCTIBLE'
+  + '|drep-distribution:s1:c1:STAGED_FILE:IRREPRODUCIBLE'
+  + '|epoch-stake:s1:c1:IMMUTABLE_GENERATION:RECONSTRUCTIBLE'
   + '|governance-proposal-status:s1:c1:STAGED_FILE:IRREPRODUCIBLE'
-  + '|reward:s4:c1:STAGED_FILE:IRREPRODUCIBLE';
+  + '|reward:s1:c1:STAGED_FILE:IRREPRODUCIBLE';
 
 /** The nine datasets GET /status reports, verbatim from the same node. */
 const LIVE_DATASETS = ['account_event', 'ada_pot', 'address_transaction', 'drep_distribution',
   'epoch_stake', 'governance_proposal_status', 'reward', 'transaction', 'utxo_history'];
 
-/** GET /history/watermark spells these the same way status does. */
+/**
+ * GET /history/watermark spells these the same way status does.
+ *
+ * Deliberately distinct values, not the shipped v1: if every version were the same number, a
+ * join that matched the wrong dataset would still produce the right answer and the test would
+ * prove nothing. The shipped values are asserted against the live capture instead.
+ */
 const LIVE_VERSIONS = {
-  account_event: 3, address_transaction: 3, transaction: 2, utxo_history: 5
+  account_event: 3, address_transaction: 4, transaction: 2, utxo_history: 5
 };
 
 describe('unknown is not zero', () => {
@@ -81,6 +87,13 @@ describe('projection state', () => {
     expect(projectionState(enabled, { ...ready, sinkHealth: 'UNAVAILABLE' })).toBe('UNAVAILABLE');
   });
 
+  it('is UNAVAILABLE when the archive failed to start, not CATCHING_UP', () => {
+    // A failed init reports enabled:true and nothing else. Describing that as "no batch has
+    // committed yet" would tell an operator to wait for something that will never happen.
+    expect(projectionState(enabled, { enabled: true, error: "unknown projection section 'transaction:v2'" }))
+      .toBe('UNAVAILABLE');
+  });
+
   it('is UNHEALTHY on a degraded sink', () => {
     expect(projectionState(enabled, { ...ready, sinkHealth: 'DEGRADED' })).toBe('UNHEALTHY');
   });
@@ -115,7 +128,7 @@ describe('artifact contracts', () => {
       'ada-pot', 'drep-distribution', 'epoch-stake', 'governance-proposal-status', 'reward'
     ]);
     expect(contracts[4]).toEqual({
-      dataset: 'reward', schemaVersion: 4, codecVersion: 1,
+      dataset: 'reward', schemaVersion: 1, codecVersion: 1,
       representation: 'STAGED_FILE', reconstructibility: 'IRREPRODUCIBLE'
     });
   });
@@ -162,13 +175,15 @@ describe('dataset rows', () => {
 
     expect(rows).toHaveLength(9);
     expect(rows.find((row) => row.name === 'account_event')?.version).toBe(3);
+    expect(rows.find((row) => row.name === 'address_transaction')?.version).toBe(4);
+    expect(rows.find((row) => row.name === 'transaction')?.version).toBe(2);
     expect(rows.find((row) => row.name === 'utxo_history')?.version).toBe(5);
   });
 
   it('normalises every spelling to one key', () => {
-    expect(datasetKey('account-events:v3')).toBe('account_event');
+    expect(datasetKey('account-events:v1')).toBe('account_event');
     expect(datasetKey('account_event')).toBe('account_event');
-    expect(datasetKey('utxo-history:v5')).toBe('utxo_history');
+    expect(datasetKey('utxo-history:v1')).toBe('utxo_history');
     expect(datasetKey('ada-pot')).toBe('ada_pot');
     // Trailing 's' is part of the name here, not a plural to strip.
     expect(datasetKey('governance-proposal-status')).toBe('governance_proposal_status');

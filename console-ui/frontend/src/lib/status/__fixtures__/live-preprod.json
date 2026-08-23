@@ -1,5 +1,5 @@
 {
-  "capturedFrom": "preprod, mid fresh sync, 2026-08-23",
+  "capturedFrom": "preprod, mid fresh sync, 2026-08-23, all datasets at projection v1",
   "status": {
     "enabled": true,
     "available": true,
@@ -15,48 +15,48 @@
       "transaction",
       "utxo_history"
     ],
-    "committedThroughBlock": 409313
+    "committedThroughBlock": 399011
   },
   "coverage": {
     "enabled": true,
-    "identity": "1:162d29c4e1cf6b8a84f2d692e67a3ac6bc7851bc3e6e4afe64d15778bed8bd86|ducklake|v1|account-events:v3,address-transaction:v3,transaction:v2,utxo-history:v5",
+    "identity": "1:162d29c4e1cf6b8a84f2d692e67a3ac6bc7851bc3e6e4afe64d15778bed8bd86|ducklake|v1|account-events:v1,address-transaction:v1,transaction:v1,utxo-history:v1",
     "sections": [
-      "account-events:v3",
-      "address-transaction:v3",
-      "transaction:v2",
-      "utxo-history:v5"
+      "account-events:v1",
+      "address-transaction:v1",
+      "transaction:v1",
+      "utxo-history:v1"
     ],
-    "artifactContracts": "ada-pot:s1:c1:ATOMIC_EVIDENCE:RECONSTRUCTIBLE|drep-distribution:s2:c1:STAGED_FILE:IRREPRODUCIBLE|epoch-stake:s2:c1:IMMUTABLE_GENERATION:RECONSTRUCTIBLE|governance-proposal-status:s1:c1:STAGED_FILE:IRREPRODUCIBLE|reward:s4:c1:STAGED_FILE:IRREPRODUCIBLE",
+    "artifactContracts": "ada-pot:s1:c1:ATOMIC_EVIDENCE:RECONSTRUCTIBLE|drep-distribution:s1:c1:STAGED_FILE:IRREPRODUCIBLE|epoch-stake:s1:c1:IMMUTABLE_GENERATION:RECONSTRUCTIBLE|governance-proposal-status:s1:c1:STAGED_FILE:IRREPRODUCIBLE|reward:s1:c1:STAGED_FILE:IRREPRODUCIBLE",
     "sinkHealth": "READY",
     "genesisCaptured": true,
     "queryableFromBlock": 0,
-    "queryableThroughBlock": 407304,
-    "tipBlock": 414525,
-    "blocksBehindTip": 7221,
+    "queryableThroughBlock": 399011,
+    "tipBlock": 405265,
+    "blocksBehindTip": 6254,
     "maxCommitLatency": "PT15M",
     "transactionHashLookup": {
       "correct": true,
-      "note": "no derived tx-hash index is built for projection archives; lookup by hash scans the transactions table and is not suitable for hot paths",
-      "mode": "full-scan"
+      "mode": "full-scan",
+      "note": "no derived tx-hash index is built for projection archives; lookup by hash scans the transactions table and is not suitable for hot paths"
     },
     "note": "blocks above queryableThroughBlock are not yet committed to the archive; treat them as unknown rather than absent"
   },
   "watermark": {
     "source": "projection",
     "available": true,
-    "generation": "1:162d29c4e1cf6b8a84f2d692e67a3ac6bc7851bc3e6e4afe64d15778bed8bd86|ducklake|v1|account-events:v3,address-transaction:v3,transaction:v2,utxo-history:v5",
+    "generation": "1:162d29c4e1cf6b8a84f2d692e67a3ac6bc7851bc3e6e4afe64d15778bed8bd86|ducklake|v1|account-events:v1,address-transaction:v1,transaction:v1,utxo-history:v1",
     "fromBlock": 0,
-    "toBlock": 409313,
+    "toBlock": 399011,
     "asOf": {
-      "blockNumber": 409313,
-      "slot": 15524289,
-      "blockHash": "d692f2f61820479f0847decceef2676c360a8fe8714c8a0b78373c00b07b0aee"
+      "blockNumber": 399011,
+      "blockHash": "21ef7d9862651bb21f775a6c7400a62a8794d4fd5cff4b047e36370c76954946",
+      "slot": 15308421
     },
     "projectionVersions": {
-      "account_event": 3,
-      "address_transaction": 3,
-      "transaction": 2,
-      "utxo_history": 5
+      "account_event": 1,
+      "address_transaction": 1,
+      "transaction": 1,
+      "utxo_history": 1
     }
   }
 }

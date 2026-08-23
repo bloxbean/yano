@@ -49,6 +49,9 @@ export function projectionState(status: ArchiveHistoryStatus | undefined,
                                 coverage: ProjectionCoverage | undefined): ProjectionState {
   if (!status?.enabled) return 'DISABLED';
   if (!coverage?.enabled) return 'UNAVAILABLE';
+  // A failed initialisation reports enabled:true with nothing else. Falling through would
+  // reach the "nothing committed yet" branch and describe a broken archive as merely young.
+  if (coverage.error) return 'UNAVAILABLE';
   if (coverage.sinkHealth === 'UNAVAILABLE') return 'UNAVAILABLE';
   if (coverage.sinkHealth === 'DEGRADED') return 'UNHEALTHY';
   // A fresh archive must not claim coverage from block 0 before genesis is durable, or a
