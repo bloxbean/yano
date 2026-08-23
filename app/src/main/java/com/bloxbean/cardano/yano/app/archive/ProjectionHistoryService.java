@@ -1109,9 +1109,18 @@ public class ProjectionHistoryService implements AutoCloseable {
     }
 
     /**
-     * Current aggregate archive-retained footprint. Staged-artifact and pinned-generation
-     * bytes are zero until Phase 5 produces artifacts; they are part of the budget from the
-     * start so enabling artifacts cannot silently exceed a limit sized without them.
+     * Current aggregate archive-retained footprint.
+     *
+     * <p>Staged-artifact bytes are measured, not assumed. They were a literal zero while Phase 5
+     * produced no artifacts; leaving that in once it did meant the soft and hard archive limits
+     * under-counted by exactly the evidence the phase added, and on mainnet a reward epoch is the
+     * largest single thing the archive retains.
+     *
+     * <p>Pinned-generation bytes remain zero, and that is a statement rather than a placeholder:
+     * the only IMMUTABLE_GENERATION artifact shipped is epoch stake, whose generations live in
+     * ledger state that this service does not own and cannot size without walking column families
+     * it has no handle to. Reporting a fabricated number would be worse than reporting none, so
+     * the gap is named here instead.
      */
     public ArchiveRetainedFootprint footprint() {
         long outboxBytes = outbox == null ? 0 : outbox.stats(identity.requiredSections()).pendingBytes();
@@ -1122,7 +1131,33 @@ public class ProjectionHistoryService implements AutoCloseable {
         } catch (Exception ignored) {
             // An unreadable free-space probe must not itself stop ingestion.
         }
-        return new ArchiveRetainedFootprint(outboxBytes, 0, 0, diskAmplification, free);
+        return new ArchiveRetainedFootprint(outboxBytes, stagedArtifactBytes(), 0,
+                diskAmplification, free);
+    }
+
+    /**
+     * Bytes currently held by staged epoch evidence.
+     *
+     * <p>Measured by walking the staging tree rather than tracked incrementally: evidence is
+     * released by a different path than it is written, and a counter that drifts would silently
+     * mis-size the budget in whichever direction it drifted. A probe failure reports zero and
+     * never propagates, because an unreadable directory must not stop ingestion.
+     */
+    private long stagedArtifactBytes() {
+        if (historyDirectory == null) return 0;
+        java.nio.file.Path staged = historyDirectory.resolve("epoch-source");
+        if (!java.nio.file.Files.isDirectory(staged)) return 0;
+        try (var paths = java.nio.file.Files.walk(staged)) {
+            return paths.filter(java.nio.file.Files::isRegularFile).mapToLong(path -> {
+                try {
+                    return java.nio.file.Files.size(path);
+                } catch (java.io.IOException unreadable) {
+                    return 0L;
+                }
+            }).sum();
+        } catch (java.io.IOException | RuntimeException e) {
+            return 0;
+        }
     }
 
     /**
