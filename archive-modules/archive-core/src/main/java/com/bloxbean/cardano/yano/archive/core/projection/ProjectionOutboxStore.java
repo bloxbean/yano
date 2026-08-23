@@ -211,6 +211,12 @@ public final class ProjectionOutboxStore {
                 .map(ProjectionOutboxKeys::decodeLong).orElse(-1L);
     }
 
+    /** Greatest block whose artifact set has been durably frozen for a sink commit. */
+    public long artifactsSealedThrough() {
+        return get(metaCf, ProjectionOutboxKeys.META_ARTIFACT_SEALED)
+                .map(ProjectionOutboxKeys::decodeLong).orElse(-1L);
+    }
+
     /**
      * Greatest block for which every required contributor is durably done.
      *
@@ -302,14 +308,52 @@ public final class ProjectionOutboxStore {
     }
 
     /**
+     * Every artifact reference in a block range, grouped by producing block.
+     *
+     * <p>One iterator for a whole batch rather than one per block. The per-block form costs a
+     * RocksDB iterator and an upper-bound Slice for every block committed, which on a full sync
+     * is millions of them for the handful of blocks that actually carry an artifact.
+     *
+     * <p>Only blocks with at least one reference appear, so a caller can treat an absent key as
+     * an empty list without materialising one per block.
+     */
+    public java.util.Map<Long, List<com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef>>
+            readArtifacts(long fromBlock, long throughBlock) {
+        java.util.Map<Long, List<com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef>> byBlock =
+                new java.util.HashMap<>();
+        if (throughBlock < fromBlock) return byBlock;
+        byte[] lower = ProjectionOutboxKeys.blockKey(fromBlock);
+        byte[] upper = ProjectionOutboxKeys.blockKey(throughBlock + 1);
+        try (Slice upperSlice = new Slice(upper);
+             ReadOptions options = new ReadOptions().setIterateUpperBound(upperSlice);
+             RocksIterator it = db.newIterator(artifactCf, options)) {
+            for (it.seek(lower); it.isValid(); it.next()) {
+                byBlock.computeIfAbsent(ProjectionOutboxKeys.blockFromKey(it.key()), k -> new ArrayList<>())
+                        .add(ProjectionSectionCodec.decodeArtifact(it.value()));
+            }
+        }
+        return byBlock;
+    }
+
+    /**
      * Record an artifact reference in its own synced write.
      *
      * <p>For evidence that became durable outside any RocksDB batch - a staged file, fsynced and
      * published before this is called. There is no batch to join, and joining one would be worse:
      * the reference must not become durable before the evidence it points at.
      */
-    public void putArtifactDirect(long blockNumber,
+    public synchronized void putArtifactDirect(long blockNumber,
             com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef ref) {
+        long sealed = artifactsSealedThrough();
+        if (blockNumber <= sealed) {
+            throw new ProjectionOutboxException("cannot record staged artifact for block " + blockNumber
+                    + ": artifact sets are sealed through block " + sealed);
+        }
+        long acknowledged = acknowledgedThrough();
+        if (blockNumber <= acknowledged) {
+            throw new ProjectionOutboxException("cannot record staged artifact for block " + blockNumber
+                    + ": the outbox is acknowledged through block " + acknowledged);
+        }
         try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions().setSync(true)) {
             batch.put(artifactCf,
                     ProjectionOutboxKeys.artifactKey(blockNumber, ref.dataset().name(), ref.semanticEpoch(),
@@ -319,6 +363,28 @@ public final class ProjectionOutboxStore {
         } catch (RocksDBException e) {
             throw new ProjectionOutboxException("failed to record staged artifact reference for "
                     + ref.dataset() + " epoch " + ref.semanticEpoch(), e);
+        }
+    }
+
+    /**
+     * Durably close every artifact set through {@code throughBlock} before a batch is built.
+     *
+     * <p>The marker is monotonic and the write is synchronized with {@link #putArtifactDirect}.
+     * Once this returns, the consumer can re-read a stable artifact snapshot without holding a
+     * Java lock across the sink commit. A crash preserves the seal, so restart cannot attach new
+     * evidence to a range whose receipt may already be durable.
+     */
+    public synchronized void sealArtifactsThrough(long throughBlock) {
+        if (throughBlock < 0) throw new IllegalArgumentException("artifact seal block must not be negative");
+        long sealed = artifactsSealedThrough();
+        if (throughBlock <= sealed) return;
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions().setSync(true)) {
+            batch.put(metaCf, ProjectionOutboxKeys.META_ARTIFACT_SEALED,
+                    ProjectionOutboxKeys.encodeLong(throughBlock));
+            db.write(options, batch);
+        } catch (RocksDBException e) {
+            throw new ProjectionOutboxException("failed to seal projection artifacts through block "
+                    + throughBlock, e);
         }
     }
 
@@ -372,7 +438,7 @@ public final class ProjectionOutboxStore {
      * cannot leave the outbox claiming data it has already removed. Re-running with the
      * same argument is harmless.
      */
-    public void acknowledgeThrough(long throughBlock) {
+    public synchronized void acknowledgeThrough(long throughBlock) {
         byte[] upper = ProjectionOutboxKeys.blockKey(throughBlock + 1);
         byte[] lower = ProjectionOutboxKeys.blockKey(0);
         try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions().setSync(true)) {

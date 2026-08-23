@@ -20,7 +20,16 @@ public record ArchiveRetainedFootprint(long logicalOutboxBytes,
                                        long stagedArtifactBytes,
                                        long pinnedGenerationBytes,
                                        double amplificationFactor,
-                                       long filesystemFreeBytes) {
+                                       long filesystemFreeBytes,
+                                       boolean pinnedGenerationsMeasured) {
+
+    /** Source-compatible constructor for callers that provide an actual pinned byte count. */
+    public ArchiveRetainedFootprint(long logicalOutboxBytes, long stagedArtifactBytes,
+                                    long pinnedGenerationBytes, double amplificationFactor,
+                                    long filesystemFreeBytes) {
+        this(logicalOutboxBytes, stagedArtifactBytes, pinnedGenerationBytes, amplificationFactor,
+                filesystemFreeBytes, true);
+    }
 
     public ArchiveRetainedFootprint {
         if (logicalOutboxBytes < 0 || stagedArtifactBytes < 0 || pinnedGenerationBytes < 0) {
@@ -30,24 +39,9 @@ public record ArchiveRetainedFootprint(long logicalOutboxBytes,
             throw new IllegalArgumentException("amplification factor cannot be below 1.0");
         }
         if (filesystemFreeBytes < 0) throw new IllegalArgumentException("free space must not be negative");
-    }
-
-    /**
-     * Whether pinned generations were actually measured.
-     *
-     * <p>A byte count of zero is a measurement meaning "nothing pinned", and for pinned
-     * generations that is not what zero currently means: epoch-stake artifacts always ship, so
-     * generations are always pinned, and the runtime cannot yet size ledger state this component
-     * does not own. Distinguishing "none" from "not measured" keeps a reader from concluding the
-     * budget is complete when a term is missing from it.
-     *
-     * <p>The unmeasured term is excluded from {@link #estimatedPhysicalBytes()} rather than
-     * guessed. Treating unknown as unbounded would pause ingestion on every node; treating it as
-     * zero at least keeps the other terms enforceable. The gap is real and is reported, not
-     * papered over.
-     */
-    public boolean pinnedGenerationsMeasured() {
-        return pinnedGenerationBytes > 0;
+        if (!pinnedGenerationsMeasured && pinnedGenerationBytes != 0) {
+            throw new IllegalArgumentException("unmeasured pinned generations cannot carry a byte count");
+        }
     }
 
     /**

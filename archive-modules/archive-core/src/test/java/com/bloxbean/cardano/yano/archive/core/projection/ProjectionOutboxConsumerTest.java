@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -588,6 +589,46 @@ class ProjectionOutboxConsumerTest {
         assertThat(store.readArtifacts(1))
                 .as("and its outbox reference is gone only because it was acknowledged")
                 .isEmpty();
+    }
+
+    @Test
+    void anArtifactCannotSlipInAfterTheFlushSnapshot() {
+        tip.set(10_000);
+        commitBlock(0);
+        var late = artifactAt(0, 77);
+        var refused = new AtomicReference<RuntimeException>();
+
+        // This hook runs after the consumer has built the row batch but before the synthetic
+        // sink makes its receipt durable. Without a seal, the direct write succeeds here and
+        // acknowledgeThrough deletes a reference that was absent from the committed batch.
+        sink.beforeNextCommit(() -> {
+            try {
+                store.putArtifactDirect(0, late);
+            } catch (RuntimeException expected) {
+                refused.set(expected);
+            }
+        });
+
+        var committed = consumer().drainOnce(Instant.EPOCH);
+
+        assertThat(committed.outcome()).isEqualTo(ProjectionConsumerResult.Outcome.COMMITTED);
+        assertThat(refused.get())
+                .as("a direct artifact write must be refused once the batch snapshot is sealed")
+                .isInstanceOf(ProjectionOutboxException.class)
+                .hasMessageContaining("sealed through block 0");
+        assertThat(artifacts.acknowledged()).doesNotContain(late);
+        assertThat(store.artifactsSealedThrough()).isZero();
+    }
+
+    @Test
+    void artifactSealSurvivesRestart() {
+        store.sealArtifactsThrough(5);
+        restartNode();
+
+        assertThat(store.artifactsSealedThrough()).isEqualTo(5);
+        assertThatThrownBy(() -> store.putArtifactDirect(5, artifactAt(5, 77)))
+                .isInstanceOf(ProjectionOutboxException.class)
+                .hasMessageContaining("sealed through block 5");
     }
 
     /** Stage an artifact reference against a block, the way an epoch transition would. */

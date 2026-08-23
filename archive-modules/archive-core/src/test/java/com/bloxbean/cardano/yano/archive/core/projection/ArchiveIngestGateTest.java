@@ -53,6 +53,15 @@ class ArchiveIngestGateTest {
     }
 
     @Test
+    void measuredZeroPinnedBytesIsDistinctFromAnUnmeasuredTerm() {
+        var measured = new ArchiveRetainedFootprint(0, 0, 0, 1.4, 500 * GB);
+        var unmeasured = new ArchiveRetainedFootprint(0, 0, 0, 1.4, 500 * GB, false);
+
+        assertThat(measured.pinnedGenerationsMeasured()).isTrue();
+        assertThat(unmeasured.pinnedGenerationsMeasured()).isFalse();
+    }
+
+    @Test
     void amplificationIsCountedSoTheBudgetReflectsRealDisk() {
         var gate = new ArchiveIngestGate(limits());
         // 24 GiB logical is under the 32 GiB hard limit, but 1.4x amplification is not.

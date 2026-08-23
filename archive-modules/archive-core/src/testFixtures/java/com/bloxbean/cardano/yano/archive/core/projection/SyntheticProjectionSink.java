@@ -40,6 +40,8 @@ public final class SyntheticProjectionSink implements ProjectionSink {
     private int failNextAppends;
     /** When true, an append commits durably and then throws, as a crash after commit would. */
     private boolean throwAfterCommit;
+    /** One-shot hook for forcing an interleaving after batch materialisation but before commit. */
+    private Runnable beforeNextCommit;
 
     @Override
     public String engine() {
@@ -78,6 +80,10 @@ public final class SyntheticProjectionSink implements ProjectionSink {
         for (ArchiveRow row : batch.rows()) {
             rowCounts.merge(row.table(), 1L, Long::sum);
         }
+
+        Runnable hook = beforeNextCommit;
+        beforeNextCommit = null;
+        if (hook != null) hook.run();
 
         ProjectionReceipt receipt = ProjectionReceipt.of(batch, rowCounts, Instant.EPOCH);
         // Rows and receipt become visible together.
@@ -143,10 +149,15 @@ public final class SyntheticProjectionSink implements ProjectionSink {
         this.throwAfterCommit = true;
     }
 
+    public void beforeNextCommit(Runnable hook) {
+        this.beforeNextCommit = java.util.Objects.requireNonNull(hook, "hook");
+    }
+
     /** Drops in-flight state; durable receipts and rows remain, as after a real restart. */
     public void simulateRestart() {
         failNextAppends = 0;
         throwAfterCommit = false;
+        beforeNextCommit = null;
         health = ProjectionSinkHealth.ready();
     }
 
