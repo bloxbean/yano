@@ -187,6 +187,10 @@ public final class ProjectionOutboxConsumer {
             return ProjectionConsumerResult.idle();
         }
 
+        // Freeze direct staged writes before taking the artifact snapshot. The seal is a small,
+        // durable RocksDB write per projection batch; the potentially long sink append remains
+        // outside the store lock.
+        store.sealArtifactsThrough(accumulator.lastBlock());
         ProjectionBatch batch = new ProjectionBatch(identity, withCurrentArtifacts(accumulator.envelopes()));
         verifyContiguity(batch, acknowledged);
 

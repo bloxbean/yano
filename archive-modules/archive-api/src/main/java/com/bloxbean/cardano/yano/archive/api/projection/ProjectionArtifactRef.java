@@ -23,37 +23,30 @@ public record ProjectionArtifactRef(ArchiveDatasetId dataset, int semanticEpoch,
                                     OptionalLong expectedRowCount, String contentDigest,
                                     long oldestRequiredSlot, byte[] inlinePayload) {
     /**
-     * Canonical identity of this reference, for binding into a receipt digest.
+     * Canonical identity of every field in this reference, for binding into a receipt digest.
      *
-     * <p>Content is part of it, not just identity. Two references naming the same dataset,
-     * epoch and generation but carrying different rows must not be interchangeable, or a
-     * receipt could authorise releasing evidence it never committed.
+     * <p>The chunks are length-prefixed by {@link ProjectionDigest#ofChunks}, so values containing
+     * delimiters cannot collide. Content and row metadata are both part of the identity: a
+     * receipt must not authorise releasing evidence whose payload, source version, coordinate or
+     * retention requirement differs from what the sink committed.
      */
     public String canonicalForm() {
-        return dataset.logicalName() + ':' + semanticEpoch + ':' + sourceGeneration
-                + ':' + sourceCodecVersion + ':' + representation.name()
-                + ':' + producingBlockNumber + ':' + producingSlot
-                + ':' + expectedRowCount.orElse(-1L) + ':' + contentDigest
-                + ':' + inlineDigest();
-    }
-
-    /**
-     * Digest of the inline payload, or {@code "-"} when there is none.
-     *
-     * <p>ATOMIC_EVIDENCE artifacts carry their rows here and leave contentDigest empty, so
-     * without this an ada-pot artifact is indistinguishable from any other ada-pot artifact for
-     * the same epoch: same dataset, same generation, same single row, same empty digest. Two
-     * different treasury and reserve figures would share a canonical form, which is precisely
-     * the collision the canonical form exists to prevent.
-     */
-    private String inlineDigest() {
-        if (inlinePayload == null || inlinePayload.length == 0) return "-";
-        try {
-            return java.util.HexFormat.of().formatHex(
-                    java.security.MessageDigest.getInstance("SHA-256").digest(inlinePayload));
-        } catch (java.security.NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 unavailable", e);
-        }
+        var utf8 = java.nio.charset.StandardCharsets.UTF_8;
+        return ProjectionDigest.ofChunks(java.util.List.of(
+                dataset.logicalName().getBytes(utf8),
+                Integer.toString(semanticEpoch).getBytes(utf8),
+                Long.toString(producingBlockNumber).getBytes(utf8),
+                Long.toString(producingSlot).getBytes(utf8),
+                representation.name().getBytes(utf8),
+                sourceGeneration.getBytes(utf8),
+                Integer.toString(sourceCodecVersion).getBytes(utf8),
+                sourceStateVersion.getBytes(utf8),
+                expectedRowCount.isPresent()
+                        ? ("present:" + expectedRowCount.getAsLong()).getBytes(utf8)
+                        : "absent".getBytes(utf8),
+                contentDigest.getBytes(utf8),
+                Long.toString(oldestRequiredSlot).getBytes(utf8),
+                inlinePayload));
     }
 
     public ProjectionArtifactRef {

@@ -165,7 +165,10 @@ final class DuckLakeWriteSession implements ArchiveWriteSession {
             close();
             return replayReceipt;
         }
-        Instant committedAt = Instant.now();
+        // DuckDB TIMESTAMP persists microseconds. Return the same precision that a retry reads
+        // back, otherwise Linux clocks with nanosecond resolution make the first and replayed
+        // receipts unequal even though they describe the same durable commit.
+        Instant committedAt = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
         String orderedDigest = HexFormat.of().formatHex(digest.digest());
         try {
             long predictedGeneration = Math.addExact(DuckLakeSql.currentSnapshot(connection), 1);

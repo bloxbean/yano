@@ -76,6 +76,22 @@ class ProjectionContractsTest {
     }
 
     @Test
+    void artifactSourceVersionAndRetentionRequirementAreReceiptBound() {
+        var base = reward(42, "gen-a", "aa".repeat(32));
+        var otherState = new ProjectionArtifactRef(base.dataset(), base.semanticEpoch(),
+                base.producingBlockNumber(), base.producingSlot(), base.representation(),
+                base.sourceGeneration(), base.sourceCodecVersion(), "ledger-boundary-v2/reward",
+                base.expectedRowCount(), base.contentDigest(), base.oldestRequiredSlot());
+        var otherRetention = new ProjectionArtifactRef(base.dataset(), base.semanticEpoch(),
+                base.producingBlockNumber(), base.producingSlot(), base.representation(),
+                base.sourceGeneration(), base.sourceCodecVersion(), base.sourceStateVersion(),
+                base.expectedRowCount(), base.contentDigest(), 1_999L);
+
+        assertThat(base.canonicalForm()).isNotEqualTo(otherState.canonicalForm());
+        assertThat(base.canonicalForm()).isNotEqualTo(otherRetention.canonicalForm());
+    }
+
+    @Test
     void aDifferentArtifactSetOverTheSameBlocksIsADifferentBatch() {
         var none = new ProjectionBatch(identity(), List.of(withArtifacts(100, List.of())));
         var one = new ProjectionBatch(identity(),

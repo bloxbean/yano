@@ -104,7 +104,12 @@ public class ProjectionHistoryService implements AutoCloseable {
      */
     private volatile long stagedBytesCached;
 
-    private volatile long stagedBytesMeasuredAt;
+    private volatile long stagedBytesProbedAt;
+
+    private volatile boolean stagedBytesProbeHealthy;
+
+    private final java.util.concurrent.atomic.AtomicLong stagedBytesVersion =
+            new java.util.concurrent.atomic.AtomicLong();
 
     private static final long STAGED_BYTES_TTL_NANOS = java.time.Duration.ofSeconds(5).toNanos();
     private volatile ArchiveSafetyWindows safetyWindows;
@@ -240,6 +245,11 @@ public class ProjectionHistoryService implements AutoCloseable {
 
     public synchronized void initialize(Yano yano, ChainQuery chain, LedgerQuery ledger,
                                        YanoConfig nodeConfig) {
+        if (initialized) return;
+        if (initializationError != null) {
+            throw new IllegalStateException("projection history initialization already failed; "
+                    + "restart the process before retrying: " + initializationError);
+        }
         // Any failure anywhere in initialisation must leave a reportable reason. Scoping this to
         // one call was the earlier mistake: sink opening, the startup guard, artifact installation
         // and contributor installation can all fail after identity is assigned, and each left the
@@ -250,6 +260,7 @@ public class ProjectionHistoryService implements AutoCloseable {
             initializationError = null;
         } catch (RuntimeException e) {
             // Fail closed exactly as before; only the reporting changes.
+            initialized = false;
             initializationError = e.getMessage() == null ? e.toString() : e.getMessage();
             throw e;
         }
@@ -257,11 +268,6 @@ public class ProjectionHistoryService implements AutoCloseable {
 
     private void initializeInternal(Yano yano, ChainQuery chain, LedgerQuery ledger,
                                     YanoConfig nodeConfig) {
-        // Idempotence keys off completion, not off the first field assigned. outbox is set early,
-        // so guarding on it meant a second call after a partial failure returned immediately -
-        // and the caller then recorded success and cleared the error for an archive that never
-        // finished starting.
-        if (initialized) return;
         enabled = config.getOptionalValue(YanoPropertyKeys.History.PROJECTION_ENABLED, Boolean.class).orElse(false);
         if (!enabled) {
             log.info("ADR-039 projection history is disabled");
@@ -1139,11 +1145,10 @@ public class ProjectionHistoryService implements AutoCloseable {
      * under-counted by exactly the evidence the phase added, and on mainnet a reward epoch is the
      * largest single thing the archive retains.
      *
-     * <p>Pinned-generation bytes remain zero, and that is a statement rather than a placeholder:
-     * the only IMMUTABLE_GENERATION artifact shipped is epoch stake, whose generations live in
-     * ledger state that this service does not own and cannot size without walking column families
-     * it has no handle to. Reporting a fabricated number would be worse than reporting none, so
-     * the gap is named here instead.
+     * <p>Pinned-generation bytes are explicitly marked unmeasured. The only
+     * IMMUTABLE_GENERATION artifact shipped is epoch stake, whose generations live in ledger
+     * state that this service does not own and cannot size without walking column families it has
+     * no handle to. Reporting a fabricated number would be worse than reporting none.
      */
     public ArchiveRetainedFootprint footprint() {
         long outboxBytes = outbox == null ? 0 : outbox.stats(identity.requiredSections()).pendingBytes();
@@ -1155,7 +1160,7 @@ public class ProjectionHistoryService implements AutoCloseable {
             // An unreadable free-space probe must not itself stop ingestion.
         }
         return new ArchiveRetainedFootprint(outboxBytes, stagedArtifactBytes(), 0,
-                diskAmplification, free);
+                diskAmplification, free, false);
     }
 
     /**
@@ -1163,28 +1168,40 @@ public class ProjectionHistoryService implements AutoCloseable {
      *
      * <p>Measured by walking the staging tree rather than tracked incrementally: evidence is
      * released by a different path than it is written, and a counter that drifts would silently
-     * mis-size the budget in whichever direction it drifted. A probe failure reports zero and
-     * never propagates, because an unreadable directory must not stop ingestion.
+     * mis-size the budget in whichever direction it drifted. A failed or internally inconsistent
+     * probe keeps the last known value and pauses ingestion until a complete probe succeeds.
      */
     private long stagedArtifactBytes() {
         long now = System.nanoTime();
-        long measuredAt = stagedBytesMeasuredAt;
-        if (measuredAt != 0 && now - measuredAt < STAGED_BYTES_TTL_NANOS) return stagedBytesCached;
+        long probedAt = stagedBytesProbedAt;
+        if (probedAt != 0 && now - probedAt < STAGED_BYTES_TTL_NANOS) return stagedBytesCached;
 
+        long version = stagedBytesVersion.get();
         long measured = measureStagedArtifactBytes();
+        if (version != stagedBytesVersion.get()) {
+            // A stage or release overlapped the walk. Do not publish a mixed snapshot; the next
+            // header retries immediately against the new tree.
+            stagedBytesProbeHealthy = false;
+            return stagedBytesCached;
+        }
         if (measured >= 0) {
             stagedBytesCached = measured;
-            stagedBytesMeasuredAt = now;
+            stagedBytesProbeHealthy = true;
+        } else {
+            stagedBytesProbeHealthy = false;
         }
-        // A failed probe keeps the last known figure rather than reporting zero. Zero is a
-        // measurement meaning "nothing staged", and reporting it because a directory could not
-        // be read would lift the hard limit at exactly the moment the disk is least healthy.
+        // Publish the TTL timestamp last. A concurrent caller that observes a fresh probe must
+        // also observe the value and health state produced by that probe.
+        stagedBytesProbedAt = now;
+        // The last known value remains useful for status. ingestDecision() separately pauses on
+        // an unhealthy probe, including the first probe when no valid cached value exists.
         return stagedBytesCached;
     }
 
     /** Invalidate the cached measurement, so the next probe reflects a stage or release. */
     private void stagedBytesChanged() {
-        stagedBytesMeasuredAt = 0;
+        stagedBytesVersion.incrementAndGet();
+        stagedBytesProbedAt = 0;
     }
 
     /** Walk the staging tree. Returns -1 when the measurement could not be taken. */
@@ -1193,13 +1210,20 @@ public class ProjectionHistoryService implements AutoCloseable {
         java.nio.file.Path staged = historyDirectory.resolve("epoch-source");
         if (!java.nio.file.Files.isDirectory(staged)) return 0;
         try (var paths = java.nio.file.Files.walk(staged)) {
-            return paths.filter(java.nio.file.Files::isRegularFile).mapToLong(path -> {
+            long total = 0;
+            var iterator = paths.iterator();
+            while (iterator.hasNext()) {
+                java.nio.file.Path path = iterator.next();
+                java.nio.file.attribute.BasicFileAttributes attributes;
                 try {
-                    return java.nio.file.Files.size(path);
+                    attributes = java.nio.file.Files.readAttributes(path,
+                            java.nio.file.attribute.BasicFileAttributes.class);
                 } catch (java.io.IOException unreadable) {
-                    return 0L;
+                    return -1;
                 }
-            }).sum();
+                if (attributes.isRegularFile()) total = Math.addExact(total, attributes.size());
+            }
+            return total;
         } catch (java.io.IOException | RuntimeException e) {
             return -1;
         }
@@ -1222,9 +1246,17 @@ public class ProjectionHistoryService implements AutoCloseable {
 
     /** Whether canonical ingestion may continue. Re-evaluated against the live footprint. */
     public ArchiveIngestGate.Decision ingestDecision() {
-        return ingestGate == null ? new ArchiveIngestGate.Decision(
-                ArchiveIngestGate.Decision.State.RUNNING, Optional.empty(), 0, 0, 0)
-                : ingestGate.evaluate(footprint());
+        if (ingestGate == null) return new ArchiveIngestGate.Decision(
+                ArchiveIngestGate.Decision.State.RUNNING, Optional.empty(), 0, 0, 0);
+        ArchiveRetainedFootprint current = footprint();
+        if (!stagedBytesProbeHealthy) {
+            return new ArchiveIngestGate.Decision(ArchiveIngestGate.Decision.State.PAUSED,
+                    Optional.of("staged-artifact disk usage could not be measured; canonical ingestion"
+                            + " is paused until the probe succeeds"),
+                    current.estimatedPhysicalBytes(), ingestGate.limits().hardBytes(),
+                    current.filesystemFreeBytes());
+        }
+        return ingestGate.evaluate(current);
     }
 
     private Long autoLong(String name) {
