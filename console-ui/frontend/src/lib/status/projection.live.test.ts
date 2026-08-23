@@ -41,6 +41,18 @@ describe('against a live preprod capture', () => {
     expect(sections.every((row) => row.version !== null)).toBe(true);
   });
 
+  it('gives every epoch artifact a version to show', () => {
+    // The watermark reports projection versions for block sections only, so without the
+    // contract these five rows render blank in a table whose other rows are populated.
+    const rows = datasetRows(status, coverage, watermark);
+    const artifacts = rows.filter((row) => row.kind === 'epoch artifact');
+
+    expect(artifacts).toHaveLength(5);
+    expect(artifacts.every((row) => row.version === null)).toBe(true);
+    expect(artifacts.every((row) => row.contract !== null)).toBe(true);
+    expect(artifacts.every((row) => (row.contract?.schemaVersion ?? 0) > 0)).toBe(true);
+  });
+
   it('classifies the five shipped epoch artifacts', () => {
     const rows = datasetRows(status, coverage, watermark);
     const artifacts = rows.filter((row) => row.kind === 'epoch artifact').map((row) => row.name);

@@ -125,7 +125,13 @@
             <tr>
               <td class="p-3 font-mono text-slate-200">{row.name}</td>
               <td class="p-3 text-slate-400">{row.kind}</td>
-              <td class="p-3">{row.version === null ? '—' : `v${row.version}`}</td>
+              <td class="p-3">
+                {#if row.version !== null}v{row.version}
+                {:else if row.contract}
+                  <span class="text-slate-400">schema v{row.contract.schemaVersion} · codec
+                    v{row.contract.codecVersion}</span>
+                {:else}—{/if}
+              </td>
             </tr>
           {:else}
             <tr><td colspan="3" class="p-8 text-center text-slate-500">No datasets reported.</td></tr>

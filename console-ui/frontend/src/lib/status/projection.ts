@@ -146,6 +146,15 @@ export interface DatasetRow {
   /** Committed projection version, or null when the watermark does not report one. */
   version: number | null;
   kind: 'block section' | 'epoch artifact';
+  /**
+   * Versions a row actually has.
+   *
+   * The watermark reports projection versions for block sections only, so an epoch artifact
+   * would otherwise render blank. Its contract carries the versions that do apply to it, and
+   * they are a different thing from a projection version - hence a separate field rather than
+   * a fallback into one column that would silently mix the two.
+   */
+  contract: ArtifactContract | null;
 }
 
 /**
@@ -158,8 +167,8 @@ export interface DatasetRow {
 export function datasetRows(status: ArchiveHistoryStatus | undefined,
                             coverage: ProjectionCoverage | undefined,
                             watermark: ProjectionWatermark | undefined): DatasetRow[] {
-  const artifacts = new Set(parseArtifactContracts(coverage?.artifactContracts)
-    .map((contract) => datasetKey(contract.dataset)));
+  const artifacts = new Map(parseArtifactContracts(coverage?.artifactContracts)
+    .map((contract) => [datasetKey(contract.dataset), contract]));
   const versions = new Map(Object.entries(watermark?.projectionVersions ?? {})
     .map(([name, version]) => [datasetKey(name), version]));
 
@@ -168,10 +177,12 @@ export function datasetRows(status: ArchiveHistoryStatus | undefined,
     .map((name) => {
       const key = datasetKey(name);
       const version = versions.get(key);
+      const contract = artifacts.get(key) ?? null;
       return {
         name,
         version: typeof version === 'number' ? version : null,
-        kind: artifacts.has(key) ? 'epoch artifact' : 'block section'
+        kind: contract ? 'epoch artifact' : 'block section',
+        contract
       };
     });
 }
