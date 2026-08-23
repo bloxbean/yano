@@ -94,6 +94,21 @@ describe('projection state', () => {
       .toBe('UNAVAILABLE');
   });
 
+  it('does not call a failed archive DISABLED', () => {
+    // Both payloads captured verbatim from a node whose archive failed to initialise: /status
+    // reports it as neither enabled nor available, while the reason lives on coverage. Testing
+    // status first would answer "not enabled on this node" for a node that was configured to
+    // run an archive and could not - and would contradict the error the tab shows beneath it.
+    const failedStatus = { enabled: false, available: false };
+    const failedCoverage = {
+      enabled: true,
+      error: "unknown projection section 'transaction:v2'; known sections are "
+        + '[account-events:v1, address-transaction:v1, transaction:v1, utxo-history:v1]'
+    };
+
+    expect(projectionState(failedStatus, failedCoverage)).toBe('UNAVAILABLE');
+  });
+
   it('is UNHEALTHY on a degraded sink', () => {
     expect(projectionState(enabled, { ...ready, sinkHealth: 'DEGRADED' })).toBe('UNHEALTHY');
   });

@@ -47,11 +47,14 @@ export function count(value: unknown): string {
  */
 export function projectionState(status: ArchiveHistoryStatus | undefined,
                                 coverage: ProjectionCoverage | undefined): ProjectionState {
+  // Order matters here. When initialisation fails, /status reports the archive as neither
+  // enabled nor available while /history/coverage carries the reason. Testing enabled first
+  // would answer DISABLED - "not enabled on this node" - for a node that was configured to run
+  // an archive and failed, which is the opposite of what happened and sends whoever reads it
+  // to the wrong place.
+  if (coverage?.error) return 'UNAVAILABLE';
   if (!status?.enabled) return 'DISABLED';
   if (!coverage?.enabled) return 'UNAVAILABLE';
-  // A failed initialisation reports enabled:true with nothing else. Falling through would
-  // reach the "nothing committed yet" branch and describe a broken archive as merely young.
-  if (coverage.error) return 'UNAVAILABLE';
   if (coverage.sinkHealth === 'UNAVAILABLE') return 'UNAVAILABLE';
   if (coverage.sinkHealth === 'DEGRADED') return 'UNHEALTHY';
   // A fresh archive must not claim coverage from block 0 before genesis is durable, or a
