@@ -308,6 +308,34 @@ public final class ProjectionOutboxStore {
     }
 
     /**
+     * Every artifact reference in a block range, grouped by producing block.
+     *
+     * <p>One iterator for a whole batch rather than one per block. The per-block form costs a
+     * RocksDB iterator and an upper-bound Slice for every block committed, which on a full sync
+     * is millions of them for the handful of blocks that actually carry an artifact.
+     *
+     * <p>Only blocks with at least one reference appear, so a caller can treat an absent key as
+     * an empty list without materialising one per block.
+     */
+    public java.util.Map<Long, List<com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef>>
+            readArtifacts(long fromBlock, long throughBlock) {
+        java.util.Map<Long, List<com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef>> byBlock =
+                new java.util.HashMap<>();
+        if (throughBlock < fromBlock) return byBlock;
+        byte[] lower = ProjectionOutboxKeys.blockKey(fromBlock);
+        byte[] upper = ProjectionOutboxKeys.blockKey(throughBlock + 1);
+        try (Slice upperSlice = new Slice(upper);
+             ReadOptions options = new ReadOptions().setIterateUpperBound(upperSlice);
+             RocksIterator it = db.newIterator(artifactCf, options)) {
+            for (it.seek(lower); it.isValid(); it.next()) {
+                byBlock.computeIfAbsent(ProjectionOutboxKeys.blockFromKey(it.key()), k -> new ArrayList<>())
+                        .add(ProjectionSectionCodec.decodeArtifact(it.value()));
+            }
+        }
+        return byBlock;
+    }
+
+    /**
      * Record an artifact reference in its own synced write.
      *
      * <p>For evidence that became durable outside any RocksDB batch - a staged file, fsynced and

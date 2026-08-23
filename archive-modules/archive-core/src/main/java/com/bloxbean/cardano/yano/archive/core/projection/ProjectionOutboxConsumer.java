@@ -269,10 +269,16 @@ public final class ProjectionOutboxConsumer {
      * exactly the case that slips through.
      */
     private List<ProjectionEnvelope> withCurrentArtifacts(List<ProjectionEnvelope> buffered) {
+        if (buffered.isEmpty()) return buffered;
+        // One range scan for the batch, not one iterator per block. Artifacts exist for a
+        // handful of boundary blocks; paying a RocksDB iterator for every block committed put
+        // millions of them on the sync path for the few that carry anything.
+        var artifactsByBlock = store.readArtifacts(
+                buffered.getFirst().header().blockNumber(), buffered.getLast().header().blockNumber());
         List<ProjectionEnvelope> refreshed = new ArrayList<>(buffered.size());
         for (ProjectionEnvelope envelope : buffered) {
             var header = envelope.header();
-            var current = store.readArtifacts(header.blockNumber());
+            var current = artifactsByBlock.getOrDefault(header.blockNumber(), List.of());
             if (current.equals(header.artifacts())) {
                 refreshed.add(envelope);
                 continue;
