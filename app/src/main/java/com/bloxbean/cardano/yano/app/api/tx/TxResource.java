@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.app.api.tx;
 
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.TxGateway;
+import com.bloxbean.cardano.yano.app.api.ApiGroup;
 import com.bloxbean.cardano.yano.runtime.blockproducer.TransactionValidationException;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
@@ -10,12 +11,14 @@ import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import org.eclipse.microprofile.openapi.annotations.extensions.Extension;
 
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+@Extension(name = ApiGroup.CORE, value = "")
 @Path("tx")
 @Produces(MediaType.APPLICATION_JSON)
 public class TxResource {

@@ -7,6 +7,7 @@ import com.bloxbean.cardano.yano.api.NodeLifecycle;
 import com.bloxbean.cardano.yano.api.account.AccountStateReadStore;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.util.CardanoBech32Ids;
+import com.bloxbean.cardano.yano.app.api.ApiGroup;
 import com.bloxbean.cardano.yano.app.api.EpochUtil;
 import com.bloxbean.cardano.yano.app.api.epochs.dto.AdaPotDto;
 import com.bloxbean.cardano.yano.app.api.epochs.dto.EpochDto;
@@ -23,6 +24,7 @@ import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import org.eclipse.microprofile.openapi.annotations.extensions.Extension;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -30,6 +32,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
+@Extension(name = ApiGroup.CORE, value = "")
 @Path("epochs")
 @Produces(MediaType.APPLICATION_JSON)
 public class EpochResource {

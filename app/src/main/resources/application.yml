@@ -53,10 +53,42 @@ quarkus:
   smallrye-openapi:
     info-title: "Yano API"
     info-version: "${quarkus.application.version:0.1.0}"
-    info-description: "Cardano Yano REST API"
+    info-description: "Cardano Yano REST API (all groups)"
+    # ADR-034: named OpenAPI documents, one per API group. Each document
+    # only contains operations whose resource carries the matching
+    # ApiGroup @Extension (SmallRye scan profile). Routes are unchanged;
+    # the unnamed document at /q/openapi still covers everything.
+    core:
+      scan-profiles: core
+      info-title: "Yano Core API"
+      info-version: "${quarkus.application.version:0.1.0}"
+      info-description: "Chain and ledger queries, transaction submission and evaluation"
+    app-chain:
+      scan-profiles: app-chain
+      info-title: "Yano App Chain API"
+      info-version: "${quarkus.application.version:0.1.0}"
+      info-description: "App-chain messages, blocks, state proofs, effects and plugin domain routes"
+    devnet:
+      scan-profiles: devnet
+      info-title: "Yano Devnet API"
+      info-version: "${quarkus.application.version:0.1.0}"
+      info-description: "Devnet-only controls: rollback, snapshots, faucet and time travel"
+    admin:
+      scan-profiles: admin
+      info-title: "Yano Admin API"
+      info-version: "${quarkus.application.version:0.1.0}"
+      info-description: "Node lifecycle, plugin operations and diagnostics"
   swagger-ui:
     always-include: ${YANO_SWAGGER_UI_ENABLED:true}
     path: /q/swagger-ui
+    # "Select a definition" drop-down; Core API is pre-selected.
+    urls:
+      "Core API": /q/openapi-core
+      "App Chain API": /q/openapi-app-chain
+      "Devnet API": /q/openapi-devnet
+      "Admin API": /q/openapi-admin
+      "All APIs": /q/openapi
+    urls-primary-name: "Core API"
   banner:
     enabled: true
     path: "banner.txt"

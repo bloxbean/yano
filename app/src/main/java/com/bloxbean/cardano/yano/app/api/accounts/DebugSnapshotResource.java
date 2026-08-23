@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.app.api.accounts;
 
+import com.bloxbean.cardano.yano.app.api.ApiGroup;
 import com.bloxbean.cardano.yano.ledgerstate.AccountStateCborCodec;
 import com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore;
 import com.bloxbean.cardano.yano.ledgerstate.EpochRewardCalculator;
@@ -11,11 +12,13 @@ import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
+import org.eclipse.microprofile.openapi.annotations.extensions.Extension;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.*;
 
+@Extension(name = ApiGroup.ADMIN, value = "")
 @Path("/api/debug")
 @Produces(MediaType.APPLICATION_JSON)
 public class DebugSnapshotResource {
