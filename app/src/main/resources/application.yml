@@ -24,7 +24,7 @@ quarkus:
           "X-Content-Type-Options": nosniff
           "Referrer-Policy": no-referrer
           "Cache-Control": no-store
-      # ADR-025.2 §10.5: the node-served console restricts connect-src to the
+      # The node-served console restricts connect-src to the
       # host plus explicitly configured console origins. Append additional
       # origins (space-separated) via YANO_CONSOLE_CONNECT_SRC_EXTRA, e.g.
       # " https://other-node.example" for an explicit external connection.
@@ -225,7 +225,7 @@ yano:
   # rollback-retention-epochs: 20
   account:
     stake-balance-index-enabled: true
-  # ADR-039: history is written by the canonical projection outbox. The replay-worker
+  # History is written by the canonical projection outbox. The replay-worker
   # archive was removed in Phase 7a, and with it the backfill workers, per-dataset
   # start modes, hot store and dataset toggles that tuned it. Those keys are now
   # rejected rather than ignored, so a stale setting fails loudly instead of reading
@@ -330,24 +330,12 @@ yano:
       protocol-parameters-file: config/network/devnet/protocol-param.json
     account-state:
       enabled: true
-    # ADR-039: the projection archive is OFF for devnet, and that is a statement about
-    # what the devnet assembly can currently support rather than a preference.
-    #
-    # YanoDevnetAssembly.DevnetYano is a delegating decorator that does not forward the
-    # archive surface of Yano - chainstateRocksAccess, installProjectionContributor,
-    # installEpochArtifactContributor, genesisUtxoProvider and installArchiveIngestHold
-    # all fall through to interface defaults. The first throws, which is why enabling
-    # this failed startup; the rest degrade silently, which is worse: contributors that
-    # never install and a genesis provider that returns EMPTY would produce an archive
-    # that looks healthy and is empty.
-    #
-    # Enabling it here would therefore be a claim the code cannot honour. Forward those
-    # methods in the decorator before turning this on, and add a test that fails when a
-    # new Yano method goes unforwarded. Tracked as issue #80.
+    # Devnet runs the projection archive, like every other network, so a local devnet
+    # exercises the same history write path and serves the same history endpoints.
     history:
       enabled: false
       projection:
-        enabled: false
+        enabled: true
         sink: ducklake
     epoch-snapshot:
       amounts-enabled: true           # UTXO balance aggregation in snapshots

@@ -6,9 +6,10 @@ import java.util.Map;
 /**
  * Enabled UTXO-history row families and their first eligible block.
  *
- * <p>A missing table is disabled. Keeping the activation cutoff beside the
- * switch lets a newly enabled table join the live projection without causing
- * the backfill worker to populate older blocks.</p>
+ * <p>A missing table is disabled. The activation cutoff sits beside the switch so a
+ * newly enabled table joins the projection from that block forward, and its absence from
+ * earlier blocks is a recorded fact rather than a gap to be filled later. Nothing
+ * backfills: the projection records each block once, as it is applied.</p>
  */
 public record UtxoHistoryProjection(Map<Table, Long> activationBlocks) {
     public UtxoHistoryProjection {

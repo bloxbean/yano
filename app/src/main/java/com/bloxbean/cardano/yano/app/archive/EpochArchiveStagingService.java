@@ -237,7 +237,8 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
     }
 
     /**
-     * Materialise a staged job's rows, through the same dataset derivation the replay worker used.
+     * Materialise a staged job's rows, through the dataset derivation inherited from the
+     * replay worker, so staged evidence yields byte-identical rows to what it produced.
      *
      * <p>Evidence is verified before the first row - a truncated or corrupt file raises rather
      * than yielding a short epoch - and the archive job identity is deterministic over the staged
