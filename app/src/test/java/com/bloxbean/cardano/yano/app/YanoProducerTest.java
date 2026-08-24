@@ -41,8 +41,11 @@ class YanoProducerTest {
                 IllegalArgumentException.class,
                 producer::rejectRemovedAccountHistoryConfig);
 
-        assertEquals("yano.account-history.enabled was removed; remove it and use yano.history.enabled "
-                + "and yano.history.datasets.* settings", error.getMessage());
+        // The replacement it names must itself be accepted. The previous wording pointed at
+        // yano.history.enabled and yano.history.datasets.*, both of which are now rejected, so
+        // an operator who followed the message hit a second startup failure.
+        assertEquals("yano.account-history.enabled was removed; remove it and set "
+                + "yano.history.projection.enabled=true instead", error.getMessage());
     }
 
     @Test

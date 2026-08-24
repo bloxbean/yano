@@ -553,8 +553,11 @@ public class AccountStateResource {
         return featureUnavailable(switch (dataset) {
             case ACCOUNT_EVENT -> "Account tx/cert history index is disabled";
             case ADDRESS_TRANSACTION -> "Address transaction history disabled "
-                    + "(enable yano.history.datasets.address-transactions.enabled)";
-            case REWARD -> "Reward history disabled (enable yano.history.datasets.rewards.enabled)";
+                    + "(set yano.history.projection.enabled=true; if "
+                    + "yano.history.projection.sections is set it must include "
+                    + "address-transaction:v1)";
+            case REWARD -> "Reward history disabled (set yano.history.projection.enabled=true; "
+                    + "rewards always ship with the projection archive)";
             default -> throw new IllegalArgumentException(
                     "Unsupported account-history dataset: " + dataset.logicalName());
         });

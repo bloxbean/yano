@@ -233,17 +233,6 @@
       "pluginBundleId": null
     },
     {
-      "sourcePath": ":archive-modules:archive-store-sqlite",
-      "sourceDirectory": "archive-modules/archive-store-sqlite",
-      "disposition": "retain",
-      "owner": "yano-core",
-      "targetPath": ":archive-modules:archive-store-sqlite",
-      "targetDirectory": "archive-modules/archive-store-sqlite",
-      "artifactId": "yano-archive-store-sqlite",
-      "publicationType": "library",
-      "pluginBundleId": null
-    },
-    {
       "sourcePath": ":yano-bom",
       "sourceDirectory": "bom",
       "disposition": "retain",

@@ -1,18 +1,16 @@
 # Yano archive modules
 
-These modules implement the optional asynchronous history architecture from
-[ADR-034](../adr/in-progress/034-optional-asynchronous-history-archive.md).
-They keep historical projection outside the authoritative block-apply path and
-support two interchangeable durable backends.
+These modules implement the optional history archive. They keep historical
+projection outside the authoritative block-apply path, writing through a
+canonical projection outbox into a single durable backend, DuckLake.
 
 ## Modules
 
 | Gradle project | Purpose |
 |---|---|
 | `:archive-modules:archive-api` | Backend-neutral schemas, storage contracts, query sessions, and typed repositories. |
-| `:archive-modules:archive-core` | Block and epoch projection, independent resolvers, the pluggable hot-store contract, progress tracking, and workers. |
+| `:archive-modules:archive-core` | Block and epoch projection, the canonical projection outbox, independent resolvers, and progress tracking. |
 | `:archive-modules:archive-store-ducklake` | DuckLake tables over Parquet, using DuckDB for access and SQLite as the default catalog database. |
-| `:archive-modules:archive-store-sqlite` | Standalone relational SQLite archive plus the optional relational SQLite hot-store engine, each with an isolated Flyway schema. |
 
 Dependencies flow inward: stores and core depend on `archive-api`; application
 composition lives in the top-level `app` module. The archive modules do not
@@ -34,69 +32,63 @@ The SQLite catalog does not contain the historical dataset rows; DuckLake owns
 its catalog schema and stores those rows in Parquet. The transaction-locator
 SQLite file is a rebuildable point-lookup accelerator.
 
-The `sqlite` engine instead stores catalog metadata and historical rows in the
-single default file `<history-dir>/history.sqlite`. Yano owns that schema and
-migrates it with Flyway.
+DuckLake is the only archive engine. A standalone SQLite backend existed once
+and was removed with its module; `yano.history.archive.engine=sqlite` is now
+rejected at startup. SQLite itself has not left the stack — DuckLake keeps its
+catalog and the transaction locator in SQLite files, as above.
 
-The bounded rollback-sensitive layer is selected independently with
-`yano.history.hot-store.engine=rocksdb|sqlite`. RocksDB remains the compatibility
-implementation and SQLite is the validated default. SQLite stores the entire hot layer—including recent facts, resolver
-lifecycle, checkpoints, progress, receipts, leases, and requirements—in
-`<history-dir>/hot-history.sqlite`; it is not the standalone archive database.
+There is no separate hot store. Rollback-sensitive state lives in the projection
+outbox, inside the node's own RocksDB, so a contributor's write is atomic with the
+state it derives from.
 
 ## Datasets
 
 The shared schemas cover account events, address transactions, transactions,
-rewards, optional UTXO history, epoch stake, DRep distribution, Ada pots, and
-governance proposal status. Each dataset has independent enablement, start
-mode, coverage, projection version, retention, and health.
+UTXO history, rewards, epoch stake, DRep distribution, Ada pots, and governance
+proposal status.
 
-UTXO history additionally supports row-family switches. Outputs carry inline
-datum and reference-script CBOR directly; witness datums and redeemers use
-transaction-scoped tables. All row families default to enabled when UTXO
-history is selected. A row family enabled later starts with the next canonical
-core block and is never backfilled implicitly.
+Block sections — `transaction:v1`, `utxo-history:v1`, `account-events:v1` and
+`address-transaction:v1` — are selectable through
+`yano.history.projection.sections`, all four by default. The choice is part of
+the archive identity, so it is made once at fresh sync: an archive cannot gain
+or drop a section later, because the earlier blocks would be missing from it.
 
-DuckLake facts are flat and self-contained for address/stake queries; it has no
-address dimension or address locator. The standalone SQLite engine normalizes
-addresses and stake addresses privately and exposes the same flat logical
-contract through views.
+Epoch artifacts are not selectable. Rewards, epoch stake, DRep distribution, Ada
+pots and governance proposal status always ship.
 
-Address-transaction subject scopes are projection-time selectable. All three
-default to enabled; the wallet profile selects only `stake-credential`. The
-selection is pinned when the dataset activates, so changing it requires a new
-history directory or an explicit rebuild rather than silently creating partial
-historical coverage.
+Outputs carry inline datum and reference-script CBOR directly; witness datums
+and redeemers use transaction-scoped tables.
+
+DuckLake facts are flat and self-contained for address and stake queries; there
+is no address dimension or address locator. Per-subject scoping of address
+transactions — address, payment credential, stake credential — went with the
+replay worker; the section is written whole.
 
 ## Runtime use
 
 History is disabled by default. The JVM distribution includes the optional
-`history` profile:
+`projection` profile:
 
 ```bash
-./yano.sh start:preprod,history
+./yano.sh start:preprod,projection
 ```
 
-For indexed stake-address transaction history without the other archive
-datasets or DuckDB, use the SQLite-backed wallet profile:
+For stake-address transaction history without the other block sections, the
+`wallet` profile selects `address-transaction:v1` alone:
 
 ```bash
 ./yano.sh start:preprod,wallet
 ```
 
-See [`application-history.yml`](../app/config/application-history.yml) for the
-operator defaults. DuckLake currently requires the JVM distribution; native
-startup rejects enabled history.
+See [`application-projection.yml`](../app/config/application-projection.yml) for
+the operator defaults. DuckLake requires the JVM distribution; native startup
+rejects enabled history.
 
-Bulk history backfill and core catch-up run concurrently by default. A
-resource-constrained host can give core catch-up priority with:
-
-```yaml
-yano:
-  history:
-    worker:
-      pause-backfill-during-core-catchup: true
-```
+There is no bulk backfill to schedule against core catch-up. The projection
+records every canonical block as it is applied and drains to the sink once a
+block is past the finality gate, so the archive trails the chain tip by design
+rather than catching up behind it. The `worker.*` settings that tuned the old
+backfill are rejected at startup.
 
 ## Build and test
 
@@ -104,10 +96,9 @@ yano:
 ./gradlew \
   :archive-modules:archive-api:test \
   :archive-modules:archive-core:test \
-  :archive-modules:archive-store-ducklake:test \
-  :archive-modules:archive-store-sqlite:test
+  :archive-modules:archive-store-ducklake:test
 ```
 
 Backend implementations share the conformance suite supplied by
 `archive-api` test fixtures. Integration and release gates are recorded in the
-[ADR-034 phase reports](../adr/reports/).
+[archive phase reports](../adr/reports/).

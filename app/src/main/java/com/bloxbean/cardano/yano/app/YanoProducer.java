@@ -511,8 +511,8 @@ public class YanoProducer {
 
     void rejectRemovedAccountHistoryConfig() {
         if (removedAccountHistoryEnabled != null && removedAccountHistoryEnabled.isPresent()) {
-            throw new IllegalArgumentException("yano.account-history.enabled was removed; remove it and use yano.history.enabled "
-                    + "and yano.history.datasets.* settings");
+            throw new IllegalArgumentException("yano.account-history.enabled was removed; remove it and set "
+                    + "yano.history.projection.enabled=true instead");
         }
     }
 
@@ -973,10 +973,10 @@ public class YanoProducer {
                     assembledYano.chain(),
                     assembledYano.ledger(),
                     (YanoConfig) assembledYano.lifecycle().getConfig());
-            // ADR-039 projection history. Composed separately from the replay-worker
-            // service above so the two can run side by side while the old path serves as
-            // the differential oracle. Disabled by default; a disabled node installs no
-            // contributor and keeps its current behaviour.
+            // Projection history: the node's only archival write path. The service
+            // initialised above no longer writes anything - it is the read facade over the
+            // archive this one produces, which is why both are still composed here.
+            // Disabled by default; a disabled node installs no contributor.
             projectionHistory.initialize(
                     assembledYano,
                     assembledYano.chain(),

@@ -27,7 +27,7 @@ yano:
 #  rollback-retention-epochs: 20
 #  storage:
 #    path: ./chainstate
-  # Optional asynchronous archive (ADR-034). See the bundled application.yml
+  # Optional asynchronous archive. See the bundled application.yml
   # for dataset and bounded DuckDB settings.
   history:
     enabled: false
