@@ -43,7 +43,6 @@ yanoModules.each { projectName, projectDirectory ->
 include ':archive-modules:archive-api'
 include ':archive-modules:archive-core'
 include ':archive-modules:archive-store-ducklake'
-include ':archive-modules:archive-store-sqlite'
 
 gradle.settingsEvaluated {
     logger.lifecycle('Yano build configured with {} projects', yanoModules.size() + 4)

@@ -271,9 +271,6 @@ public final class YanoPropertyKeys {
         public static final String PREFIX = "yano.history.";
         public static final String ENABLED = PREFIX + "enabled";
         public static final String DIR = PREFIX + "dir";
-        public static final String START_MODE = PREFIX + "start-mode";
-        public static final String HOT_STORE_ENGINE = PREFIX + "hot-store.engine";
-        public static final String HOT_STORE_SQLITE_PATH = PREFIX + "hot-store.sqlite.path";
         public static final String ENGINE = PREFIX + "archive.engine";
         public static final String FINALITY_BLOCKS = PREFIX + "archive.finality-blocks";
         public static final String DUCKLAKE_TARGET_FILE_SIZE =
@@ -285,26 +282,10 @@ public final class YanoPropertyKeys {
         public static final String DUCKLAKE_CLEANUP_GRACE_HOURS =
                 PREFIX + "archive.ducklake.cleanup-grace-hours";
         public static final String ROLLBACK_RETENTION_BLOCKS = PREFIX + "rollback.retention-blocks";
-        public static final String WORKER_POLL_MILLIS = PREFIX + "worker.poll-interval-millis";
-        public static final String WORKER_MAX_BLOCKS = PREFIX + "worker.max-blocks-per-batch";
-        public static final String WORKER_MAX_ROWS = PREFIX + "worker.max-rows-per-batch";
-        public static final String WORKER_PAUSE_DURING_CORE_CATCHUP =
-                PREFIX + "worker.pause-backfill-during-core-catchup";
-        public static final String WORKER_CORE_LAG = PREFIX + "worker.bulk-pause-core-lag-blocks";
-        public static final String WORKER_PROJECTION_PARALLELISM = PREFIX + "worker.projection-parallelism";
-        public static final String ADDRESS_SUBJECT_ADDRESS =
-                PREFIX + "datasets.address-transactions.subjects.address";
-        public static final String ADDRESS_SUBJECT_PAYMENT_CREDENTIAL =
-                PREFIX + "datasets.address-transactions.subjects.payment-credential";
-        public static final String ADDRESS_SUBJECT_STAKE_CREDENTIAL =
-                PREFIX + "datasets.address-transactions.subjects.stake-credential";
         /** Interval at which an ongoing archive resource wait logs diagnostics. Waiting is not a failure. */
         public static final String ARCHIVE_WAIT_WARN_SECONDS = PREFIX + "archive.wait-warn-seconds";
         /** Only after this does a resource wait fail the archive mutation, without advancing any cursor. */
         public static final String ARCHIVE_STUCK_OPERATION_SECONDS = PREFIX + "archive.stuck-operation-seconds";
-        public static final String MAINTENANCE_INTERVAL_SECONDS = PREFIX + "maintenance.interval-seconds";
-        public static final String MAINTENANCE_TIME_LIMIT_SECONDS = PREFIX + "maintenance.time-limit-seconds";
-        public static final String MAINTENANCE_MAX_REWRITE = PREFIX + "maintenance.max-bytes-to-rewrite";
         public static final String DUCKDB_MAX_TOTAL_MEMORY = PREFIX + "duckdb.max-total-memory";
         public static final String DUCKDB_MAX_CONCURRENT_QUERIES = PREFIX + "duckdb.max-concurrent-queries";
         public static final String DUCKDB_MAX_TEMP_SIZE = PREFIX + "duckdb.max-temp-directory-size";
@@ -317,7 +298,7 @@ public final class YanoPropertyKeys {
         // --- ADR-039 canonical projection outbox -------------------------------
         /** Enable projection-outbox history. Must be set from genesis; mid-chain activation is rejected. */
         public static final String PROJECTION_ENABLED = PREFIX + "projection.enabled";
-        /** Primary sink: ducklake | sqlite | none. "none" measures producer cost without a sink. */
+        /** Primary sink: ducklake | none. "none" measures producer cost without a sink. */
         public static final String PROJECTION_SINK = PREFIX + "projection.sink";
         /** Deterministic split bound for one physical section value. */
         public static final String PROJECTION_CHUNK_BYTES = PREFIX + "projection.chunk-bytes";

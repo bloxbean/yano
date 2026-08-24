@@ -4,9 +4,11 @@
 #   ./yano.sh start:preprod,wallet
 #   ./yano.sh start:mainnet,wallet
 #
-# This profile requires complete stake-credential transaction history from
-# genesis. On an existing node it fails clearly if required block bodies have
-# already been pruned.
+# This profile serves stake-credential transaction history from genesis, so it is
+# FRESH SYNC ONLY. Pruned block bodies are not the constraint: the projection
+# startup guard refuses any existing chainstate that was not built with a matching
+# projection identity, whatever its body retention. Point it at an empty storage
+# directory.
 
 yano:
   account-state:
@@ -21,59 +23,38 @@ yano:
     tracking-enabled: true
   governance:
     enabled: true
-
   history:
-    enabled: true
     dir: ${YANO_HISTORY_DIR:./history}
-    # History coverage mode (override with YANO_HISTORY_START_MODE):
-    #   full-required      - start at genesis; fail if any required block body is unavailable
-    #   earliest-available - start at the earliest retained block body; history may be partial
-    #   tip                - start after the current chain tip; do not backfill older history
-    start-mode: ${YANO_HISTORY_START_MODE:full-required}
-    hot-store:
-      # Hot rollback-sensitive state: sqlite (validated default) or rocksdb
-      # (compatibility implementation).
-      engine: sqlite
-      sqlite:
-        path: ${YANO_HISTORY_HOT_STORE_SQLITE_PATH:${YANO_HISTORY_DIR:./history}/hot-history.sqlite}
+    # History is written by the canonical projection outbox. The older replay-worker archive
+    # this profile used to configure no longer exists, and its keys are rejected rather than
+    # ignored - so start-mode, hot-store, worker and datasets are gone from here because
+    # setting them now stops the node.
+    #
+    # What a wallet node can and cannot choose. Block sections are selectable, but the choice
+    # is part of the archive identity: it is made once at fresh sync and cannot be widened or
+    # narrowed afterwards, because the startup guard refuses an archive whose section set
+    # differs. Epoch artifacts are not selectable at all - reward, epoch-stake, ada-pot,
+    # drep-distribution and governance-proposal-status always ship - so this profile can no
+    # longer switch rewards off. The per-subject choice it once made for address transactions
+    # (address vs payment credential vs stake credential) is gone with the replay worker.
+    #
+    # The archive engine is DuckLake only. SQLite has not left the stack - DuckLake keeps its
+    # catalog in one - but it is no longer something to select here.
+    projection:
+      enabled: true
+      sink: ducklake
+      # Every selectable section, with the version that ships today:
+      #   transaction:v1         - chain transactions
+      #   utxo-history:v1        - outputs, inputs, assets, datums, redeemers
+      #   account-events:v1      - stake registration, delegation, withdrawal events
+      #   address-transaction:v1 - address and credential to transaction index
+      #
+      # A wallet serves address history, so it carries that section alone. Widening this
+      # later requires resyncing from genesis, and an archive missing a section looks
+      # healthy until a query over it returns nothing.
+      sections: address-transaction:v1
     archive:
-      # Archive engine options:
-      #   sqlite   - one Flyway-managed relational database with indexed lookups
-      #   ducklake - SQLite catalog plus DuckLake-managed Parquet data
-      # SQLite is selected here for direct indexed stake-history lookup without DuckDB.
-      engine: sqlite
+      engine: ducklake
       finality-blocks: auto
-      sqlite:
-        path: ${YANO_HISTORY_SQLITE_PATH:${YANO_HISTORY_DIR:./history}/history.sqlite}
     rollback:
       retention-blocks: auto
-    worker:
-      projection-parallelism: auto
-      max-blocks-per-batch: 1000
-      max-rows-per-batch: 250000
-      pause-backfill-during-core-catchup: false
-      bulk-pause-core-lag-blocks: 100
-    datasets:
-      account-events:
-        enabled: false
-      transactions:
-        enabled: false
-      address-transactions:
-        enabled: true
-        retention-epochs: 0
-        subjects:
-          address: false
-          payment-credential: false
-          stake-credential: true
-      rewards:
-        enabled: false
-      utxo-history:
-        enabled: false
-      epoch-stake:
-        enabled: false
-      drep-distribution:
-        enabled: false
-      ada-pots:
-        enabled: false
-      governance-proposal-status:
-        enabled: false

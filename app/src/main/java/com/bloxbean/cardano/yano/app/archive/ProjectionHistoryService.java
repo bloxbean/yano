@@ -51,12 +51,15 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * Composes ADR-039 projection history for the node.
+ * Composes projection history for the node - the only path that writes an archive.
  *
- * <p>Kept separate from {@link HistoryArchiveService} deliberately: that service
- * orchestrates the replay-worker architecture ADR-039 replaces, and the two must be able
- * to run side by side while the old path serves as the differential oracle. Mixing them
- * would make the eventual removal commit far harder to review.
+ * <p>Still separate from {@link HistoryArchiveService}, but not for the original reason.
+ * That service once orchestrated the replay-worker pipeline this replaced, and the two ran
+ * side by side while the old path served as a differential oracle. The pipeline is gone;
+ * what remains there is the read facade, which opens the archive this service wrote and
+ * answers historical queries over it. Writing and reading stay apart because they fail
+ * differently: a sink that cannot commit must pause ingestion, while a reader that cannot
+ * open must not.
  *
  * <p>When {@code yano.history.projection.enabled} is false this initialises nothing and
  * installs no contributor, so a history-disabled node keeps its current behaviour.
@@ -574,7 +577,7 @@ public class ProjectionHistoryService implements AutoCloseable {
 
         artifactReader = new RoutingArtifactReader(readers);
 
-        // The state version must match the replay worker's exactly. Both write it into
+        // The state version is inherited from the replay worker's format exactly. Both wrote it into
         // source_state_version, and a mismatch would make identical data look like it came from
         // different producers.
         var collector = new com.bloxbean.cardano.yano.archive.core.projection.EpochArtifactCollector(
@@ -1533,7 +1536,7 @@ public class ProjectionHistoryService implements AutoCloseable {
             coverage.put("maxCommitLatency", policy.maxLinger(active.nearTip()).toString());
         }
         // ADR-039 Phase 6 requires this to be stated rather than discovered. The projection does
-        // not build the replay worker's SQLite tx-hash locator, so a lookup by transaction hash
+        // not build the SQLite tx-hash locator the replay worker did, so a lookup by transaction hash
         // falls back to a full-range scan of the transactions table. The result is correct - the
         // locator was only ever an accelerator, and the fallback query is the authoritative one -
         // but it is O(archive), not O(1), until a derived index exists.

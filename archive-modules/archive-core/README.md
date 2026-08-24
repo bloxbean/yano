@@ -12,7 +12,7 @@ the optional history subsystem.
 - independent sequential outpoint and pointer resolution;
 - the semantic, backend-neutral `HotHistoryStore` contract and RocksDB adapter
   with exact undo information;
-- backfill, live, promotion, rollback, retention, progress, and health workers.
+- the canonical projection outbox, its finality gate, and the ordered drain.
 
 The UTXO decoder emits only configured row families. Inline datum/reference
 script bytes remain output-local, while transaction datums and redeemers are
@@ -28,22 +28,22 @@ mutable core UTXO/account state as the source of historical truth and they do
 not participate in authoritative block commits. Dataset or backend failure
 must degrade only archive health.
 
-Block backfill parses each canonical body once per bounded coordinator cycle.
-Transaction, account-event, UTXO, and address projections share the immutable
-decoded block and may derive concurrently on an archive-owned fixed executor.
+Each canonical body is parsed once as it is applied. Transaction, account-event,
+UTXO and address projections share the immutable decoded block and may derive
+concurrently on an archive-owned fixed executor.
 The default parallelism is conservative and container-aware: half the reported
 processors, capped by four and by the number of enabled block projections.
-Both DuckLake and SQLite retain a single serialized writer. Batch size remains
+DuckLake retains a single serialized writer. Batch size remains
 adaptive through the existing halve-on-capacity / three-successes-before-grow
 rule.
 
-## Tracks
+## One write path
 
-Backfill advances historical coverage from the configured start mode. The live
-track can project near-tip blocks independently so wallet data does not wait
-for a long backfill. Finalized hot rows are promoted atomically through the
-selected `ArchiveBackend`; recent rows remain rollback-aware in the dedicated
-hot store.
+There are no backfill and live tracks. Every canonical block is projected into
+the outbox as it is applied, in the same RocksDB write batch as the state it
+derives from, and drains to the sink once it is past the finality gate. The
+archive therefore trails the chain tip by design rather than catching up behind
+it, and rollback-sensitive rows stay in the outbox until they are final.
 
 ## Dependency direction
 
@@ -51,10 +51,10 @@ This module depends on `archive-api`, RocksDB, and Cardano decoding libraries.
 It contains no DuckLake- or SQLite-specific storage logic and no Quarkus
 application wiring.
 
-`HotHistoryStore` and `HotHistorySnapshot` keep workers, resolvers, promotion,
-and query code independent of the physical hot engine. RocksDB remains the
-compatibility default; `archive-store-sqlite` supplies the complete relational
-alternative. Both run the same semantic conformance fixture.
+`HotHistoryStore` and `HotHistorySnapshot` keep resolvers and query code
+independent of the physical hot engine. RocksDB is the only implementation; the
+relational alternative went with the SQLite store module. The semantic
+conformance fixture still applies to it.
 
 ## Testing
 
@@ -63,5 +63,5 @@ alternative. Both run the same semantic conformance fixture.
 ```
 
 Tests cover era decoding, genesis UTXOs, resolver behavior, dataset projection,
-hot-store rollback, parent-chain validation, backfill/live convergence,
-restart, and worker failure isolation.
+outbox rollback, parent-chain validation, receipt identity and artifact
+handshake, restart, and failure isolation.

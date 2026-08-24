@@ -98,7 +98,6 @@ dependencies {
     implementation project(':archive-modules:archive-api')
     implementation project(':archive-modules:archive-core')
     runtimeOnly project(':archive-modules:archive-store-ducklake')
-    runtimeOnly project(':archive-modules:archive-store-sqlite')
     // Uses the release-matched, bounded MPF verifier for the console's
     // node-assisted existing-proof verification endpoint.
     implementation project(':appchain-proof-verifier')
@@ -119,7 +118,6 @@ dependencies {
     testImplementation libs.assertj.core
     testImplementation libs.mockito.inline
     testImplementation libs.mockito.junit.jupiter
-    testImplementation project(':archive-modules:archive-store-sqlite')
     testImplementation project(':archive-modules:archive-store-ducklake')
 
     testImplementation project(':testkit')
@@ -1593,8 +1591,8 @@ tasks.register('verifyCoreJvmDistribution') {
             if (archive.getEntry("${root}/yano.jar") == null) {
                 throw new GradleException('Yano JVM distribution does not contain yano.jar')
             }
-            if (archive.getEntry("${root}/config/application-history.yml") == null) {
-                throw new GradleException('Yano JVM distribution is missing the history profile')
+            if (archive.getEntry("${root}/config/application-projection.yml") == null) {
+                throw new GradleException('Yano JVM distribution is missing the projection profile')
             }
             if (archive.getEntry("${root}/config/application-wallet.yml") == null) {
                 throw new GradleException('Yano JVM distribution is missing the wallet profile')

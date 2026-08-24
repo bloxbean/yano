@@ -76,7 +76,9 @@ public class AddressResource {
                 error = "Address transaction history is unavailable after a non-retryable failure";
             } else {
                 error = "Address transaction history disabled "
-                        + "(enable yano.history and address-transactions dataset)";
+                        + "(set yano.history.projection.enabled=true; if "
+                        + "yano.history.projection.sections is set it must include "
+                        + "address-transaction:v1)";
             }
             return Response.status(Response.Status.SERVICE_UNAVAILABLE)
                     .entity(Map.of("error", error))

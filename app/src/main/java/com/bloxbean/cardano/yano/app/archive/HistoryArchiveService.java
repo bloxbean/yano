@@ -164,6 +164,12 @@ public class HistoryArchiveService implements AutoCloseable {
             projectionBackedReads = true;
             log.info("ADR-039 historical reads routed to the projection archive ({} datasets: {})",
                     covered.size(), covered.stream().map(ArchiveDatasetId::logicalName).sorted().toList());
+        } catch (IllegalArgumentException configuration) {
+            // A rejected setting is not an archive that would not open, and saying so sends the
+            // operator to the wrong place: they go looking at the archive directory rather than
+            // at the line they just changed. Propagated unwrapped so the message that names the
+            // offending key stays the message they see.
+            throw configuration;
         } catch (Exception e) {
             // Fail loudly rather than silently answering "history disabled" over a full archive.
             throw new IllegalStateException("could not open the projection archive for reading", e);
@@ -486,43 +492,38 @@ public class HistoryArchiveService implements AutoCloseable {
                 YanoPropertyKeys.History.ARCHIVE_WAIT_WARN_SECONDS, "30"));
         properties.put("stuck-operation-seconds", string(
                 YanoPropertyKeys.History.ARCHIVE_STUCK_OPERATION_SECONDS, "300"));
-        if (engine == ArchiveEngine.SQLITE) {
-            properties.put("database.path", string("yano.history.archive.sqlite.path",
-                    directory.resolve("history.sqlite").toString()));
-        } else {
-            properties.put("catalog.path", string("yano.history.archive.ducklake.catalog.path",
-                    directory.resolve("ducklake-catalog.sqlite").toString()));
-            properties.put("data.path", string("yano.history.archive.ducklake.data-path",
-                    directory.resolve("ducklake-data").toString()));
-            properties.put("temp.path", string("yano.history.duckdb.temp-directory",
-                    directory.resolve("tmp").toString()));
-            properties.put("extensions.path", string("yano.history.archive.ducklake.extensions-path",
-                    directory.resolve("extensions").toString()));
-            properties.put("target-file-size-bytes", Long.toString(sizeBytes(string(
-                    YanoPropertyKeys.History.DUCKLAKE_TARGET_FILE_SIZE, "4MB"))));
-            properties.put("row-group-size", Integer.toString(intValue(
-                    YanoPropertyKeys.History.DUCKLAKE_ROW_GROUP_SIZE, 100_000)));
-            properties.put("snapshot-retention-hours", Long.toString(longValue(
-                    YanoPropertyKeys.History.DUCKLAKE_SNAPSHOT_RETENTION_HOURS, 168)));
-            properties.put("cleanup-grace-hours", Long.toString(longValue(
-                    YanoPropertyKeys.History.DUCKLAKE_CLEANUP_GRACE_HOURS, 24)));
-            properties.put("duckdb.max-total-memory-bytes", Long.toString(sizeBytes(
-                    string(YanoPropertyKeys.History.DUCKDB_MAX_TOTAL_MEMORY, "256MB"))));
-            properties.put("duckdb.max-concurrent-queries", Integer.toString(intValue(
-                    YanoPropertyKeys.History.DUCKDB_MAX_CONCURRENT_QUERIES, 2)));
-            properties.put("duckdb.max-temp-directory-bytes", Long.toString(sizeBytes(
-                    string(YanoPropertyKeys.History.DUCKDB_MAX_TEMP_SIZE, "2GB"))));
-            properties.put("duckdb.steady-memory-bytes", Long.toString(sizeBytes(
-                    string(YanoPropertyKeys.History.DUCKDB_STEADY_MEMORY, "128MB"))));
-            properties.put("duckdb.steady-threads", Integer.toString(intValue(
-                    YanoPropertyKeys.History.DUCKDB_STEADY_THREADS, 1)));
-            properties.put("duckdb.bulk-memory-bytes", Long.toString(sizeBytes(
-                    string(YanoPropertyKeys.History.DUCKDB_BULK_MEMORY, "128MB"))));
-            properties.put("duckdb.bulk-threads", Integer.toString(intValue(
-                    YanoPropertyKeys.History.DUCKDB_BULK_THREADS, 1)));
-            properties.put("duckdb.max-concurrent-bulk-jobs", Integer.toString(intValue(
-                    YanoPropertyKeys.History.DUCKDB_BULK_JOBS, 1)));
-        }
+        properties.put("catalog.path", string("yano.history.archive.ducklake.catalog.path",
+                directory.resolve("ducklake-catalog.sqlite").toString()));
+        properties.put("data.path", string("yano.history.archive.ducklake.data-path",
+                directory.resolve("ducklake-data").toString()));
+        properties.put("temp.path", string("yano.history.duckdb.temp-directory",
+                directory.resolve("tmp").toString()));
+        properties.put("extensions.path", string("yano.history.archive.ducklake.extensions-path",
+                directory.resolve("extensions").toString()));
+        properties.put("target-file-size-bytes", Long.toString(sizeBytes(string(
+                YanoPropertyKeys.History.DUCKLAKE_TARGET_FILE_SIZE, "4MB"))));
+        properties.put("row-group-size", Integer.toString(intValue(
+                YanoPropertyKeys.History.DUCKLAKE_ROW_GROUP_SIZE, 100_000)));
+        properties.put("snapshot-retention-hours", Long.toString(longValue(
+                YanoPropertyKeys.History.DUCKLAKE_SNAPSHOT_RETENTION_HOURS, 168)));
+        properties.put("cleanup-grace-hours", Long.toString(longValue(
+                YanoPropertyKeys.History.DUCKLAKE_CLEANUP_GRACE_HOURS, 24)));
+        properties.put("duckdb.max-total-memory-bytes", Long.toString(sizeBytes(
+                string(YanoPropertyKeys.History.DUCKDB_MAX_TOTAL_MEMORY, "256MB"))));
+        properties.put("duckdb.max-concurrent-queries", Integer.toString(intValue(
+                YanoPropertyKeys.History.DUCKDB_MAX_CONCURRENT_QUERIES, 2)));
+        properties.put("duckdb.max-temp-directory-bytes", Long.toString(sizeBytes(
+                string(YanoPropertyKeys.History.DUCKDB_MAX_TEMP_SIZE, "2GB"))));
+        properties.put("duckdb.steady-memory-bytes", Long.toString(sizeBytes(
+                string(YanoPropertyKeys.History.DUCKDB_STEADY_MEMORY, "128MB"))));
+        properties.put("duckdb.steady-threads", Integer.toString(intValue(
+                YanoPropertyKeys.History.DUCKDB_STEADY_THREADS, 1)));
+        properties.put("duckdb.bulk-memory-bytes", Long.toString(sizeBytes(
+                string(YanoPropertyKeys.History.DUCKDB_BULK_MEMORY, "128MB"))));
+        properties.put("duckdb.bulk-threads", Integer.toString(intValue(
+                YanoPropertyKeys.History.DUCKDB_BULK_THREADS, 1)));
+        properties.put("duckdb.max-concurrent-bulk-jobs", Integer.toString(intValue(
+                YanoPropertyKeys.History.DUCKDB_BULK_JOBS, 1)));
         return Map.copyOf(properties);
     }
 
@@ -546,8 +547,9 @@ public class HistoryArchiveService implements AutoCloseable {
             }
         }
         if (removedSnapshot) {
-            throw new IllegalArgumentException("yano.snapshot-export.* was removed; enable the equivalent "
-                    + "yano.history.datasets.* dataset instead");
+            throw new IllegalArgumentException("yano.snapshot-export.* was removed; set "
+                    + "yano.history.projection.enabled=true instead. Epoch artifacts are not "
+                    + "selectable - every one of them ships with the projection archive");
         }
         if (config.getOptionalValue(REMOVED_LIVE_ENABLED, String.class).isPresent()) {
             throw new IllegalArgumentException("yano.history.live-enabled was removed; history now has one "
@@ -585,7 +587,16 @@ public class HistoryArchiveService implements AutoCloseable {
             "yano.history.worker.",
             "yano.history.hot-store.",
             "yano.history.start-mode",
-            "yano.history.datasets.");
+            "yano.history.datasets.",
+            // Read by nothing since Phase 7a, and unguarded until now - which made these the
+            // worst of the removed keys rather than the mildest. They read as the knobs that
+            // bound archive upkeep, so an operator capping a rewrite budget to keep compaction
+            // out of a maintenance window got no effect and no warning. The projection schedules
+            // its own maintenance and never consulted them.
+            "yano.history.maintenance.",
+            // The SQLite archive module is gone; DuckLake is the only engine. This key named a
+            // database file for a backend that no longer exists.
+            "yano.history.archive.sqlite.");
 
 
 
@@ -610,8 +621,34 @@ public class HistoryArchiveService implements AutoCloseable {
         return value.equalsIgnoreCase("auto") ? null : Long.parseLong(value);
     }
     private <T extends Enum<T>> T enumValue(String name, String fallback, Class<T> type) {
-        String value = config.getOptionalValue(name, String.class).orElse(fallback);
-        return Enum.valueOf(type, value.trim().toUpperCase(Locale.ROOT).replace('-', '_'));
+        return parseEnum(name, config.getOptionalValue(name, String.class).orElse(fallback), type);
+    }
+
+    /**
+     * Parse a configured enum value, naming the alternatives when it is not one.
+     *
+     * <p>Kept separate from {@link #enumValue} and free of any Config or backend dependency, so
+     * the rule can be tested for what it accepts as directly as for what it rejects. Proving
+     * acceptance through {@code initializeProjectionReads} would mean opening a real archive and
+     * asserting on some later, unrelated failure - a test that passes for the wrong reason and
+     * writes a directory into the source tree on the way.
+     *
+     * <p>{@code Enum.valueOf} alone reports "No enum constant com.bloxbean...ArchiveEngine.SQLITE",
+     * which names a Java class and leaves the operator to work out what is allowed. sqlite was a
+     * real engine until its store module was removed, so it is a value carried forward from
+     * older deployment files rather than a typo.
+     */
+    static <T extends Enum<T>> T parseEnum(String name, String value, Class<T> type) {
+        String trimmed = value.trim();
+        try {
+            return Enum.valueOf(type, trimmed.toUpperCase(Locale.ROOT).replace('-', '_'));
+        } catch (IllegalArgumentException unknown) {
+            throw new IllegalArgumentException(name + "=" + trimmed + " is not supported;"
+                    + " valid values are "
+                    + java.util.Arrays.stream(type.getEnumConstants())
+                            .map(constant -> constant.name().toLowerCase(Locale.ROOT).replace('_', '-'))
+                            .sorted().toList());
+        }
     }
     private static UUID stableArchiveId(int magic, String genesis, String engine, Path directory) {
         return UUID.nameUUIDFromBytes((magic + "|" + genesis + "|" + engine + "|" + directory)

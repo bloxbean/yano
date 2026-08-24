@@ -281,6 +281,70 @@ public final class YanoDevnetAssembly {
             return Optional.empty();
         }
 
+        // ---------------------------------------------------------------- archive surface
+        //
+        // Every one of these has a default on Yano, and every default is a quiet one: empty,
+        // false, NONE, -1. Not forwarding them did not fail, it produced a devnet whose archive
+        // installed no contributors and recorded no genesis while reporting itself healthy. Only
+        // chainstateRocksAccess threw, and only because the projection refuses to start without
+        // it - the rest would have degraded in silence.
+        //
+        // A decorator over an interface with defaults is a place where forgetting is invisible,
+        // which is why DevnetYanoForwardingTest asserts this list stays complete.
+
+        @Override
+        public java.util.Optional<com.bloxbean.cardano.yano.api.db.RocksDbAccess> chainstateRocksAccess() {
+            return delegate.chainstateRocksAccess();
+        }
+
+        @Override
+        public boolean installProjectionContributor(
+                com.bloxbean.cardano.yano.api.archive.CanonicalProjectionContributor contributor) {
+            return delegate.installProjectionContributor(contributor);
+        }
+
+        @Override
+        public boolean installEpochArtifactContributor(
+                com.bloxbean.cardano.yano.api.archive.EpochArtifactContributor contributor) {
+            return delegate.installEpochArtifactContributor(contributor);
+        }
+
+        @Override
+        public com.bloxbean.cardano.yano.api.genesis.GenesisUtxoProvider genesisUtxoProvider() {
+            return delegate.genesisUtxoProvider();
+        }
+
+        @Override
+        public boolean installArchiveIngestHold(java.util.function.BooleanSupplier hold, String reason) {
+            return delegate.installArchiveIngestHold(hold, reason);
+        }
+
+        @Override
+        public long commonRollbackFloorSlot() {
+            return delegate.commonRollbackFloorSlot();
+        }
+
+        @Override
+        public java.util.Optional<com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore>
+                accountStateStoreForArtifacts() {
+            return delegate.accountStateStoreForArtifacts();
+        }
+
+        @Override
+        public com.bloxbean.cardano.yano.api.archive.PointerCredentialSource pointerCredentialSource() {
+            return delegate.pointerCredentialSource();
+        }
+
+        @Override
+        public boolean markPointerIndexFromGenesis() {
+            return delegate.markPointerIndexFromGenesis();
+        }
+
+        @Override
+        public com.bloxbean.cardano.yano.api.archive.SnapshotRetentionClamp snapshotRetentionClamp() {
+            return delegate.snapshotRetentionClamp();
+        }
+
         @Override
         public void close() {
             delegate.close();

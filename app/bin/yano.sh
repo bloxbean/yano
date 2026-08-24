@@ -6,7 +6,7 @@
 # Usage:
 #   ./yano.sh start                # Default preprod profile
 #   ./yano.sh start:preprod,relay  # Preprod with relay upstream profile
-#   ./yano.sh start:preprod,history # Preprod with optional history archive
+#   ./yano.sh start:preprod,projection # Preprod with the optional history archive
 #   ./yano.sh start:mainnet        # Mainnet relay alias
 #   ./yano.sh start:<profiles>     # Custom comma-separated Quarkus profiles
 #   ./yano.sh appchain config ...  # App-chain configuration tooling
@@ -38,8 +38,8 @@ Examples:
   ./yano.sh start
   ./yano.sh start:preprod,relay
   ./yano.sh start:preprod,relay,praos-lite
-  ./yano.sh start:preprod,history
-  ./yano.sh start:mainnet,history
+  ./yano.sh start:preprod,projection
+  ./yano.sh start:mainnet,projection
   ./yano.sh start:mainnet
   ./yano.sh start:preview
   ./yano.sh start:sanchonet
