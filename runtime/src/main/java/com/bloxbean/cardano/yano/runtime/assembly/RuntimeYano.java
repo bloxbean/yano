@@ -124,6 +124,74 @@ final class RuntimeYano implements Yano, DevnetRuntimeProvider {
     }
 
     @Override
+    public boolean installArchiveIngestHold(java.util.function.BooleanSupplier hold, String reason) {
+        return chainQuery instanceof com.bloxbean.cardano.yano.runtime.internal.RuntimeNode node
+                && node.installArchiveIngestHold(hold, reason);
+    }
+
+    @Override
+    public boolean markPointerIndexFromGenesis() {
+        return chainQuery instanceof com.bloxbean.cardano.yano.runtime.internal.RuntimeNode node
+                && node.markPointerIndexFromGenesis();
+    }
+
+    @Override
+    public com.bloxbean.cardano.yano.api.genesis.GenesisUtxoProvider genesisUtxoProvider() {
+        return chainQuery instanceof com.bloxbean.cardano.yano.runtime.internal.RuntimeNode node
+                ? node.genesisUtxoProvider()
+                : com.bloxbean.cardano.yano.api.genesis.GenesisUtxoProvider.EMPTY;
+    }
+
+    @Override
+    public boolean installEpochArtifactContributor(
+            com.bloxbean.cardano.yano.api.archive.EpochArtifactContributor contributor) {
+        return chainQuery instanceof com.bloxbean.cardano.yano.runtime.internal.RuntimeNode node
+                && node.installEpochArtifactContributor(contributor);
+    }
+
+    @Override
+    public java.util.Optional<com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore>
+            accountStateStoreForArtifacts() {
+        return chainQuery instanceof com.bloxbean.cardano.yano.runtime.internal.RuntimeNode node
+                ? node.accountStateStoreForArtifacts()
+                : java.util.Optional.empty();
+    }
+
+    @Override
+    public com.bloxbean.cardano.yano.api.archive.SnapshotRetentionClamp snapshotRetentionClamp() {
+        return chainQuery instanceof com.bloxbean.cardano.yano.runtime.internal.RuntimeNode node
+                ? node.snapshotRetentionClamp()
+                : com.bloxbean.cardano.yano.api.archive.SnapshotRetentionClamp.NONE;
+    }
+
+    @Override
+    public long commonRollbackFloorSlot() {
+        return chainQuery instanceof com.bloxbean.cardano.yano.runtime.internal.RuntimeNode node
+                ? node.commonRollbackFloorSlot()
+                : -1L;
+    }
+
+    @Override
+    public com.bloxbean.cardano.yano.api.archive.PointerCredentialSource pointerCredentialSource() {
+        return chainQuery instanceof com.bloxbean.cardano.yano.runtime.internal.RuntimeNode node
+                ? node.pointerCredentialSource()
+                : com.bloxbean.cardano.yano.api.archive.PointerCredentialSource.NONE;
+    }
+
+    @Override
+    public boolean installProjectionContributor(
+            com.bloxbean.cardano.yano.api.archive.CanonicalProjectionContributor contributor) {
+        return chainQuery instanceof com.bloxbean.cardano.yano.runtime.internal.RuntimeNode node
+                && node.installProjectionContributor(contributor);
+    }
+
+    @Override
+    public java.util.Optional<com.bloxbean.cardano.yano.api.db.RocksDbAccess> chainstateRocksAccess() {
+        return chainQuery instanceof com.bloxbean.cardano.yano.runtime.internal.RuntimeNode node
+                ? node.chainstateRocksAccess() : java.util.Optional.empty();
+    }
+
+    @Override
     public LedgerQuery ledger() {
         return ledgerQuery;
     }
@@ -228,6 +296,14 @@ final class RuntimeYano implements Yano, DevnetRuntimeProvider {
     @Override
     public Optional<DebugLedgerStateAccess> debugLedgerStateAccess() {
         return Optional.of(debugLedgerStateAccess);
+    }
+
+    @Override
+    public Optional<com.bloxbean.cardano.yano.api.events.stream.NodeEventStream> eventStream() {
+        // The runtime node behind the gateway interfaces also fans out L1 events.
+        return txGateway instanceof com.bloxbean.cardano.yano.api.events.stream.NodeEventStream stream
+                ? Optional.of(stream)
+                : Optional.empty();
     }
 
     @Override

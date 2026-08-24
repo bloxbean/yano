@@ -1,6 +1,5 @@
 package com.bloxbean.cardano.yano.api;
 
-import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.model.GenesisParameters;
 import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
@@ -16,10 +15,6 @@ public interface LedgerQuery {
     UtxoState getUtxoState();
 
     default LedgerStateProvider getLedgerStateProvider() {
-        return null;
-    }
-
-    default AccountHistoryProvider getAccountHistoryProvider() {
         return null;
     }
 
@@ -47,4 +42,15 @@ public interface LedgerQuery {
     }
 
     long slotToUnixTime(long slot);
+
+    /** Converts a canonical slot using the genesis-derived era/epoch schedule. */
+    default long slotToEpoch(long slot) {
+        throw new UnsupportedOperationException("slot-to-epoch conversion unavailable");
+    }
+
+    /** Installs the optional epoch archive capture before startup recovery runs. */
+    default void setEpochArchiveStagingSink(
+            com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink sink) {
+        throw new UnsupportedOperationException("epoch archive staging is unavailable");
+    }
 }

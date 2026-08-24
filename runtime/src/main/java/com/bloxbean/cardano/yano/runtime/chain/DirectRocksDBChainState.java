@@ -1,19 +1,22 @@
 package com.bloxbean.cardano.yano.runtime.chain;
 
 import com.bloxbean.cardano.yaci.core.model.Era;
+import com.bloxbean.cardano.yaci.core.model.serializers.ByronEbBlockSerializer;
 import java.math.BigInteger;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
+import com.bloxbean.cardano.yano.api.ByronEpochBoundaryReference;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.db.RocksDbAccess;
 import com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore;
 import com.bloxbean.cardano.yano.runtime.blockproducer.NonceStateStore;
 import com.bloxbean.cardano.yano.runtime.blockproducer.NonceStateSnapshot;
-import com.bloxbean.cardano.yano.ledgerstate.AccountHistoryCfNames;
 import com.bloxbean.cardano.yano.ledgerstate.AccountStateCfNames;
 import com.bloxbean.cardano.yano.runtime.db.RocksDbContext;
+import com.bloxbean.cardano.yano.api.archive.ProjectionCfNames;
 import com.bloxbean.cardano.yano.runtime.db.RocksDbSupplier;
 import com.bloxbean.cardano.yano.runtime.db.UtxoCfNames;
 import lombok.extern.slf4j.Slf4j;
@@ -46,7 +49,8 @@ import java.util.OptionalLong;
 public class DirectRocksDBChainState implements ChainState, AutoCloseable, RocksDbSupplier,
         NonceStateStore, RocksDbAccess, RollbackCapableStore, ByronEbHeaderStore,
         OriginRollbackCapable, ChainStateRecovery, ChainStateSnapshots, NearestSlotLookup,
-        BootstrapChainStateWriter, EraMetadataStore, ByronGenesisUtxoMetadataStore {
+        BootstrapChainStateWriter, EraMetadataStore, ByronGenesisUtxoMetadataStore,
+        ArchiveChainStateCapabilities {
 
     private static final byte[] TIP_KEY = "tip".getBytes(StandardCharsets.UTF_8);
     private static final byte[] HEADER_TIP_KEY = "header_tip".getBytes(StandardCharsets.UTF_8);
@@ -127,18 +131,15 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
             ColumnFamilyOptions utxoPointLookup = null;
             ColumnFamilyOptions utxoAddrPrefix = null;
             ColumnFamilyOptions utxoDeltaOpts = null;
-            ColumnFamilyOptions accountHistoryPrefix = null;
             if (tuningEnabled) {
                 utxoPointLookup = buildPointLookupCfOptions(); // utxo_unspent, utxo_spent
                 utxoAddrPrefix = buildPrefixScanCfOptions(28); // utxo_addr
                 utxoDeltaOpts = buildSequentialCfOptions();    // utxo_block_delta
-                accountHistoryPrefix = buildPrefixScanCfOptions(30); // type + stake cred
 
                 // Log effective CF tuning plan for visibility
                 log.info("RocksDB CF tuning: utxo_unspent/utxo_spent => point-lookup (ZSTD, bloom≈10bpk, whole-key, pin L0, partitioned filters)");
                 log.info("RocksDB CF tuning: utxo_addr => prefix-scan (ZSTD, prefixExtractor=28, memtablePrefixBloom≈0.10, bloom≈10bpk, pin L0, partitioned filters)");
                 log.info("RocksDB CF tuning: utxo_block_delta => sequential (ZSTD)");
-                log.info("RocksDB CF tuning: account_history => prefix-scan (ZSTD, prefixExtractor=30)");
             } else {
                 log.info("RocksDB tuning disabled via flag; using defaults for CF options");
             }
@@ -177,10 +178,14 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                     new ColumnFamilyDescriptor(AccountStateCfNames.ACCT_BOUNDARY_DELTA.getBytes()),
                     new ColumnFamilyDescriptor(AccountStateCfNames.EPOCH_DELEG_SNAPSHOT.getBytes()),
                     new ColumnFamilyDescriptor(AccountStateCfNames.EPOCH_PARAMS.getBytes()),
-                    new ColumnFamilyDescriptor(
-                            AccountHistoryCfNames.ACCOUNT_HISTORY.getBytes(),
-                            tuningEnabled ? accountHistoryPrefix : new ColumnFamilyOptions()),
-                    new ColumnFamilyDescriptor(AccountHistoryCfNames.ACCOUNT_HISTORY_DELTA.getBytes())
+                    // Canonical projection outbox (ADR-039). Declared here so a contributor
+                    // can write its section inside the same WriteBatch as the state it was
+                    // derived from. Created on open, so a node that never enables history
+                    // simply leaves them empty.
+                    new ColumnFamilyDescriptor(ProjectionCfNames.PROJ_HEADER.getBytes(), buildSequentialCfOptions()),
+                    new ColumnFamilyDescriptor(ProjectionCfNames.PROJ_SECTION.getBytes(), buildSequentialCfOptions()),
+                    new ColumnFamilyDescriptor(ProjectionCfNames.PROJ_META.getBytes()),
+                    new ColumnFamilyDescriptor(ProjectionCfNames.PROJ_ARTIFACT.getBytes())
             );
 
             // Open database
@@ -530,6 +535,72 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
             return hasBlock(blockHash);
         } catch (Exception e) {
             return false;
+        }
+    }
+
+    @Override
+    public Optional<CanonicalBlockReference> getCanonicalBlockReference(long blockNumber) {
+        if (blockNumber < 0) return Optional.empty();
+        try {
+            byte[] slotBytes = db.get(slotByNumberHandle, longToBytes(blockNumber));
+            if (slotBytes == null) return Optional.empty();
+            long slot = bytesToLong(slotBytes);
+            byte[] blockHash = db.get(slotToHashHandle, longToBytes(slot));
+            return blockHash == null
+                    ? Optional.empty()
+                    : Optional.of(new CanonicalBlockReference(blockNumber, slot, blockHash));
+        } catch (Exception e) {
+            log.warn("Failed to read canonical reference for block {}: {}", blockNumber, e.toString());
+            return Optional.empty();
+        }
+    }
+
+    @Override
+    public Optional<ByronEpochBoundaryReference> getByronEpochBoundaryBlockAtOrBefore(long slot) {
+        if (slot < 0) return Optional.empty();
+        try (RocksIterator iterator = db.newIterator(ebbBySlot0Handle)) {
+            iterator.seekForPrev(longToBytes(slot));
+            if (!iterator.isValid()) return Optional.empty();
+            long ebbSlot = bytesToLong(iterator.key());
+            byte[] blockHash = Arrays.copyOf(iterator.value(), iterator.value().length);
+            byte[] body = db.get(blocksHandle, blockHash);
+            if (body == null) return Optional.empty();
+            String parentHash = ByronEbBlockSerializer.INSTANCE.deserialize(body).getHeader().getPrevBlock();
+            if (parentHash == null || parentHash.isBlank()) return Optional.empty();
+            return Optional.of(new ByronEpochBoundaryReference(ebbSlot, blockHash,
+                    HexUtil.decodeHexString(parentHash)));
+        } catch (Exception e) {
+            log.warn("Failed to read Byron EBB reference at or before slot {}: {}", slot, e.toString());
+            return Optional.empty();
+        }
+    }
+
+    @Override
+    public OptionalLong getEarliestRetainedBodyBlockNumber() {
+        try {
+            long start = 0;
+            byte[] cursorBytes = db.get(metadataHandle, BlockPruner.CURSOR_KEY);
+            if (cursorBytes != null && cursorBytes.length == Long.BYTES) {
+                start = Math.max(0, bytesToLong(cursorBytes) + 1);
+            }
+            try (RocksIterator it = db.newIterator(slotByNumberHandle)) {
+                it.seek(longToBytes(start));
+                while (it.isValid()) {
+                    if (it.key().length == Long.BYTES && it.value().length == Long.BYTES) {
+                        long blockNumber = bytesToLong(it.key());
+                        long slot = bytesToLong(it.value());
+                        byte[] hash = db.get(slotToHashHandle, longToBytes(slot));
+                        if (hash != null && db.get(blocksHandle, hash) != null) {
+                            return OptionalLong.of(blockNumber);
+                        }
+                    }
+                    it.next();
+                }
+            }
+            return OptionalLong.empty();
+        } catch (Exception e) {
+            log.warn("Failed to read earliest retained block body: {}", e.toString());
+            return OptionalLong.empty();
         }
     }
 

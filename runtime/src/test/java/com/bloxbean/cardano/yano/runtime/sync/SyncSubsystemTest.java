@@ -66,8 +66,7 @@ class SyncSubsystemTest {
                 .maxParallelBodies(2)
                 .build();
         RuntimeOptions options = new RuntimeOptions(null, null, Map.of(
-                "yano.account-state.enabled", false,
-                "yano.account-history.enabled", false));
+                "yano.account-state.enabled", false));
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
         ChainStorageSubsystem chainStorage = new ChainStorageSubsystem(
                 config,
@@ -1127,8 +1126,7 @@ class SyncSubsystemTest {
 
     private static RuntimeOptions options() {
         return new RuntimeOptions(null, null, Map.of(
-                "yano.account-state.enabled", false,
-                "yano.account-history.enabled", false));
+                "yano.account-state.enabled", false));
     }
 
     private static TransactionAdmission noopTransactionAdmission() {

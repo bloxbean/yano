@@ -376,6 +376,11 @@ public final class TxSubsystem implements Subsystem, TransactionAdmission, Block
         return memPool.size();
     }
 
+    /** Whether the mempool currently holds the transaction (hex hash). */
+    public boolean containsTransaction(String txHash) {
+        return txHash != null && memPool.contains(txHash);
+    }
+
     public long mempoolBytes() {
         return memPool.byteSize();
     }

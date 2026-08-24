@@ -821,18 +821,6 @@
     "allDeclaredConstructors": true
   },
   {
-    "name": "com.bloxbean.cardano.yano.ledgerstate.AccountHistoryEventHandler_EventBindings",
-    "allDeclaredFields": true,
-    "allDeclaredMethods": true,
-    "allDeclaredConstructors": true
-  },
-  {
-    "name": "com.bloxbean.cardano.yano.ledgerstate.AccountHistoryEventHandler",
-    "allDeclaredFields": true,
-    "allDeclaredMethods": true,
-    "allDeclaredConstructors": true
-  },
-  {
     "name": "com.bloxbean.cardano.yano.appchain.stdlib.StdlibStateMachineProviders$KvRegistryProvider",
     "allDeclaredConstructors": true
   },

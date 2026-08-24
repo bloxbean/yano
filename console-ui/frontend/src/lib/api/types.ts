@@ -79,6 +79,131 @@ export interface StorageStatus {
     cfEstimates?: Record<string, number>;
   };
   cfEstimates?: Record<string, number>;
+  history?: ArchiveHistoryStatus;
+}
+
+/** Read-only archive status published by GET /status. */
+export interface ArchiveHistoryStatus {
+  enabled?: boolean;
+  available?: boolean;
+  error?: string;
+  engine?: string;
+  hotStoreEngine?: string;
+  directory?: string;
+  finalityBlocks?: number;
+  rollbackRetentionBlocks?: number;
+  generation?: number;
+  health?: ArchiveHealth;
+  worker?: ArchiveWorkerConfiguration;
+  datasets?: Record<string, ArchiveDatasetStatus>;
+  finalizedConsistency?: ArchiveConsistencyStatus;
+  maintenance?: ArchiveMaintenanceStatus;
+  resources?: ArchiveResourceStatus;
+  epochStagingError?: string;
+  cycleError?: string;
+  shutdownError?: string;
+  /** Present when dataset state could not be read, e.g. under reader saturation. */
+  datasetsUnavailable?: string;
+  /** Per-stage cycle failures, keyed by stage name; a stage failing no longer skips the rest. */
+  stageErrors?: Record<string, string>;
+}
+
+/** Scheduling-only contention view. Carries no row, address, or transaction data. */
+export interface ArchiveResourceStatus {
+  gates?: ArchiveGateUsage[];
+  lastWaitWarning?: ArchiveWaitWarning;
+  lastMutationFailure?: ArchiveMutationFailure;
+}
+
+export interface ArchiveGateUsage {
+  name?: string;
+  inUse?: number;
+  totalPermits?: number;
+  waiters?: number;
+  holder?: string;
+  holderSeconds?: number;
+}
+
+export interface ArchiveWaitWarning {
+  gate?: string;
+  operation?: string;
+  waitedSeconds?: number;
+  holder?: string;
+  at?: string;
+}
+
+export interface ArchiveMutationFailure {
+  operation?: string;
+  detail?: string;
+  at?: string;
+}
+
+export interface ArchiveHealth {
+  status?: string;
+  detail?: string;
+  observedAt?: string;
+}
+
+export interface ArchiveWorkerConfiguration {
+  projectionParallelismRequested?: string;
+  projectionParallelismEffective?: number;
+  pauseBackfillDuringCoreCatchup?: boolean;
+  bulkPauseCoreLagBlocks?: number;
+  maxBlocksPerBatch?: number;
+  maxRowsPerBatch?: number;
+  decodedBlocks?: number;
+  decodedBlockCacheHits?: number;
+}
+
+export interface ArchiveDatasetStatus {
+  enabled?: boolean;
+  /** Present only for a configured-but-disabled dataset. */
+  state?: string;
+  startMode?: string;
+  retentionEpochs?: number;
+  subjects?: Record<string, boolean>;
+  phase?: string;
+  ready?: boolean;
+  coverage?: ArchiveCoverage;
+  workers?: Record<string, ArchiveWorkerStatus>;
+}
+
+export interface ArchiveCoverage {
+  dataset?: string;
+  projectionVersion?: number;
+  revision?: number;
+  completeRanges?: Array<{ startInclusive?: number; endInclusive?: number }>;
+}
+
+export interface ArchiveWorkerStatus {
+  dataset?: string;
+  track?: string;
+  state?: string;
+  coordinate?: number;
+  slot?: number;
+  lag?: number;
+  detail?: string;
+  observedAt?: string;
+}
+
+export interface ArchiveConsistencyStatus {
+  available?: boolean;
+  detail?: string;
+  generation?: number;
+  fromBlock?: number;
+  toBlock?: number;
+  asOf?: { blockNumber?: number; blockHash?: string; slot?: number };
+  projectionVersions?: Record<string, number>;
+}
+
+export interface ArchiveMaintenanceStatus {
+  intervalSeconds?: number;
+  timeLimitSeconds?: number;
+  maxBytesToRewrite?: number;
+  lastCompletedAt?: string;
+  error?: string;
+  /** Why bounded upkeep did not run: active snapshot, writer wait, time budget, rewrite budget. */
+  deferredReason?: string;
 }
 
 export interface Peer {

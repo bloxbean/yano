@@ -21,13 +21,9 @@ final class UtxoKeyUtil {
     }
 
     static byte[] addrHash28(String bech32OrHex) {
-        try {
-            byte[] raw = AddressUtil.addressToBytes(bech32OrHex);
-            return Blake2bUtil.blake2bHash224(raw);
-        } catch (Exception e) {
-            // Fallback: hash the literal string bytes (should be rare)
-            return Blake2bUtil.blake2bHash224(bech32OrHex.getBytes());
-        }
+        // Canonical implementation shared with the archive address-tx
+        // index — both indexes must agree on what an address hashes to.
+        return com.bloxbean.cardano.yano.api.util.AddressKeyUtil.addrHash28(bech32OrHex);
     }
 
     static byte[] addressIndexKey(byte[] addrKey28, long slot, String txHashHex, int index) {
@@ -41,21 +37,8 @@ final class UtxoKeyUtil {
     }
 
     static byte[] paymentCred28(String bech32OrHex) {
-        try {
-            // Try as bech32 string first
-            Address addr;
-            try {
-                addr = new Address(bech32OrHex);
-            } catch (Exception e) {
-                // Fallback to hex-encoded bytes
-                byte[] raw;
-                try { raw = HexUtil.decodeHexString(bech32OrHex); } catch (Exception ex) { return null; }
-                addr = new Address(raw);
-            }
-            return AddressProvider.getPaymentCredentialHash(addr).orElse(null);
-        } catch (Exception e) {
-            return null;
-        }
+        // Canonical implementation shared with the archive address-tx index.
+        return com.bloxbean.cardano.yano.api.util.AddressKeyUtil.paymentCred28(bech32OrHex);
     }
 
     static boolean prefixMatches(byte[] key, byte[] prefix, int len) {

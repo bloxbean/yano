@@ -28,6 +28,8 @@ import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.plugin.PluginCatalogView;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginOperationsView;
 import com.bloxbean.cardano.yano.app.bootstrap.BootstrapConfigParser;
+import com.bloxbean.cardano.yano.app.archive.HistoryArchiveService;
+import com.bloxbean.cardano.yano.app.archive.ProjectionHistoryService;
 import com.bloxbean.cardano.yano.bootstrap.providers.DefaultBootstrapDataProviderFactory;
 import com.bloxbean.cardano.yano.devnet.YanoDevnetAssembly;
 import com.bloxbean.cardano.yano.runtime.assembly.YanoAssembly;
@@ -89,13 +91,18 @@ public class YanoProducer {
             RollbackRetentionPlanner.ACCOUNT_STATE_EPOCH_BLOCK_DATA_RETENTION_LAG;
     private static final String ACCOUNT_STATE_SNAPSHOT_RETENTION_EPOCHS =
             RollbackRetentionPlanner.ACCOUNT_STATE_SNAPSHOT_RETENTION_EPOCHS;
-    private static final String ACCOUNT_HISTORY_ROLLBACK_SAFETY_SLOTS =
-            RollbackRetentionPlanner.ACCOUNT_HISTORY_ROLLBACK_SAFETY_SLOTS;
+    private static final String REMOVED_ACCOUNT_HISTORY_ENABLED = "yano.account-history.enabled";
     private static final String BLOCK_BODY_PRUNE_DEPTH =
             RollbackRetentionPlanner.BLOCK_BODY_PRUNE_DEPTH;
 
     @Inject
     Config appConfig;
+
+    @Inject
+    HistoryArchiveService historyArchive;
+
+    @Inject
+    ProjectionHistoryService projectionHistory;
 
     @ConfigProperty(name = YanoPropertyKeys.NETWORK, defaultValue = "mainnet")
     String network;
@@ -341,20 +348,9 @@ public class YanoProducer {
     int accountStateSnapshotRetentionEpochs;
     @ConfigProperty(name = YanoPropertyKeys.AccountState.STAKE_BALANCE_INDEX_ENABLED, defaultValue = "true")
     boolean stakeBalanceIndexEnabled;
-    @ConfigProperty(name = YanoPropertyKeys.AccountHistory.ENABLED, defaultValue = "false")
-    boolean accountHistoryEnabled;
-    @ConfigProperty(name = YanoPropertyKeys.AccountHistory.TX_EVENTS_ENABLED, defaultValue = "true")
-    boolean accountHistoryTxEventsEnabled;
-    @ConfigProperty(name = YanoPropertyKeys.AccountHistory.REWARDS_ENABLED, defaultValue = "false")
-    boolean accountHistoryRewardsEnabled;
-    @ConfigProperty(name = YanoPropertyKeys.AccountHistory.RETENTION_EPOCHS, defaultValue = "0")
-    int accountHistoryRetentionEpochs;
-    @ConfigProperty(name = YanoPropertyKeys.AccountHistory.PRUNE_INTERVAL_SECONDS, defaultValue = "300")
-    long accountHistoryPruneIntervalSeconds;
-    @ConfigProperty(name = YanoPropertyKeys.AccountHistory.PRUNE_BATCH_SIZE, defaultValue = "50000")
-    int accountHistoryPruneBatchSize;
-    @ConfigProperty(name = YanoPropertyKeys.AccountHistory.ROLLBACK_SAFETY_SLOTS)
-    java.util.Optional<Long> accountHistoryRollbackSafetySlots;
+    /** One-release migration guard for the removed synchronous history switch. */
+    @ConfigProperty(name = REMOVED_ACCOUNT_HISTORY_ENABLED)
+    Optional<Boolean> removedAccountHistoryEnabled;
 
     // Epoch subsystem config
     @ConfigProperty(name = YanoPropertyKeys.EpochSnapshot.AMOUNTS_ENABLED, defaultValue = "false")
@@ -369,22 +365,10 @@ public class YanoProducer {
     boolean epochParamsTrackingEnabled;
     @ConfigProperty(name = YanoPropertyKeys.Ledger.GOVERNANCE_ENABLED, defaultValue = "false")
     boolean governanceEnabled;
-    @ConfigProperty(name = YanoPropertyKeys.SnapshotExport.ENABLED, defaultValue = "false")
-    boolean snapshotExportEnabled;
-    @ConfigProperty(name = YanoPropertyKeys.SnapshotExport.STAKE, defaultValue = "false")
-    boolean snapshotExportStake;
-    @ConfigProperty(name = YanoPropertyKeys.SnapshotExport.DREP_DIST, defaultValue = "true")
-    boolean snapshotExportDrepDist;
-    @ConfigProperty(name = YanoPropertyKeys.SnapshotExport.ADAPOT, defaultValue = "true")
-    boolean snapshotExportAdaPot;
-    @ConfigProperty(name = YanoPropertyKeys.SnapshotExport.PROPOSALS, defaultValue = "true")
-    boolean snapshotExportProposals;
     @ConfigProperty(name = YanoPropertyKeys.Ledger.EXIT_ON_EPOCH_CALC_ERROR, defaultValue = "false")
     boolean exitOnEpochCalcError;
     @ConfigProperty(name = YanoPropertyKeys.Ledger.AUTO_CHECKPOINT_INTERVAL, defaultValue = "0")
     int autoCheckpointInterval;
-    @ConfigProperty(name = YanoPropertyKeys.SnapshotExport.DIR, defaultValue = "data")
-    String snapshotExportDir;
 
     // Block body pruning config
     @ConfigProperty(name = YanoPropertyKeys.Chain.BLOCK_BODY_PRUNE_DEPTH, defaultValue = "0")
@@ -525,6 +509,13 @@ public class YanoProducer {
         this(PluginLoaderHandle.classpath(pluginClassLoader));
     }
 
+    void rejectRemovedAccountHistoryConfig() {
+        if (removedAccountHistoryEnabled != null && removedAccountHistoryEnabled.isPresent()) {
+            throw new IllegalArgumentException("yano.account-history.enabled was removed; remove it and use yano.history.enabled "
+                    + "and yano.history.datasets.* settings");
+        }
+    }
+
     Yano ensureYano() {
         if (apiPrefixContract != null) {
             apiPrefixContract.verify();
@@ -532,6 +523,7 @@ public class YanoProducer {
         if (yano != null) {
             return yano;
         }
+        rejectRemovedAccountHistoryConfig();
 
         log.info("Creating Yano with network: {}", network);
 
@@ -631,14 +623,12 @@ public class YanoProducer {
                             + "Effective retention: utxo.rollbackWindow={}, "
                             + "account-state.epoch-block-data-retention-lag={}, "
                             + "account-state.snapshot-retention-epochs={}, "
-                            + "account-history.rollback-safety-slots={}, "
                             + "chain.block-body-prune-depth={}",
                     rollbackRetentionSettings.retentionEpochs(),
                     rollbackRetentionSettings.slotWindow(),
                     rollbackRetentionSettings.utxoRollbackWindow(),
                     rollbackRetentionSettings.accountStateEpochBlockDataRetentionLag(),
                     rollbackRetentionSettings.accountStateSnapshotRetentionEpochs(),
-                    rollbackRetentionSettings.accountHistoryRollbackSafetySlots().orElse(null),
                     rollbackRetentionSettings.blockBodyPruneDepth());
         }
 
@@ -739,12 +729,6 @@ public class YanoProducer {
         // Account state
         globals.put(YanoPropertyKeys.AccountState.ENABLED, accountStateEnabled);
         globals.put(YanoPropertyKeys.AccountState.STAKE_BALANCE_INDEX_ENABLED, stakeBalanceIndexEnabled);
-        globals.put(YanoPropertyKeys.AccountHistory.ENABLED, accountHistoryEnabled);
-        globals.put(YanoPropertyKeys.AccountHistory.TX_EVENTS_ENABLED, accountHistoryTxEventsEnabled);
-        globals.put(YanoPropertyKeys.AccountHistory.REWARDS_ENABLED, accountHistoryRewardsEnabled);
-        globals.put(YanoPropertyKeys.AccountHistory.RETENTION_EPOCHS, accountHistoryRetentionEpochs);
-        globals.put(YanoPropertyKeys.AccountHistory.PRUNE_INTERVAL_SECONDS, accountHistoryPruneIntervalSeconds);
-        globals.put(YanoPropertyKeys.AccountHistory.PRUNE_BATCH_SIZE, accountHistoryPruneBatchSize);
 
         // Epoch subsystems
         globals.put(YanoPropertyKeys.EpochSnapshot.AMOUNTS_ENABLED, epochSnapshotAmountsEnabled);
@@ -753,12 +737,6 @@ public class YanoProducer {
         globals.put(YanoPropertyKeys.Ledger.REWARDS_ENABLED, rewardsEnabled);
         globals.put(YanoPropertyKeys.Ledger.EPOCH_PARAMS_TRACKING_ENABLED, epochParamsTrackingEnabled);
         globals.put(YanoPropertyKeys.Ledger.GOVERNANCE_ENABLED, governanceEnabled);
-        globals.put(YanoPropertyKeys.SnapshotExport.ENABLED, snapshotExportEnabled);
-        globals.put(YanoPropertyKeys.SnapshotExport.DIR, snapshotExportDir);
-        globals.put(YanoPropertyKeys.SnapshotExport.STAKE, snapshotExportStake);
-        globals.put(YanoPropertyKeys.SnapshotExport.DREP_DIST, snapshotExportDrepDist);
-        globals.put(YanoPropertyKeys.SnapshotExport.ADAPOT, snapshotExportAdaPot);
-        globals.put(YanoPropertyKeys.SnapshotExport.PROPOSALS, snapshotExportProposals);
         globals.put(YanoPropertyKeys.Ledger.EXIT_ON_EPOCH_CALC_ERROR, exitOnEpochCalcError);
         globals.put(YanoPropertyKeys.Ledger.AUTO_CHECKPOINT_INTERVAL, autoCheckpointInterval);
 
@@ -831,6 +809,13 @@ public class YanoProducer {
     @ApplicationScoped
     public TxEvaluationGateway createTxEvaluationGateway() {
         return ensureYano().txEvaluationGateway();
+    }
+
+    @Produces
+    @ApplicationScoped
+    public com.bloxbean.cardano.yano.api.events.stream.NodeEventStream createNodeEventStream() {
+        return ensureYano().eventStream()
+                .orElse(com.bloxbean.cardano.yano.api.events.stream.NodeEventStream.UNAVAILABLE);
     }
 
     @Produces
@@ -984,6 +969,31 @@ public class YanoProducer {
 
         try {
             Yano assembledYano = ensureYano();
+            historyArchive.initialize(
+                    assembledYano.chain(),
+                    assembledYano.ledger(),
+                    (YanoConfig) assembledYano.lifecycle().getConfig());
+            // ADR-039 projection history. Composed separately from the replay-worker
+            // service above so the two can run side by side while the old path serves as
+            // the differential oracle. Disabled by default; a disabled node installs no
+            // contributor and keeps its current behaviour.
+            projectionHistory.initialize(
+                    assembledYano,
+                    assembledYano.chain(),
+                    assembledYano.ledger(),
+                    (YanoConfig) assembledYano.lifecycle().getConfig());
+            // ADR-039 Phase 6: route historical reads at the primary archive. When the legacy
+            // writer is off, this service holds no backend, so every archive-backed query would
+            // answer "history disabled" over an archive the projection had fully populated.
+            if (projectionHistory.isEnabled() && !historyArchive.enabled()) {
+                projectionHistory.archiveIdentity().ifPresent(identity ->
+                        historyArchive.initializeProjectionReads(
+                                (YanoConfig) assembledYano.lifecycle().getConfig(),
+                                identity,
+                                projectionHistory.coveredDatasets(),
+                                projectionHistory::committedThroughBlock));
+            }
+
             if (autoSyncStart) {
                 log.info("Auto-starting Yano synchronization...");
                 assembledYano.start();
@@ -993,6 +1003,8 @@ public class YanoProducer {
                 log.info("Auto-sync is disabled. Start manually via: curl -X POST {}/start", nodeApiBaseUrl());
                 log.info("REST API available at {}/", nodeApiBaseUrl());
             }
+            // ADR-039: there is no separate archive worker to start. The projection drain runs
+            // with the node, and historical reads are served from the archive it writes.
         } catch (Throwable e) {
             // Do not inspect or allocate diagnostics around a process-fatal
             // root. Runtime layers preserve the same terminal distinction.
@@ -1361,10 +1373,17 @@ public class YanoProducer {
 
     void onStop(@Observes ShutdownEvent event) {
         log.info("Yano application shutting down...");
-        if (yano != null) {
-            log.info("Stopping Yano...");
-            yano.close();
-            log.info("Yano stopped");
+        // Stop and join optional archive work while its core query dependencies
+        // and native stores are still valid.
+        try {
+            projectionHistory.close();
+            historyArchive.close();
+        } finally {
+            if (yano != null) {
+                log.info("Stopping Yano...");
+                yano.close();
+                log.info("Yano stopped");
+            }
         }
     }
 
@@ -1630,8 +1649,6 @@ public class YanoProducer {
                 isConfigPropertyPresent(ACCOUNT_STATE_EPOCH_BLOCK_DATA_RETENTION_LAG),
                 accountStateSnapshotRetentionEpochs,
                 isConfigPropertyPresent(ACCOUNT_STATE_SNAPSHOT_RETENTION_EPOCHS),
-                accountHistoryRollbackSafetySlots,
-                isConfigPropertyPresent(ACCOUNT_HISTORY_ROLLBACK_SAFETY_SLOTS),
                 blockBodyPruneDepth);
     }
 
@@ -1641,8 +1658,6 @@ public class YanoProducer {
                 settings.accountStateEpochBlockDataRetentionLag());
         globals.put(ACCOUNT_STATE_SNAPSHOT_RETENTION_EPOCHS,
                 settings.accountStateSnapshotRetentionEpochs());
-        settings.accountHistoryRollbackSafetySlots().ifPresent(v ->
-                globals.put(ACCOUNT_HISTORY_ROLLBACK_SAFETY_SLOTS, v));
         globals.put(BLOCK_BODY_PRUNE_DEPTH, settings.blockBodyPruneDepth());
     }
 

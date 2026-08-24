@@ -1,0 +1,79 @@
+# Wallet-serving profile with minimal confirmed transaction history.
+#
+# Compose after a network profile, for example:
+#   ./yano.sh start:preprod,wallet
+#   ./yano.sh start:mainnet,wallet
+#
+# This profile requires complete stake-credential transaction history from
+# genesis. On an existing node it fails clearly if required block bodies have
+# already been pruned.
+
+yano:
+  account-state:
+    enabled: true
+  account:
+    stake-balance-index-enabled: true
+  adapot:
+    enabled: true
+  rewards:
+    enabled: true
+  epoch-params:
+    tracking-enabled: true
+  governance:
+    enabled: true
+
+  history:
+    enabled: true
+    dir: ${YANO_HISTORY_DIR:./history}
+    # History coverage mode (override with YANO_HISTORY_START_MODE):
+    #   full-required      - start at genesis; fail if any required block body is unavailable
+    #   earliest-available - start at the earliest retained block body; history may be partial
+    #   tip                - start after the current chain tip; do not backfill older history
+    start-mode: ${YANO_HISTORY_START_MODE:full-required}
+    hot-store:
+      # Hot rollback-sensitive state: sqlite (validated default) or rocksdb
+      # (compatibility implementation).
+      engine: sqlite
+      sqlite:
+        path: ${YANO_HISTORY_HOT_STORE_SQLITE_PATH:${YANO_HISTORY_DIR:./history}/hot-history.sqlite}
+    archive:
+      # Archive engine options:
+      #   sqlite   - one Flyway-managed relational database with indexed lookups
+      #   ducklake - SQLite catalog plus DuckLake-managed Parquet data
+      # SQLite is selected here for direct indexed stake-history lookup without DuckDB.
+      engine: sqlite
+      finality-blocks: auto
+      sqlite:
+        path: ${YANO_HISTORY_SQLITE_PATH:${YANO_HISTORY_DIR:./history}/history.sqlite}
+    rollback:
+      retention-blocks: auto
+    worker:
+      projection-parallelism: auto
+      max-blocks-per-batch: 1000
+      max-rows-per-batch: 250000
+      pause-backfill-during-core-catchup: false
+      bulk-pause-core-lag-blocks: 100
+    datasets:
+      account-events:
+        enabled: false
+      transactions:
+        enabled: false
+      address-transactions:
+        enabled: true
+        retention-epochs: 0
+        subjects:
+          address: false
+          payment-credential: false
+          stake-credential: true
+      rewards:
+        enabled: false
+      utxo-history:
+        enabled: false
+      epoch-stake:
+        enabled: false
+      drep-distribution:
+        enabled: false
+      ada-pots:
+        enabled: false
+      governance-proposal-status:
+        enabled: false

@@ -139,7 +139,6 @@ class YanoDevnetTestKitTest {
         assertEquals(Boolean.TRUE, globals.get(YanoPropertyKeys.Ledger.REWARDS_ENABLED));
         assertEquals(Boolean.TRUE, globals.get(YanoPropertyKeys.Ledger.EPOCH_PARAMS_TRACKING_ENABLED));
         assertEquals(Boolean.TRUE, globals.get(YanoPropertyKeys.Ledger.GOVERNANCE_ENABLED));
-        assertFalse(globals.containsKey(YanoPropertyKeys.AccountHistory.ENABLED));
     }
 
     @Test

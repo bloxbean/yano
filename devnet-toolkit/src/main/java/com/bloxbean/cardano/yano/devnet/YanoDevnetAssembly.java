@@ -258,6 +258,11 @@ public final class YanoDevnetAssembly {
         }
 
         @Override
+        public Optional<com.bloxbean.cardano.yano.api.events.stream.NodeEventStream> eventStream() {
+            return delegate.eventStream();
+        }
+
+        @Override
         public Optional<com.bloxbean.cardano.yano.api.plugin.PluginCatalogView> pluginCatalog() {
             return delegate.pluginCatalog();
         }

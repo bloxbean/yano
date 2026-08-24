@@ -129,4 +129,34 @@ class StoreRewardRestTest {
             assertThat(stored).isTrue();
         }
     }
+
+    @Test
+    @DisplayName("Reward rest keeps types separate and aggregates only within a type")
+    void rewardRest_keepsTypesSeparate() throws Exception {
+        registerCredential(0, CRED_HASH);
+
+        storeAndCommit(DefaultAccountStateStore.REWARD_REST_PROPOSAL_REFUND, 100);
+        storeAndCommit(DefaultAccountStateStore.REWARD_REST_PROPOSAL_REFUND, 25);
+        storeAndCommit(DefaultAccountStateStore.REWARD_REST_TREASURY_WITHDRAWAL, 50);
+
+        var proposal = AccountStateCborCodec.decodeRewardRest(rocks.db().get(rocks.cfState(),
+                DefaultAccountStateStore.rewardRestKey(248,
+                        DefaultAccountStateStore.REWARD_REST_PROPOSAL_REFUND, 0, CRED_HASH)));
+        var treasury = AccountStateCborCodec.decodeRewardRest(rocks.db().get(rocks.cfState(),
+                DefaultAccountStateStore.rewardRestKey(248,
+                        DefaultAccountStateStore.REWARD_REST_TREASURY_WITHDRAWAL, 0, CRED_HASH)));
+
+        assertThat(proposal.amount()).isEqualTo(BigInteger.valueOf(125));
+        assertThat(treasury.amount()).isEqualTo(BigInteger.valueOf(50));
+        assertThat(store.getSpendableRewardRest(248))
+                .containsEntry("0:" + CRED_HASH, BigInteger.valueOf(175));
+    }
+
+    private void storeAndCommit(byte type, long amount) throws Exception {
+        try (WriteBatch batch = new WriteBatch()) {
+            assertThat(store.storeRewardRest(248, type, REWARD_ACCOUNT, BigInteger.valueOf(amount),
+                    247, 0, batch, new ArrayList<>())).isTrue();
+            commit(batch);
+        }
+    }
 }

@@ -266,22 +266,133 @@ public final class YanoPropertyKeys {
         }
     }
 
-    /**
-     * Account-history index and retention settings.
-     */
-    public static final class AccountHistory {
-        public static final String ENABLED = "yano.account-history.enabled";
-        public static final String TX_EVENTS_ENABLED = "yano.account-history.tx-events-enabled";
-        public static final String REWARDS_ENABLED = "yano.account-history.rewards-enabled";
-        public static final String RETENTION_EPOCHS = "yano.account-history.retention-epochs";
-        public static final String PRUNE_INTERVAL_SECONDS =
-                "yano.account-history.prune-interval-seconds";
-        public static final String PRUNE_BATCH_SIZE = "yano.account-history.prune-batch-size";
-        public static final String ROLLBACK_SAFETY_SLOTS =
-                "yano.account-history.rollback-safety-slots";
+    /** Optional asynchronous history/archive settings (ADR-034). */
+    public static final class History {
+        public static final String PREFIX = "yano.history.";
+        public static final String ENABLED = PREFIX + "enabled";
+        public static final String DIR = PREFIX + "dir";
+        public static final String START_MODE = PREFIX + "start-mode";
+        public static final String HOT_STORE_ENGINE = PREFIX + "hot-store.engine";
+        public static final String HOT_STORE_SQLITE_PATH = PREFIX + "hot-store.sqlite.path";
+        public static final String ENGINE = PREFIX + "archive.engine";
+        public static final String FINALITY_BLOCKS = PREFIX + "archive.finality-blocks";
+        public static final String DUCKLAKE_TARGET_FILE_SIZE =
+                PREFIX + "archive.ducklake.target-file-size";
+        public static final String DUCKLAKE_ROW_GROUP_SIZE =
+                PREFIX + "archive.ducklake.row-group-size";
+        public static final String DUCKLAKE_SNAPSHOT_RETENTION_HOURS =
+                PREFIX + "archive.ducklake.snapshot-retention-hours";
+        public static final String DUCKLAKE_CLEANUP_GRACE_HOURS =
+                PREFIX + "archive.ducklake.cleanup-grace-hours";
+        public static final String ROLLBACK_RETENTION_BLOCKS = PREFIX + "rollback.retention-blocks";
+        public static final String WORKER_POLL_MILLIS = PREFIX + "worker.poll-interval-millis";
+        public static final String WORKER_MAX_BLOCKS = PREFIX + "worker.max-blocks-per-batch";
+        public static final String WORKER_MAX_ROWS = PREFIX + "worker.max-rows-per-batch";
+        public static final String WORKER_PAUSE_DURING_CORE_CATCHUP =
+                PREFIX + "worker.pause-backfill-during-core-catchup";
+        public static final String WORKER_CORE_LAG = PREFIX + "worker.bulk-pause-core-lag-blocks";
+        public static final String WORKER_PROJECTION_PARALLELISM = PREFIX + "worker.projection-parallelism";
+        public static final String ADDRESS_SUBJECT_ADDRESS =
+                PREFIX + "datasets.address-transactions.subjects.address";
+        public static final String ADDRESS_SUBJECT_PAYMENT_CREDENTIAL =
+                PREFIX + "datasets.address-transactions.subjects.payment-credential";
+        public static final String ADDRESS_SUBJECT_STAKE_CREDENTIAL =
+                PREFIX + "datasets.address-transactions.subjects.stake-credential";
+        /** Interval at which an ongoing archive resource wait logs diagnostics. Waiting is not a failure. */
+        public static final String ARCHIVE_WAIT_WARN_SECONDS = PREFIX + "archive.wait-warn-seconds";
+        /** Only after this does a resource wait fail the archive mutation, without advancing any cursor. */
+        public static final String ARCHIVE_STUCK_OPERATION_SECONDS = PREFIX + "archive.stuck-operation-seconds";
+        public static final String MAINTENANCE_INTERVAL_SECONDS = PREFIX + "maintenance.interval-seconds";
+        public static final String MAINTENANCE_TIME_LIMIT_SECONDS = PREFIX + "maintenance.time-limit-seconds";
+        public static final String MAINTENANCE_MAX_REWRITE = PREFIX + "maintenance.max-bytes-to-rewrite";
+        public static final String DUCKDB_MAX_TOTAL_MEMORY = PREFIX + "duckdb.max-total-memory";
+        public static final String DUCKDB_MAX_CONCURRENT_QUERIES = PREFIX + "duckdb.max-concurrent-queries";
+        public static final String DUCKDB_MAX_TEMP_SIZE = PREFIX + "duckdb.max-temp-directory-size";
+        public static final String DUCKDB_STEADY_MEMORY = PREFIX + "duckdb.steady-state.memory-limit";
+        public static final String DUCKDB_STEADY_THREADS = PREFIX + "duckdb.steady-state.threads";
+        public static final String DUCKDB_BULK_MEMORY = PREFIX + "duckdb.bulk-catch-up.memory-limit";
+        public static final String DUCKDB_BULK_THREADS = PREFIX + "duckdb.bulk-catch-up.threads";
+        public static final String DUCKDB_BULK_JOBS = PREFIX + "duckdb.bulk-catch-up.max-concurrent-jobs";
 
-        private AccountHistory() {
-        }
+        // --- ADR-039 canonical projection outbox -------------------------------
+        /** Enable projection-outbox history. Must be set from genesis; mid-chain activation is rejected. */
+        public static final String PROJECTION_ENABLED = PREFIX + "projection.enabled";
+        /** Primary sink: ducklake | sqlite | none. "none" measures producer cost without a sink. */
+        public static final String PROJECTION_SINK = PREFIX + "projection.sink";
+        /** Deterministic split bound for one physical section value. */
+        public static final String PROJECTION_CHUNK_BYTES = PREFIX + "projection.chunk-bytes";
+        public static final String PROJECTION_MAX_BLOCKS_PER_BATCH = PREFIX + "projection.batch.max-blocks";
+        public static final String PROJECTION_MAX_BYTES_PER_BATCH = PREFIX + "projection.batch.max-bytes";
+        public static final String PROJECTION_SOFT_BACKLOG_BLOCKS = PREFIX + "projection.backlog.soft-blocks";
+        public static final String PROJECTION_HARD_BACKLOG_BLOCKS = PREFIX + "projection.backlog.hard-blocks";
+        public static final String PROJECTION_SOFT_BACKLOG_BYTES = PREFIX + "projection.backlog.soft-bytes";
+        public static final String PROJECTION_HARD_BACKLOG_BYTES = PREFIX + "projection.backlog.hard-bytes";
+        public static final String PROJECTION_DRAIN_INTERVAL_MILLIS = PREFIX + "projection.drain-interval-millis";
+        /**
+         * Comma-separated wire names of the sections this node projects. <strong>Defaults to
+         * every shipped block dataset</strong>; set it only to deliberately project fewer, which
+         * is a legacy or testing configuration rather than a tuning knob.
+         *
+         * <p>Part of the projection identity, so changing it changes the fingerprint and requires
+         * a fresh sync — intended, because a section added mid-chain would be missing for every
+         * earlier block. The corollary is that a dataset omitted here can only be added by
+         * resyncing from genesis.
+         *
+         * <p>Example legacy value: {@code transaction:v1,utxo-history:v1}.
+         */
+        public static final String PROJECTION_SECTIONS = PREFIX + "projection.sections";
+
+        /** Rows read per epoch-artifact page. Bounds the drain's working set, not what is written. */
+        public static final String PROJECTION_ARTIFACT_PAGE_ROWS = PREFIX + "projection.artifact.page-rows";
+        /** Wall-clock spacing between housekeeping passes; housekeeping also runs during bootstrap. */
+        public static final String PROJECTION_HOUSEKEEPING_INTERVAL_MINUTES =
+                PREFIX + "projection.maintenance.housekeeping-interval-minutes";
+        /** Wall-clock spacing between compaction passes, which additionally require a caught-up sink. */
+        public static final String PROJECTION_COMPACTION_INTERVAL_MINUTES =
+                PREFIX + "projection.maintenance.compaction-interval-minutes";
+        /** Time budget for one housekeeping pass. */
+        public static final String PROJECTION_HOUSEKEEPING_BUDGET_SECONDS =
+                PREFIX + "projection.maintenance.housekeeping-budget-seconds";
+        /** Time budget for one compaction pass. */
+        public static final String PROJECTION_COMPACTION_BUDGET_SECONDS =
+                PREFIX + "projection.maintenance.compaction-budget-seconds";
+        /** Upper bound on bytes one compaction pass may rewrite. */
+        public static final String PROJECTION_COMPACTION_REWRITE_BYTES =
+                PREFIX + "projection.maintenance.compaction-rewrite-bytes";
+        /** Compaction output target size for the primary sink, in bytes. */
+        public static final String PROJECTION_SINK_TARGET_FILE_SIZE_BYTES =
+                PREFIX + "projection.sink-options.target-file-size-bytes";
+        /** Parquet row-group size for the primary sink. */
+        public static final String PROJECTION_SINK_ROW_GROUP_SIZE =
+                PREFIX + "projection.sink-options.row-group-size";
+        /**
+         * How long sink snapshots are retained before housekeeping may expire them.
+         *
+         * <p>Independent of the legacy archive setting: the projection path has one writer
+         * and short-lived readers, so it does not need the replay worker's window. Until a
+         * snapshot expires, the files it references cannot be reclaimed.
+         */
+        public static final String PROJECTION_SINK_SNAPSHOT_RETENTION_HOURS =
+                PREFIX + "projection.sink-options.snapshot-retention-hours";
+        /**
+         * Grace period before files that a newer snapshot superseded are deleted from disk.
+         *
+         * <p>This bounds how long compaction's rewritten inputs stay on disk alongside their
+         * replacements, so peak sink footprint is roughly doubled for this long after a
+         * compaction pass.
+         */
+        public static final String PROJECTION_SINK_CLEANUP_GRACE_HOURS =
+                PREFIX + "projection.sink-options.cleanup-grace-hours";
+        // Aggregate archive-retained disk budget (ADR-039 disk backpressure). Canonical sync
+        // stays asynchronous until one of these is reached; it is never paced by sink speed.
+        public static final String PROJECTION_DISK_SOFT_BYTES = PREFIX + "projection.disk.soft-bytes";
+        public static final String PROJECTION_DISK_HARD_BYTES = PREFIX + "projection.disk.hard-bytes";
+        public static final String PROJECTION_DISK_LOW_WATER_BYTES = PREFIX + "projection.disk.low-water-bytes";
+        public static final String PROJECTION_DISK_FREE_RESERVE_BYTES = PREFIX + "projection.disk.free-space-reserve-bytes";
+        /** Measured logical-to-physical factor for outbox bytes; the first slice observed ~1.4. */
+        public static final String PROJECTION_DISK_AMPLIFICATION = PREFIX + "projection.disk.amplification-factor";
+
+        private History() { }
     }
 
     /**
@@ -310,21 +421,6 @@ public final class YanoPropertyKeys {
                 "yano.auto-checkpoint-interval";
 
         private Ledger() {
-        }
-    }
-
-    /**
-     * Snapshot export settings for offline diagnostics and comparisons.
-     */
-    public static final class SnapshotExport {
-        public static final String ENABLED = "yano.snapshot-export.enabled";
-        public static final String DIR = "yano.snapshot-export.dir";
-        public static final String STAKE = "yano.snapshot-export.stake";
-        public static final String DREP_DIST = "yano.snapshot-export.drep-dist";
-        public static final String ADAPOT = "yano.snapshot-export.adapot";
-        public static final String PROPOSALS = "yano.snapshot-export.proposals";
-
-        private SnapshotExport() {
         }
     }
 

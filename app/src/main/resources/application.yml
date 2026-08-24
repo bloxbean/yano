@@ -220,20 +220,40 @@ yano:
     # epoch-block-data-retention-lag: 5    # epochs to keep per-block issuer/fee data after consumption (controls rollback depth)
     # snapshot-retention-epochs: 50        # epochs of delegation snapshots to retain
   # Optional umbrella rollback retention. When set, Yano fills missing rollback
-  # retention properties for UTXO/account-state/account-history from genesis epoch length.
+  # retention properties for UTXO/account-state from genesis epoch length.
   # Explicit leaf properties still take precedence.
   # rollback-retention-epochs: 20
   account:
     stake-balance-index-enabled: true
-  account-history:
+  # ADR-039: history is written by the canonical projection outbox. The replay-worker
+  # archive was removed in Phase 7a, and with it the backfill workers, per-dataset
+  # start modes, hot store and dataset toggles that tuned it. Those keys are now
+  # rejected rather than ignored, so a stale setting fails loudly instead of reading
+  # as configuration that nothing consumes.
+  history:
     enabled: false
-    tx-events-enabled: true
-    rewards-enabled: false
-    retention-epochs: 0
-    # Defaults to yano.utxo.rollbackWindow when omitted.
-    # rollback-safety-slots: 4320
-    prune-interval-seconds: 300
-    prune-batch-size: 50000
+    dir: ./history
+    archive:
+      engine: ducklake
+      finality-blocks: auto
+      # Waiting for the single archive writer or bounded DuckDB capacity is
+      # normal flow control. Diagnostics are logged at wait-warn-seconds; only
+      # stuck-operation-seconds fails a mutation, and it never advances a cursor.
+      wait-warn-seconds: 30
+      stuck-operation-seconds: 300
+      ducklake:
+        target-file-size: 4MB
+        row-group-size: 100000
+        snapshot-retention-hours: 168
+        cleanup-grace-hours: 24
+    rollback:
+      retention-blocks: auto
+    duckdb:
+      max-total-memory: 256MB
+      max-concurrent-queries: 2
+      max-temp-directory-size: 2GB
+      steady-state: { memory-limit: 128MB, threads: 1 }
+      bulk-catch-up: { memory-limit: 128MB, threads: 1, max-concurrent-jobs: 1 }
   epoch-snapshot:
     amounts-enabled: true
   adapot:
@@ -310,6 +330,25 @@ yano:
       protocol-parameters-file: config/network/devnet/protocol-param.json
     account-state:
       enabled: true
+    # ADR-039: the projection archive is OFF for devnet, and that is a statement about
+    # what the devnet assembly can currently support rather than a preference.
+    #
+    # YanoDevnetAssembly.DevnetYano is a delegating decorator that does not forward the
+    # archive surface of Yano - chainstateRocksAccess, installProjectionContributor,
+    # installEpochArtifactContributor, genesisUtxoProvider and installArchiveIngestHold
+    # all fall through to interface defaults. The first throws, which is why enabling
+    # this failed startup; the rest degrade silently, which is worse: contributors that
+    # never install and a genesis provider that returns EMPTY would produce an archive
+    # that looks healthy and is empty.
+    #
+    # Enabling it here would therefore be a claim the code cannot honour. Forward those
+    # methods in the decorator before turning this on, and add a test that fails when a
+    # new Yano method goes unforwarded. Tracked as issue #80.
+    history:
+      enabled: false
+      projection:
+        enabled: false
+        sink: ducklake
     epoch-snapshot:
       amounts-enabled: true           # UTXO balance aggregation in snapshots
     adapot:

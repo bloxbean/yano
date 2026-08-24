@@ -36,8 +36,11 @@ class UtxoResourceMempoolQueryTest {
         UtxoDto defaultBody = (UtxoDto) resource.getUtxo(outpoint.txHash(), 0, false).getEntity();
         UtxoDto transientBody = (UtxoDto) resource.getUtxo(outpoint.txHash(), 0, true).getEntity();
 
-        assertThat(defaultBody.amount().getFirst().quantity()).isEqualTo(BigInteger.valueOf(1_000_000));
-        assertThat(transientBody.amount().getFirst().quantity()).isEqualTo(BigInteger.valueOf(2_000_000));
+        // AmountDto.quantity is a string in this branch: lovelace exceeds 2^53, so a JSON
+        // number loses precision in any JavaScript client. What this test checks is unchanged -
+        // the default view sees the settled output and the transient view sees the mempool one.
+        assertThat(defaultBody.amount().getFirst().quantity()).isEqualTo("1000000");
+        assertThat(transientBody.amount().getFirst().quantity()).isEqualTo("2000000");
     }
 
     private static Utxo utxo(Outpoint outpoint, long lovelace) {
