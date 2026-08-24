@@ -7,7 +7,7 @@ import type { AnchorCommitment, AppChainBlockDetail, AppChainBlocks, AppChainMes
   L1Transaction, L1TransactionUtxos, PluginOperationsSummary, ProofVerificationRequest,
   ProofVerificationResult, StateProofEnvelope,
   ProofSubjectDiscovery,
-  StorageStatus } from './types';
+  StorageStatus, ProjectionCoverage, ProjectionWatermark } from './types';
 
 const API_STORAGE_KEY = 'yano.console.api-base.v1';
 const KEY_STORAGE_KEY = 'yano.console.api-key.v1';
@@ -220,6 +220,10 @@ export class YanoApi {
   status(signal?: AbortSignal) { return this.json<NodeStatus>('/node/status', signal); }
   peers(signal?: AbortSignal) { return this.json<NodePeers>('/node/peers', signal); }
   storage(signal?: AbortSignal) { return this.json<StorageStatus>('/status', signal); }
+  /** What the projection archive can answer for right now; see ProjectionCoverage. */
+  historyCoverage(signal?: AbortSignal) { return this.json<ProjectionCoverage>('/history/coverage', signal); }
+  /** Cross-dataset consistency point over the archive's committed range. */
+  historyWatermark(signal?: AbortSignal) { return this.json<ProjectionWatermark>('/history/watermark', signal); }
   chains(signal?: AbortSignal) { return this.json<ChainSummary[]>('/app-chain/chains', signal); }
   chainStatus(chainId: string, signal?: AbortSignal) {
     return this.json<AppChainStatus>(`${chainPath(chainId)}/status`, signal);
