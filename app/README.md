@@ -293,7 +293,19 @@ The rollback goes through the full standard rollback flow: ChainState rollback, 
 
 ## Swagger UI
 
-An interactive API explorer is available at `/q/swagger-ui` when the node is running. The OpenAPI spec is at `/q/openapi`.
+An interactive API explorer is available at `/q/swagger-ui` when the node is running. The complete OpenAPI spec is at `/q/openapi`.
+
+The endpoints are published in groups (ADR-040). Swagger UI shows a **Select a definition** drop-down in the top bar; **Core API** is selected by default. Each group is also available as its own OpenAPI document:
+
+| Group | OpenAPI document | Contents |
+|-------|------------------|----------|
+| Core API (default) | `/q/openapi-core` | Blocks, transactions (`/tx/submit`, `/txs`), UTXOs, accounts, epochs, genesis, governance, network, scripts, `/status`, `/utils/txs/evaluate`, read-only `/node/{status,tip,protocol-params}` |
+| App Chain API | `/q/openapi-app-chain` | `/app-chain/chains/{chainId}/...` and `/plugins/{bundleId}/...` |
+| Devnet API | `/q/openapi-devnet` | `/devnet/...` (rollback, snapshots, faucet, time travel) |
+| Admin API | `/q/openapi-admin` | Node lifecycle (`/node/start`, `/node/stop`, `/node/recover`, `/node/config`, ...), `/plugin-operations`, `/api/debug/...` |
+| All APIs | `/q/openapi` | Everything (unchanged) |
+
+Grouping only affects documentation — every route keeps its existing path. A new resource class is assigned to a group with `@Extension(name = ApiGroup.<GROUP>, value = "")` (see `app/src/main/java/.../app/api/ApiGroup.java`); the `ApiGroupOpenApiTest` fails if an endpoint belongs to no group.
 
 To disable Swagger UI in production, set the environment variable:
 

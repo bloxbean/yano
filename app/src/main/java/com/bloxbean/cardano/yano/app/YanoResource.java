@@ -5,6 +5,7 @@ import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.NodeLifecycle;
 import com.bloxbean.cardano.yano.api.TxGateway;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
+import com.bloxbean.cardano.yano.app.api.ApiGroup;
 import com.bloxbean.cardano.yano.app.archive.HistoryArchiveService;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
@@ -15,9 +16,11 @@ import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.eclipse.microprofile.openapi.annotations.extensions.Extension;
 
 import java.util.Map;
 
+@Extension(name = ApiGroup.ADMIN, value = "")
 @Path("node")
 @Produces(MediaType.APPLICATION_JSON)
 public class YanoResource {
@@ -42,6 +45,8 @@ public class YanoResource {
 
     @GET
     @Path("/status")
+    @Extension(name = ApiGroup.CORE, value = "")
+    @Extension(name = ApiGroup.ADMIN, value = "")
     public Response getStatus() {
         return Response.ok(nodeLifecycle.getStatus()).build();
     }
@@ -93,6 +98,8 @@ public class YanoResource {
 
     @GET
     @Path("/tip")
+    @Extension(name = ApiGroup.CORE, value = "")
+    @Extension(name = ApiGroup.ADMIN, value = "")
     public Response getLocalTip() {
         var tip = chainQuery.getLocalTip();
         if (tip == null) {
@@ -153,6 +160,8 @@ public class YanoResource {
 
     @GET
     @Path("/protocol-params")
+    @Extension(name = ApiGroup.CORE, value = "")
+    @Extension(name = ApiGroup.ADMIN, value = "")
     public Response getProtocolParameters() {
         String params = ledgerQuery.getProtocolParameters();
         if (params == null) {

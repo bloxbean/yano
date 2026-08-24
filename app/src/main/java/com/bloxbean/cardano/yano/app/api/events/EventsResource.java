@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.app.api.events;
 
 import com.bloxbean.cardano.yano.api.events.stream.NodeEventStream;
+import com.bloxbean.cardano.yano.app.api.ApiGroup;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.DefaultValue;
@@ -12,6 +13,7 @@ import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.sse.Sse;
 import jakarta.ws.rs.sse.SseEventSink;
+import org.eclipse.microprofile.openapi.annotations.extensions.Extension;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -28,6 +30,7 @@ import java.util.stream.Collectors;
  * drop-oldest) must reconcile via the REST endpoints; the stream is a
  * poll-reducer, not a guaranteed feed.
  */
+@Extension(name = ApiGroup.CORE, value = "")
 @Path("events")
 public class EventsResource {
     private static final Logger log = LoggerFactory.getLogger(EventsResource.class);

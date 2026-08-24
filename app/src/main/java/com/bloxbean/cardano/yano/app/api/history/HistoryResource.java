@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.app.api.history;
 
+import com.bloxbean.cardano.yano.app.api.ApiGroup;
 import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import com.bloxbean.cardano.yano.archive.api.ArchiveStoreException;
 import com.bloxbean.cardano.yano.app.archive.HistoryArchiveService;
@@ -11,6 +12,7 @@ import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import org.eclipse.microprofile.openapi.annotations.extensions.Extension;
 
 import java.util.Arrays;
 import java.util.EnumSet;
@@ -19,6 +21,7 @@ import java.util.OptionalLong;
 import java.util.Set;
 
 /** Finalized cross-dataset archive consistency metadata. */
+@Extension(name = ApiGroup.CORE, value = "")
 @Path("history")
 @Produces(MediaType.APPLICATION_JSON)
 public class HistoryResource {

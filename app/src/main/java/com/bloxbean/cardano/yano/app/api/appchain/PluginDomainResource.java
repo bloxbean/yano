@@ -8,6 +8,7 @@ import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiRequest;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiResponse;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainApiRoute;
 import com.bloxbean.cardano.yano.api.plugin.domain.DomainHttpMethod;
+import com.bloxbean.cardano.yano.app.api.ApiGroup;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -24,6 +25,7 @@ import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.MultivaluedMap;
 import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.core.UriInfo;
+import org.eclipse.microprofile.openapi.annotations.extensions.Extension;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -38,6 +40,7 @@ import java.util.Map;
  * callbacks. This adapter retains ownership of the public namespace,
  * authentication, request bounds, media types and failure redaction.</p>
  */
+@Extension(name = ApiGroup.APP_CHAIN, value = "")
 @Path("plugins/{bundleId}")
 public class PluginDomainResource {
 

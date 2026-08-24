@@ -8,6 +8,7 @@ import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
+import com.bloxbean.cardano.yano.app.api.ApiGroup;
 import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import com.bloxbean.cardano.yano.app.api.addresses.dto.AddressSummaryDto;
 import com.bloxbean.cardano.yano.app.api.addresses.dto.AddressTxDto;
@@ -22,6 +23,7 @@ import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import org.eclipse.microprofile.openapi.annotations.extensions.Extension;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -40,6 +42,7 @@ import java.util.Map;
  * {@code addresses} would out-match UtxoResource's class path for
  * {@code /addresses/{address}/utxos} and 404 it.
  */
+@Extension(name = ApiGroup.CORE, value = "")
 @Path("/")
 @Produces(MediaType.APPLICATION_JSON)
 public class AddressResource {
