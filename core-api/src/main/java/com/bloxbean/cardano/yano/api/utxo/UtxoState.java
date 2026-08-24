@@ -72,6 +72,12 @@ public interface UtxoState {
         // Default no-op — implementations override
     }
 
+    /** Consistent snapshot of complete live UTXO records for derived resolvers. */
+    default long forEachUtxoRecord(java.util.function.Consumer<com.bloxbean.cardano.yano.api.utxo.model.Utxo> consumer) {
+        // Implementations without a complete store cannot seed a live resolver.
+        return -1;
+    }
+
     /**
      * Iterate over unspent UTXOs created at or before {@code maxSlot},
      * using a consistent point-in-time snapshot of the UTXO store.

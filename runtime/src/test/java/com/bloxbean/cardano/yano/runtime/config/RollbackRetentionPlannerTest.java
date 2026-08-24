@@ -23,15 +23,12 @@ class RollbackRetentionPlannerTest {
                 false,
                 50,
                 false,
-                Optional.empty(),
-                false,
                 0);
 
         assertFalse(settings.umbrellaEnabled());
         assertEquals(4320, settings.utxoRollbackWindow());
         assertEquals(5, settings.accountStateEpochBlockDataRetentionLag());
         assertEquals(50, settings.accountStateSnapshotRetentionEpochs());
-        assertTrue(settings.accountHistoryRollbackSafetySlots().isEmpty());
         assertEquals(0, settings.blockBodyPruneDepth());
     }
 
@@ -47,8 +44,6 @@ class RollbackRetentionPlannerTest {
                 false,
                 50,
                 false,
-                Optional.empty(),
-                false,
                 0);
 
         assertTrue(settings.umbrellaEnabled());
@@ -56,7 +51,6 @@ class RollbackRetentionPlannerTest {
         assertEquals(8_640_000, settings.utxoRollbackWindow());
         assertEquals(21, settings.accountStateEpochBlockDataRetentionLag());
         assertEquals(50, settings.accountStateSnapshotRetentionEpochs());
-        assertEquals(8_640_000L, settings.accountHistoryRollbackSafetySlots().orElseThrow());
         assertEquals(0, settings.blockBodyPruneDepth());
     }
 
@@ -72,15 +66,12 @@ class RollbackRetentionPlannerTest {
                 true,
                 120,
                 true,
-                Optional.of(7_776_000L),
-                true,
                 2160);
 
         assertTrue(settings.umbrellaEnabled());
         assertEquals(7_776_000, settings.utxoRollbackWindow());
         assertEquals(40, settings.accountStateEpochBlockDataRetentionLag());
         assertEquals(120, settings.accountStateSnapshotRetentionEpochs());
-        assertEquals(7_776_000L, settings.accountHistoryRollbackSafetySlots().orElseThrow());
         assertEquals(864_000, settings.blockBodyPruneDepth());
     }
 
@@ -96,8 +87,6 @@ class RollbackRetentionPlannerTest {
                         5,
                         false,
                         50,
-                        false,
-                        Optional.empty(),
                         false,
                         0));
 

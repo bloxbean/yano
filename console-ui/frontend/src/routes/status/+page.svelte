@@ -4,13 +4,17 @@
   import MetricCard from '$lib/components/MetricCard.svelte';
   import MetricRow from '$lib/components/MetricRow.svelte';
   import CopyValue from '$lib/components/CopyValue.svelte';
+  import ArchiveHistoryPanel from '$lib/components/ArchiveHistoryPanel.svelte';
   import { apiFailureMessage, resolveApiBase, YanoApi } from '$lib/api/client';
-  import type { NodeConfig, NodePeers, NodeStatus, StorageStatus } from '$lib/api/types';
+  import type { NodeConfig, NodePeers, NodeStatus, ProjectionCoverage, ProjectionWatermark,
+  StorageStatus } from '$lib/api/types';
   import { SessionHistory, type CompactSample } from '$lib/telemetry/history';
   import { columnSamples, mergeSamples } from '$lib/telemetry/durable-history';
   import { PrometheusHistoryProvider, resolveMetricsBase, type PrometheusSeries } from '$lib/telemetry/prometheus';
   import { createPoller, type Poller } from '$lib/telemetry/poller';
   import { isLocalProducer, syncProgress } from '$lib/status/view-model';
+  import { known, NO_CURSOR_PROGRESS, observeCursor, type CursorProgress }
+    from '$lib/status/projection';
 
   let status: NodeStatus | null = null;
   let peers: NodePeers | null = null;
@@ -26,6 +30,11 @@
   let poller: Poller | null = null;
   let durableSamples: CompactSample[] = [];
   let historySource = 'browser session';
+  let activeTab: 'overview' | 'history' = 'overview';
+  let coverage: ProjectionCoverage | null = null;
+  let watermark: ProjectionWatermark | null = null;
+  let archiveError = '';
+  let cursorProgress: CursorProgress = NO_CURSOR_PROGRESS;
 
   const n = (value: unknown) => Number.isFinite(Number(value)) ? Number(value) : 0;
   const fmt = (value: unknown) => value === null || value === undefined ? '-' : n(value).toLocaleString();
@@ -73,6 +82,30 @@
         error = apiFailureMessage(cause, 'Unable to load node identity');
       }
       if (disposed) return;
+      // The archive is optional: a node without it answers 404, and older nodes have no
+      // /history endpoints at all. Neither may blank the rest of the status page.
+      const refreshArchive = async (signal: AbortSignal) => {
+        try {
+          const [nextCoverage, nextWatermark] = await Promise.all([
+            api.historyCoverage(signal), api.historyWatermark(signal)
+          ]);
+          coverage = nextCoverage;
+          watermark = nextWatermark;
+          // Successive samples are the only thing that distinguishes a moving cursor from a
+          // frozen one; a single reading looks identical either way.
+          cursorProgress = observeCursor(cursorProgress,
+            known(nextCoverage?.queryableThroughBlock), Date.now());
+          archiveError = '';
+        } catch (cause) {
+          if (cause instanceof DOMException && cause.name === 'AbortError') return;
+          coverage = null;
+          watermark = null;
+          // Deliberately not reset: a failed read must not restart the stall clock.
+          cursorProgress = observeCursor(cursorProgress, null, Date.now());
+          archiveError = apiFailureMessage(cause, 'Archive status request failed');
+        }
+      };
+
       poller = createPoller(async (signal) => {
         const started = performance.now();
         try {
@@ -86,6 +119,7 @@
           requestMs = Math.round(performance.now() - started);
           lastUpdated = new Date().toLocaleTimeString();
           error = '';
+          await refreshArchive(signal);
         } catch (cause) {
           if (!(cause instanceof DOMException && cause.name === 'AbortError')) {
             error = apiFailureMessage(cause, 'Status request failed');
@@ -184,6 +218,16 @@
   <div class="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-300">{error}</div>
 {/if}
 
+<div class="mb-4 flex gap-2 border-b border-slate-700/50" role="tablist" aria-label="Node sections">
+  <button type="button" role="tab" aria-selected={activeTab === 'overview'}
+          class="border-b-2 px-3 py-2 text-sm font-medium {activeTab === 'overview' ? 'border-blue-400 text-blue-300' : 'border-transparent text-slate-400 hover:text-slate-200'}"
+          on:click={() => activeTab = 'overview'}>Overview</button>
+  <button type="button" role="tab" aria-selected={activeTab === 'history'}
+          class="border-b-2 px-3 py-2 text-sm font-medium {activeTab === 'history' ? 'border-blue-400 text-blue-300' : 'border-transparent text-slate-400 hover:text-slate-200'}"
+          on:click={() => activeTab = 'history'}>History</button>
+</div>
+
+{#if activeTab === 'overview'}
 <section class="card overflow-hidden p-5">
   <div class="flex flex-wrap items-end justify-between gap-6">
     <div>
@@ -326,6 +370,11 @@
     </table>
   </div>
 </section>
+{:else}
+  <ArchiveHistoryPanel history={storage?.history} coverage={coverage ?? undefined}
+                       watermark={watermark ?? undefined} error={archiveError}
+                       progress={cursorProgress} />
+{/if}
 
 <footer class="mt-6 flex flex-wrap gap-2 text-xs text-slate-600">
   <span>Yano node dashboard</span><span>·</span><span>auto-refresh every 5s</span><span>·</span>

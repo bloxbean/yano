@@ -62,6 +62,11 @@ public class EpochRewardCalculator {
     private org.rocksdb.WriteBatch rewardBatch;
     private List<DefaultAccountStateStore.DeltaOp> rewardDeltaOps;
     private DefaultAccountStateStore.BatchStateOverlay rewardStateOverlay;
+    private volatile com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink archiveStaging =
+            com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.NOOP;
+    private volatile com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Boundary archiveBoundary;
+    private com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.FactWriter<
+            com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.RewardFact> rewardArchiveWriter;
 
     public EpochRewardCalculator(RocksDB db, ColumnFamilyHandle cfState,
                                  ColumnFamilyHandle cfEpochSnapshot, boolean enabled) {
@@ -107,6 +112,17 @@ public class EpochRewardCalculator {
         this.accountStateStore = store;
     }
 
+    public void setEpochArchiveStagingSink(
+            com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink sink) {
+        this.archiveStaging = sink != null ? sink
+                : com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.NOOP;
+    }
+
+    public void setArchiveBoundary(
+            com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Boundary boundary) {
+        this.archiveBoundary = boundary;
+    }
+
     public void setEraProvider(EraProvider eraProvider) {
         this.eraProvider = eraProvider;
     }
@@ -119,10 +135,13 @@ public class EpochRewardCalculator {
      * Open a WriteBatch for delta-aware reward distribution.
      * Must be called before calculateAndDistribute() and paired with commitRewardBatch().
      */
-    void beginRewardBatch() {
+    void beginRewardBatch(int archiveEpoch, String part) {
         this.rewardBatch = new org.rocksdb.WriteBatch();
         this.rewardDeltaOps = new ArrayList<>();
         this.rewardStateOverlay = new DefaultAccountStateStore.BatchStateOverlay();
+        this.rewardArchiveWriter = archiveStaging.enabled(
+                com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset.REWARD)
+                ? archiveStaging.openRewards(archiveEpoch, part) : null;
     }
 
     /**
@@ -145,13 +164,17 @@ public class EpochRewardCalculator {
      */
     void commitRewardBatch(long boundarySlot, byte phase) throws RocksDBException {
         if (rewardBatch == null) return;
+        var archiveWriter = rewardArchiveWriter;
         try (var wo = new org.rocksdb.WriteOptions()) {
             accountStateStore.commitBoundaryDelta(boundarySlot, phase, rewardBatch, rewardDeltaOps);
             db.write(wo, rewardBatch);
+            if (archiveWriter != null) archiveWriter.commit();
         } finally {
+            if (archiveWriter != null) archiveWriter.close();
             rewardBatch.close();
             rewardBatch = null;
             rewardDeltaOps = null;
+            rewardArchiveWriter = null;
             if (rewardStateOverlay != null) {
                 rewardStateOverlay.clear();
             }
@@ -735,6 +758,14 @@ public class EpochRewardCalculator {
                 earnedEpoch, rewardType.ordinal(), amount, poolHash);
         accountStateStore.putStateWithDelta(rewardKey,
                 AccountStateCborCodec.encodeAccumulatedReward(reward), rewardBatch, rewardDeltaOps, rewardStateOverlay);
+
+        if (rewardArchiveWriter != null) {
+            int spendableEpoch = archiveBoundary != null ? archiveBoundary.newEpoch() : earnedEpoch + 2;
+            String sourceId = poolHash != null && !poolHash.isBlank() ? poolHash : "ledger";
+            rewardArchiveWriter.append(new com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.RewardFact(
+                    credType, credHash, poolHash, rewardType.name(), earnedEpoch, spendableEpoch,
+                    amount, sourceId));
+        }
     }
 
     /**
@@ -810,8 +841,10 @@ public class EpochRewardCalculator {
             }
 
             try {
+                // A deposit refund is not leader income — type it as REFUND so
+                // reward history (and the accumulated-reward record) label it correctly.
                 creditReward(credType, credHash, deposit, epoch,
-                        com.bloxbean.cardano.yano.api.account.RewardType.LEADER, pool.poolHash());
+                        com.bloxbean.cardano.yano.api.account.RewardType.REFUND, pool.poolHash());
                 totalRefunded = totalRefunded.add(deposit);
                 log.info("Pool {} deposit refund {} credited to {} at epoch {}",
                         pool.poolHash(), deposit, credKey, epoch);

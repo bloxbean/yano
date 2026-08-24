@@ -22,6 +22,8 @@ import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
 import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
 import com.bloxbean.cardano.yano.api.plugin.UtxoFilterContext;
 import com.bloxbean.cardano.yano.api.util.StoredBlockUtil;
+import com.bloxbean.cardano.yano.api.archive.CanonicalProjectionContributor;
+import com.bloxbean.cardano.yano.api.archive.ConsumedOutputAddresses;
 import com.bloxbean.cardano.yano.runtime.db.RocksDbSupplier;
 import com.bloxbean.cardano.yano.runtime.db.UtxoCfNames;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
@@ -96,8 +98,42 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     private volatile long lastBlockSize = 0L;
     private final AtomicReference<java.util.Map<String, Long>> cfEstimates = new AtomicReference<>(java.util.Map.of());
 
+    /** Shared RocksDB context, cached so the projection hook resolves handles without reallocating. */
+    private volatile com.bloxbean.cardano.yano.runtime.db.RocksDbContext rocksContext;
+    /** ADR-039 projection contributor; NOOP unless history is enabled. */
+    private volatile CanonicalProjectionContributor projectionContributor = CanonicalProjectionContributor.NOOP;
+
+    // ADR-039 gate 1 instrument. Cross-run wall-clock A/B legs cannot resolve a 5% effect on a
+    // shared host - measured spread was 16-49% - so the projection's cost is attributed
+    // *within* a single run instead: time spent inside the contributor against time spent in
+    // the whole block apply, both measured on the same thread in the same run. Cross-run
+    // variance cancels completely because there is no second run.
+    //
+    // Thread CPU time would be preferable but is unavailable here: applyBlock runs on a
+    // virtual thread, where ThreadMXBean reports no CPU time. Wall time is a good substitute
+    // for this particular ratio because the contributor performs no I/O - it stages into an
+    // in-memory WriteBatch - so its wall time is essentially its CPU time, while the
+    // denominator legitimately includes the RocksDB write that projection also inflates.
+    //
+    // This measures the *apply-stage* share. RocksDB write amplification from the extra column
+    // families is captured separately as a disk measurement (~1.4x logical).
+    /** Stable key for a consumed outpoint; hex id plus index, which is already how inputs arrive. */
+    private static String consumedKey(String txHash, int outputIndex) {
+        return txHash + '#' + outputIndex;
+    }
+
+    private final java.util.concurrent.atomic.LongAdder applyNanos = new java.util.concurrent.atomic.LongAdder();
+    private final java.util.concurrent.atomic.LongAdder projectionNanos = new java.util.concurrent.atomic.LongAdder();
+    private final java.util.concurrent.atomic.LongAdder attributedBlocks = new java.util.concurrent.atomic.LongAdder();
+    // Full per-block cycle: apply plus the gap until the next block reaches apply. Recording it
+    // here means the projection's share of *sync* - not just of apply - is reported by the node
+    // rather than derived by hand from a throughput figure taken over a different window.
+    private final java.util.concurrent.atomic.LongAdder cycleNanos = new java.util.concurrent.atomic.LongAdder();
+    private long previousApplyStartNanos;
+
     public DefaultUtxoStore(RocksDbSupplier supplier, Logger logger, java.util.Map<String, Object> config) {
         this.supplier = supplier;
+        this.rocksContext = supplier.rocks();
         this.db = supplier.rocks().db();
         this.log = logger;
         Object ev = config != null ? config.getOrDefault(YanoPropertyKeys.Utxo.ENABLED, Boolean.TRUE) : Boolean.TRUE;
@@ -149,12 +185,21 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     }
 
     /**
+     * Install the ADR-039 projection contributor. Called once during composition when
+     * history is enabled; otherwise the store keeps the NOOP contributor.
+     */
+    public void setProjectionContributor(CanonicalProjectionContributor contributor) {
+        this.projectionContributor = contributor == null ? CanonicalProjectionContributor.NOOP : contributor;
+    }
+
+    /**
      * Reinitialize DB and CF handles from the supplier after a snapshot restore.
      * The supplier's underlying RocksDB has been closed and reopened, so all
      * cached handles are stale.
      */
     public synchronized void reinitialize() {
         var ctx = supplier.rocks();
+        this.rocksContext = ctx;
         this.db = ctx.db();
         this.cfUnspent = ctx.handle(UtxoCfNames.UTXO_UNSPENT);
         this.cfSpent = ctx.handle(UtxoCfNames.UTXO_SPENT);
@@ -396,6 +441,28 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                 }
                 it.next();
             }
+        }
+    }
+
+    @Override
+    public long forEachUtxoRecord(java.util.function.Consumer<Utxo> consumer) {
+        if (!enabled || db == null) return -1;
+        org.rocksdb.Snapshot snapshot = db.getSnapshot();
+        try (org.rocksdb.ReadOptions options = new org.rocksdb.ReadOptions().setSnapshot(snapshot);
+             RocksIterator it = db.newIterator(cfUnspent, options)) {
+            byte[] applied = db.get(cfMeta, options, META_LAST_APPLIED_BLOCK);
+            long snapshotBlock = applied == null ? 0
+                    : ByteBuffer.wrap(applied).order(ByteOrder.BIG_ENDIAN).getLong();
+            for (it.seekToFirst(); it.isValid(); it.next()) {
+                String txHash = UtxoKeyUtil.txHashFromOutpointKey(it.key());
+                int index = UtxoKeyUtil.outputIndexFromOutpointKey(it.key());
+                consumer.accept(decodeStoredToUtxo(it.value(), new Outpoint(txHash, index)));
+            }
+            return snapshotBlock;
+        } catch (RocksDBException e) {
+            throw new IllegalStateException("failed to capture UTXO snapshot", e);
+        } finally {
+            db.releaseSnapshot(snapshot);
         }
     }
 
@@ -687,6 +754,13 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         if (!enabled) return;
         if (e.block() == null) return; // header-only or EBB
         long t0 = System.nanoTime();
+        long projectionCpu = 0L;
+        // Addresses of the outputs this block consumes, captured while they are still current.
+        // Only collected when a contributor actually needs them (the address-transaction
+        // section); otherwise this stays null and costs one reference check per input.
+        java.util.Map<String, String> consumedAddresses =
+                projectionContributor.enabled() && projectionContributor.needsConsumedOutputAddresses()
+                        ? new java.util.HashMap<>() : null;
 
         // Determine Allegra bootstrap outpoints to remove (before ctx is created).
         // These are collected here but written into the block's WriteBatch for atomicity.
@@ -790,6 +864,10 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                                 batch.put(cfSpent, key, spentVal);
                                 batch.delete(cfUnspent, key);
                                 var stored = UtxoCborCodec.decodeUtxoRecord(prev);
+                                if (consumedAddresses != null) {
+                                    consumedAddresses.put(
+                                            consumedKey(in.getTransactionId(), in.getIndex()), stored.address);
+                                }
                                 if (indexAddressHash) {
                                     byte[] akey = UtxoKeyUtil.addrHash28(stored.address);
                                     byte[] aIdx = UtxoKeyUtil.addressIndexKey(akey, stored.slot, in.getTransactionId(), in.getIndex());
@@ -838,6 +916,14 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                             batch.put(cfUnspent, outKey, val);
                             // Track for intra-block spend detection
                             intraBlockOutputs.put(tx.getTxHash() + ":" + outIdx, val);
+                            // Capture on creation as well as on spend. An output created and
+                            // consumed inside one block is never read back from the store, so
+                            // the spend path alone leaves it unresolvable - observed on preprod
+                            // block 1,809,762, where an invalid transaction's collateral return
+                            // is spent in the same block.
+                            if (consumedAddresses != null) {
+                                consumedAddresses.put(consumedKey(tx.getTxHash(), outIdx), out.getAddress());
+                            }
                             if (referenceScriptHash != null && out.getScriptRef() != null) {
                                 batch.put(cfScriptRef, referenceScriptHash, HexUtil.decodeHexString(out.getScriptRef()));
                             }
@@ -882,6 +968,10 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                                 batch.put(cfSpent, key, spentVal);
                                 batch.delete(cfUnspent, key);
                                 var stored = UtxoCborCodec.decodeUtxoRecord(prev);
+                                if (consumedAddresses != null) {
+                                    consumedAddresses.put(
+                                            consumedKey(in.getTransactionId(), in.getIndex()), stored.address);
+                                }
                                 if (indexAddressHash) {
                                     byte[] akey = UtxoKeyUtil.addrHash28(stored.address);
                                     byte[] aIdx = UtxoKeyUtil.addressIndexKey(akey, stored.slot, in.getTransactionId(), in.getIndex());
@@ -914,6 +1004,9 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
 
                         byte[] outKey = UtxoKeyUtil.outpointKey(tx.getTxHash(), outIdx);
                         batch.put(cfUnspent, outKey, val);
+                        if (consumedAddresses != null) {
+                            consumedAddresses.put(consumedKey(tx.getTxHash(), outIdx), out.getAddress());
+                        }
                         if (referenceScriptHash != null && out.getScriptRef() != null) {
                             batch.put(cfScriptRef, referenceScriptHash, HexUtil.decodeHexString(out.getScriptRef()));
                         }
@@ -943,6 +1036,26 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             batch.put(cfMeta, META_LAST_APPLIED_SLOT, ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(slot).array());
             batch.put(cfMeta, META_LAST_APPLIED_BLOCK, ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(blockNo).array());
             applyStakeBalanceDeltas(batch, stakeBalanceDeltas);
+            // ADR-039: stage this block's projection sections into the SAME batch as the
+            // UTXO state they were derived from. That is the whole atomicity argument —
+            // a section cannot become durable without its state, or the reverse — and it
+            // avoids any transaction spanning chain, UTXO and ledger. When history is
+            // disabled this is one predictable false check.
+            if (projectionContributor.enabled()) {
+                long projectionCpu0 = metricsEnabled ? System.nanoTime() : 0L;
+                java.util.Map<String, String> captured = consumedAddresses;
+                ConsumedOutputAddresses consumed = captured == null
+                        ? ConsumedOutputAddresses.NONE
+                        : (txHash, outputIndex) -> captured.get(consumedKey(txHash, outputIndex));
+                projectionContributor.contributeBlock(e, consumed, (cf, key, value) -> {
+                    try {
+                        batch.put(rocksContext.handle(cf), key, value);
+                    } catch (RocksDBException rex) {
+                        throw new RuntimeException("Failed to stage projection record in UTXO batch", rex);
+                    }
+                });
+                if (metricsEnabled) projectionCpu = System.nanoTime() - projectionCpu0;
+            }
             db.write(wo, batch);
 
             if (log.isDebugEnabled()) {
@@ -951,6 +1064,14 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                 } else {
                     log.debug("UTXO applied: block={} slot={} created={} spent={} era={}", blockNo, slot, createdRefs.size(), spentRefs.size(), e.era());
                 }
+            }
+            if (metricsEnabled) {
+                applyNanos.add(System.nanoTime() - t0);
+                projectionNanos.add(projectionCpu);
+                attributedBlocks.increment();
+                // Skip the first block: there is no previous start to measure a cycle against.
+                if (previousApplyStartNanos != 0) cycleNanos.add(t0 - previousApplyStartNanos);
+                previousApplyStartNanos = t0;
             }
             if (metricsEnabled) {
                 long dtMs = (System.nanoTime() - t0) / 1_000_000L;
@@ -1003,18 +1124,16 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                 String hexAddr = entry.getKey();
                 BigInteger lovelace = entry.getValue();
 
-                // Derive genesis tx hash: blake2b-256(address_hex_bytes) — matches yaci-store convention
-                byte[] addrBytes = HexUtil.decodeHexString(hexAddr);
-                String txHash = HexUtil.encodeHexString(Blake2bUtil.blake2bHash256(addrBytes));
-                int outputIndex = 0;
-
-                // Convert hex address to bech32
-                String bech32Addr;
-                try {
-                    bech32Addr = new Address(addrPrefix, addrBytes).toBech32();
-                } catch (Exception e) {
+                // Normalised once, shared. The tx-hash convention, the bech32 form and the
+                // output index live in GenesisUtxos so the ADR-039 projection derives exactly
+                // the same outputs rather than reimplementing them.
+                var genesisUtxo = com.bloxbean.cardano.yano.api.genesis.GenesisUtxos.shelley(
+                        hexAddr, lovelace, networkMagic, blockNumber, slot, blockHash);
+                String txHash = genesisUtxo.txHash();
+                int outputIndex = genesisUtxo.outputIndex();
+                String bech32Addr = genesisUtxo.address();
+                if (bech32Addr.equals(hexAddr)) {
                     log.warn("Could not convert genesis address to bech32: {}", hexAddr);
-                    bech32Addr = hexAddr; // fallback to hex
                 }
 
                 // Encode UTXO record
@@ -1074,10 +1193,11 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                 String byronAddress = entry.getKey();
                 BigInteger lovelace = entry.getValue();
 
-                // Derive genesis tx hash: blake2b-256(Base58.decode(address)) — matches yaci-store convention
-                byte[] addrBytes = Base58.decode(byronAddress);
-                String txHash = HexUtil.encodeHexString(Blake2bUtil.blake2bHash256(addrBytes));
-                int outputIndex = 0;
+                // Same shared normalisation as the Shelley branch above.
+                var genesisUtxo = com.bloxbean.cardano.yano.api.genesis.GenesisUtxos.byron(
+                        byronAddress, lovelace, blockNumber, slot, blockHash);
+                String txHash = genesisUtxo.txHash();
+                int outputIndex = genesisUtxo.outputIndex();
 
                 // Store address as-is (base58 string, no bech32 conversion for Byron)
                 byte[] val = UtxoCborCodec.encodeUtxoRecord(byronAddress, lovelace, null, null, null, null, false, slot, blockNumber, blockHash);
@@ -1918,6 +2038,28 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         java.util.Map<String, Object> m = new HashMap<>();
         m.put("apply.ms.avg", avg);
         m.put("apply.ms.p95", p95);
+        // ADR-039 gate 1: the projection's share of block-apply time, attributed within the
+        // run rather than inferred by differencing two runs. Cumulative since start, so it is
+        // a stable ratio rather than a noisy instantaneous one.
+        long attributed = attributedBlocks.sum();
+        if (attributed > 0) {
+            long applyNs = applyNanos.sum();
+            long projNs = projectionNanos.sum();
+            long cycleNs = cycleNanos.sum();
+            m.put("apply.ns.avg", applyNs / attributed);
+            m.put("projection.ns.avg", projNs / attributed);
+            m.put("projection.applyShare", applyNs == 0 ? 0.0 : (double) projNs / applyNs);
+            m.put("attributedBlocks", attributed);
+            if (cycleNs > 0) {
+                m.put("cycle.ns.avg", cycleNs / attributed);
+                m.put("apply.cycleShare", (double) applyNs / cycleNs);
+                // The gate-1 number: an upper bound on the sync-throughput cost of projection
+                // staging. An upper bound rather than a point estimate because it assumes apply
+                // sits wholly on the critical path; where pipeline stages overlap, removing the
+                // projection would recover less than this.
+                m.put("projection.cycleShare", (double) projNs / cycleNs);
+            }
+        }
         m.put("apply.created.last", lastApplyCreated);
         m.put("apply.spent.last", lastApplySpent);
         m.put("throughput.blocksPerSec", bps);

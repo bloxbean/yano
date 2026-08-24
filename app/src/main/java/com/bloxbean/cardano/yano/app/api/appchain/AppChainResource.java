@@ -423,7 +423,7 @@ public class AppChainResource {
     @Consumes(MediaType.APPLICATION_JSON)
     @RegisterForReflection
     // Sub-resource operations take their API group from THIS class, not
-    // from the locator's declaring class (ADR-034).
+    // from the locator's declaring class (ADR-040).
     @Extension(name = ApiGroup.APP_CHAIN, value = "")
     public static class ChainScopedResource {
 

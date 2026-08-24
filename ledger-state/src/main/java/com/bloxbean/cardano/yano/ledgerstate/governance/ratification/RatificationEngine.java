@@ -212,14 +212,15 @@ public class RatificationEngine {
             GovActionId id = entry.getKey();
             GovActionRecord proposal = entry.getValue();
 
-            Status status = evaluateProposal(id, proposal, drepDist, activeDRepKeys,
+            Decision decision = evaluateProposal(id, proposal, drepDist, activeDRepKeys,
                     poolStakeDist, poolDRepDelegation,
                     committeeMembers, committeeThreshold, lastEnactedActions, currentEpoch,
                     isBootstrapPhase, committeeMinSize, committeeMaxTermLength,
                     committeeState, treasury, drepThresholds, spoThresholds,
                     effectiveDrepVotingThresholds, delayed);
 
-            results.add(new RatificationResult(id, proposal, status));
+            Status status = decision.status();
+            results.add(new RatificationResult(id, proposal, status, decision.reason()));
 
             // Delaying actions prevent subsequent ratifications
             if (status == Status.RATIFIED && isDelayingAction(proposal.actionType())) {
@@ -245,7 +246,7 @@ public class RatificationEngine {
     /**
      * Evaluate a single proposal.
      */
-    private Status evaluateProposal(
+    private Decision evaluateProposal(
             GovActionId id, GovActionRecord proposal,
             Map<DRepDistKey, BigInteger> drepDist,
             Set<DRepDistKey> activeDRepKeys,
@@ -288,7 +289,10 @@ public class RatificationEngine {
 
         if (earlyStatus != null) {
             logEarlyRatificationDecision(id, proposal, earlyStatus, lastEnactedActions, currentEpoch, delayed);
-            return earlyStatus;
+            String reason = isExpired ? "expired_lifecycle"
+                    : type == GovActionType.INFO_ACTION ? "info_action"
+                    : delayed ? "delayed_by_prior_action" : "previous_action_mismatch";
+            return new Decision(earlyStatus, reason);
         }
 
         // Get votes for this proposal
@@ -338,8 +342,11 @@ public class RatificationEngine {
                 lastEnactedActions, currentEpoch, isBootstrapPhase, committeeMinSize,
                 committeeMaxTermLength, committeeState, treasury, drepThresholds,
                 spoThresholds, effectiveDrepVotingThresholds, delayed);
-        return status;
+        return new Decision(status, accepted ? "accepted"
+                : isLastChance ? "last_chance_threshold_not_met" : "threshold_not_met");
     }
+
+    private record Decision(Status status, String reason) { }
 
     // ===== Per-Action-Type Evaluators =====
 

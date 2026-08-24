@@ -6,6 +6,7 @@ import com.bloxbean.cardano.yano.api.NodeLifecycle;
 import com.bloxbean.cardano.yano.api.TxGateway;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.app.api.ApiGroup;
+import com.bloxbean.cardano.yano.app.archive.HistoryArchiveService;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.GET;
@@ -39,6 +40,9 @@ public class YanoResource {
     @Inject
     TxGateway txGateway;
 
+    @Inject
+    HistoryArchiveService historyArchive;
+
     @GET
     @Path("/status")
     @Extension(name = ApiGroup.CORE, value = "")
@@ -64,6 +68,7 @@ public class YanoResource {
 
         try {
             nodeLifecycle.start();
+            // ADR-039: the projection drain starts with the node; there is no archive worker.
             return Response.ok(Map.of("message", "Node started successfully")).build();
         } catch (Exception e) {
             return Response.serverError()

@@ -8,8 +8,12 @@ import com.bloxbean.cardano.yaci.core.model.governance.GovActionId;
 public record RatificationResult(
         GovActionId govActionId,
         GovActionRecord proposal,
-        Status status
+        Status status,
+        String decisionReason
 ) {
+    public RatificationResult(GovActionId id, GovActionRecord proposal, Status status) {
+        this(id, proposal, status, null);
+    }
     public enum Status {
         /** All applicable thresholds met — ratified, will be enacted next epoch */
         RATIFIED,

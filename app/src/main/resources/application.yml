@@ -24,7 +24,7 @@ quarkus:
           "X-Content-Type-Options": nosniff
           "Referrer-Policy": no-referrer
           "Cache-Control": no-store
-      # ADR-025.2 §10.5: the node-served console restricts connect-src to the
+      # The node-served console restricts connect-src to the
       # host plus explicitly configured console origins. Append additional
       # origins (space-separated) via YANO_CONSOLE_CONNECT_SRC_EXTRA, e.g.
       # " https://other-node.example" for an explicit external connection.
@@ -54,7 +54,7 @@ quarkus:
     info-title: "Yano API"
     info-version: "${quarkus.application.version:0.1.0}"
     info-description: "Cardano Yano REST API (all groups)"
-    # ADR-034: named OpenAPI documents, one per API group. Each document
+    # ADR-040: named OpenAPI documents, one per API group. Each document
     # only contains operations whose resource carries the matching
     # ApiGroup @Extension (SmallRye scan profile). Routes are unchanged;
     # the unnamed document at /q/openapi still covers everything.
@@ -252,20 +252,40 @@ yano:
     # epoch-block-data-retention-lag: 5    # epochs to keep per-block issuer/fee data after consumption (controls rollback depth)
     # snapshot-retention-epochs: 50        # epochs of delegation snapshots to retain
   # Optional umbrella rollback retention. When set, Yano fills missing rollback
-  # retention properties for UTXO/account-state/account-history from genesis epoch length.
+  # retention properties for UTXO/account-state from genesis epoch length.
   # Explicit leaf properties still take precedence.
   # rollback-retention-epochs: 20
   account:
     stake-balance-index-enabled: true
-  account-history:
+  # History is written by the canonical projection outbox. The replay-worker
+  # archive was removed in Phase 7a, and with it the backfill workers, per-dataset
+  # start modes, hot store and dataset toggles that tuned it. Those keys are now
+  # rejected rather than ignored, so a stale setting fails loudly instead of reading
+  # as configuration that nothing consumes.
+  history:
     enabled: false
-    tx-events-enabled: true
-    rewards-enabled: false
-    retention-epochs: 0
-    # Defaults to yano.utxo.rollbackWindow when omitted.
-    # rollback-safety-slots: 4320
-    prune-interval-seconds: 300
-    prune-batch-size: 50000
+    dir: ./history
+    archive:
+      engine: ducklake
+      finality-blocks: auto
+      # Waiting for the single archive writer or bounded DuckDB capacity is
+      # normal flow control. Diagnostics are logged at wait-warn-seconds; only
+      # stuck-operation-seconds fails a mutation, and it never advances a cursor.
+      wait-warn-seconds: 30
+      stuck-operation-seconds: 300
+      ducklake:
+        target-file-size: 4MB
+        row-group-size: 100000
+        snapshot-retention-hours: 168
+        cleanup-grace-hours: 24
+    rollback:
+      retention-blocks: auto
+    duckdb:
+      max-total-memory: 256MB
+      max-concurrent-queries: 2
+      max-temp-directory-size: 2GB
+      steady-state: { memory-limit: 128MB, threads: 1 }
+      bulk-catch-up: { memory-limit: 128MB, threads: 1, max-concurrent-jobs: 1 }
   epoch-snapshot:
     amounts-enabled: true
   adapot:
@@ -342,6 +362,13 @@ yano:
       protocol-parameters-file: config/network/devnet/protocol-param.json
     account-state:
       enabled: true
+    # Devnet runs the projection archive, like every other network, so a local devnet
+    # exercises the same history write path and serves the same history endpoints.
+    history:
+      enabled: false
+      projection:
+        enabled: true
+        sink: ducklake
     epoch-snapshot:
       amounts-enabled: true           # UTXO balance aggregation in snapshots
     adapot:

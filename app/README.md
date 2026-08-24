@@ -295,7 +295,7 @@ The rollback goes through the full standard rollback flow: ChainState rollback, 
 
 An interactive API explorer is available at `/q/swagger-ui` when the node is running. The complete OpenAPI spec is at `/q/openapi`.
 
-The endpoints are published in groups (ADR-034). Swagger UI shows a **Select a definition** drop-down in the top bar; **Core API** is selected by default. Each group is also available as its own OpenAPI document:
+The endpoints are published in groups (ADR-040). Swagger UI shows a **Select a definition** drop-down in the top bar; **Core API** is selected by default. Each group is also available as its own OpenAPI document:
 
 | Group | OpenAPI document | Contents |
 |-------|------------------|----------|

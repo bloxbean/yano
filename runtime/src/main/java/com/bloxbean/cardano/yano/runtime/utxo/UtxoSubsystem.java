@@ -80,6 +80,21 @@ public final class UtxoSubsystem implements Subsystem {
         return "utxo";
     }
 
+    /**
+     * Install the ADR-039 projection contributor so block projection sections are staged
+     * inside the UTXO store's existing per-block write batch. Returns false when the
+     * configured store cannot contribute, so a caller cannot assume history is being
+     * captured when it is not.
+     */
+    public boolean installProjectionContributor(
+            com.bloxbean.cardano.yano.api.archive.CanonicalProjectionContributor contributor) {
+        if (utxoStore instanceof DefaultUtxoStore defaultStore) {
+            defaultStore.setProjectionContributor(contributor);
+            return true;
+        }
+        return false;
+    }
+
     public UtxoStoreWriter store() {
         return utxoStore;
     }

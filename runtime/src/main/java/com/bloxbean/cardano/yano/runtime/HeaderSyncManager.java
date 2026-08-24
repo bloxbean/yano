@@ -59,6 +59,12 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
     // Backpressure configuration
     private final long maxGapThreshold;  // Maximum gap allowed between header tip and body tip
     private volatile boolean isPaused = false;  // Whether header sync is paused due to backpressure
+    /**
+     * Optional external hold on canonical ingestion (ADR-039 disk backpressure).
+     * Defaults to "never pause", so a node without projection history is unaffected.
+     */
+    private volatile java.util.function.BooleanSupplier ingestHold = () -> false;
+    private volatile String ingestHoldReason = null;
 
     // Progress logging
     private static final int PROGRESS_LOG_INTERVAL = 1000;
@@ -346,6 +352,10 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
      */
     private boolean checkBackpressure(long currentHeaderBlockNumber) {
         try {
+            // An external hold (archive-retained disk at its configured limit) pauses
+            // ingestion regardless of the header/body gap, and the same check governs
+            // resume, so cleanup releasing disk automatically lets sync continue.
+            if (ingestHold.getAsBoolean()) return true;
 
             if (maxGapThreshold == -1)
                 return false; // Backpressure disabled
@@ -452,6 +462,24 @@ public class HeaderSyncManager implements ChainSyncAgentListener {
      */
     public boolean isPaused() {
         return isPaused;
+    }
+
+    /**
+     * Install an external hold on canonical ingestion.
+     *
+     * <p>Used by ADR-039 projection history so a lagging archive sink cannot exhaust the
+     * disk. Canonical sync is <em>not</em> paced by sink speed: this returns true only when
+     * the configured aggregate archive-retained budget or the filesystem free-space reserve
+     * is reached, and the same predicate governs resume once cleanup frees space.
+     */
+    public void setIngestHold(java.util.function.BooleanSupplier hold, String reason) {
+        this.ingestHold = hold == null ? () -> false : hold;
+        this.ingestHoldReason = reason;
+    }
+
+    /** Reason for an externally held ingestion pause, when one is installed. */
+    public String ingestHoldReason() {
+        return ingestHoldReason;
     }
 
     /**

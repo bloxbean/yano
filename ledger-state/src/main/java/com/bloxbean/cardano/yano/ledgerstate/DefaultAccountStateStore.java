@@ -49,7 +49,9 @@ import java.util.*;
  * and reward balances with delta-journal rollback support.
  */
 public class DefaultAccountStateStore implements AccountStateStore, AccountStateReadStore,
-        com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore {
+        com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore,
+        com.bloxbean.cardano.yano.api.archive.PointerCredentialSource,
+        com.bloxbean.cardano.yano.api.archive.PointerIndexMaintenance, com.bloxbean.cardano.yano.api.archive.SnapshotRetentionClamp {
 
     // Key prefixes
     public static final byte PREFIX_ACCT = 0x01;
@@ -67,6 +69,49 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     static final byte PREFIX_POOL_REG_SLOT = 0x13;   // pool registration slot: poolHash → slot (long BE)
     static final byte PREFIX_ACCT_REG_SLOT = 0x14;   // stake account registration slot: credType + credHash → slot (long BE)
     static final byte PREFIX_POINTER_ADDR = 0x15;    // pointer address: slot(8) + txIdx(4) + certIdx(4) → credType(1) + credHash(28)
+    /**
+     * Stake deregistration index: credType(1) + credHash(28) + slot(8) → marker.
+     *
+     * <p>Credential-major so "was this credential deregistered between slot A and slot B"
+     * is one seek. {@code PREFIX_STAKE_EVENT} already records deregistrations but is
+     * slot-major, which would make that question a range scan over every event in the
+     * window.
+     *
+     * <p>Exists so pointer-address resolution can answer <em>as of a given slot</em> rather
+     * than as of now. The Shelley ledger removes a credential's {@code ptrs} entries when it
+     * is deregistered, so a pointer address must stop resolving from that slot onward — but
+     * ADR-039 contributor replay may project block N while this store is far ahead of N, and
+     * a mutable "is it registered now" answer would differ between the first pass and the
+     * replay. Append-only slot-keyed records give the same answer both times.
+     */
+    /**
+     * Derived credential-major deregistration index:
+     * credType(1) + credHash(28) + slot(8) + txIdx(2) + certIdx(2) -> marker.
+     *
+     * <p>The <strong>authoritative</strong> record of stake registration and deregistration
+     * remains {@link #PREFIX_STAKE_EVENT}, which is slot-major and carries the event type.
+     * This structure is a pure lookup index over the deregistration subset of that log: it
+     * adds no fact, and it can be rebuilt or verified from the event log alone.
+     *
+     * <p>It exists because pointer-address resolution must answer "was this credential
+     * deregistered strictly after coordinate R and at or before coordinate B" in one seek.
+     * Asking the slot-major log would mean scanning every event in the window.
+     *
+     * <p>The key carries the <em>complete event coordinate</em>, not just the slot. Two
+     * deregistrations of the same credential in one slot are legal (different transactions),
+     * and a slot-only key would collide and lose one. Big-endian packing makes RocksDB byte
+     * order identical to coordinate order, so an ordered seek is an ordered coordinate scan.
+     */
+    static final byte PREFIX_ACCT_DEREG_COORD = 0x16;
+
+    /** Durable marker: the as-of pointer index has been maintained from genesis. */
+    static final byte[] META_POINTER_INDEX_GENESIS =
+            "meta.pointer.index.from-genesis".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    /** Durable marker: pointer history was cleaned up through the recorded slot. */
+    static final byte[] META_POINTER_INDEX_CLEANED =
+            "meta.pointer.index.cleaned-through".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+    private static final byte[] EMPTY_MARKER = new byte[0];
 
     // Epoch-scoped prefixes for reward calculation
     static final byte PREFIX_POOL_BLOCK_COUNT = 0x50;
@@ -133,6 +178,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     private final EpochParamProvider epochParamProvider;
 
     private RocksDB db;
+    /** Retained so ADR-039 can stage projection records into the boundary's own batch. */
+    private CfSupplier rocksHandles;
     private ColumnFamilyHandle cfState;
     private ColumnFamilyHandle cfDelta;
     private ColumnFamilyHandle cfBoundaryDelta;
@@ -223,9 +270,9 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     private HashMap<String, HashSet<String>> batchReverseAdded;    // "drepType:drepHash" -> set of "ct:hash"
     private HashMap<String, HashSet<String>> batchReverseRemoved;  // "drepType:drepHash" -> set of "ct:hash"
 
-    // Optional epoch snapshot exporter for debugging (NOOP when disabled)
-    private com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter snapshotExporter =
-            com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter.NOOP;
+    private volatile com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink archiveStaging =
+            com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.NOOP;
+    private volatile com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Boundary archiveBoundary;
 
     // Optional governance subsystem
     private volatile com.bloxbean.cardano.yano.ledgerstate.governance.GovernanceBlockProcessor governanceBlockProcessor;
@@ -264,6 +311,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         this.log = log;
         this.enabled = enabled;
         this.epochParamProvider = epochParamProvider != null ? epochParamProvider : ZERO_PROVIDER;
+        this.rocksHandles = supplier;
         this.cfState = supplier.handle(AccountStateCfNames.ACCT_STATE);
         this.cfDelta = supplier.handle(AccountStateCfNames.ACCT_DELTA);
         this.cfBoundaryDelta = supplier.handle(AccountStateCfNames.ACCT_BOUNDARY_DELTA);
@@ -363,9 +411,18 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         this.epochBoundaryProcessor = processor;
     }
 
-    public void setSnapshotExporter(com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter exporter) {
-        this.snapshotExporter = exporter != null ? exporter
-                : com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter.NOOP;
+    public void setEpochArchiveStagingSink(
+            com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink sink) {
+        this.archiveStaging = sink != null ? sink
+                : com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.NOOP;
+        if (epochBoundaryProcessor != null) epochBoundaryProcessor.setEpochArchiveStagingSink(this.archiveStaging);
+    }
+
+    @Override
+    public void prepareEpochBoundary(int previousEpoch, int newEpoch, long slot, long blockNumber) {
+        archiveBoundary = new com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Boundary(
+                previousEpoch, newEpoch, slot, blockNumber);
+        if (epochBoundaryProcessor != null) epochBoundaryProcessor.setBoundaryCoordinates(archiveBoundary);
     }
 
     /**
@@ -703,6 +760,44 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
      * Build stake event key: [0x55][slot(8 BE)][txIdx(2 BE)][certIdx(2 BE)][credType(1)][credHash(28)]
      * Slot-first ordering enables efficient range scans for "all events in slot range".
      */
+    /** Full-coordinate key: [prefix][credType][hash(28)][slot(8)][txIdx(2)][certIdx(2)]. */
+    static byte[] acctDeregCoordKey(int credType, String credHash, long slot, int txIdx, int certIdx) {
+        byte[] hash = HexUtil.decodeHexString(credHash);
+        byte[] key = new byte[1 + 1 + hash.length + 8 + 2 + 2];
+        key[0] = PREFIX_ACCT_DEREG_COORD;
+        key[1] = (byte) credType;
+        System.arraycopy(hash, 0, key, 2, hash.length);
+        int off = 2 + hash.length;
+        ByteBuffer.wrap(key, off, 8).order(ByteOrder.BIG_ENDIAN).putLong(slot);
+        ByteBuffer.wrap(key, off + 8, 2).order(ByteOrder.BIG_ENDIAN).putShort((short) txIdx);
+        ByteBuffer.wrap(key, off + 10, 2).order(ByteOrder.BIG_ENDIAN).putShort((short) certIdx);
+        return key;
+    }
+
+    /** Credential prefix, so a seek stays inside one credential's entries. */
+    static byte[] acctDeregCoordPrefix(int credType, String credHash) {
+        byte[] hash = HexUtil.decodeHexString(credHash);
+        byte[] key = new byte[1 + 1 + hash.length];
+        key[0] = PREFIX_ACCT_DEREG_COORD;
+        key[1] = (byte) credType;
+        System.arraycopy(hash, 0, key, 2, hash.length);
+        return key;
+    }
+
+    private static boolean startsWith(byte[] key, byte[] prefix) {
+        if (key.length < prefix.length) return false;
+        for (int i = 0; i < prefix.length; i++) if (key[i] != prefix[i]) return false;
+        return true;
+    }
+
+    /** Decodes (slot, txIdx, certIdx) from a deregistration-index key. */
+    private static long[] coordinateOf(byte[] key, int prefixLength) {
+        long slot = ByteBuffer.wrap(key, prefixLength, 8).order(ByteOrder.BIG_ENDIAN).getLong();
+        int txIdx = ByteBuffer.wrap(key, prefixLength + 8, 2).order(ByteOrder.BIG_ENDIAN).getShort() & 0xFFFF;
+        int certIdx = ByteBuffer.wrap(key, prefixLength + 10, 2).order(ByteOrder.BIG_ENDIAN).getShort() & 0xFFFF;
+        return new long[]{slot, txIdx, certIdx};
+    }
+
     static byte[] stakeEventKey(long slot, int txIdx, int certIdx, int credType, String credHash) {
         byte[] hash = HexUtil.decodeHexString(credHash);
         // 1 prefix + 8 slot + 2 txIdx + 2 certIdx + 1 credType + 28 hash = 42
@@ -1458,6 +1553,59 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         return snapshot;
     }
 
+    /**
+     * Stream one epoch's delegation snapshot in key order, for ADR-039 artifact reads.
+     *
+     * <p>Paged by an opaque cursor rather than returned whole: a mainnet epoch holds on the order
+     * of a million delegators, and the projection's memory bound is the reason the artifact is a
+     * reference rather than a copy in the first place. Materialising it here would give the bound
+     * back.
+     *
+     * @param afterKey exclusive start, or null to begin at the epoch
+     * @return rows up to {@code limit}, and the key to continue from, or null when exhausted
+     */
+    public EpochSnapshotPage readEpochDelegSnapshotPage(int epoch, byte[] afterKey, int limit) {
+        List<EpochSnapshotRow> rows = new ArrayList<>(Math.min(limit, 1024));
+        byte[] nextKey = null;
+        byte[] lastIncluded = null;
+        byte[] epochPrefix = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(epoch).array();
+        try (RocksIterator it = db.newIterator(cfEpochSnapshot)) {
+            if (afterKey != null) {
+                it.seek(afterKey);
+                if (it.isValid() && java.util.Arrays.equals(it.key(), afterKey)) it.next();
+            } else {
+                it.seek(epochPrefix);
+            }
+            while (it.isValid()) {
+                byte[] key = it.key();
+                if (key.length < 5) break;
+                int keyEpoch = ByteBuffer.wrap(key, 0, 4).order(ByteOrder.BIG_ENDIAN).getInt();
+                if (keyEpoch != epoch) break;
+                // The cursor is the last row INCLUDED, because resuming skips the key it is
+                // given. Handing back the first unread row instead would skip exactly one row
+                // per page - invisible whenever an epoch fits in a single page, and silently
+                // lossy on any epoch that does not.
+                if (rows.size() >= limit) { nextKey = lastIncluded; break; }
+                var snapshot = AccountStateCborCodec.decodeEpochDelegSnapshot(it.value());
+                rows.add(new EpochSnapshotRow(key[4] & 0xFF,
+                        java.util.Arrays.copyOfRange(key, 5, key.length),
+                        snapshot.poolHash(), snapshot.amount()));
+                lastIncluded = key;
+                it.next();
+            }
+        }
+        return new EpochSnapshotPage(List.copyOf(rows), nextKey);
+    }
+
+    /** One delegator's stake in an epoch snapshot. */
+    public record EpochSnapshotRow(int credentialType, byte[] credentialHash, String poolHash,
+                                   java.math.BigInteger amount) { }
+
+    /** A bounded page of snapshot rows plus the key to resume from. */
+    public record EpochSnapshotPage(List<EpochSnapshotRow> rows, byte[] nextKey) {
+        public boolean hasMore() { return nextKey != null; }
+    }
+
     // --- Epoch Delegation Snapshot queries ---
 
     @Override
@@ -1586,8 +1734,11 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     }
 
     /**
-     * Store a reward_rest entry (deferred reward: proposal refund, treasury withdrawal, etc.).
-     * The reward becomes part of stake at the spendable_epoch snapshot.
+     * Store a typed reward_rest aggregate (deferred reward: proposal refund, treasury withdrawal, etc.).
+     * The key keeps reward types separate and combines only amounts that share the same
+     * spendable epoch, type, and credential. Source-level event identity belongs to the
+     * optional archive projection, not authoritative ledger balance state. The reward
+     * becomes part of stake at the spendable_epoch snapshot.
      *
      * @param spendableEpoch Epoch when the reward becomes spendable and counts toward stake
      * @param type           Reward type (REWARD_REST_PROPOSAL_REFUND, etc.)
@@ -1746,6 +1897,9 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             if (perCredentialTotal.isEmpty()) {
                 return;
             }
+            try (var rewardArchive = archiveStaging.enabled(
+                    com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset.REWARD)
+                    ? archiveStaging.openRewards(epoch, "mir") : null) {
 
             int credited = 0;
             int skipped = 0;
@@ -1777,6 +1931,12 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 } else {
                     creditedTreasury = creditedTreasury.add(amount);
                 }
+                if (rewardArchive != null) rewardArchive.append(
+                        new com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.RewardFact(
+                                ck.typeInt(), ck.hash(), null,
+                                mirType == REWARD_REST_MIR_RESERVES ? "mir_reserves" : "mir_treasury",
+                                epoch - 1, epoch, amount,
+                                (mirType == REWARD_REST_MIR_RESERVES ? "mir-reserves-" : "mir-treasury-") + epoch));
             }
             for (byte[] key : keysToDelete) {
                 deleteStateWithDelta(key, batch, deltaOps);
@@ -1798,9 +1958,11 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             long boundarySlot = slotForEpochStart(epoch);
             commitBoundaryDelta(boundarySlot, PHASE_MIR, batch, deltaOps);
             db.write(wo, batch);
+            if (rewardArchive != null) rewardArchive.commit();
             if (credited > 0 || skipped > 0) {
                 log.info("Credited {} MIR reward_rest entries for epoch {}: total={} (reserves={}, treasury={}), skipped={} deregistered",
                         credited, epoch, totalCredited, creditedReserves, creditedTreasury, skipped);
+            }
             }
         } catch (Exception e) {
             log.error("creditMirRewardRest failed: {}", e.toString(), e);
@@ -2454,11 +2616,16 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     public void handleEpochTransition(int previousEpoch, int newEpoch) {
         if (!enabled) return;
 
+        var boundary = archiveBoundary;
+        if (boundary != null) archiveStaging.beginBoundary(boundary);
+
         // Process epoch boundary: rewards, adapot, protocol params, governance
         if (epochBoundaryProcessor != null) {
             try {
                 epochBoundaryProcessor.processEpochBoundary(previousEpoch, newEpoch);
+                if (boundary != null) archiveStaging.completeBoundary(boundary);
             } catch (Exception e) {
+                if (boundary != null) archiveStaging.abortBoundary(boundary);
                 log.warn("Epoch boundary processing failed for {} -> {}: {}",
                         previousEpoch, newEpoch, e.getMessage(), e);
                 throw new RuntimeException("Epoch boundary processing failed for "
@@ -2876,6 +3043,181 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         return key;
     }
 
+    // ------------------------------------------------------------------
+    // ADR-039 as-of pointer resolution
+    // ------------------------------------------------------------------
+
+    @Override
+    public java.util.Optional<com.bloxbean.cardano.yano.api.archive.PointerCredentialSource.PointerCredential>
+            registrationAt(com.bloxbean.cardano.yano.api.archive.PointerCredentialSource.PointerCoordinate coordinate) {
+        if (pointerAddressResolver == null) return java.util.Optional.empty();
+        PointerAddressResolver.StakeCredential credential = pointerAddressResolver.resolve(
+                coordinate.slot(), coordinate.txIndex(), coordinate.certIndex());
+        return credential == null ? java.util.Optional.empty()
+                : java.util.Optional.of(new com.bloxbean.cardano.yano.api.archive.PointerCredentialSource
+                        .PointerCredential(credential.credType(), credential.credHash()));
+    }
+
+    /**
+     * Seeks the derived deregistration index for this credential's first entry strictly after
+     * {@code after}, and reports whether it lies at or before {@code through}.
+     *
+     * <p>One seek bounded by the credential prefix. The upper bound is what makes replay
+     * deterministic: a deregistration recorded later than the block being projected falls
+     * outside the interval and is ignored, so projecting block N yields the same answer
+     * however far this store has since advanced.
+     */
+    @Override
+    public boolean deregisteredWithin(
+            com.bloxbean.cardano.yano.api.archive.PointerCredentialSource.PointerCredential credential,
+            com.bloxbean.cardano.yano.api.archive.PointerCredentialSource.PointerCoordinate after,
+            com.bloxbean.cardano.yano.api.archive.PointerCredentialSource.PointerCoordinate through) {
+        if (credential == null || after.compareTo(through) >= 0) return false;
+        byte[] prefix = acctDeregCoordPrefix(credential.credentialType(), credential.credentialHash());
+        byte[] seek = acctDeregCoordKey(credential.credentialType(), credential.credentialHash(),
+                after.slot(), after.txIndex(), after.certIndex());
+        try (RocksIterator it = db.newIterator(cfState)) {
+            for (it.seek(seek); it.isValid(); it.next()) {
+                byte[] key = it.key();
+                if (!startsWith(key, prefix)) return false;
+                long[] c = coordinateOf(key, prefix.length);
+                var found = new com.bloxbean.cardano.yano.api.archive.PointerCredentialSource
+                        .PointerCoordinate(c[0], (int) c[1], (int) c[2]);
+                // seek() lands on >= ; the interval is strictly greater than `after`.
+                if (found.compareTo(after) <= 0) continue;
+                return found.compareTo(through) <= 0;
+            }
+        }
+        return false;
+    }
+
+    @Override
+    public com.bloxbean.cardano.yano.api.archive.PointerCredentialSource.IndexCompleteness completeness() {
+        try {
+            if (db.get(cfState, META_POINTER_INDEX_CLEANED) != null) {
+                return com.bloxbean.cardano.yano.api.archive.PointerCredentialSource
+                        .IndexCompleteness.CLEANED;
+            }
+            return db.get(cfState, META_POINTER_INDEX_GENESIS) != null
+                    ? com.bloxbean.cardano.yano.api.archive.PointerCredentialSource.IndexCompleteness.COMPLETE
+                    : com.bloxbean.cardano.yano.api.archive.PointerCredentialSource.IndexCompleteness.INCOMPLETE;
+        } catch (RocksDBException e) {
+            throw ledgerStateReadFailure("pointer index completeness", e);
+        }
+    }
+
+    /**
+     * Record that the derived index has been maintained from genesis.
+     *
+     * <p>Refused on a chainstate that has already advanced. Asserting completeness there
+     * would claim coverage the index does not have: pre-Conway deregistrations applied
+     * before this point were never indexed, and nothing downstream could detect it.
+     */
+    public void markPointerIndexFromGenesis() {
+        if (getLatestAppliedSlot() > 0) {
+            throw new IllegalStateException("refusing to mark the pointer index complete on a"
+                    + " chainstate that has already advanced; projection history is fresh-sync only");
+        }
+        try (WriteOptions wo = new WriteOptions().setSync(true)) {
+            db.put(cfState, wo, META_POINTER_INDEX_GENESIS, EMPTY_MARKER);
+        } catch (RocksDBException e) {
+            throw new RuntimeException("failed to mark pointer index complete", e);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // ADR-039 pointer index maintenance
+    // ------------------------------------------------------------------
+
+    @Override
+    public com.bloxbean.cardano.yano.api.archive.PointerIndexMaintenance.PointerIndexStatus
+            pointerIndexStatus() {
+        long cleaned = -1;
+        try {
+            byte[] value = db.get(cfState, META_POINTER_INDEX_CLEANED);
+            if (value != null && value.length >= 8) {
+                cleaned = ByteBuffer.wrap(value).order(ByteOrder.BIG_ENDIAN).getLong();
+            }
+        } catch (RocksDBException e) {
+            throw ledgerStateReadFailure("pointer index status", e);
+        }
+        return new com.bloxbean.cardano.yano.api.archive.PointerIndexMaintenance.PointerIndexStatus(
+                completeness(), pointerDeregIndexEntryCount(), pointerDeregIndexBytes(),
+                cleaned < 0 ? java.util.OptionalLong.empty() : java.util.OptionalLong.of(cleaned));
+    }
+
+    /**
+     * Bounded, idempotent removal of derived index entries at or before {@code throughSlot}.
+     *
+     * <p>Scans the whole index prefix because it is credential-major: entries for one slot are
+     * scattered across credentials, so there is no contiguous slot range to drop. The bound
+     * keeps each pass short, and the scan is cheap because the index only ever holds
+     * pre-Conway deregistrations.
+     *
+     * <p>Deletes only the derived index. The authoritative {@code PREFIX_STAKE_EVENT} log is
+     * untouched: reward calculation and deregistered-account detection still read it, and
+     * conflating the two would delete history another subsystem depends on.
+     */
+    @Override
+    public long cleanupPointerIndex(long throughSlot, int maxKeys) {
+        if (maxKeys <= 0) return 0;
+        byte[] prefix = {PREFIX_ACCT_DEREG_COORD};
+        long removed = 0;
+        try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions().setSync(true);
+             RocksIterator it = db.newIterator(cfState)) {
+            for (it.seek(prefix); it.isValid() && removed < maxKeys; it.next()) {
+                byte[] key = it.key();
+                if (!startsWith(key, prefix)) break;
+                // key = [prefix][credType][hash(28)][slot(8)][txIdx(2)][certIdx(2)]
+                int coordinateOffset = key.length - 12;
+                long slot = ByteBuffer.wrap(key, coordinateOffset, 8).order(ByteOrder.BIG_ENDIAN).getLong();
+                if (slot > throughSlot) continue;
+                batch.delete(cfState, key);
+                removed++;
+            }
+            if (removed > 0) db.write(wo, batch);
+        } catch (RocksDBException e) {
+            throw new RuntimeException("pointer index cleanup failed", e);
+        }
+        return removed;
+    }
+
+    @Override
+    public void markPointerIndexCleaned(long throughSlot) {
+        try (WriteOptions wo = new WriteOptions().setSync(true)) {
+            db.put(cfState, wo, META_POINTER_INDEX_CLEANED,
+                    ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(throughSlot).array());
+        } catch (RocksDBException e) {
+            throw new RuntimeException("failed to record pointer index cleanup", e);
+        }
+    }
+
+    /** Derived index entry count, for capacity accounting and measurement. */
+    public long pointerDeregIndexEntryCount() {
+        long count = 0;
+        byte[] prefix = {PREFIX_ACCT_DEREG_COORD};
+        try (RocksIterator it = db.newIterator(cfState)) {
+            for (it.seek(prefix); it.isValid(); it.next()) {
+                if (!startsWith(it.key(), prefix)) break;
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /** Logical bytes held by the derived index; values are empty markers. */
+    public long pointerDeregIndexBytes() {
+        long bytes = 0;
+        byte[] prefix = {PREFIX_ACCT_DEREG_COORD};
+        try (RocksIterator it = db.newIterator(cfState)) {
+            for (it.seek(prefix); it.isValid(); it.next()) {
+                if (!startsWith(it.key(), prefix)) break;
+                bytes += it.key().length + it.value().length;
+            }
+        }
+        return bytes;
+    }
+
     /** Key for pointer address mapping: PREFIX_POINTER_ADDR | slot(8 BE) | txIdx(4 BE) | certIdx(4 BE) */
     private static byte[] pointerAddrKey(long slot, int txIdx, int certIdx) {
         byte[] key = new byte[1 + 8 + 4 + 4];
@@ -3016,6 +3358,13 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         byte[] eventVal = AccountStateCborCodec.encodeStakeEvent(AccountStateCborCodec.EVENT_DEREGISTRATION);
         batch.put(cfState, eventKey, eventVal);
         deltaOps.add(new DeltaOp(OP_PUT, eventKey, null));
+
+        // Derived credential-major index over the deregistration just recorded above, so
+        // pointer resolution can seek rather than scan. Same batch and same delta op as the
+        // authoritative event, so the two can never disagree and rollback removes both.
+        byte[] deregKey = acctDeregCoordKey(ct, cred.getHash(), slot, txIdx, certIdx);
+        batch.put(cfState, deregKey, EMPTY_MARKER);
+        deltaOps.add(new DeltaOp(OP_PUT, deregKey, null));
 
         return depositRefund;
     }
@@ -3514,12 +3863,18 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     public java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> createAndCommitDelegationSnapshot(
             int epoch, java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> precomputedUtxoBalances) {
         java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> utxoBalances = null;
+        var archiveWriter = archiveStaging.enabled(
+                com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset.EPOCH_STAKE)
+                ? archiveStaging.openStake(epoch) : null;
         try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
-            utxoBalances = createDelegationSnapshot(epoch, batch, precomputedUtxoBalances);
+            utxoBalances = createDelegationSnapshot(epoch, batch, precomputedUtxoBalances, archiveWriter);
             db.write(wo, batch);
+            if (archiveWriter != null) archiveWriter.commit();
         } catch (Exception ex) {
             log.error("Failed to create delegation snapshot for epoch {}: {}", epoch, ex.toString());
             throw new RuntimeException("Failed to create delegation snapshot for epoch " + epoch, ex);
+        } finally {
+            if (archiveWriter != null) archiveWriter.close();
         }
         return utxoBalances;
     }
@@ -3533,7 +3888,10 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
     private java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> createDelegationSnapshot(
             int epoch, WriteBatch batch,
-            java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> precomputedUtxoBalances) throws RocksDBException {
+            java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> precomputedUtxoBalances,
+            com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.FactWriter<
+                    com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.StakeFact> archiveWriter)
+            throws RocksDBException {
         byte[] epochBytes = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(epoch).array();
         int count = 0;
         int skippedUnregistered = 0;
@@ -3619,11 +3977,6 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             // Fallback: compute inline. Era not available here — uses protocol version fallback.
             utxoBalances = aggregateUtxoBalances(epoch);
         }
-
-        // Collect entries for export (only allocate list when exporter is active)
-        final java.util.List<com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter.StakeEntry> exportEntries =
-                (snapshotExporter != com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter.NOOP)
-                        ? new java.util.ArrayList<>() : null;
 
         try (RocksIterator it = db.newIterator(cfState)) {
             it.seek(new byte[]{PREFIX_POOL_DELEG});
@@ -3720,15 +4073,31 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 batch.put(cfEpochSnapshot, snapshotKey, snapshotVal);
                 count++;
 
-                // Collect for export (only if exporter is active)
-                if (exportEntries != null) {
-                    exportEntries.add(new com.bloxbean.cardano.yano.ledgerstate.export.EpochSnapshotExporter.StakeEntry(
-                            credType, credHash, deleg.poolHash(), stakeAmount));
-                }
+                if (archiveWriter != null) archiveWriter.append(
+                        new com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.StakeFact(
+                                credType, credHash, deleg.poolHash(), stakeAmount));
 
 
                 it.next();
             }
+        }
+
+        // ADR-039: stage the artifact reference in the SAME batch as the snapshot it points at,
+        // so neither can become durable without the other.
+        if (epochArtifacts.enabled()) {
+            var boundary = archiveBoundary;
+            if (boundary == null) {
+                throw new IllegalStateException("epoch boundary was not prepared before the delegation"
+                        + " snapshot for epoch " + epoch + "; the artifact would have no coordinate");
+            }
+            epochArtifacts.contributeEpochStake(epoch, boundary.slot(), boundary.blockNumber(),
+                    count, (cfName, key, value) -> {
+                        try {
+                            batch.put(rocksHandles.handle(cfName), key, value);
+                        } catch (RocksDBException e) {
+                            throw new RuntimeException("failed to stage epoch artifact reference", e);
+                        }
+                    });
         }
 
         byte[] epochMeta = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(epoch).array();
@@ -3736,16 +4105,93 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         log.info("Created delegation snapshot for epoch {} ({} delegations, amounts={}, skipped: {} unregistered, {} zero-balance, {} retired-pool, {} stale-delegation, {} dereg-after-deleg)",
                 epoch, count, utxoBalances != null, skippedUnregistered, skippedZeroBalance, skippedRetiredPool, skippedStaleDelegation, skippedDeregAfterDeleg);
 
-        // Export stake snapshot for debugging
-        if (exportEntries != null) {
-            snapshotExporter.exportStakeSnapshot(epoch, exportEntries);
+        return utxoBalances;
+    }
+
+    /**
+     * Epoch below which snapshots may not be pruned, because an archive still references them.
+     *
+     * <p>ADR-039 projects epoch stake by *referencing* the delegation snapshot rather than copying
+     * it, so a snapshot must survive until the sink has durably committed the rows derived from
+     * it. Without this clamp the normal retention window would delete a generation an
+     * unacknowledged artifact still points at, and the reference would resolve to nothing.
+     *
+     * <p>{@link Integer#MAX_VALUE} would freeze pruning entirely, so the clamp only ever holds
+     * back epochs an archive has actually claimed; it is released as soon as the sink acknowledges.
+     */
+    private volatile int protectedSnapshotFloorEpoch = -1;
+
+    /**
+     * Stage the ADA-pot artifact together with the pot value it describes.
+     *
+     * <p>The pot is stored directly rather than through the boundary's batch, and it is re-stored
+     * as rewards and then governance adjust it, so there is no existing batch to join. Writing the
+     * final value again alongside the reference is what makes the pair atomic: after this returns,
+     * either both the final pot and its artifact are durable or neither is. Re-writing identical
+     * bytes is a no-op semantically and costs one small record per epoch.
+     */
+    public void contributeAdaPotArtifact(int epoch, AccountStateCborCodec.AdaPot pot) {
+        if (!epochArtifacts.enabled()) return;
+        var boundary = archiveBoundary;
+        if (boundary == null) {
+            throw new IllegalStateException("epoch boundary was not prepared before the ada pot for"
+                    + " epoch " + epoch + "; the artifact would have no coordinate");
         }
 
-        return utxoBalances;
+        long[] values = {
+                pot.treasury().longValueExact(), pot.reserves().longValueExact(),
+                pot.deposits().longValueExact(), pot.fees().longValueExact(),
+                pot.distributed().longValueExact(), pot.undistributed().longValueExact(),
+                pot.rewardsPot().longValueExact(), pot.poolRewardsPot().longValueExact()};
+
+        try (WriteBatch batch = new WriteBatch();
+             WriteOptions options = new WriteOptions().setSync(true)) {
+            batch.put(cfState, adaPotKey(epoch), AccountStateCborCodec.encodeAdaPot(pot));
+            epochArtifacts.contributeAdaPot(epoch, boundary.slot(), boundary.blockNumber(), values,
+                    (cfName, key, value) -> {
+                        try {
+                            batch.put(rocksHandles.handle(cfName), key, value);
+                        } catch (RocksDBException e) {
+                            throw new RuntimeException("failed to stage ada pot artifact", e);
+                        }
+                    });
+            db.write(options, batch);
+        } catch (RocksDBException e) {
+            throw new RuntimeException("failed to commit ada pot artifact for epoch " + epoch, e);
+        }
+    }
+
+    /** ADR-039 epoch artifact hook; NOOP unless projection history is enabled. */
+    private volatile com.bloxbean.cardano.yano.api.archive.EpochArtifactContributor epochArtifacts =
+            com.bloxbean.cardano.yano.api.archive.EpochArtifactContributor.NOOP;
+
+    public void setEpochArtifactContributor(
+            com.bloxbean.cardano.yano.api.archive.EpochArtifactContributor contributor) {
+        this.epochArtifacts = contributor == null
+                ? com.bloxbean.cardano.yano.api.archive.EpochArtifactContributor.NOOP : contributor;
+    }
+
+    /** Protect snapshots from {@code epoch} upward, or pass {@code -1} to release the clamp. */
+    @Override
+    public void protectSnapshotsFrom(int epoch) {
+        this.protectedSnapshotFloorEpoch = epoch;
+    }
+
+    @Override
+    public int protectedSnapshotFloorEpoch() {
+        return protectedSnapshotFloorEpoch;
     }
 
     private void pruneOldSnapshots(int oldestToKeep, WriteBatch batch) throws RocksDBException {
         if (oldestToKeep <= 0) return;
+
+        // Never prune past what an archive still references. Retention shrinks the window;
+        // the clamp is the floor it may not cross.
+        int floor = protectedSnapshotFloorEpoch;
+        if (floor >= 0 && floor < oldestToKeep) {
+            oldestToKeep = floor;
+            if (oldestToKeep <= 0) return;
+        }
 
         try (RocksIterator it = db.newIterator(cfEpochSnapshot)) {
             it.seekToFirst();

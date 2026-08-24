@@ -33,6 +33,22 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class YanoProducerTest {
 
     @Test
+    void removedSynchronousAccountHistoryConfigIsRejectedEvenWhenFalse() {
+        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
+        producer.removedAccountHistoryEnabled = Optional.of(false);
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                producer::rejectRemovedAccountHistoryConfig);
+
+        // The replacement it names must itself be accepted. The previous wording pointed at
+        // yano.history.enabled and yano.history.datasets.*, both of which are now rejected, so
+        // an operator who followed the message hit a second startup failure.
+        assertEquals("yano.account-history.enabled was removed; remove it and set "
+                + "yano.history.projection.enabled=true instead", error.getMessage());
+    }
+
+    @Test
     void pluginPolicyIsMappedWithoutDroppingAllowDenyOrReservedFlag() {
         var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
         producer.appConfig = new PresentConfig(Map.of(
@@ -286,13 +302,11 @@ class YanoProducerTest {
         var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
         producer.appConfig = new PresentConfig(Map.of(
                 RollbackRetentionPlanner.UTXO_ROLLBACK_WINDOW, "4320",
-                RollbackRetentionPlanner.ACCOUNT_STATE_SNAPSHOT_RETENTION_EPOCHS, "10",
-                RollbackRetentionPlanner.ACCOUNT_HISTORY_ROLLBACK_SAFETY_SLOTS, "123"));
+                RollbackRetentionPlanner.ACCOUNT_STATE_SNAPSHOT_RETENTION_EPOCHS, "10"));
         producer.rollbackRetentionEpochs = Optional.of(20);
         producer.utxoRollbackWindow = 4320;
         producer.accountStateEpochBlockDataRetentionLag = 5;
         producer.accountStateSnapshotRetentionEpochs = 10;
-        producer.accountHistoryRollbackSafetySlots = Optional.of(123L);
         producer.blockBodyPruneDepth = 2160;
 
         var settings = producer.resolveRollbackRetentionSettings(
@@ -301,7 +315,6 @@ class YanoProducerTest {
         assertEquals(4320, settings.utxoRollbackWindow());
         assertEquals(21, settings.accountStateEpochBlockDataRetentionLag());
         assertEquals(10, settings.accountStateSnapshotRetentionEpochs());
-        assertEquals(123L, settings.accountHistoryRollbackSafetySlots().orElseThrow());
         assertEquals(864_000, settings.blockBodyPruneDepth());
 
         var globals = new java.util.HashMap<String, Object>();
@@ -310,7 +323,6 @@ class YanoProducerTest {
         assertEquals(4320, globals.get(RollbackRetentionPlanner.UTXO_ROLLBACK_WINDOW));
         assertEquals(21, globals.get(RollbackRetentionPlanner.ACCOUNT_STATE_EPOCH_BLOCK_DATA_RETENTION_LAG));
         assertEquals(10, globals.get(RollbackRetentionPlanner.ACCOUNT_STATE_SNAPSHOT_RETENTION_EPOCHS));
-        assertEquals(123L, globals.get(RollbackRetentionPlanner.ACCOUNT_HISTORY_ROLLBACK_SAFETY_SLOTS));
         assertEquals(864_000, globals.get(RollbackRetentionPlanner.BLOCK_BODY_PRUNE_DEPTH));
     }
 

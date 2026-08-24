@@ -1,7 +1,7 @@
 package com.bloxbean.cardano.yano.app.api;
 
 /**
- * OpenAPI document groups (ADR-034).
+ * OpenAPI document groups (ADR-040).
  *
  * <p>Each constant is the name of a SmallRye OpenAPI <em>scan profile</em>
  * extension. Annotating a resource class (or a single operation) with

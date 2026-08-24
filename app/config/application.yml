@@ -27,13 +27,10 @@ yano:
 #  rollback-retention-epochs: 20
 #  storage:
 #    path: ./chainstate
-  snapshot-export:
+  # Optional asynchronous archive. See the bundled application.yml
+  # for dataset and bounded DuckDB settings.
+  history:
     enabled: false
-    dir: data
-    stake: false        # large; millions of rows per epoch
-    drep-dist: true
-    adapot: true
-    proposals: true
 
 # =====================================================================
 # Optional Features (uncomment to enable)

@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.storage;
 
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
+import com.bloxbean.cardano.yano.api.BlockBodyRetentionBoundary;
 import com.bloxbean.cardano.yano.api.config.RuntimeOptions;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
@@ -26,6 +27,8 @@ import org.slf4j.Logger;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
+import java.util.OptionalLong;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
  * Storage-owned runtime boundary for chain-state construction, storage
@@ -39,6 +42,8 @@ public final class ChainStorageSubsystem implements Subsystem {
     private final RuntimeMaintenanceGate maintenanceGate = new RuntimeMaintenanceGate();
 
     private PruneService blockPruneService;
+    private final MutableBlockBodyRetentionBoundary blockBodyRetentionBoundary =
+            new MutableBlockBodyRetentionBoundary();
     private boolean closed;
 
     public ChainStorageSubsystem(YanoConfig config, RuntimeOptions runtimeOptions, Logger log) {
@@ -134,11 +139,15 @@ public final class ChainStorageSubsystem implements Subsystem {
                 runtimeOptions.globals().get(YanoPropertyKeys.Chain.BLOCK_PRUNE_INTERVAL_SECONDS),
                 120L);
         blockPruneService = new PruneService(
-                new BlockPruner(chainState, rocks, blockPruneDepth, pruneBatch),
+                new BlockPruner(chainState, rocks, blockPruneDepth, pruneBatch, blockBodyRetentionBoundary),
                 Math.max(1L, pruneIntervalSec) * 1000L);
         blockPruneService.start();
         log.info("Block body prune service started (retention={} blocks, batch={}, interval={}s)",
                 blockPruneDepth, pruneBatch, pruneIntervalSec);
+    }
+
+    public void setBlockBodyRetentionBoundary(BlockBodyRetentionBoundary boundary) {
+        blockBodyRetentionBoundary.setDelegate(boundary);
     }
 
     @Override
@@ -227,5 +236,30 @@ public final class ChainStorageSubsystem implements Subsystem {
             }
         }
         return def;
+    }
+
+    /** Stable boundary captured by the pruner with safe optional-consumer detach. */
+    private static final class MutableBlockBodyRetentionBoundary implements BlockBodyRetentionBoundary {
+        private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
+        private BlockBodyRetentionBoundary delegate = BlockBodyRetentionBoundary.NONE;
+
+        @Override
+        public OptionalLong oldestRequiredBlockNumber() {
+            lock.readLock().lock();
+            try {
+                return delegate.oldestRequiredBlockNumber();
+            } finally {
+                lock.readLock().unlock();
+            }
+        }
+
+        void setDelegate(BlockBodyRetentionBoundary boundary) {
+            lock.writeLock().lock();
+            try {
+                delegate = boundary == null ? BlockBodyRetentionBoundary.NONE : boundary;
+            } finally {
+                lock.writeLock().unlock();
+            }
+        }
     }
 }

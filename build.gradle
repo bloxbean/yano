@@ -1,3 +1,5 @@
+import java.time.Duration
+
 plugins {
     id 'java-library'
     id 'maven-publish'
@@ -431,6 +433,60 @@ tasks.named('check') {
     dependsOn tasks.named('verifyRepositorySplitAllocation')
 }
 
+tasks.register('verifyLegacyAccountHistoryRemoved') {
+    group = 'verification'
+    description = 'Prevents the removed synchronous account-history implementation from returning.'
+
+    doLast {
+        def forbiddenPaths = [
+                'ledger-state/src/main/java/com/bloxbean/cardano/yano/ledgerstate/AccountHistoryCborCodec.java',
+                'ledger-state/src/main/java/com/bloxbean/cardano/yano/ledgerstate/AccountHistoryCfNames.java',
+                'ledger-state/src/main/java/com/bloxbean/cardano/yano/ledgerstate/AccountHistoryEventHandler.java',
+                'ledger-state/src/main/java/com/bloxbean/cardano/yano/ledgerstate/AccountHistoryStore.java',
+                'runtime/src/main/java/com/bloxbean/cardano/yano/runtime/ledger/AccountHistorySubsystem.java'
+        ]
+        def failures = forbiddenPaths.findAll { file(it).exists() }
+                .collect { "removed file exists: ${it}" }
+        def forbiddenTokens = [
+                'AccountHistoryStore',
+                'AccountHistoryEventHandler',
+                'AccountHistorySubsystem',
+                'AccountHistoryCborCodec',
+                'AccountHistoryCfNames',
+                'YanoPropertyKeys.AccountHistory',
+                'getAccountHistoryProvider'
+        ]
+        fileTree(rootProject.projectDir) {
+            include '**/src/main/**/*.java'
+            exclude '**/build/**'
+        }.files.each { source ->
+            def text = source.getText('UTF-8')
+            forbiddenTokens.each { token ->
+                if (text.contains(token)) {
+                    failures.add("${rootProject.projectDir.toPath().relativize(source.toPath())} contains ${token}")
+                }
+            }
+        }
+        fileTree(rootProject.projectDir) {
+            include 'app/src/main/resources/**/*.yml'
+            include 'app/config/**/*.yml'
+        }.files.each { configFile ->
+            if (configFile.getText('UTF-8').contains('account-history:')) {
+                failures.add("supported config still declares account-history: "
+                        + rootProject.projectDir.toPath().relativize(configFile.toPath()))
+            }
+        }
+        if (!failures.isEmpty()) {
+            throw new GradleException('Legacy synchronous account history removal verification failed:\n - '
+                    + failures.join('\n - '))
+        }
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyLegacyAccountHistoryRemoved')
+}
+
 tasks.register('verifyLeanHostDependencyBoundary') {
     group = 'verification'
     description = 'Rejects Yano X allocated projects from the Yano host runtime graph.'
@@ -547,7 +603,7 @@ if (commit_id && project.version.endsWith("-SNAPSHOT")) {
     version = "${project.version}".replace("-SNAPSHOT", "-${commit_id}-SNAPSHOT")
 }
 
-def nonLibraryModules = ['app', 'console-ui', 'yano-bom'] as Set
+def nonLibraryModules = ['app', 'console-ui', 'yano-bom', 'archive-modules'] as Set
 
 subprojects {
     // Skip most configuration for application modules (Quarkus/Scala handle their own builds)
@@ -681,6 +737,24 @@ subprojects {
     tasks.withType(Test) {
         useJUnitPlatform()
         jvmArgs '--add-opens=java.base/java.lang=ALL-UNNAMED'
+
+        // A deadlocked test blocks forever, and a blocked build is indistinguishable from a slow
+        // one: an inherited PluginOperationsRegistry deadlock sat in awaitNoActiveSamplesLocked
+        // for roughly 21 hours while the suite appeared to be "still running". A per-test
+        // deadline turns that into a failure with a stack trace instead of silence.
+        //
+        // Applied through JUnit's global timeout so it covers every test without annotating each
+        // one, and set well above the slowest legitimate test (DuckLake maintenance passes take
+        // tens of seconds) so it never fires on a merely slow one.
+        systemProperty 'junit.jupiter.execution.timeout.default',
+                rootProject.providers.gradleProperty('junitTestTimeout').getOrElse('10m')
+        systemProperty 'junit.jupiter.execution.timeout.thread.mode.default', 'SEPARATE_THREAD'
+
+        // Backstop for a worker that hangs outside a test method, which the JUnit timeout cannot
+        // interrupt - the Gradle daemon reclaims it rather than waiting indefinitely.
+        timeout = Duration.ofMinutes(
+                Integer.parseInt(rootProject.providers.gradleProperty('junitTaskTimeoutMinutes')
+                        .getOrElse('45')))
         testLogging {
             def verbose = rootProject.providers.gradleProperty('verboseTests')
                     .map { it.toBoolean() }
@@ -688,7 +762,12 @@ subprojects {
             events(*(verbose
                     ? ['started', 'passed', 'skipped', 'failed']
                     : ['skipped', 'failed']))
-            exceptionFormat verbose ? 'full' : 'short'
+            // Always full. This prints only for a failing test, and the short form gives the
+            // exception class and line without its message - which is precisely the part needed
+            // to tell a lock conflict from a corrupt file from a missing column family. Gating it
+            // behind a flag means the one run that failed is the one run that cannot be
+            // diagnosed, and on CI there is no opportunity to re-run it verbosely by hand.
+            exceptionFormat 'full'
             showStandardStreams = verbose
         }
 

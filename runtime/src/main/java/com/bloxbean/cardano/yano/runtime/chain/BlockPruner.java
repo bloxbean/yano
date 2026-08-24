@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.runtime.chain;
 
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
+import com.bloxbean.cardano.yano.api.BlockBodyRetentionBoundary;
 import com.bloxbean.cardano.yano.runtime.db.RocksDbSupplier;
 import com.bloxbean.cardano.yano.runtime.utxo.Prunable;
 import org.rocksdb.*;
@@ -29,18 +30,25 @@ import java.nio.charset.StandardCharsets;
 public final class BlockPruner implements Prunable {
 
     private static final Logger log = LoggerFactory.getLogger(BlockPruner.class);
-    private static final byte[] CURSOR_KEY = "prune.block.cursor".getBytes(StandardCharsets.UTF_8);
+    static final byte[] CURSOR_KEY = "prune.block.cursor".getBytes(StandardCharsets.UTF_8);
 
     private final ChainState chainState;
     private final RocksDbSupplier rocksDbSupplier;
     private final int retentionBlocks;
     private final int batchSize;
+    private final BlockBodyRetentionBoundary retentionBoundary;
 
     public BlockPruner(ChainState chainState, RocksDbSupplier rocksDbSupplier, int retentionBlocks, int batchSize) {
+        this(chainState, rocksDbSupplier, retentionBlocks, batchSize, BlockBodyRetentionBoundary.NONE);
+    }
+
+    public BlockPruner(ChainState chainState, RocksDbSupplier rocksDbSupplier, int retentionBlocks, int batchSize,
+                       BlockBodyRetentionBoundary retentionBoundary) {
         this.chainState = chainState;
         this.rocksDbSupplier = rocksDbSupplier;
         this.retentionBlocks = retentionBlocks;
         this.batchSize = batchSize;
+        this.retentionBoundary = retentionBoundary == null ? BlockBodyRetentionBoundary.NONE : retentionBoundary;
     }
 
     @Override
@@ -63,6 +71,11 @@ public final class BlockPruner implements Prunable {
             }
 
             long cutoff = tip.getBlockNumber() - retentionBlocks;
+            var oldestRequired = retentionBoundary.oldestRequiredBlockNumber();
+            if (oldestRequired.isPresent()) {
+                if (oldestRequired.getAsLong() == 0) return;
+                cutoff = Math.min(cutoff, oldestRequired.getAsLong() - 1);
+            }
 
             // Read cursor (-1 means never pruned)
             long cursor = -1;
@@ -112,10 +125,13 @@ public final class BlockPruner implements Prunable {
                     it.next();
                 }
 
-                if (deleted > 0) {
+                if (lastPrunedBlock > cursor) {
                     batch.put(metadataCf, CURSOR_KEY, longToBytes(lastPrunedBlock));
                     db.write(wo, batch);
-                    log.info("Block pruner: deleted {} block bodies, cursor now at block {}", deleted, lastPrunedBlock);
+                    if (deleted > 0) {
+                        log.info("Block pruner: deleted {} block bodies, cursor now at block {}",
+                                deleted, lastPrunedBlock);
+                    }
                 }
             }
         } catch (Exception e) {

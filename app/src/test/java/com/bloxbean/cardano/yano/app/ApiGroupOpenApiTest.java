@@ -19,7 +19,7 @@ import static io.restassured.RestAssured.given;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * ADR-034: the REST surface is published as one OpenAPI document per API
+ * ADR-040: the REST surface is published as one OpenAPI document per API
  * group (core / app-chain / devnet / admin) selected by SmallRye scan
  * profiles, plus the unchanged "all" document at {@code /q/openapi}.
  * Swagger UI exposes the groups in a "Select a definition" drop-down with
@@ -152,7 +152,7 @@ class ApiGroupOpenApiTest {
             }
         });
         assertThat(orphans)
-                .as("operations missing an ApiGroup @Extension (ADR-034)")
+                .as("operations missing an ApiGroup @Extension (ADR-040)")
                 .isEmpty();
         assertThat(all).isNotEmpty();
     }

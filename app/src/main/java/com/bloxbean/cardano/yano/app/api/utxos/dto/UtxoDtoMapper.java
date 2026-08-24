@@ -35,12 +35,12 @@ public final class UtxoDtoMapper {
 
         List<AmountDto> amounts = new ArrayList<>();
         // Lovelace as first entry
-        amounts.add(new AmountDto(LOVELACE, u.lovelace()));
+        amounts.add(new AmountDto(LOVELACE, u.lovelace().toString()));
         // Native assets
         if (u.assets() != null) {
             for (AssetAmount a : u.assets()) {
                 String unit = a.policyId() + a.assetName();
-                amounts.add(new AmountDto(unit, a.quantity()));
+                amounts.add(new AmountDto(unit, a.quantity().toString()));
             }
         }
 

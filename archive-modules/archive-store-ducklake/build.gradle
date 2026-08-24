@@ -1,0 +1,74 @@
+plugins {
+    id 'java-library'
+}
+
+dependencies {
+    api project(':archive-modules:archive-api')
+    implementation libs.duckdb.jdbc
+    implementation libs.sqlite.jdbc
+
+    testImplementation testFixtures(project(':archive-modules:archive-api'))
+}
+
+def duckDbJdbcVersion = libs.duckdb.jdbc.get().version.toString()
+def duckDbVersion = duckDbJdbcVersion.endsWith('.0')
+        ? duckDbJdbcVersion.substring(0, duckDbJdbcVersion.length() - 2)
+        : duckDbJdbcVersion
+def generatedExtensions = layout.buildDirectory.dir('generated/duckdb-extensions')
+
+sourceSets.main.resources.srcDir(generatedExtensions)
+
+tasks.register('bundleDuckDbExtensions') {
+    description = 'Bundles signed DuckLake/SQLite extensions for the build host; runtime never downloads extensions.'
+    outputs.dir(generatedExtensions)
+    doLast {
+        def osName = System.getProperty('os.name').toLowerCase(Locale.ROOT)
+        def arch = System.getProperty('os.arch').toLowerCase(Locale.ROOT)
+        def arm = arch in ['aarch64', 'arm64']
+        def platform
+        if (osName.contains('mac')) platform = arm ? 'osx_arm64' : 'osx_amd64'
+        else if (osName.contains('linux')) platform = arm ? 'linux_arm64' : 'linux_amd64'
+        else if (osName.contains('win')) platform = arm ? 'windows_arm64' : 'windows_amd64'
+        else throw new GradleException("Unsupported DuckDB extension platform: ${osName}/${arch}")
+
+        def cacheRoot = new File(gradle.gradleUserHomeDir, "caches/yano-duckdb-extensions/${duckDbVersion}/${platform}")
+        cacheRoot.mkdirs()
+        def targetRoot = generatedExtensions.get().dir("duckdb-extensions/${duckDbVersion}/${platform}").asFile
+        targetRoot.mkdirs()
+        ['ducklake', 'sqlite_scanner'].each { extensionName ->
+            def cached = new File(cacheRoot, "${extensionName}.duckdb_extension")
+            if (!cached.exists()) {
+                def download = new URL("https://extensions.duckdb.org/v${duckDbVersion}/${platform}/${extensionName}.duckdb_extension.gz")
+                def temporary = new File(cacheRoot, "${extensionName}.download")
+                download.openStream().withCloseable { input ->
+                    new java.util.zip.GZIPInputStream(input).withCloseable { gzip ->
+                        temporary.withOutputStream { output -> gzip.transferTo(output) }
+                    }
+                }
+                java.nio.file.Files.move(temporary.toPath(), cached.toPath(),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                        java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+            }
+            def target = new File(targetRoot, cached.name)
+            java.nio.file.Files.copy(cached.toPath(), target.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            def digest = java.security.MessageDigest.getInstance('SHA-256').digest(target.bytes).encodeHex().toString()
+            new File(targetRoot, "${extensionName}.sha256").text = digest + System.lineSeparator()
+        }
+    }
+}
+
+tasks.named('processResources') {
+    dependsOn tasks.named('bundleDuckDbExtensions')
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano DuckLake Archive Store'
+                description = 'DuckLake and bounded DuckDB implementation for optional Yano archives'
+            }
+        }
+    }
+}
