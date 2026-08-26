@@ -185,7 +185,10 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                     new ColumnFamilyDescriptor(ProjectionCfNames.PROJ_HEADER.getBytes(), buildSequentialCfOptions()),
                     new ColumnFamilyDescriptor(ProjectionCfNames.PROJ_SECTION.getBytes(), buildSequentialCfOptions()),
                     new ColumnFamilyDescriptor(ProjectionCfNames.PROJ_META.getBytes()),
-                    new ColumnFamilyDescriptor(ProjectionCfNames.PROJ_ARTIFACT.getBytes())
+                    new ColumnFamilyDescriptor(ProjectionCfNames.PROJ_ARTIFACT.getBytes()),
+                    // Keys here are transaction hashes, so point lookups rather than the
+                    // sequential scan the header/section families are tuned for.
+                    new ColumnFamilyDescriptor(ProjectionCfNames.PROJ_BYRON_UTXO.getBytes())
             );
 
             // Open database

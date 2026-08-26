@@ -286,7 +286,8 @@ public class ProjectionHistoryService implements AutoCloseable {
                 handle(access, ProjectionCfNames.PROJ_HEADER),
                 handle(access, ProjectionCfNames.PROJ_SECTION),
                 handle(access, ProjectionCfNames.PROJ_META),
-                handle(access, ProjectionCfNames.PROJ_ARTIFACT));
+                handle(access, ProjectionCfNames.PROJ_ARTIFACT),
+                handle(access, ProjectionCfNames.PROJ_BYRON_UTXO));
 
         sink = config.getOptionalValue(YanoPropertyKeys.History.PROJECTION_SINK, String.class)
                 .orElse("none").trim().toLowerCase();
@@ -384,8 +385,12 @@ public class ProjectionHistoryService implements AutoCloseable {
                             + " deregistrations applied before the upgrade were never indexed.");
         }
 
+        // The genesis distribution reaches the collector so its Byron outpoint resolver can seed
+        // itself on the first Byron main block. Same provider the genesis bootstrap uses: a
+        // second derivation of the same outputs is exactly what GenesisUtxos exists to prevent.
         collector = new CanonicalProjectionCollector(outbox, identity,
-                ledger::slotToEpoch, ledger::slotToUnixTime, chunkBytes, true, pointerSource);
+                ledger::slotToEpoch, ledger::slotToUnixTime, chunkBytes, true, pointerSource,
+                yano.genesisUtxoProvider());
         contributorMonitor = new ProjectionContributorHealth.Monitor(Duration.ofMinutes(5));
 
         // Disk backpressure. Canonical sync runs ahead of the sink by design; these bounds

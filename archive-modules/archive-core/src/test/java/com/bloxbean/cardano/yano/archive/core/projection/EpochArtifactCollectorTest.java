@@ -58,7 +58,7 @@ class EpochArtifactCollectorTest {
         }
         handles = new ArrayList<>();
         db = RocksDB.open(dbOptions, directory.resolve("db").toString(), descriptors, handles);
-        store = new ProjectionOutboxStore(db, handles.get(1), handles.get(2), handles.get(3), handles.get(4));
+        store = new ProjectionOutboxStore(db, handles.get(1), handles.get(2), handles.get(3), handles.get(4), handles.get(5));
         clamp = new RecordingClamp();
     }
 

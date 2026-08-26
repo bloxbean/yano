@@ -27,5 +27,19 @@ public final class ProjectionCfNames {
     /** Epoch-artifact references and their durable leases. */
     public static final String PROJ_ARTIFACT = "proj_artifact";
 
-    public static final String[] ALL = {PROJ_HEADER, PROJ_SECTION, PROJ_META, PROJ_ARTIFACT};
+    /**
+     * Outpoint to address for outputs the live UTXO subsystem never applies.
+     *
+     * <p>Shelley+ consumed addresses are captured during apply, while the spent output is still
+     * in {@code cfUnspent}. Byron has no such moment: the UTXO path returns on the
+     * {@code block() == null} sentinel and never applies a Byron transaction, so an output a
+     * Byron block created exists in no live column family and is unresolvable when a later
+     * block - Byron or Shelley+ - spends it. This is the archive-owned resolver ADR-039
+     * requires for Byron address participation, seeded from the Byron genesis distribution and
+     * advanced in canonical order.
+     */
+    public static final String PROJ_BYRON_UTXO = "proj_byron_utxo";
+
+    public static final String[] ALL =
+            {PROJ_HEADER, PROJ_SECTION, PROJ_META, PROJ_ARTIFACT, PROJ_BYRON_UTXO};
 }

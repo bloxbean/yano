@@ -88,7 +88,7 @@ class ByronProjectionCarrierTest {
         }
         handles = new ArrayList<>();
         db = RocksDB.open(dbOptions, directory.resolve("db").toString(), descriptors, handles);
-        store = new ProjectionOutboxStore(db, handles.get(1), handles.get(2), handles.get(3), handles.get(4));
+        store = new ProjectionOutboxStore(db, handles.get(1), handles.get(2), handles.get(3), handles.get(4), handles.get(5));
         collector = new CanonicalProjectionCollector(store, IDENTITY, slot -> slot / 21600,
                 slot -> 1_506_203_091L + slot * 20);
     }
@@ -303,6 +303,7 @@ class ByronProjectionCarrierTest {
                         new CanonicalProjectionCollector(store, all, slot -> 0, slot -> 0,
                                 1 << 20, true, com.bloxbean.cardano.yano.api.archive
                                         .PointerCredentialSource.NONE,
+                                com.bloxbean.cardano.yano.api.genesis.GenesisUtxoProvider.EMPTY,
                                 java.util.Set.of(ProjectionSectionType.TRANSACTION)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("cannot");

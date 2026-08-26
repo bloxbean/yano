@@ -49,14 +49,29 @@ public final class ProjectionOutboxStore {
     private final ColumnFamilyHandle sectionCf;
     private final ColumnFamilyHandle metaCf;
     private final ColumnFamilyHandle artifactCf;
+    private final ColumnFamilyHandle byronUtxoCf;
+    private final ByronOutputAddressIndex byronOutputs;
 
     public ProjectionOutboxStore(RocksDB db, ColumnFamilyHandle headerCf, ColumnFamilyHandle sectionCf,
-                                 ColumnFamilyHandle metaCf, ColumnFamilyHandle artifactCf) {
+                                 ColumnFamilyHandle metaCf, ColumnFamilyHandle artifactCf,
+                                 ColumnFamilyHandle byronUtxoCf) {
         this.db = Objects.requireNonNull(db, "db");
         this.headerCf = Objects.requireNonNull(headerCf, "headerCf");
         this.sectionCf = Objects.requireNonNull(sectionCf, "sectionCf");
         this.metaCf = Objects.requireNonNull(metaCf, "metaCf");
         this.artifactCf = Objects.requireNonNull(artifactCf, "artifactCf");
+        this.byronUtxoCf = Objects.requireNonNull(byronUtxoCf, "byronUtxoCf");
+        this.byronOutputs = new ByronOutputAddressIndex(db, byronUtxoCf);
+    }
+
+    /**
+     * The Byron outpoint resolver backing address participation.
+     *
+     * <p>Owned here because this class owns the projection column families; its writes are
+     * staged into the same batches as the sections derived from them.
+     */
+    public ByronOutputAddressIndex byronOutputIndex() {
+        return byronOutputs;
     }
 
     // ------------------------------------------------------------------ identity
@@ -190,6 +205,7 @@ public final class ProjectionOutboxStore {
             case ProjectionCfNames.PROJ_SECTION -> sectionCf;
             case ProjectionCfNames.PROJ_META -> metaCf;
             case ProjectionCfNames.PROJ_ARTIFACT -> artifactCf;
+            case ProjectionCfNames.PROJ_BYRON_UTXO -> byronUtxoCf;
             default -> throw new ProjectionOutboxException("unknown projection column family: " + name);
         };
     }
@@ -233,6 +249,18 @@ public final class ProjectionOutboxStore {
     }
 
     // ------------------------------------------------------------------- reading
+
+    /**
+     * Whether a canonical block already claimed this coordinate.
+     *
+     * <p>Exists for the Byron epoch boundary. An EBB's block number is its chain difficulty, and
+     * an EBB does not advance difficulty — so it reports the number of the main block before it,
+     * which owns that coordinate and its sections. The chain state refuses EBBs a number mapping
+     * for the same reason.
+     */
+    public boolean hasBlockIdentity(long blockNumber) {
+        return get(headerCf, ProjectionOutboxKeys.blockKey(blockNumber)).isPresent();
+    }
 
     public Optional<ProjectionEnvelope> readEnvelope(long blockNumber, Set<ProjectionSectionType> requiredSections) {
         Optional<byte[]> identity = get(headerCf, ProjectionOutboxKeys.blockKey(blockNumber));

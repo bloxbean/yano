@@ -1,6 +1,8 @@
 package com.bloxbean.cardano.yano.archive.core.projection;
 
 import com.bloxbean.cardano.yaci.core.model.Block;
+import com.bloxbean.cardano.yaci.core.model.TransactionBody;
+import com.bloxbean.cardano.yaci.core.model.TransactionOutput;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.archive.CanonicalProjectionContributor;
 import com.bloxbean.cardano.yano.api.archive.PointerCredentialSource;
@@ -18,9 +20,13 @@ import com.bloxbean.cardano.yano.archive.core.dataset.BlockSourceContext;
 import com.bloxbean.cardano.yano.archive.core.source.ByronBlockNormalizer;
 import com.bloxbean.cardano.yano.archive.core.source.YaciBlockArchiveDecoder;
 import com.bloxbean.cardano.yano.archive.core.source.YaciUtxoHistoryDecoder;
+import com.bloxbean.cardano.yano.api.genesis.GenesisUtxo;
+import com.bloxbean.cardano.yano.api.genesis.GenesisUtxoProvider;
 
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.function.LongUnaryOperator;
 
@@ -49,6 +55,8 @@ public final class CanonicalProjectionCollector implements CanonicalProjectionCo
     private final boolean enabled;
     /** Authoritative pointer mapping, owned by the account-state contributor. */
     private final PointerCredentialSource pointerSource;
+    /** The genesis distribution the Byron outpoint resolver is seeded from. */
+    private final GenesisUtxoProvider genesisUtxos;
 
     public CanonicalProjectionCollector(ProjectionOutboxStore outbox, ProjectionIdentity identity,
                                         LongUnaryOperator slotToEpoch, LongUnaryOperator slotToUnixTime) {
@@ -66,7 +74,15 @@ public final class CanonicalProjectionCollector implements CanonicalProjectionCo
                                         LongUnaryOperator slotToEpoch, LongUnaryOperator slotToUnixTime,
                                         int chunkBytes, boolean enabled, PointerCredentialSource pointerSource) {
         this(outbox, identity, slotToEpoch, slotToUnixTime, chunkBytes, enabled, pointerSource,
-                BUILDABLE_SECTIONS);
+                GenesisUtxoProvider.EMPTY);
+    }
+
+    public CanonicalProjectionCollector(ProjectionOutboxStore outbox, ProjectionIdentity identity,
+                                        LongUnaryOperator slotToEpoch, LongUnaryOperator slotToUnixTime,
+                                        int chunkBytes, boolean enabled, PointerCredentialSource pointerSource,
+                                        GenesisUtxoProvider genesisUtxos) {
+        this(outbox, identity, slotToEpoch, slotToUnixTime, chunkBytes, enabled, pointerSource,
+                genesisUtxos, BUILDABLE_SECTIONS);
     }
 
     /**
@@ -77,8 +93,10 @@ public final class CanonicalProjectionCollector implements CanonicalProjectionCo
     CanonicalProjectionCollector(ProjectionOutboxStore outbox, ProjectionIdentity identity,
                                  LongUnaryOperator slotToEpoch, LongUnaryOperator slotToUnixTime,
                                  int chunkBytes, boolean enabled, PointerCredentialSource pointerSource,
+                                 GenesisUtxoProvider genesisUtxos,
                                  java.util.Set<ProjectionSectionType> buildableSections) {
         this.pointerSource = Objects.requireNonNull(pointerSource, "pointerSource");
+        this.genesisUtxos = Objects.requireNonNull(genesisUtxos, "genesisUtxos");
         this.outbox = Objects.requireNonNull(outbox, "outbox");
         this.identity = Objects.requireNonNull(identity, "identity");
         this.network = identity.networkIdentity();
@@ -112,6 +130,15 @@ public final class CanonicalProjectionCollector implements CanonicalProjectionCo
 
     private static final com.bloxbean.cardano.yano.archive.core.address.AddressKeyCodec ADDRESS_KEYS =
             new com.bloxbean.cardano.yano.archive.core.address.AddressKeyCodec();
+
+    /**
+     * Coordinate the seed asks the genesis provider for.
+     *
+     * <p>Immaterial: the resolver keeps outpoint and address, and drops the block, slot and hash
+     * a genesis output is attributed to. Those belong to the genesis bootstrap, which records
+     * them against the real canonical first block.
+     */
+    private static final String GENESIS_COORDINATE = "00".repeat(32);
 
     /**
      * Consumed-output addresses for the block being contributed.
@@ -156,9 +183,23 @@ public final class CanonicalProjectionCollector implements CanonicalProjectionCo
         byte[] blockHash = HexUtil.decodeHexString(event.blockHash());
 
         if (event.isEpochBoundary()) {
-            // An EBB carries no transactions but occupies a block number. It contributes an
-            // empty envelope and advances every required contributor, so the sink's greatest
-            // contiguous coordinate can move past it instead of stopping there forever.
+            // An EBB's block number is its chain difficulty, and an EBB does not advance
+            // difficulty - so every EBB but the chain's first reports the number of the main
+            // block before it. That block owns the coordinate and has already written its
+            // sections there; letting the EBB claim it replaced a real block's identity with an
+            // empty one and left its sections orphaned, which readEnvelope then rejects as "an
+            // epoch-boundary block must produce an empty envelope". Observed on mainnet at slot
+            // 21,600, where the epoch-1 EBB reports block 21,586. The chain state refuses EBBs a
+            // number mapping for exactly this reason; the projection follows it.
+            //
+            // The genesis EBB is the exception that must NOT be skipped: it is block 0, no main
+            // block claims that number, and the drain begins at block 0 - so without its
+            // envelope the first batch fails its contiguity check and the archive never starts.
+            if (outbox.hasBlockIdentity(event.blockNumber())) return;
+
+            // Otherwise the EBB contributes an empty envelope and advances every required
+            // contributor, so the sink's greatest contiguous coordinate can move past it
+            // instead of stopping there forever.
             Block normalized = ByronBlockNormalizer.normalizeEpochBoundary(
                     event.epochBoundaryBlock(), event.blockNumber(), blockHash);
             var context = context(event.blockNumber(), event.slot(), event.blockHash(), normalized);
@@ -171,8 +212,81 @@ public final class CanonicalProjectionCollector implements CanonicalProjectionCo
 
         Block normalized = ByronBlockNormalizer.normalizeMain(
                 event.mainBlock(), event.blockNumber(), blockHash);
-        contribute(context(event.blockNumber(), event.slot(), event.blockHash(), normalized),
-                ProjectionBlockKind.BYRON_MAIN, writer);
+        // Byron gets its consumed addresses from the archive's own resolver rather than from
+        // apply: the live UTXO path never applied this block, so nothing was captured. Advancing
+        // the resolver and building the section happen in one batch, so an output can never be
+        // durable without the section that recorded it, or the reverse.
+        if (needsConsumedOutputAddresses()) {
+            this.consumedAddresses = recordByronOutputs(normalized, writer);
+        }
+        try {
+            contribute(context(event.blockNumber(), event.slot(), event.blockHash(), normalized),
+                    ProjectionBlockKind.BYRON_MAIN, writer);
+        } finally {
+            this.consumedAddresses = ConsumedOutputAddresses.NONE;
+        }
+    }
+
+    /**
+     * Stage this Byron block's outputs into the resolver, and answer for the block being built.
+     *
+     * <p>The returned resolution consults this block before the durable index because a RocksDB
+     * point read cannot observe the batch these entries are staged in, and Byron chains
+     * transactions inside one block. The durable index is consulted through
+     * {@link #addressResolution()} like every other era's.
+     *
+     * <p>The genesis distribution is seeded here, on the first Byron main block, rather than at
+     * startup. Seeding needs the node's genesis configuration, which is loaded after projection
+     * history initialises, and the genesis-capture trigger can be deferred or replayed — so
+     * ordering is established by construction instead of by reasoning about event sequence.
+     */
+    private ConsumedOutputAddresses recordByronOutputs(Block block, ProjectionStagingWriter writer) {
+        ByronOutputAddressIndex index = outbox.byronOutputIndex();
+        Map<String, String> thisBlock = new HashMap<>();
+
+        if (!index.genesisSeeded()) {
+            for (GenesisUtxo utxo : genesisUtxos.genesisUtxos(0, 0, GENESIS_COORDINATE)) {
+                // Shelley initial funds live in the UTXO set and are captured during apply;
+                // only the Byron half is unreachable to that path.
+                if (!utxo.isByron()) continue;
+                index.put(writer, utxo.txHash(), utxo.outputIndex(), utxo.address());
+                thisBlock.put(outpoint(utxo.txHash(), utxo.outputIndex()), utxo.address());
+            }
+            index.markGenesisSeeded(writer);
+        }
+
+        for (TransactionBody tx : block.getTransactionBodies()) {
+            List<TransactionOutput> outputs = tx.getOutputs();
+            if (outputs == null) continue;
+            for (int outputIndex = 0; outputIndex < outputs.size(); outputIndex++) {
+                String address = outputs.get(outputIndex).getAddress();
+                index.put(writer, tx.getTxHash(), outputIndex, address);
+                thisBlock.put(outpoint(tx.getTxHash(), outputIndex), address);
+            }
+        }
+        return (txHash, outputIndex) -> thisBlock.get(outpoint(txHash, outputIndex));
+    }
+
+    /**
+     * Consumed-output addresses for the block being built.
+     *
+     * <p>What apply captured comes first; the Byron resolver answers for what it could not hold.
+     * That fallback is not Byron-only in effect: a Shelley-era transaction spending an output a
+     * Byron block created finds nothing in {@code cfUnspent} either, because that output was
+     * never applied there. The resolver is therefore consulted in every era, for as long as
+     * Byron-era outputs remain unspent.
+     */
+    private ConsumedOutputAddresses addressResolution() {
+        ConsumedOutputAddresses captured = consumedAddresses;
+        ByronOutputAddressIndex byronOutputs = outbox.byronOutputIndex();
+        return (txHash, outputIndex) -> {
+            String address = captured.addressOf(txHash, outputIndex);
+            return address != null ? address : byronOutputs.addressOf(txHash, outputIndex);
+        };
+    }
+
+    private static String outpoint(String txHash, int outputIndex) {
+        return txHash + '#' + outputIndex;
     }
 
     @Override
@@ -229,10 +343,11 @@ public final class CanonicalProjectionCollector implements CanonicalProjectionCo
             // requires a section this collector cannot build.
             case ADDRESS_TRANSACTION -> {
                 // Consumed inputs were resolved during apply, while the outputs they spend were
-                // still current; outputs are parsed here with the same parser the live path
-                // uses. The sink therefore needs neither the block nor the UTXO set.
+                // still current, or - for outputs apply never held, which is all of Byron's -
+                // from the archive's own resolver. Outputs are parsed here with the same parser
+                // the live path uses. The sink therefore needs neither the block nor the UTXO set.
                 var fact = ProjectionAddressParticipation.resolve(context.block(), context.slot(),
-                        consumedAddresses, ADDRESS_KEYS, pointerSource);
+                        addressResolution(), ADDRESS_KEYS, pointerSource);
                 long rows = fact.transactions().stream()
                         .mapToLong(tx -> tx.participations().size()).sum();
                 yield section(type, ProjectionFactCodec.encodeAddressParticipations(fact), rows);
