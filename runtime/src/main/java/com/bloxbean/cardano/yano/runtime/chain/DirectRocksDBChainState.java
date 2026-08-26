@@ -11,6 +11,7 @@ import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
 import com.bloxbean.cardano.yano.api.ByronEpochBoundaryReference;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.db.RocksDbAccess;
+import com.bloxbean.cardano.yano.api.rollback.PointRollbackCapableStore;
 import com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore;
 import com.bloxbean.cardano.yano.runtime.blockproducer.NonceStateStore;
 import com.bloxbean.cardano.yano.runtime.blockproducer.NonceStateSnapshot;
@@ -47,8 +48,9 @@ import java.util.OptionalLong;
  */
 @Slf4j
 public class DirectRocksDBChainState implements ChainState, AutoCloseable, RocksDbSupplier,
-        NonceStateStore, RocksDbAccess, RollbackCapableStore, ByronEbHeaderStore,
-        OriginRollbackCapable, ChainStateRecovery, ChainStateSnapshots, NearestSlotLookup,
+        NonceStateStore, RocksDbAccess, PointRollbackCapableStore, ByronEbHeaderStore,
+        OriginRollbackCapable, PointRollbackCapable, ChainStateRecovery, ChainStateSnapshots,
+        NearestSlotLookup, NearestPointLookup,
         BootstrapChainStateWriter, EraMetadataStore, ByronGenesisUtxoMetadataStore,
         ArchiveChainStateCapabilities {
 
@@ -646,7 +648,6 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
     @Override
     public void rollbackTo(Long slot) {
         try {
-            // Check if the exact requested slot exists
             byte[] blockNumberBytes = db.get(numberBySlotHandle, longToBytes(slot));
             if (blockNumberBytes == null) {
                 if (slot == 0 && getTip() == null && getHeaderTip() == null) {
@@ -664,27 +665,56 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                 log.error("Rollback failed: block hash not found for slot {} block {}", slot, rollbackBlockNumber);
                 throw new RuntimeException("Cannot rollback to slot " + slot + " - block hash not found");
             }
-
-            // Get current tips to determine rollback strategy
-            ChainTip bodyTip = getTip();
-            ChainTip headerTip = getHeaderTip();
-
-            // Intelligently decide rollback strategy based on body tip position
-            if (bodyTip == null || slot > bodyTip.getSlot()) {
-                // Header-only rollback: common during restart when starting from header_tip
-                log.info("Header-only rollback to slot {} (body tip at {})",
-                        slot, bodyTip != null ? bodyTip.getSlot() : "null");
-                performHeaderOnlyRollback(slot, rollbackBlockNumber, rollbackHash, headerTip);
-            } else {
-                // Full rollback: real chain reorganization affecting both headers and bodies
-                log.warn("Full rollback to slot {} (affecting headers and bodies)", slot);
-                performFullRollback(slot, rollbackBlockNumber, rollbackHash, bodyTip, headerTip);
-            }
-
+            rollbackTo(new Point(slot, HexUtil.encodeHexString(rollbackHash)));
         } catch (Exception e) {
             log.error("Rollback failed: to slot={}", slot, e);
             throw new RuntimeException("Failed to rollback to slot " + slot, e);
         }
+    }
+
+    @Override
+    public synchronized void rollbackTo(Point target) {
+        if (target == null) throw new IllegalArgumentException("Rollback target is required");
+        if (target.getHash() == null) {
+            rollbackToOrigin();
+            return;
+        }
+
+        try {
+            ResolvedRollbackPoint resolved = resolveRollbackPoint(target);
+            ChainTip bodyTip = getTip();
+            ResolvedRollbackPoint resolvedBodyTip = resolveTip(bodyTip);
+            boolean headerOnly = bodyTip == null || comparePoints(resolved, resolvedBodyTip) > 0;
+
+            if (headerOnly) {
+                log.info("Header-only rollback to point slot={}, hash={} (body tip at {})",
+                        resolved.slot(), target.getHash(), bodyTip != null ? bodyTip.getSlot() : "null");
+                performHeaderOnlyRollback(resolved);
+            } else {
+                log.warn("Full rollback to point slot={}, hash={} (affecting headers and bodies)",
+                        resolved.slot(), target.getHash());
+                performFullRollback(resolved);
+            }
+
+            ChainTip resultingHeaderTip = getHeaderTip();
+            if (!samePoint(resultingHeaderTip, resolved)) {
+                throw new IllegalStateException("Header rollback ended at " + describePoint(resultingHeaderTip)
+                        + " instead of " + describePoint(resolved));
+            }
+            if (!headerOnly && !samePoint(getTip(), resolved)) {
+                throw new IllegalStateException("Body rollback ended at " + describePoint(getTip())
+                        + " instead of " + describePoint(resolved));
+            }
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to rollback to point " + target, e);
+        }
+    }
+
+    @Override
+    public void rollbackToPoint(Point target) {
+        rollbackTo(target);
     }
 
     public void rollbackToOrigin() {
@@ -724,6 +754,15 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
             try (RocksIterator iterator = db.newIterator(ebbBySlot0Handle)) {
                 for (iterator.seekToFirst(); iterator.isValid(); iterator.next()) {
                     byte[] key = Arrays.copyOf(iterator.key(), iterator.key().length);
+                    byte[] hash = Arrays.copyOf(iterator.value(), iterator.value().length);
+                    if (db.get(blocksHandle, hash) != null) {
+                        batch.delete(blocksHandle, hash);
+                        blocksDeleted++;
+                    }
+                    if (db.get(headersHandle, hash) != null) {
+                        batch.delete(headersHandle, hash);
+                        headersDeleted++;
+                    }
                     batch.delete(ebbBySlot0Handle, key);
                     ebbDeleted++;
                 }
@@ -776,199 +815,190 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
         }
     }
 
-    /**
-     * Perform a header-only rollback - efficient for restart scenarios
-     * This is used when the rollback point is beyond the current body tip,
-     * typically during restart when we start from header_tip.
-     */
-    private void performHeaderOnlyRollback(Long slot, long rollbackBlockNumber, byte[] rollbackHash, ChainTip headerTip) throws RocksDBException {
-        if (headerTip == null || headerTip.getSlot() <= slot) {
-            log.debug("No header rollback needed - header tip at or before rollback point");
-            return;
+    private ResolvedRollbackPoint resolveRollbackPoint(Point target) throws RocksDBException {
+        byte[] requestedHash;
+        try {
+            requestedHash = HexUtil.decodeHexString(target.getHash());
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Invalid rollback hash: " + target.getHash(), e);
+        }
+        if (requestedHash.length != 32) {
+            throw new IllegalArgumentException("Rollback hash must be exactly 32 bytes");
         }
 
-        WriteBatch batch = new WriteBatch();
-        int headersDeleted = 0;
-
-        try {
-            // Delete headers after the rollback slot
-            try (RocksIterator iterator = db.newIterator(numberBySlotHandle)) {
-                iterator.seekToLast();
-
-                while (iterator.isValid()) {
-                    long currentSlot = bytesToLong(iterator.key());
-
-                    // Stop when we reach the rollback point
-                    if (currentSlot <= slot) {
-                        break;
-                    }
-
-                    long blockNumber = bytesToLong(iterator.value());
-                    byte[] blockHash = db.get(slotToHashHandle, iterator.key());
-
-                    if (blockHash != null) {
-                        // Only delete header data (not checking for bodies as this is header-only)
-                        byte[] headerData = db.get(headersHandle, blockHash);
-                        if (headerData != null) {
-                            batch.delete(headersHandle, blockHash);
-                            headersDeleted++;
-                        }
-
-                        // Delete mappings
-                        batch.delete(numberBySlotHandle, iterator.key());
-                        batch.delete(slotByNumberHandle, longToBytes(blockNumber));
-                        // Delete slot->hash mapping
-                        batch.delete(slotToHashHandle, iterator.key());
-                    }
-
-                    iterator.prev();
-                }
+        long slot = target.getSlot();
+        byte[] mainHash = db.get(slotToHashHandle, longToBytes(slot));
+        if (Arrays.equals(mainHash, requestedHash)) {
+            byte[] blockNumber = db.get(numberBySlotHandle, longToBytes(slot));
+            if (blockNumber == null) {
+                throw new IllegalStateException("Missing block number for canonical main block at slot " + slot);
             }
+            return new ResolvedRollbackPoint(slot, bytesToLong(blockNumber), requestedHash, false);
+        }
 
-            // Update header_tip to rollback point
-            ChainTip newHeaderTip = new ChainTip(slot, rollbackHash, rollbackBlockNumber);
-            batch.put(metadataHandle, HEADER_TIP_KEY, serializeChainTip(newHeaderTip));
+        byte[] ebbHash = db.get(ebbBySlot0Handle, longToBytes(slot));
+        if (Arrays.equals(ebbHash, requestedHash)) {
+            return new ResolvedRollbackPoint(slot, inferEbbBlockNumber(slot, requestedHash), requestedHash, true);
+        }
+        throw new IllegalArgumentException("Rollback point is not canonical at slot " + slot);
+    }
 
-            // Commit all changes
-            try (WriteOptions wo = new WriteOptions()) {
-                db.write(wo, batch);
-            }
+    private ResolvedRollbackPoint resolveTip(ChainTip tip) throws RocksDBException {
+        if (tip == null || tip.getBlockHash() == null) return null;
+        byte[] ebbHash = db.get(ebbBySlot0Handle, longToBytes(tip.getSlot()));
+        boolean ebb = Arrays.equals(ebbHash, tip.getBlockHash());
+        return new ResolvedRollbackPoint(tip.getSlot(), tip.getBlockNumber(), tip.getBlockHash(), ebb);
+    }
 
-            log.info("Header-only rollback completed: deleted {} headers, new header_tip at slot {}",
-                    headersDeleted, slot);
+    private long inferEbbBlockNumber(long slot, byte[] hash) throws RocksDBException {
+        ChainTip bodyTip = getTip();
+        if (bodyTip != null && bodyTip.getSlot() == slot && Arrays.equals(bodyTip.getBlockHash(), hash)) {
+            return bodyTip.getBlockNumber();
+        }
+        ChainTip headerTip = getHeaderTip();
+        if (headerTip != null && headerTip.getSlot() == slot && Arrays.equals(headerTip.getBlockHash(), hash)) {
+            return headerTip.getBlockNumber();
+        }
 
-        } finally {
-            batch.close();
+        byte[] sameSlotNumber = db.get(numberBySlotHandle, longToBytes(slot));
+        if (sameSlotNumber != null) return Math.max(0L, bytesToLong(sameSlotNumber) - 1L);
+
+        try (RocksIterator iterator = db.newIterator(numberBySlotHandle)) {
+            iterator.seekForPrev(longToBytes(slot));
+            if (iterator.isValid()) return bytesToLong(iterator.value());
+        }
+        return 0L;
+    }
+
+    private static boolean isMainAfter(long slot, byte[] hash, ResolvedRollbackPoint target) {
+        if (slot != target.slot()) return slot > target.slot();
+        return target.ebb() || !Arrays.equals(hash, target.hash());
+    }
+
+    private static boolean isEbbAfter(long slot, byte[] hash, ResolvedRollbackPoint target) {
+        if (slot != target.slot()) return slot > target.slot();
+        return target.ebb() && !Arrays.equals(hash, target.hash());
+    }
+
+    private static int comparePoints(ResolvedRollbackPoint left, ResolvedRollbackPoint right) {
+        if (right == null) return 1;
+        int slot = Long.compare(left.slot(), right.slot());
+        if (slot != 0) return slot;
+        if (left.ebb() == right.ebb()) return 0;
+        return left.ebb() ? -1 : 1;
+    }
+
+    private static boolean samePoint(ChainTip tip, ResolvedRollbackPoint point) {
+        return tip != null
+                && tip.getSlot() == point.slot()
+                && Arrays.equals(tip.getBlockHash(), point.hash());
+    }
+
+    private static String describePoint(ChainTip tip) {
+        if (tip == null) return "origin";
+        return "slot=" + tip.getSlot() + ", block=" + tip.getBlockNumber()
+                + ", hash=" + HexUtil.encodeHexString(tip.getBlockHash());
+    }
+
+    private static String describePoint(ResolvedRollbackPoint point) {
+        return "slot=" + point.slot() + ", block=" + point.blockNumber()
+                + ", hash=" + HexUtil.encodeHexString(point.hash())
+                + (point.ebb() ? ", kind=EBB" : ", kind=main");
+    }
+
+    private record ResolvedRollbackPoint(long slot, long blockNumber, byte[] hash, boolean ebb) {
+        ChainTip toTip() {
+            return new ChainTip(slot, hash, blockNumber);
         }
     }
 
-    /**
-     * Perform a full rollback of both headers and bodies - for real chain reorganizations
-     * This is the traditional rollback used when the network has a real chain reorg.
-     */
-    private void performFullRollback(Long slot, long rollbackBlockNumber, byte[] rollbackHash,
-                                     ChainTip bodyTip, ChainTip headerTip) throws RocksDBException {
+    private record DeleteCounts(int mainSlots, int bodies, int mainHeaders, int ebbs, int ebbHeaders) {
+    }
 
-        // Determine the highest block number to clean up
-        long maxBlockToDelete = Math.max(
-                bodyTip != null ? bodyTip.getBlockNumber() : 0,
-                headerTip != null ? headerTip.getBlockNumber() : 0
-        );
-
-        if (maxBlockToDelete <= rollbackBlockNumber) {
-            log.info("No rollback needed - tips are at or before rollback point");
-
-            // CHECK TIP ALIGNMENT: Ensure header and body tips have same hash
-            if (headerTip != null && bodyTip != null &&
-                    !Arrays.equals(headerTip.getBlockHash(), bodyTip.getBlockHash())) {
-
-                log.warn("🚨 TIP MISMATCH DETECTED: Header tip and body tip have different hashes!");
-                log.warn("Header tip: block #{} slot {} hash {}",
-                        headerTip.getBlockNumber(), headerTip.getSlot(),
-                        HexUtil.encodeHexString(headerTip.getBlockHash()));
-                log.warn("Body tip: block #{} slot {} hash {}",
-                        bodyTip.getBlockNumber(), bodyTip.getSlot(),
-                        HexUtil.encodeHexString(bodyTip.getBlockHash()));
-
-                // Find the last block where header and body hashes match
-                long alignedBlockNumber = findLastAlignedBlock(rollbackBlockNumber);
-                if (alignedBlockNumber > 0) {
-                    // Get the aligned block's details
-                    // Resolve aligned hash by its slot mapping
-                    byte[] slotBytes = db.get(slotByNumberHandle, longToBytes(alignedBlockNumber));
-                    byte[] alignedHash = null;
-                    long alignedSlot = 0;
-                    if (slotBytes != null) {
-                        alignedSlot = bytesToLong(slotBytes);
-                        alignedHash = db.get(slotToHashHandle, longToBytes(alignedSlot));
-                    }
-
-                    if (alignedHash != null) {
-                        // Update body tip to the aligned point
-                        ChainTip alignedTip = new ChainTip(alignedSlot, alignedHash, alignedBlockNumber);
-                        WriteBatch batch = new WriteBatch();
-                        try {
-                            batch.put(metadataHandle, TIP_KEY, serializeChainTip(alignedTip));
-                            try (WriteOptions wo = new WriteOptions()) {
-                                db.write(wo, batch);
-                            }
-
-                            log.warn("✅ REALIGNED body tip to block #{} at slot {} where header/body hashes match",
-                                    alignedBlockNumber, alignedSlot);
-                        } finally {
-                            batch.close();
-                        }
-                    }
-                } else {
-                    log.error("Could not find aligned block - manual intervention may be required");
-                }
-            }
-
-            return;
+    private void performHeaderOnlyRollback(ResolvedRollbackPoint target) throws RocksDBException {
+        try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
+            DeleteCounts deleted = stageDeletesAfter(batch, target, false);
+            batch.put(metadataHandle, HEADER_TIP_KEY, serializeChainTip(target.toTip()));
+            db.write(wo, batch);
+            log.info("Header-only rollback completed: point={}, deleted {} main headers and {} EBB headers",
+                    describePoint(target), deleted.mainHeaders(), deleted.ebbHeaders());
         }
+    }
 
-        WriteBatch batch = new WriteBatch();
-        int blocksDeleted = 0;
-        int headersDeleted = 0;
-        int slotsDeleted = 0;
-
-        try {
-            // Delete all slots, blocks and headers after the rollback point
-            try (RocksIterator iterator = db.newIterator(numberBySlotHandle)) {
-                iterator.seekToLast();
-
-                while (iterator.isValid()) {
-                    long currentSlot = bytesToLong(iterator.key());
-
-                    // Stop when we reach the rollback point
-                    if (currentSlot <= slot) {
-                        break;
-                    }
-
-                    long blockNumber = bytesToLong(iterator.value());
-                    byte[] blockHash = db.get(slotToHashHandle, iterator.key());
-
-                    if (blockHash != null) {
-                        // Delete block and header data
-                        byte[] blockBody = db.get(blocksHandle, blockHash);
-                        byte[] headerData = db.get(headersHandle, blockHash);
-
-                        if (blockBody != null) {
-                            batch.delete(blocksHandle, blockHash);
-                            blocksDeleted++;
-                        }
-                        if (headerData != null) {
-                            batch.delete(headersHandle, blockHash);
-                            headersDeleted++;
-                        }
-
-                        // Delete mappings
-                        batch.delete(numberBySlotHandle, iterator.key());
-                        batch.delete(slotByNumberHandle, longToBytes(blockNumber));
-                        batch.delete(slotToHashHandle, iterator.key());
-                    }
-
-                    slotsDeleted++;
-                    iterator.prev();
-                }
-            }
-
-            // Update both header_tip and body_tip to rollback point
-            ChainTip newTip = new ChainTip(slot, rollbackHash, rollbackBlockNumber);
+    private void performFullRollback(ResolvedRollbackPoint target) throws RocksDBException {
+        try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
+            DeleteCounts deleted = stageDeletesAfter(batch, target, true);
+            ChainTip newTip = target.toTip();
             batch.put(metadataHandle, HEADER_TIP_KEY, serializeChainTip(newTip));
             batch.put(metadataHandle, TIP_KEY, serializeChainTip(newTip));
-
-            // Commit all changes
-            try (WriteOptions wo = new WriteOptions()) {
-                db.write(wo, batch);
-            }
-
-            log.warn("Full rollback completed: to slot={}, deleted {} slots, {} blocks, {} headers",
-                    slot, slotsDeleted, blocksDeleted, headersDeleted);
-
-        } finally {
-            batch.close();
+            db.write(wo, batch);
+            log.warn("Full rollback completed: point={}, deleted {} main slots, {} bodies, {} headers, {} EBBs",
+                    describePoint(target), deleted.mainSlots(), deleted.bodies(),
+                    deleted.mainHeaders() + deleted.ebbHeaders(), deleted.ebbs());
         }
+    }
+
+    private DeleteCounts stageDeletesAfter(WriteBatch batch,
+                                           ResolvedRollbackPoint target,
+                                           boolean deleteBodies) throws RocksDBException {
+        int mainSlots = 0;
+        int bodies = 0;
+        int mainHeaders = 0;
+        int ebbs = 0;
+        int ebbHeaders = 0;
+
+        try (RocksIterator iterator = db.newIterator(numberBySlotHandle)) {
+            iterator.seekToLast();
+            while (iterator.isValid()) {
+                long slot = bytesToLong(iterator.key());
+                if (slot < target.slot()) break;
+                byte[] slotKey = Arrays.copyOf(iterator.key(), iterator.key().length);
+                long blockNumber = bytesToLong(iterator.value());
+                byte[] blockHash = db.get(slotToHashHandle, slotKey);
+                if (!isMainAfter(slot, blockHash, target)) break;
+
+                if (blockHash != null) {
+                    if (deleteBodies && db.get(blocksHandle, blockHash) != null) {
+                        batch.delete(blocksHandle, blockHash);
+                        bodies++;
+                    }
+                    if (db.get(headersHandle, blockHash) != null) {
+                        batch.delete(headersHandle, blockHash);
+                        mainHeaders++;
+                    }
+                }
+                batch.delete(numberBySlotHandle, slotKey);
+                batch.delete(slotByNumberHandle, longToBytes(blockNumber));
+                batch.delete(slotToHashHandle, slotKey);
+                mainSlots++;
+                iterator.prev();
+            }
+        }
+
+        try (RocksIterator iterator = db.newIterator(ebbBySlot0Handle)) {
+            iterator.seekToLast();
+            while (iterator.isValid()) {
+                long slot = bytesToLong(iterator.key());
+                if (slot < target.slot()) break;
+                byte[] slotKey = Arrays.copyOf(iterator.key(), iterator.key().length);
+                byte[] blockHash = Arrays.copyOf(iterator.value(), iterator.value().length);
+                if (!isEbbAfter(slot, blockHash, target)) break;
+
+                if (deleteBodies && db.get(blocksHandle, blockHash) != null) {
+                    batch.delete(blocksHandle, blockHash);
+                    bodies++;
+                }
+                if (db.get(headersHandle, blockHash) != null) {
+                    batch.delete(headersHandle, blockHash);
+                    ebbHeaders++;
+                }
+                batch.delete(ebbBySlot0Handle, slotKey);
+                ebbs++;
+                iterator.prev();
+            }
+        }
+
+        return new DeleteCounts(mainSlots, bodies, mainHeaders, ebbs, ebbHeaders);
     }
 
     @Override
@@ -1236,6 +1266,19 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
         } catch (Exception e) {
             log.error("Failed to find nearest slot at or before {}", targetSlot, e);
             return null;
+        }
+    }
+
+    @Override
+    public Point findNearestPointAtOrBefore(long targetSlot) {
+        try (RocksIterator it = db.newIterator(numberBySlotHandle)) {
+            it.seekForPrev(longToBytes(targetSlot));
+            if (!it.isValid()) return null;
+            long slot = bytesToLong(it.key());
+            byte[] hash = db.get(slotToHashHandle, it.key());
+            return hash != null ? new Point(slot, HexUtil.encodeHexString(hash)) : null;
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to resolve canonical point at or before " + targetSlot, e);
         }
     }
 
@@ -1854,6 +1897,11 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
         return Optional.empty();
     }
 
+    @Override
+    public byte[] getShelleyStartUtxoTotalKey() {
+        return META_SHELLEY_START_UTXO_TOTAL.getBytes(StandardCharsets.UTF_8);
+    }
+
     // --- Byron genesis UTXO keys (for Allegra bootstrap removal) ---
 
     /**
@@ -1904,6 +1952,11 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
         }
     }
 
+    @Override
+    public byte[] getByronGenesisUtxoKeysKey() {
+        return META_BYRON_GENESIS_UTXO_KEYS.getBytes(StandardCharsets.UTF_8);
+    }
+
     // --- Allegra bootstrap completion marker ---
 
     /**
@@ -1944,6 +1997,15 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
     public long getLatestAppliedSlot() {
         ChainTip tip = getTip();
         return tip != null ? tip.getSlot() : -1;
+    }
+
+    @Override
+    public RollbackCapableStore.AppliedPoint getLatestAppliedPoint() {
+        ChainTip tip = getTip();
+        return tip == null
+                ? new RollbackCapableStore.AppliedPoint(-1L, null)
+                : new RollbackCapableStore.AppliedPoint(
+                        tip.getSlot(), HexUtil.encodeHexString(tip.getBlockHash()));
     }
 
     @Override

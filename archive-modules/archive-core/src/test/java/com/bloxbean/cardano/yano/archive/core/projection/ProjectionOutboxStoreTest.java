@@ -121,6 +121,23 @@ class ProjectionOutboxStoreTest {
         commitSection(blockNumber, section(ProjectionSectionType.UTXO_HISTORY, 3, new byte[]{3, 4, 5}));
     }
 
+    private void commitCompleteBlock(long blockNumber, long slot,
+                                     ProjectionBlockKind kind, byte[] hash) {
+        var header = new ProjectionEnvelopeHeader(PREPROD, kind, blockNumber,
+                hash, new byte[32], slot, 0, 1_600_000_000L + blockNumber,
+                1, List.of(), List.of());
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
+            store.putBlockIdentity(ProjectionOutboxStore.batchWriter(batch, store.handles()), header);
+            db.write(options, batch);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+        if (!kind.allowsEmptyEnvelope()) {
+            commitSection(blockNumber, section(ProjectionSectionType.TRANSACTION, 0));
+            commitSection(blockNumber, section(ProjectionSectionType.UTXO_HISTORY, 0));
+        }
+    }
+
     // ------------------------------------------------------- completion gating
 
     @Test
@@ -478,6 +495,46 @@ class ProjectionOutboxStoreTest {
         assertThat(first).isEqualTo(5);
         assertThat(second).isZero();
         assertThat(store.completeThrough(REQUIRED)).isEqualTo(105);
+    }
+
+    @Test
+    void exactRollbackToByronEbbRemovesSameSlotSuccessor() {
+        byte[] ebbHash = new byte[32];
+        java.util.Arrays.fill(ebbHash, (byte) 0x40);
+        byte[] successorHash = new byte[32];
+        java.util.Arrays.fill(successorHash, (byte) 0x41);
+        commitCompleteBlock(100, 2_160, ProjectionBlockKind.BYRON_EBB, ebbHash);
+        commitCompleteBlock(101, 2_160, ProjectionBlockKind.BYRON_MAIN, successorHash);
+
+        long removed = store.rollbackToPoint(2_160, ebbHash, false, REQUIRED);
+
+        assertThat(removed).isEqualTo(1);
+        assertThat(store.readEnvelope(100, REQUIRED)).isPresent();
+        assertThat(store.readEnvelope(101, REQUIRED)).isEmpty();
+        assertThat(store.completeThrough(REQUIRED)).isEqualTo(100);
+    }
+
+    @Test
+    void exactRollbackToSameSlotMainRetainsMatchingEnvelope() {
+        byte[] ebbHash = new byte[32];
+        java.util.Arrays.fill(ebbHash, (byte) 0x50);
+        byte[] successorHash = new byte[32];
+        java.util.Arrays.fill(successorHash, (byte) 0x51);
+        commitCompleteBlock(100, 2_160, ProjectionBlockKind.BYRON_EBB, ebbHash);
+        commitCompleteBlock(101, 2_160, ProjectionBlockKind.BYRON_MAIN, successorHash);
+
+        assertThat(store.rollbackToPoint(2_160, successorHash, false, REQUIRED)).isZero();
+        assertThat(store.completeThrough(REQUIRED)).isEqualTo(101);
+    }
+
+    @Test
+    void exactOriginRollbackClearsPendingProjectionState() {
+        commitCompleteBlock(100);
+        commitCompleteBlock(101);
+
+        assertThat(store.rollbackToPoint(0, null, true, REQUIRED)).isEqualTo(2);
+        assertThat(store.identityCursor()).isEqualTo(99);
+        assertThat(store.readEnvelope(100, REQUIRED)).isEmpty();
     }
 
     // ------------------------------------- lingering batches are not durable state

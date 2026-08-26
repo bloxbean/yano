@@ -20,6 +20,7 @@ import org.rocksdb.WriteBatch;
 import org.rocksdb.WriteOptions;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -497,11 +498,40 @@ public final class ProjectionOutboxStore {
      * @return the number of envelopes removed
      */
     public long rollbackToSlot(long rollbackSlot, Set<ProjectionSectionType> requiredSections) {
+        return rollbackToPoint(rollbackSlot, null, false, false, requiredSections);
+    }
+
+    /**
+     * Roll back pending envelopes to an exact canonical point. A null hash denotes
+     * origin when {@code origin} is true. At a shared Byron slot, a different-hash
+     * successor is removed while the matching EBB or main-block envelope is retained.
+     */
+    public long rollbackToPoint(long rollbackSlot,
+                                byte[] rollbackHash,
+                                boolean origin,
+                                Set<ProjectionSectionType> requiredSections) {
+        return rollbackToPoint(rollbackSlot, rollbackHash, origin, true, requiredSections);
+    }
+
+    private long rollbackToPoint(long rollbackSlot,
+                                 byte[] rollbackHash,
+                                 boolean origin,
+                                 boolean exact,
+                                 Set<ProjectionSectionType> requiredSections) {
+        if (!origin && (rollbackHash == null || rollbackHash.length != 32)) {
+            if (exact) {
+                throw new IllegalArgumentException("Non-origin projection rollback requires a 32-byte hash");
+            }
+        }
         long firstRemoved = -1;
         try (RocksIterator it = db.newIterator(headerCf)) {
             for (it.seekToLast(); it.isValid(); it.prev()) {
                 ProjectionEnvelopeHeader header = ProjectionEnvelopeCodec.decodeHeader(it.value());
-                if (header.slot() <= rollbackSlot) break;
+                if (!origin && (header.slot() < rollbackSlot
+                        || header.slot() == rollbackSlot
+                        && (!exact || Arrays.equals(header.blockHash(), rollbackHash)))) {
+                    break;
+                }
                 firstRemoved = header.blockNumber();
             }
         }

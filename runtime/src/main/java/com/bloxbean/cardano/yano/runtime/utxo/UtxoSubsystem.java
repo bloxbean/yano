@@ -10,6 +10,7 @@ import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.runtime.db.RocksDbSupplier;
 import com.bloxbean.cardano.yano.runtime.kernel.Subsystem;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
+import com.bloxbean.cardano.yano.runtime.blockproducer.GenesisConfig;
 import org.slf4j.Logger;
 
 import java.time.Duration;
@@ -118,11 +119,81 @@ public final class UtxoSubsystem implements Subsystem {
         }
     }
 
+    public void initializeOrValidateFullStateGenesis(GenesisConfig genesisConfig, long networkMagic) {
+        if (!(utxoStore instanceof DefaultUtxoStore defaultStore)) {
+            return;
+        }
+        if (config.isEnableBootstrap()) {
+            log.info("Skipping full-history Byron UTXO capability marker in bootstrap partial-state mode");
+            return;
+        }
+
+        boolean emptyChain = chainState.getTip() == null && chainState.getHeaderTip() == null;
+        boolean rebuildUnmarked = resolveBoolean(runtimeOptions.globals(),
+                YanoPropertyKeys.Utxo.REBUILD_UNMARKED_FROM_GENESIS, false);
+        if (!emptyChain) {
+            if (rebuildUnmarked && !defaultStore.hasByronMainApplyCapability()) {
+                log.warn("Operator-requested rebuild of unmarked full-history UTXO state is starting. "
+                        + "Canonical block bodies must be retained through Byron or the rebuild will fail closed.");
+                rebuildFullStateFromGenesis(genesisConfig, networkMagic);
+                return;
+            }
+            if (rebuildUnmarked) {
+                log.warn("Ignoring {} because the Byron-main UTXO capability marker is already present; "
+                                + "remove this one-shot migration setting",
+                        YanoPropertyKeys.Utxo.REBUILD_UNMARKED_FROM_GENESIS);
+            }
+            defaultStore.requireByronMainApplyCapability(chainState, false);
+            return;
+        }
+
+        // A producer stores Shelley genesis UTXOs after it has committed the real
+        // genesis block, so those records carry that block's hash. Stage 64 owns
+        // only the capability marker and Byron distributions in producer mode;
+        // stage 68 remains the single Shelley-seeding authority.
+        Map<String, java.math.BigInteger> shelley = genesisConfig != null
+                && !config.isEnableBlockProducer()
+                ? genesisConfig.getInitialFunds() : Map.of();
+        Map<String, java.math.BigInteger> nonAvvm = genesisConfig != null
+                ? genesisConfig.getByronNonAvvmBalances() : Map.of();
+        Map<String, java.math.BigInteger> avvm = genesisConfig != null
+                ? genesisConfig.getByronAvvmBalances() : Map.of();
+        defaultStore.initializeFreshFullStateGenesis(
+                shelley, networkMagic, nonAvvm, avvm,
+                0L, 0L, "00".repeat(32));
+        if (config.isEnableBlockProducer() && genesisConfig != null
+                && !genesisConfig.getInitialFunds().isEmpty()) {
+            log.info("Deferred {} Shelley genesis UTXOs to the block-producer genesis path",
+                    genesisConfig.getInitialFunds().size());
+        }
+    }
+
+    /** Caller must pause UTXO workers and hold the runtime maintenance lock. */
+    public void rebuildFullStateFromGenesis(GenesisConfig genesisConfig, long networkMagic) {
+        if (config.isEnableBootstrap()) {
+            throw new IllegalStateException("Full-history UTXO rebuild is not valid in bootstrap partial-state mode");
+        }
+        if (!(utxoStore instanceof DefaultUtxoStore defaultStore)) {
+            throw new UnsupportedOperationException("Configured UTXO store does not support full-state rebuild");
+        }
+        Map<String, java.math.BigInteger> shelley = genesisConfig != null
+                ? genesisConfig.getInitialFunds() : Map.of();
+        Map<String, java.math.BigInteger> nonAvvm = genesisConfig != null
+                ? genesisConfig.getByronNonAvvmBalances() : Map.of();
+        Map<String, java.math.BigInteger> avvm = genesisConfig != null
+                ? genesisConfig.getByronAvvmBalances() : Map.of();
+        defaultStore.rebuildFullStateFromGenesis(
+                chainState, shelley, networkMagic, nonAvvm, avvm);
+    }
+
     public void reinitializeAndReconcileAfterSnapshotRestore() {
         if (utxoStore == null) {
             return;
         }
         utxoStore.reinitialize();
+        if (!config.isEnableBootstrap() && utxoStore instanceof DefaultUtxoStore defaultStore) {
+            defaultStore.requireByronMainApplyCapability(chainState, true);
+        }
         try {
             utxoStore.reconcile(chainState);
         } catch (Throwable t) {
@@ -357,12 +428,8 @@ public final class UtxoSubsystem implements Subsystem {
             boolean utxoEnabled = resolveBoolean(runtimeOptions.globals(), YanoPropertyKeys.Utxo.ENABLED, false);
             if (utxoEnabled && rocks != null) {
                 utxoStore = UtxoStoreFactory.create(rocks, log, runtimeOptions.globals());
-                if (config.isEnableClient()) {
-                    reconcilePending = true;
-                    log.info("UTXO store initialized; reconciliation deferred until startup recovery");
-                } else {
-                    reconcile();
-                }
+                reconcilePending = true;
+                log.info("UTXO store initialized; reconciliation deferred until startup genesis/marker validation");
 
                 boolean applyAsync = resolveBoolean(runtimeOptions.globals(), YanoPropertyKeys.Utxo.APPLY_ASYNC, false);
                 if (applyAsync && config.isEnableClient()) {

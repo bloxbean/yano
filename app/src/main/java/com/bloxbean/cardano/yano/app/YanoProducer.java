@@ -203,6 +203,8 @@ public class YanoProducer {
     boolean utxoDeltaSelfContained;
     @ConfigProperty(name = YanoPropertyKeys.Utxo.APPLY_ASYNC, defaultValue = "false")
     boolean utxoApplyAsync;
+    @ConfigProperty(name = YanoPropertyKeys.Utxo.REBUILD_UNMARKED_FROM_GENESIS, defaultValue = "false")
+    boolean utxoRebuildUnmarkedFromGenesis;
 
     @ConfigProperty(name = YanoPropertyKeys.Metrics.ENABLED, defaultValue = "true")
     boolean metricsEnabled;
@@ -646,6 +648,8 @@ public class YanoProducer {
         globals.put(YanoPropertyKeys.Utxo.INDEXING_STRATEGY, utxoIndexingStrategy);
         globals.put(YanoPropertyKeys.Utxo.DELTA_SELF_CONTAINED, utxoDeltaSelfContained);
         globals.put(YanoPropertyKeys.Utxo.APPLY_ASYNC, utxoApplyAsync);
+        globals.put(YanoPropertyKeys.Utxo.REBUILD_UNMARKED_FROM_GENESIS,
+                utxoRebuildUnmarkedFromGenesis);
         globals.put(YanoPropertyKeys.Metrics.ENABLED, metricsEnabled);
         globals.put(YanoPropertyKeys.Metrics.ROCKSDB_SAMPLE_SECONDS, metricsSampleRocksDbSeconds);
         globals.put(YanoPropertyKeys.Validation.DEFAULT_VALIDATOR_ENABLED, defaultValidatorEnabled);

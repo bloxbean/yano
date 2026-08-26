@@ -317,6 +317,9 @@ yano:
     # Set to true to opt in for testing.
     supplementary-rules-enabled: false
   utxo:
+    # One-shot migration for a pre-ADR-041 full-history DB. Requires all canonical
+    # block bodies through Byron; leave false after the first successful rebuild.
+    rebuild-unmarked-from-genesis: false
     prune:
       schedule:
         seconds: 5

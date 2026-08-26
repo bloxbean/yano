@@ -304,6 +304,12 @@ public final class CanonicalProjectionCollector implements CanonicalProjectionCo
         return outbox.rollbackToSlot(rollbackSlot, identity.requiredSections());
     }
 
+    /** Roll back pending projection state to the exact canonical point. */
+    public long rollbackToPoint(long rollbackSlot, byte[] rollbackHash, boolean origin) {
+        return outbox.rollbackToPoint(
+                rollbackSlot, rollbackHash, origin, identity.requiredSections());
+    }
+
     // ---------------------------------------------------------------- internals
 
     private void contribute(BlockSourceContext<Block> context, ProjectionBlockKind kind,

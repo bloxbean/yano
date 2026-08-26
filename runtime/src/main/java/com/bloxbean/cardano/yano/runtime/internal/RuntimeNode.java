@@ -62,9 +62,10 @@ import com.bloxbean.cardano.yano.runtime.HeaderSyncManager;
 import com.bloxbean.cardano.yano.runtime.chain.BootstrapChainStateWriter;
 import com.bloxbean.cardano.yano.runtime.chain.ByronGenesisUtxoMetadataStore;
 import com.bloxbean.cardano.yano.runtime.chain.ChainStateRecovery;
+import com.bloxbean.cardano.yano.runtime.chain.ChainStateRollback;
 import com.bloxbean.cardano.yano.runtime.chain.ChainStateSnapshots;
 import com.bloxbean.cardano.yano.runtime.chain.EraMetadataStore;
-import com.bloxbean.cardano.yano.runtime.chain.NearestSlotLookup;
+import com.bloxbean.cardano.yano.runtime.chain.NearestPointLookup;
 import com.bloxbean.cardano.yano.runtime.chronology.ChronologyService;
 import com.bloxbean.cardano.yano.runtime.chronology.ChronologySubsystem;
 import com.bloxbean.cardano.yano.api.events.NodeStartedEvent;
@@ -91,6 +92,7 @@ import com.bloxbean.cardano.yano.runtime.plugins.PluginOperationsRegistry;
 import com.bloxbean.cardano.yano.api.account.AccountStateReadStore;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore;
+import com.bloxbean.cardano.yano.api.rollback.PointRollbackCapableStore;
 import com.bloxbean.cardano.yano.api.account.AccountStateStore;
 import com.bloxbean.cardano.yano.ledgerstate.DefaultAccountStateStore;
 import com.bloxbean.cardano.yano.ledgerstate.EpochParamTracker;
@@ -1196,10 +1198,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             @Override
             public void runBootstrapRecovery() {
                 loadGenesisConfigForStartup();
-                if (!config.isEnableBlockProducer() && config.getShelleyGenesisFile() != null
-                        && chainState.getTip() == null) {
-                    initializeGenesisUtxos();
-                }
+                utxoSubsystem.initializeOrValidateFullStateGenesis(
+                        genesisConfig, config.getProtocolMagic());
                 if (config.isEnableBootstrap() && config.isEnableClient()
                         && chainState.getTip() == null && chainState.getHeaderTip() == null) {
                     performBootstrap();
@@ -2712,61 +2712,10 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         return null;
     }
 
-    /**
-     * Pre-populate genesis UTXOs for relay mode.
-     * Stores an empty genesis block and writes UTXOs directly to the UTXO store
-     * using tx_hash = blake2b(address) convention (matching yaci-store and wallets).
-     */
+    /** Compatibility entry point retained for tests and internal callers. */
     private void initializeGenesisUtxos() {
-        log.info("Initializing genesis UTXOs...");
-
-        if (inMemoryDevnetGenesis != null) {
-            genesisConfig = GenesisConfig.fromInMemory(
-                    inMemoryDevnetGenesis.shelley(),
-                    inMemoryDevnetGenesis.byron(),
-                    runtimeProtocolParametersJson());
-        } else {
-            genesisConfig = GenesisConfig.load(
-                    config.getShelleyGenesisFile(),
-                    config.getByronGenesisFile(),
-                    runtimeProtocolParametersFile());
-        }
-
-        propagateGenesisToConfig(genesisConfig);
-
-        boolean hasFunds = genesisConfig.hasInitialFunds() || genesisConfig.hasByronBalances();
-
-        if (hasFunds) {
-            // Store genesis UTXOs directly in UTXO store with blake2b(address) tx hashes.
-            String blockHash = "0000000000000000000000000000000000000000000000000000000000000000";
-
-            if (utxoStore != null) {
-                if (genesisConfig.hasInitialFunds()) {
-                    utxoStore.storeGenesisUtxos(genesisConfig.getInitialFunds(),
-                            config.getProtocolMagic(), 0, 0, blockHash);
-                }
-                if (genesisConfig.hasByronBalances()) {
-                    utxoStore.storeByronGenesisUtxos(genesisConfig.getByronBalances(),
-                            0, 0, blockHash);
-
-                    // Persist Byron genesis UTXO outpoint keys for Allegra removal, then free memory
-                    if (utxoStore instanceof com.bloxbean.cardano.yano.runtime.utxo.DefaultUtxoStore defaultUtxo
-                            && byronGenesisUtxoMetadataStoreOrNull() instanceof ByronGenesisUtxoMetadataStore byronMetadataStore) {
-                        var keys = defaultUtxo.getByronGenesisOutpointKeys();
-                        if (!keys.isEmpty()) {
-                            byronMetadataStore.setByronGenesisUtxoKeys(keys);
-                            defaultUtxo.clearByronGenesisOutpointKeys();
-                        }
-                    }
-                }
-            }
-
-            log.info("Genesis UTXOs stored: {} shelley + {} byron fund entries",
-                    genesisConfig.getInitialFunds().size(),
-                    genesisConfig.getByronBalances().size());
-        } else {
-            log.info("No genesis funds found in genesis files");
-        }
+        loadGenesisConfigForStartup();
+        utxoSubsystem.initializeOrValidateFullStateGenesis(genesisConfig, config.getProtocolMagic());
     }
 
     private boolean hasAnyGenesisConfig() {
@@ -3016,19 +2965,23 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             return;
         }
 
-        // Find the nearest stored block at or before the target slot
-        Long nearestSlot = null;
-        if (chainState instanceof NearestSlotLookup nearestSlotLookup) {
-            nearestSlot = nearestSlotLookup.findNearestSlotAtOrBefore(targetSlot);
+        // Resolve the nearest canonical main-block point. Main wins when an EBB
+        // and its successor share the requested slot; targeting the EBB requires
+        // an explicit point-aware API rather than this legacy slot option.
+        Point targetPoint = null;
+        if (chainState instanceof NearestPointLookup nearestPointLookup) {
+            targetPoint = nearestPointLookup.findNearestPointAtOrBefore(targetSlot);
         }
-        if (nearestSlot == null) {
+        if (targetPoint == null) {
             log.error("Adhoc rollback: no stored block found at or before slot {}. Skipping.", targetSlot);
             return;
         }
-        if (!nearestSlot.equals(targetSlot)) {
-            log.info("Adhoc rollback: exact slot {} not found, using nearest block at slot {}", targetSlot, nearestSlot);
+        if (targetPoint.getSlot() != targetSlot) {
+            log.info("Adhoc rollback: exact slot {} not found, using nearest block at slot {}",
+                    targetSlot, targetPoint.getSlot());
         }
-        targetSlot = nearestSlot;
+        targetSlot = targetPoint.getSlot();
+        log.info("Adhoc rollback resolved point: slot={}, hash={}", targetSlot, targetPoint.getHash());
 
         var stores = ledgerStateSubsystem.rollbackCapableStores(utxoStore);
 
@@ -3065,7 +3018,11 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         // Order: AccountState → UTXO → ChainState
         for (var store : stores) {
             log.info("Rolling back {}", store.storeName());
-            store.rollbackToSlot(targetSlot);
+            if (store instanceof PointRollbackCapableStore pointStore) {
+                pointStore.rollbackToPoint(targetPoint);
+            } else {
+                store.rollbackToSlot(targetSlot);
+            }
         }
 
         // Post-rollback verification: each store must report latestAppliedSlot <= targetSlot
@@ -3075,6 +3032,12 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 throw new IllegalStateException(
                         store.storeName() + " reports latestAppliedSlot=" + actual
                                 + " after rollback to " + targetSlot);
+            }
+            var appliedPoint = store.getLatestAppliedPoint();
+            if (actual == targetSlot && appliedPoint.blockHash() != null
+                    && !appliedPoint.blockHash().equalsIgnoreCase(targetPoint.getHash())) {
+                throw new IllegalStateException(store.storeName() + " reports hash="
+                        + appliedPoint.blockHash() + " after rollback to " + targetPoint.getHash());
             }
         }
 
@@ -3147,17 +3110,24 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                     blockPrunePaused = true;
                 }
 
-                // 2. Rollback chain state (removes blocks/headers after target slot)
-                rollbackStarted = true;
-                chainState.rollbackTo(targetSlot);
+                if (!(chainState instanceof NearestPointLookup nearestPointLookup)) {
+                    throw new IllegalStateException("ChainState cannot resolve an exact rollback point");
+                }
+                Point rollbackPoint = nearestPointLookup.findNearestPointAtOrBefore(targetSlot);
+                if (rollbackPoint == null) {
+                    throw new IllegalArgumentException("No canonical point found at or before slot " + targetSlot);
+                }
+                targetSlot = rollbackPoint.getSlot();
 
-                // 3. Get new tip after rollback for the Point
+                // 2. Rollback chain state to the resolved point.
+                rollbackStarted = true;
+                ChainStateRollback.rollbackToPoint(chainState, rollbackPoint);
+
+                // 3. Verify the exact restored point.
                 ChainTip newTip = chainState.getTip();
-                Point rollbackPoint;
-                if (newTip != null) {
-                    rollbackPoint = new Point(newTip.getSlot(), HexUtil.encodeHexString(newTip.getBlockHash()));
-                } else {
-                    rollbackPoint = new Point(targetSlot, "0000000000000000000000000000000000000000000000000000000000000000");
+                if (newTip == null || newTip.getSlot() != rollbackPoint.getSlot()
+                        || !HexUtil.encodeHexString(newTip.getBlockHash()).equalsIgnoreCase(rollbackPoint.getHash())) {
+                    throw new IllegalStateException("ChainState did not restore exact API rollback point " + rollbackPoint);
                 }
 
                 // 4. Publish RollbackEvent (isReal=true so UTXO deltas get unwound)

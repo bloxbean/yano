@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.app.archive;
 
 import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
+import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.ChainQuery;
 import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
@@ -1096,7 +1097,9 @@ public class ProjectionHistoryService implements AutoCloseable {
         bus.subscribe(RollbackEvent.class, ctx -> {
             var target = ctx.event().target();
             if (target == null) return;
-            long removed = collector.rollbackToSlot(target.getSlot());
+            boolean origin = target.getHash() == null;
+            byte[] targetHash = origin ? null : decodeRollbackHash(target.getHash());
+            long removed = collector.rollbackToPoint(target.getSlot(), targetHash, origin);
             // Whatever the drain thread has buffered may describe the discarded fork. The
             // flag is observed at its next safe point; taking a lock here would stall the
             // event bus behind an in-flight sink commit.
@@ -1108,16 +1111,30 @@ public class ProjectionHistoryService implements AutoCloseable {
                 // for an artifact that no longer exists and pruning would never resume.
                 artifactReader.reconcileAfterRestart(outbox.pendingArtifacts());
                 // Staged epoch files above the rollback point describe a discarded fork. The
-                // cutoff is derived from the surviving tip, since the rollback point is a slot.
+                // cutoff is derived from the surviving canonical tip.
                 var staging = epochStaging;
                 if (staging != null) {
                     var tip = chainQuery == null ? null : chainQuery.getLocalTip();
                     if (tip != null) staging.discardAfterBlock(tip.getBlockNumber());
                 }
-                log.info("ADR-039 rollback to slot {} removed {} pending projection envelope(s)",
-                        target.getSlot(), removed);
+                log.info("ADR-039 rollback to point slot={}, hash={} removed {} pending projection envelope(s)",
+                        target.getSlot(), target.getHash(), removed);
             }
         }, SubscriptionOptions.builder().build());
+    }
+
+    private static byte[] decodeRollbackHash(String hash) {
+        try {
+            byte[] decoded = HexUtil.decodeHexString(hash);
+            if (decoded.length != 32) {
+                throw new IllegalArgumentException("Rollback hash must be exactly 32 bytes");
+            }
+            return decoded;
+        } catch (IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Invalid rollback hash: " + hash, e);
+        }
     }
 
     private static String genesisHash(YanoConfig nodeConfig) {

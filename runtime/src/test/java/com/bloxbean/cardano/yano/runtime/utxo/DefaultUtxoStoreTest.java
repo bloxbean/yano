@@ -39,9 +39,11 @@ class DefaultUtxoStoreTest {
     private DirectRocksDBChainState chain;
     private DefaultUtxoStore store;
     private EventBus bus;
+    private final NavigableMap<Long, String> publishedBlockHashes = new TreeMap<>();
 
     @BeforeEach
     void setup() throws Exception {
+        publishedBlockHashes.clear();
         tempDir = Files.createTempDirectory("yaci-utxo-test").toFile();
         chain = new DirectRocksDBChainState(tempDir.getAbsolutePath());
         bus = new SimpleEventBus();
@@ -71,14 +73,28 @@ class DefaultUtxoStoreTest {
     }
 
     private void publishBlock(long slot, long blockNo, String hash, Block block) {
+        publishedBlockHashes.put(slot, hash);
         bus.publish(new BlockAppliedEvent(Era.Babbage, slot, blockNo, hash, block),
                 EventMetadata.builder().origin("test").slot(slot).blockNo(blockNo).blockHash(hash).build(),
                 PublishOptions.builder().build());
     }
 
     private void publishRollback(long targetSlot) {
-        bus.publish(new RollbackEvent(new Point(targetSlot, null), true),
-                EventMetadata.builder().origin("test").slot(targetSlot).build(),
+        Point point;
+        if (targetSlot < 0) {
+            point = Point.ORIGIN;
+        } else {
+            Map.Entry<Long, String> target = publishedBlockHashes.floorEntry(targetSlot);
+            if (target == null) {
+                throw new IllegalArgumentException("No published block at or before slot " + targetSlot);
+            }
+            // Most tests use an arbitrary slot between two blocks to exercise the
+            // rollback window. Preserve that intent while supplying the hash now
+            // required by the point-aware store contract.
+            point = new Point(targetSlot, target.getValue());
+        }
+        bus.publish(new RollbackEvent(point, true),
+                EventMetadata.builder().origin("test").slot(point.getSlot()).blockHash(point.getHash()).build(),
                 PublishOptions.builder().build());
     }
 
@@ -616,6 +632,36 @@ class DefaultUtxoStoreTest {
         assertEquals(-1, store.getLatestAppliedSlot());
     }
 
+    @Test
+    void exactRollbackRejectsInvalidHashBeforeMutation() {
+        Block block = Block.builder().era(Era.Babbage)
+                .transactionBodies(Collections.emptyList())
+                .invalidTransactions(Collections.emptyList()).build();
+        publishBlock(100, 1, "a4".repeat(32), block);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> store.rollbackToPoint(new Point(100L, "abcd")));
+        assertEquals(1L, store.getLastAppliedBlock());
+        assertEquals("a4".repeat(32), store.getLatestAppliedPoint().blockHash());
+    }
+
+    @Test
+    void exactRollbackFailsClosedForEqualSlotDeltaWithoutHash() throws Exception {
+        Block block = Block.builder().era(Era.Babbage)
+                .transactionBodies(Collections.emptyList())
+                .invalidTransactions(Collections.emptyList()).build();
+        publishBlock(100, 1, "a5".repeat(32), block);
+        ColumnFamilyHandle delta = (ColumnFamilyHandle) chain.getColumnFamilyHandle(UtxoCfNames.UTXO_BLOCK_DELTA);
+        byte[] key = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(1L).array();
+        store.getDb().put(delta, key, UtxoDeltaCodec.encode(
+                1L, 100L, null, List.of(), List.of()));
+
+        RuntimeException failure = assertThrows(RuntimeException.class,
+                () -> store.rollbackToPoint(new Point(100L, "a6".repeat(32))));
+        assertTrue(failure.getCause().getMessage().contains("exact rollback is ambiguous"));
+        assertEquals(1L, store.getLastAppliedBlock());
+    }
+
     // --- Allegra bootstrap UTXO removal tests ---
 
     @Test
@@ -749,7 +795,7 @@ class DefaultUtxoStoreTest {
     }
 
     @Test
-    void reconcileSkipsStoredByronBlocks() {
+    void reconcileFailsClosedOnMalformedStoredByronBlocks() {
         byte[] hash1 = HexUtil.decodeHexString("11".repeat(32));
         byte[] hash2 = HexUtil.decodeHexString("22".repeat(32));
 
@@ -758,7 +804,8 @@ class DefaultUtxoStoreTest {
         chain.forceStoreBlockHeader(hash2, 2L, 2L, new byte[]{2});
         chain.storeBlock(hash2, 2L, 2L, byronTaggedBlockBytes());
 
-        assertDoesNotThrow(() -> store.reconcile(chain));
+        RuntimeException ex = assertThrows(RuntimeException.class, () -> store.reconcile(chain));
+        assertTrue(ex.getMessage().contains("UTXO reconcile failed to deserialize Byron EBB 1"));
         assertEquals(0L, store.readLastAppliedBlock());
     }
 
@@ -781,7 +828,7 @@ class DefaultUtxoStoreTest {
         assertEquals(Era.Byron, chain.getBlockEra(1L),
                 "ChainState's legacy era reader uses intValue and can misclassify this malformed tag");
         RuntimeException ex = assertThrows(RuntimeException.class, () -> store.reconcile(chain));
-        assertTrue(ex.getMessage().contains("UTXO reconcile failed to deserialize block 1"));
+        assertTrue(ex.getMessage().contains("UTXO reconcile failed to classify Byron block 1"));
     }
 
     private byte[] getUnspent(byte[] outpointKey) {
@@ -812,7 +859,7 @@ class DefaultUtxoStoreTest {
     }
 
     private static byte[] byronTaggedBlockBytes() {
-        return new byte[]{(byte) 0x82, (byte) 0x01, (byte) 0x80};
+        return new byte[]{(byte) 0x82, (byte) 0x00, (byte) 0x80};
     }
 
     private static byte[] malformedNonByronBlockBytes() {

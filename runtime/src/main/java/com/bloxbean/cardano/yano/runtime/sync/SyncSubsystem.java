@@ -25,6 +25,7 @@ import com.bloxbean.cardano.yano.runtime.BodyFetchManager;
 import com.bloxbean.cardano.yano.runtime.HeaderSyncManager;
 import com.bloxbean.cardano.yano.runtime.apply.LedgerApplyProcessor;
 import com.bloxbean.cardano.yano.runtime.chain.ChainStateRecovery;
+import com.bloxbean.cardano.yano.runtime.chain.ChainStateRollback;
 import com.bloxbean.cardano.yano.runtime.chain.OriginRollbackCapable;
 import com.bloxbean.cardano.yano.runtime.kernel.Subsystem;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
@@ -1031,6 +1032,7 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
     private void doHandleChainSyncRollback(Point point) {
         ChainTip localTip = chainState.getTip();
         long rollbackSlot = point.getSlot();
+        boolean rollbackToOrigin = point.getHash() == null;
         BodyFetchManager bodyFetchManager = currentBodyFetchManager();
 
         if (pipelinedMode && bodyFetchManager != null) {
@@ -1038,7 +1040,7 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
             log.info("BodyFetchManager paused for rollback to slot {}", rollbackSlot);
         }
 
-        if (localTip != null && localTip.getBlockNumber() > 1000 && rollbackSlot == 0) {
+        if (localTip != null && localTip.getBlockNumber() > 1000 && rollbackToOrigin) {
             log.error("CATASTROPHIC ROLLBACK DETECTED");
             log.error("Current tip: slot={}, block={}", localTip.getSlot(), localTip.getBlockNumber());
             log.error("Rollback requested to: slot={}", rollbackSlot);
@@ -1048,12 +1050,12 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
             return;
         }
 
-        if (rollbackSlot == 0) {
-            log.warn("Rollback requested to genesis (slot 0)");
+        if (rollbackToOrigin) {
+            log.warn("Rollback requested to origin");
         }
 
         boolean isReal = isRealRollback(point);
-        chainState.rollbackTo(rollbackSlot);
+        ChainStateRollback.rollbackToPoint(chainState, point);
 
         try {
             eventBus.publish(new RollbackEvent(point, isReal),
@@ -2316,7 +2318,7 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
 
     private void discardHeaderOnlyCacheToBodyTip(ChainTip bodyTip, String context) {
         if (bodyTip != null) {
-            chainState.rollbackTo(bodyTip.getSlot());
+            ChainStateRollback.rollbackToPoint(chainState, ChainStateRollback.pointOf(bodyTip));
             return;
         }
         if (chainState instanceof OriginRollbackCapable originRollback) {
@@ -2393,7 +2395,13 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
             return false;
         }
         ChainTip bodyTipBeforeRollback = chainState.getTip();
-        if (bodyTipBeforeRollback != null && rollbackPoint.getSlot() < bodyTipBeforeRollback.getSlot()) {
+        boolean earlierSlot = bodyTipBeforeRollback != null
+                && rollbackPoint.getSlot() < bodyTipBeforeRollback.getSlot();
+        boolean differentSameSlotPoint = bodyTipBeforeRollback != null
+                && rollbackPoint.getSlot() == bodyTipBeforeRollback.getSlot()
+                && (rollbackPoint.getHash() == null || !rollbackPoint.getHash().equalsIgnoreCase(
+                        HexUtil.encodeHexString(bodyTipBeforeRollback.getBlockHash())));
+        if (earlierSlot || differentSameSlotPoint) {
             log.info("Real chain reorganization detected - rollback from slot {} to slot {}",
                     bodyTipBeforeRollback.getSlot(), rollbackPoint.getSlot());
             return true;
