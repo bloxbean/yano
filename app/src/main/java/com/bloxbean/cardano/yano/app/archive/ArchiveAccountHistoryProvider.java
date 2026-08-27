@@ -114,7 +114,7 @@ final class ArchiveAccountHistoryProvider implements AccountHistoryProvider {
     public List<RewardRecord> getRewards(int type, String hash, int page, int count, String order) {
         service.requireCompleteEpochHistory(ArchiveDatasetId.REWARD);
         return query(ArchiveDatasetId.REWARD, Map.of("stake_credential", HexUtil.decodeHexString(hash)),
-                page, count, order).stream().map(row -> new RewardRecord(integer(row, "earned_epoch"),
+                page, count, order).stream().map(row -> new RewardRecord(integer(row, "epoch"),
                 bigInteger(row, "amount"), Objects.toString(row.value("reward_type")),
                 hexNullable(row, "pool_hash"), number(row, "boundary_slot"))).toList();
     }
@@ -186,7 +186,7 @@ final class ArchiveAccountHistoryProvider implements AccountHistoryProvider {
 
     private static Comparator<ArchiveRecord> comparator(ArchiveDatasetId dataset) {
         return switch (dataset) {
-            case REWARD -> Comparator.comparingLong((ArchiveRecord row) -> number(row, "earned_epoch"))
+            case REWARD -> Comparator.comparingLong((ArchiveRecord row) -> number(row, "epoch"))
                     .thenComparing(row -> Objects.toString(row.value("reward_type")))
                     .thenComparing(row -> Objects.toString(row.value("source_id")));
             case ACCOUNT_EVENT -> Comparator.comparingLong((ArchiveRecord row) -> number(row, "block_number"))
@@ -203,7 +203,7 @@ final class ArchiveAccountHistoryProvider implements AccountHistoryProvider {
             case ADDRESS_TRANSACTION -> hex(row, "tx_hash") + ':' + row.value("subject_type") + ':'
                     + HexUtil.encodeHexString((byte[]) row.value("subject_key"));
             case ACCOUNT_EVENT -> hex(row, "tx_hash") + ':' + number(row, "event_index") + ':' + row.value("event_type");
-            case REWARD -> hex(row, "stake_credential") + ':' + number(row, "earned_epoch") + ':'
+            case REWARD -> hex(row, "stake_credential") + ':' + number(row, "epoch") + ':'
                     + row.value("reward_type") + ':' + row.value("source_id");
             default -> row.toString();
         };

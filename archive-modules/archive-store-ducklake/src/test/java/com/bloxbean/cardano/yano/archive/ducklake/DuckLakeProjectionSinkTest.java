@@ -9,6 +9,7 @@ import com.bloxbean.cardano.yano.archive.api.projection.ArchiveArtifactReader;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionCoordinate;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionIdentity;
+import com.bloxbean.cardano.yano.archive.api.projection.ProjectionMaintenance;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionReceipt;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionReceiptMismatchException;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionRowBatch;
@@ -20,9 +21,9 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.Statement;
-import com.bloxbean.cardano.yano.archive.api.projection.ProjectionMaintenance;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -143,6 +144,27 @@ class DuckLakeProjectionSinkTest {
         }
     }
 
+    private List<String> partitionColumns(String table) throws Exception {
+        try (var connection = DriverManager.getConnection("jdbc:sqlite:" + config.catalogPath());
+             var sql = connection.prepareStatement(
+                     "SELECT c.column_name FROM ducklake_partition_info i"
+                             + " JOIN ducklake_table t ON t.table_id=i.table_id"
+                             + " JOIN ducklake_partition_column p ON p.partition_id=i.partition_id"
+                             + " AND p.table_id=i.table_id"
+                             + " JOIN ducklake_column c ON c.column_id=p.column_id"
+                             + " AND c.table_id=i.table_id"
+                             + " WHERE t.table_name=? AND t.end_snapshot IS NULL"
+                             + " AND i.end_snapshot IS NULL AND c.end_snapshot IS NULL"
+                             + " ORDER BY p.partition_key_index")) {
+            sql.setString(1, table);
+            try (var rows = sql.executeQuery()) {
+                List<String> columns = new ArrayList<>();
+                while (rows.next()) columns.add(rows.getString(1));
+                return List.copyOf(columns);
+            }
+        }
+    }
+
     private boolean projectionTableExists(DuckLakeArchiveConfig selectedConfig, String table)
             throws Exception {
         try (var probe = new DuckDbManager(DuckDbManagerConfig.defaults(
@@ -182,6 +204,13 @@ class DuckLakeProjectionSinkTest {
             assertThat(projectionTableExists(config, "archive_invalidations")).isFalse();
             assertThat(projectionTableExists(config, "archive_schema")).isFalse();
             assertThat(projectionTableExists(config, "projection_receipts")).isTrue();
+        }
+    }
+
+    @Test
+    void rewardsArePartitionedByTheirCanonicalEarnedEpoch() throws Exception {
+        try (var ignored = open("reward-partition")) {
+            assertThat(partitionColumns("rewards")).containsExactly("epoch");
         }
     }
 
