@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yano.api.NodeLifecycle;
 import com.bloxbean.cardano.yano.api.config.NodeConfig;
 import com.bloxbean.cardano.yano.api.listener.NodeEventListener;
 import com.bloxbean.cardano.yano.api.model.NodeStatus;
+import com.bloxbean.cardano.yano.app.archive.HistoryArchiveService;
 import com.bloxbean.cardano.yano.app.archive.ProjectionHistoryService;
 import com.bloxbean.cardano.yano.runtime.kernel.NodeKernel;
 import com.bloxbean.cardano.yano.runtime.kernel.Schedulers;
@@ -28,6 +29,20 @@ class YanoHealthCheckTest {
         YanoHealthCheck healthCheck = new YanoHealthCheck();
         healthCheck.projectionHistory = mock(ProjectionHistoryService.class);
         when(healthCheck.projectionHistory.hasInitializationFailure()).thenReturn(true);
+        healthCheck.nodeKernel = kernel(SubsystemHealth.up("chain-storage"));
+
+        try {
+            assertEquals(HealthCheckResponse.Status.DOWN, healthCheck.call().getStatus());
+        } finally {
+            healthCheck.nodeKernel.close();
+        }
+    }
+
+    @Test
+    void readinessIsDownWhenHistoryReadFacadeInitializationFailedEvenIfKernelIsHealthy() {
+        YanoHealthCheck healthCheck = new YanoHealthCheck();
+        healthCheck.historyArchive = mock(HistoryArchiveService.class);
+        when(healthCheck.historyArchive.hasInitializationFailure()).thenReturn(true);
         healthCheck.nodeKernel = kernel(SubsystemHealth.up("chain-storage"));
 
         try {

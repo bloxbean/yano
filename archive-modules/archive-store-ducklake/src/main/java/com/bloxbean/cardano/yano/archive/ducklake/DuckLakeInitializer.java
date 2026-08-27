@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.archive.ducklake;
 
 import com.bloxbean.cardano.yano.archive.api.ArchiveIdentity;
 import com.bloxbean.cardano.yano.archive.api.ArchiveStoreException;
+import com.bloxbean.cardano.yano.archive.api.SourceKind;
 import com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas;
 import com.bloxbean.cardano.yano.archive.api.schema.ArchiveTableSchema;
 
@@ -10,6 +11,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.List;
 import java.util.UUID;
 
 final class DuckLakeInitializer {
@@ -19,20 +21,11 @@ final class DuckLakeInitializer {
         this.config = config;
     }
 
-    void initialize(Connection connection, ArchiveIdentity expected) throws SQLException {
-        initialize(connection, expected, false);
-    }
-
     /** Projection startup creates block/genesis tables first; selected epoch tables join later. */
     void initializeProjection(Connection connection, ArchiveIdentity expected) throws SQLException {
-        initialize(connection, expected, true);
-    }
-
-    private void initialize(Connection connection, ArchiveIdentity expected, boolean blockOnly)
-            throws SQLException {
         createMetadata(connection);
-        createDatasetTables(connection, blockOnly);
-        configureTables(connection, blockOnly);
+        createDatasetTables(connection);
+        configureTables(connection);
         createViews(connection);
         verifyOrCreateIdentity(connection, expected);
     }
@@ -42,41 +35,24 @@ final class DuckLakeInitializer {
             sql.execute("CREATE TABLE IF NOT EXISTS history_lake.archive_identity ("
                     + "archive_id UUID NOT NULL, engine VARCHAR NOT NULL, schema_version INTEGER NOT NULL, "
                     + "network_magic INTEGER NOT NULL, genesis_hash VARCHAR NOT NULL, created_at TIMESTAMP NOT NULL)");
-            sql.execute("CREATE TABLE IF NOT EXISTS history_lake.archive_schema ("
-                    + "dataset VARCHAR NOT NULL, projection_version INTEGER NOT NULL, installed_at TIMESTAMP NOT NULL)");
-            sql.execute("CREATE TABLE IF NOT EXISTS history_lake.archive_commits ("
-                    + "job_id UUID NOT NULL, dataset VARCHAR NOT NULL, projection_version INTEGER NOT NULL, "
-                    + "source_kind VARCHAR NOT NULL, range_start BIGINT NOT NULL, range_end BIGINT NOT NULL, "
-                    + "start_slot BIGINT NOT NULL, start_hash BLOB NOT NULL, end_slot BIGINT NOT NULL, end_hash BLOB NOT NULL, "
-                    + "source_state_version VARCHAR NOT NULL, backend_generation BIGINT NOT NULL, "
-                    + "ordered_digest VARCHAR NOT NULL, committed_at TIMESTAMP NOT NULL)");
-            sql.execute("CREATE TABLE IF NOT EXISTS history_lake.archive_commit_counts ("
-                    + "job_id UUID NOT NULL, table_name VARCHAR NOT NULL, row_count BIGINT NOT NULL)");
-            sql.execute("CREATE TABLE IF NOT EXISTS history_lake.archive_coverage ("
-                    + "job_id UUID NOT NULL, dataset VARCHAR NOT NULL, projection_version INTEGER NOT NULL, "
-                    + "source_kind VARCHAR NOT NULL, range_start BIGINT NOT NULL, range_end BIGINT NOT NULL, "
-                    + "backend_generation BIGINT NOT NULL)");
-            sql.execute("CREATE TABLE IF NOT EXISTS history_lake.archive_invalidations ("
-                    + "invalidation_id UUID NOT NULL, dataset VARCHAR NOT NULL, source_kind VARCHAR NOT NULL, "
-                    + "range_start BIGINT NOT NULL, range_end BIGINT NOT NULL, invalidated_at TIMESTAMP NOT NULL)");
         }
     }
 
-    private void createDatasetTables(Connection connection, boolean blockOnly) throws SQLException {
+    private void createDatasetTables(Connection connection) throws SQLException {
         try (Statement sql = connection.createStatement()) {
-            for (ArchiveTableSchema table : datasetTables(blockOnly)) {
+            for (ArchiveTableSchema table : blockDatasetTables()) {
                 sql.execute(DuckLakeSql.createTable(table));
             }
         }
     }
 
-    private void configureTables(Connection connection, boolean blockOnly) throws SQLException {
+    private void configureTables(Connection connection) throws SQLException {
         try (Statement sql = connection.createStatement()) {
             sql.execute("CALL history_lake.set_option('data_inlining_row_limit', 0)");
             sql.execute("CALL history_lake.set_option('parquet_compression', 'zstd')");
             sql.execute("CALL history_lake.set_option('target_file_size', '" + config.targetFileSizeBytes() + "B')");
             sql.execute("CALL history_lake.set_option('parquet_row_group_size', '" + config.rowGroupSize() + "')");
-            for (ArchiveTableSchema table : datasetTables(blockOnly)) {
+            for (ArchiveTableSchema table : blockDatasetTables()) {
                 if (table.columns().stream().anyMatch(column -> column.name().equals("epoch"))) {
                     try {
                         sql.execute("ALTER TABLE history_lake." + DuckLakeSql.name(table.physicalName())
@@ -89,10 +65,9 @@ final class DuckLakeInitializer {
         }
     }
 
-    private java.util.List<ArchiveTableSchema> datasetTables(boolean blockOnly) {
+    private List<ArchiveTableSchema> blockDatasetTables() {
         return ArchiveSchemas.all().entrySet().stream()
-                .filter(entry -> !blockOnly
-                        || entry.getKey().sourceKind() == com.bloxbean.cardano.yano.archive.api.SourceKind.BLOCK)
+                .filter(entry -> entry.getKey().sourceKind() == SourceKind.BLOCK)
                 .flatMap(entry -> entry.getValue().tables().stream())
                 .distinct()
                 .toList();
@@ -146,7 +121,6 @@ final class DuckLakeInitializer {
                     throw new ArchiveStoreException("DuckLake archive identity mismatch: expected=" + expected
                             + ", actual=" + actual);
                 }
-                verifyProjectionVersions(connection);
                 return;
             }
         }
@@ -159,31 +133,6 @@ final class DuckLakeInitializer {
             insert.setInt(4, expected.networkMagic());
             insert.setString(5, expected.genesisHash());
             insert.executeUpdate();
-        }
-        try (PreparedStatement insert = connection.prepareStatement(
-                "INSERT INTO history_lake.archive_schema VALUES (?, ?, current_timestamp)")) {
-            for (var entry : ArchiveSchemas.all().entrySet()) {
-                insert.setString(1, entry.getKey().logicalName());
-                insert.setInt(2, entry.getValue().projectionVersion());
-                insert.addBatch();
-            }
-            insert.executeBatch();
-        }
-    }
-
-    private void verifyProjectionVersions(Connection connection) throws SQLException {
-        try (PreparedStatement query = connection.prepareStatement(
-                "SELECT projection_version FROM history_lake.archive_schema WHERE dataset=?")) {
-            for (var entry : ArchiveSchemas.all().entrySet()) {
-                query.setString(1, entry.getKey().logicalName());
-                try (ResultSet result = query.executeQuery()) {
-                    if (!result.next() || result.getInt(1) != entry.getValue().projectionVersion()
-                            || result.next()) {
-                        throw new ArchiveStoreException("DuckLake projection metadata mismatch for "
-                                + entry.getKey() + "; rebuild the unreleased preview archive directory");
-                    }
-                }
-            }
         }
     }
 

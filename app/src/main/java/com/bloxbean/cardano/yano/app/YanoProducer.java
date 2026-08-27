@@ -91,7 +91,6 @@ public class YanoProducer {
             RollbackRetentionPlanner.ACCOUNT_STATE_EPOCH_BLOCK_DATA_RETENTION_LAG;
     private static final String ACCOUNT_STATE_SNAPSHOT_RETENTION_EPOCHS =
             RollbackRetentionPlanner.ACCOUNT_STATE_SNAPSHOT_RETENTION_EPOCHS;
-    private static final String REMOVED_ACCOUNT_HISTORY_ENABLED = "yano.account-history.enabled";
     private static final String BLOCK_BODY_PRUNE_DEPTH =
             RollbackRetentionPlanner.BLOCK_BODY_PRUNE_DEPTH;
 
@@ -350,10 +349,6 @@ public class YanoProducer {
     int accountStateSnapshotRetentionEpochs;
     @ConfigProperty(name = YanoPropertyKeys.AccountState.STAKE_BALANCE_INDEX_ENABLED, defaultValue = "true")
     boolean stakeBalanceIndexEnabled;
-    /** One-release migration guard for the removed synchronous history switch. */
-    @ConfigProperty(name = REMOVED_ACCOUNT_HISTORY_ENABLED)
-    Optional<Boolean> removedAccountHistoryEnabled;
-
     // Epoch subsystem config
     @ConfigProperty(name = YanoPropertyKeys.EpochSnapshot.AMOUNTS_ENABLED, defaultValue = "false")
     boolean epochSnapshotAmountsEnabled;
@@ -511,13 +506,6 @@ public class YanoProducer {
         this(PluginLoaderHandle.classpath(pluginClassLoader));
     }
 
-    void rejectRemovedAccountHistoryConfig() {
-        if (removedAccountHistoryEnabled != null && removedAccountHistoryEnabled.isPresent()) {
-            throw new IllegalArgumentException("yano.account-history.enabled was removed; remove it and set "
-                    + "yano.history.projection.enabled=true instead");
-        }
-    }
-
     Yano ensureYano() {
         if (apiPrefixContract != null) {
             apiPrefixContract.verify();
@@ -525,8 +513,6 @@ public class YanoProducer {
         if (yano != null) {
             return yano;
         }
-        rejectRemovedAccountHistoryConfig();
-
         log.info("Creating Yano with network: {}", network);
 
         YanoConfig yaciConfig = YanoConfig.defaultForNetwork(network);
@@ -973,10 +959,7 @@ public class YanoProducer {
 
         try {
             Yano assembledYano = ensureYano();
-            historyArchive.initialize(
-                    assembledYano.chain(),
-                    assembledYano.ledger(),
-                    (YanoConfig) assembledYano.lifecycle().getConfig());
+            historyArchive.initialize();
             // Projection history: the node's only archival write path. The service
             // initialised above no longer writes anything - it is the read facade over the
             // archive this one produces, which is why both are still composed here.
@@ -992,7 +975,6 @@ public class YanoProducer {
             if (projectionHistory.isEnabled() && !historyArchive.enabled()) {
                 projectionHistory.archiveIdentity().ifPresent(identity ->
                         historyArchive.initializeProjectionReads(
-                                (YanoConfig) assembledYano.lifecycle().getConfig(),
                                 identity,
                                 projectionHistory.coveredDatasets(),
                                 projectionHistory::committedThroughBlock,

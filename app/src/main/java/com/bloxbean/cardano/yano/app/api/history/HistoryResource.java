@@ -19,7 +19,6 @@ import org.eclipse.microprofile.openapi.annotations.extensions.Extension;
 import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.Map;
-import java.util.OptionalLong;
 import java.util.Set;
 
 /** Finalized cross-dataset archive consistency metadata. */
@@ -36,10 +35,10 @@ public class HistoryResource {
     /**
      * What the archive can answer for right now.
      *
-     * <p>Separate from {@code watermark}, which reports cross-dataset consistency of the legacy
-     * pipeline. This reports the ADR-039 archive's committed range, its identity, and the epoch
-     * artifact contracts it is maintained under - the last of which cannot be derived from the
-     * section fingerprint.
+     * <p>Separate from {@code watermark}, which reports cross-dataset projection consistency.
+     * This reports the projection archive's committed range, its identity, and the epoch artifact
+     * contracts it is maintained under - the last of which cannot be derived from the section
+     * fingerprint.
      *
      * <p>Callers must treat blocks above {@code queryableThroughBlock} as unknown, not absent.
      * Near tip a block can be final and durable and still be up to one batch linger plus one
@@ -95,14 +94,13 @@ public class HistoryResource {
                               @QueryParam("at-or-before-slot") Long atOrBeforeSlot) {
         try {
             Set<ArchiveDatasetId> datasets = parseDatasets(selected);
-            // When the projection is the primary writer the legacy coverage tables are empty, so
-            // asking them would report an empty archive rather than a lagging one.
             var projected = projection.consistencyPoint(datasets);
-            if (projected.isPresent()) return Response.ok(projected.get()).build();
-
-            long start = fromBlock == null ? history.firstCanonicalHistoryBlock() : fromBlock;
-            return Response.ok(history.finalizedWatermark(datasets, start,
-                    optional(atOrBeforeBlock), optional(atOrBeforeSlot))).build();
+            if (projected.isEmpty()) {
+                return Response.status(Response.Status.CONFLICT)
+                        .entity(Map.of("error", "projection history is unavailable"))
+                        .build();
+            }
+            return Response.ok(projected.get()).build();
         } catch (IllegalArgumentException e) {
             return Response.status(Response.Status.BAD_REQUEST)
                     .entity(Map.of("error", e.getMessage())).build();
@@ -132,7 +130,4 @@ public class HistoryResource {
                 .orElseThrow(() -> new IllegalArgumentException("unknown archive dataset: " + name));
     }
 
-    private static OptionalLong optional(Long value) {
-        return value == null ? OptionalLong.empty() : OptionalLong.of(value);
-    }
 }

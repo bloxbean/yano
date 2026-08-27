@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted and implemented
 
 ## Date
 
@@ -22,6 +22,9 @@ Proposed
 - [ADR-044](044-selective-epoch-artifact-projection.md) and
   [ADR-045](045-epoch-artifact-gaps-and-resumable-capture.md) define the current
   epoch-artifact selection, coverage, gap and recovery model.
+- [Implementation report](reports/adr-047-implementation-report-2026-08-27.md)
+  records the deletion inventory, automated verification and live preprod/devnet
+  acceptance evidence.
 
 ## Context
 
@@ -267,6 +270,7 @@ transaction lookup, health and close.
 
 Delete the resulting unused types and implementation:
 
+- `ArchiveMaintenanceBudget`;
 - `ArchiveWriteSession`;
 - `ArchiveRetentionCutoff`;
 - `DuckLakeWriteSession`; and
@@ -401,10 +405,11 @@ commit may restore or create a second archive writer.
    tests, including Byron, Shelley base/enterprise/reward addresses, pre-Conway
    pointer addresses, post-Conway pointer behavior, invalid transactions, collateral
    inputs/returns, assets, datums and redeemers. Before deleting the sequential
-   resolver oracle, run the real `RocksDbHotHistoryStore`-backed resolver over the
-   pointer fixture matrix and check its outputs into stable golden data. Extraction
-   tests consume that frozen data, preserving independent expected answers after the
-   executable legacy oracle is removed.
+   resolver oracle, use its fixture matrix to identify the pointer lifecycle
+   invariants that must survive. Preserve resolved, unresolved and Conway row output
+   as inline expected strings; preserve registration/deregistration/re-registration,
+   as-of replay, determinism and idempotence in focused tests of the current
+   projection overlay and persistent pointer index.
 2. Extract `ArchiveAddressParser` and `UtxoHistoryRows`; switch the projection to
    them and prove byte-for-byte/row-for-row parity before deleting legacy owners.
 3. Remove `AddressTransactionDataset`, `UtxoHistoryDataset`, the stateful dataset
@@ -460,8 +465,9 @@ The cleanup is complete only when all of the following hold.
 The new suites must cover:
 
 - exact address-parser and UTXO-row parity across the fixture matrix;
-- frozen pointer-resolution golden answers produced by the real sequential resolver
-  before its deletion;
+- inline expected rows for resolved, unresolved and Conway pointer outcomes, plus
+  persistent and same-block pointer lifecycle, as-of replay, determinism and
+  idempotence;
 - selected/unselected block and epoch datasets;
 - zero-row epoch evidence;
 - complete, not-projected and gap coverage responses;

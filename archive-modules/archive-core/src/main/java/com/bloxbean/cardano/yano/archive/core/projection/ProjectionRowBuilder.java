@@ -2,23 +2,33 @@ package com.bloxbean.cardano.yano.archive.core.projection;
 
 import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import com.bloxbean.cardano.yano.archive.api.ArchiveJob;
+import com.bloxbean.cardano.yano.archive.api.ArchiveNetworkIdentity;
 import com.bloxbean.cardano.yano.archive.api.ArchiveRangeAnchor;
 import com.bloxbean.cardano.yano.archive.api.ArchiveRow;
 import com.bloxbean.cardano.yano.archive.api.BlockRange;
+import com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactIntervalRepair;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionBatch;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionEnvelope;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionRowBatch;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionSection;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionSectionType;
+import com.bloxbean.cardano.yano.archive.core.dataset.AccountEventFact;
 import com.bloxbean.cardano.yano.archive.core.dataset.ArchiveBlockFacts;
+import com.bloxbean.cardano.yano.archive.core.dataset.AddressSubjectRows;
+import com.bloxbean.cardano.yano.archive.core.dataset.AddressTransactionSubjects;
 import com.bloxbean.cardano.yano.archive.core.dataset.BlockSourceContext;
 import com.bloxbean.cardano.yano.archive.core.dataset.StandardBlockDatasets;
-import com.bloxbean.cardano.yano.archive.core.dataset.UtxoHistoryDataset;
+import com.bloxbean.cardano.yano.archive.core.dataset.TransactionFact;
 import com.bloxbean.cardano.yano.archive.core.dataset.UtxoHistoryFact;
+import com.bloxbean.cardano.yano.archive.core.dataset.UtxoHistoryRows;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
+import java.util.NoSuchElementException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Collectors;
 
 /**
  * Materialises a projection batch into archive rows, once, for every backend.
@@ -46,13 +56,12 @@ public final class ProjectionRowBuilder {
     }
 
     public static ProjectionRowBatch materialise(ProjectionBatch batch,
-            List<com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactIntervalRepair>
-                    intervalRepairs) {
+                                                  List<EpochArtifactIntervalRepair> intervalRepairs) {
         Iterable<ArchiveRow> rows = new SingleUseRowSource(batch.envelopes());
         return new ProjectionRowBatch(batch.identity(), batch.firstBlock(), batch.lastBlock(),
                 batch.blockCount(), batch.firstEnvelopeId(), batch.lastEnvelopeId(),
                 batch.orderedDigest(), rows, batch.artifacts(), batch.envelopes().stream()
-                        .collect(java.util.stream.Collectors.toUnmodifiableMap(
+                        .collect(Collectors.toUnmodifiableMap(
                                 ProjectionEnvelope::blockNumber,
                                 envelope -> envelope.header().blockHash())),
                 batch.envelopes().getLast().header().slot(), intervalRepairs);
@@ -71,15 +80,14 @@ public final class ProjectionRowBuilder {
     /** Enforces single use; see {@link #materialise}. */
     private static final class SingleUseRowSource implements Iterable<ArchiveRow> {
         private final List<ProjectionEnvelope> envelopes;
-        private final java.util.concurrent.atomic.AtomicBoolean consumed =
-                new java.util.concurrent.atomic.AtomicBoolean();
+        private final AtomicBoolean consumed = new AtomicBoolean();
 
         SingleUseRowSource(List<ProjectionEnvelope> envelopes) {
             this.envelopes = envelopes;
         }
 
         @Override
-        public java.util.Iterator<ArchiveRow> iterator() {
+        public Iterator<ArchiveRow> iterator() {
             if (!consumed.compareAndSet(false, true)) {
                 throw new IllegalStateException("projection row stream is single-use; re-materialise the"
                         + " batch from the outbox instead of iterating a partially consumed source");
@@ -88,7 +96,7 @@ public final class ProjectionRowBuilder {
         }
     }
 
-    private static final class StreamingRowIterator implements java.util.Iterator<ArchiveRow> {
+    private static final class StreamingRowIterator implements Iterator<ArchiveRow> {
         private final List<ProjectionEnvelope> envelopes;
         private int nextEnvelope;
         private List<ArchiveRow> buffer = List.of();
@@ -112,7 +120,7 @@ public final class ProjectionRowBuilder {
 
         @Override
         public ArchiveRow next() {
-            if (!hasNext()) throw new java.util.NoSuchElementException();
+            if (!hasNext()) throw new NoSuchElementException();
             return buffer.get(nextRow++);
         }
     }
@@ -137,13 +145,13 @@ public final class ProjectionRowBuilder {
      *
      * <p>Genesis funds belong to no block, so they cannot arrive as an envelope section - but
      * they must not become a second row derivation either. This routes the normalised genesis
-     * fact through {@link UtxoHistoryDataset}, so address decomposition, column order and schema
+     * fact through {@link UtxoHistoryRows}, so address decomposition, column order and schema
      * semantics are shared with every other output row by construction.
      *
      * <p>The job identity is deterministic over the genesis coordinate, so a bootstrap replayed
      * after a crash reproduces the same {@code archive_job_id} rather than a fresh one.
      */
-    public static List<ArchiveRow> genesisRows(com.bloxbean.cardano.yano.archive.api.ArchiveNetworkIdentity network, int projectionVersion,
+    public static List<ArchiveRow> genesisRows(ArchiveNetworkIdentity network, int projectionVersion,
                                                long blockNumber, long slot, int epoch, long blockTime,
                                                byte[] blockHash, byte[] parentHash,
                                                UtxoHistoryFact fact) {
@@ -152,7 +160,7 @@ public final class ProjectionRowBuilder {
         ArchiveJob job = ArchiveJob.deterministic(network, ArchiveDatasetId.UTXO_HISTORY,
                 projectionVersion, new BlockRange(blockNumber, blockNumber),
                 new ArchiveRangeAnchor(slot, blockHash, slot, blockHash), "genesis");
-        new UtxoHistoryDataset().derive(job,
+        UtxoHistoryRows.emit(job,
                 new BlockSourceContext<>(blockNumber, slot, epoch, Instant.ofEpochSecond(blockTime),
                         blockHash, parentHash, fact),
                 rows::add);
@@ -167,7 +175,7 @@ public final class ProjectionRowBuilder {
         Instant blockTime = Instant.ofEpochSecond(header.blockTime());
 
         envelope.section(ProjectionSectionType.TRANSACTION).ifPresent(section -> {
-            List<com.bloxbean.cardano.yano.archive.core.dataset.TransactionFact> facts = new ArrayList<>();
+            List<TransactionFact> facts = new ArrayList<>();
             ProjectionFactCodec.streamTransactions(section.chunks(), facts::add);
             StandardBlockDatasets.transactions().derive(
                     job(ArchiveDatasetId.TRANSACTION, envelope),
@@ -177,7 +185,7 @@ public final class ProjectionRowBuilder {
         });
 
         envelope.section(ProjectionSectionType.ACCOUNT_EVENT).ifPresent(section -> {
-            List<com.bloxbean.cardano.yano.archive.core.dataset.AccountEventFact> facts = new ArrayList<>();
+            List<AccountEventFact> facts = new ArrayList<>();
             ProjectionFactCodec.streamAccountEvents(section.chunks(), facts::add);
             StandardBlockDatasets.accountEvents().derive(
                     job(ArchiveDatasetId.ACCOUNT_EVENT, envelope),
@@ -192,13 +200,12 @@ public final class ProjectionRowBuilder {
             // protocol-bounded. Rows come from the same accumulator the live path uses.
             var job = job(ArchiveDatasetId.ADDRESS_TRANSACTION, envelope);
             ProjectionFactCodec.streamAddressParticipations(section.chunks(), tx -> {
-                var accumulator = new com.bloxbean.cardano.yano.archive.core.dataset.AddressSubjectRows(
-                        com.bloxbean.cardano.yano.archive.core.dataset.AddressTransactionSubjects.all(),
+                var accumulator = new AddressSubjectRows(
+                        AddressTransactionSubjects.all(),
                         header.networkIdentity().networkMagic());
                 for (var participation : tx.participations()) {
                     accumulator.add(participation.participant(),
-                            com.bloxbean.cardano.yano.archive.core.dataset.AddressSubjectRows.Role
-                                    .valueOf(participation.role()));
+                            AddressSubjectRows.Role.valueOf(participation.role()));
                 }
                 accumulator.emit(tx.txHash(), tx.txIndex(), blockHash, blockNumber, header.slot(),
                         header.epoch(), header.blockTime(), job.jobId(), rows::add);
@@ -207,7 +214,7 @@ public final class ProjectionRowBuilder {
 
         envelope.section(ProjectionSectionType.UTXO_HISTORY).ifPresent(section -> {
             UtxoHistoryFact fact = ProjectionFactCodec.decodeUtxoHistory(section.chunks());
-            new UtxoHistoryDataset().derive(
+            UtxoHistoryRows.emit(
                     job(ArchiveDatasetId.UTXO_HISTORY, envelope),
                     new BlockSourceContext<>(blockNumber, header.slot(), header.epoch(), blockTime,
                             blockHash, parentHash, fact),

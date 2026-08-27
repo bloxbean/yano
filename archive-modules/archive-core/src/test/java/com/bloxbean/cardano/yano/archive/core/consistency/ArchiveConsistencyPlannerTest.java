@@ -71,8 +71,6 @@ class ArchiveConsistencyPlannerTest {
         @Override public ArchiveCapabilities capabilities() {
             return new ArchiveCapabilities(true, false, false, false, false);
         }
-        @Override public ArchiveWriteSession begin(ArchiveJob job) { throw new UnsupportedOperationException(); }
-        @Override public Optional<ArchiveReceipt> findReceipt(UUID jobId) { return Optional.empty(); }
         @Override public ArchiveCoverage coverage(ArchiveDatasetId dataset) {
             return new ArchiveCoverage(dataset, 1, 5,
                     coverage.getOrDefault(dataset, List.of()).stream().map(value -> (ArchiveRange) value).toList());
@@ -93,10 +91,6 @@ class ArchiveConsistencyPlannerTest {
             @Override public long generation() { return 5; }
             @Override public void close() { }
         }; }
-        @Override public void invalidate(ArchiveDatasetId dataset, ArchiveRange range) { }
-        @Override public int invalidateEpochJobsAfterSlot(ArchiveDatasetId dataset, long rollbackSlot) { return 0; }
-        @Override public void applyRetention(ArchiveDatasetId dataset, ArchiveRetentionCutoff cutoff) { }
-        @Override public void maintain(ArchiveMaintenanceBudget budget) { }
         @Override public ArchiveHealth health() { return ArchiveHealth.healthy(); }
         @Override public void close() { }
     }
