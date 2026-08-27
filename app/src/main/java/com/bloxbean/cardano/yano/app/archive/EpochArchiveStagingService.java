@@ -24,14 +24,21 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
     private final ArchiveNetworkIdentity network;
     private final Path root;
     private final Set<Dataset> enabled;
+    private final int firstPostByronEpoch;
     private final Map<String, SourceBinding<?>> sources = new ConcurrentHashMap<>();
     private volatile Boundary boundary;
+    /** True only while the prepared boundary's source epoch is still Byron. */
+    private volatile boolean skipCurrentBoundary;
     private volatile String error;
 
     EpochArchiveStagingService(ChainQuery chain, LedgerQuery ledger, ArchiveNetworkIdentity network,
-                               Path root, Set<Dataset> enabled) {
+                               Path root, Set<Dataset> enabled, int firstPostByronEpoch) {
+        if (firstPostByronEpoch < 0) {
+            throw new IllegalArgumentException("firstPostByronEpoch must be non-negative");
+        }
         this.chain = chain; this.ledger = ledger; this.network = network;
         this.root = root.toAbsolutePath().normalize(); this.enabled = Set.copyOf(enabled);
+        this.firstPostByronEpoch = firstPostByronEpoch;
         try {
             Files.createDirectories(completedDirectory());
             try (var files = Files.list(completedDirectory())) {
@@ -45,7 +52,9 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
         registerKnownSources();
     }
 
-    public boolean enabled(Dataset dataset) { return enabled.contains(dataset) && error == null; }
+    public boolean enabled(Dataset dataset) {
+        return enabled.contains(dataset) && error == null && !skipCurrentBoundary;
+    }
 
     /**
      * Why staging stopped, when it has.
@@ -57,24 +66,33 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
      * failure is missing from the archive.
      */
     public java.util.Optional<String> failure() { return java.util.Optional.ofNullable(error); }
-    public void beginBoundary(Boundary value) { boundary = value; }
+    public void beginBoundary(Boundary value) {
+        boundary = Objects.requireNonNull(value, "epoch boundary is required");
+        skipCurrentBoundary = value.previousEpoch() < firstPostByronEpoch;
+    }
     public void completeBoundary(Boundary value) {
         if (!Objects.equals(boundary, value)) return;
         try {
-            if (enabled.isEmpty()) return;
+            if (skipCurrentBoundary || enabled.isEmpty()) return;
             if (error == null) publishCompleted(value);
             else discardBoundary(value);
         } catch (Exception e) { fail(e); }
-        finally { boundary = null; }
+        finally { clearBoundary(); }
     }
     public void abortBoundary(Boundary value) {
         if (!Objects.equals(boundary, value)) return;
         // Core epoch phases commit independently. Preserve source parts from
         // already-committed phases so startup recovery can add the remaining
         // parts and publish one whole-boundary completion marker.
-        try { Files.deleteIfExists(completion(value.blockNumber())); }
+        try {
+            if (!skipCurrentBoundary) Files.deleteIfExists(completion(value.blockNumber()));
+        }
         catch (Exception e) { fail(e); }
-        finally { boundary = null; }
+        finally { clearBoundary(); }
+    }
+    private void clearBoundary() {
+        boundary = null;
+        skipCurrentBoundary = false;
     }
     Optional<String> error() { return Optional.ofNullable(error); }
     Collection<SourceBinding<?>> sources() { return List.copyOf(sources.values()); }

@@ -6,6 +6,8 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.ChainQuery;
 import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
+import com.bloxbean.cardano.yano.api.util.EpochSlotCalc;
+import com.bloxbean.cardano.yano.runtime.config.DefaultEpochParamProvider;
 import com.bloxbean.cardano.yano.runtime.config.NetworkGenesisConfig;
 import com.bloxbean.cardano.yano.api.archive.ProjectionCfNames;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
@@ -360,7 +362,8 @@ public class ProjectionHistoryService implements AutoCloseable {
         verifyArtifactContracts(sinkEmpty && acknowledgedThrough < 0, chain, ledger);
 
         installEpochArtifacts(yano, chain, ledger, network.networkMagic());
-        installEpochStagingForUnmigratedDatasets(chain, ledger, network);
+        int firstPostByronEpoch = resolveFirstPostByronEpoch(genesis, nodeConfig);
+        installEpochStagingForUnmigratedDatasets(chain, ledger, network, firstPostByronEpoch);
 
         safetyWindows = ArchiveSafetyWindows.resolve(genesis.getSecurityParam(),
                 autoLong(YanoPropertyKeys.History.ROLLBACK_RETENTION_BLOCKS),
@@ -436,6 +439,27 @@ public class ProjectionHistoryService implements AutoCloseable {
                 chunkBytes, safetyWindows.archiveFinalityBlocks(),
                 pointerSource == com.bloxbean.cardano.yano.api.archive.PointerCredentialSource.NONE
                         ? "none" : "account-state(" + completeness + ")");
+    }
+
+    /**
+     * Resolve the staging era threshold without depending on RuntimeNode.start() having already
+     * propagated genesis values back into the mutable node configuration. Projection history is
+     * initialized before that lifecycle step by the packaged application.
+     */
+    static int resolveFirstPostByronEpoch(NetworkGenesisConfig genesis, YanoConfig nodeConfig) {
+        Long configuredStart = nodeConfig.getConfiguredFirstNonByronSlot();
+        if (configuredStart != null && configuredStart < 0) {
+            throw new IllegalArgumentException("firstNonByronSlot must be non-negative");
+        }
+        long firstNonByronSlot = configuredStart != null
+                ? configuredStart
+                : DefaultEpochParamProvider.resolveFirstNonByronSlot(
+                        genesis.getNetworkMagic(), genesis.hasByronGenesis());
+        return new EpochSlotCalc(
+                genesis.getEpochLength(),
+                genesis.getByronSlotsPerEpoch(),
+                firstNonByronSlot)
+                .firstNonByronEpoch();
     }
 
     /**
@@ -706,14 +730,15 @@ public class ProjectionHistoryService implements AutoCloseable {
      * the whole method disappears in Phase 7b once the set is empty.
      */
     private void installEpochStagingForUnmigratedDatasets(ChainQuery chain, LedgerQuery ledger,
-                                                          ArchiveNetworkIdentity network) {
+                                                          ArchiveNetworkIdentity network,
+                                                          int firstPostByronEpoch) {
         var pending = stagedFileDatasets();
         if (pending.isEmpty()) {
             log.info("ADR-039 no epoch dataset uses staged-file evidence; staging is not installed");
             return;
         }
         epochStaging = new EpochArchiveStagingService(chain, ledger, network,
-                historyDirectory.resolve("epoch-source"), pending);
+                historyDirectory.resolve("epoch-source"), pending, firstPostByronEpoch);
 
         // The other half of the migration. A staging class that writes files nobody references
         // is not a migration: durable evidence has to become an outbox reference, get committed
