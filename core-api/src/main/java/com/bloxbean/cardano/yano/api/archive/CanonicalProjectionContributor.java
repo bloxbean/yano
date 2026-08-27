@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.api.archive;
 
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.ByronBlockProjectionEvent;
+import com.bloxbean.cardano.yano.api.events.ByronMainBlockAppliedEvent;
 
 /**
  * Produces projection sections during canonical block application (ADR-039 §8).
@@ -49,10 +50,30 @@ public interface CanonicalProjectionContributor {
     }
 
     /**
-     * Contribute Byron sections for an already-decoded Byron block. Epoch-boundary
-     * blocks contribute an empty envelope so the projection coordinate stays contiguous.
+     * Contribute an already-decoded Byron epoch-boundary block. It may contribute an
+     * empty envelope when the coordinate is not already occupied by a main block.
      */
     void contributeByronBlock(ByronBlockProjectionEvent event, ProjectionStagingWriter writer);
+
+    /**
+     * Contribute a Byron main block inside the UTXO store's canonical write batch.
+     *
+     * <p>The default preserves source compatibility for custom contributors that do not
+     * support Byron history.
+     */
+    default void contributeByronMainBlock(ByronMainBlockAppliedEvent event,
+                                          ConsumedOutputAddresses consumed,
+                                          ProjectionStagingWriter writer) {
+    }
+
+    /**
+     * Refresh any cached native storage handles after the chain-state database is replaced.
+     *
+     * <p>Devnet snapshot restore closes and reopens RocksDB. Contributors that retain outbox
+     * handles must rebind them before canonical application or background draining resumes.
+     */
+    default void reinitializeAfterSnapshotRestore() {
+    }
 
     /** Drop pending envelopes at or above {@code fromBlockNumber} and rewind cursors. */
     void rollbackFrom(long fromBlockNumber);

@@ -901,12 +901,6 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
 
             // Publish BlockApplied after storage
             eventBus.publish(new BlockAppliedEvent(Era.Byron, slot, blockNumber, hash, null), appMeta, appOptions);
-            // ADR-039: carry the already-decoded Byron block to projection history on a
-            // dedicated type. BlockAppliedEvent's null block stays a Byron/EBB sentinel
-            // for its existing consumers; this adds a subscriber-free cost when history
-            // is disabled.
-            eventBus.publish(ByronBlockProjectionEvent.main(slot, blockNumber, hash,
-                    byronBlock.getHeader().getPrevBlock(), byronBlock), appMeta, appOptions);
             recordBodyApplied(slot, blockNumber);
 
             // Publish TipChanged if tip advanced

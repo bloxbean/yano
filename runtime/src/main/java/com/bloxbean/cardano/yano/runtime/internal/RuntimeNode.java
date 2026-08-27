@@ -283,6 +283,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     private final LedgerStateSubsystem ledgerStateSubsystem;
     private final SyncSubsystem syncSubsystem;
     private volatile UtxoStoreWriter utxoStore;
+    private volatile List<String> projectionFilterPreflight;
     private BootstrapDataProvider bootstrapDataProvider;
     private volatile List<SubscriptionHandle> nonceListenerSubscriptions = List.of();
 
@@ -755,6 +756,13 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     public boolean installProjectionContributor(
             com.bloxbean.cardano.yano.api.archive.CanonicalProjectionContributor contributor) {
         return utxoSubsystem != null && utxoSubsystem.installProjectionContributor(contributor);
+    }
+
+    public List<String> configuredUtxoStorageFilters() {
+        List<String> resolved = utxoSubsystem.configuredStorageFilterNames(
+                pluginManager != null ? pluginManager.getStorageFilters() : List.of());
+        projectionFilterPreflight = List.copyOf(resolved);
+        return projectionFilterPreflight;
     }
 
     /**
@@ -1567,7 +1575,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             }
             domainApiRegistry.resume();
             utxoSubsystem.initializeFilterChain(
-                    pluginManager != null ? pluginManager.getStorageFilters() : List.of());
+                    pluginManager != null ? pluginManager.getStorageFilters() : List.of(),
+                    projectionFilterPreflight);
             // Health and metrics may depend on services contributed by the
             // ordinary plugin planes, so construct telemetry only after both
             // NodePlugin and domain products are active.

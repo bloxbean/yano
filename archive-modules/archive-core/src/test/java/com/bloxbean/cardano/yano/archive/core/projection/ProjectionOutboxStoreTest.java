@@ -52,6 +52,10 @@ class ProjectionOutboxStoreTest {
     }
 
     private void openDatabase() {
+        openDatabase(true);
+    }
+
+    private void openDatabase(boolean replaceStore) {
         try {
             dbOptions = new DBOptions().setCreateIfMissing(true).setCreateMissingColumnFamilies(true);
             List<ColumnFamilyDescriptor> descriptors = new ArrayList<>();
@@ -61,10 +65,22 @@ class ProjectionOutboxStoreTest {
             }
             handles = new ArrayList<>();
             db = RocksDB.open(dbOptions, directory.resolve("db").toString(), descriptors, handles);
-            store = new ProjectionOutboxStore(db, handles.get(1), handles.get(2), handles.get(3), handles.get(4), handles.get(5));
+            if (replaceStore) {
+                store = new ProjectionOutboxStore(() -> db, this::projectionHandle);
+            }
         } catch (Exception e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    private ColumnFamilyHandle projectionHandle(String name) {
+        return switch (name) {
+            case ProjectionCfNames.PROJ_HEADER -> handles.get(1);
+            case ProjectionCfNames.PROJ_SECTION -> handles.get(2);
+            case ProjectionCfNames.PROJ_META -> handles.get(3);
+            case ProjectionCfNames.PROJ_ARTIFACT -> handles.get(4);
+            default -> null;
+        };
     }
 
     private void closeDatabase() {
@@ -346,6 +362,19 @@ class ProjectionOutboxStoreTest {
         assertThat(after.envelopeId()).isEqualTo(before);
         assertThat(after.sections()).hasSize(2);
         assertThat(store.completeThrough(REQUIRED)).isEqualTo(100);
+    }
+
+    @Test
+    void cachedNativeHandlesCanBeReboundAfterDatabaseReplacement() {
+        commitCompleteBlock(100);
+
+        closeDatabase();
+        openDatabase(false);
+        store.reinitializeAfterSnapshotRestore();
+
+        assertThat(store.readEnvelope(100, REQUIRED)).isPresent();
+        commitCompleteBlock(101);
+        assertThat(store.completeThrough(REQUIRED)).isEqualTo(101);
     }
 
     /** ADR-039 §11 case 2: crash after one contributor commits, before the envelope completes. */

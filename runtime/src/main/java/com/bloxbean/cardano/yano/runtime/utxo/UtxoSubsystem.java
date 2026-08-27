@@ -7,6 +7,7 @@ import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.plugin.StorageFilter;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
+import com.bloxbean.cardano.yano.runtime.chain.NearestPointLookup;
 import com.bloxbean.cardano.yano.runtime.db.RocksDbSupplier;
 import com.bloxbean.cardano.yano.runtime.kernel.Subsystem;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
@@ -182,8 +183,40 @@ public final class UtxoSubsystem implements Subsystem {
                 ? genesisConfig.getByronNonAvvmBalances() : Map.of();
         Map<String, java.math.BigInteger> avvm = genesisConfig != null
                 ? genesisConfig.getByronAvvmBalances() : Map.of();
-        defaultStore.rebuildFullStateFromGenesis(
-                chainState, shelley, networkMagic, nonAvvm, avvm);
+        var previousContributor = defaultStore.swapProjectionContributor(
+                com.bloxbean.cardano.yano.api.archive.CanonicalProjectionContributor.NOOP);
+        try {
+            defaultStore.rebuildFullStateFromGenesis(
+                    chainState, shelley, networkMagic, nonAvvm, avvm);
+            var tip = chainState.getTip();
+            if (tip != null) {
+                var applied = defaultStore.getLatestAppliedPoint();
+                long expectedSlot = tip.getSlot();
+                String expectedHash = com.bloxbean.cardano.yaci.core.util.HexUtil
+                        .encodeHexString(tip.getBlockHash());
+                // An EBB can be the physical chain tip while the UTXO cursor correctly
+                // remains on the numbered main block that owns its difficulty. Validate
+                // against that canonical state-transition point, not the no-op EBB.
+                Long numberedSlot = chainState.getSlotByBlockNumber(tip.getBlockNumber());
+                if (numberedSlot != null && chainState instanceof NearestPointLookup lookup) {
+                    var numberedPoint = lookup.findNearestPointAtOrBefore(numberedSlot);
+                    if (numberedPoint != null && numberedPoint.getHash() != null) {
+                        expectedSlot = numberedPoint.getSlot();
+                        expectedHash = numberedPoint.getHash();
+                    }
+                }
+                if (defaultStore.readLastAppliedBlock() != tip.getBlockNumber()
+                        || applied.slot() != expectedSlot
+                        || !expectedHash.equalsIgnoreCase(applied.blockHash())) {
+                    throw new IllegalStateException("UTXO rebuild ended at "
+                            + defaultStore.readLastAppliedBlock() + "/" + applied
+                            + " but canonical state-transition tip is block " + tip.getBlockNumber()
+                            + " slot " + expectedSlot + " hash " + expectedHash);
+                }
+            }
+        } finally {
+            defaultStore.setProjectionContributor(previousContributor);
+        }
     }
 
     public void reinitializeAndReconcileAfterSnapshotRestore() {
@@ -297,17 +330,45 @@ public final class UtxoSubsystem implements Subsystem {
         }
     }
 
+    public List<String> configuredStorageFilterNames(List<StorageFilter> pluginFilters) {
+        return resolveFilterConfiguration(pluginFilters).names();
+    }
+
     public void initializeFilterChain(List<StorageFilter> pluginFilters) {
+        initializeFilterChain(pluginFilters, null);
+    }
+
+    public void initializeFilterChain(List<StorageFilter> pluginFilters,
+                                      List<String> expectedPreflight) {
         if (!(utxoStore instanceof DefaultUtxoStore defaultStore)) {
             return;
         }
 
-        boolean filterEnabled = resolveBoolean(runtimeOptions.globals(), YanoPropertyKeys.UtxoFilter.ENABLED, false);
-        if (!filterEnabled) {
+        FilterConfiguration resolved = resolveFilterConfiguration(pluginFilters);
+        if (expectedPreflight != null && !expectedPreflight.equals(resolved.names())) {
+            throw new IllegalStateException("UTXO storage-filter preflight changed before runtime start: "
+                    + expectedPreflight + " != " + resolved.names());
+        }
+
+        if (!resolved.enabled()) {
             defaultStore.setFilterChain(null);
             log.info("UTXO storage filtering disabled");
             return;
         }
+
+        defaultStore.setFilterChain(resolved.filters().isEmpty()
+                ? null : new StorageFilterChain(resolved.filters()));
+        if (!resolved.filters().isEmpty()) {
+            log.info("UTXO storage filter chain active with {} filter(s)", resolved.filters().size());
+        } else {
+            log.info("UTXO storage filter chain inactive (no configured filters)");
+        }
+    }
+
+    private FilterConfiguration resolveFilterConfiguration(List<StorageFilter> pluginFilters) {
+        boolean filterEnabled = resolveBoolean(runtimeOptions.globals(),
+                YanoPropertyKeys.UtxoFilter.ENABLED, false);
+        if (!filterEnabled) return new FilterConfiguration(false, List.of(), List.of());
 
         Set<String> addresses = new HashSet<>();
         Set<String> paymentCreds = new HashSet<>();
@@ -337,22 +398,20 @@ public final class UtxoSubsystem implements Subsystem {
         List<StorageFilter> filters = new ArrayList<>();
         if (!addresses.isEmpty() || !paymentCreds.isEmpty()) {
             filters.add(new AddressUtxoFilter(addresses, paymentCreds));
-            log.info("UTXO filter configured: {} addresses, {} payment-credentials",
-                    addresses.size(), paymentCreds.size());
         }
         if (pluginFilters != null && !pluginFilters.isEmpty()) {
             filters.addAll(pluginFilters);
         }
 
-        StorageFilterChain filterChain = filters.isEmpty()
-                ? null : new StorageFilterChain(filters);
-        defaultStore.setFilterChain(filterChain);
-        if (filterChain != null) {
-            log.info("UTXO storage filter chain active with {} filter(s)", filters.size());
-        } else {
-            log.info("UTXO storage filter chain inactive (no configured filters)");
-        }
+        List<StorageFilter> immutable = List.copyOf(filters);
+        List<String> names = immutable.stream()
+                .map(filter -> filter.getClass().getName() + "@" + filter.priority())
+                .toList();
+        return new FilterConfiguration(true, immutable, names);
     }
+
+    private record FilterConfiguration(boolean enabled, List<StorageFilter> filters,
+                                       List<String> names) {}
 
     @Override
     public void start() {
@@ -433,6 +492,10 @@ public final class UtxoSubsystem implements Subsystem {
 
                 boolean applyAsync = resolveBoolean(runtimeOptions.globals(), YanoPropertyKeys.Utxo.APPLY_ASYNC, false);
                 if (applyAsync && config.isEnableClient()) {
+                    // ADR-042 relies on this ordering: Byron main projection commits on the
+                    // synchronous UTXO worker before the later EBB carrier is dispatched.
+                    // If historical client apply ever becomes asynchronous, both carriers
+                    // must be routed through one ordered worker before relaxing this guard.
                     log.warn("yano.utxo.applyAsync=true is disabled during client sync; ordered apply requires "
                             + "synchronous UTXO failures to propagate");
                     applyAsync = false;

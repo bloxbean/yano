@@ -122,15 +122,19 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     //
     // This measures the *apply-stage* share. RocksDB write amplification from the extra column
     // families is captured separately as a disk measurement (~1.4x logical).
-    /** Stable key for a consumed outpoint; hex id plus index, which is already how inputs arrive. */
-    private static String consumedKey(String txHash, int outputIndex) {
-        return txHash + '#' + outputIndex;
-    }
-
     private final java.util.concurrent.atomic.LongAdder applyNanos = new java.util.concurrent.atomic.LongAdder();
     private final java.util.concurrent.atomic.LongAdder projectionNanos = new java.util.concurrent.atomic.LongAdder();
     private final java.util.concurrent.atomic.LongAdder attributedBlocks = new java.util.concurrent.atomic.LongAdder();
     private final java.util.concurrent.atomic.LongAdder continuityWarnings = new java.util.concurrent.atomic.LongAdder();
+    /**
+     * Last committed delta used by the diagnostic continuity guard.
+     *
+     * <p>Apply is serialized, so reopening an iterator and seeking the delta tail for every
+     * block only repeats information this store just committed. The cache is loaded once on
+     * startup and explicitly refreshed by rollback, rebuild and snapshot reinitialization.
+     */
+    private boolean continuityCacheInitialized;
+    private UtxoDeltaCodec.Decoded continuityPrevious;
     private final java.util.concurrent.atomic.LongAdder shelleyUnresolvedInputs = new java.util.concurrent.atomic.LongAdder();
     private final java.util.concurrent.atomic.LongAdder shelleyFilteredStoreUnresolvedInputs = new java.util.concurrent.atomic.LongAdder();
     private final AtomicLong lastShelleyUnresolvedWarningMillis = new AtomicLong();
@@ -202,6 +206,17 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         this.projectionContributor = contributor == null ? CanonicalProjectionContributor.NOOP : contributor;
     }
 
+    CanonicalProjectionContributor swapProjectionContributor(
+            CanonicalProjectionContributor contributor) {
+        CanonicalProjectionContributor previous = projectionContributor;
+        setProjectionContributor(contributor);
+        return previous;
+    }
+
+    CanonicalProjectionContributor projectionContributorForTest() {
+        return projectionContributor;
+    }
+
     public void setShelleyStartBoundaryCapture(Runnable capture) {
         this.shelleyStartBoundaryCapture = capture != null ? capture : () -> { };
     }
@@ -228,6 +243,8 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         }
         this.processor = new DefaultUtxoProcessor(this.db);
         this.byronUtxoApplier = createByronUtxoApplier();
+        invalidateContinuityCache();
+        this.projectionContributor.reinitializeAfterSnapshotRestore();
         refreshStakeBalanceIndexReady();
         log.info("DefaultUtxoStore reinitialized after snapshot restore");
     }
@@ -783,15 +800,33 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         if (event == null) throw new IllegalArgumentException("Byron main block event is required");
         observeApplyContinuity(event.blockNumber(), event.slot(), event.blockHash(), "Byron");
         long started = System.nanoTime();
+        long projectionCpu = 0L;
         try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
-            ByronUtxoApplier.ApplyResult result = byronUtxoApplier.stageBlock(event, batch);
+            ConsumedAddressCapture consumedAddresses = ConsumedAddressCapture.create(
+                    projectionContributor.enabled() && projectionContributor.needsConsumedOutputAddresses());
+            ByronUtxoApplier.ApplyResult result = byronUtxoApplier.stageBlock(event, batch, consumedAddresses);
             stageDeltaAndCursor(batch, event.blockNumber(), event.slot(), event.blockHash(),
                     result.created(), result.spent());
+            if (projectionContributor.enabled()) {
+                long projectionCpu0 = metricsEnabled ? System.nanoTime() : 0L;
+                projectionContributor.contributeByronMainBlock(event, result.consumedAddresses(),
+                        (cf, key, value) -> {
+                            try {
+                                batch.put(rocksContext.handle(cf), key, value);
+                            } catch (RocksDBException rex) {
+                                throw new RuntimeException(
+                                        "Failed to stage Byron projection record in UTXO batch", rex);
+                            }
+                        });
+                if (metricsEnabled) projectionCpu = System.nanoTime() - projectionCpu0;
+            }
             db.write(options, batch);
+            rememberAppliedContinuity(event.blockNumber(), event.slot(), event.blockHash());
             lastApplyCreated = result.created().size();
             lastApplySpent = result.spent().size();
             if (metricsEnabled) {
                 applyNanos.add(System.nanoTime() - started);
+                projectionNanos.add(projectionCpu);
                 attributedBlocks.increment();
             }
             log.debug("Byron UTXO applied: block={} slot={} created={} spent={} filtered={}",
@@ -814,10 +849,9 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         long projectionCpu = 0L;
         // Addresses of the outputs this block consumes, captured while they are still current.
         // Only collected when a contributor actually needs them (the address-transaction
-        // section); otherwise this stays null and costs one reference check per input.
-        java.util.Map<String, String> consumedAddresses =
-                projectionContributor.enabled() && projectionContributor.needsConsumedOutputAddresses()
-                        ? new java.util.HashMap<>() : null;
+        // section); otherwise the shared disabled sentinel costs one reference check per input.
+        ConsumedAddressCapture consumedAddresses = ConsumedAddressCapture.create(
+                projectionContributor.enabled() && projectionContributor.needsConsumedOutputAddresses());
 
         // Determine Allegra bootstrap outpoints to remove (before ctx is created).
         // These are collected here but written into the block's WriteBatch for atomicity.
@@ -925,10 +959,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                                 batch.put(cfSpent, key, spentVal);
                                 batch.delete(cfUnspent, key);
                                 var stored = UtxoCborCodec.decodeUtxoRecord(prev);
-                                if (consumedAddresses != null) {
-                                    consumedAddresses.put(
-                                            consumedKey(in.getTransactionId(), in.getIndex()), stored.address);
-                                }
+                                consumedAddresses.recordSpent(in.getTransactionId(), in.getIndex(), stored);
                                 if (indexAddressHash) {
                                     byte[] akey = UtxoKeyUtil.addrHash28(stored.address);
                                     byte[] aIdx = UtxoKeyUtil.addressIndexKey(akey, stored.slot, in.getTransactionId(), in.getIndex());
@@ -982,12 +1013,10 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                             // the spend path alone leaves it unresolvable - observed on preprod
                             // block 1,809,762, where an invalid transaction's collateral return
                             // is spent in the same block.
-                            if (consumedAddresses != null) {
-                                consumedAddresses.put(consumedKey(tx.getTxHash(), outIdx), out.getAddress());
-                            }
                             if (referenceScriptHash != null && out.getScriptRef() != null) {
                                 batch.put(cfScriptRef, referenceScriptHash, HexUtil.decodeHexString(out.getScriptRef()));
                             }
+                            consumedAddresses.recordCreated(tx.getTxHash(), outIdx, out.getAddress());
                             //log.info("UTXO created: {}:{}", tx.getTxHash(), outIdx);
                             if (indexAddressHash) {
                                 byte[] addrHash = UtxoKeyUtil.addrHash28(out.getAddress());
@@ -1033,10 +1062,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                                 batch.put(cfSpent, key, spentVal);
                                 batch.delete(cfUnspent, key);
                                 var stored = UtxoCborCodec.decodeUtxoRecord(prev);
-                                if (consumedAddresses != null) {
-                                    consumedAddresses.put(
-                                            consumedKey(in.getTransactionId(), in.getIndex()), stored.address);
-                                }
+                                consumedAddresses.recordSpent(in.getTransactionId(), in.getIndex(), stored);
                                 if (indexAddressHash) {
                                     byte[] akey = UtxoKeyUtil.addrHash28(stored.address);
                                     byte[] aIdx = UtxoKeyUtil.addressIndexKey(akey, stored.slot, in.getTransactionId(), in.getIndex());
@@ -1069,9 +1095,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
 
                         byte[] outKey = UtxoKeyUtil.outpointKey(tx.getTxHash(), outIdx);
                         batch.put(cfUnspent, outKey, val);
-                        if (consumedAddresses != null) {
-                            consumedAddresses.put(consumedKey(tx.getTxHash(), outIdx), out.getAddress());
-                        }
+                        consumedAddresses.recordCreated(tx.getTxHash(), outIdx, out.getAddress());
                         if (referenceScriptHash != null && out.getScriptRef() != null) {
                             batch.put(cfScriptRef, referenceScriptHash, HexUtil.decodeHexString(out.getScriptRef()));
                         }
@@ -1102,11 +1126,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             // disabled this is one predictable false check.
             if (projectionContributor.enabled()) {
                 long projectionCpu0 = metricsEnabled ? System.nanoTime() : 0L;
-                java.util.Map<String, String> captured = consumedAddresses;
-                ConsumedOutputAddresses consumed = captured == null
-                        ? ConsumedOutputAddresses.NONE
-                        : (txHash, outputIndex) -> captured.get(consumedKey(txHash, outputIndex));
-                projectionContributor.contributeBlock(e, consumed, (cf, key, value) -> {
+                projectionContributor.contributeBlock(e, consumedAddresses.view(), (cf, key, value) -> {
                     try {
                         batch.put(rocksContext.handle(cf), key, value);
                     } catch (RocksDBException rex) {
@@ -1116,6 +1136,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                 if (metricsEnabled) projectionCpu = System.nanoTime() - projectionCpu0;
             }
             db.write(wo, batch);
+            rememberAppliedContinuity(blockNo, slot, blockHash);
 
             if (log.isDebugEnabled()) {
                 if (filteredOutputs > 0) {
@@ -1169,10 +1190,10 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     }
 
     private void observeApplyContinuity(long blockNumber, long slot, String blockHash, String eraLabel) {
-        try (RocksIterator iterator = db.newIterator(cfDelta)) {
-            iterator.seekToLast();
-            if (!iterator.isValid()) return; // origin, genesis pseudo-cursor, or bootstrap injection
-            UtxoDeltaCodec.Decoded previous = UtxoDeltaCodec.decode(iterator.value());
+        try {
+            ensureContinuityCache();
+            UtxoDeltaCodec.Decoded previous = continuityPrevious;
+            if (previous == null) return; // origin, genesis pseudo-cursor, or bootstrap injection
             boolean identical = previous.blockNumber() == blockNumber
                     && previous.slot() == slot
                     && previous.blockHash() != null
@@ -1192,6 +1213,32 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             log.warn("Unable to observe UTXO apply continuity for block {} (diagnostic only): {}",
                     blockNumber, t.toString());
         }
+    }
+
+    private void ensureContinuityCache() {
+        if (continuityCacheInitialized) return;
+        try (RocksIterator iterator = db.newIterator(cfDelta)) {
+            iterator.seekToLast();
+            continuityPrevious = iterator.isValid()
+                    ? UtxoDeltaCodec.decode(iterator.value()) : null;
+            continuityCacheInitialized = true;
+        }
+    }
+
+    private void rememberAppliedContinuity(long blockNumber, long slot, String blockHash) {
+        continuityPrevious = new UtxoDeltaCodec.Decoded(
+                blockNumber, slot, blockHash, List.of(), List.of());
+        continuityCacheInitialized = true;
+    }
+
+    private void rememberRollbackContinuity(UtxoDeltaCodec.Decoded retained) {
+        continuityPrevious = retained;
+        continuityCacheInitialized = true;
+    }
+
+    private void invalidateContinuityCache() {
+        continuityPrevious = null;
+        continuityCacheInitialized = false;
     }
 
     private void observeShelleyUnresolvedInput(BlockAppliedEvent event, String txHash, int index) {
@@ -1376,6 +1423,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             markStakeBalanceIndexReady(batch);
             batch.put(cfMeta, META_BYRON_MAIN_APPLY_CAPABILITY, new byte[]{1});
             db.write(options, batch);
+            invalidateContinuityCache();
             if (stakeBalanceIndexEnabled) stakeBalanceIndexReady = true;
             log.info("Initialized full UTXO genesis state atomically: shelley={}, byronNonAvvm={}, "
                             + "byronAvvm={}, persistedAvvmKeys={}",
@@ -1442,6 +1490,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         clearColumnFamilyForRebuild(cfMeta);
         clearColumnFamilyForRebuild(cfScriptRef);
         clearColumnFamilyForRebuild(cfStakeBalance);
+        invalidateContinuityCache();
         stakeBalanceIndexReady = false;
 
         initializeFreshFullStateGenesis(shelleyFunds, networkMagic,
@@ -1814,6 +1863,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             applyStakeBalanceDeltas(batch, stakeBalanceDeltas);
 
             db.write(wo, batch);
+            rememberAppliedContinuity(blockNumber, slot, blockHash);
             log.info("***********************************************************************");
             log.info("*** Bootstrap: injected {} UTXOs at block #{}, slot={}", utxos.size(), blockNumber, slot);
             log.info("***********************************************************************");
@@ -2050,14 +2100,12 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
              WriteOptions wo = new WriteOptions();
              RocksIterator it = db.newIterator(cfDelta)) {
             java.util.Map<StakeCredentialKey, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
-            Long retainedBlock = null;
-            Long retainedSlot = null;
+            UtxoDeltaCodec.Decoded retained = null;
             it.seekToLast();
             while (it.isValid()) {
                 UtxoDeltaCodec.Decoded dec = UtxoDeltaCodec.decode(it.value());
                 if (target.retains(dec)) {
-                    retainedBlock = dec.blockNumber();
-                    retainedSlot = dec.slot();
+                    retained = dec;
                     break;
                 }
 
@@ -2123,9 +2171,12 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             if (allegraBootstrapDoneKey != null && metadataHandle != null) {
                 batch.delete(metadataHandle, allegraBootstrapDoneKey);
             }
-            updateRollbackMetadata(batch, retainedBlock, retainedSlot);
+            updateRollbackMetadata(batch,
+                    retained != null ? retained.blockNumber() : null,
+                    retained != null ? retained.slot() : null);
             applyStakeBalanceDeltas(batch, stakeBalanceDeltas);
             db.write(wo, batch);
+            rememberRollbackContinuity(retained);
             log.info("UTXO {} rollback complete: slot={}, hash={}",
                     operation, target.slot(), target.hash());
         } catch (Exception ex) {

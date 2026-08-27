@@ -105,7 +105,14 @@ public class InMemoryChainState implements ChainState, NonceStateStore,
     @Override
     public Optional<CanonicalBlockReference> getCanonicalBlockReference(long blockNumber) {
         byte[] hash = blockHashByNumber.get(blockNumber);
-        if (hash == null) return Optional.empty();
+        if (hash == null) {
+            if (blockNumber != 0) return Optional.empty();
+            return ebbHeaderNumberBySlot.entrySet().stream()
+                    .filter(entry -> entry.getValue() == blockNumber)
+                    .findFirst()
+                    .map(entry -> new CanonicalBlockReference(
+                            blockNumber, entry.getKey(), ebbHeaderHashBySlot.get(entry.getKey())));
+        }
         return blockNumberBySlot.entrySet().stream()
                 .filter(entry -> java.util.Objects.equals(entry.getValue(), blockNumber))
                 .findFirst()

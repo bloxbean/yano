@@ -8,6 +8,9 @@ import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
+import com.bloxbean.cardano.yano.api.archive.CanonicalProjectionContributor;
+import com.bloxbean.cardano.yano.api.archive.ProjectionStagingWriter;
+import com.bloxbean.cardano.yano.api.events.ByronBlockProjectionEvent;
 import com.bloxbean.cardano.yano.api.plugin.StorageFilter;
 import com.bloxbean.cardano.yano.runtime.chain.DirectRocksDBChainState;
 import com.bloxbean.cardano.yano.runtime.chain.InMemoryChainState;
@@ -16,6 +19,8 @@ import com.bloxbean.cardano.yano.runtime.genesis.ShelleyGenesisData;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.LoggerFactory;
+import org.rocksdb.ColumnFamilyHandle;
+import org.rocksdb.RocksDB;
 
 import java.time.Duration;
 import java.math.BigInteger;
@@ -24,8 +29,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class UtxoSubsystemTest {
 
@@ -91,6 +98,29 @@ class UtxoSubsystemTest {
     }
 
     @Test
+    void clientHistoryConfigurationForcesOrderedSynchronousApply() {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        try (DirectRocksDBChainState chain = new DirectRocksDBChainState(
+                tempDir.resolve("client-ordered-apply").toString())) {
+            UtxoSubsystem subsystem = new UtxoSubsystem(
+                    YanoConfig.clientOnly("localhost", 3001, 42L),
+                    new RuntimeOptions(null, null, Map.of(
+                            YanoPropertyKeys.Utxo.ENABLED, true,
+                            YanoPropertyKeys.Utxo.APPLY_ASYNC, true,
+                            YanoPropertyKeys.History.PROJECTION_ENABLED, true,
+                            YanoPropertyKeys.Metrics.ENABLED, false)),
+                    chain, chain, new NoopEventBus(), scheduler, LoggerFactory.getLogger(getClass()));
+            try {
+                assertThat(subsystem.isAsyncHandlerRunning()).isFalse();
+            } finally {
+                subsystem.close();
+            }
+        } finally {
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
     void emptyFilterSnapshotClearsStartCycleFilterFromPreviousRun() {
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
         RuntimeOptions options = new RuntimeOptions(null, null, Map.of(
@@ -118,6 +148,135 @@ class UtxoSubsystemTest {
 
                 subsystem.initializeFilterChain(List.of());
                 assertThat(store.activeStorageFilterCount()).isZero();
+            } finally {
+                subsystem.close();
+            }
+        } finally {
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void filterPreflightAndInstalledChainUseTheSameResolver() {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        RuntimeOptions options = new RuntimeOptions(null, null, Map.of(
+                YanoPropertyKeys.Utxo.ENABLED, true,
+                YanoPropertyKeys.UtxoFilter.ENABLED, true,
+                YanoPropertyKeys.UtxoFilter.ADDRESSES, List.of(BASE_ADDRESS),
+                "yano.metrics.enabled", false));
+        StorageFilter plugin = new StorageFilter() { };
+
+        try (DirectRocksDBChainState chain = new DirectRocksDBChainState(
+                tempDir.resolve("filter-preflight").toString())) {
+            UtxoSubsystem subsystem = new UtxoSubsystem(YanoConfig.serverOnly(0), options,
+                    chain, chain, new NoopEventBus(), scheduler, LoggerFactory.getLogger(getClass()));
+            try {
+                List<String> preflight = subsystem.configuredStorageFilterNames(List.of(plugin));
+                assertThat(preflight).hasSize(2);
+
+                subsystem.initializeFilterChain(List.of(plugin), preflight);
+                assertThat(((DefaultUtxoStore) subsystem.store()).activeStorageFilterCount())
+                        .isEqualTo(2);
+                assertThatThrownBy(() -> subsystem.initializeFilterChain(List.of(), preflight))
+                        .isInstanceOf(IllegalStateException.class)
+                        .hasMessageContaining("preflight changed");
+            } finally {
+                subsystem.close();
+            }
+        } finally {
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void rebuildRestoresProjectionContributorEvenWhenCanonicalReplayFails() {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        try (DirectRocksDBChainState chain = new DirectRocksDBChainState(
+                tempDir.resolve("rebuild-contributor").toString())) {
+            UtxoSubsystem subsystem = new UtxoSubsystem(YanoConfig.serverOnly(0),
+                    new RuntimeOptions(null, null, Map.of(
+                            YanoPropertyKeys.Utxo.ENABLED, true,
+                            YanoPropertyKeys.Metrics.ENABLED, false)),
+                    chain, chain, new NoopEventBus(), scheduler, LoggerFactory.getLogger(getClass()));
+            try {
+                DefaultUtxoStore store = (DefaultUtxoStore) subsystem.store();
+                store.wireAllegraBootstrapRemoval(chain);
+                subsystem.initializeOrValidateFullStateGenesis(null, 42L);
+                CanonicalProjectionContributor contributor = new CanonicalProjectionContributor() {
+                    @Override public boolean enabled() { return true; }
+                    @Override public void contributeBlock(BlockAppliedEvent event,
+                                                          ProjectionStagingWriter writer) { }
+                    @Override public void contributeByronBlock(ByronBlockProjectionEvent event,
+                                                               ProjectionStagingWriter writer) { }
+                    @Override public void rollbackFrom(long fromBlockNumber) { }
+                };
+                subsystem.installProjectionContributor(contributor);
+                byte[] hash = new byte[32];
+                hash[0] = 1;
+                chain.storeBlock(hash, 1L, 1L, new byte[]{99});
+
+                assertThatThrownBy(() -> subsystem.rebuildFullStateFromGenesis(null, 42L))
+                        .isInstanceOf(IllegalStateException.class);
+                assertThat(store.projectionContributorForTest()).isSameAs(contributor);
+            } finally {
+                subsystem.close();
+            }
+        } finally {
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void successfulRebuildLeavesProjectionStateUntouchedAndRestoresContributor() throws Exception {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        try (DirectRocksDBChainState chain = new DirectRocksDBChainState(
+                tempDir.resolve("rebuild-projection-untouched").toString())) {
+            byte[] block = emptyBabbageBlockCbor(1L, 10L);
+            var decoded = com.bloxbean.cardano.yaci.core.model.serializers.BlockSerializer.INSTANCE
+                    .deserialize(block);
+            byte[] hash = com.bloxbean.cardano.yaci.core.util.HexUtil.decodeHexString(
+                    decoded.getHeader().getHeaderBody().getBlockHash());
+            chain.storeBlockHeader(hash, 1L, 10L, block);
+            chain.storeBlock(hash, 1L, 10L, block);
+
+            UtxoSubsystem subsystem = new UtxoSubsystem(YanoConfig.serverOnly(0),
+                    new RuntimeOptions(null, null, Map.of(
+                            YanoPropertyKeys.Utxo.ENABLED, true,
+                            YanoPropertyKeys.Metrics.ENABLED, false)),
+                    chain, chain, new NoopEventBus(), scheduler, LoggerFactory.getLogger(getClass()));
+            try {
+                DefaultUtxoStore store = (DefaultUtxoStore) subsystem.store();
+                store.wireAllegraBootstrapRemoval(chain);
+                AtomicInteger contributions = new AtomicInteger();
+                CanonicalProjectionContributor contributor = new CanonicalProjectionContributor() {
+                    @Override public boolean enabled() { return true; }
+                    @Override public void contributeBlock(BlockAppliedEvent event,
+                                                          ProjectionStagingWriter writer) {
+                        contributions.incrementAndGet();
+                    }
+                    @Override public void contributeByronBlock(ByronBlockProjectionEvent event,
+                                                               ProjectionStagingWriter writer) { }
+                    @Override public void rollbackFrom(long fromBlockNumber) { }
+                };
+                subsystem.installProjectionContributor(contributor);
+
+                RocksDB db = (RocksDB) chain.getDb();
+                ColumnFamilyHandle projectionMeta = (ColumnFamilyHandle) chain.getColumnFamilyHandle(
+                        com.bloxbean.cardano.yano.api.archive.ProjectionCfNames.PROJ_META);
+                byte[] key = "rebuild-archive-sentinel".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                byte[] value = new byte[]{4, 2};
+                db.put(projectionMeta, key, value);
+
+                subsystem.rebuildFullStateFromGenesis(null, 42L);
+
+                assertThat(contributions).hasValue(0);
+                assertThat(db.get(projectionMeta, key)).containsExactly(value);
+                assertThat(store.projectionContributorForTest()).isSameAs(contributor);
+                assertThat(store.getLastAppliedBlock()).isEqualTo(1L);
+                assertThat(store.getLatestAppliedSlot()).isEqualTo(10L);
+                assertThat(store.getLatestAppliedPoint().blockHash())
+                        .isEqualToIgnoringCase(com.bloxbean.cardano.yaci.core.util.HexUtil
+                                .encodeHexString(hash));
             } finally {
                 subsystem.close();
             }
@@ -279,7 +438,10 @@ class UtxoSubsystemTest {
         try (DirectRocksDBChainState chain = new DirectRocksDBChainState(
                 tempDir.resolve("operator-rebuild").toString())) {
             byte[] block = emptyBabbageBlockCbor(1L, 10L);
-            byte[] hash = com.bloxbean.cardano.yaci.core.util.HexUtil.decodeHexString("cd".repeat(32));
+            var decoded = com.bloxbean.cardano.yaci.core.model.serializers.BlockSerializer.INSTANCE
+                    .deserialize(block);
+            byte[] hash = com.bloxbean.cardano.yaci.core.util.HexUtil.decodeHexString(
+                    decoded.getHeader().getHeaderBody().getBlockHash());
             chain.storeBlockHeader(hash, 1L, 10L, block);
             chain.storeBlock(hash, 1L, 10L, block);
             RuntimeOptions options = new RuntimeOptions(null, null, Map.of(

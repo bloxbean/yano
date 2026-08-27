@@ -30,11 +30,14 @@ import com.bloxbean.cardano.yano.archive.core.projection.CanonicalProjectionColl
 import com.bloxbean.cardano.yano.archive.core.projection.ProjectionChunking;
 import com.bloxbean.cardano.yano.archive.core.projection.ProjectionContributorHealth;
 import com.bloxbean.cardano.yano.archive.core.projection.ProjectionMaintenanceSchedule;
+import com.bloxbean.cardano.yano.archive.core.projection.ProjectionActivationException;
 import com.bloxbean.cardano.yano.archive.core.projection.ProjectionOutboxStats;
 import com.bloxbean.cardano.yano.archive.core.projection.ProjectionOutboxStore;
 import com.bloxbean.cardano.yano.archive.core.projection.ProjectionSinkLifecycle;
 import com.bloxbean.cardano.yano.archive.core.projection.ProjectionStartupGuard;
+import com.bloxbean.cardano.yano.archive.core.projection.ProjectionRestartReconciler;
 import com.bloxbean.cardano.yano.runtime.assembly.Yano;
+import com.bloxbean.cardano.yano.runtime.maintenance.RuntimeMaintenanceGate;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.Config;
@@ -46,6 +49,7 @@ import org.slf4j.LoggerFactory;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -278,17 +282,22 @@ public class ProjectionHistoryService implements AutoCloseable {
             return;
         }
 
+        Set<ProjectionSectionType> required = configuredSections();
+        List<String> configuredFilters = yano.configuredUtxoStorageFilters();
+        if (required.contains(ProjectionSectionType.ADDRESS_TRANSACTION)
+                && !configuredFilters.isEmpty()) {
+            throw new ProjectionActivationException(
+                    "address-transaction projection requires a complete UTXO store, but canonical "
+                            + "UTXO filtering is configured: " + configuredFilters);
+        }
+
         var access = yano.chainstateRocksAccess().orElseThrow(() -> new IllegalStateException(
                 "projection history requires a RocksDB-backed chain state; the outbox must share the"
                         + " chainstate database so contributor writes are atomic with their source state"));
 
-        RocksDB db = (RocksDB) access.getDb();
-        outbox = new ProjectionOutboxStore(db,
-                handle(access, ProjectionCfNames.PROJ_HEADER),
-                handle(access, ProjectionCfNames.PROJ_SECTION),
-                handle(access, ProjectionCfNames.PROJ_META),
-                handle(access, ProjectionCfNames.PROJ_ARTIFACT),
-                handle(access, ProjectionCfNames.PROJ_BYRON_UTXO));
+        outbox = new ProjectionOutboxStore(
+                () -> (RocksDB) access.getDb(),
+                name -> handle(access, name));
 
         sink = config.getOptionalValue(YanoPropertyKeys.History.PROJECTION_SINK, String.class)
                 .orElse("none").trim().toLowerCase();
@@ -308,7 +317,6 @@ public class ProjectionHistoryService implements AutoCloseable {
         // a fresh sync that silently omitted one would produce an archive that looks healthy
         // while a whole dataset is missing, and the omission is undiscoverable later because
         // the sections cannot be added without resyncing.
-        Set<ProjectionSectionType> required = configuredSections();
         identity = new ProjectionIdentity(network, sink, 1, required);
 
         long tipBlock = chain.getLocalTip() == null ? 0 : chain.getLocalTip().getBlockNumber();
@@ -386,12 +394,8 @@ public class ProjectionHistoryService implements AutoCloseable {
                             + " deregistrations applied before the upgrade were never indexed.");
         }
 
-        // The genesis distribution reaches the collector so its Byron outpoint resolver can seed
-        // itself on the first Byron main block. Same provider the genesis bootstrap uses: a
-        // second derivation of the same outputs is exactly what GenesisUtxos exists to prevent.
         collector = new CanonicalProjectionCollector(outbox, identity,
-                ledger::slotToEpoch, ledger::slotToUnixTime, chunkBytes, true, pointerSource,
-                yano.genesisUtxoProvider());
+                ledger::slotToEpoch, ledger::slotToUnixTime, chunkBytes, true, pointerSource);
         contributorMonitor = new ProjectionContributorHealth.Monitor(Duration.ofMinutes(5));
 
         // Disk backpressure. Canonical sync runs ahead of the sink by design; these bounds
@@ -831,6 +835,7 @@ public class ProjectionHistoryService implements AutoCloseable {
                 this::commonRollbackFloorSlot);
 
         reconcileGenesis(chain);
+        reconcileOutboxToCanonicalTipBeforeDrain(chain);
 
         // Durable lease reconciliation, before any drain or prune can run. Leases live in memory;
         // the outbox's surviving artifact references are what actually survives a crash.
@@ -849,6 +854,19 @@ public class ProjectionHistoryService implements AutoCloseable {
         drainThread = Thread.ofVirtual().name("adr039-projection-drain").start(() -> drainLoop(interval));
         log.info("ADR-039 projection sink '{}' opened; drain loop started ({} ms idle interval)",
                 sink, interval);
+    }
+
+    private void reconcileOutboxToCanonicalTipBeforeDrain(ChainQuery chain) {
+        var tip = chain.getLocalTip();
+        com.bloxbean.cardano.yano.api.CanonicalBlockReference bodyTip = tip == null ? null
+                : new com.bloxbean.cardano.yano.api.CanonicalBlockReference(
+                        tip.getBlockNumber(), tip.getSlot(), tip.getBlockHash());
+        long removed = ProjectionRestartReconciler.reconcile(outbox, projectionSink.coordinate(),
+                bodyTip, runtimeYano::canonicalBlockReference, identity.requiredSections());
+        if (removed > 0) {
+            log.info("ADR-042 pre-drain reconciliation removed {} non-canonical pending envelope(s)",
+                    removed);
+        }
     }
 
     /**
@@ -960,32 +978,43 @@ public class ProjectionHistoryService implements AutoCloseable {
     private void drainLoop(long idleIntervalMillis) {
         while (draining) {
             try {
-                // Genesis must be durable before any block range is committed, or the archive
-                // would hold blocks against a distribution it never captured.
-                captureGenesisIfPossible();
+                RuntimeMaintenanceGate.ReadLease readLease = runtimeYano.maintenanceGate()
+                        .map(gate -> gate.enterRead("projection outbox drain"))
+                        .orElse(null);
+                boolean workPending = false;
+                // Snapshot restore replaces RocksDB and every native CF handle. Holding the
+                // shared runtime read lease makes the restore wait for this pass to finish;
+                // DefaultUtxoStore then refreshes the contributor/outbox before the exclusive
+                // maintenance lease is released.
+                try (readLease) {
+                    // Genesis must be durable before any block range is committed, or the archive
+                    // would hold blocks against a distribution it never captured.
+                    captureGenesisIfPossible();
 
-                ProjectionSinkLifecycle lifecycle = sinkLifecycle;
-                if (lifecycle == null || lifecycle.isClosed()) {
-                    Thread.sleep(idleIntervalMillis);
-                    continue;
-                }
-                // Every sink touch happens under the lifecycle lock, so shutdown can prove
-                // nothing is in flight before it closes anything.
-                ProjectionConsumerResult result = lifecycle.use(ignored -> consumer.drainOnce());
-                if (result.madeProgress()) {
-                    drainedBatches.increment();
-                    drainedBlocks.add(result.lastBlock() - result.firstBlock() + 1);
+                    ProjectionSinkLifecycle lifecycle = sinkLifecycle;
+                    if (lifecycle != null && !lifecycle.isClosed()) {
+                        // Every sink touch happens under the lifecycle lock, so shutdown can prove
+                        // nothing is in flight before it closes anything.
+                        ProjectionConsumerResult result = lifecycle.use(ignored -> consumer.drainOnce());
+                        if (result.madeProgress()) {
+                            drainedBatches.increment();
+                            drainedBlocks.add(result.lastBlock() - result.firstBlock() + 1);
+                        }
+                        workPending = result.workPending();
+                        if (!workPending) {
+                            if (result.outcome() == ProjectionConsumerResult.Outcome.PAUSED) {
+                                log.warn("ADR-039 projection drain paused: {}",
+                                        result.detail().orElse("unknown"));
+                            } else {
+                                runMaintenanceIfDue();
+                            }
+                        }
+                    }
                 }
                 // Keep draining while envelopes are still waiting, even when this pass only
                 // accumulated. Backing off mid-bootstrap because nothing was committed yet
                 // would idle the loop through the whole backlog.
-                if (result.workPending()) continue;
-
-                if (result.outcome() == ProjectionConsumerResult.Outcome.PAUSED) {
-                    log.warn("ADR-039 projection drain paused: {}", result.detail().orElse("unknown"));
-                } else {
-                    runMaintenanceIfDue();
-                }
+                if (workPending) continue;
                 Thread.sleep(idleIntervalMillis);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();

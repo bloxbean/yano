@@ -124,8 +124,9 @@ The source reviews against `feat/adr-038-archive-throughput@5a3cebec` found four
 initial blocking omissions plus epoch-artifact durability and retention
 clarifications. This revision incorporates them:
 
-- Byron main blocks now require a typed already-decoded projection carrier;
-  EBBs produce empty envelopes so coverage remains contiguous.
+- As amended by ADR-042, Byron main blocks contribute through the typed
+  `ByronMainBlockAppliedEvent` inside the UTXO batch; the dedicated projection
+  carrier is EBB-only.
 - One global chain/UTXO/ledger transaction is no longer an implementation
   candidate. Existing per-contributor RocksDB batches, cursors, retained bodies,
   reconciliation, and `BlockBodyRetentionBoundary` form the durability model.
@@ -143,8 +144,8 @@ clarifications. This revision incorporates them:
 - Existing dataset/table/projection-version ownership is preserved initially.
 - The hot-RocksDB compaction consequence of a lagging outbox is explicit.
 - First-slice UTXO inputs do not require resolved consumed-output data;
-  Shelley+ address/credential history does, and Byron retains an archive-owned
-  resolver.
+  address/credential history receives consumed addresses from canonical UTXO
+  apply for both Byron and Shelley+ (ADR-042).
 - Epoch recoverability is classified per column. Persisted generations,
   conditionally recomputable facts, and non-reconstructible boundary-time joins
   have different capture/durability requirements.
@@ -535,9 +536,8 @@ asynchronous sink never needs to reread the block.
 Original consumed-output resolution is required by later Shelley+ address and
 credential projections such as `address_transaction`; it is not the primary
 justification for the first slice. Decode-once during normal operation is the
-primary throughput benefit. Address/credential history also requires an
-archive-owned sequential resolver for Byron because the live UTXO subsystem
-does not apply Byron transactions.
+primary throughput benefit. ADR-042 makes native Byron UTXO apply authoritative
+for the same consumed-address capture and removes the archive-owned resolver.
 
 Shelley-and-later validity semantics remain explicit:
 
@@ -558,12 +558,11 @@ format translation and batching; it does not repeat ledger resolution.
 Byron epoch-boundary blocks (EBBs), and multiple existing consumers use that
 sentinel. The projection design must not overload or reinterpret it.
 
-When projection history is enabled, `BodyFetchManager` publishes a dedicated
-typed Byron projection event carrying the already-decoded raw `ByronMainBlock`
-or `ByronEbBlock` after canonical storage. The collector retains the current
-Byron normalizer that maps a main block into the projection model. It does not
-decode stored CBOR again during normal application. EBBs produce an empty
-logical envelope so the block projection coordinate remains contiguous.
+When projection history is enabled, Byron main blocks are normalized and
+contributed from `ByronMainBlockAppliedEvent` inside the same RocksDB batch as
+their UTXO transition. `ByronBlockProjectionEvent` carries only an already
+decoded `ByronEbBlock`; an EBB with an unclaimed coordinate produces an empty
+logical envelope, while a same-coordinate EBB is a validated no-op.
 
 Byron projection semantics are an explicit strict subset:
 
@@ -572,9 +571,8 @@ Byron projection semantics are an explicit strict subset:
 - there are no invalid-transaction, collateral, reference-input, datum,
   redeemer, multi-asset, or pointer-address facts;
 - Byron addresses use their raw base58 representation;
-- Byron address/account participation that needs input funding addresses uses
-  an archive-owned resolver seeded from Byron genesis and advanced in canonical
-  order.
+- Byron address/account participation uses addresses captured while native
+  Byron UTXO apply resolves each committed or intra-block input.
 
 Crash recovery may decode a retained Byron body to rebuild a missing contributor
 section. This is recovery replay, not a second normal-operation decode.
@@ -1601,10 +1599,8 @@ pass.
 Add accepted envelope sections for `ACCOUNT_EVENT` and
 `ADDRESS_TRANSACTION`, unless a separately accepted product ADR has already
 retired either dataset and its APIs. Reuse Shelley+ live resolution where it is
-authoritative. Retain an archive-owned sequential outpoint resolver for Byron
-address participation, seeded from Byron genesis and updated in canonical
-order. Include this resolver in contributor atomicity, rollback, replay, and
-pruning protection.
+authoritative. For Byron, use the same apply-time consumed-address capture as
+Shelley+ and stage the resulting projection in the Byron UTXO batch (ADR-042).
 
 Exit: all four currently shipped block datasets have differential parity across
 Byron and Shelley+ ranges, or every omitted dataset has an explicit accepted
