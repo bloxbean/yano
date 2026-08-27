@@ -17,6 +17,7 @@ import com.bloxbean.cardano.yano.api.plugin.operations.PluginOperationsSnapshot;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginOperationsTotals;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginOperationsView;
 import com.bloxbean.cardano.yano.api.plugin.operations.PluginTimerValue;
+import com.bloxbean.cardano.yano.app.api.ApiGroup;
 import com.bloxbean.cardano.yano.app.api.appchain.AppChainAccess;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -30,6 +31,7 @@ import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import org.eclipse.microprofile.openapi.annotations.extensions.Extension;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -43,6 +45,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /** Host-owned, cache-only ADR-011.4 plugin operations surface. */
+@Extension(name = ApiGroup.ADMIN, value = "")
 @Path("plugin-operations")
 @Produces(MediaType.APPLICATION_JSON)
 public class PluginOperationsResource {

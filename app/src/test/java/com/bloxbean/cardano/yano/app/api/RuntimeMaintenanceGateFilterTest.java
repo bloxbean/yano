@@ -1,7 +1,13 @@
 package com.bloxbean.cardano.yano.app.api;
 
+import com.bloxbean.cardano.yano.runtime.maintenance.RuntimeMaintenanceGate;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -44,5 +50,29 @@ class RuntimeMaintenanceGateFilterTest {
                 "GET", "api/v1/node/start/"));
         assertFalse(RuntimeMaintenanceGateFilter.isExclusiveMaintenanceEndpoint(
                 "GET", "api/v1/node/stop/"));
+    }
+
+    @Test
+    void requestDestructionReleasesLeaseWhenResponseFilteringIsSkipped() throws Exception {
+        var gate = new RuntimeMaintenanceGate();
+        var requestLease = new RuntimeMaintenanceReadLease();
+        requestLease.open(gate, "GET api/v1/failing-request");
+
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var attempting = new CountDownLatch(1);
+            var maintenance = executor.submit(() -> {
+                attempting.countDown();
+                try (var ignored = gate.enterMaintenance("node stop")) {
+                    return true;
+                }
+            });
+            assertThat(attempting.await(1, TimeUnit.SECONDS)).isTrue();
+            assertThat(maintenance).isNotDone();
+
+            requestLease.close();
+
+            assertThat(maintenance.get(1, TimeUnit.SECONDS)).isTrue();
+            requestLease.close();
+        }
     }
 }

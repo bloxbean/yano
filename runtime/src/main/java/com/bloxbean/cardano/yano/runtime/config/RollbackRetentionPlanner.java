@@ -15,8 +15,6 @@ public final class RollbackRetentionPlanner {
             YanoPropertyKeys.AccountState.EPOCH_BLOCK_DATA_RETENTION_LAG;
     public static final String ACCOUNT_STATE_SNAPSHOT_RETENTION_EPOCHS =
             YanoPropertyKeys.AccountState.SNAPSHOT_RETENTION_EPOCHS;
-    public static final String ACCOUNT_HISTORY_ROLLBACK_SAFETY_SLOTS =
-            YanoPropertyKeys.AccountHistory.ROLLBACK_SAFETY_SLOTS;
     public static final String BLOCK_BODY_PRUNE_DEPTH =
             YanoPropertyKeys.Chain.BLOCK_BODY_PRUNE_DEPTH;
 
@@ -33,15 +31,12 @@ public final class RollbackRetentionPlanner {
             boolean accountStateEpochBlockDataRetentionLagConfigured,
             int accountStateSnapshotRetentionEpochs,
             boolean accountStateSnapshotRetentionEpochsConfigured,
-            Optional<Long> accountHistoryRollbackSafetySlots,
-            boolean accountHistoryRollbackSafetySlotsConfigured,
             int blockBodyPruneDepth) {
 
         var unchanged = new RollbackRetentionSettings(
                 utxoRollbackWindow,
                 accountStateEpochBlockDataRetentionLag,
                 accountStateSnapshotRetentionEpochs,
-                accountHistoryRollbackSafetySlots,
                 blockBodyPruneDepth,
                 false,
                 0,
@@ -79,10 +74,6 @@ public final class RollbackRetentionPlanner {
         int resolvedSnapshotRetention = accountStateSnapshotRetentionEpochsConfigured
                 ? accountStateSnapshotRetentionEpochs
                 : Math.max(accountStateSnapshotRetentionEpochs, snapshotRetention);
-        Optional<Long> resolvedAccountHistorySafety = accountHistoryRollbackSafetySlotsConfigured
-                ? accountHistoryRollbackSafetySlots
-                : Optional.of(Math.max(accountHistoryRollbackSafetySlots.orElse(0L), slotWindow));
-
         int resolvedBlockBodyPruneDepth = blockBodyPruneDepth;
         if (blockBodyPruneDepth > 0) {
             int minimumPruneDepth = computeMinimumBlockBodyPruneDepth(
@@ -94,7 +85,6 @@ public final class RollbackRetentionPlanner {
                 resolvedUtxoRollbackWindow,
                 resolvedAccountStateLag,
                 resolvedSnapshotRetention,
-                resolvedAccountHistorySafety,
                 resolvedBlockBodyPruneDepth,
                 true,
                 retentionEpochs,

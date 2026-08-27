@@ -117,6 +117,7 @@ The `config/` directory contains genesis files and protocol parameters for each 
 config/
   application.yml
   application-appchain.yml
+  application-projection.yml
   application-preprod.yml
   application-relay.yml
   application-praos-lite.yml
@@ -137,7 +138,27 @@ optional validation:
 ./yano.sh start:mainnet,trusted-peers
 ./yano.sh start:preview,relay,praos-lite
 ./yano.sh start:preprod,relay,praos-ledger
+./yano.sh start:preprod,projection
 ```
+
+The `projection` profile enables the optional JVM-only history archive, written by
+the canonical projection outbox into DuckLake.
+
+The archive is fresh-sync only: it is built from genesis, and there is no
+partial-coverage mode. The `history` profile that offered one was removed with
+the replay-worker pipeline it configured.
+
+What can be chosen is the set of block sections, through
+`yano.history.projection.sections` — `transaction:v1`, `utxo-history:v1`,
+`account-events:v1` and `address-transaction:v1`, all four by default. The choice
+is part of the archive identity, so it is made once at first sync and cannot be
+changed afterwards without resyncing; the bundled `wallet` profile uses it to
+carry address transactions alone.
+
+Epoch artifacts are not selectable. Rewards, epoch stake, ada pots, DRep
+distribution and governance proposal status always ship.
+
+The archive defaults to `./history`; override it with `YANO_HISTORY_DIR`.
 
 ## Directory Structure
 

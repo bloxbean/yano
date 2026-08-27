@@ -6,6 +6,7 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.MempoolQueryGateway;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
+import com.bloxbean.cardano.yano.app.api.ApiGroup;
 import com.bloxbean.cardano.yano.app.api.scripts.dto.ScriptCborDto;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.GET;
@@ -16,7 +17,9 @@ import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import org.eclipse.microprofile.openapi.annotations.extensions.Extension;
 
+@Extension(name = ApiGroup.CORE, value = "")
 @Path("scripts")
 @Produces(MediaType.APPLICATION_JSON)
 public class ScriptResource {

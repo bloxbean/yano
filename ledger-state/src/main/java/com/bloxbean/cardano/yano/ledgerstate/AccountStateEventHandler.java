@@ -36,7 +36,10 @@ public final class AccountStateEventHandler implements AutoCloseable {
 
     @DomainEventListener(order = 110)
     public void onPreEpochTransition(PreEpochTransitionEvent e) {
-        if (store != null && store.isEnabled()) store.handleEpochTransition(e.previousEpoch(), e.newEpoch());
+        if (store != null && store.isEnabled()) {
+            store.prepareEpochBoundary(e.previousEpoch(), e.newEpoch(), e.slot(), e.blockNumber());
+            store.handleEpochTransition(e.previousEpoch(), e.newEpoch());
+        }
     }
 
     @DomainEventListener(order = 110)

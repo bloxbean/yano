@@ -40,7 +40,6 @@ class DevnetSnapshotRestoreServiceTest {
                 "pauseAsyncUtxo:PT30S",
                 "pauseUtxoPrune:PT5S",
                 "pauseUtxoMetrics:PT5S",
-                "pauseAccountHistoryPrune:PT5S",
                 "stopBlockPrune:PT5S",
                 "restore",
                 "reinitializeUtxo",
@@ -50,7 +49,7 @@ class DevnetSnapshotRestoreServiceTest {
                 "notifyServerNewDataAvailable",
                 "invalidateSlotTimeCache",
                 "resumeUtxo:true,true,true",
-                "resumeLedger:true",
+                "resumeLedger",
                 "startBlockPrune",
                 "startTxAdmission",
                 "startServer",
@@ -62,7 +61,6 @@ class DevnetSnapshotRestoreServiceTest {
         assertTrue(actions.asyncUtxoHandlerRunning);
         assertTrue(actions.utxoPruneRunning);
         assertTrue(actions.utxoMetricsRunning);
-        assertTrue(actions.accountHistoryPruneRunning);
         assertTrue(actions.blockPruneRunning);
     }
 
@@ -224,7 +222,6 @@ class DevnetSnapshotRestoreServiceTest {
         private boolean asyncUtxoHandlerRunning;
         private boolean utxoPruneRunning;
         private boolean utxoMetricsRunning;
-        private boolean accountHistoryPruneRunning;
         private boolean blockPruneRunning;
         private boolean asyncUtxoPauseSucceeds = true;
         private boolean failResumeUtxo;
@@ -241,7 +238,6 @@ class DevnetSnapshotRestoreServiceTest {
             actions.asyncUtxoHandlerRunning = true;
             actions.utxoPruneRunning = true;
             actions.utxoMetricsRunning = true;
-            actions.accountHistoryPruneRunning = true;
             actions.blockPruneRunning = true;
             return actions;
         }
@@ -381,28 +377,13 @@ class DevnetSnapshotRestoreServiceTest {
         }
 
         @Override
-        public boolean isAccountHistoryPruneServiceRunning() {
-            return accountHistoryPruneRunning;
-        }
-
-        @Override
-        public boolean pauseAccountHistoryPruneServiceAndAwait(Duration timeout) {
-            calls.add("pauseAccountHistoryPrune:" + timeout);
-            accountHistoryPruneRunning = false;
-            return true;
-        }
-
-        @Override
         public void reinitializeLedgerAndReconcileAfterSnapshotRestore() {
             calls.add("reinitializeLedger");
         }
 
         @Override
-        public void resumeLedgerAfterSnapshotRestore(boolean accountHistoryPrunePaused) {
-            calls.add("resumeLedger:" + accountHistoryPrunePaused);
-            if (accountHistoryPrunePaused) {
-                accountHistoryPruneRunning = true;
-            }
+        public void resumeLedgerAfterSnapshotRestore() {
+            calls.add("resumeLedger");
         }
 
         @Override

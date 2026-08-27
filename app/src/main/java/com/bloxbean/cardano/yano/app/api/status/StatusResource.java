@@ -5,16 +5,21 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.ChainQuery;
 import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
+import com.bloxbean.cardano.yano.app.api.ApiGroup;
 import com.bloxbean.cardano.yano.runtime.utxo.UtxoStatusProvider;
+import com.bloxbean.cardano.yano.app.archive.HistoryArchiveService;
+import com.bloxbean.cardano.yano.app.archive.ProjectionHistoryService;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import org.eclipse.microprofile.openapi.annotations.extensions.Extension;
 import java.util.HashMap;
 import java.util.Map;
 
+@Extension(name = ApiGroup.CORE, value = "")
 @Path("status")
 @Produces(MediaType.APPLICATION_JSON)
 public class StatusResource {
@@ -24,6 +29,12 @@ public class StatusResource {
 
     @Inject
     LedgerQuery ledgerQuery;
+
+    @Inject
+    HistoryArchiveService historyArchive;
+
+    @Inject
+    ProjectionHistoryService projectionHistory;
 
     @GET
     public Response status() {
@@ -72,6 +83,8 @@ public class StatusResource {
         Map<String, Object> body = new HashMap<>();
         body.put("chain", chain);
         body.put("utxo", utxo);
+        body.put("history", historyArchive.status());
+        body.put("projection", projectionHistory.status());
         body.put("cfEstimates", cfEstimates);
         return Response.ok(body).build();
     }

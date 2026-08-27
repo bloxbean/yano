@@ -79,6 +79,67 @@ export interface StorageStatus {
     cfEstimates?: Record<string, number>;
   };
   cfEstimates?: Record<string, number>;
+  history?: ArchiveHistoryStatus;
+}
+
+/** Read-only projection archive status published by GET /status. */
+export interface ArchiveHistoryStatus {
+  enabled?: boolean;
+  available?: boolean;
+  /** 'projection' for an ADR-039 archive; absent when reads are not projection-backed. */
+  source?: string;
+  /** Logical dataset names this archive projects, e.g. 'transaction', 'utxo-history'. */
+  datasets?: string[];
+  /** Highest block committed to the sink, or -1 when nothing has committed yet. */
+  committedThroughBlock?: number;
+}
+
+/**
+ * GET /history/coverage - what the projection archive can answer for right now.
+ *
+ * Block-number fields carry -1 for "unknown", never 0. Blocks above
+ * queryableThroughBlock are not yet committed: treat them as unknown, not absent.
+ */
+export interface ProjectionCoverage {
+  enabled?: boolean;
+  /**
+   * Why the archive could not initialise, when it could not.
+   *
+   * Present instead of the fields below, not alongside them: a node whose projection failed to
+   * start keeps serving, so this endpoint reports the reason rather than throwing.
+   */
+  error?: string;
+  /** Projection identity fingerprint: network, sink engine, version, section wire names. */
+  identity?: string;
+  sections?: string[];
+  /** Pipe-separated artifact contract wire forms; parse with parseArtifactContracts(). */
+  artifactContracts?: string;
+  sinkHealth?: 'READY' | 'DEGRADED' | 'UNAVAILABLE' | string;
+  /** A fresh archive cannot claim coverage from block 0 until genesis is durable. */
+  genesisCaptured?: boolean;
+  queryableFromBlock?: number;
+  queryableThroughBlock?: number;
+  tipBlock?: number;
+  blocksBehindTip?: number;
+  /** ISO-8601 duration, e.g. 'PT2S': upper bound for a final block to become queryable. */
+  maxCommitLatency?: string;
+  transactionHashLookup?: { mode?: string; correct?: boolean; note?: string };
+  note?: string;
+}
+
+/** GET /history/watermark - cross-dataset consistency point. */
+export interface ProjectionWatermark {
+  source?: string;
+  available?: boolean;
+  /** Why no consistency point is available; present only when available is false. */
+  reason?: string;
+  /** The projection identity fingerprint, not a numeric generation. */
+  generation?: string;
+  fromBlock?: number;
+  toBlock?: number;
+  /** Omitted when the chain cannot resolve the coordinate canonically. */
+  asOf?: { blockNumber?: number; slot?: number; blockHash?: string };
+  projectionVersions?: Record<string, number>;
 }
 
 export interface Peer {

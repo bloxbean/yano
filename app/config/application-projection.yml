@@ -1,0 +1,77 @@
+# Canonical projection outbox archive profile.
+#
+# Compose this after a network profile, for example:
+#   ./yano.sh start:preprod,projection
+#   ./yano.sh start:mainnet,projection
+#
+# This replaced the older replay-worker archive. That pipeline and its `history`
+# profile are gone, and its configuration keys are rejected rather than ignored, so
+# there is nothing left to enable alongside this.
+#
+# FRESH SYNC ONLY. The set of projected datasets is part of the archive's identity,
+# so an archive cannot gain a dataset later - the earlier blocks would be missing
+# from it. A node started against an archive written with a different dataset set,
+# network, or schema version fails closed at startup rather than appending rows of
+# a second shape into the same tables.
+
+yano:
+  account-state:
+    # Required: pre-Conway pointer addresses are resolved from the account-state
+    # subsystem's deregistration index while the mapping is still current for the
+    # block being projected. Without it the node refuses to project.
+    enabled: true
+  history:
+    # The older replay-worker archive stays off; this profile replaces it.
+    enabled: false
+    dir: ${YANO_HISTORY_DIR:./history}
+    projection:
+      enabled: true
+
+      # DuckLake (DuckDB + Parquet + a SQLite catalog) is the validated primary sink.
+      # Exactly one primary sink is supported at a time.
+      sink: ${YANO_PROJECTION_SINK:ducklake}
+
+      # Datasets to project. Defaults to every shipped block dataset:
+      #   transaction:v1, utxo-history:v1, account-events:v1, address-transaction:v1
+      #
+      # Set this ONLY to deliberately project fewer, which is a legacy or testing
+      # configuration. A dataset omitted here can be added back only by resyncing
+      # from genesis, and an archive missing one looks healthy until a query
+      # returns nothing.
+      # sections: transaction:v1,utxo-history:v1
+
+      # How often the drain loop polls when it has nothing eligible to commit.
+      drain-interval-millis: ${YANO_PROJECTION_DRAIN_INTERVAL_MILLIS:250}
+
+      maintenance:
+        # Housekeeping - expiring snapshots, deleting superseded and orphaned files -
+        # runs on this interval and is allowed during bootstrap, because a long sync
+        # can outlast the retention windows.
+        housekeeping-interval-minutes: ${YANO_PROJECTION_HOUSEKEEPING_INTERVAL_MINUTES:30}
+        housekeeping-budget-seconds: ${YANO_PROJECTION_HOUSEKEEPING_BUDGET_SECONDS:30}
+        # Compaction additionally requires the sink to be caught up with no backlog,
+        # so it never competes with ingestion for the bulk pool.
+        compaction-interval-minutes: ${YANO_PROJECTION_COMPACTION_INTERVAL_MINUTES:360}
+        compaction-budget-seconds: ${YANO_PROJECTION_COMPACTION_BUDGET_SECONDS:300}
+        compaction-rewrite-bytes: ${YANO_PROJECTION_COMPACTION_REWRITE_BYTES:8589934592}
+
+      sink-options:
+        # Compaction output target. Not the per-commit file size: each commit writes
+        # its own file per touched table, and compaction merges them afterwards.
+        target-file-size-bytes: ${YANO_PROJECTION_TARGET_FILE_SIZE_BYTES:4194304}
+        # Retention windows inherited from the replay-worker backend. Compaction's
+        # rewritten inputs stay on disk for the cleanup grace, so peak sink footprint
+        # is roughly twice the logical archive for that long. Shorten only after
+        # active-reader fencing and query duration are proven.
+        snapshot-retention-hours: ${YANO_PROJECTION_SNAPSHOT_RETENTION_HOURS:168}
+        cleanup-grace-hours: ${YANO_PROJECTION_CLEANUP_GRACE_HOURS:24}
+
+      # Aggregate archive-retained disk budget. Canonical sync runs ahead of the sink
+      # by design; these bounds exist so a lagging sink cannot exhaust the disk, not
+      # to pace core to sink speed. Ingestion pauses visibly at the hard limit and
+      # resumes automatically below the low-water mark.
+      disk:
+        soft-bytes: ${YANO_PROJECTION_DISK_SOFT_BYTES:8589934592}
+        hard-bytes: ${YANO_PROJECTION_DISK_HARD_BYTES:34359738368}
+        low-water-bytes: ${YANO_PROJECTION_DISK_LOW_WATER_BYTES:4294967296}
+        free-space-reserve-bytes: ${YANO_PROJECTION_DISK_FREE_RESERVE_BYTES:17179869184}

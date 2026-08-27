@@ -3,10 +3,12 @@ package com.bloxbean.cardano.yano.app.api.utils;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.TxEvaluationGateway;
 import com.bloxbean.cardano.yano.api.model.TxEvaluationResult;
+import com.bloxbean.cardano.yano.app.api.ApiGroup;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import org.eclipse.microprofile.openapi.annotations.extensions.Extension;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -19,6 +21,7 @@ import java.util.Map;
  * Blockfrost/Ogmios-compatible Plutus script evaluation endpoint.
  * Returns computed ExUnits per redeemer for a given transaction.
  */
+@Extension(name = ApiGroup.CORE, value = "")
 @Path("utils/txs")
 @Produces(MediaType.APPLICATION_JSON)
 public class EvaluationResource {

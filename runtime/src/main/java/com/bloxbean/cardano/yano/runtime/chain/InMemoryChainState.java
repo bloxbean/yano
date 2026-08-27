@@ -1,9 +1,10 @@
 package com.bloxbean.cardano.yano.runtime.chain;
 
+import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
-import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
 import com.bloxbean.cardano.yano.runtime.blockproducer.NonceStateStore;
 import com.bloxbean.cardano.yano.runtime.blockproducer.NonceStateSnapshot;
 import lombok.extern.slf4j.Slf4j;
@@ -11,6 +12,8 @@ import lombok.extern.slf4j.Slf4j;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListMap;
 
@@ -20,7 +23,7 @@ import java.util.concurrent.ConcurrentSkipListMap;
  */
 @Slf4j
 public class InMemoryChainState implements ChainState, NonceStateStore,
-        ByronEbHeaderStore, OriginRollbackCapable {
+        ByronEbHeaderStore, OriginRollbackCapable, ArchiveChainStateCapabilities {
     // Use hex string keys instead of byte[] to ensure proper equals/hashCode behavior
     private Map<String, byte[]> blockStore = new ConcurrentHashMap<>();
     private Map<String, byte[]> blockHeaderStore = new ConcurrentHashMap<>();
@@ -93,6 +96,24 @@ public class InMemoryChainState implements ChainState, NonceStateStore,
             return blockStore.get(toHex(blockHash));
         }
         return null;
+    }
+
+    @Override
+    public Optional<CanonicalBlockReference> getCanonicalBlockReference(long blockNumber) {
+        byte[] hash = blockHashByNumber.get(blockNumber);
+        if (hash == null) return Optional.empty();
+        return blockNumberBySlot.entrySet().stream()
+                .filter(entry -> entry.getValue() == blockNumber)
+                .findFirst()
+                .map(entry -> new CanonicalBlockReference(blockNumber, entry.getKey(), hash));
+    }
+
+    @Override
+    public OptionalLong getEarliestRetainedBodyBlockNumber() {
+        return blockHashByNumber.entrySet().stream()
+                .filter(entry -> blockStore.containsKey(toHex(entry.getValue())))
+                .mapToLong(Map.Entry::getKey)
+                .min();
     }
 
     @Override

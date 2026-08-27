@@ -1068,17 +1068,6 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                     + rollbackSlot, ex);
         }
 
-        try {
-            ledgerStateSubsystem.ensureAccountHistoryRolledBack(point);
-        } catch (Exception ex) {
-            log.error("Account history rollback verification failed after chainstate rollback to slot {}. "
-                    + "Refusing to continue with possibly inconsistent ledger state.", rollbackSlot, ex);
-            log.error("EMERGENCY EXIT - account history did not verify after chainstate rollback");
-            System.exit(1);
-            throw new RuntimeException("Account history rollback verification failed after chainstate rollback to slot "
-                    + rollbackSlot, ex);
-        }
-
         log.info("ROLLBACK_EVENT: slot={}, type={}, phase={}, serverNotified={}",
                 rollbackSlot, isReal ? "REAL_REORG" : "RECONNECTION", syncPhase,
                 isReal && serveSubsystem.isRunning());
@@ -1941,7 +1930,30 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
                 headerValidator,
                 bodyValidator);
         session.setGenesisBootstrapDataSupplier(genesisBootstrapDataSupplier);
+        // Re-apply any external ingestion hold. A peer session is recreated on reconnect, so
+        // installing the hold once on the first manager would silently lose it the first time
+        // the upstream drops — exactly when a backlog is most likely to have grown.
+        applyIngestHold(session.getHeaderSyncManager());
         return session;
+    }
+
+    /**
+     * External hold on canonical ingestion (ADR-039 disk backpressure), remembered so it
+     * survives both pre-start registration and peer-session replacement.
+     */
+    private final IngestHoldRegistry ingestHolds = new IngestHoldRegistry();
+
+    /**
+     * Install the hold and apply it to the current session, if any. Safe to call before the
+     * node starts: the hold is stored and applied when a session is created.
+     */
+    public void setIngestHold(java.util.function.BooleanSupplier hold, String reason) {
+        ingestHolds.register(hold, reason);
+        applyIngestHold(currentHeaderSyncManager());
+    }
+
+    private void applyIngestHold(HeaderSyncManager manager) {
+        ingestHolds.applyTo(manager == null ? null : manager::setIngestHold);
     }
 
     private record ConfiguredUpstreamPeer(String id,

@@ -14,6 +14,7 @@ import com.bloxbean.cardano.yano.api.appchain.state.StateProof;
 import com.bloxbean.cardano.yano.api.appchain.state.StateProofEnvelope;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.plugin.PluginCatalogView;
+import com.bloxbean.cardano.yano.app.api.ApiGroup;
 import com.bloxbean.cardano.yano.appchain.proof.AppChainProofVerifier;
 import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
@@ -31,6 +32,7 @@ import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.eclipse.microprofile.openapi.annotations.Operation;
+import org.eclipse.microprofile.openapi.annotations.extensions.Extension;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -53,6 +55,7 @@ import java.util.regex.Pattern;
  * ({@code @Operation(hidden = true)}): on a multi-chain node they can only
  * answer 400, so Swagger UI documents the chain-scoped surface exclusively.
  */
+@Extension(name = ApiGroup.APP_CHAIN, value = "")
 @Path("app-chain")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
@@ -419,6 +422,9 @@ public class AppChainResource {
     @Produces(MediaType.APPLICATION_JSON)
     @Consumes(MediaType.APPLICATION_JSON)
     @RegisterForReflection
+    // Sub-resource operations take their API group from THIS class, not
+    // from the locator's declaring class (ADR-040).
+    @Extension(name = ApiGroup.APP_CHAIN, value = "")
     public static class ChainScopedResource {
 
         private static final int MAX_PROOF_KEY_BYTES = 256;

@@ -26,7 +26,7 @@ class LedgerStateSubsystemTest {
     void disabledLedgerStateStartsWithoutStoresAndClosesCleanly() {
         LedgerStateSubsystem subsystem = new LedgerStateSubsystem(
                 YanoConfig.serverOnly(0),
-                options(false, false),
+                options(false),
                 new InMemoryChainState(),
                 new NoopEventBus(),
                 LoggerFactory.getLogger(LedgerStateSubsystemTest.class),
@@ -41,35 +41,12 @@ class LedgerStateSubsystemTest {
 
         assertThat(subsystem.name()).isEqualTo("ledger-state");
         assertThat(subsystem.accountStateStore()).isNull();
-        assertThat(subsystem.accountHistoryStore()).isNull();
         assertThat(subsystem.ledgerStateProvider()).isNull();
-        assertThat(subsystem.accountHistoryProvider()).isNull();
         assertThat(subsystem.health().healthy()).isTrue();
 
         subsystem.close();
 
         assertThat(subsystem.health().status()).isEqualTo(SubsystemHealth.Status.DOWN);
-    }
-
-    @Test
-    void accountHistoryCannotStartWithoutAccountState() {
-        assertThatThrownBy(() -> new LedgerStateSubsystem(
-                YanoConfig.serverOnly(0),
-                options(false, true),
-                new InMemoryChainState(),
-                new NoopEventBus(),
-                LoggerFactory.getLogger(LedgerStateSubsystemTest.class),
-                null,
-                null,
-                null,
-                null,
-                () -> null,
-                () -> null,
-                () -> null,
-                null))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Failed to initialize ledger-state subsystem")
-                .hasRootCauseMessage("Account history requested but not initialized because account-state is disabled");
     }
 
     @Test
@@ -125,9 +102,8 @@ class LedgerStateSubsystemTest {
                 .hasMessageContaining("earliest known era is unavailable");
     }
 
-    private static RuntimeOptions options(boolean accountStateEnabled, boolean accountHistoryEnabled) {
+    private static RuntimeOptions options(boolean accountStateEnabled) {
         return new RuntimeOptions(null, null, Map.of(
-                "yano.account-state.enabled", accountStateEnabled,
-                "yano.account-history.enabled", accountHistoryEnabled));
+                "yano.account-state.enabled", accountStateEnabled));
     }
 }

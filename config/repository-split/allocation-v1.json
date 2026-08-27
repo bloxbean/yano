@@ -189,13 +189,46 @@
       "pluginBundleId": null
     },
     {
-      "sourcePath": ":epoch-export",
-      "sourceDirectory": "epoch-export",
+      "sourcePath": ":archive-modules",
+      "sourceDirectory": "archive-modules",
       "disposition": "retain",
       "owner": "yano-core",
-      "targetPath": ":epoch-export",
-      "targetDirectory": "epoch-export",
-      "artifactId": "yano-epoch-export",
+      "targetPath": ":archive-modules",
+      "targetDirectory": "archive-modules",
+      "artifactId": null,
+      "publicationType": "module-group",
+      "pluginBundleId": null
+    },
+    {
+      "sourcePath": ":archive-modules:archive-api",
+      "sourceDirectory": "archive-modules/archive-api",
+      "disposition": "retain",
+      "owner": "yano-core",
+      "targetPath": ":archive-modules:archive-api",
+      "targetDirectory": "archive-modules/archive-api",
+      "artifactId": "yano-archive-api",
+      "publicationType": "library",
+      "pluginBundleId": null
+    },
+    {
+      "sourcePath": ":archive-modules:archive-core",
+      "sourceDirectory": "archive-modules/archive-core",
+      "disposition": "retain",
+      "owner": "yano-core",
+      "targetPath": ":archive-modules:archive-core",
+      "targetDirectory": "archive-modules/archive-core",
+      "artifactId": "yano-archive-core",
+      "publicationType": "library",
+      "pluginBundleId": null
+    },
+    {
+      "sourcePath": ":archive-modules:archive-store-ducklake",
+      "sourceDirectory": "archive-modules/archive-store-ducklake",
+      "disposition": "retain",
+      "owner": "yano-core",
+      "targetPath": ":archive-modules:archive-store-ducklake",
+      "targetDirectory": "archive-modules/archive-store-ducklake",
+      "artifactId": "yano-archive-store-ducklake",
       "publicationType": "library",
       "pluginBundleId": null
     },

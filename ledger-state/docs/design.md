@@ -14,7 +14,7 @@ The `ledger-state` module is the RocksDB-backed persistence layer for Cardano le
 - [Conway Governance](#conway-governance)
 - [Two-Phase Governance Commit](#two-phase-governance-commit)
 - [Delta Journal & Rollback](#delta-journal--rollback)
-- [Epoch Snapshot Export](#epoch-snapshot-export)
+- [Epoch Archive Staging](#epoch-archive-staging)
 - [Module Dependencies](#module-dependencies)
 - [TODO / Known Issues](#todo--known-issues)
 
@@ -431,28 +431,17 @@ On `rollbackTo(blockNumber)`:
 
 ---
 
-## Epoch Snapshot Export
+## Epoch Archive Staging
 
-Optional Parquet export for debugging and DBSync cross-verification.
+ADR-034 replaces the preview snapshot exporter with an explicitly injected,
+optional `EpochArchiveStagingSink`. When selected archive datasets are enabled,
+the sink streams transient stake, DRep, Ada-pot, governance lifecycle, and
+reward facts to durable bounded source files. An asynchronous archive worker
+publishes those facts to DuckLake or standalone SQLite only after the boundary
+is final. The disabled sink is a singleton no-op and allocates no row buffers.
 
-**Architecture:** SPI interface (`EpochSnapshotExporter`) in `ledger-state`, implementation (`ParquetEpochSnapshotExporter`) in `epoch-export` module via ServiceLoader.
-
-**Output:** Hive-partitioned Parquet files in `data/epoch=N/`:
-- `epoch_stake.parquet` -- stake delegations with bech32 `stake_address` and `pool_id`
-- `drep_dist.parquet` -- DRep distribution with bech32 `drep_id`
-- `adapot.parquet` -- treasury, reserves, deposits, fees
-- `proposal_status.parquet` -- ratification results with `gov_action_id`
-
-**Querying:**
-```sql
--- DuckDB reads Hive partitions automatically
-SELECT * FROM 'data/epoch=*/drep_dist.parquet' WHERE epoch = 280;
-SELECT epoch, count(*) FROM 'data/epoch=*/adapot.parquet' GROUP BY epoch;
-```
-
-**Cross-verification:** `verify.sh` compares exports against DBSync and Yaci-Store.
-
-Enabled via `yano.snapshot-export.enabled=true`. Zero overhead when disabled (NOOP pattern).
+The old `yano.snapshot-export.*`, ServiceLoader exporter, raw Parquet directory,
+and rollback directory cleanup no longer exist.
 
 ---
 
@@ -470,8 +459,7 @@ ledger-state
 
 Dependents:
     |- runtime   (creates and wires DefaultAccountStateStore, Yano)
-    |- app       (REST endpoints, configuration)
-    |- epoch-export   (Parquet snapshot exporter)
+    |- app       (REST endpoints and optional archive composition)
 ```
 
 ---
