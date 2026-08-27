@@ -7,6 +7,8 @@ import com.bloxbean.cardano.yano.app.archive.HistoryArchiveService;
 import com.bloxbean.cardano.yano.app.archive.ProjectionHistoryService;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.GET;
+import jakarta.ws.rs.POST;
+import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
@@ -45,8 +47,44 @@ public class HistoryResource {
      */
     @GET
     @Path("coverage")
-    public Response coverage() {
-        return Response.ok(projection.coverage()).build();
+    public Response coverage(@QueryParam("dataset") String dataset,
+                             @QueryParam("from-epoch") Integer fromEpoch,
+                             @QueryParam("to-epoch") Integer toEpoch,
+                             @QueryParam("offset") Integer offset,
+                             @QueryParam("limit") Integer limit) {
+        try {
+            if (dataset == null || dataset.isBlank()) {
+                return Response.ok(projection.coverage()).build();
+            }
+            return Response.ok(projection.coverageDetails(HistoryResource.dataset(dataset),
+                    fromEpoch, toEpoch, offset, limit)).build();
+        } catch (IllegalArgumentException e) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("error", e.getMessage())).build();
+        }
+    }
+
+    /** Resume future capture for a paused epoch artifact without hiding its retained gaps. */
+    @POST
+    @Path("coverage/{dataset}/resume")
+    public Response resume(@PathParam("dataset") String dataset) {
+        try {
+            return Response.ok(projection.resumeEpochArtifact(dataset(dataset))).build();
+        } catch (IllegalArgumentException e) {
+            return Response.status(Response.Status.BAD_REQUEST).entity(Map.of("error", e.getMessage())).build();
+        } catch (IllegalStateException | ArchiveStoreException e) {
+            return Response.status(Response.Status.CONFLICT).entity(Map.of("error", e.getMessage())).build();
+        }
+    }
+
+    @POST
+    @Path("coverage/legacy-staging-failure/acknowledge")
+    public Response acknowledgeLegacyStagingFailure() {
+        try {
+            return Response.ok(projection.acknowledgeLegacyStagingFailure()).build();
+        } catch (IllegalStateException e) {
+            return Response.status(Response.Status.CONFLICT).entity(Map.of("error", e.getMessage())).build();
+        }
     }
 
     @GET

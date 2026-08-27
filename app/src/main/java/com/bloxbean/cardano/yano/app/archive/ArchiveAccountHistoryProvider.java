@@ -94,6 +94,7 @@ final class ArchiveAccountHistoryProvider implements AccountHistoryProvider {
 
     @Override
     public List<RewardRecord> getRewards(int type, String hash, int page, int count, String order) {
+        service.requireCompleteEpochHistory(ArchiveDatasetId.REWARD);
         return query(ArchiveDatasetId.REWARD, Map.of("stake_credential", HexUtil.decodeHexString(hash)),
                 page, count, order).stream().map(row -> new RewardRecord(integer(row, "earned_epoch"),
                 bigInteger(row, "amount"), Objects.toString(row.value("reward_type")),

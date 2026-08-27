@@ -219,7 +219,8 @@ public final class ProjectionOutboxConsumer {
             replayed = true;
         } else {
             // Materialise once, in shared code, so every backend sees the same rows.
-            ProjectionReceipt receipt = sink.append(ProjectionRowBuilder.materialise(batch), artifacts);
+            ProjectionReceipt receipt = sink.append(ProjectionRowBuilder.materialise(batch,
+                    store.previewEpochArtifactIntervalRepairs(batch.artifacts())), artifacts);
             if (!receipt.matches(batch)) {
                 throw new ProjectionReceiptMismatchException(
                         "sink returned a receipt that does not describe the committed batch at block "
@@ -242,6 +243,10 @@ public final class ProjectionOutboxConsumer {
         for (var artifact : batch.artifacts()) {
             artifacts.acknowledge(artifact);
         }
+        // Sink COMPLETE and any interval split are already durable in the same transaction.
+        // Only now may the outbox remove its GAP/interval intent. A crash before this line
+        // replays the receipt and reaches the same idempotent acknowledgement.
+        store.acknowledgeEpochArtifactRepairs(batch.artifacts());
         // Only now is removal authorised, and only for exactly this verified range.
         store.acknowledgeThrough(batch.lastBlock());
         accumulator.recordFlush(decision);

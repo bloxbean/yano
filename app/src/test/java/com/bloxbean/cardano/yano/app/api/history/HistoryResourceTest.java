@@ -85,4 +85,33 @@ class HistoryResourceTest {
         // The legacy path must not even be consulted.
         org.mockito.Mockito.verifyNoInteractions(legacy);
     }
+
+    @Test
+    void resumeReturnsDatasetStatusAndConflictsWhenNotPaused() {
+        ProjectionHistoryService projection = mock(ProjectionHistoryService.class);
+        when(projection.resumeEpochArtifact(ArchiveDatasetId.REWARD))
+                .thenReturn(Map.of("dataset", "reward", "captureState", "ACTIVE"));
+        HistoryResource resource = new HistoryResource();
+        resource.history = mock(HistoryArchiveService.class);
+        resource.projection = projection;
+
+        assertThat(resource.resume("reward").getStatus()).isEqualTo(200);
+        when(projection.resumeEpochArtifact(ArchiveDatasetId.REWARD))
+                .thenThrow(new IllegalStateException("reward is not paused"));
+        assertThat(resource.resume("reward").getStatus()).isEqualTo(409);
+        assertThat(resource.resume("unknown").getStatus()).isEqualTo(400);
+    }
+
+    @Test
+    void coverageDetailIsBoundedAndRejectsUnknownDatasets() {
+        ProjectionHistoryService projection = mock(ProjectionHistoryService.class);
+        when(projection.coverageDetails(ArchiveDatasetId.REWARD, 400, 500, 0, 25))
+                .thenReturn(Map.of("gapDetail", Map.of("total", 1)));
+        HistoryResource resource = new HistoryResource();
+        resource.history = mock(HistoryArchiveService.class);
+        resource.projection = projection;
+
+        assertThat(resource.coverage("reward", 400, 500, 0, 25).getStatus()).isEqualTo(200);
+        assertThat(resource.coverage("unknown", null, null, null, null).getStatus()).isEqualTo(400);
+    }
 }

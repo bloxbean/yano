@@ -20,9 +20,19 @@ final class DuckLakeInitializer {
     }
 
     void initialize(Connection connection, ArchiveIdentity expected) throws SQLException {
+        initialize(connection, expected, false);
+    }
+
+    /** Projection startup creates block/genesis tables first; selected epoch tables join later. */
+    void initializeProjection(Connection connection, ArchiveIdentity expected) throws SQLException {
+        initialize(connection, expected, true);
+    }
+
+    private void initialize(Connection connection, ArchiveIdentity expected, boolean blockOnly)
+            throws SQLException {
         createMetadata(connection);
-        createDatasetTables(connection);
-        configureTables(connection);
+        createDatasetTables(connection, blockOnly);
+        configureTables(connection, blockOnly);
         createViews(connection);
         verifyOrCreateIdentity(connection, expected);
     }
@@ -52,21 +62,21 @@ final class DuckLakeInitializer {
         }
     }
 
-    private void createDatasetTables(Connection connection) throws SQLException {
+    private void createDatasetTables(Connection connection, boolean blockOnly) throws SQLException {
         try (Statement sql = connection.createStatement()) {
-            for (ArchiveTableSchema table : DuckLakeSql.tables().values()) {
+            for (ArchiveTableSchema table : datasetTables(blockOnly)) {
                 sql.execute(DuckLakeSql.createTable(table));
             }
         }
     }
 
-    private void configureTables(Connection connection) throws SQLException {
+    private void configureTables(Connection connection, boolean blockOnly) throws SQLException {
         try (Statement sql = connection.createStatement()) {
             sql.execute("CALL history_lake.set_option('data_inlining_row_limit', 0)");
             sql.execute("CALL history_lake.set_option('parquet_compression', 'zstd')");
             sql.execute("CALL history_lake.set_option('target_file_size', '" + config.targetFileSizeBytes() + "B')");
             sql.execute("CALL history_lake.set_option('parquet_row_group_size', '" + config.rowGroupSize() + "')");
-            for (ArchiveTableSchema table : DuckLakeSql.tables().values()) {
+            for (ArchiveTableSchema table : datasetTables(blockOnly)) {
                 if (table.columns().stream().anyMatch(column -> column.name().equals("epoch"))) {
                     try {
                         sql.execute("ALTER TABLE history_lake." + DuckLakeSql.name(table.physicalName())
@@ -77,6 +87,15 @@ final class DuckLakeInitializer {
                 }
             }
         }
+    }
+
+    private java.util.List<ArchiveTableSchema> datasetTables(boolean blockOnly) {
+        return ArchiveSchemas.all().entrySet().stream()
+                .filter(entry -> !blockOnly
+                        || entry.getKey().sourceKind() == com.bloxbean.cardano.yano.archive.api.SourceKind.BLOCK)
+                .flatMap(entry -> entry.getValue().tables().stream())
+                .distinct()
+                .toList();
     }
 
     private void createViews(Connection connection) throws SQLException {

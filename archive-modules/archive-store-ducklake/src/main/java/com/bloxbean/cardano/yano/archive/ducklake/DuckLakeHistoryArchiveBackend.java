@@ -122,7 +122,15 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
                                                       PackagedDuckDbExtensionLoader extensions,
                                                       ArchiveWaitPolicy waitPolicy) {
         return new DuckLakeHistoryArchiveBackend(identity, config,
-                new DuckDbManager(managerConfig, extensions, waitPolicy), true, waitPolicy);
+                new DuckDbManager(managerConfig, extensions, waitPolicy), true, waitPolicy, false);
+    }
+
+    /** Open the read facade for a projection archive without creating unselected epoch tables. */
+    public static DuckLakeHistoryArchiveBackend openProjectionRead(ArchiveIdentity identity,
+            DuckLakeArchiveConfig config, DuckDbManagerConfig managerConfig,
+            PackagedDuckDbExtensionLoader extensions, ArchiveWaitPolicy waitPolicy) {
+        return new DuckLakeHistoryArchiveBackend(identity, config,
+                new DuckDbManager(managerConfig, extensions, waitPolicy), true, waitPolicy, true);
     }
 
     private DuckLakeHistoryArchiveBackend(ArchiveIdentity identity, DuckLakeArchiveConfig config,
@@ -133,6 +141,12 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
     private DuckLakeHistoryArchiveBackend(ArchiveIdentity identity, DuckLakeArchiveConfig config,
                                           DuckDbManager manager, boolean ownsManager,
                                           ArchiveWaitPolicy waitPolicy) {
+        this(identity, config, manager, ownsManager, waitPolicy, false);
+    }
+
+    private DuckLakeHistoryArchiveBackend(ArchiveIdentity identity, DuckLakeArchiveConfig config,
+                                          DuckDbManager manager, boolean ownsManager,
+                                          ArchiveWaitPolicy waitPolicy, boolean projectionRead) {
         this.identity = java.util.Objects.requireNonNull(identity, "identity");
         if (!identity.engine().equals("ducklake")) {
             throw new IllegalArgumentException("DuckLake backend requires engine=ducklake");
@@ -153,7 +167,11 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
         try (DuckDbLease lease = manager.acquire(DuckDbWorkload.BULK_CATCH_UP, config.acquireTimeout())) {
             DuckLakeSql.attach(lease.connection(), config, null, false);
             try {
-                new DuckLakeInitializer(config).initialize(lease.connection(), identity);
+                if (projectionRead) {
+                    new DuckLakeInitializer(config).initializeProjection(lease.connection(), identity);
+                } else {
+                    new DuckLakeInitializer(config).initialize(lease.connection(), identity);
+                }
                 transactionLocator = new DuckLakeTransactionLocator(config.catalogPath());
                 transactionLocator.rebuildIfRequired(lease.connection(), DuckLakeSql.currentSnapshot(lease.connection()));
             } finally {
@@ -943,9 +961,31 @@ public final class DuckLakeHistoryArchiveBackend implements ArchiveBackend {
             // rather than being fabricated - those reads fail closed instead.
             if (ranges.isEmpty() && dataset.sourceKind() == SourceKind.BLOCK) {
                 ranges.addAll(receiptRanges(connection));
+            } else if (ranges.isEmpty() && dataset.sourceKind() == SourceKind.EPOCH) {
+                ranges.addAll(projectionEpochRanges(connection, dataset));
             }
             return new ArchiveCoverage(dataset, projectionVersion, revision, mergeAdjacent(ranges));
         }
+    }
+
+    /** COMPLETE outcomes written atomically with projection artifact rows. */
+    private List<ArchiveRange> projectionEpochRanges(Connection connection, ArchiveDatasetId dataset)
+            throws SQLException {
+        List<ArchiveRange> ranges = new ArrayList<>();
+        if (!tableExists(connection, DuckLakeProjectionSchema.EPOCH_COVERAGE_TABLE)) return ranges;
+        try (PreparedStatement query = connection.prepareStatement(
+                "SELECT DISTINCT semantic_epoch FROM history_lake."
+                        + DuckLakeProjectionSchema.EPOCH_COVERAGE_TABLE
+                        + " WHERE dataset=? AND outcome='COMPLETE' ORDER BY semantic_epoch")) {
+            query.setString(1, dataset.name());
+            try (ResultSet rows = query.executeQuery()) {
+                while (rows.next()) {
+                    long epoch = rows.getLong(1);
+                    ranges.add(new EpochRange(epoch, epoch));
+                }
+            }
+        }
+        return ranges;
     }
 
     /**

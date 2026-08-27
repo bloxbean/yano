@@ -136,6 +136,30 @@ class EpochArtifactCollectorTest {
     }
 
     @Test
+    void selectionAndProjectedFromGateEachDirectDataset() {
+        var selected = new EpochArtifactCollector(store, clamp,
+                java.util.Map.of(ArchiveDatasetId.EPOCH_STAKE, 251),
+                1, "ledger-boundary-v1");
+
+        contribute(selected, 250, 100_000L, 4_800_000L, 10);
+        contribute(selected, 251, 100_100L, 4_800_001L, 11);
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
+            selected.contributeAdaPot(251, 100_100L, 4_800_001L,
+                    new long[]{1,2,3,4,5,6,7,8},
+                    ProjectionOutboxStore.batchWriter(batch, store.handles()));
+            db.write(options, batch);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+
+        assertThat(store.readArtifacts(4_800_000L)).isEmpty();
+        assertThat(store.readArtifacts(4_800_001L))
+                .extracting(ref -> ref.dataset())
+                .containsExactly(ArchiveDatasetId.EPOCH_STAKE);
+        assertThat(clamp.protectedSnapshotFloorEpoch()).isEqualTo(251);
+    }
+
+    @Test
     void anAdaPotArtifactCarriesItsEvidenceAndRequiresNoRetention() {
         // The pot is not written through the boundary batch and is re-stored as rewards and
         // governance adjust it, so there is no generation to reference and nothing to protect.

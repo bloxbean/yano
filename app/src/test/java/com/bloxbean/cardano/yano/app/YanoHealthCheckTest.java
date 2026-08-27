@@ -4,6 +4,7 @@ import com.bloxbean.cardano.yano.api.NodeLifecycle;
 import com.bloxbean.cardano.yano.api.config.NodeConfig;
 import com.bloxbean.cardano.yano.api.listener.NodeEventListener;
 import com.bloxbean.cardano.yano.api.model.NodeStatus;
+import com.bloxbean.cardano.yano.app.archive.ProjectionHistoryService;
 import com.bloxbean.cardano.yano.runtime.kernel.NodeKernel;
 import com.bloxbean.cardano.yano.runtime.kernel.Schedulers;
 import com.bloxbean.cardano.yano.runtime.kernel.ServiceRegistry;
@@ -17,8 +18,24 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class YanoHealthCheckTest {
+
+    @Test
+    void readinessIsDownWhenProjectionInitializationFailedEvenIfKernelIsHealthy() {
+        YanoHealthCheck healthCheck = new YanoHealthCheck();
+        healthCheck.projectionHistory = mock(ProjectionHistoryService.class);
+        when(healthCheck.projectionHistory.hasInitializationFailure()).thenReturn(true);
+        healthCheck.nodeKernel = kernel(SubsystemHealth.up("chain-storage"));
+
+        try {
+            assertEquals(HealthCheckResponse.Status.DOWN, healthCheck.call().getStatus());
+        } finally {
+            healthCheck.nodeKernel.close();
+        }
+    }
 
     @Test
     void readinessIsDownWhenPeerRecoveryIsTerminal() {

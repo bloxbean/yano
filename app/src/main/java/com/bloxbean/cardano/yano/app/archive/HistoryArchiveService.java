@@ -92,6 +92,7 @@ public class HistoryArchiveService implements AutoCloseable {
     private volatile List<SequentialOutpointResolver.Entry> genesisResolverEntries = List.of();
     private volatile long firstCanonicalBlockNumber;
     private final AccountHistoryProvider archiveAccountHistory = new ArchiveAccountHistoryProvider(this);
+    private volatile java.util.function.Consumer<ArchiveDatasetId> epochCoverageGuard = ignored -> { };
     private final EnumMap<ArchiveDatasetId, Long> appliedRetention = new EnumMap<>(ArchiveDatasetId.class);
     private final EnumMap<ArchiveDatasetId, Integer> promotionBatchBlocks = new EnumMap<>(ArchiveDatasetId.class);
     private final AtomicLong pendingRollbackEpoch = new AtomicLong(Long.MAX_VALUE);
@@ -158,7 +159,9 @@ public class HistoryArchiveService implements AutoCloseable {
                     .findFirst().orElseThrow(() -> new IllegalStateException(
                             "archive backend provider not packaged for engine " + engineName));
 
-            backend = provider.open(identity, directory, backendProperties(directory, engine));
+            Map<String, String> properties = new HashMap<>(backendProperties(directory, engine));
+            properties.put("projection.read-mode", "true");
+            backend = provider.open(identity, directory, Map.copyOf(properties));
             projectionDatasets = Set.copyOf(covered);
             projectionCommittedThrough = committedThrough;
             projectionBackedReads = true;
@@ -174,6 +177,19 @@ public class HistoryArchiveService implements AutoCloseable {
             // Fail loudly rather than silently answering "history disabled" over a full archive.
             throw new IllegalStateException("could not open the projection archive for reading", e);
         }
+    }
+
+    public synchronized void initializeProjectionReads(YanoConfig nodeConfig,
+                                                       ArchiveIdentity identity,
+                                                       Set<ArchiveDatasetId> covered,
+                                                       java.util.function.LongSupplier committedThrough,
+                                                       java.util.function.Consumer<ArchiveDatasetId> epochCoverageGuard) {
+        this.epochCoverageGuard = Objects.requireNonNull(epochCoverageGuard, "epochCoverageGuard");
+        initializeProjectionReads(nodeConfig, identity, covered, committedThrough);
+    }
+
+    void requireCompleteEpochHistory(ArchiveDatasetId dataset) {
+        if (dataset.sourceKind() == SourceKind.EPOCH) epochCoverageGuard.accept(dataset);
     }
 
     /**

@@ -137,6 +137,22 @@ class ProjectionOutboxStoreTest {
         commitSection(blockNumber, section(ProjectionSectionType.UTXO_HISTORY, 3, new byte[]{3, 4, 5}));
     }
 
+    private void commitArtifact(long blockNumber,
+            com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId dataset, int epoch, String generation) {
+        var ref = new com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef(
+                dataset, epoch, blockNumber, blockNumber * 10,
+                com.bloxbean.cardano.yano.archive.api.projection
+                        .ProjectionArtifactRepresentation.STAGED_FILE,
+                generation, 1, "ledger-boundary-v1/test", java.util.OptionalLong.of(0),
+                "digest-" + generation, -1);
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
+            store.putArtifact(ProjectionOutboxStore.batchWriter(batch, store.handles()), blockNumber, ref);
+            db.write(options, batch);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
     private void commitCompleteBlock(long blockNumber, long slot,
                                      ProjectionBlockKind kind, byte[] hash) {
         var header = new ProjectionEnvelopeHeader(PREPROD, kind, blockNumber,
@@ -402,6 +418,229 @@ class ProjectionOutboxStoreTest {
         store.putIdentity(identity);
         restart();
         assertThat(store.identityFingerprint()).contains(identity.fingerprint());
+    }
+
+    @Test
+    void artifactContractsAndEnrollmentCommitTogether() {
+        var identity = com.bloxbean.cardano.yano.archive.api.projection
+                .ProjectionArtifactIdentity.of(List.of(
+                        com.bloxbean.cardano.yano.archive.api.projection
+                                .ProjectionArtifactContracts.reward()));
+        var enrollments = com.bloxbean.cardano.yano.archive.api.projection
+                .ProjectionArtifactEnrollments.of(List.of(
+                        new com.bloxbean.cardano.yano.archive.api.projection
+                                .ProjectionArtifactEnrollment(
+                                com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.REWARD,
+                                java.util.OptionalInt.of(209),
+                                com.bloxbean.cardano.yano.archive.api.projection
+                                        .ProjectionArtifactEnrollmentOrigin.PROSPECTIVE_JOIN)));
+
+        store.putArtifactSelection(identity, enrollments);
+        restart();
+
+        assertThat(store.artifactIdentityWire()).contains(identity.wireForm());
+        assertThat(store.artifactEnrollmentsWire()).contains(enrollments.wireForm());
+    }
+
+    @Test
+    void epochGapPausesSurvivesRestartAndExactPointRollbackRemovesIt() {
+        byte[] hash = new byte[] {7, 7, 7};
+        var gap = new com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap(
+                com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.REWARD,
+                450, 9_000, 90_000, hash, "io", "disk write failed",
+                java.time.Instant.parse("2026-08-27T00:00:00Z"));
+
+        store.recordEpochArtifactGap(gap);
+        restart();
+
+        assertThat(store.epochArtifactGaps()).singleElement().satisfies(stored -> {
+            assertThat(stored.sameOutcome(gap)).isTrue();
+            assertThat(stored.detail()).isEqualTo("disk write failed");
+        });
+        assertThat(store.epochArtifactCaptureState(
+                com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.REWARD))
+                .isEqualTo(com.bloxbean.cardano.yano.archive.api.projection
+                        .EpochArtifactCaptureState.PAUSED);
+
+        assertThat(store.rollbackEpochArtifactGaps(90_000, hash, false)).isZero();
+        assertThat(store.rollbackEpochArtifactGaps(90_000, new byte[] {8}, false)).isEqualTo(1);
+        assertThat(store.epochArtifactGaps()).isEmpty();
+        assertThat(store.epochArtifactCaptureState(
+                com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.REWARD))
+                .isEqualTo(com.bloxbean.cardano.yano.archive.api.projection
+                        .EpochArtifactCaptureState.ACTIVE);
+    }
+
+    @Test
+    void recordingGapAtomicallyRemovesEarlierPartsForOnlyThatDataset() {
+        var reward = com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.REWARD;
+        var drep = com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.DREP_DISTRIBUTION;
+        commitArtifact(9_000, reward, 450, "reward-part");
+        commitArtifact(9_000, drep, 450, "drep-part");
+
+        store.recordEpochArtifactGap(new com.bloxbean.cardano.yano.archive.api.projection
+                .EpochArtifactGap(reward, 450, 9_000, 90_000, new byte[] {7}, "capture",
+                "later reward part failed", java.time.Instant.now()));
+
+        assertThat(store.readArtifacts(9_000)).singleElement()
+                .extracting(com.bloxbean.cardano.yano.archive.api.projection
+                        .ProjectionArtifactRef::dataset).isEqualTo(drep);
+        assertThat(store.epochArtifactGaps()).extracting(
+                com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap::dataset)
+                .containsExactly(reward);
+    }
+
+    @Test
+    void conflictingEpochGapFailsClosedAndResumeKeepsGap() {
+        var original = new com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap(
+                com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.REWARD,
+                450, 9_000, 90_000, new byte[] {7}, "io", "first", java.time.Instant.now());
+        store.recordEpochArtifactGap(original);
+
+        assertThatThrownBy(() -> store.recordEpochArtifactGap(
+                new com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap(
+                        original.dataset(), original.semanticEpoch(), 9_001, 90_001,
+                        new byte[] {8}, "capture", "replacement", java.time.Instant.now())))
+                .isInstanceOf(ProjectionOutboxException.class)
+                .hasMessageContaining("conflicting");
+
+        store.resumeEpochArtifact(original.dataset());
+        assertThat(store.epochArtifactGaps()).hasSize(1);
+        assertThat(store.epochArtifactCaptureState(original.dataset()))
+                .isEqualTo(com.bloxbean.cardano.yano.archive.api.projection
+                        .EpochArtifactCaptureState.ACTIVE);
+        store.acknowledgeEpochArtifactRepair(original.dataset(), original.semanticEpoch());
+        assertThat(store.epochArtifactGaps()).isEmpty();
+    }
+
+    @Test
+    void pausedBoundariesFormOneIntervalThatRollbackShortensAndResumeCloses() {
+        var dataset = com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.REWARD;
+        store.recordEpochArtifactGap(new com.bloxbean.cardano.yano.archive.api.projection
+                .EpochArtifactGap(dataset, 450, 9_000, 90_000, new byte[] {7}, "io", "disk",
+                java.time.Instant.now()));
+        store.recordPausedEpoch(dataset, 451, 91_000, new byte[] {8});
+        store.recordPausedEpoch(dataset, 452, 92_000, new byte[] {9});
+        assertThat(store.epochArtifactGapIntervals()).singleElement().satisfies(interval -> {
+            assertThat(interval.fromEpoch()).isEqualTo(451);
+            assertThat(interval.throughEpoch()).isEqualTo(452);
+            assertThat(interval.open()).isTrue();
+        });
+
+        store.rollbackEpochArtifactGaps(91_000, new byte[] {8}, false);
+        assertThat(store.epochArtifactGapIntervals()).singleElement().satisfies(interval -> {
+            assertThat(interval.fromEpoch()).isEqualTo(451);
+            assertThat(interval.throughEpoch()).isEqualTo(451);
+        });
+
+        store.resumeEpochArtifact(dataset, 93_000, new byte[] {10});
+        assertThat(store.epochArtifactGapIntervals()).singleElement()
+                .extracting(com.bloxbean.cardano.yano.archive.api.projection
+                        .EpochArtifactGapInterval::open).isEqualTo(false);
+        store.rollbackEpochArtifactGaps(91_000, new byte[] {8}, false);
+        assertThat(store.epochArtifactCaptureState(dataset))
+                .isEqualTo(com.bloxbean.cardano.yano.archive.api.projection
+                        .EpochArtifactCaptureState.PAUSED);
+        assertThat(store.epochArtifactGapIntervals()).singleElement()
+                .extracting(com.bloxbean.cardano.yano.archive.api.projection
+                        .EpochArtifactGapInterval::open).isEqualTo(true);
+    }
+
+    @Test
+    void repairingInsidePausedRangePreviewsAndPersistsAnExactSplit() {
+        var dataset = com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.REWARD;
+        store.recordEpochArtifactGap(new com.bloxbean.cardano.yano.archive.api.projection
+                .EpochArtifactGap(dataset, 450, 9_000, 90_000, new byte[] {7}, "io", "disk",
+                java.time.Instant.now()));
+        store.recordPausedEpoch(dataset, 451, 91_000, new byte[] {8});
+        store.recordPausedEpoch(dataset, 452, 92_000, new byte[] {9});
+        store.recordPausedEpoch(dataset, 453, 93_000, new byte[] {10});
+        var repaired = new com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef(
+                dataset, 452, 9_200, 92_000,
+                com.bloxbean.cardano.yano.archive.api.projection
+                        .ProjectionArtifactRepresentation.STAGED_FILE,
+                "repair-452", 1, "ledger-boundary-v1/rewards",
+                java.util.OptionalLong.of(0), "digest", -1);
+
+        assertThat(store.previewEpochArtifactIntervalRepairs(List.of(repaired)))
+                .singleElement().satisfies(repair -> assertThat(repair.survivingSegments())
+                        .extracting(com.bloxbean.cardano.yano.archive.api.projection
+                                .EpochArtifactGapInterval::fromEpoch,
+                                com.bloxbean.cardano.yano.archive.api.projection
+                                        .EpochArtifactGapInterval::throughEpoch)
+                        .containsExactly(org.assertj.core.groups.Tuple.tuple(451, 451),
+                                org.assertj.core.groups.Tuple.tuple(453, 453)));
+
+        store.acknowledgeEpochArtifactRepairs(List.of(repaired));
+        assertThat(store.epochArtifactGapIntervals())
+                .extracting(com.bloxbean.cardano.yano.archive.api.projection
+                                .EpochArtifactGapInterval::fromEpoch,
+                        com.bloxbean.cardano.yano.archive.api.projection
+                                .EpochArtifactGapInterval::throughEpoch)
+                .containsExactly(org.assertj.core.groups.Tuple.tuple(451, 451),
+                        org.assertj.core.groups.Tuple.tuple(453, 453));
+    }
+
+    @Test
+    void repairingTheCauseWhilePausedPreservesFutureIntervalCaptureAndRollbackState() {
+        var dataset = com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.REWARD;
+        store.recordEpochArtifactGap(new com.bloxbean.cardano.yano.archive.api.projection
+                .EpochArtifactGap(dataset, 450, 9_000, 90_000, new byte[] {7}, "io", "disk",
+                java.time.Instant.now()));
+        store.recordPausedEpoch(dataset, 451, 91_000, new byte[] {8});
+
+        store.acknowledgeEpochArtifactRepair(dataset, 450);
+        assertThat(store.epochArtifactGaps()).isEmpty();
+        assertThat(store.epochArtifactCaptureState(dataset)).isEqualTo(
+                com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactCaptureState.PAUSED);
+        store.recordPausedEpoch(dataset, 452, 92_000, new byte[] {9});
+        assertThat(store.epochArtifactGapIntervals()).singleElement().satisfies(interval -> {
+            assertThat(interval.fromEpoch()).isEqualTo(451);
+            assertThat(interval.throughEpoch()).isEqualTo(452);
+        });
+
+        store.resumeEpochArtifact(dataset, 93_000, new byte[] {10});
+        store.rollbackEpochArtifactGaps(92_000, new byte[] {9}, false);
+        assertThat(store.epochArtifactCaptureState(dataset)).isEqualTo(
+                com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactCaptureState.PAUSED);
+    }
+
+    @Test
+    void crashRepairReconciliationUsesEveryIntervalsExactCheckpoint() {
+        var dataset = com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.REWARD;
+        store.recordEpochArtifactGap(new com.bloxbean.cardano.yano.archive.api.projection
+                .EpochArtifactGap(dataset, 450, 9_000, 90_000, new byte[] {7}, "io", "disk",
+                java.time.Instant.now()));
+        store.recordPausedEpoch(dataset, 451, 91_000, new byte[] {8});
+        store.recordPausedEpoch(dataset, 452, 92_000, new byte[] {9});
+        store.recordPausedEpoch(dataset, 453, 93_000, new byte[] {10});
+
+        int repaired = store.acknowledgeRepairsAlreadyComplete((candidate, epoch, slot, hash) ->
+                candidate == dataset && epoch == 452 && slot == 92_000
+                        && java.util.Arrays.equals(hash, new byte[] {9}));
+
+        assertThat(repaired).isEqualTo(1);
+        assertThat(store.epochArtifactGapIntervals())
+                .extracting(com.bloxbean.cardano.yano.archive.api.projection
+                                .EpochArtifactGapInterval::fromEpoch,
+                        com.bloxbean.cardano.yano.archive.api.projection
+                                .EpochArtifactGapInterval::throughEpoch)
+                .containsExactly(org.assertj.core.groups.Tuple.tuple(451, 451),
+                        org.assertj.core.groups.Tuple.tuple(453, 453));
+    }
+
+    @Test
+    void artifactSelectionRejectsMismatchedEnrollmentBeforeWriting() {
+        var identity = com.bloxbean.cardano.yano.archive.api.projection
+                .ProjectionArtifactIdentity.of(List.of(
+                        com.bloxbean.cardano.yano.archive.api.projection
+                                .ProjectionArtifactContracts.reward()));
+
+        assertThatThrownBy(() -> store.putArtifactSelection(identity,
+                com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactEnrollments.NONE))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(store.artifactIdentityWire()).isEmpty();
+        assertThat(store.artifactEnrollmentsWire()).isEmpty();
     }
 
     // --------------------------------------------------------- torn records

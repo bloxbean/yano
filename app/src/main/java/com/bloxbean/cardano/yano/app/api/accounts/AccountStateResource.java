@@ -12,6 +12,7 @@ import com.bloxbean.cardano.yano.app.api.ApiGroup;
 import com.bloxbean.cardano.yano.app.api.EpochUtil;
 import com.bloxbean.cardano.yano.app.api.accounts.dto.AccountStateDtos.*;
 import com.bloxbean.cardano.yano.app.archive.HistoryArchiveService;
+import com.bloxbean.cardano.yano.app.archive.IncompleteEpochHistoryException;
 import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
@@ -340,6 +341,8 @@ public class AccountStateResource {
                             blockfrostRewardType(r.type())))
                     .toList();
             return Response.ok(body).build();
+        } catch (IncompleteEpochHistoryException e) {
+            return Response.status(Response.Status.CONFLICT).entity(e.response()).build();
         } catch (IllegalStateException e) {
             return readUnavailable("Reward history read failed", e);
         }
@@ -560,7 +563,7 @@ public class AccountStateResource {
                     + "yano.history.projection.sections is set it must include "
                     + "address-transaction:v1)";
             case REWARD -> "Reward history disabled (set yano.history.projection.enabled=true; "
-                    + "rewards always ship with the projection archive)";
+                    + "if yano.history.projection.epoch-artifacts is set it must include reward:v1)";
             default -> throw new IllegalArgumentException(
                     "Unsupported account-history dataset: " + dataset.logicalName());
         });

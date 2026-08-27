@@ -46,7 +46,7 @@ public final class DuckLakeProjectionSinkProvider implements ProjectionSinkProvi
                 java.sql.Connection connection = lease.connection();
                 DuckLakeSql.attach(connection, archiveConfig, null, false);
                 try {
-                    new DuckLakeInitializer(archiveConfig).initialize(connection, expectedIdentity);
+                    new DuckLakeInitializer(archiveConfig).initializeProjection(connection, expectedIdentity);
                     DuckLakeProjectionSchema.initialize(connection);
                 } finally {
                     DuckLakeSql.detach(connection);

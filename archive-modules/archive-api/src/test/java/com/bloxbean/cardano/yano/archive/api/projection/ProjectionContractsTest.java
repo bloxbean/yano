@@ -374,6 +374,42 @@ class ProjectionContractsTest {
         assertThat(a.matches(c)).isFalse();
         assertThat(a.matches(d)).isFalse();
         assertThat(a.fingerprint()).contains("transaction:v1", "utxo-history:v1", "ducklake");
+        assertThat(ProjectionIdentity.parseFingerprint(a.fingerprint())).isEqualTo(a);
+    }
+
+    @Test
+    void malformedIdentityFingerprintFailsClosed() {
+        assertThatThrownBy(() -> ProjectionIdentity.parseFingerprint("not-a-projection-identity"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("malformed");
+    }
+
+    @Test
+    void artifactEnrollmentsRoundTripAndKeepUnknownLegacyDistinct() {
+        var enrollments = ProjectionArtifactEnrollments.of(List.of(
+                new ProjectionArtifactEnrollment(ArchiveDatasetId.REWARD,
+                        java.util.OptionalInt.of(209), ProjectionArtifactEnrollmentOrigin.FRESH),
+                new ProjectionArtifactEnrollment(ArchiveDatasetId.ADA_POT,
+                        java.util.OptionalInt.empty(), ProjectionArtifactEnrollmentOrigin.LEGACY_UNKNOWN)));
+
+        assertThat(ProjectionArtifactEnrollments.parse(enrollments.wireForm()))
+                .isEqualTo(enrollments);
+        assertThat(enrollments.enrollmentFor(ArchiveDatasetId.REWARD).orElseThrow()
+                .projectedFromEpoch()).hasValue(209);
+        assertThat(enrollments.enrollmentFor(ArchiveDatasetId.ADA_POT).orElseThrow()
+                .projectedFromEpoch()).isEmpty();
+    }
+
+    @Test
+    void enrollmentDatasetsMustMatchSelectedContracts() {
+        var rewards = ProjectionArtifactIdentity.of(List.of(ProjectionArtifactContracts.reward()));
+        var adaPotEnrollment = ProjectionArtifactEnrollments.of(List.of(
+                new ProjectionArtifactEnrollment(ArchiveDatasetId.ADA_POT,
+                        java.util.OptionalInt.of(1), ProjectionArtifactEnrollmentOrigin.FRESH)));
+
+        assertThatThrownBy(() -> adaPotEnrollment.requireMatches(rewards))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("do not match");
     }
 
     @Test

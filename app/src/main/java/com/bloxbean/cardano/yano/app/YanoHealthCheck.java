@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.app;
 
 import com.bloxbean.cardano.yano.api.NodeLifecycle;
 import com.bloxbean.cardano.yano.api.model.NodeStatus;
+import com.bloxbean.cardano.yano.app.archive.ProjectionHistoryService;
 import com.bloxbean.cardano.yano.runtime.kernel.NodeKernel;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -20,9 +21,15 @@ public class YanoHealthCheck implements HealthCheck {
     @Inject
     NodeKernel nodeKernel;
 
+    @Inject
+    ProjectionHistoryService projectionHistory;
+
     @Override
     public HealthCheckResponse call() {
         try {
+            if (projectionHistory != null && projectionHistory.hasInitializationFailure()) {
+                return HealthCheckResponse.down("yano");
+            }
             if (nodeKernel != null) {
                 boolean kernelHealthy = nodeKernel.health().stream()
                         .allMatch(health -> health.status() == SubsystemHealth.Status.UP);

@@ -42,10 +42,20 @@ public final class ProjectionRowBuilder {
      * of either deadlocking the consumer or blowing the heap.
      */
     public static ProjectionRowBatch materialise(ProjectionBatch batch) {
+        return materialise(batch, List.of());
+    }
+
+    public static ProjectionRowBatch materialise(ProjectionBatch batch,
+            List<com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactIntervalRepair>
+                    intervalRepairs) {
         Iterable<ArchiveRow> rows = new SingleUseRowSource(batch.envelopes());
         return new ProjectionRowBatch(batch.identity(), batch.firstBlock(), batch.lastBlock(),
                 batch.blockCount(), batch.firstEnvelopeId(), batch.lastEnvelopeId(),
-                batch.orderedDigest(), rows, batch.artifacts());
+                batch.orderedDigest(), rows, batch.artifacts(), batch.envelopes().stream()
+                        .collect(java.util.stream.Collectors.toUnmodifiableMap(
+                                ProjectionEnvelope::blockNumber,
+                                envelope -> envelope.header().blockHash())),
+                batch.envelopes().getLast().header().slot(), intervalRepairs);
     }
 
     /**

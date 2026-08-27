@@ -329,6 +329,14 @@ public final class YanoPropertyKeys {
          */
         public static final String PROJECTION_SECTIONS = PREFIX + "projection.sections";
 
+        /**
+         * Comma-separated versioned epoch-artifact selectors, or {@code all}/{@code none}.
+         * Omission means all shipped artifacts for a fresh archive and preserves the persisted
+         * enrollment for an existing archive (ADR-044).
+         */
+        public static final String PROJECTION_EPOCH_ARTIFACTS =
+                PREFIX + "projection.epoch-artifacts";
+
         /** Rows read per epoch-artifact page. Bounds the drain's working set, not what is written. */
         public static final String PROJECTION_ARTIFACT_PAGE_ROWS = PREFIX + "projection.artifact.page-rows";
         /** Wall-clock spacing between housekeeping passes; housekeeping also runs during bootstrap. */

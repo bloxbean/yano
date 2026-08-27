@@ -105,3 +105,36 @@ and total lovelace at the Shelley boundary. The preprod replay proves live
 cross-era application and recovery but is not that independent comparison.
 A mainnet replay was not started because the sync-validation procedure requires
 explicit mainnet authorization.
+
+## Addendum (2026-08-27): mainnet Shelley-boundary observation
+
+Recorded from the fresh mainnet sync of the `0.1.0-pre14` build started
+2026-08-26 23:09 (relay `mainnet` profile, no `wallet` profile). The initial
+in-Byron run is in
+`/Users/satya/Downloads/yano-try/yano-0.1.0-pre14/yano.log.1`; the restarted run,
+including the Shelley transition and Allegra sweep quoted below, is in
+`/Users/satya/Downloads/yano-try/yano-0.1.0-pre14/yano.log`. This records the
+numeric part of the ADR-041 completion gate; the outpoint-set comparison
+against a trusted reference at the boundary remains open.
+
+- `2026-08-26 23:25:41,965 … Captured Shelley-start UTXO total at era
+  transition: 31111977147073356 lovelace` — 31,111,977,147.073356 ADA, equal to
+  45,000,000,000 − 13,888,022,852.926644 ADA (mainnet's known Shelley-start
+  reserves).
+- `2026-08-26 23:25:42,057 … 📦 Block: 4490536, Slot: 4493320 (Shelley)` —
+  first Shelley block applied; Byron era took ~16 minutes at ~5.1k blocks/s
+  (UTXO apply ~42 µs/block average).
+- `2026-08-26 23:31:07,999 … Allegra bootstrap: removed 318200635000000
+  lovelace of Byron genesis UTXOs (block 5086524)` — 318,200,635 ADA, the known
+  unredeemed-AVVM amount returned to reserves.
+- `/api/v1/status` through block 5,303,626 (Mary): `lagBlocks 1`,
+  `apply.byron.unresolvedInputs 0`, `apply.shelley.unresolvedInputs 0`,
+  `apply.continuityWarnings 0`.
+- Spot-checks against Yaci Store mainnet data (and the yaci-playground API for
+  one outpoint): the #87 outpoint `a12a839c…#0` and its spend output
+  `6497b33b…#0` absent; five Byron-created outputs (Oct–Dec 2017) that stayed
+  unspent until 2021 present with exact address, amount and block hash; four
+  outputs spent inside Byron absent.
+- A stop/start inside Byron (23:15:10 → 23:15:18, body tip 1,886,524) passed
+  marker validation, needed no replay, performed a header-only exact-point
+  rollback to the header intersection, and resumed without gap.

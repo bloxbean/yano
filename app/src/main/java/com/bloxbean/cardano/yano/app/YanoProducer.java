@@ -995,7 +995,8 @@ public class YanoProducer {
                                 (YanoConfig) assembledYano.lifecycle().getConfig(),
                                 identity,
                                 projectionHistory.coveredDatasets(),
-                                projectionHistory::committedThroughBlock));
+                                projectionHistory::committedThroughBlock,
+                                projectionHistory::requireCompleteEpochHistory));
             }
 
             if (autoSyncStart) {

@@ -13,6 +13,7 @@ import com.bloxbean.cardano.yano.archive.api.projection.ProjectionRowBatch;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionSectionType;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionSinkException;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
@@ -46,8 +47,12 @@ class DuckLakeProjectionSinkTest {
             Set.of(ProjectionSectionType.TRANSACTION, ProjectionSectionType.UTXO_HISTORY));
 
     private DuckLakeHistoryArchiveBackend backend;
-    private DuckDbManager manager;
     private DuckLakeArchiveConfig config;
+
+    @AfterEach
+    void closeBackend() {
+        if (backend != null) backend.close();
+    }
 
     private DuckLakeProjectionSink open(String name) throws Exception {
         Path root = temp.resolve(name);
@@ -64,6 +69,16 @@ class DuckLakeProjectionSinkTest {
         // production. Sharing one across sinks would only work because of a leak.
         var sink = newSink();
         sink.initialize(IDENTITY);
+        var selected = com.bloxbean.cardano.yano.archive.api.projection
+                .ProjectionArtifactContracts.shipped();
+        sink.initializeArtifacts(selected,
+                com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactEnrollments.of(
+                        selected.contracts().keySet().stream().map(dataset ->
+                                new com.bloxbean.cardano.yano.archive.api.projection
+                                        .ProjectionArtifactEnrollment(dataset,
+                                        java.util.OptionalInt.of(0),
+                                        com.bloxbean.cardano.yano.archive.api.projection
+                                                .ProjectionArtifactEnrollmentOrigin.FRESH)).toList()));
         return sink;
     }
 
@@ -100,8 +115,12 @@ class DuckLakeProjectionSinkTest {
     }
 
     private static ProjectionRowBatch batch(long firstBlock, long lastBlock, List<ArchiveRow> rows) {
+        java.util.Map<Long, byte[]> hashes = new java.util.LinkedHashMap<>();
+        for (long block = firstBlock; block <= lastBlock; block++) {
+            hashes.put(block, new byte[]{(byte) block, 9});
+        }
         return new ProjectionRowBatch(IDENTITY, firstBlock, lastBlock, lastBlock - firstBlock + 1,
-                "aa".repeat(32), "bb".repeat(32), "cc".repeat(32), rows, List.of());
+                "aa".repeat(32), "bb".repeat(32), "cc".repeat(32), rows, List.of(), hashes);
     }
 
     private static ProjectionRowBatch simpleBatch(long firstBlock, long lastBlock) {
@@ -122,6 +141,25 @@ class DuckLakeProjectionSinkTest {
         }
     }
 
+    private boolean projectionTableExists(DuckLakeArchiveConfig selectedConfig, String table)
+            throws Exception {
+        try (var probe = new DuckDbManager(DuckDbManagerConfig.defaults(
+                selectedConfig.catalogPath().getParent().resolve("probe-tmp")),
+                new PackagedDuckDbExtensionLoader(temp.resolve("extensions")));
+             var lease = probe.acquire(DuckDbWorkload.STEADY, Duration.ofSeconds(30))) {
+            DuckLakeSql.attach(lease.connection(), selectedConfig, null, true);
+            try (var statement = lease.connection().prepareStatement(
+                    "SELECT 1 FROM information_schema.tables WHERE table_name=? LIMIT 1")) {
+                statement.setString(1, table);
+                try (var rows = statement.executeQuery()) {
+                    return rows.next();
+                }
+            } finally {
+                DuckLakeSql.detach(lease.connection());
+            }
+        }
+    }
+
     private static final ArchiveArtifactReader NO_ARTIFACTS = new ArchiveArtifactReader() {
         @Override public ArtifactLease acquire(ProjectionArtifactRef ref, Instant expiresAt) {
             throw new UnsupportedOperationException();
@@ -136,6 +174,127 @@ class DuckLakeProjectionSinkTest {
 
     // --------------------------------------------------------- epoch artifacts
 
+    @Test
+    void noneCreatesNoEpochTablesAndProspectiveJoinCreatesOnlyItsSchema() throws Exception {
+        Path root = temp.resolve("selected-schema");
+        Files.createDirectories(root);
+        var selectedConfig = new DuckLakeArchiveConfig(root.resolve("catalog.sqlite"),
+                root.resolve("data"), Duration.ofSeconds(30), 10, 10,
+                16L * 1024 * 1024, 100_000, Duration.ofHours(168), Duration.ofHours(24));
+        var provider = new DuckLakeProjectionSinkProvider();
+        var archiveIdentity = new ArchiveIdentity(UUID.randomUUID(), "ducklake", 1, 1,
+                "fixture-genesis");
+        try (var projection = provider.openProjectionSink(archiveIdentity, root,
+                java.util.Map.of("catalog.path", selectedConfig.catalogPath().toString(),
+                        "data.path", selectedConfig.dataPath().toString(),
+                        "temp.path", root.resolve("tmp").toString(),
+                        "extensions.path", temp.resolve("extensions").toString()))) {
+            projection.initialize(IDENTITY);
+            projection.initializeArtifacts(
+                    com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactIdentity.NONE,
+                    com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactEnrollments.NONE);
+
+            assertThat(projectionTableExists(selectedConfig, "chain_transaction")).isTrue();
+            assertThat(projectionTableExists(selectedConfig, "rewards")).isFalse();
+            assertThat(projectionTableExists(selectedConfig, "epoch_stakes")).isFalse();
+
+            var rewards = com.bloxbean.cardano.yano.archive.api.projection
+                    .ProjectionArtifactIdentity.of(List.of(
+                            com.bloxbean.cardano.yano.archive.api.projection
+                                    .ProjectionArtifactContracts.reward()));
+            var enrollment = com.bloxbean.cardano.yano.archive.api.projection
+                    .ProjectionArtifactEnrollments.of(List.of(
+                            new com.bloxbean.cardano.yano.archive.api.projection
+                                    .ProjectionArtifactEnrollment(
+                                    com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.REWARD,
+                                    java.util.OptionalInt.of(500),
+                                    com.bloxbean.cardano.yano.archive.api.projection
+                                            .ProjectionArtifactEnrollmentOrigin.PROSPECTIVE_JOIN)));
+            projection.initializeArtifacts(rewards, enrollment);
+
+            assertThat(projectionTableExists(selectedConfig, "rewards")).isTrue();
+            assertThat(projectionTableExists(selectedConfig, "epoch_stakes")).isFalse();
+            assertThat(projectionTableExists(selectedConfig, "ada_pots")).isFalse();
+        }
+    }
+
+    @Test
+    void epochGapIsIdempotentConflictsFailAndRollbackUsesTheFullPoint() throws Exception {
+        try (var sink = open("epoch-gap")) {
+            var gap = new com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap(
+                    com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.REWARD,
+                    450, 9_000, 90_000, new byte[] {7, 7}, "io", "disk write failed",
+                    Instant.parse("2026-08-27T00:00:00Z"));
+            sink.recordEpochArtifactGap(gap);
+            sink.recordEpochArtifactGap(gap);
+
+            assertThat(sink.epochArtifactGaps()).singleElement()
+                    .satisfies(stored -> assertThat(stored.sameOutcome(gap)).isTrue());
+            assertThatThrownBy(() -> sink.recordEpochArtifactGap(
+                    new com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap(
+                            gap.dataset(), gap.semanticEpoch(), 9_001, 90_001, new byte[] {8},
+                            "capture", "different", Instant.now())))
+                    .isInstanceOf(ProjectionSinkException.class)
+                    .hasMessageContaining("conflicting");
+
+            sink.rollbackEpochArtifactCoverage(90_000, new byte[] {7, 7}, false);
+            assertThat(sink.epochArtifactGaps()).hasSize(1);
+            sink.rollbackEpochArtifactCoverage(90_000, new byte[] {8}, false);
+            assertThat(sink.epochArtifactGaps()).isEmpty();
+
+            var interval = new com.bloxbean.cardano.yano.archive.api.projection
+                    .EpochArtifactGapInterval(gap.dataset(), 451, 452, 91_000,
+                    new byte[] {8}, 92_000, new byte[] {9}, true, 450, "io");
+            sink.recordEpochArtifactGapInterval(interval);
+            sink.recordEpochArtifactGapInterval(interval);
+            assertThat(sink.epochArtifactGapIntervals()).singleElement()
+                    .satisfies(stored -> assertThat(stored.throughEpoch()).isEqualTo(452));
+            sink.rollbackEpochArtifactCoverage(91_000, new byte[] {8}, false);
+            assertThat(sink.epochArtifactGapIntervals()).isEmpty();
+        }
+    }
+
+    @Test
+    void repairedRowsAndPausedIntervalSplitCommitAtomically() throws Exception {
+        try (var sink = open("epoch-interval-repair")) {
+            var dataset = com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.REWARD;
+            var original = new com.bloxbean.cardano.yano.archive.api.projection
+                    .EpochArtifactGapInterval(dataset, 451, 453, 91_000, new byte[] {8},
+                    93_000, new byte[] {10}, true, 450, "io");
+            sink.replaceEpochArtifactGapIntervals(List.of(original));
+            var left = new com.bloxbean.cardano.yano.archive.api.projection
+                    .EpochArtifactGapInterval(dataset, 451, 451, 91_000, new byte[] {8},
+                    91_000, new byte[] {8}, false, 450, "io");
+            var right = new com.bloxbean.cardano.yano.archive.api.projection
+                    .EpochArtifactGapInterval(dataset, 453, 453, 93_000, new byte[] {10},
+                    93_000, new byte[] {10}, true, 450, "io");
+            var artifact = new ProjectionArtifactRef(dataset, 452, 4, 4,
+                    com.bloxbean.cardano.yano.archive.api.projection
+                            .ProjectionArtifactRepresentation.STAGED_FILE,
+                    "repair-452", 1, "ledger-boundary-v1/rewards",
+                    java.util.OptionalLong.of(0), "digest", -1);
+            var base = batchWith(0, 4, simpleBatch(0, 4).rows(), List.of(artifact));
+            var repaired = new ProjectionRowBatch(base.identity(), base.firstBlock(), base.lastBlock(),
+                    base.blockCount(), base.firstEnvelopeId(), base.lastEnvelopeId(),
+                    base.orderedDigest(), base.rows(), base.artifacts(), base.canonicalBlockHashes(),
+                    base.lastSlot(),
+                    List.of(new com.bloxbean.cardano.yano.archive.api.projection
+                            .EpochArtifactIntervalRepair(dataset, 450, List.of(left, right))));
+
+            sink.append(repaired, new FakeArtifacts(List.of()));
+
+            assertThat(sink.epochArtifactCoverage().get(dataset))
+                    .containsExactly(new com.bloxbean.cardano.yano.archive.api.EpochRange(452, 452));
+            assertThat(sink.epochArtifactGapIntervals())
+                    .extracting(com.bloxbean.cardano.yano.archive.api.projection
+                                    .EpochArtifactGapInterval::fromEpoch,
+                            com.bloxbean.cardano.yano.archive.api.projection
+                                    .EpochArtifactGapInterval::throughEpoch)
+                    .containsExactly(org.assertj.core.groups.Tuple.tuple(451, 451),
+                            org.assertj.core.groups.Tuple.tuple(453, 453));
+        }
+    }
+
     private static ProjectionArtifactRef stakeArtifact(int epoch, long block, long expectedRows) {
         return new ProjectionArtifactRef(
                 com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.EPOCH_STAKE, epoch, block, block,
@@ -148,8 +307,12 @@ class DuckLakeProjectionSinkTest {
 
     private static ProjectionRowBatch batchWith(long firstBlock, long lastBlock, Iterable<ArchiveRow> rows,
                                                 List<ProjectionArtifactRef> artifacts) {
+        java.util.Map<Long, byte[]> hashes = new java.util.LinkedHashMap<>();
+        for (long block = firstBlock; block <= lastBlock; block++) {
+            hashes.put(block, new byte[]{(byte) block, 9});
+        }
         return new ProjectionRowBatch(IDENTITY, firstBlock, lastBlock, lastBlock - firstBlock + 1,
-                "aa".repeat(32), "bb".repeat(32), "cc".repeat(32), rows, artifacts);
+                "aa".repeat(32), "bb".repeat(32), "cc".repeat(32), rows, artifacts, hashes);
     }
 
     /** One already-materialised epoch_stakes row, exactly as the real reader emits it. */
@@ -202,8 +365,35 @@ class DuckLakeProjectionSinkTest {
 
             assertThat(count("epoch_stakes")).as("artifact rows land in the archive").isEqualTo(2);
             assertThat(receipt.rowCounts()).containsEntry("epoch_stakes", 2L);
+            assertThat(sink.epochArtifactCoverage()
+                    .get(com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.EPOCH_STAKE))
+                    .containsExactly(new com.bloxbean.cardano.yano.archive.api.EpochRange(250, 250));
             assertThat(artifacts.leasesOpened).isEqualTo(1);
             assertThat(artifacts.leasesClosed).as("the lease is released even on success").isEqualTo(1);
+        }
+    }
+
+    @Test
+    void aZeroRowArtifactRecordsCompleteCoverageRatherThanAbsence() throws Exception {
+        try (var sink = open("artifact-zero-row")) {
+            var artifacts = new FakeArtifacts(List.of());
+            var batch = batchWith(0, 4, simpleBatch(0, 4).rows(),
+                    List.of(stakeArtifact(250, 4, 0)));
+
+            ProjectionReceipt receipt = sink.append(batch, artifacts);
+
+            assertThat(count("epoch_stakes")).isZero();
+            assertThat(receipt.rowCounts()).doesNotContainKey("epoch_stakes");
+            assertThat(sink.epochArtifactCoverage()
+                    .get(com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.EPOCH_STAKE))
+                    .containsExactly(new com.bloxbean.cardano.yano.archive.api.EpochRange(250, 250));
+            assertThat(sink.hasCompleteEpochArtifact(
+                    com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.EPOCH_STAKE,
+                    250, 4, new byte[] {4, 9})).isTrue();
+            assertThat(sink.hasCompleteEpochArtifact(
+                    com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.EPOCH_STAKE,
+                    250, 4, new byte[] {9, 9})).isFalse();
+            assertThat(artifacts.leasesClosed).isEqualTo(1);
         }
     }
 
@@ -330,7 +520,12 @@ class DuckLakeProjectionSinkTest {
             assertThat(sink.coordinate()).isEqualTo(ProjectionCoordinate.NONE);
 
             sink.append(simpleBatch(0, 4), NO_ARTIFACTS);
-            assertThat(sink.coordinate().blockNumber()).isEqualTo(4);
+            assertThat(sink.coordinate()).satisfies(coordinate -> {
+                assertThat(coordinate.blockNumber()).isEqualTo(4);
+                assertThat(coordinate.slot()).isEqualTo(4);
+                assertThat(coordinate.blockHash()).containsExactly((byte) 4, (byte) 9);
+                assertThat(coordinate.envelopeId()).isEqualTo("bb".repeat(32));
+            });
 
             // A range beyond a gap must not advance the contiguous coordinate.
             sink.append(simpleBatch(10, 12), NO_ARTIFACTS);
