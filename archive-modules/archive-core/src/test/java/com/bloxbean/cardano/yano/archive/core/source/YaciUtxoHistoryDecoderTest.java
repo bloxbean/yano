@@ -4,25 +4,22 @@ import com.bloxbean.cardano.yaci.core.model.*;
 import com.bloxbean.cardano.yaci.core.model.certs.StakeRegistration;
 import com.bloxbean.cardano.yaci.core.model.certs.StakeCredential;
 import com.bloxbean.cardano.yaci.core.model.certs.StakeCredType;
+import com.bloxbean.cardano.yano.api.archive.PointerCredentialSource;
 import com.bloxbean.cardano.yano.archive.api.*;
-import com.bloxbean.cardano.yano.archive.core.dataset.UtxoHistoryDataset;
+import com.bloxbean.cardano.yano.archive.core.dataset.BlockSourceContext;
 import com.bloxbean.cardano.yano.archive.core.dataset.UtxoHistoryProjection;
-import com.bloxbean.cardano.yano.archive.core.hot.RocksDbHotHistoryStore;
-import com.bloxbean.cardano.yano.archive.core.worker.ArchiveTrack;
+import com.bloxbean.cardano.yano.archive.core.dataset.UtxoHistoryRows;
+import com.bloxbean.cardano.yano.archive.core.projection.ProjectionPointerResolution;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 
 import java.math.BigInteger;
-import java.nio.file.Path;
 import java.time.Instant;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class YaciUtxoHistoryDecoderTest {
-    @TempDir Path temp;
-
     @Test
     void recordsNormalizedAssetsAndPhaseTwoCollateralSemantics() {
         byte[] address = new byte[57];
@@ -67,21 +64,17 @@ class YaciUtxoHistoryDecoderTest {
         Block block = Block.builder().era(Era.Babbage).transactionBodies(List.of(tx))
                 .invalidTransactions(List.of()).build();
         var facts = new YaciUtxoHistoryDecoder(slot -> 0, slot -> 0).derive(block, 10);
-        var context = new com.bloxbean.cardano.yano.archive.core.dataset.BlockSourceContext<>(
-                1, 10, 0, Instant.EPOCH, new byte[]{1}, new byte[0], facts);
+        var resolved = ProjectionPointerResolution.resolve(facts, 10, PointerCredentialSource.NONE);
+        var context = new BlockSourceContext<>(
+                1, 10, 0, Instant.EPOCH, new byte[]{1}, new byte[0], resolved);
         ArchiveJob job = ArchiveJob.deterministic(new ArchiveNetworkIdentity(1, "g"),
                 ArchiveDatasetId.UTXO_HISTORY, 1, new BlockRange(1, 1),
                 new ArchiveRangeAnchor(10, new byte[]{1}, 10, new byte[]{1}), "v1");
 
-        try (var state = new RocksDbHotHistoryStore(temp.resolve("pointer"))) {
-            var dataset = new UtxoHistoryDataset(state, ArchiveTrack.BACKFILL);
-            dataset.beginBatch(job, List.of(context));
-            List<ArchiveRow> rows = new ArrayList<>();
-            dataset.derive(job, context, rows::add);
-            assertThat(rows).filteredOn(row -> row.table().equals("transaction_outputs")).singleElement()
-                    .satisfies(row -> assertThat((byte[]) row.values().get(11)).containsOnly((byte) 0x77));
-            dataset.abortBatch();
-        }
+        List<ArchiveRow> rows = new ArrayList<>();
+        UtxoHistoryRows.emit(job, context, rows::add);
+        assertThat(rows).filteredOn(row -> row.table().equals("transaction_outputs")).singleElement()
+                .satisfies(row -> assertThat((byte[]) row.values().get(11)).containsOnly((byte) 0x77));
     }
 
     @Test
@@ -97,14 +90,13 @@ class YaciUtxoHistoryDecoderTest {
             assertThat(address.stakeReferenceType()).isEqualTo("pointer");
             assertThat(address.pointerSlot()).isEqualTo(10);
         });
-        var context = new com.bloxbean.cardano.yano.archive.core.dataset.BlockSourceContext<>(
+        var context = new BlockSourceContext<>(
                 1, 10, 0, Instant.EPOCH, new byte[]{1}, new byte[0], facts);
         ArchiveJob job = ArchiveJob.deterministic(new ArchiveNetworkIdentity(1, "g"),
                 ArchiveDatasetId.UTXO_HISTORY, 1, new BlockRange(1, 1),
                 new ArchiveRangeAnchor(10, new byte[]{1}, 10, new byte[]{1}), "v1");
-        var dataset = new UtxoHistoryDataset();
         List<ArchiveRow> rows = new ArrayList<>();
-        dataset.derive(job, context, rows::add);
+        UtxoHistoryRows.emit(job, context, rows::add);
         assertThat(rows).filteredOn(row -> row.table().equals("transaction_outputs")).singleElement()
                 .satisfies(row -> {
                     assertThat(row.values().get(6)).isEqualTo("ptr");

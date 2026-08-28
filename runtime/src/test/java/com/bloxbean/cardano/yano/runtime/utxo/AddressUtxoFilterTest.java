@@ -63,6 +63,13 @@ class AddressUtxoFilterTest {
     }
 
     @Test
+    void byronUsesSameAddressPredicateWithoutShelleyPlaceholders() {
+        var filter = new AddressUtxoFilter(Set.of("Ae2_match"), Set.of());
+        assertTrue(filter.acceptByronUtxoOutput(ctx("Ae2_match", null), null, null));
+        assertFalse(filter.acceptByronUtxoOutput(ctx("Ae2_other", null), null, null));
+    }
+
+    @Test
     void nullAddress_inContext_handledGracefully() {
         var filter = new AddressUtxoFilter(Set.of("addr1"), Set.of());
         assertFalse(filter.acceptUtxoOutput(ctx(null, null), null, null));

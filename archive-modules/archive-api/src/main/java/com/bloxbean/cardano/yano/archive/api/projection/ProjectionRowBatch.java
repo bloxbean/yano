@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.archive.api.projection;
 import com.bloxbean.cardano.yano.archive.api.ArchiveRow;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -26,7 +27,10 @@ import java.util.Objects;
 public record ProjectionRowBatch(ProjectionIdentity identity, long firstBlock, long lastBlock,
                                  long blockCount, String firstEnvelopeId, String lastEnvelopeId,
                                  String orderedDigest, Iterable<ArchiveRow> rows,
-                                 List<ProjectionArtifactRef> artifacts) implements ProjectionJob {
+                                 List<ProjectionArtifactRef> artifacts,
+                                 Map<Long, byte[]> canonicalBlockHashes,
+                                 long lastSlot,
+                                 List<EpochArtifactIntervalRepair> intervalRepairs) implements ProjectionJob {
     public ProjectionRowBatch {
         Objects.requireNonNull(identity, "identity");
         firstEnvelopeId = Objects.requireNonNull(firstEnvelopeId, "firstEnvelopeId").trim().toLowerCase();
@@ -34,12 +38,44 @@ public record ProjectionRowBatch(ProjectionIdentity identity, long firstBlock, l
         orderedDigest = Objects.requireNonNull(orderedDigest, "orderedDigest").trim().toLowerCase();
         Objects.requireNonNull(rows, "rows");
         artifacts = List.copyOf(Objects.requireNonNull(artifacts, "artifacts"));
+        Objects.requireNonNull(canonicalBlockHashes, "canonicalBlockHashes");
+        canonicalBlockHashes = canonicalBlockHashes.entrySet().stream().collect(
+                java.util.stream.Collectors.toUnmodifiableMap(Map.Entry::getKey,
+                        entry -> entry.getValue().clone()));
+        intervalRepairs = List.copyOf(Objects.requireNonNull(intervalRepairs, "intervalRepairs"));
         if (firstBlock < 0 || lastBlock < firstBlock) throw new IllegalArgumentException("invalid batch range");
+        if (lastSlot < 0) throw new IllegalArgumentException("lastSlot must not be negative");
         if (blockCount != lastBlock - firstBlock + 1) {
             throw new IllegalArgumentException("blockCount does not match the batch range");
         }
         if (firstEnvelopeId.isEmpty() || lastEnvelopeId.isEmpty() || orderedDigest.isEmpty()) {
             throw new IllegalArgumentException("batch identity fields are required");
         }
+    }
+
+    /** Compatibility constructor for row batches without epoch artifacts. */
+    public ProjectionRowBatch(ProjectionIdentity identity, long firstBlock, long lastBlock,
+                              long blockCount, String firstEnvelopeId, String lastEnvelopeId,
+                              String orderedDigest, Iterable<ArchiveRow> rows,
+                              List<ProjectionArtifactRef> artifacts) {
+        this(identity, firstBlock, lastBlock, blockCount, firstEnvelopeId, lastEnvelopeId,
+                orderedDigest, rows, artifacts, Map.of(), lastBlock, List.of());
+    }
+
+    /** Compatibility constructor for callers that provide hashes but no interval repair. */
+    public ProjectionRowBatch(ProjectionIdentity identity, long firstBlock, long lastBlock,
+                              long blockCount, String firstEnvelopeId, String lastEnvelopeId,
+                              String orderedDigest, Iterable<ArchiveRow> rows,
+                              List<ProjectionArtifactRef> artifacts,
+                              Map<Long, byte[]> canonicalBlockHashes) {
+        this(identity, firstBlock, lastBlock, blockCount, firstEnvelopeId, lastEnvelopeId,
+                orderedDigest, rows, artifacts, canonicalBlockHashes, lastBlock, List.of());
+    }
+
+    @Override
+    public Map<Long, byte[]> canonicalBlockHashes() {
+        return canonicalBlockHashes.entrySet().stream().collect(
+                java.util.stream.Collectors.toUnmodifiableMap(Map.Entry::getKey,
+                        entry -> entry.getValue().clone()));
     }
 }

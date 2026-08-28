@@ -2,6 +2,8 @@ package com.bloxbean.cardano.yano.api.plugin;
 
 import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yaci.core.model.TransactionBody;
+import com.bloxbean.cardano.yaci.core.model.byron.ByronMainBlock;
+import com.bloxbean.cardano.yaci.core.model.byron.ByronTx;
 
 /**
  * Filter interface for controlling which data gets persisted to storage.
@@ -26,6 +28,15 @@ public interface StorageFilter {
      * @return true to keep (store), false to reject (skip storage)
      */
     default boolean acceptUtxoOutput(UtxoFilterContext ctx, Block block, TransactionBody txBody) {
+        return true;
+    }
+
+    /**
+     * Decide whether a native Byron transaction output should be stored.
+     * Existing filters remain pass-through until they opt into Byron inspection.
+     */
+    default boolean acceptByronUtxoOutput(
+            UtxoFilterContext ctx, ByronMainBlock block, ByronTx tx) {
         return true;
     }
 

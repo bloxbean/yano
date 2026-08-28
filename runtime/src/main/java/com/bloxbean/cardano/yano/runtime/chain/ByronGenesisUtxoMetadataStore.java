@@ -10,6 +10,10 @@ public interface ByronGenesisUtxoMetadataStore {
 
     List<byte[]> getByronGenesisUtxoKeys();
 
+    byte[] getByronGenesisUtxoKeysKey();
+
+    byte[] getShelleyStartUtxoTotalKey();
+
     boolean isAllegraBootstrapDone();
 
     byte[] getAllegraBootstrapDoneKey();

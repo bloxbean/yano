@@ -86,8 +86,7 @@ public class TransactionResource {
                 return Response.ok(TxStatusDto.inBlock(normalized, blockNumber, blockHash,
                         slot, blockTime, confirmations)).build();
             }
-            if (lookup.state() == HistoryArchiveService.TransactionLookup.State.INCOMPLETE
-                    || lookup.state() == HistoryArchiveService.TransactionLookup.State.UNAVAILABLE) {
+            if (lookup.state() == HistoryArchiveService.TransactionLookup.State.UNAVAILABLE) {
                 return Response.status(Response.Status.SERVICE_UNAVAILABLE)
                         .entity(Map.of("tx_hash", normalized, "status", "incomplete",
                                 "detail", lookup.detail()))

@@ -13,11 +13,13 @@ import java.util.Map;
 public class DevnetTestProfile implements QuarkusTestProfile {
 
     protected static final Path TEMP_STORAGE_DIR;
+    protected static final Path TEMP_HISTORY_DIR;
     protected static final Path TEMP_SHELLEY_GENESIS;
 
     static {
         try {
             TEMP_STORAGE_DIR = Files.createTempDirectory("yano-e2etest-chainstate");
+            TEMP_HISTORY_DIR = Files.createTempDirectory("yano-e2etest-history");
             TEMP_SHELLEY_GENESIS = TEMP_STORAGE_DIR.resolve("shelley-genesis.json");
             Files.copy(configFile("shelley-genesis.json"), TEMP_SHELLEY_GENESIS);
         } catch (IOException e) {
@@ -25,22 +27,27 @@ public class DevnetTestProfile implements QuarkusTestProfile {
         }
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            try {
-                if (Files.exists(TEMP_STORAGE_DIR)) {
-                    try (var paths = Files.walk(TEMP_STORAGE_DIR)) {
-                        paths.sorted(Comparator.reverseOrder()).forEach(path -> {
-                            try {
-                                Files.deleteIfExists(path);
-                            } catch (IOException ignored) {
-                                // Best-effort shutdown cleanup.
-                            }
-                        });
-                    }
-                }
-            } catch (IOException ignored) {
-                // Best-effort shutdown cleanup.
-            }
+            deleteTree(TEMP_STORAGE_DIR);
+            deleteTree(TEMP_HISTORY_DIR);
         }));
+    }
+
+    private static void deleteTree(Path directory) {
+        try {
+            if (Files.exists(directory)) {
+                try (var paths = Files.walk(directory)) {
+                    paths.sorted(Comparator.reverseOrder()).forEach(path -> {
+                        try {
+                            Files.deleteIfExists(path);
+                        } catch (IOException ignored) {
+                            // Best-effort shutdown cleanup.
+                        }
+                    });
+                }
+            }
+        } catch (IOException ignored) {
+            // Best-effort shutdown cleanup.
+        }
     }
 
     protected static Path configFile(String name) {
@@ -86,8 +93,9 @@ public class DevnetTestProfile implements QuarkusTestProfile {
                 "yano.storage.path", TEMP_STORAGE_DIR.toString(),
                 // Devnet runs the projection archive, so the test writes one. Left at its
                 // default it lands in ./history inside the source tree - 53 MB of DuckLake per
-                // run, untracked and uncleaned. The temp directory already has a shutdown hook.
-                "yano.history.dir", TEMP_STORAGE_DIR.resolve("history").toString(),
+                // run, untracked and uncleaned. Keep it outside the RocksDB directory: devnet
+                // snapshot restore replaces that directory and the archive must remain intact.
+                "yano.history.dir", TEMP_HISTORY_DIR.toString(),
                 "yano.genesis.shelley-genesis-file", TEMP_SHELLEY_GENESIS.toString(),
                 "yano.plugins.enabled", "false",
                 "yano.server.port", "23337"

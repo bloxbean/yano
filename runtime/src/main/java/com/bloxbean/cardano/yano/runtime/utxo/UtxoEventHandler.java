@@ -6,6 +6,7 @@ import com.bloxbean.cardano.yaci.events.api.support.AnnotationListenerRegistrar;
 import com.bloxbean.cardano.yaci.events.api.DomainEventListener;
 import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
+import com.bloxbean.cardano.yano.api.events.ByronMainBlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
 import com.bloxbean.cardano.yano.api.events.UtxoStateAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.UtxoStateRolledBackEvent;
@@ -32,6 +33,15 @@ public final class UtxoEventHandler implements AutoCloseable {
         this.writer = writer;
         SubscriptionOptions defaults = SubscriptionOptions.builder().build();
         this.handles = AnnotationListenerRegistrar.register(bus, this, defaults);
+    }
+
+    @DomainEventListener(order = 100)
+    public void onByronMainBlockApplied(ByronMainBlockAppliedEvent e) {
+        if (writer != null && writer.isEnabled()) {
+            writer.applyByronBlock(e);
+            // The following compatibility BlockAppliedEvent publishes the single
+            // UTXO acknowledgement after this native apply has committed.
+        }
     }
 
     @DomainEventListener(order = 100)

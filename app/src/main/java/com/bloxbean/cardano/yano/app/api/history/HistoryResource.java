@@ -7,6 +7,8 @@ import com.bloxbean.cardano.yano.app.archive.HistoryArchiveService;
 import com.bloxbean.cardano.yano.app.archive.ProjectionHistoryService;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.GET;
+import jakarta.ws.rs.POST;
+import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
@@ -17,7 +19,6 @@ import org.eclipse.microprofile.openapi.annotations.extensions.Extension;
 import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.Map;
-import java.util.OptionalLong;
 import java.util.Set;
 
 /** Finalized cross-dataset archive consistency metadata. */
@@ -34,10 +35,10 @@ public class HistoryResource {
     /**
      * What the archive can answer for right now.
      *
-     * <p>Separate from {@code watermark}, which reports cross-dataset consistency of the legacy
-     * pipeline. This reports the ADR-039 archive's committed range, its identity, and the epoch
-     * artifact contracts it is maintained under - the last of which cannot be derived from the
-     * section fingerprint.
+     * <p>Separate from {@code watermark}, which reports cross-dataset projection consistency.
+     * This reports the projection archive's committed range, its identity, and the epoch artifact
+     * contracts it is maintained under - the last of which cannot be derived from the section
+     * fingerprint.
      *
      * <p>Callers must treat blocks above {@code queryableThroughBlock} as unknown, not absent.
      * Near tip a block can be final and durable and still be up to one batch linger plus one
@@ -45,8 +46,44 @@ public class HistoryResource {
      */
     @GET
     @Path("coverage")
-    public Response coverage() {
-        return Response.ok(projection.coverage()).build();
+    public Response coverage(@QueryParam("dataset") String dataset,
+                             @QueryParam("from-epoch") Integer fromEpoch,
+                             @QueryParam("to-epoch") Integer toEpoch,
+                             @QueryParam("offset") Integer offset,
+                             @QueryParam("limit") Integer limit) {
+        try {
+            if (dataset == null || dataset.isBlank()) {
+                return Response.ok(projection.coverage()).build();
+            }
+            return Response.ok(projection.coverageDetails(HistoryResource.dataset(dataset),
+                    fromEpoch, toEpoch, offset, limit)).build();
+        } catch (IllegalArgumentException e) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity(Map.of("error", e.getMessage())).build();
+        }
+    }
+
+    /** Resume future capture for a paused epoch artifact without hiding its retained gaps. */
+    @POST
+    @Path("coverage/{dataset}/resume")
+    public Response resume(@PathParam("dataset") String dataset) {
+        try {
+            return Response.ok(projection.resumeEpochArtifact(dataset(dataset))).build();
+        } catch (IllegalArgumentException e) {
+            return Response.status(Response.Status.BAD_REQUEST).entity(Map.of("error", e.getMessage())).build();
+        } catch (IllegalStateException | ArchiveStoreException e) {
+            return Response.status(Response.Status.CONFLICT).entity(Map.of("error", e.getMessage())).build();
+        }
+    }
+
+    @POST
+    @Path("coverage/legacy-staging-failure/acknowledge")
+    public Response acknowledgeLegacyStagingFailure() {
+        try {
+            return Response.ok(projection.acknowledgeLegacyStagingFailure()).build();
+        } catch (IllegalStateException e) {
+            return Response.status(Response.Status.CONFLICT).entity(Map.of("error", e.getMessage())).build();
+        }
     }
 
     @GET
@@ -57,14 +94,13 @@ public class HistoryResource {
                               @QueryParam("at-or-before-slot") Long atOrBeforeSlot) {
         try {
             Set<ArchiveDatasetId> datasets = parseDatasets(selected);
-            // When the projection is the primary writer the legacy coverage tables are empty, so
-            // asking them would report an empty archive rather than a lagging one.
             var projected = projection.consistencyPoint(datasets);
-            if (projected.isPresent()) return Response.ok(projected.get()).build();
-
-            long start = fromBlock == null ? history.firstCanonicalHistoryBlock() : fromBlock;
-            return Response.ok(history.finalizedWatermark(datasets, start,
-                    optional(atOrBeforeBlock), optional(atOrBeforeSlot))).build();
+            if (projected.isEmpty()) {
+                return Response.status(Response.Status.CONFLICT)
+                        .entity(Map.of("error", "projection history is unavailable"))
+                        .build();
+            }
+            return Response.ok(projected.get()).build();
         } catch (IllegalArgumentException e) {
             return Response.status(Response.Status.BAD_REQUEST)
                     .entity(Map.of("error", e.getMessage())).build();
@@ -94,7 +130,4 @@ public class HistoryResource {
                 .orElseThrow(() -> new IllegalArgumentException("unknown archive dataset: " + name));
     }
 
-    private static OptionalLong optional(Long value) {
-        return value == null ? OptionalLong.empty() : OptionalLong.of(value);
-    }
 }

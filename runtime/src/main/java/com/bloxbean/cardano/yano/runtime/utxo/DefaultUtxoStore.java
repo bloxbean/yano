@@ -5,11 +5,12 @@ import co.nstant.in.cbor.model.UnsignedInteger;
 import com.bloxbean.cardano.client.address.Address;
 import com.bloxbean.cardano.client.address.AddressType;
 import com.bloxbean.cardano.client.api.util.ReferenceScriptUtil;
-import com.bloxbean.cardano.client.crypto.Base58;
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.yaci.core.common.Constants;
 import com.bloxbean.cardano.yaci.core.model.*;
 import com.bloxbean.cardano.yaci.core.model.serializers.BlockSerializer;
+import com.bloxbean.cardano.yaci.core.model.serializers.ByronBlockSerializer;
+import com.bloxbean.cardano.yaci.core.model.serializers.ByronEbBlockSerializer;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
@@ -27,7 +28,9 @@ import com.bloxbean.cardano.yano.api.archive.ConsumedOutputAddresses;
 import com.bloxbean.cardano.yano.runtime.db.RocksDbSupplier;
 import com.bloxbean.cardano.yano.runtime.db.UtxoCfNames;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
+import com.bloxbean.cardano.yano.api.events.ByronMainBlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
+import com.bloxbean.cardano.yano.api.rollback.PointRollbackCapableStore;
 import com.bloxbean.cardano.yano.runtime.chain.ByronGenesisUtxoMetadataStore;
 import org.rocksdb.*;
 import org.slf4j.Logger;
@@ -57,7 +60,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * Listens to BlockAppliedEvent and RollbackEvent, applies compact deltas.
  */
 public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Prunable, UtxoStatusProvider, AutoCloseable,
-        com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore {
+        PointRollbackCapableStore {
     private RocksDB db;
     private final Logger log;
     private final boolean enabled;
@@ -80,6 +83,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     private final boolean configuredUtxoFiltersEnabled;
     private volatile boolean stakeBalanceIndexReady;
     private UtxoProcessor processor;
+    private ByronUtxoApplier byronUtxoApplier;
     private volatile StorageFilterChain filterChain;
     // Metrics
     private final boolean metricsEnabled;
@@ -102,6 +106,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     private volatile com.bloxbean.cardano.yano.runtime.db.RocksDbContext rocksContext;
     /** ADR-039 projection contributor; NOOP unless history is enabled. */
     private volatile CanonicalProjectionContributor projectionContributor = CanonicalProjectionContributor.NOOP;
+    private volatile Runnable shelleyStartBoundaryCapture = () -> { };
 
     // ADR-039 gate 1 instrument. Cross-run wall-clock A/B legs cannot resolve a 5% effect on a
     // shared host - measured spread was 16-49% - so the projection's cost is attributed
@@ -117,14 +122,22 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     //
     // This measures the *apply-stage* share. RocksDB write amplification from the extra column
     // families is captured separately as a disk measurement (~1.4x logical).
-    /** Stable key for a consumed outpoint; hex id plus index, which is already how inputs arrive. */
-    private static String consumedKey(String txHash, int outputIndex) {
-        return txHash + '#' + outputIndex;
-    }
-
     private final java.util.concurrent.atomic.LongAdder applyNanos = new java.util.concurrent.atomic.LongAdder();
     private final java.util.concurrent.atomic.LongAdder projectionNanos = new java.util.concurrent.atomic.LongAdder();
     private final java.util.concurrent.atomic.LongAdder attributedBlocks = new java.util.concurrent.atomic.LongAdder();
+    private final java.util.concurrent.atomic.LongAdder continuityWarnings = new java.util.concurrent.atomic.LongAdder();
+    /**
+     * Last committed delta used by the diagnostic continuity guard.
+     *
+     * <p>Apply is serialized, so reopening an iterator and seeking the delta tail for every
+     * block only repeats information this store just committed. The cache is loaded once on
+     * startup and explicitly refreshed by rollback, rebuild and snapshot reinitialization.
+     */
+    private boolean continuityCacheInitialized;
+    private UtxoDeltaCodec.Decoded continuityPrevious;
+    private final java.util.concurrent.atomic.LongAdder shelleyUnresolvedInputs = new java.util.concurrent.atomic.LongAdder();
+    private final java.util.concurrent.atomic.LongAdder shelleyFilteredStoreUnresolvedInputs = new java.util.concurrent.atomic.LongAdder();
+    private final AtomicLong lastShelleyUnresolvedWarningMillis = new AtomicLong();
     // Full per-block cycle: apply plus the gap until the next block reaches apply. Recording it
     // here means the projection's share of *sync* - not just of apply - is reported by the node
     // rather than derived by hand from a throughput figure taken over a different window.
@@ -173,6 +186,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         this.configuredUtxoFiltersEnabled = getBool(config, YanoPropertyKeys.UtxoFilter.ENABLED, false);
 
         this.processor = new DefaultUtxoProcessor(this.db);
+        this.byronUtxoApplier = createByronUtxoApplier();
         refreshStakeBalanceIndexReady();
 
         // Metrics setup
@@ -190,6 +204,21 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
      */
     public void setProjectionContributor(CanonicalProjectionContributor contributor) {
         this.projectionContributor = contributor == null ? CanonicalProjectionContributor.NOOP : contributor;
+    }
+
+    CanonicalProjectionContributor swapProjectionContributor(
+            CanonicalProjectionContributor contributor) {
+        CanonicalProjectionContributor previous = projectionContributor;
+        setProjectionContributor(contributor);
+        return previous;
+    }
+
+    CanonicalProjectionContributor projectionContributorForTest() {
+        return projectionContributor;
+    }
+
+    public void setShelleyStartBoundaryCapture(Runnable capture) {
+        this.shelleyStartBoundaryCapture = capture != null ? capture : () -> { };
     }
 
     /**
@@ -213,6 +242,9 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             this.metadataHandle = ctx.handle("metadata");
         }
         this.processor = new DefaultUtxoProcessor(this.db);
+        this.byronUtxoApplier = createByronUtxoApplier();
+        invalidateContinuityCache();
+        this.projectionContributor.reinitializeAfterSnapshotRestore();
         refreshStakeBalanceIndexReady();
         log.info("DefaultUtxoStore reinitialized after snapshot restore");
     }
@@ -232,6 +264,19 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     int activeStorageFilterCount() {
         StorageFilterChain current = filterChain;
         return current != null ? current.size() : 0;
+    }
+
+    private ByronUtxoApplier createByronUtxoApplier() {
+        return new ByronUtxoApplier(db, cfUnspent, cfSpent, cfAddr,
+                indexAddressHash, () -> filterChain, log);
+    }
+
+    long getByronUnresolvedInputCount() {
+        return byronUtxoApplier.unresolvedInputCount();
+    }
+
+    long getByronFilteredStoreUnresolvedInputCount() {
+        return byronUtxoApplier.filteredStoreUnresolvedInputCount();
     }
 
     @Override
@@ -750,17 +795,63 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     private record StakeCredentialKey(int credType, String credHash) {}
 
     @Override
+    public synchronized void applyByronBlock(ByronMainBlockAppliedEvent event) {
+        if (!enabled) return;
+        if (event == null) throw new IllegalArgumentException("Byron main block event is required");
+        observeApplyContinuity(event.blockNumber(), event.slot(), event.blockHash(), "Byron");
+        long started = System.nanoTime();
+        long projectionCpu = 0L;
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
+            ConsumedAddressCapture consumedAddresses = ConsumedAddressCapture.create(
+                    projectionContributor.enabled() && projectionContributor.needsConsumedOutputAddresses());
+            ByronUtxoApplier.ApplyResult result = byronUtxoApplier.stageBlock(event, batch, consumedAddresses);
+            stageDeltaAndCursor(batch, event.blockNumber(), event.slot(), event.blockHash(),
+                    result.created(), result.spent());
+            if (projectionContributor.enabled()) {
+                long projectionCpu0 = metricsEnabled ? System.nanoTime() : 0L;
+                projectionContributor.contributeByronMainBlock(event, result.consumedAddresses(),
+                        (cf, key, value) -> {
+                            try {
+                                batch.put(rocksContext.handle(cf), key, value);
+                            } catch (RocksDBException rex) {
+                                throw new RuntimeException(
+                                        "Failed to stage Byron projection record in UTXO batch", rex);
+                            }
+                        });
+                if (metricsEnabled) projectionCpu = System.nanoTime() - projectionCpu0;
+            }
+            db.write(options, batch);
+            rememberAppliedContinuity(event.blockNumber(), event.slot(), event.blockHash());
+            lastApplyCreated = result.created().size();
+            lastApplySpent = result.spent().size();
+            if (metricsEnabled) {
+                applyNanos.add(System.nanoTime() - started);
+                projectionNanos.add(projectionCpu);
+                attributedBlocks.increment();
+            }
+            log.debug("Byron UTXO applied: block={} slot={} created={} spent={} filtered={}",
+                    event.blockNumber(), event.slot(), result.created().size(),
+                    result.spent().size(), result.filteredOutputs());
+        } catch (Exception ex) {
+            log.error("Byron UTXO apply failed for block {}: {}",
+                    event.blockNumber(), ex.toString(), ex);
+            throw new RuntimeException("Byron UTXO apply failed for block " + event.blockNumber(), ex);
+        }
+    }
+
+    @Override
     public synchronized void applyBlock(BlockAppliedEvent e) {
         if (!enabled) return;
         if (e.block() == null) return; // header-only or EBB
+        observeApplyContinuity(e.blockNumber(), e.slot(), e.blockHash(),
+                e.era() != null ? e.era().name() : "Shelley-family");
         long t0 = System.nanoTime();
         long projectionCpu = 0L;
         // Addresses of the outputs this block consumes, captured while they are still current.
         // Only collected when a contributor actually needs them (the address-transaction
-        // section); otherwise this stays null and costs one reference check per input.
-        java.util.Map<String, String> consumedAddresses =
-                projectionContributor.enabled() && projectionContributor.needsConsumedOutputAddresses()
-                        ? new java.util.HashMap<>() : null;
+        // section); otherwise the shared disabled sentinel costs one reference check per input.
+        ConsumedAddressCapture consumedAddresses = ConsumedAddressCapture.create(
+                projectionContributor.enabled() && projectionContributor.needsConsumedOutputAddresses());
 
         // Determine Allegra bootstrap outpoints to remove (before ctx is created).
         // These are collected here but written into the block's WriteBatch for atomicity.
@@ -842,7 +933,8 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                         for (var in : tx.getInputs()) {
                             byte[] key = UtxoKeyUtil.outpointKey(in.getTransactionId(), in.getIndex());
                             // Filter: bootstrap UTXOs removed by Allegra are unspendable
-                            byte[] prev = removedBootstrapOutpoints.contains(new ByteArrayKey(key))
+                            boolean deliberatelyRemoved = removedBootstrapOutpoints.contains(new ByteArrayKey(key));
+                            byte[] prev = deliberatelyRemoved
                                     ? null : ctx.getUnspent(key);
                             // Also check intra-block outputs (created earlier in this block)
                             String intraKey = in.getTransactionId() + ":" + in.getIndex();
@@ -856,6 +948,9 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                             } else {
                                 intraBlockOutputs.remove(intraKey);
                             }
+                            if (prev == null && !deliberatelyRemoved) {
+                                observeShelleyUnresolvedInput(e, in.getTransactionId(), in.getIndex());
+                            }
                             if (prev != null) {
                                 Map spentMap = new Map();
                                 spentMap.put(new UnsignedInteger(2), CborSerializationUtil.deserializeOne(prev));
@@ -864,10 +959,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                                 batch.put(cfSpent, key, spentVal);
                                 batch.delete(cfUnspent, key);
                                 var stored = UtxoCborCodec.decodeUtxoRecord(prev);
-                                if (consumedAddresses != null) {
-                                    consumedAddresses.put(
-                                            consumedKey(in.getTransactionId(), in.getIndex()), stored.address);
-                                }
+                                consumedAddresses.recordSpent(in.getTransactionId(), in.getIndex(), stored);
                                 if (indexAddressHash) {
                                     byte[] akey = UtxoKeyUtil.addrHash28(stored.address);
                                     byte[] aIdx = UtxoKeyUtil.addressIndexKey(akey, stored.slot, in.getTransactionId(), in.getIndex());
@@ -921,12 +1013,10 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                             // the spend path alone leaves it unresolvable - observed on preprod
                             // block 1,809,762, where an invalid transaction's collateral return
                             // is spent in the same block.
-                            if (consumedAddresses != null) {
-                                consumedAddresses.put(consumedKey(tx.getTxHash(), outIdx), out.getAddress());
-                            }
                             if (referenceScriptHash != null && out.getScriptRef() != null) {
                                 batch.put(cfScriptRef, referenceScriptHash, HexUtil.decodeHexString(out.getScriptRef()));
                             }
+                            consumedAddresses.recordCreated(tx.getTxHash(), outIdx, out.getAddress());
                             //log.info("UTXO created: {}:{}", tx.getTxHash(), outIdx);
                             if (indexAddressHash) {
                                 byte[] addrHash = UtxoKeyUtil.addrHash28(out.getAddress());
@@ -949,7 +1039,8 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                         for (var in : tx.getCollateralInputs()) {
                             byte[] key = UtxoKeyUtil.outpointKey(in.getTransactionId(), in.getIndex());
                             // Filter: bootstrap UTXOs removed by Allegra are unspendable
-                            byte[] prev = removedBootstrapOutpoints.contains(new ByteArrayKey(key))
+                            boolean deliberatelyRemoved = removedBootstrapOutpoints.contains(new ByteArrayKey(key));
+                            byte[] prev = deliberatelyRemoved
                                     ? null : ctx.getUnspent(key);
                             String intraKey = in.getTransactionId() + ":" + in.getIndex();
                             if (prev == null) {
@@ -960,6 +1051,9 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                             } else {
                                 intraBlockOutputs.remove(intraKey);
                             }
+                            if (prev == null && !deliberatelyRemoved) {
+                                observeShelleyUnresolvedInput(e, in.getTransactionId(), in.getIndex());
+                            }
                             if (prev != null) {
                                 Map spentMap = new Map();
                                 spentMap.put(new UnsignedInteger(2), CborSerializationUtil.deserializeOne(prev));
@@ -968,10 +1062,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                                 batch.put(cfSpent, key, spentVal);
                                 batch.delete(cfUnspent, key);
                                 var stored = UtxoCborCodec.decodeUtxoRecord(prev);
-                                if (consumedAddresses != null) {
-                                    consumedAddresses.put(
-                                            consumedKey(in.getTransactionId(), in.getIndex()), stored.address);
-                                }
+                                consumedAddresses.recordSpent(in.getTransactionId(), in.getIndex(), stored);
                                 if (indexAddressHash) {
                                     byte[] akey = UtxoKeyUtil.addrHash28(stored.address);
                                     byte[] aIdx = UtxoKeyUtil.addressIndexKey(akey, stored.slot, in.getTransactionId(), in.getIndex());
@@ -1004,9 +1095,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
 
                         byte[] outKey = UtxoKeyUtil.outpointKey(tx.getTxHash(), outIdx);
                         batch.put(cfUnspent, outKey, val);
-                        if (consumedAddresses != null) {
-                            consumedAddresses.put(consumedKey(tx.getTxHash(), outIdx), out.getAddress());
-                        }
+                        consumedAddresses.recordCreated(tx.getTxHash(), outIdx, out.getAddress());
                         if (referenceScriptHash != null && out.getScriptRef() != null) {
                             batch.put(cfScriptRef, referenceScriptHash, HexUtil.decodeHexString(out.getScriptRef()));
                         }
@@ -1028,13 +1117,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                 }
             }
 
-            // Write delta
-            byte[] dval = UtxoDeltaCodec.encode(blockNo, slot, blockHash, createdRefs, spentRefs);
-            byte[] dkey = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(blockNo).array();
-            batch.put(cfDelta, dkey, dval);
-            // Update meta high-water marks atomically with the block apply
-            batch.put(cfMeta, META_LAST_APPLIED_SLOT, ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(slot).array());
-            batch.put(cfMeta, META_LAST_APPLIED_BLOCK, ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(blockNo).array());
+            stageDeltaAndCursor(batch, blockNo, slot, blockHash, createdRefs, spentRefs);
             applyStakeBalanceDeltas(batch, stakeBalanceDeltas);
             // ADR-039: stage this block's projection sections into the SAME batch as the
             // UTXO state they were derived from. That is the whole atomicity argument —
@@ -1043,11 +1126,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             // disabled this is one predictable false check.
             if (projectionContributor.enabled()) {
                 long projectionCpu0 = metricsEnabled ? System.nanoTime() : 0L;
-                java.util.Map<String, String> captured = consumedAddresses;
-                ConsumedOutputAddresses consumed = captured == null
-                        ? ConsumedOutputAddresses.NONE
-                        : (txHash, outputIndex) -> captured.get(consumedKey(txHash, outputIndex));
-                projectionContributor.contributeBlock(e, consumed, (cf, key, value) -> {
+                projectionContributor.contributeBlock(e, consumedAddresses.view(), (cf, key, value) -> {
                     try {
                         batch.put(rocksContext.handle(cf), key, value);
                     } catch (RocksDBException rex) {
@@ -1057,6 +1136,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                 if (metricsEnabled) projectionCpu = System.nanoTime() - projectionCpu0;
             }
             db.write(wo, batch);
+            rememberAppliedContinuity(blockNo, slot, blockHash);
 
             if (log.isDebugEnabled()) {
                 if (filteredOutputs > 0) {
@@ -1091,6 +1171,88 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         } catch (Exception ex) {
             log.error("UTXO apply failed for block {}: {}", e.blockNumber(), ex.toString(), ex);
             throw new RuntimeException("UTXO apply failed for block " + e.blockNumber(), ex);
+        }
+    }
+
+    private void stageDeltaAndCursor(WriteBatch batch,
+                                     long blockNumber,
+                                     long slot,
+                                     String blockHash,
+                                     List<UtxoDeltaCodec.OutRef> created,
+                                     List<UtxoDeltaCodec.OutRef> spent) throws RocksDBException {
+        byte[] delta = UtxoDeltaCodec.encode(blockNumber, slot, blockHash, created, spent);
+        byte[] key = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(blockNumber).array();
+        batch.put(cfDelta, key, delta);
+        batch.put(cfMeta, META_LAST_APPLIED_SLOT,
+                ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(slot).array());
+        batch.put(cfMeta, META_LAST_APPLIED_BLOCK,
+                ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(blockNumber).array());
+    }
+
+    private void observeApplyContinuity(long blockNumber, long slot, String blockHash, String eraLabel) {
+        try {
+            ensureContinuityCache();
+            UtxoDeltaCodec.Decoded previous = continuityPrevious;
+            if (previous == null) return; // origin, genesis pseudo-cursor, or bootstrap injection
+            boolean identical = previous.blockNumber() == blockNumber
+                    && previous.slot() == slot
+                    && previous.blockHash() != null
+                    && previous.blockHash().equalsIgnoreCase(blockHash);
+            if (identical) return;
+
+            boolean continuous = blockNumber == previous.blockNumber() + 1 && slot >= previous.slot();
+            if (!continuous) {
+                continuityWarnings.increment();
+                log.warn("UTXO apply continuity anomaly (diagnostic only): era={}, previous={}/{}:{}, "
+                                + "incoming={}/{}:{}",
+                        eraLabel, previous.blockNumber(), previous.slot(), previous.blockHash(),
+                        blockNumber, slot, blockHash);
+            }
+        } catch (Throwable t) {
+            continuityWarnings.increment();
+            log.warn("Unable to observe UTXO apply continuity for block {} (diagnostic only): {}",
+                    blockNumber, t.toString());
+        }
+    }
+
+    private void ensureContinuityCache() {
+        if (continuityCacheInitialized) return;
+        try (RocksIterator iterator = db.newIterator(cfDelta)) {
+            iterator.seekToLast();
+            continuityPrevious = iterator.isValid()
+                    ? UtxoDeltaCodec.decode(iterator.value()) : null;
+            continuityCacheInitialized = true;
+        }
+    }
+
+    private void rememberAppliedContinuity(long blockNumber, long slot, String blockHash) {
+        continuityPrevious = new UtxoDeltaCodec.Decoded(
+                blockNumber, slot, blockHash, List.of(), List.of());
+        continuityCacheInitialized = true;
+    }
+
+    private void rememberRollbackContinuity(UtxoDeltaCodec.Decoded retained) {
+        continuityPrevious = retained;
+        continuityCacheInitialized = true;
+    }
+
+    private void invalidateContinuityCache() {
+        continuityPrevious = null;
+        continuityCacheInitialized = false;
+    }
+
+    private void observeShelleyUnresolvedInput(BlockAppliedEvent event, String txHash, int index) {
+        StorageFilterChain filters = filterChain;
+        boolean selective = filters != null && !filters.isEmpty();
+        if (selective) shelleyFilteredStoreUnresolvedInputs.increment();
+        else shelleyUnresolvedInputs.increment();
+        long now = System.currentTimeMillis();
+        long previous = lastShelleyUnresolvedWarningMillis.get();
+        if (now - previous >= 30_000L
+                && lastShelleyUnresolvedWarningMillis.compareAndSet(previous, now)) {
+            log.warn("Unresolved Shelley-family input {}#{} at block {} slot {} hash {} "
+                            + "(selectiveStore={}, warnOnly=true)",
+                    txHash, index, event.blockNumber(), event.slot(), event.blockHash(), selective);
         }
     }
 
@@ -1176,7 +1338,190 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     private java.util.function.Supplier<java.util.List<byte[]>> byronGenesisKeysSupplier;
     private java.util.function.Supplier<Boolean> allegraBootstrapDoneChecker;
     private byte[] allegraBootstrapDoneKey;        // metadata CF key for completion marker
+    private byte[] byronGenesisKeysMetadataKey;
+    private byte[] shelleyStartUtxoTotalMetadataKey;
     private org.rocksdb.ColumnFamilyHandle metadataHandle; // metadata CF handle for atomic write
+
+    private static final byte[] META_BYRON_MAIN_APPLY_CAPABILITY =
+            "utxo.capability.byron_main_apply.v1".getBytes(StandardCharsets.UTF_8);
+
+    public synchronized boolean hasByronMainApplyCapability() {
+        if (!enabled) return true;
+        try {
+            return db.get(cfMeta, META_BYRON_MAIN_APPLY_CAPABILITY) != null;
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to read Byron UTXO capability marker", e);
+        }
+    }
+
+    public synchronized void requireByronMainApplyCapability(ChainState chainState, boolean snapshotRestore) {
+        if (!enabled || hasByronMainApplyCapability()) return;
+        boolean hasCanonicalState = chainState != null
+                && (chainState.getTip() != null || chainState.getHeaderTip() != null);
+        if (snapshotRestore || hasCanonicalState) {
+            String source = snapshotRestore ? "restored snapshot" : "existing chain database";
+            throw new IllegalStateException("The " + source
+                    + " has no Byron-main UTXO capability marker. Its derived UTXO history may omit "
+                    + "Byron transactions; rebuild UTXO state from genesis or perform a full resync.");
+        }
+    }
+
+    /**
+     * Atomically seeds every genesis distribution and establishes the versioned
+     * full-history capability. This is the only automatic marker-writing path.
+     */
+    public synchronized void initializeFreshFullStateGenesis(
+            java.util.Map<String, BigInteger> shelleyFunds,
+            long networkMagic,
+            java.util.Map<String, BigInteger> nonAvvmBalances,
+            java.util.Map<String, BigInteger> avvmBalances,
+            long slot,
+            long blockNumber,
+            String blockHash) {
+        if (!enabled || hasByronMainApplyCapability()) return;
+        if (metadataHandle == null || byronGenesisKeysMetadataKey == null) {
+            throw new IllegalStateException("Chain metadata must be wired before fresh UTXO genesis initialization");
+        }
+        if (!isColumnFamilyEmpty(cfUnspent) || !isColumnFamilyEmpty(cfSpent)
+                || !isColumnFamilyEmpty(cfAddr) || !isColumnFamilyEmpty(cfDelta)
+                || !isColumnFamilyEmpty(cfScriptRef) || !isColumnFamilyEmpty(cfStakeBalance)) {
+            throw new IllegalStateException("Cannot establish Byron UTXO capability on non-empty unmarked state; "
+                    + "use the explicit rebuild operation");
+        }
+
+        java.util.Map<String, BigInteger> shelley = shelleyFunds != null
+                ? shelleyFunds : java.util.Map.of();
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
+            java.util.Map<StakeCredentialKey, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
+            for (var entry : shelley.entrySet()) {
+                var output = com.bloxbean.cardano.yano.api.genesis.GenesisUtxos.shelley(
+                        entry.getKey(), entry.getValue(), networkMagic, blockNumber, slot, blockHash);
+                byte[] value = UtxoCborCodec.encodeUtxoRecord(output.address(), output.amount(), null,
+                        null, null, null, false, slot, blockNumber, blockHash);
+                byte[] outpoint = UtxoKeyUtil.outpointKey(output.txHash(), output.outputIndex());
+                batch.put(cfUnspent, outpoint, value);
+                if (indexAddressHash) {
+                    batch.put(cfAddr, UtxoKeyUtil.addressIndexKey(
+                            UtxoKeyUtil.addrHash28(output.address()), slot,
+                            output.txHash(), output.outputIndex()), new byte[0]);
+                }
+                if (indexPaymentCred) {
+                    byte[] credential = UtxoKeyUtil.paymentCred28(output.address());
+                    if (credential != null) {
+                        batch.put(cfAddr, UtxoKeyUtil.addressIndexKey(
+                                credential, slot, output.txHash(), output.outputIndex()), new byte[0]);
+                    }
+                }
+                addStakeBalanceDelta(stakeBalanceDeltas, output.address(), output.amount());
+            }
+
+            ByronUtxoApplier.GenesisResult byron = byronUtxoApplier.stageGenesisOutputs(
+                    nonAvvmBalances, avvmBalances, slot, blockNumber, blockHash, batch);
+            batch.put(metadataHandle, byronGenesisKeysMetadataKey,
+                    encodeOutpointKeys(byron.avvmOutpointKeys()));
+            applyStakeBalanceDeltas(batch, stakeBalanceDeltas);
+            markStakeBalanceIndexReady(batch);
+            batch.put(cfMeta, META_BYRON_MAIN_APPLY_CAPABILITY, new byte[]{1});
+            db.write(options, batch);
+            invalidateContinuityCache();
+            if (stakeBalanceIndexEnabled) stakeBalanceIndexReady = true;
+            log.info("Initialized full UTXO genesis state atomically: shelley={}, byronNonAvvm={}, "
+                            + "byronAvvm={}, persistedAvvmKeys={}",
+                    shelley.size(), nonAvvmBalances != null ? nonAvvmBalances.size() : 0,
+                    avvmBalances != null ? avvmBalances.size() : 0,
+                    byron.avvmOutpointKeys().size());
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to initialize fresh full UTXO genesis state", e);
+        }
+    }
+
+    private static byte[] encodeOutpointKeys(java.util.List<byte[]> keys) {
+        int size = 0;
+        for (byte[] key : keys) {
+            if (key == null || key.length != 34) {
+                throw new IllegalArgumentException("Byron genesis outpoint key must be 34 bytes");
+            }
+            size += key.length;
+        }
+        byte[] encoded = new byte[size];
+        int offset = 0;
+        for (byte[] key : keys) {
+            System.arraycopy(key, 0, encoded, offset, key.length);
+            offset += key.length;
+        }
+        return encoded;
+    }
+
+    /**
+     * Destructively rebuild derived UTXO state from retained canonical bodies.
+     * The caller must hold the runtime maintenance lock and pause apply/prune/snapshot workers.
+     */
+    public synchronized void rebuildFullStateFromGenesis(
+            ChainState chainState,
+            java.util.Map<String, BigInteger> shelleyFunds,
+            long networkMagic,
+            java.util.Map<String, BigInteger> nonAvvmBalances,
+            java.util.Map<String, BigInteger> avvmBalances) {
+        if (!enabled) return;
+        if (chainState == null) throw new IllegalArgumentException("ChainState is required for UTXO rebuild");
+        if (metadataHandle == null || byronGenesisKeysMetadataKey == null) {
+            throw new IllegalStateException("Chain metadata must be wired before UTXO rebuild");
+        }
+
+        // Remove the capability marker first. A crash at any later point therefore
+        // fails closed on restart instead of exposing a half-cleared state as complete.
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
+            batch.delete(cfMeta, META_BYRON_MAIN_APPLY_CAPABILITY);
+            batch.delete(metadataHandle, byronGenesisKeysMetadataKey);
+            if (allegraBootstrapDoneKey != null) batch.delete(metadataHandle, allegraBootstrapDoneKey);
+            if (shelleyStartUtxoTotalMetadataKey == null) {
+                throw new IllegalStateException("Shelley-start UTXO metadata key was not wired");
+            }
+            batch.delete(metadataHandle, shelleyStartUtxoTotalMetadataKey);
+            db.write(options, batch);
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to mark UTXO rebuild in progress", e);
+        }
+
+        clearColumnFamilyForRebuild(cfUnspent);
+        clearColumnFamilyForRebuild(cfSpent);
+        clearColumnFamilyForRebuild(cfAddr);
+        clearColumnFamilyForRebuild(cfDelta);
+        clearColumnFamilyForRebuild(cfMeta);
+        clearColumnFamilyForRebuild(cfScriptRef);
+        clearColumnFamilyForRebuild(cfStakeBalance);
+        invalidateContinuityCache();
+        stakeBalanceIndexReady = false;
+
+        initializeFreshFullStateGenesis(shelleyFunds, networkMagic,
+                nonAvvmBalances, avvmBalances, 0L, 0L, "00".repeat(32));
+        try {
+            reconcile(chainState);
+        } catch (RuntimeException e) {
+            throw new IllegalStateException("UTXO rebuild could not replay retained canonical bodies. "
+                    + "If Byron bodies were pruned, a full resync or validated complete checkpoint is required.", e);
+        }
+    }
+
+    private void clearColumnFamilyForRebuild(ColumnFamilyHandle handle) {
+        final int batchSize = 10_000;
+        try (RocksIterator iterator = db.newIterator(handle); WriteOptions options = new WriteOptions()) {
+            iterator.seekToFirst();
+            while (iterator.isValid()) {
+                try (WriteBatch batch = new WriteBatch()) {
+                    int staged = 0;
+                    while (iterator.isValid() && staged < batchSize) {
+                        batch.delete(handle, Arrays.copyOf(iterator.key(), iterator.key().length));
+                        staged++;
+                        iterator.next();
+                    }
+                    db.write(options, batch);
+                }
+            }
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to clear UTXO column family during rebuild", e);
+        }
+    }
 
     @Override
     public synchronized void storeByronGenesisUtxos(java.util.Map<String, BigInteger> nonAvvmBalances, long slot, long blockNumber, String blockHash) {
@@ -1186,39 +1531,15 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             return;
         }
 
-        int stored = 0;
-
         try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
-            for (var entry : nonAvvmBalances.entrySet()) {
-                String byronAddress = entry.getKey();
-                BigInteger lovelace = entry.getValue();
-
-                // Same shared normalisation as the Shelley branch above.
-                var genesisUtxo = com.bloxbean.cardano.yano.api.genesis.GenesisUtxos.byron(
-                        byronAddress, lovelace, blockNumber, slot, blockHash);
-                String txHash = genesisUtxo.txHash();
-                int outputIndex = genesisUtxo.outputIndex();
-
-                // Store address as-is (base58 string, no bech32 conversion for Byron)
-                byte[] val = UtxoCborCodec.encodeUtxoRecord(byronAddress, lovelace, null, null, null, null, false, slot, blockNumber, blockHash);
-                byte[] outKey = UtxoKeyUtil.outpointKey(txHash, outputIndex);
-                batch.put(cfUnspent, outKey, val);
-
-                // Track outpoint key for Allegra bootstrap removal
-                byronGenesisOutpointKeys.add(outKey);
-
-                // Address index (address hash only — Byron addresses don't have Shelley-style payment credentials)
-                if (indexAddressHash) {
-                    byte[] addrHash = UtxoKeyUtil.addrHash28(byronAddress);
-                    byte[] addrIdxKey = UtxoKeyUtil.addressIndexKey(addrHash, slot, txHash, outputIndex);
-                    batch.put(cfAddr, addrIdxKey, new byte[0]);
-                }
-                stored++;
-            }
+            ByronUtxoApplier.GenesisResult staged = byronUtxoApplier.stageGenesisOutputs(
+                    nonAvvmBalances, java.util.Map.of(), slot, blockNumber, blockHash, batch);
+            byronGenesisOutpointKeys.addAll(staged.allOutpointKeys());
             markStakeBalanceIndexReady(batch);
             db.write(wo, batch);
             if (stakeBalanceIndexEnabled) stakeBalanceIndexReady = true;
-            log.info("Stored {} Byron genesis UTXOs (tx_hash = blake2b(Base58.decode(address)), outputIndex=0)", stored);
+            log.info("Stored {} Byron genesis UTXOs (tx_hash = blake2b(Base58.decode(address)), outputIndex=0)",
+                    staged.allOutpointKeys().size());
         } catch (Exception ex) {
             log.error("Failed to store Byron genesis UTXOs: {}", ex.toString(), ex);
             throw new RuntimeException("Failed to store Byron genesis UTXOs", ex);
@@ -1278,6 +1599,8 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                 metadataStore::isAllegraBootstrapDone,
                 metadataStore.getAllegraBootstrapDoneKey(),
                 metadataCfHandle);
+        this.byronGenesisKeysMetadataKey = metadataStore.getByronGenesisUtxoKeysKey();
+        this.shelleyStartUtxoTotalMetadataKey = metadataStore.getShelleyStartUtxoTotalKey();
     }
 
     /**
@@ -1540,6 +1863,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             applyStakeBalanceDeltas(batch, stakeBalanceDeltas);
 
             db.write(wo, batch);
+            rememberAppliedContinuity(blockNumber, slot, blockHash);
             log.info("***********************************************************************");
             log.info("*** Bootstrap: injected {} UTXOs at block #{}, slot={}", utxos.size(), blockNumber, slot);
             log.info("***********************************************************************");
@@ -1550,91 +1874,13 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
 
     @Override
     public synchronized void rollbackTo(RollbackEvent e) {
-        if (!enabled) return;
-        long targetSlot = e.target().getSlot();
-        ensureRollbackTargetIsSafe(targetSlot);
-        try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions(); RocksIterator it = db.newIterator(cfDelta)) {
-            java.util.Map<StakeCredentialKey, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
-            Long retainedBlock = null;
-            Long retainedSlot = null;
-            it.seekToLast();
-            while (it.isValid()) {
-                var dec = UtxoDeltaCodec.decode(it.value());
-                if (dec.slot() <= targetSlot) {
-                    retainedBlock = dec.blockNumber();
-                    retainedSlot = dec.slot();
-                    break;
-                }
-                // Restore spent
-                for (UtxoDeltaCodec.OutRef r : dec.spent()) {
-                    byte[] okey = UtxoKeyUtil.outpointKey(r.txHash(), r.index());
-                    byte[] sval = db.get(cfSpent, okey);
-                    if (sval == null) {
-                        throw missingSpentRecordForRollback(targetSlot, dec, r);
-                    }
-                    byte[] unspentVal = UtxoCborCodec.unwrapSpentUtxo(sval);
-                    batch.put(cfUnspent, okey, unspentVal);
-                    var stored = UtxoCborCodec.decodeUtxoRecord(unspentVal);
-                    if (indexAddressHash) {
-                        byte[] akey = UtxoKeyUtil.addrHash28(stored.address);
-                        byte[] aIdx = UtxoKeyUtil.addressIndexKey(akey, stored.slot, r.txHash(), r.index());
-                        batch.put(cfAddr, aIdx, new byte[0]);
-                    }
-                    if (indexPaymentCred) {
-                        byte[] pc = UtxoKeyUtil.paymentCred28(stored.address);
-                        if (pc != null) {
-                            byte[] pIdx = UtxoKeyUtil.addressIndexKey(pc, stored.slot, r.txHash(), r.index());
-                            batch.put(cfAddr, pIdx, new byte[0]);
-                        }
-                    }
-                    batch.delete(cfSpent, okey);
-                    addStakeBalanceDelta(stakeBalanceDeltas, stored.address, stored.lovelace);
-                }
-                // Delete created
-                for (UtxoDeltaCodec.OutRef r : dec.created()) {
-                    byte[] okey = UtxoKeyUtil.outpointKey(r.txHash(), r.index());
-                    byte[] record = db.get(cfUnspent, okey);
-                    if (record == null) {
-                        byte[] spent = db.get(cfSpent, okey);
-                        if (spent != null) {
-                            record = UtxoCborCodec.unwrapSpentUtxo(spent);
-                        }
-                    }
-                    if (record != null) {
-                        var stored = UtxoCborCodec.decodeUtxoRecord(record);
-                        if (indexAddressHash) {
-                            byte[] akey = UtxoKeyUtil.addrHash28(stored.address);
-                            byte[] aIdx = UtxoKeyUtil.addressIndexKey(akey, stored.slot, r.txHash(), r.index());
-                            batch.delete(cfAddr, aIdx);
-                        }
-                        if (indexPaymentCred) {
-                            byte[] pc = UtxoKeyUtil.paymentCred28(stored.address);
-                            if (pc != null) {
-                                byte[] pIdx = UtxoKeyUtil.addressIndexKey(pc, stored.slot, r.txHash(), r.index());
-                                batch.delete(cfAddr, pIdx);
-                            }
-                        }
-                        batch.delete(cfUnspent, okey);
-                        batch.delete(cfSpent, okey);
-                        addStakeBalanceDelta(stakeBalanceDeltas, stored.address, stored.lovelace.negate());
-                    }
-                }
-                batch.delete(cfDelta, it.key());
-                it.prev();
-            }
-            // Clear Allegra completion marker on any rollback — the self-check in
-            // applyBlock() will re-evaluate and re-set it on forward sync if needed.
-            if (allegraBootstrapDoneKey != null && metadataHandle != null) {
-                batch.delete(metadataHandle, allegraBootstrapDoneKey);
-            }
+        rollbackToPoint(e.target());
+    }
 
-            updateRollbackMetadata(batch, retainedBlock, retainedSlot);
-            applyStakeBalanceDeltas(batch, stakeBalanceDeltas);
-            db.write(wo, batch);
-        } catch (Exception ex) {
-            log.error("UTXO rollback failed: {}", ex.toString(), ex);
-            throw new RuntimeException("UTXO rollback failed", ex);
-        }
+    @Override
+    public synchronized void rollbackToPoint(Point target) {
+        if (!enabled) return;
+        rollbackInternal(UtxoRollbackTarget.exact(target), "exact-point");
     }
 
     @Override
@@ -1722,94 +1968,14 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     @Override
     public synchronized void rollbackToSlot(long targetSlot) {
         if (!enabled) return;
-        ensureRollbackTargetIsSafe(targetSlot);
-        // Reuse internal rollback logic directly (no RollbackEvent construction)
-        try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions(); RocksIterator it = db.newIterator(cfDelta)) {
-            java.util.Map<StakeCredentialKey, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
-            Long retainedBlock = null;
-            Long retainedSlot = null;
-            it.seekToLast();
-            while (it.isValid()) {
-                var dec = UtxoDeltaCodec.decode(it.value());
-                if (dec.slot() <= targetSlot) {
-                    retainedBlock = dec.blockNumber();
-                    retainedSlot = dec.slot();
-                    break;
-                }
-                // Restore spent
-                for (UtxoDeltaCodec.OutRef r : dec.spent()) {
-                    byte[] okey = UtxoKeyUtil.outpointKey(r.txHash(), r.index());
-                    byte[] sval = db.get(cfSpent, okey);
-                    if (sval == null) {
-                        throw missingSpentRecordForRollback(targetSlot, dec, r);
-                    }
-                    byte[] unspentVal = UtxoCborCodec.unwrapSpentUtxo(sval);
-                    batch.put(cfUnspent, okey, unspentVal);
-                    var stored = UtxoCborCodec.decodeUtxoRecord(unspentVal);
-                    if (indexAddressHash) {
-                        byte[] akey = UtxoKeyUtil.addrHash28(stored.address);
-                        byte[] aIdx = UtxoKeyUtil.addressIndexKey(akey, stored.slot, r.txHash(), r.index());
-                        batch.put(cfAddr, aIdx, new byte[0]);
-                    }
-                    if (indexPaymentCred) {
-                        byte[] pc = UtxoKeyUtil.paymentCred28(stored.address);
-                        if (pc != null) {
-                            byte[] pIdx = UtxoKeyUtil.addressIndexKey(pc, stored.slot, r.txHash(), r.index());
-                            batch.put(cfAddr, pIdx, new byte[0]);
-                        }
-                    }
-                    batch.delete(cfSpent, okey);
-                    addStakeBalanceDelta(stakeBalanceDeltas, stored.address, stored.lovelace);
-                }
-                // Delete created
-                for (UtxoDeltaCodec.OutRef r : dec.created()) {
-                    byte[] okey = UtxoKeyUtil.outpointKey(r.txHash(), r.index());
-                    byte[] record = db.get(cfUnspent, okey);
-                    if (record == null) {
-                        byte[] spent = db.get(cfSpent, okey);
-                        if (spent != null) {
-                            record = UtxoCborCodec.unwrapSpentUtxo(spent);
-                        }
-                    }
-                    if (record != null) {
-                        var stored = UtxoCborCodec.decodeUtxoRecord(record);
-                        if (indexAddressHash) {
-                            byte[] akey = UtxoKeyUtil.addrHash28(stored.address);
-                            byte[] aIdx = UtxoKeyUtil.addressIndexKey(akey, stored.slot, r.txHash(), r.index());
-                            batch.delete(cfAddr, aIdx);
-                        }
-                        if (indexPaymentCred) {
-                            byte[] pc = UtxoKeyUtil.paymentCred28(stored.address);
-                            if (pc != null) {
-                                byte[] pIdx = UtxoKeyUtil.addressIndexKey(pc, stored.slot, r.txHash(), r.index());
-                                batch.delete(cfAddr, pIdx);
-                            }
-                        }
-                        batch.delete(cfUnspent, okey);
-                        batch.delete(cfSpent, okey);
-                        addStakeBalanceDelta(stakeBalanceDeltas, stored.address, stored.lovelace.negate());
-                    }
-                }
-                batch.delete(cfDelta, it.key());
-                it.prev();
-            }
-            // Clear Allegra completion marker on rollback
-            if (allegraBootstrapDoneKey != null && metadataHandle != null) {
-                batch.delete(metadataHandle, allegraBootstrapDoneKey);
-            }
-            updateRollbackMetadata(batch, retainedBlock, retainedSlot);
-            applyStakeBalanceDeltas(batch, stakeBalanceDeltas);
-            db.write(wo, batch);
-            log.info("UTXO adhoc rollback to slot {} complete", targetSlot);
-        } catch (Exception ex) {
-            throw new RuntimeException("UTXO adhoc rollback failed", ex);
-        }
+        rollbackInternal(UtxoRollbackTarget.legacySlot(targetSlot), "adhoc");
     }
 
     @Override
     public synchronized void reconcile(ChainState chainState) {
         if (!enabled || chainState == null) return;
         long lastAppliedBlock = 0L;
+        boolean hasCursor = false;
         try {
             byte[] b = db.get(cfMeta, META_LAST_APPLIED_BLOCK);
             if (b != null) {
@@ -1817,6 +1983,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                     throw new IllegalStateException("Malformed UTXO last applied block metadata length: " + b.length);
                 }
                 lastAppliedBlock = ByteBuffer.wrap(b).order(ByteOrder.BIG_ENDIAN).getLong();
+                hasCursor = true;
             }
         } catch (Exception e) {
             throw new RuntimeException("Failed to read UTXO last applied block", e);
@@ -1826,7 +1993,28 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         if (tip == null) return;
         long tipBlock = tip.getBlockNumber();
 
-        if (lastAppliedBlock == tipBlock) return; // in sync
+        if (hasCursor && lastAppliedBlock == tipBlock) return; // in sync
+
+        // Byron begins with block-0 EBB, which deliberately has no number index and
+        // no UTXO transition. A restart in the short window before main block 1 must
+        // validate that body and consider the empty transition stream current.
+        if (!hasCursor && tipBlock == 0L && chainState.getBlockByNumber(0L) == null) {
+            byte[] tipBody = tip.getBlockHash() != null ? chainState.getBlock(tip.getBlockHash()) : null;
+            if (tipBody == null) {
+                throw new IllegalStateException("UTXO reconcile missing local block body for Byron genesis EBB");
+            }
+            try {
+                if (StoredBlockUtil.requireByronEnvelopeKind(tipBody)
+                        != StoredBlockUtil.ByronEnvelopeKind.EBB) {
+                    throw new IllegalArgumentException("Byron genesis block is not an EBB envelope");
+                }
+                ByronEbBlockSerializer.INSTANCE.deserialize(tipBody);
+                log.debug("UTXO reconcile validated and ignored the Byron genesis EBB");
+                return;
+            } catch (RuntimeException notEbb) {
+                throw new RuntimeException("UTXO reconcile failed to deserialize Byron genesis EBB", notEbb);
+            }
+        }
 
         if (lastAppliedBlock > tipBlock) {
             // Roll back to tip slot (fork safe within rollback window)
@@ -1835,17 +2023,12 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             return;
         }
 
-        byte[] tipBlockBytes = chainState.getBlockByNumber(tipBlock);
-        if (lastAppliedBlock == 0
-                && getLatestAppliedSlot() < 0
-                && StoredBlockUtil.isStoredByronBlock(chainState.getBlockEra(tipBlock), tipBlockBytes)) {
-            log.info("UTXO reconcile skipped: tip block {} is Byron era, nothing to index", tipBlock);
-            return;
-        }
-
         // Forward replay: apply missing blocks using stored bodies
-        log.info("UTXO reconcile: replaying blocks {} to {}", lastAppliedBlock + 1, tipBlock);
-        for (long bn = lastAppliedBlock + 1; bn <= tipBlock; bn++) {
+        long firstBlock = hasCursor ? lastAppliedBlock + 1
+                : (tipBlock == 0L || chainState.getBlockByNumber(0L) != null ? 0L : 1L);
+        log.info("UTXO reconcile: replaying blocks {} to {}", firstBlock, tipBlock);
+        boolean boundaryCaptureAttempted = false;
+        for (long bn = firstBlock; bn <= tipBlock; bn++) {
             if ((bn - lastAppliedBlock) % 1000 == 0) {
                 log.info("UTXO reconcile progress: block {}/{}", bn, tipBlock);
             }
@@ -1854,18 +2037,52 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                 throw new IllegalStateException("UTXO reconcile missing local block body for block " + bn);
             }
             Era storedEra = chainState.getBlockEra(bn);
-            if (StoredBlockUtil.isStoredByronBlock(storedEra, blockBytes)) {
+            if (storedEra == Era.Byron || StoredBlockUtil.isStoredByronBlock(storedEra, blockBytes)) {
+                StoredBlockUtil.ByronEnvelopeKind envelopeKind;
+                try {
+                    envelopeKind = StoredBlockUtil.requireByronEnvelopeKind(blockBytes);
+                } catch (RuntimeException malformedEnvelope) {
+                    throw new RuntimeException(
+                            "UTXO reconcile failed to classify Byron block " + bn, malformedEnvelope);
+                }
+                if (envelopeKind == StoredBlockUtil.ByronEnvelopeKind.EBB) {
+                    try {
+                        ByronEbBlockSerializer.INSTANCE.deserialize(blockBytes);
+                    } catch (RuntimeException malformedEbb) {
+                        throw new RuntimeException(
+                                "UTXO reconcile failed to deserialize Byron EBB " + bn, malformedEbb);
+                    }
+                    log.debug("UTXO reconcile ignored Byron epoch-boundary block {}", bn);
+                    continue;
+                }
+
+                final com.bloxbean.cardano.yaci.core.model.byron.ByronMainBlock byron;
+                try {
+                    byron = ByronBlockSerializer.INSTANCE.deserialize(blockBytes);
+                } catch (RuntimeException malformedMain) {
+                    throw new RuntimeException(
+                            "UTXO reconcile failed to deserialize Byron main block " + bn, malformedMain);
+                }
+                long slot = byron.getHeader().getConsensusData().getAbsoluteSlot();
+                // Intentionally outside all classification/deserialization catches:
+                // an apply failure must fail reconciliation with its original cause.
+                applyByronBlock(new ByronMainBlockAppliedEvent(
+                        slot, bn, byron.getHeader().getBlockHash(), byron));
                 continue;
             }
             Block block;
             try {
                 block = BlockSerializer.INSTANCE.deserialize(blockBytes);
-            } catch (Throwable t) {
+            } catch (RuntimeException t) {
                 throw new RuntimeException("UTXO reconcile failed to deserialize block " + bn, t);
             }
             long slot = block.getHeader().getHeaderBody().getSlot();
             String blockHash = block.getHeader().getHeaderBody().getBlockHash();
             Era era = block.getEra() != null ? block.getEra() : storedEra;
+            if (!boundaryCaptureAttempted && era != null && era.getValue() > Era.Byron.getValue()) {
+                shelleyStartBoundaryCapture.run();
+                boundaryCaptureAttempted = true;
+            }
             applyBlock(new BlockAppliedEvent(era, slot, bn, blockHash, block));
         }
     }
@@ -1876,6 +2093,133 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     private static final byte[] META_LAST_APPLIED_BLOCK = "meta.last_applied_block".getBytes(StandardCharsets.UTF_8);
     private static final byte[] META_PRUNE_DELTA_CURSOR = "prune.delta.cursor".getBytes(StandardCharsets.UTF_8);
     private static final byte[] META_PRUNE_SPENT_CURSOR = "prune.spent.cursor".getBytes(StandardCharsets.UTF_8);
+
+    private void rollbackInternal(UtxoRollbackTarget target, String operation) {
+        ensureRollbackTargetIsSafe(target.slot());
+        try (WriteBatch batch = new WriteBatch();
+             WriteOptions wo = new WriteOptions();
+             RocksIterator it = db.newIterator(cfDelta)) {
+            java.util.Map<StakeCredentialKey, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
+            UtxoDeltaCodec.Decoded retained = null;
+            it.seekToLast();
+            while (it.isValid()) {
+                UtxoDeltaCodec.Decoded dec = UtxoDeltaCodec.decode(it.value());
+                if (target.retains(dec)) {
+                    retained = dec;
+                    break;
+                }
+
+                for (UtxoDeltaCodec.OutRef ref : dec.spent()) {
+                    byte[] outpoint = UtxoKeyUtil.outpointKey(ref.txHash(), ref.index());
+                    byte[] spentValue = db.get(cfSpent, outpoint);
+                    if (spentValue == null) {
+                        throw missingSpentRecordForRollback(target.slot(), dec, ref);
+                    }
+                    byte[] unspentValue = UtxoCborCodec.unwrapSpentUtxo(spentValue);
+                    batch.put(cfUnspent, outpoint, unspentValue);
+                    UtxoCborCodec.StoredUtxo stored = UtxoCborCodec.decodeUtxoRecord(unspentValue);
+                    if (indexAddressHash) {
+                        byte[] addressHash = UtxoKeyUtil.addrHash28(stored.address);
+                        byte[] addressIndex = UtxoKeyUtil.addressIndexKey(
+                                addressHash, stored.slot, ref.txHash(), ref.index());
+                        batch.put(cfAddr, addressIndex, new byte[0]);
+                    }
+                    if (indexPaymentCred) {
+                        byte[] paymentCredential = UtxoKeyUtil.paymentCred28(stored.address);
+                        if (paymentCredential != null) {
+                            byte[] paymentIndex = UtxoKeyUtil.addressIndexKey(
+                                    paymentCredential, stored.slot, ref.txHash(), ref.index());
+                            batch.put(cfAddr, paymentIndex, new byte[0]);
+                        }
+                    }
+                    batch.delete(cfSpent, outpoint);
+                    addStakeBalanceDelta(stakeBalanceDeltas, stored.address, stored.lovelace);
+                }
+
+                for (UtxoDeltaCodec.OutRef ref : dec.created()) {
+                    byte[] outpoint = UtxoKeyUtil.outpointKey(ref.txHash(), ref.index());
+                    byte[] record = db.get(cfUnspent, outpoint);
+                    if (record == null) {
+                        byte[] spent = db.get(cfSpent, outpoint);
+                        if (spent != null) record = UtxoCborCodec.unwrapSpentUtxo(spent);
+                    }
+                    if (record != null) {
+                        UtxoCborCodec.StoredUtxo stored = UtxoCborCodec.decodeUtxoRecord(record);
+                        if (indexAddressHash) {
+                            byte[] addressHash = UtxoKeyUtil.addrHash28(stored.address);
+                            byte[] addressIndex = UtxoKeyUtil.addressIndexKey(
+                                    addressHash, stored.slot, ref.txHash(), ref.index());
+                            batch.delete(cfAddr, addressIndex);
+                        }
+                        if (indexPaymentCred) {
+                            byte[] paymentCredential = UtxoKeyUtil.paymentCred28(stored.address);
+                            if (paymentCredential != null) {
+                                byte[] paymentIndex = UtxoKeyUtil.addressIndexKey(
+                                        paymentCredential, stored.slot, ref.txHash(), ref.index());
+                                batch.delete(cfAddr, paymentIndex);
+                            }
+                        }
+                        batch.delete(cfUnspent, outpoint);
+                        batch.delete(cfSpent, outpoint);
+                        addStakeBalanceDelta(stakeBalanceDeltas, stored.address, stored.lovelace.negate());
+                    }
+                }
+                batch.delete(cfDelta, Arrays.copyOf(it.key(), it.key().length));
+                it.prev();
+            }
+
+            if (allegraBootstrapDoneKey != null && metadataHandle != null) {
+                batch.delete(metadataHandle, allegraBootstrapDoneKey);
+            }
+            updateRollbackMetadata(batch,
+                    retained != null ? retained.blockNumber() : null,
+                    retained != null ? retained.slot() : null);
+            applyStakeBalanceDeltas(batch, stakeBalanceDeltas);
+            db.write(wo, batch);
+            rememberRollbackContinuity(retained);
+            log.info("UTXO {} rollback complete: slot={}, hash={}",
+                    operation, target.slot(), target.hash());
+        } catch (Exception ex) {
+            log.error("UTXO {} rollback failed: {}", operation, ex.toString(), ex);
+            throw new RuntimeException("UTXO " + operation + " rollback failed", ex);
+        }
+    }
+
+    private record UtxoRollbackTarget(long slot, String hash, boolean origin, boolean exact) {
+        static UtxoRollbackTarget exact(Point point) {
+            if (point == null) throw new IllegalArgumentException("Rollback target is required");
+            if (point.getHash() == null) return new UtxoRollbackTarget(-1L, null, true, true);
+            try {
+                byte[] decoded = HexUtil.decodeHexString(point.getHash());
+                if (decoded.length != 32) {
+                    throw new IllegalArgumentException("Rollback hash must be exactly 32 bytes");
+                }
+            } catch (IllegalArgumentException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new IllegalArgumentException("Invalid rollback hash: " + point.getHash(), e);
+            }
+            return new UtxoRollbackTarget(point.getSlot(), point.getHash(), false, true);
+        }
+
+        static UtxoRollbackTarget legacySlot(long slot) {
+            return slot < 0
+                    ? new UtxoRollbackTarget(-1L, null, true, false)
+                    : new UtxoRollbackTarget(slot, null, false, false);
+        }
+
+        boolean retains(UtxoDeltaCodec.Decoded delta) {
+            if (origin) return false;
+            if (delta.slot() < slot) return true;
+            if (delta.slot() > slot) return false;
+            if (!exact) return true;
+            if (delta.blockHash() == null || delta.blockHash().isBlank()) {
+                throw new IllegalStateException("UTXO delta at target slot " + slot
+                        + " has no block hash; exact rollback is ambiguous");
+            }
+            return delta.blockHash().equalsIgnoreCase(hash);
+        }
+    }
 
     private void updateRollbackMetadata(WriteBatch batch, Long retainedBlock, Long retainedSlot) throws RocksDBException {
         if (retainedBlock != null && retainedSlot != null) {
@@ -2062,6 +2406,13 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         }
         m.put("apply.created.last", lastApplyCreated);
         m.put("apply.spent.last", lastApplySpent);
+        m.put("apply.continuityWarnings", continuityWarnings.sum());
+        m.put("apply.byron.unresolvedInputs", byronUtxoApplier.unresolvedInputCount());
+        m.put("apply.byron.filteredStoreUnresolvedInputs",
+                byronUtxoApplier.filteredStoreUnresolvedInputCount());
+        m.put("apply.shelley.unresolvedInputs", shelleyUnresolvedInputs.sum());
+        m.put("apply.shelley.filteredStoreUnresolvedInputs",
+                shelleyFilteredStoreUnresolvedInputs.sum());
         m.put("throughput.blocksPerSec", bps);
         m.put("prune.ms.last", lastPruneMs);
         m.put("prune.deltaDeleted.last", lastDeltaDeleted);

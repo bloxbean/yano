@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.archive.core.projection;
 import com.bloxbean.cardano.yano.api.archive.ProjectionCfNames;
 import com.bloxbean.cardano.yano.api.archive.ProjectionStagingWriter;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionBatch;
+import com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionCoordinate;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionEnvelope;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionEnvelopeHeader;
@@ -20,6 +21,7 @@ import org.rocksdb.WriteBatch;
 import org.rocksdb.WriteOptions;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -27,6 +29,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.function.Supplier;
 
 /**
  * Durable RocksDB outbox for canonical projection envelopes (ADR-039 §2, §8).
@@ -44,34 +48,46 @@ import java.util.Set;
  */
 public final class ProjectionOutboxStore {
 
-    private final RocksDB db;
-    private final ColumnFamilyHandle headerCf;
-    private final ColumnFamilyHandle sectionCf;
-    private final ColumnFamilyHandle metaCf;
-    private final ColumnFamilyHandle artifactCf;
-    private final ColumnFamilyHandle byronUtxoCf;
-    private final ByronOutputAddressIndex byronOutputs;
+    private volatile RocksDB db;
+    private volatile ColumnFamilyHandle headerCf;
+    private volatile ColumnFamilyHandle sectionCf;
+    private volatile ColumnFamilyHandle metaCf;
+    private volatile ColumnFamilyHandle artifactCf;
+    private final Supplier<RocksDB> dbSupplier;
+    private final Function<String, ColumnFamilyHandle> handleSupplier;
 
     public ProjectionOutboxStore(RocksDB db, ColumnFamilyHandle headerCf, ColumnFamilyHandle sectionCf,
-                                 ColumnFamilyHandle metaCf, ColumnFamilyHandle artifactCf,
-                                 ColumnFamilyHandle byronUtxoCf) {
-        this.db = Objects.requireNonNull(db, "db");
-        this.headerCf = Objects.requireNonNull(headerCf, "headerCf");
-        this.sectionCf = Objects.requireNonNull(sectionCf, "sectionCf");
-        this.metaCf = Objects.requireNonNull(metaCf, "metaCf");
-        this.artifactCf = Objects.requireNonNull(artifactCf, "artifactCf");
-        this.byronUtxoCf = Objects.requireNonNull(byronUtxoCf, "byronUtxoCf");
-        this.byronOutputs = new ByronOutputAddressIndex(db, byronUtxoCf);
+                                 ColumnFamilyHandle metaCf, ColumnFamilyHandle artifactCf) {
+        this(() -> db, name -> switch (name) {
+            case ProjectionCfNames.PROJ_HEADER -> headerCf;
+            case ProjectionCfNames.PROJ_SECTION -> sectionCf;
+            case ProjectionCfNames.PROJ_META -> metaCf;
+            case ProjectionCfNames.PROJ_ARTIFACT -> artifactCf;
+            default -> null;
+        });
     }
 
     /**
-     * The Byron outpoint resolver backing address participation.
-     *
-     * <p>Owned here because this class owns the projection column families; its writes are
-     * staged into the same batches as the sections derived from them.
+     * Construct an outbox whose native handles can be refreshed after snapshot restore.
      */
-    public ByronOutputAddressIndex byronOutputIndex() {
-        return byronOutputs;
+    public ProjectionOutboxStore(Supplier<RocksDB> dbSupplier,
+                                 Function<String, ColumnFamilyHandle> handleSupplier) {
+        this.dbSupplier = Objects.requireNonNull(dbSupplier, "dbSupplier");
+        this.handleSupplier = Objects.requireNonNull(handleSupplier, "handleSupplier");
+        reinitializeAfterSnapshotRestore();
+    }
+
+    /** Refresh native handles after the chain-state database has been replaced. */
+    public synchronized void reinitializeAfterSnapshotRestore() {
+        this.db = Objects.requireNonNull(dbSupplier.get(), "db");
+        this.headerCf = requiredHandle(ProjectionCfNames.PROJ_HEADER);
+        this.sectionCf = requiredHandle(ProjectionCfNames.PROJ_SECTION);
+        this.metaCf = requiredHandle(ProjectionCfNames.PROJ_META);
+        this.artifactCf = requiredHandle(ProjectionCfNames.PROJ_ARTIFACT);
+    }
+
+    private ColumnFamilyHandle requiredHandle(String name) {
+        return Objects.requireNonNull(handleSupplier.apply(name), "column family " + name);
     }
 
     // ------------------------------------------------------------------ identity
@@ -114,6 +130,461 @@ public final class ProjectionOutboxStore {
                 .map(value -> new String(value, java.nio.charset.StandardCharsets.UTF_8));
     }
 
+    /**
+     * Persist the selected contracts and their capture lifetime in one synced RocksDB batch.
+     * A crash must never leave an artifact selected without an honest projected-from epoch.
+     */
+    public void putArtifactSelection(
+            com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactIdentity identity,
+            com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactEnrollments enrollments) {
+        Objects.requireNonNull(identity, "identity");
+        Objects.requireNonNull(enrollments, "enrollments");
+        enrollments.requireMatches(identity);
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions().setSync(true)) {
+            batch.put(metaCf, ProjectionOutboxKeys.META_ARTIFACTS,
+                    identity.wireForm().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            batch.put(metaCf, ProjectionOutboxKeys.META_ARTIFACT_ENROLLMENTS,
+                    enrollments.wireForm().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            db.write(options, batch);
+        } catch (RocksDBException e) {
+            throw new ProjectionOutboxException("failed to persist artifact selection", e);
+        }
+    }
+
+    /** Persist block identity plus artifact selection as one startup decision. */
+    public void putProjectionSelection(
+            ProjectionIdentity projectionIdentity,
+            com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactIdentity artifactIdentity,
+            com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactEnrollments enrollments) {
+        Objects.requireNonNull(projectionIdentity, "projectionIdentity");
+        Objects.requireNonNull(artifactIdentity, "artifactIdentity");
+        Objects.requireNonNull(enrollments, "enrollments");
+        enrollments.requireMatches(artifactIdentity);
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions().setSync(true)) {
+            batch.put(metaCf, ProjectionOutboxKeys.META_IDENTITY,
+                    projectionIdentity.fingerprint().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            batch.put(metaCf, ProjectionOutboxKeys.META_ARTIFACTS,
+                    artifactIdentity.wireForm().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            batch.put(metaCf, ProjectionOutboxKeys.META_ARTIFACT_ENROLLMENTS,
+                    enrollments.wireForm().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            db.write(options, batch);
+        } catch (RocksDBException e) {
+            throw new ProjectionOutboxException("failed to persist projection selection", e);
+        }
+    }
+
+    public Optional<String> artifactEnrollmentsWire() {
+        return get(metaCf, ProjectionOutboxKeys.META_ARTIFACT_ENROLLMENTS)
+                .map(value -> new String(value, java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    // --------------------------------------------------------- epoch coverage outcomes
+
+    /** Atomically record a canonical point gap and pause future capture for its dataset. */
+    public synchronized void recordEpochArtifactGap(
+            com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap gap) {
+        Objects.requireNonNull(gap, "gap");
+        if (gap.boundaryBlockNumber() <= artifactsSealedThrough()
+                || gap.boundaryBlockNumber() <= acknowledgedThrough()) {
+            throw new ProjectionOutboxException("cannot record epoch-artifact gap for sealed block "
+                    + gap.boundaryBlockNumber());
+        }
+        byte[] key = ProjectionOutboxKeys.epochGapKey(gap.dataset().name(), gap.semanticEpoch());
+        get(metaCf, key).ifPresent(existing -> {
+            var decoded = EpochArtifactGapCodec.decode(existing);
+            if (!decoded.sameOutcome(gap)) {
+                throw new ProjectionOutboxException("conflicting epoch-artifact gap for "
+                        + gap.dataset() + " epoch " + gap.semanticEpoch());
+            }
+        });
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions().setSync(true)) {
+            // A dataset may have published one part before a later part failed. The point GAP
+            // replaces the whole dataset outcome for this boundary, so remove every earlier
+            // reference in the same durable batch before staging is allowed to delete evidence.
+            byte[] lower = ProjectionOutboxKeys.blockKey(gap.boundaryBlockNumber());
+            byte[] upper = ProjectionOutboxKeys.blockKey(gap.boundaryBlockNumber() + 1);
+            try (Slice upperSlice = new Slice(upper);
+                 ReadOptions read = new ReadOptions().setIterateUpperBound(upperSlice);
+                 RocksIterator iterator = db.newIterator(artifactCf, read)) {
+                for (iterator.seek(lower); iterator.isValid(); iterator.next()) {
+                    var ref = ProjectionSectionCodec.decodeArtifact(iterator.value());
+                    if (ref.dataset() == gap.dataset()) batch.delete(artifactCf, iterator.key());
+                }
+                iterator.status();
+            }
+            batch.put(metaCf, key, EpochArtifactGapCodec.encode(gap));
+            batch.put(metaCf, ProjectionOutboxKeys.epochStateKey(gap.dataset().name()),
+                    com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactCaptureState.PAUSED
+                            .name().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            batch.put(metaCf, ProjectionOutboxKeys.epochPauseCauseKey(gap.dataset().name()),
+                    EpochArtifactGapCodec.encode(gap));
+            db.write(options, batch);
+        } catch (RocksDBException e) {
+            throw new ProjectionOutboxException("failed to persist epoch-artifact gap", e);
+        }
+    }
+
+    public List<com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap> epochArtifactGaps() {
+        byte[] prefix = ProjectionOutboxKeys.epochGapPrefix();
+        List<com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap> gaps = new ArrayList<>();
+        try (RocksIterator iterator = db.newIterator(metaCf)) {
+            iterator.seek(prefix);
+            while (iterator.isValid() && startsWith(iterator.key(), prefix)) {
+                gaps.add(EpochArtifactGapCodec.decode(iterator.value()));
+                iterator.next();
+            }
+            iterator.status();
+        } catch (RocksDBException e) {
+            throw new ProjectionOutboxException("failed to scan epoch-artifact gaps", e);
+        }
+        gaps.sort(java.util.Comparator
+                .comparing((com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap gap) ->
+                        gap.dataset().name())
+                .thenComparingInt(com.bloxbean.cardano.yano.archive.api.projection
+                        .EpochArtifactGap::semanticEpoch));
+        return List.copyOf(gaps);
+    }
+
+    public com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactCaptureState
+            epochArtifactCaptureState(com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId dataset) {
+        return get(metaCf, ProjectionOutboxKeys.epochStateKey(dataset.name()))
+                .map(value -> com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactCaptureState
+                        .valueOf(new String(value, java.nio.charset.StandardCharsets.UTF_8)))
+                .orElse(com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactCaptureState.ACTIVE);
+    }
+
+    public synchronized void resumeEpochArtifact(
+            com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId dataset) {
+        resumeEpochArtifact(dataset, -1, null);
+    }
+
+    public synchronized void resumeEpochArtifact(
+            com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId dataset,
+            long slot, byte[] hash) {
+        if (slot >= 0 && (hash == null || hash.length == 0)) {
+            throw new IllegalArgumentException("resume point hash is required");
+        }
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions().setSync(true)) {
+            batch.put(metaCf, ProjectionOutboxKeys.epochStateKey(dataset.name()),
+                    com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactCaptureState.ACTIVE
+                            .name().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            byte[] prefix = ProjectionOutboxKeys.epochIntervalPrefix();
+            try (RocksIterator iterator = db.newIterator(metaCf)) {
+                iterator.seek(prefix);
+                while (iterator.isValid() && startsWith(iterator.key(), prefix)) {
+                    var state = EpochGapIntervalCodec.decode(iterator.value());
+                    if (state.dataset() == dataset && state.open()) {
+                        batch.put(metaCf, iterator.key(), EpochGapIntervalCodec.encode(
+                                new EpochGapIntervalCodec.State(state.dataset(), state.causedByEpoch(),
+                                        state.failureClass(), false, state.checkpoints())));
+                    }
+                    iterator.next();
+                }
+                iterator.status();
+            }
+            if (slot >= 0) {
+                byte[] resume = java.nio.ByteBuffer.allocate(12 + hash.length)
+                        .order(java.nio.ByteOrder.BIG_ENDIAN).putLong(slot).putInt(hash.length).put(hash).array();
+                batch.put(metaCf, ProjectionOutboxKeys.epochResumeKey(dataset.name()), resume);
+            }
+            db.write(options, batch);
+        } catch (RocksDBException e) {
+            throw new ProjectionOutboxException("failed to resume epoch artifact " + dataset, e);
+        }
+    }
+
+    /** Remove point-gap intent after the sink atomically repaired it to COMPLETE. */
+    public synchronized void acknowledgeEpochArtifactRepair(
+            com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId dataset, int epoch) {
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions().setSync(true)) {
+            batch.delete(metaCf, ProjectionOutboxKeys.epochGapKey(dataset.name(), epoch));
+            if (epochArtifactCaptureState(dataset)
+                    == com.bloxbean.cardano.yano.archive.api.projection
+                            .EpochArtifactCaptureState.ACTIVE) {
+                batch.delete(metaCf, ProjectionOutboxKeys.epochPauseCauseKey(dataset.name()));
+            }
+            byte[] prefix = ProjectionOutboxKeys.epochIntervalPrefix();
+            try (RocksIterator iterator = db.newIterator(metaCf)) {
+                iterator.seek(prefix);
+                while (iterator.isValid() && startsWith(iterator.key(), prefix)) {
+                    var state = EpochGapIntervalCodec.decode(iterator.value());
+                    if (state.dataset() == dataset
+                            && state.checkpoints().stream().anyMatch(point -> point.epoch() == epoch)) {
+                        var retained = state.checkpoints().stream()
+                                .filter(point -> point.epoch() != epoch).toList();
+                        if (retained.isEmpty()) batch.delete(metaCf, iterator.key());
+                        else batch.put(metaCf, iterator.key(), EpochGapIntervalCodec.encode(
+                                new EpochGapIntervalCodec.State(state.dataset(), state.causedByEpoch(),
+                                        state.failureClass(), state.open(), retained)));
+                    }
+                    iterator.next();
+                }
+                iterator.status();
+            }
+            db.write(options, batch);
+        } catch (RocksDBException e) {
+            throw new ProjectionOutboxException("failed to acknowledge epoch-artifact repair", e);
+        }
+    }
+
+    /** Preview interval splits that the sink must commit atomically with repaired rows. */
+    public List<com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactIntervalRepair>
+            previewEpochArtifactIntervalRepairs(List<ProjectionArtifactRef> artifacts) {
+        var repaired = artifacts.stream().collect(java.util.stream.Collectors.groupingBy(
+                ProjectionArtifactRef::dataset,
+                java.util.stream.Collectors.mapping(ProjectionArtifactRef::semanticEpoch,
+                        java.util.stream.Collectors.toSet())));
+        if (repaired.isEmpty()) return List.of();
+        var result = new ArrayList<com.bloxbean.cardano.yano.archive.api.projection
+                .EpochArtifactIntervalRepair>();
+        byte[] prefix = ProjectionOutboxKeys.epochIntervalPrefix();
+        try (RocksIterator iterator = db.newIterator(metaCf)) {
+            iterator.seek(prefix);
+            while (iterator.isValid() && startsWith(iterator.key(), prefix)) {
+                var state = EpochGapIntervalCodec.decode(iterator.value());
+                var epochs = repaired.get(state.dataset());
+                if (epochs != null && state.checkpoints().stream()
+                        .anyMatch(point -> epochs.contains(point.epoch()))) {
+                    var retained = state.checkpoints().stream()
+                            .filter(point -> !epochs.contains(point.epoch())).toList();
+                    var segments = retained.isEmpty() ? List.<com.bloxbean.cardano.yano.archive.api
+                                    .projection.EpochArtifactGapInterval>of()
+                            : new EpochGapIntervalCodec.State(state.dataset(), state.causedByEpoch(),
+                                    state.failureClass(), state.open(), retained).intervals();
+                    result.add(new com.bloxbean.cardano.yano.archive.api.projection
+                            .EpochArtifactIntervalRepair(state.dataset(), state.causedByEpoch(), segments));
+                }
+                iterator.next();
+            }
+            iterator.status();
+        } catch (RocksDBException e) {
+            throw new ProjectionOutboxException("failed to preview epoch interval repair", e);
+        }
+        return List.copyOf(result);
+    }
+
+    public void acknowledgeEpochArtifactRepairs(List<ProjectionArtifactRef> artifacts) {
+        artifacts.stream().map(ref -> java.util.Map.entry(ref.dataset(), ref.semanticEpoch()))
+                .distinct().forEach(entry -> acknowledgeEpochArtifactRepair(
+                        entry.getKey(), entry.getValue()));
+    }
+
+    @FunctionalInterface
+    public interface CompleteEpochArtifactProbe {
+        boolean isComplete(com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId dataset,
+                           int epoch, long slot, byte[] hash);
+    }
+
+    /**
+     * Reconcile a crash after sink COMPLETE but before outbox acknowledgement using exact points.
+     */
+    public int acknowledgeRepairsAlreadyComplete(CompleteEpochArtifactProbe probe) {
+        Objects.requireNonNull(probe, "probe");
+        record Candidate(com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId dataset,
+                         int epoch, long slot, byte[] hash) {
+            Candidate { hash = hash.clone(); }
+            @Override public byte[] hash() { return hash.clone(); }
+        }
+        var candidates = new java.util.LinkedHashMap<String, Candidate>();
+        for (var gap : epochArtifactGaps()) {
+            var candidate = new Candidate(gap.dataset(), gap.semanticEpoch(), gap.boundarySlot(),
+                    gap.boundaryBlockHash());
+            candidates.put(gap.dataset().name() + '/' + gap.semanticEpoch(), candidate);
+        }
+        byte[] prefix = ProjectionOutboxKeys.epochIntervalPrefix();
+        try (RocksIterator iterator = db.newIterator(metaCf)) {
+            iterator.seek(prefix);
+            while (iterator.isValid() && startsWith(iterator.key(), prefix)) {
+                var state = EpochGapIntervalCodec.decode(iterator.value());
+                for (var point : state.checkpoints()) {
+                    var candidate = new Candidate(state.dataset(), point.epoch(), point.slot(), point.hash());
+                    candidates.putIfAbsent(state.dataset().name() + '/' + point.epoch(), candidate);
+                }
+                iterator.next();
+            }
+            iterator.status();
+        } catch (RocksDBException e) {
+            throw new ProjectionOutboxException("failed to scan repair candidates", e);
+        }
+        int acknowledged = 0;
+        for (var candidate : candidates.values()) {
+            if (probe.isComplete(candidate.dataset(), candidate.epoch(), candidate.slot(), candidate.hash())) {
+                acknowledgeEpochArtifactRepair(candidate.dataset(), candidate.epoch());
+                acknowledged++;
+            }
+        }
+        return acknowledged;
+    }
+
+    /** Extend the one compact interval representing boundaries missed while paused. */
+    public synchronized void recordPausedEpoch(
+            com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId dataset,
+            int epoch, long slot, byte[] hash) {
+        if (hash == null || hash.length == 0) throw new IllegalArgumentException("boundary hash is required");
+        var cause = get(metaCf, ProjectionOutboxKeys.epochPauseCauseKey(dataset.name()))
+                .map(EpochArtifactGapCodec::decode)
+                .orElseThrow(() -> new ProjectionOutboxException(
+                        "cannot open a paused interval without a durable pause cause"));
+        byte[] key = ProjectionOutboxKeys.epochIntervalKey(dataset.name(), cause.semanticEpoch());
+        var existing = get(metaCf, key).map(EpochGapIntervalCodec::decode);
+        EpochGapIntervalCodec.State next;
+        if (existing.isPresent() && existing.orElseThrow().open()) {
+            var state = existing.orElseThrow();
+            var checkpoints = new ArrayList<>(state.checkpoints());
+            var last = checkpoints.getLast();
+            if (epoch < last.epoch()) throw new ProjectionOutboxException("paused epoch moved backward");
+            if (epoch == last.epoch()) {
+                if (last.slot() != slot || !java.util.Arrays.equals(last.hash(), hash)) {
+                    throw new ProjectionOutboxException("conflicting paused boundary for " + dataset
+                            + " epoch " + epoch);
+                }
+                return;
+            }
+            checkpoints.add(new EpochGapIntervalCodec.Checkpoint(epoch, slot, hash));
+            next = new EpochGapIntervalCodec.State(dataset, state.causedByEpoch(),
+                    state.failureClass(), true, checkpoints);
+        } else {
+            next = new EpochGapIntervalCodec.State(dataset, cause.semanticEpoch(), cause.failureClass(),
+                    true, List.of(new EpochGapIntervalCodec.Checkpoint(epoch, slot, hash)));
+        }
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions().setSync(true)) {
+            batch.put(metaCf, key, EpochGapIntervalCodec.encode(next));
+            db.write(options, batch);
+        } catch (RocksDBException e) {
+            throw new ProjectionOutboxException("failed to persist paused epoch interval", e);
+        }
+    }
+
+    public List<com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGapInterval>
+            epochArtifactGapIntervals() {
+        byte[] prefix = ProjectionOutboxKeys.epochIntervalPrefix();
+        var values = new ArrayList<com.bloxbean.cardano.yano.archive.api.projection
+                .EpochArtifactGapInterval>();
+        try (RocksIterator iterator = db.newIterator(metaCf)) {
+            iterator.seek(prefix);
+            while (iterator.isValid() && startsWith(iterator.key(), prefix)) {
+                values.addAll(EpochGapIntervalCodec.decode(iterator.value()).intervals());
+                iterator.next();
+            }
+            iterator.status();
+        } catch (RocksDBException e) {
+            throw new ProjectionOutboxException("failed to scan paused epoch intervals", e);
+        }
+        values.sort(java.util.Comparator
+                .comparing((com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGapInterval value)
+                        -> value.dataset().name())
+                .thenComparingInt(com.bloxbean.cardano.yano.archive.api.projection
+                        .EpochArtifactGapInterval::causedByEpoch)
+                .thenComparingInt(com.bloxbean.cardano.yano.archive.api.projection
+                        .EpochArtifactGapInterval::fromEpoch));
+        return List.copyOf(values);
+    }
+
+    /** Drop point gaps above an exact canonical rollback target and re-derive paused states. */
+    public synchronized int rollbackEpochArtifactGaps(long slot, byte[] hash, boolean origin) {
+        if (!origin && (hash == null || hash.length == 0)) {
+            throw new IllegalArgumentException("non-origin rollback requires a hash");
+        }
+        List<com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap> all = epochArtifactGaps();
+        List<com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap> remove = all.stream()
+                .filter(gap -> origin || gap.boundarySlot() > slot
+                        || (gap.boundarySlot() == slot
+                        && !java.util.Arrays.equals(gap.boundaryBlockHash(), hash)))
+                .toList();
+        var intervalUpdates = new java.util.LinkedHashMap<byte[], byte[]>();
+        var intervalDeletes = new java.util.ArrayList<byte[]>();
+        var revertedResumes = new java.util.HashSet<com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId>();
+        var survivingPauseCauses = new java.util.HashSet<
+                com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId>();
+        var removedPauseCauses = new java.util.HashSet<
+                com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId>();
+        for (var dataset : com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.values()) {
+            get(metaCf, ProjectionOutboxKeys.epochPauseCauseKey(dataset.name())).ifPresent(encoded -> {
+                var cause = EpochArtifactGapCodec.decode(encoded);
+                boolean retained = !origin && (cause.boundarySlot() < slot
+                        || cause.boundarySlot() == slot
+                        && java.util.Arrays.equals(cause.boundaryBlockHash(), hash));
+                if (retained) survivingPauseCauses.add(dataset);
+                else removedPauseCauses.add(dataset);
+            });
+            get(metaCf, ProjectionOutboxKeys.epochResumeKey(dataset.name())).ifPresent(encoded -> {
+                var buffer = java.nio.ByteBuffer.wrap(encoded).order(java.nio.ByteOrder.BIG_ENDIAN);
+                long resumeSlot = buffer.getLong(); int length = buffer.getInt();
+                if (length <= 0 || length != buffer.remaining()) {
+                    throw new ProjectionOutboxException("invalid resume point for " + dataset);
+                }
+                byte[] resumeHash = new byte[length]; buffer.get(resumeHash);
+                if (origin || resumeSlot > slot || (resumeSlot == slot
+                        && !java.util.Arrays.equals(resumeHash, hash))) revertedResumes.add(dataset);
+            });
+        }
+        byte[] intervalPrefix = ProjectionOutboxKeys.epochIntervalPrefix();
+        try (RocksIterator iterator = db.newIterator(metaCf)) {
+            iterator.seek(intervalPrefix);
+            while (iterator.isValid() && startsWith(iterator.key(), intervalPrefix)) {
+                var state = EpochGapIntervalCodec.decode(iterator.value());
+                var retained = state.checkpoints().stream().filter(point -> !origin
+                        && (point.slot() < slot || (point.slot() == slot
+                        && java.util.Arrays.equals(point.hash(), hash)))).toList();
+                byte[] key = iterator.key().clone();
+                if (retained.isEmpty()) intervalDeletes.add(key);
+                else {
+                    int latestCause = all.stream().filter(gap -> gap.dataset() == state.dataset()
+                                    && !remove.contains(gap))
+                            .mapToInt(com.bloxbean.cardano.yano.archive.api.projection
+                                    .EpochArtifactGap::semanticEpoch).max().orElse(-1);
+                    boolean reopen = revertedResumes.contains(state.dataset())
+                            && state.causedByEpoch() == latestCause;
+                    if (retained.size() != state.checkpoints().size() || (reopen && !state.open())) {
+                    intervalUpdates.put(key, EpochGapIntervalCodec.encode(new EpochGapIntervalCodec.State(
+                            state.dataset(), state.causedByEpoch(), state.failureClass(),
+                            state.open() || reopen, retained)));
+                    }
+                }
+                iterator.next();
+            }
+            iterator.status();
+        } catch (RocksDBException e) {
+            throw new ProjectionOutboxException("failed to scan paused intervals for rollback", e);
+        }
+        if (remove.isEmpty() && intervalUpdates.isEmpty() && intervalDeletes.isEmpty()
+                && revertedResumes.isEmpty() && removedPauseCauses.isEmpty()) return 0;
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions().setSync(true)) {
+            for (var gap : remove) {
+                batch.delete(metaCf, ProjectionOutboxKeys.epochGapKey(
+                        gap.dataset().name(), gap.semanticEpoch()));
+            }
+            for (byte[] key : intervalDeletes) batch.delete(metaCf, key);
+            for (var update : intervalUpdates.entrySet()) {
+                batch.put(metaCf, update.getKey(), update.getValue());
+            }
+            for (var dataset : com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.values()) {
+                boolean surviving = survivingPauseCauses.contains(dataset);
+                if (!surviving) batch.delete(metaCf, ProjectionOutboxKeys.epochStateKey(dataset.name()));
+                else if (revertedResumes.contains(dataset)) batch.put(metaCf,
+                        ProjectionOutboxKeys.epochStateKey(dataset.name()),
+                        com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactCaptureState.PAUSED
+                                .name().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                if (revertedResumes.contains(dataset)) {
+                    batch.delete(metaCf, ProjectionOutboxKeys.epochResumeKey(dataset.name()));
+                }
+                if (removedPauseCauses.contains(dataset)) {
+                    batch.delete(metaCf, ProjectionOutboxKeys.epochPauseCauseKey(dataset.name()));
+                }
+            }
+            db.write(options, batch);
+            return remove.size();
+        } catch (RocksDBException e) {
+            throw new ProjectionOutboxException("failed to roll back epoch-artifact gaps", e);
+        }
+    }
+
+    private static boolean startsWith(byte[] value, byte[] prefix) {
+        if (value.length < prefix.length) return false;
+        for (int i = 0; i < prefix.length; i++) if (value[i] != prefix[i]) return false;
+        return true;
+    }
+
     // ------------------------------------------------------------------- writing
 
     /**
@@ -128,8 +599,7 @@ public final class ProjectionOutboxStore {
                 List.of(), List.of());
         writer.put(ProjectionCfNames.PROJ_HEADER, ProjectionOutboxKeys.blockKey(header.blockNumber()),
                 ProjectionEnvelopeCodec.encodeHeader(identityOnly));
-        writer.put(ProjectionCfNames.PROJ_META, ProjectionOutboxKeys.META_CURSOR_IDENTITY,
-                ProjectionOutboxKeys.encodeLong(header.blockNumber()));
+        stageCursorMax(writer, ProjectionOutboxKeys.META_CURSOR_IDENTITY, header.blockNumber());
     }
 
     /** Stage one contributor's section plus its cursor. Both land in the caller's batch. */
@@ -143,8 +613,7 @@ public final class ProjectionOutboxStore {
             writer.put(ProjectionCfNames.PROJ_SECTION,
                     ProjectionOutboxKeys.sectionChunkKey(blockNumber, section.type(), i), chunks.get(i));
         }
-        writer.put(ProjectionCfNames.PROJ_META, ProjectionOutboxKeys.cursorKey(section.type()),
-                ProjectionOutboxKeys.encodeLong(blockNumber));
+        stageCursorMax(writer, ProjectionOutboxKeys.cursorKey(section.type()), blockNumber);
     }
 
     /**
@@ -153,8 +622,14 @@ public final class ProjectionOutboxStore {
      * forever on a contributor that has nothing to say.
      */
     public void advanceContributor(ProjectionStagingWriter writer, ProjectionSectionType type, long blockNumber) {
-        writer.put(ProjectionCfNames.PROJ_META, ProjectionOutboxKeys.cursorKey(type),
-                ProjectionOutboxKeys.encodeLong(blockNumber));
+        stageCursorMax(writer, ProjectionOutboxKeys.cursorKey(type), blockNumber);
+    }
+
+    private void stageCursorMax(ProjectionStagingWriter writer, byte[] key, long candidate) {
+        long current = get(metaCf, key).map(ProjectionOutboxKeys::decodeLong).orElse(-1L);
+        if (candidate > current) {
+            writer.put(ProjectionCfNames.PROJ_META, key, ProjectionOutboxKeys.encodeLong(candidate));
+        }
     }
 
     /** Stage an epoch-artifact reference alongside its producing block. */
@@ -184,10 +659,8 @@ public final class ProjectionOutboxStore {
     /**
      * Run {@code work} in the store's own atomic batch.
      *
-     * <p>Used by contributors that have no other subsystem batch to join — notably Byron,
-     * which the live UTXO path never applies. The section and its cursor still commit
-     * atomically with each other, and the durable replay intent remains the retained
-     * canonical body plus that cursor.
+     * <p>Used by contributors that have no other subsystem batch to join — notably Byron
+     * epoch-boundary blocks, which have no UTXO transition. Main blocks use the UTXO batch.
      */
     public void commit(java.util.function.Consumer<ProjectionStagingWriter> work) {
         try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions().setSync(true)) {
@@ -205,7 +678,6 @@ public final class ProjectionOutboxStore {
             case ProjectionCfNames.PROJ_SECTION -> sectionCf;
             case ProjectionCfNames.PROJ_META -> metaCf;
             case ProjectionCfNames.PROJ_ARTIFACT -> artifactCf;
-            case ProjectionCfNames.PROJ_BYRON_UTXO -> byronUtxoCf;
             default -> throw new ProjectionOutboxException("unknown projection column family: " + name);
         };
     }
@@ -260,6 +732,30 @@ public final class ProjectionOutboxStore {
      */
     public boolean hasBlockIdentity(long blockNumber) {
         return get(headerCf, ProjectionOutboxKeys.blockKey(blockNumber)).isPresent();
+    }
+
+    /** Canonical identity already retained at a projection coordinate. */
+    public Optional<ProjectionEnvelopeHeader> blockIdentity(long blockNumber) {
+        return get(headerCf, ProjectionOutboxKeys.blockKey(blockNumber))
+                .map(ProjectionEnvelopeCodec::decodeHeader);
+    }
+
+    /** Required sections that are absent or incomplete at an existing coordinate. */
+    public Set<ProjectionSectionType> missingSections(long blockNumber,
+                                                      Set<ProjectionSectionType> requiredSections) {
+        Map<ProjectionSectionType, ProjectionSectionManifest> manifests =
+                new EnumMap<>(ProjectionSectionType.class);
+        Map<ProjectionSectionType, List<byte[]>> chunks = new EnumMap<>(ProjectionSectionType.class);
+        scanSections(blockNumber, manifests, chunks);
+        Set<ProjectionSectionType> missing = java.util.EnumSet.noneOf(ProjectionSectionType.class);
+        for (ProjectionSectionType required : requiredSections) {
+            ProjectionSectionManifest manifest = manifests.get(required);
+            if (manifest == null
+                    || chunks.getOrDefault(required, List.of()).size() != manifest.chunkCount()) {
+                missing.add(required);
+            }
+        }
+        return Set.copyOf(missing);
     }
 
     public Optional<ProjectionEnvelope> readEnvelope(long blockNumber, Set<ProjectionSectionType> requiredSections) {
@@ -497,11 +993,40 @@ public final class ProjectionOutboxStore {
      * @return the number of envelopes removed
      */
     public long rollbackToSlot(long rollbackSlot, Set<ProjectionSectionType> requiredSections) {
+        return rollbackToPoint(rollbackSlot, null, false, false, requiredSections);
+    }
+
+    /**
+     * Roll back pending envelopes to an exact canonical point. A null hash denotes
+     * origin when {@code origin} is true. At a shared Byron slot, a different-hash
+     * successor is removed while the matching EBB or main-block envelope is retained.
+     */
+    public long rollbackToPoint(long rollbackSlot,
+                                byte[] rollbackHash,
+                                boolean origin,
+                                Set<ProjectionSectionType> requiredSections) {
+        return rollbackToPoint(rollbackSlot, rollbackHash, origin, true, requiredSections);
+    }
+
+    private long rollbackToPoint(long rollbackSlot,
+                                 byte[] rollbackHash,
+                                 boolean origin,
+                                 boolean exact,
+                                 Set<ProjectionSectionType> requiredSections) {
+        if (!origin && (rollbackHash == null || rollbackHash.length != 32)) {
+            if (exact) {
+                throw new IllegalArgumentException("Non-origin projection rollback requires a 32-byte hash");
+            }
+        }
         long firstRemoved = -1;
         try (RocksIterator it = db.newIterator(headerCf)) {
             for (it.seekToLast(); it.isValid(); it.prev()) {
                 ProjectionEnvelopeHeader header = ProjectionEnvelopeCodec.decodeHeader(it.value());
-                if (header.slot() <= rollbackSlot) break;
+                if (!origin && (header.slot() < rollbackSlot
+                        || header.slot() == rollbackSlot
+                        && (!exact || Arrays.equals(header.blockHash(), rollbackHash)))) {
+                    break;
+                }
                 firstRemoved = header.blockNumber();
             }
         }

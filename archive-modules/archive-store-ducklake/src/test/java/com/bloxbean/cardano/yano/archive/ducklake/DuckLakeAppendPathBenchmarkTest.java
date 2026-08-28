@@ -27,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <ol>
  *   <li><b>current</b> — 256-row {@code INSERT ... VALUES} batches whose
  *       placeholder string is built with the quadratic {@code reduce} in
- *       {@link DuckLakeWriteSession#flushPendingStagingBatch}; </li>
+ *       the projection sink's batched staging flush; </li>
  *   <li><b>stringbuilder</b> — identical, but linear placeholder construction;</li>
  *   <li><b>stringbuilder-10k</b> — linear construction with a larger batch;</li>
  *   <li><b>appender</b> — the DuckDB Appender writing straight at DuckLake.</li>
@@ -141,7 +141,7 @@ class DuckLakeAppendPathBenchmarkTest {
     }
 
     /**
-     * The shape {@link DuckLakeWriteSession} actually uses today: 256-row
+     * The shape the projection sink uses today: 256-row
      * {@code INSERT ... VALUES} batches into a native staging table created with
      * {@code CREATE TEMP TABLE ... AS SELECT * FROM <target> WHERE false}, then a
      * single {@code INSERT INTO <ducklake target> SELECT * FROM staging}. Every

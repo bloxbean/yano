@@ -2,6 +2,8 @@ package com.bloxbean.cardano.yano.runtime.utxo;
 
 import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yaci.core.model.TransactionBody;
+import com.bloxbean.cardano.yaci.core.model.byron.ByronMainBlock;
+import com.bloxbean.cardano.yaci.core.model.byron.ByronTx;
 import com.bloxbean.cardano.yano.api.plugin.StorageFilter;
 import com.bloxbean.cardano.yano.api.plugin.UtxoFilterContext;
 
@@ -36,6 +38,15 @@ public final class AddressUtxoFilter implements StorageFilter {
 
     @Override
     public boolean acceptUtxoOutput(UtxoFilterContext ctx, Block block, TransactionBody txBody) {
+        return acceptsContext(ctx);
+    }
+
+    @Override
+    public boolean acceptByronUtxoOutput(UtxoFilterContext ctx, ByronMainBlock block, ByronTx tx) {
+        return acceptsContext(ctx);
+    }
+
+    private boolean acceptsContext(UtxoFilterContext ctx) {
         if (addresses.isEmpty() && paymentCredHashes.isEmpty()) return true;
         if (ctx.address() != null && addresses.contains(ctx.address())) return true;
         if (ctx.paymentCredentialHash() != null && paymentCredHashes.contains(ctx.paymentCredentialHash())) return true;

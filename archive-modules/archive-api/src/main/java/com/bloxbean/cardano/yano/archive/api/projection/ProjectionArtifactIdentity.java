@@ -18,9 +18,9 @@ import java.util.stream.Collectors;
  * <ul>
  *   <li>a <strong>section</strong> set can never grow - a section added later would be missing
  *       from every earlier block - so its fingerprint is compared for exact equality;</li>
- *   <li>an <strong>artifact</strong> set legitimately can grow, but only for artifacts that are
- *       reconstructible from retained data. Folding both into one string would forbid the safe
- *       case along with the unsafe one.</li>
+ *   <li>an <strong>artifact</strong> set legitimately can grow prospectively when the archive
+ *       persists the first projected epoch. Folding both into one string would forbid that safe
+ *       enrollment along with unsupported retroactive completeness claims.</li>
  * </ul>
  *
  * <p>The failure modes differ too, which is why this must fail closed rather than warn. A missing
@@ -77,8 +77,11 @@ public record ProjectionArtifactIdentity(Map<ArchiveDatasetId, ProjectionArtifac
     }
 
     /**
-     * Whether a node configured for {@code this} may open an archive that recorded {@code stored},
-     * and why not when it may not.
+     * Legacy retained-source compatibility evaluator for an explicit retroactive backfill.
+     *
+     * <p>ADR-044 prospective enrollment does not call this method: it records a durable
+     * {@code projectedFromEpoch} and makes no claim for the historical prefix. Keep this
+     * evaluator for a future backfill executor that can actually prove retained coverage.
      *
      * @param coverage    whether this node still retains the sources to backfill a missing
      *                    artifact across {@code fromEpoch..throughEpoch}. Reconstructibility alone
@@ -92,8 +95,8 @@ public record ProjectionArtifactIdentity(Map<ArchiveDatasetId, ProjectionArtifac
      *
      * <ol>
      *   <li>identical contracts open, obviously;</li>
-     *   <li>a node asking for <strong>more</strong> may proceed only where every extra artifact is
-     *       reconstructible - it can backfill those, but not conjure an irreproducible one;</li>
+     *   <li>a retroactive backfill asking for <strong>more</strong> may proceed only where every
+     *       extra artifact is reconstructible from proven retained coverage;</li>
      *   <li>a node asking for <strong>less</strong> is refused: it would silently stop maintaining
      *       artifacts the archive claims to hold, and the archive would keep reporting them;</li>
      *   <li>a <strong>changed</strong> representation or codec for the same artifact is refused -

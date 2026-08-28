@@ -147,6 +147,17 @@ public interface Yano extends AutoCloseable {
         return false;
     }
 
+    /** Storage filters that canonical UTXO application will activate at runtime start. */
+    default java.util.List<String> configuredUtxoStorageFilters() {
+        return java.util.List.of();
+    }
+
+    /** Canonical full point for a retained block coordinate, independent of body pruning. */
+    default java.util.Optional<com.bloxbean.cardano.yano.api.CanonicalBlockReference>
+            canonicalBlockReference(long blockNumber) {
+        return java.util.Optional.empty();
+    }
+
     default Optional<RuntimeMaintenanceGate> maintenanceGate() {
         return Optional.empty();
     }
