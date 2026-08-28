@@ -16,7 +16,7 @@ import java.util.function.Consumer;
  * <p>Extracted so the live path and the ADR-039 projection path cannot disagree about what an
  * address transaction row <em>is</em>. Differential parity between two implementations of the
  * same rule is a test that can pass while both are wrong; sharing the rule makes the question
- * not arise. The same argument already applies to {@code UtxoHistoryDataset}, which both paths
+ * not arise. The same argument already applies to {@link UtxoHistoryRows}, which both paths
  * call.
  *
  * <p>Everything here is a pure function of already-resolved inputs. The one thing that needs

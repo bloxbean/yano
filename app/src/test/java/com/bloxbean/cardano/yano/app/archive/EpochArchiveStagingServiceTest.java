@@ -233,7 +233,7 @@ class EpochArchiveStagingServiceTest {
     }
 
     @Test
-    void unpreparedWriterStillFailsClosed() throws Exception {
+    void unpreparedWriterIsAnUnarmedNoop() throws Exception {
         Path root = temp.resolve("unprepared");
         var staging = new EpochArchiveStagingService(mock(ChainQuery.class), mock(LedgerQuery.class),
                 new ArchiveNetworkIdentity(1, "genesis"), root,
@@ -243,8 +243,189 @@ class EpochArchiveStagingServiceTest {
             writer.commit();
         }
 
-        assertThat(staging.error()).hasValue("epoch boundary was not prepared");
-        assertThat(root.resolve("FAILED")).hasContent("epoch boundary was not prepared");
+        assertThat(staging.error()).isEmpty();
+        assertThat(root.resolve("FAILED")).doesNotExist();
+    }
+
+    @Test
+    void prospectiveEnrollmentDoesNotStageBeforeProjectedFromEpoch() throws Exception {
+        ChainQuery chain = mock(ChainQuery.class);
+        LedgerQuery ledger = mock(LedgerQuery.class);
+        when(chain.getCanonicalBlockReference(501)).thenReturn(Optional.of(
+                new CanonicalBlockReference(501, 50_100, new byte[] {5, 0, 1})));
+        when(ledger.slotToUnixTime(50_100)).thenReturn(1_700_000_500L);
+        var dataset = EpochArchiveStagingSink.Dataset.REWARD;
+        var staging = new EpochArchiveStagingService(chain, ledger,
+                new ArchiveNetworkIdentity(1, "genesis"), temp.resolve("joined"),
+                EnumSet.of(dataset), 0, java.util.Map.of(dataset, 501));
+
+        var beforeJoin = new EpochArchiveStagingSink.Boundary(499, 500, 50_000, 500);
+        staging.beginBoundary(beforeJoin);
+        assertThat(staging.enabled(dataset)).isFalse();
+        try (var writer = staging.openRewards(500, "rewards")) {
+            writer.commit();
+        }
+        staging.completeBoundary(beforeJoin);
+
+        var firstCaptured = new EpochArchiveStagingSink.Boundary(500, 501, 50_100, 501);
+        staging.beginBoundary(firstCaptured);
+        assertThat(staging.enabled(dataset)).isTrue();
+        try (var writer = staging.openRewards(501, "rewards")) {
+            writer.commit();
+        }
+        staging.completeBoundary(firstCaptured);
+
+        assertThat(staging.sources().stream()
+                .flatMap(binding -> staging.pending(binding, 10).stream())
+                .map(com.bloxbean.cardano.yano.archive.core.source.EpochArchiveJob::epoch))
+                .containsExactly(501L);
+    }
+
+    @Test
+    void selectedDatasetWithNoProducerRowsPublishesZeroRowCompleteEvidence() {
+        ChainQuery chain = mock(ChainQuery.class);
+        LedgerQuery ledger = mock(LedgerQuery.class);
+        when(chain.getCanonicalBlockReference(550)).thenReturn(Optional.of(
+                new CanonicalBlockReference(550, 55_000, new byte[] {5, 5, 0})));
+        when(ledger.slotToUnixTime(55_000)).thenReturn(1_700_000_550L);
+        var reward = EpochArchiveStagingSink.Dataset.REWARD;
+        var staging = new EpochArchiveStagingService(chain, ledger,
+                new ArchiveNetworkIdentity(1, "genesis"), temp.resolve("zero-row"),
+                EnumSet.of(reward), 0, java.util.Map.of(reward, 550));
+        var announced = new java.util.ArrayList<
+                com.bloxbean.cardano.yano.archive.core.source.DurableEpochFileSource.StagedEvidence>();
+        staging.setStagedArtifactListener((job, evidence) -> announced.add(evidence));
+
+        var boundary = new EpochArchiveStagingSink.Boundary(549, 550, 55_000, 550);
+        staging.beginBoundary(boundary);
+        // Deliberately do not open a reward writer: this is the legitimate empty-producer path.
+        staging.completeBoundary(boundary);
+
+        assertThat(announced).singleElement().satisfies(evidence ->
+                assertThat(evidence.rowCount()).isZero());
+        assertThat(staging.sources().stream()
+                .flatMap(binding -> staging.pending(binding, 10).stream())
+                .map(com.bloxbean.cardano.yano.archive.core.source.EpochArchiveJob::epoch))
+                .containsExactly(550L);
+        var restarted = new EpochArchiveStagingService(chain, ledger,
+                new ArchiveNetworkIdentity(1, "genesis"), temp.resolve("zero-row"),
+                EnumSet.of(reward), 0, java.util.Map.of(reward, 550));
+        assertThat(restarted.sources().stream()
+                .flatMap(binding -> restarted.pending(binding, 10).stream())
+                .map(com.bloxbean.cardano.yano.archive.core.source.EpochArchiveJob::epoch))
+                .containsExactly(550L);
+    }
+
+    @Test
+    void fastAcknowledgementBeforeBoundaryCompletionDoesNotCreateDuplicateZeroEvidence() {
+        ChainQuery chain = mock(ChainQuery.class);
+        LedgerQuery ledger = mock(LedgerQuery.class);
+        when(chain.getCanonicalBlockReference(551)).thenReturn(Optional.of(
+                new CanonicalBlockReference(551, 55_100, new byte[] {5, 5, 1})));
+        when(ledger.slotToUnixTime(55_100)).thenReturn(1_700_000_551L);
+        var reward = EpochArchiveStagingSink.Dataset.REWARD;
+        var staging = new EpochArchiveStagingService(chain, ledger,
+                new ArchiveNetworkIdentity(1, "genesis"), temp.resolve("fast-ack"),
+                EnumSet.of(reward), 0, java.util.Map.of(reward, 551));
+        var announced = new java.util.ArrayList<java.util.UUID>();
+        staging.setStagedArtifactListener((job, evidence) -> {
+            announced.add(job.jobId());
+            staging.release(job.dataset(), job.jobId());
+        });
+
+        var boundary = new EpochArchiveStagingSink.Boundary(550, 551, 55_100, 551);
+        staging.beginBoundary(boundary);
+        try (var writer = staging.openRewards(551, "rewards")) {
+            writer.commit();
+        }
+        staging.completeBoundary(boundary);
+
+        assertThat(announced).hasSize(1);
+        assertThat(staging.sources().stream()
+                .flatMap(binding -> binding.source().pending(Integer.MAX_VALUE).stream())).isEmpty();
+        assertThat(temp.resolve("fast-ack/completed/551.properties")).doesNotExist();
+    }
+
+    @Test
+    void datasetFailurePausesOnlyThatDatasetAndExplicitResumeKeepsFutureCapturePossible() {
+        ChainQuery chain = mock(ChainQuery.class);
+        LedgerQuery ledger = mock(LedgerQuery.class);
+        when(chain.getCanonicalBlockReference(600)).thenReturn(Optional.of(
+                new CanonicalBlockReference(600, 60_000, new byte[] {6})));
+        when(chain.getCanonicalBlockReference(601)).thenReturn(Optional.of(
+                new CanonicalBlockReference(601, 60_100, new byte[] {7})));
+        when(ledger.slotToUnixTime(org.mockito.ArgumentMatchers.anyLong())).thenReturn(1_700_000_600L);
+        var rewards = EpochArchiveStagingSink.Dataset.REWARD;
+        var dreps = EpochArchiveStagingSink.Dataset.DREP_DISTRIBUTION;
+        var staging = new EpochArchiveStagingService(chain, ledger,
+                new ArchiveNetworkIdentity(1, "genesis"), temp.resolve("isolated-failure"),
+                EnumSet.of(rewards, dreps), 0);
+        var failures = new java.util.ArrayList<String>();
+        staging.setDatasetFailureListener((dataset, epoch, boundary, failure) ->
+                failures.add(dataset + ":" + epoch + ":" + boundary.blockNumber()));
+
+        var boundary = new EpochArchiveStagingSink.Boundary(599, 600, 60_000, 600);
+        staging.beginBoundary(boundary);
+        try (var writer = staging.openRewards(600, "rewards")) {
+            writer.append(new EpochArchiveStagingSink.RewardFact(
+                    0, "not-hex", null, "member", 598, 600, BigInteger.ONE, "test"));
+            writer.commit();
+        }
+        assertThat(staging.enabled(rewards)).isFalse();
+        assertThat(staging.enabled(dreps)).isTrue();
+        try (var writer = staging.openDrep(600)) {
+            writer.append(new EpochArchiveStagingSink.DrepFact(
+                    2, null, BigInteger.TEN, null, 0, null, true));
+            writer.commit();
+        }
+        staging.completeBoundary(boundary);
+
+        assertThat(failures).containsExactly("REWARD:600:600");
+        assertThat(staging.failure()).isEmpty();
+        assertThat(staging.datasetFailures()).containsOnlyKeys(rewards);
+
+        staging.resumeDurably(rewards, () -> failures.add("resumed"));
+        var next = new EpochArchiveStagingSink.Boundary(600, 601, 60_100, 601);
+        staging.beginBoundary(next);
+        assertThat(staging.enabled(rewards)).isTrue();
+        assertThat(staging.enabled(dreps)).isTrue();
+        staging.abortBoundary(next);
+        assertThat(failures).containsExactly("REWARD:600:600", "resumed");
+    }
+
+    @Test
+    void sharedBoundaryFailureRecordsEveryDatasetPreciselyWithoutLegacyMarker() throws Exception {
+        ChainQuery chain = mock(ChainQuery.class);
+        LedgerQuery ledger = mock(LedgerQuery.class);
+        when(chain.getCanonicalBlockReference(700)).thenReturn(Optional.of(
+                new CanonicalBlockReference(700, 70_000, new byte[] {7})));
+        when(ledger.slotToUnixTime(70_000)).thenReturn(1_700_000_700L);
+        var rewards = EpochArchiveStagingSink.Dataset.REWARD;
+        var dreps = EpochArchiveStagingSink.Dataset.DREP_DISTRIBUTION;
+        Path root = temp.resolve("shared-failure");
+        var staging = new EpochArchiveStagingService(chain, ledger,
+                new ArchiveNetworkIdentity(1, "genesis"), root,
+                EnumSet.of(rewards, dreps), 0);
+        var failed = new java.util.ArrayList<String>();
+        staging.setDatasetFailureListener((dataset, epoch, boundary, failure) ->
+                failed.add(dataset + ":" + epoch + ":" + boundary.blockNumber()));
+
+        var boundary = new EpochArchiveStagingSink.Boundary(699, 700, 70_000, 700);
+        staging.beginBoundary(boundary);
+        try (var reward = staging.openRewards(700, "rewards");
+             var drep = staging.openDrep(700)) {
+            reward.commit();
+            drep.commit();
+        }
+        // Corrupt only the shared completion-marker path after evidence is durable.
+        Files.delete(root.resolve("completed"));
+        Files.writeString(root.resolve("completed"), "not-a-directory");
+        staging.completeBoundary(boundary);
+
+        assertThat(failed).containsExactlyInAnyOrder("REWARD:700:700", "DREP_DISTRIBUTION:700:700");
+        assertThat(staging.datasetFailures()).containsOnlyKeys(rewards, dreps);
+        assertThat(staging.failure()).isEmpty();
+        assertThat(root.resolve("FAILED")).doesNotExist();
     }
 
     private static void assertBoundaryEligibility(int firstPostByronEpoch, int previousEpoch,

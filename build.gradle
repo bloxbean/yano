@@ -487,6 +487,59 @@ tasks.named('check') {
     dependsOn tasks.named('verifyLegacyAccountHistoryRemoved')
 }
 
+tasks.register('verifyLegacyHistoryReplayRemoved') {
+    group = 'verification'
+    description = 'Prevents the removed replay-worker archive and backend write API from returning.'
+
+    doLast {
+        def forbiddenPaths = [
+                'archive-modules/archive-core/src/main/java/com/bloxbean/cardano/yano/archive/core/config/ArchiveConfiguration.java',
+                'archive-modules/archive-core/src/main/java/com/bloxbean/cardano/yano/archive/core/config/ArchiveStartMode.java',
+                'archive-modules/archive-core/src/main/java/com/bloxbean/cardano/yano/archive/core/dataset/AddressTransactionDataset.java',
+                'archive-modules/archive-core/src/main/java/com/bloxbean/cardano/yano/archive/core/dataset/UtxoHistoryDataset.java',
+                'archive-modules/archive-api/src/main/java/com/bloxbean/cardano/yano/archive/api/ArchiveMaintenanceBudget.java',
+                'archive-modules/archive-api/src/main/java/com/bloxbean/cardano/yano/archive/api/ArchiveWriteSession.java',
+                'archive-modules/archive-api/src/main/java/com/bloxbean/cardano/yano/archive/api/ArchiveReceipt.java',
+                'archive-modules/archive-api/src/main/java/com/bloxbean/cardano/yano/archive/api/ArchiveRetentionCutoff.java',
+                'archive-modules/archive-store-ducklake/src/main/java/com/bloxbean/cardano/yano/archive/ducklake/DuckLakeWriteSession.java'
+        ]
+        def failures = forbiddenPaths.findAll { file(it).exists() }
+                .collect { "removed replay path exists: ${it}" }
+        def forbiddenTokens = [
+                'RocksDbHotHistoryStore',
+                'HotHistoryStore',
+                'ArchiveProgressStore',
+                'ArchiveTrack',
+                'SequentialOutpointResolver',
+                'SequentialPointerResolver',
+                'ArchiveMaintenanceBudget',
+                'ArchiveWriteSession',
+                'ArchiveRetentionCutoff',
+                'ArchiveReceipt',
+                'DuckLakeWriteSession'
+        ]
+        fileTree(rootProject.projectDir) {
+            include '**/src/main/**/*.java'
+            exclude '**/build/**'
+        }.files.each { source ->
+            def text = source.getText('UTF-8')
+            forbiddenTokens.each { token ->
+                if (text.contains(token)) {
+                    failures.add("${rootProject.projectDir.toPath().relativize(source.toPath())} contains ${token}")
+                }
+            }
+        }
+        if (!failures.isEmpty()) {
+            throw new GradleException('Legacy history replay removal verification failed:\n - '
+                    + failures.join('\n - '))
+        }
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyLegacyHistoryReplayRemoved')
+}
+
 tasks.register('verifyLeanHostDependencyBoundary') {
     group = 'verification'
     description = 'Rejects Yano X allocated projects from the Yano host runtime graph.'

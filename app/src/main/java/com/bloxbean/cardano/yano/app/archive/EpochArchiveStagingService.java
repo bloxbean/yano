@@ -24,20 +24,40 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
     private final ArchiveNetworkIdentity network;
     private final Path root;
     private final Set<Dataset> enabled;
+    private final Map<Dataset, Integer> projectedFrom;
     private final int firstPostByronEpoch;
     private final Map<String, SourceBinding<?>> sources = new ConcurrentHashMap<>();
+    /** Durable evidence announced during the open boundary, even if a fast sink already released it. */
+    private final Set<DatasetBoundary> announcedEvidence = ConcurrentHashMap.newKeySet();
     private volatile Boundary boundary;
     /** True only while the prepared boundary's source epoch is still Byron. */
     private volatile boolean skipCurrentBoundary;
+    private final Map<Dataset, String> datasetErrors = new ConcurrentHashMap<>();
+    private final Map<Dataset, Long> failedAtBlock = new ConcurrentHashMap<>();
     private volatile String error;
 
     EpochArchiveStagingService(ChainQuery chain, LedgerQuery ledger, ArchiveNetworkIdentity network,
                                Path root, Set<Dataset> enabled, int firstPostByronEpoch) {
+        this(chain, ledger, network, root, enabled, firstPostByronEpoch,
+                enabled.stream().collect(java.util.stream.Collectors.toUnmodifiableMap(
+                        dataset -> dataset, ignored -> 0)));
+    }
+
+    EpochArchiveStagingService(ChainQuery chain, LedgerQuery ledger, ArchiveNetworkIdentity network,
+                               Path root, Set<Dataset> enabled, int firstPostByronEpoch,
+                               Map<Dataset, Integer> projectedFrom) {
         if (firstPostByronEpoch < 0) {
             throw new IllegalArgumentException("firstPostByronEpoch must be non-negative");
         }
         this.chain = chain; this.ledger = ledger; this.network = network;
         this.root = root.toAbsolutePath().normalize(); this.enabled = Set.copyOf(enabled);
+        if (!projectedFrom.keySet().equals(this.enabled)) {
+            throw new IllegalArgumentException("projected-from datasets must match enabled staging datasets");
+        }
+        if (projectedFrom.values().stream().anyMatch(epoch -> epoch == null || epoch < 0)) {
+            throw new IllegalArgumentException("projected-from epochs must be non-negative");
+        }
+        this.projectedFrom = Map.copyOf(projectedFrom);
         this.firstPostByronEpoch = firstPostByronEpoch;
         try {
             Files.createDirectories(completedDirectory());
@@ -53,31 +73,87 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
     }
 
     public boolean enabled(Dataset dataset) {
-        return enabled.contains(dataset) && error == null && !skipCurrentBoundary;
+        Boundary current = boundary;
+        Integer floor = projectedFrom.get(dataset);
+        return floor != null && current != null && current.newEpoch() >= floor
+                && error == null && !datasetErrors.containsKey(dataset) && !skipCurrentBoundary;
     }
 
     /**
-     * Why staging stopped, when it has.
+     * Why all staged-file capture stopped, when it has.
      *
-     * <p>A failure here disables staging for every dataset and is written to a marker file that
-     * is re-read on startup, so it survives a restart. That makes it exactly the kind of state
-     * that must be reportable: without it the node runs on, produces no further epoch artifacts,
-     * and looks entirely healthy while every reward, DRep and governance boundary after the
-     * failure is missing from the archive.
+     * <p>This is the legacy/shared-infrastructure latch. Dataset-local failures are exposed by
+     * {@link #datasetFailures()} and pause only that dataset. A shared failure is written to the
+     * legacy marker and disables every staged dataset until an audited operator action.
      */
     public java.util.Optional<String> failure() { return java.util.Optional.ofNullable(error); }
+    public Map<Dataset, String> datasetFailures() { return Map.copyOf(datasetErrors); }
+    boolean boundaryOpen() { return boundary != null; }
     public void beginBoundary(Boundary value) {
         boundary = Objects.requireNonNull(value, "epoch boundary is required");
-        skipCurrentBoundary = value.previousEpoch() < firstPostByronEpoch;
+        skipCurrentBoundary = value.previousEpoch() < firstPostByronEpoch
+                || projectedFrom.values().stream().noneMatch(floor -> value.newEpoch() >= floor);
     }
     public void completeBoundary(Boundary value) {
         if (!Objects.equals(boundary, value)) return;
         try {
             if (skipCurrentBoundary || enabled.isEmpty()) return;
-            if (error == null) publishCompleted(value);
+            if (error == null) {
+                var listener = failureListener;
+                if (listener != null) {
+                    for (Dataset dataset : datasetErrors.keySet()) {
+                        Integer floor = projectedFrom.get(dataset);
+                        if (floor != null && value.newEpoch() >= floor
+                                && !Objects.equals(failedAtBlock.get(dataset), value.blockNumber())) {
+                            listener.missed(dataset, value);
+                        }
+                    }
+                }
+                ensureZeroRowEvidence(value);
+                if (datasetErrors.size() < enabled.size() && hasPendingAtBoundary(value.blockNumber())) {
+                    publishCompleted(value);
+                }
+            }
             else discardBoundary(value);
-        } catch (Exception e) { fail(e); }
+        } catch (Exception e) { failGlobal(e); }
         finally { clearBoundary(); }
+    }
+
+    /**
+     * Give every healthy selected staged dataset a positive outcome at every eligible boundary.
+     *
+     * <p>A producer that legitimately has no rows may never open a writer (notably governance
+     * before Conway). Without an empty artifact, absence is indistinguishable from a producer
+     * that silently failed. A zero-row staged job is small, durable evidence that the dataset was
+     * evaluated and empty; the sink then commits its {@code COMPLETE} outcome with row count zero.
+     */
+    private void ensureZeroRowEvidence(Boundary value) {
+        for (Dataset dataset : enabled) {
+            if (datasetErrors.containsKey(dataset)) continue;
+            boolean present = announcedEvidence.contains(new DatasetBoundary(dataset, value.blockNumber()))
+                    || sources().stream()
+                    .filter(binding -> binding.dataset() == ArchiveDatasetId.valueOf(dataset.name()))
+                    .flatMap(binding -> binding.source().pending(Integer.MAX_VALUE).stream())
+                    .anyMatch(job -> job.boundaryBlockNumber() == value.blockNumber());
+            if (present) continue;
+
+            FactWriter<?> empty = switch (dataset) {
+                // Reuse registered source parts so restart discovery sees zero-row evidence too.
+                case REWARD -> openRewards(value.newEpoch(), "rewards");
+                case DREP_DISTRIBUTION -> openDrep(value.newEpoch());
+                case GOVERNANCE_PROPOSAL_STATUS -> openGovernance(value.newEpoch(), "lifecycle");
+                // These datasets use the direct, batch-owned artifact contributor and never
+                // belong to a staged-file selection.
+                case EPOCH_STAKE, ADA_POT -> null;
+            };
+            if (empty != null) empty.commit();
+        }
+    }
+
+    private boolean hasPendingAtBoundary(long blockNumber) {
+        return sources().stream().flatMap(binding ->
+                        binding.source().pending(Integer.MAX_VALUE).stream())
+                .anyMatch(job -> job.boundaryBlockNumber() == blockNumber);
     }
     public void abortBoundary(Boundary value) {
         if (!Objects.equals(boundary, value)) return;
@@ -87,10 +163,14 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
         try {
             if (!skipCurrentBoundary) Files.deleteIfExists(completion(value.blockNumber()));
         }
-        catch (Exception e) { fail(e); }
+        catch (Exception e) { failGlobal(e); }
         finally { clearBoundary(); }
     }
     private void clearBoundary() {
+        Boundary completed = boundary;
+        if (completed != null) {
+            announcedEvidence.removeIf(value -> value.blockNumber() == completed.blockNumber());
+        }
         boundary = null;
         skipCurrentBoundary = false;
     }
@@ -178,7 +258,7 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
     private <I, O> FactWriter<I> writer(Dataset selected, ArchiveDatasetId dataset, long epoch, String part,
                                          EpochFactCodec<O> codec, EpochArchiveDataset<O> projection,
                                          Function<I, O> converter) {
-        if (!enabled(selected)) return noop();
+        if (!enabled(selected) || epoch < projectedFrom.getOrDefault(selected, Integer.MAX_VALUE)) return noop();
         try {
             Boundary current = Objects.requireNonNull(boundary, "epoch boundary was not prepared");
             var canonical = chain.getCanonicalBlockReference(current.blockNumber()).orElseThrow(() ->
@@ -206,7 +286,7 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
                     } catch (Exception e) {
                         failed = true;
                         output.close();
-                        fail(e);
+                        fail(selected, Math.toIntExact(epoch), e);
                     }
                 }
                 public void commit() {
@@ -218,12 +298,12 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
                         // Only now is the evidence durable, so only now may anything reference it.
                         announceStaged(binding, job);
                     }
-                    catch (Exception e) { output.close(); fail(e); }
+                    catch (Exception e) { output.close(); fail(selected, Math.toIntExact(epoch), e); }
                 }
                 public void abort() { if (!done) { done = true; output.close(); } }
             };
         } catch (Exception e) {
-            fail(e); return noop();
+            fail(selected, Math.toIntExact(epoch), e); return noop();
         }
     }
 
@@ -249,9 +329,10 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
     /** Announce durable evidence, after commit and never before. */
     private void announceStaged(SourceBinding<?> binding, EpochArchiveJob job) {
         var listener = stagedArtifactListener;
-        if (listener == null) return;
         if (!(binding.source() instanceof DurableEpochFileSource<?> durable)) return;
-        listener.staged(job, durable.evidenceOf(job));
+        if (listener != null) listener.staged(job, durable.evidenceOf(job));
+        announcedEvidence.add(new DatasetBoundary(
+                Dataset.valueOf(job.dataset().name()), job.boundaryBlockNumber()));
     }
 
     /**
@@ -396,9 +477,87 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
         return null;
     }
 
-    private void fail(Exception e) {
-        error = e.getMessage() != null ? e.getMessage() : e.toString();
+    @FunctionalInterface
+    interface DatasetFailureListener {
+        void failed(Dataset dataset, int semanticEpoch, Boundary boundary, Exception failure);
+
+        default void missed(Dataset dataset, Boundary boundary) { }
+    }
+
+    private volatile DatasetFailureListener failureListener;
+
+    void setDatasetFailureListener(DatasetFailureListener listener) {
+        this.failureListener = listener;
+    }
+
+    void restorePaused(Dataset dataset, String detail) {
+        if (enabled.contains(dataset)) datasetErrors.put(dataset, detail == null ? "paused" : detail);
+    }
+
+    void restoreActive(Dataset dataset) {
+        datasetErrors.remove(dataset);
+        failedAtBlock.remove(dataset);
+    }
+
+    synchronized void resumeDurably(Dataset dataset, Runnable persistActive) {
+        if (!enabled.contains(dataset)) throw new IllegalArgumentException("unselected staging dataset " + dataset);
+        if (boundary != null) throw new IllegalStateException("cannot resume while an epoch boundary is open");
+        durabilityProbe();
+        Objects.requireNonNull(persistActive, "persistActive").run();
+        datasetErrors.remove(dataset);
+        failedAtBlock.remove(dataset);
+    }
+
+    private void fail(Dataset dataset, int semanticEpoch, Exception e) {
+        if (datasetErrors.containsKey(dataset)) return;
         Boundary current = boundary;
+        if (current == null) {
+            failGlobal(e);
+            return;
+        }
+        try {
+            var listener = failureListener;
+            if (listener == null) throw new IllegalStateException("dataset failure listener is not installed");
+            listener.failed(dataset, semanticEpoch, current, e);
+            datasetErrors.put(dataset, failureDetail(e));
+            failedAtBlock.put(dataset, current.blockNumber());
+            discardDatasetBoundary(dataset, current);
+        } catch (Exception persistenceFailure) {
+            persistenceFailure.addSuppressed(e);
+            failGlobal(persistenceFailure);
+        }
+    }
+
+    private void failGlobal(Exception e) {
+        Boundary current = boundary;
+        String detail = failureDetail(e);
+
+        // A shared staging failure still has precise provenance while a boundary is open. If
+        // RocksDB can durably accept every dataset outcome, degrade those datasets independently
+        // instead of falling back to the old unstructured global latch.
+        if (current != null && failureListener != null) {
+            try {
+                for (Dataset dataset : enabled) {
+                    if (!datasetErrors.containsKey(dataset)) {
+                        failureListener.failed(dataset, current.newEpoch(), current, e);
+                    }
+                }
+                for (Dataset dataset : enabled) {
+                    datasetErrors.put(dataset, detail);
+                    failedAtBlock.put(dataset, current.blockNumber());
+                }
+                try { discardBoundary(current); } catch (Exception ignored) { }
+                return;
+            } catch (Exception outcomeFailure) {
+                outcomeFailure.addSuppressed(e);
+                e = outcomeFailure;
+                detail = failureDetail(e);
+            }
+        }
+
+        // No exact boundary, or the durable outcome store itself failed. Retain the legacy
+        // fail-closed marker because continuing with an unattributed gap is forbidden.
+        error = detail;
         if (current != null) try { discardBoundary(current); } catch (Exception ignored) { }
         try {
             Files.createDirectories(root);
@@ -411,6 +570,33 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
             }
         } catch (Exception ignored) {
             // The in-memory error still keeps capture disabled for this run.
+        }
+    }
+
+    private static String failureDetail(Exception e) {
+        String value = e.getMessage() == null ? e.toString() : e.getMessage();
+        value = value.replace('\n', ' ').replace('\r', ' ').trim();
+        return value.length() <= 1_024 ? value : value.substring(0, 1_024);
+    }
+
+    private void durabilityProbe() {
+        Path temporary = null;
+        Path moved = root.resolve(".resume-probe");
+        try {
+            Files.createDirectories(root);
+            temporary = Files.createTempFile(root, ".resume-probe-", ".tmp");
+            try (var channel = java.nio.channels.FileChannel.open(temporary,
+                    java.nio.file.StandardOpenOption.WRITE)) {
+                channel.write(java.nio.ByteBuffer.wrap(new byte[]{1}));
+                channel.force(true);
+            }
+            move(temporary, moved);
+            Files.deleteIfExists(moved);
+        } catch (Exception e) {
+            throw new ArchiveStoreException("epoch staging durability probe failed", e);
+        } finally {
+            if (temporary != null) try { Files.deleteIfExists(temporary); } catch (Exception ignored) { }
+            try { Files.deleteIfExists(moved); } catch (Exception ignored) { }
         }
     }
     private static <T> FactWriter<T> noop() { return new FactWriter<>() { public void append(T ignored) { } public void commit() { } }; }
@@ -479,6 +665,16 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
         catch (Exception e) { throw new ArchiveStoreException("cannot discard epoch boundary", e); }
     }
 
+    private void discardDatasetBoundary(Dataset dataset, Boundary value) {
+        ArchiveDatasetId archiveDataset = ArchiveDatasetId.valueOf(dataset.name());
+        for (SourceBinding<?> binding : sources()) {
+            if (binding.dataset() != archiveDataset) continue;
+            for (EpochArchiveJob job : binding.source().pending(Integer.MAX_VALUE)) {
+                if (job.boundaryBlockNumber() == value.blockNumber()) binding.source().acknowledge(job);
+            }
+        }
+    }
+
     private boolean isCompleted(EpochArchiveJob job) {
         Path marker = completion(job.boundaryBlockNumber());
         if (!Files.exists(marker)) return false;
@@ -509,4 +705,6 @@ final class EpochArchiveStagingService implements EpochArchiveStagingSink {
             return projection.dataset();
         }
     }
+
+    private record DatasetBoundary(Dataset dataset, long blockNumber) { }
 }

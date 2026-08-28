@@ -6,8 +6,6 @@ dependencies {
     api project(':archive-modules:archive-api')
     implementation libs.duckdb.jdbc
     implementation libs.sqlite.jdbc
-
-    testImplementation testFixtures(project(':archive-modules:archive-api'))
 }
 
 def duckDbJdbcVersion = libs.duckdb.jdbc.get().version.toString()

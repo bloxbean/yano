@@ -5,16 +5,14 @@ import com.bloxbean.cardano.yano.archive.api.projection.ProjectionSink;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionSinkProvider;
 
 import java.nio.file.Path;
+import java.sql.Connection;
 import java.util.Map;
 
 /**
  * Opens DuckLake as the ADR-039 primary projection sink.
  *
- * <p>Schema and identity are initialised directly, without instantiating the legacy
- * {@code DuckLakeHistoryArchiveBackend}. That backend also builds the replay-worker
- * transaction locator, whose startup rebuild was measured at ~61 seconds on a preprod
- * archive — cost the projection path has no use for, since ADR-039 §15 keeps point lookup
- * off the acknowledgement path entirely.
+ * <p>Schema and identity are initialised directly. The read facade separately builds its
+ * optional transaction locator, keeping that query accelerator off the acknowledgement path.
  */
 public final class DuckLakeProjectionSinkProvider implements ProjectionSinkProvider {
 
@@ -35,18 +33,14 @@ public final class DuckLakeProjectionSinkProvider implements ProjectionSinkProvi
         DuckDbManager manager = new DuckDbManager(DuckDbManagerConfig.defaults(temp),
                 new PackagedDuckDbExtensionLoader(extensions));
         try {
-            // Initialise schema and identity directly. Opening the legacy
-            // DuckLakeHistoryArchiveBackend to do this also constructs the replay-worker
-            // transaction locator, which performs a full rebuild on startup — measured at
-            // ~61 seconds on a preprod archive. The projection path does not use the locator
-            // at all (ADR-039 keeps point lookup off the acknowledgement path), so paying
-            // that cost on every restart was pure waste.
+            // Initialise writer-owned schema directly. Opening the read facade here would also
+            // build its transaction locator, which does not belong on the acknowledgement path.
             try (DuckDbLease lease = manager.acquire(DuckDbWorkload.BULK_CATCH_UP,
                     archiveConfig.acquireTimeout())) {
-                java.sql.Connection connection = lease.connection();
+                Connection connection = lease.connection();
                 DuckLakeSql.attach(connection, archiveConfig, null, false);
                 try {
-                    new DuckLakeInitializer(archiveConfig).initialize(connection, expectedIdentity);
+                    new DuckLakeInitializer(archiveConfig).initializeProjection(connection, expectedIdentity);
                     DuckLakeProjectionSchema.initialize(connection);
                 } finally {
                     DuckLakeSql.detach(connection);
