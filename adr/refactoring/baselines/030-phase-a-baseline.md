@@ -55,9 +55,10 @@ timestamps can change their hashes between equivalent builds.
 | Deployment parity live E2E | PASS | 415.74s |
 | Role workflow live E2E | PASS | 213.81s; includes authorization, proofs, recovery, and one-member restart/catch-up |
 
-The machine-readable commands and the behavior protected by each gate are in
-`config/repository-split/allocation-v1.json`. The root `check` lifecycle validates that inventory,
-all included projects, path ownership, artifact ids, dispositions, and debt ownership.
+At the time of the split, the machine-readable commands and behavior protected by each gate were
+recorded in `config/repository-split/allocation-v1.json`. The root `check` lifecycle validated that
+cutover inventory. The manifest and its migration-only checks were retired after the repository
+split completed; this report retains the original evidence and results.
 
 ## Phase A implementation and lessons
 

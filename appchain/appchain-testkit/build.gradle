@@ -11,6 +11,12 @@ java {
     targetCompatibility = 25
 }
 
+def publishedArtifactId = 'yano-appchain-core-testkit'
+
+tasks.named('jar') {
+    archiveBaseName = publishedArtifactId
+}
+
 tasks.named('compileJava') {
     // This module has no annotation processor that consumes the repository-wide
     // project identity option, so do not emit an irrelevant javac processing warning.
@@ -20,7 +26,7 @@ tasks.named('compileJava') {
 publishing {
     publications {
         mavenJava(MavenPublication) {
-            artifactId = 'yano-appchain-core-testkit'
+            artifactId = publishedArtifactId
             pom {
                 name = 'Yano App-Chain Core Testkit'
                 description = 'OrderedLog, host SPI, and plugin conformance support for Yano'
