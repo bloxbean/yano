@@ -157,3 +157,10 @@ Detailed evidence is in
   but it does **not** meet the original 500–600 MiB target. The measured live
   set proves that target needs more implementation work; reducing only the
   runtime heap limit causes correctness-threatening OOM recovery.
+- The user has revised the operational memory goal: correctness is the hard
+  gate, about 1.5 GB total RSS is preferred, and below 2 GB is the interim
+  target. The current 1536 MiB heap cap is not the same as that RSS target.
+  Epoch 291 transiently reached about 2.08 GiB RSS, then G1 reduced heap from
+  about 1.09 GiB at boundary start to 65 MiB at completion and process RSS fell
+  to about 1.26 GiB. This run remains intentionally unchanged until sync
+  correctness reaches tip; the transient RSS overshoot is still open.
