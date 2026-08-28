@@ -537,32 +537,14 @@ public class AccountStateResource {
         if (available) {
             return null;
         }
-        if (historyArchive != null && historyArchive.datasetBuilding(dataset)) {
-            return featureUnavailable(switch (dataset) {
-                case ACCOUNT_EVENT -> "Account tx/cert history is still building";
-                case ADDRESS_TRANSACTION -> "Address transaction history is still building";
-                case REWARD -> "Reward history is still building";
-                default -> throw new IllegalArgumentException(
-                        "Unsupported account-history dataset: " + dataset.logicalName());
-            });
-        }
-        if (historyArchive != null && historyArchive.datasetFailed(dataset)) {
-            return featureUnavailable(switch (dataset) {
-                case ACCOUNT_EVENT -> "Account tx/cert history is unavailable after a non-retryable failure";
-                case ADDRESS_TRANSACTION ->
-                        "Address transaction history is unavailable after a non-retryable failure";
-                case REWARD -> "Reward history is unavailable after a non-retryable failure";
-                default -> throw new IllegalArgumentException(
-                        "Unsupported account-history dataset: " + dataset.logicalName());
-            });
-        }
         return featureUnavailable(switch (dataset) {
-            case ACCOUNT_EVENT -> "Account tx/cert history index is disabled";
-            case ADDRESS_TRANSACTION -> "Address transaction history disabled "
+            case ACCOUNT_EVENT -> "Account tx/cert history is unavailable or not selected";
+            case ADDRESS_TRANSACTION -> "Address transaction history is unavailable or not selected "
                     + "(set yano.history.projection.enabled=true; if "
                     + "yano.history.projection.sections is set it must include "
                     + "address-transaction:v1)";
-            case REWARD -> "Reward history disabled (set yano.history.projection.enabled=true; "
+            case REWARD -> "Reward history is unavailable or not selected "
+                    + "(set yano.history.projection.enabled=true; "
                     + "if yano.history.projection.epoch-artifacts is set it must include reward:v1)";
             default -> throw new IllegalArgumentException(
                     "Unsupported account-history dataset: " + dataset.logicalName());

@@ -33,14 +33,13 @@ class AccountStateResourceBalanceTest {
     private static final String STAKE_ADDRESS = AddressProvider.getStakeAddress(new Address(BASE_ADDR)).toBech32();
 
     @Test
-    void accountHistoryCatchupIsReportedAsBuildingRatherThanDisabled() {
+    void unavailableProjectionDatasetIsReportedWithoutLegacyWorkerState() {
         AccountHistoryProvider provider = mock(AccountHistoryProvider.class);
         when(provider.isEnabled()).thenReturn(true);
         when(provider.isHealthy()).thenReturn(true);
         HistoryArchiveService archive = mock(HistoryArchiveService.class);
         when(archive.enabled()).thenReturn(true);
         when(archive.accountHistoryProvider()).thenReturn(provider);
-        when(archive.datasetBuilding(ArchiveDatasetId.ACCOUNT_EVENT)).thenReturn(true);
 
         AccountStateResource resource = resourceWith(
                 ledgerState(true, BigInteger.ZERO, BigInteger.ZERO, null, null),
@@ -50,7 +49,8 @@ class AccountStateResourceBalanceTest {
         Response response = resource.getWithdrawals(STAKE_ADDRESS, 1, 20, "desc");
 
         assertEquals(503, response.getStatus());
-        assertEquals(Map.of("error", "Account tx/cert history is still building"), response.getEntity());
+        assertEquals(Map.of("error", "Account tx/cert history is unavailable or not selected"),
+                response.getEntity());
     }
 
     @Test

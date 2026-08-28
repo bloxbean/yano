@@ -1,12 +1,15 @@
 package com.bloxbean.cardano.yano.archive.ducklake;
 
+import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import com.bloxbean.cardano.yano.archive.api.ArchiveIdentity;
 import com.bloxbean.cardano.yano.archive.api.ArchiveNetworkIdentity;
 import com.bloxbean.cardano.yano.archive.api.ArchiveRow;
+import com.bloxbean.cardano.yano.archive.api.BlockRange;
 import com.bloxbean.cardano.yano.archive.api.projection.ArchiveArtifactReader;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionCoordinate;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionIdentity;
+import com.bloxbean.cardano.yano.archive.api.projection.ProjectionMaintenance;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionReceipt;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionReceiptMismatchException;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionRowBatch;
@@ -18,9 +21,9 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.Statement;
-import com.bloxbean.cardano.yano.archive.api.projection.ProjectionMaintenance;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -61,7 +64,7 @@ class DuckLakeProjectionSinkTest {
                 Duration.ofSeconds(30), 10, 10, 16L * 1024 * 1024, 100_000,
                 Duration.ofHours(168), Duration.ofHours(24));
         // Opening the backend creates the archive tables the sink writes into.
-        backend = DuckLakeHistoryArchiveBackend.open(
+        backend = DuckLakeHistoryArchiveBackend.openReadOnly(
                 new ArchiveIdentity(UUID.randomUUID(), "ducklake", 1, 1, "fixture-genesis"),
                 config, DuckDbManagerConfig.defaults(root.resolve("tmp")),
                 new PackagedDuckDbExtensionLoader(temp.resolve("extensions")));
@@ -141,6 +144,27 @@ class DuckLakeProjectionSinkTest {
         }
     }
 
+    private List<String> partitionColumns(String table) throws Exception {
+        try (var connection = DriverManager.getConnection("jdbc:sqlite:" + config.catalogPath());
+             var sql = connection.prepareStatement(
+                     "SELECT c.column_name FROM ducklake_partition_info i"
+                             + " JOIN ducklake_table t ON t.table_id=i.table_id"
+                             + " JOIN ducklake_partition_column p ON p.partition_id=i.partition_id"
+                             + " AND p.table_id=i.table_id"
+                             + " JOIN ducklake_column c ON c.column_id=p.column_id"
+                             + " AND c.table_id=i.table_id"
+                             + " WHERE t.table_name=? AND t.end_snapshot IS NULL"
+                             + " AND i.end_snapshot IS NULL AND c.end_snapshot IS NULL"
+                             + " ORDER BY p.partition_key_index")) {
+            sql.setString(1, table);
+            try (var rows = sql.executeQuery()) {
+                List<String> columns = new ArrayList<>();
+                while (rows.next()) columns.add(rows.getString(1));
+                return List.copyOf(columns);
+            }
+        }
+    }
+
     private boolean projectionTableExists(DuckLakeArchiveConfig selectedConfig, String table)
             throws Exception {
         try (var probe = new DuckDbManager(DuckDbManagerConfig.defaults(
@@ -170,6 +194,54 @@ class DuckLakeProjectionSinkTest {
         }
         @Override public void acknowledge(ProjectionArtifactRef ref) { }
     };
+
+    @Test
+    void freshProjectionArchiveDoesNotCreateReplayWorkerMetadata() throws Exception {
+        try (var ignored = open("fresh-schema")) {
+            assertThat(projectionTableExists(config, "archive_coverage")).isFalse();
+            assertThat(projectionTableExists(config, "archive_commits")).isFalse();
+            assertThat(projectionTableExists(config, "archive_commit_counts")).isFalse();
+            assertThat(projectionTableExists(config, "archive_invalidations")).isFalse();
+            assertThat(projectionTableExists(config, "archive_schema")).isFalse();
+            assertThat(projectionTableExists(config, "projection_receipts")).isTrue();
+        }
+    }
+
+    @Test
+    void rewardsArePartitionedByTheirCanonicalEarnedEpoch() throws Exception {
+        try (var ignored = open("reward-partition")) {
+            assertThat(partitionColumns("rewards")).containsExactly("epoch");
+        }
+    }
+
+    @Test
+    void existingReplayMetadataIsLeftInertAndUnchanged() throws Exception {
+        ArchiveIdentity archiveIdentity;
+        try (var ignored = open("legacy-metadata")) {
+            archiveIdentity = backend.identity();
+        }
+        backend.close();
+        backend = null;
+
+        try (var manager = new DuckDbManager(DuckDbManagerConfig.defaults(
+                config.catalogPath().getParent().resolve("legacy-table-tmp")),
+                new PackagedDuckDbExtensionLoader(temp.resolve("extensions")));
+             var lease = manager.acquire(DuckDbWorkload.BULK_CATCH_UP, Duration.ofSeconds(30))) {
+            DuckLakeSql.attach(lease.connection(), config, null, false);
+            try (Statement sql = lease.connection().createStatement()) {
+                sql.execute("CREATE TABLE history_lake.archive_coverage(marker BIGINT)");
+                sql.execute("INSERT INTO history_lake.archive_coverage VALUES (7)");
+            } finally {
+                DuckLakeSql.detach(lease.connection());
+            }
+        }
+
+        backend = DuckLakeHistoryArchiveBackend.openReadOnly(
+                archiveIdentity, config,
+                DuckDbManagerConfig.defaults(config.catalogPath().getParent().resolve("reopen-tmp")),
+                new PackagedDuckDbExtensionLoader(temp.resolve("extensions")));
+        assertThat(count("archive_coverage")).isEqualTo(1);
+    }
 
 
     // --------------------------------------------------------- epoch artifacts
@@ -484,6 +556,11 @@ class DuckLakeProjectionSinkTest {
             assertThat(count("chain_transaction")).isEqualTo(5);
             assertThat(count("transaction_inputs")).isEqualTo(5);
             assertThat(count("projection_receipts")).isEqualTo(1);
+            try (var read = backend.openReadSession()) {
+                assertThat(backend.coverage(read, ArchiveDatasetId.TRANSACTION)
+                        .completeRanges()).containsExactly(new BlockRange(0, 4));
+                assertThat(backend.findTransaction(read, new byte[32])).isPresent();
+            }
         }
     }
 

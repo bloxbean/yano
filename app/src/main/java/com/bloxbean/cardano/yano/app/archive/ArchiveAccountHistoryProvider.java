@@ -4,12 +4,30 @@ import com.bloxbean.cardano.client.address.util.AddressUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
 import com.bloxbean.cardano.yano.api.util.AddressKeyUtil;
-import com.bloxbean.cardano.yano.archive.api.*;
+import com.bloxbean.cardano.yano.archive.api.ArchiveBackend;
+import com.bloxbean.cardano.yano.archive.api.ArchiveCoverage;
+import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
+import com.bloxbean.cardano.yano.archive.api.ArchivePageCursor;
+import com.bloxbean.cardano.yano.archive.api.ArchiveQuery;
+import com.bloxbean.cardano.yano.archive.api.ArchiveQueryResult;
+import com.bloxbean.cardano.yano.archive.api.ArchiveRange;
+import com.bloxbean.cardano.yano.archive.api.ArchiveReadSession;
+import com.bloxbean.cardano.yano.archive.api.ArchiveRecord;
+import com.bloxbean.cardano.yano.archive.api.BlockRange;
+import com.bloxbean.cardano.yano.archive.api.EpochRange;
+import com.bloxbean.cardano.yano.archive.api.SourceKind;
 import com.bloxbean.cardano.yano.archive.core.address.AddressKeyCodec;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
 
 /** Compatibility DTO adapter over the ADR-034 typed repositories. */
 final class ArchiveAccountHistoryProvider implements AccountHistoryProvider {
@@ -96,7 +114,7 @@ final class ArchiveAccountHistoryProvider implements AccountHistoryProvider {
     public List<RewardRecord> getRewards(int type, String hash, int page, int count, String order) {
         service.requireCompleteEpochHistory(ArchiveDatasetId.REWARD);
         return query(ArchiveDatasetId.REWARD, Map.of("stake_credential", HexUtil.decodeHexString(hash)),
-                page, count, order).stream().map(row -> new RewardRecord(integer(row, "earned_epoch"),
+                page, count, order).stream().map(row -> new RewardRecord(integer(row, "epoch"),
                 bigInteger(row, "amount"), Objects.toString(row.value("reward_type")),
                 hexNullable(row, "pool_hash"), number(row, "boundary_slot"))).toList();
     }
@@ -132,10 +150,9 @@ final class ArchiveAccountHistoryProvider implements AccountHistoryProvider {
                 case REWARD -> "rewards";
                 default -> throw new IllegalArgumentException("unsupported compatibility dataset");
             };
-            // No hot merge. Hot-history buffered rows ahead of the durable archive; the
-            // projection has no equivalent, because a block range becomes visible exactly when
-            // it commits. Anything above the committed coordinate is honestly "not yet", which
-            // /history/coverage reports rather than this path guessing.
+            // A projection range becomes visible atomically when it commits. Anything above the
+            // committed coordinate is honestly "not yet", which /history/coverage reports rather
+            // than this path guessing.
             try (ArchiveReadSession read = backend.openReadSession()) {
                 ArchiveCoverage coverage = backend.coverage(read, dataset);
                 if (coverage.completeRanges().isEmpty()) {
@@ -169,7 +186,7 @@ final class ArchiveAccountHistoryProvider implements AccountHistoryProvider {
 
     private static Comparator<ArchiveRecord> comparator(ArchiveDatasetId dataset) {
         return switch (dataset) {
-            case REWARD -> Comparator.comparingLong((ArchiveRecord row) -> number(row, "earned_epoch"))
+            case REWARD -> Comparator.comparingLong((ArchiveRecord row) -> number(row, "epoch"))
                     .thenComparing(row -> Objects.toString(row.value("reward_type")))
                     .thenComparing(row -> Objects.toString(row.value("source_id")));
             case ACCOUNT_EVENT -> Comparator.comparingLong((ArchiveRecord row) -> number(row, "block_number"))
@@ -186,7 +203,7 @@ final class ArchiveAccountHistoryProvider implements AccountHistoryProvider {
             case ADDRESS_TRANSACTION -> hex(row, "tx_hash") + ':' + row.value("subject_type") + ':'
                     + HexUtil.encodeHexString((byte[]) row.value("subject_key"));
             case ACCOUNT_EVENT -> hex(row, "tx_hash") + ':' + number(row, "event_index") + ':' + row.value("event_type");
-            case REWARD -> hex(row, "stake_credential") + ':' + number(row, "earned_epoch") + ':'
+            case REWARD -> hex(row, "stake_credential") + ':' + number(row, "epoch") + ':'
                     + row.value("reward_type") + ':' + row.value("source_id");
             default -> row.toString();
         };

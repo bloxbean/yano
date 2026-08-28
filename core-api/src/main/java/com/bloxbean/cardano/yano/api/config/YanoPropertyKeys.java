@@ -272,10 +272,9 @@ public final class YanoPropertyKeys {
         }
     }
 
-    /** Optional asynchronous history/archive settings (ADR-034). */
+    /** Projection archive and read-facade settings. */
     public static final class History {
         public static final String PREFIX = "yano.history.";
-        public static final String ENABLED = PREFIX + "enabled";
         public static final String DIR = PREFIX + "dir";
         public static final String ENGINE = PREFIX + "archive.engine";
         public static final String FINALITY_BLOCKS = PREFIX + "archive.finality-blocks";

@@ -35,11 +35,7 @@ public final class DuckLakeArchiveBackendProvider implements ArchiveBackendProvi
                 new DuckDbWorkloadConfig(
                         number(validatedProperties, "duckdb.bulk-memory-bytes", defaultsManager.bulkCatchUp().memoryLimitBytes()),
                         integer(validatedProperties, "duckdb.bulk-threads", defaultsManager.bulkCatchUp().threads())));
-        if (Boolean.parseBoolean(validatedProperties.getOrDefault("projection.read-mode", "false"))) {
-            return DuckLakeHistoryArchiveBackend.openProjectionRead(expectedIdentity, archiveConfig, manager,
-                    new PackagedDuckDbExtensionLoader(extensions), archiveConfig.waitPolicy());
-        }
-        return DuckLakeHistoryArchiveBackend.open(expectedIdentity, archiveConfig, manager,
+        return DuckLakeHistoryArchiveBackend.openReadOnly(expectedIdentity, archiveConfig, manager,
                 new PackagedDuckDbExtensionLoader(extensions), archiveConfig.waitPolicy());
     }
 

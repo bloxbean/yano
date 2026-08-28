@@ -60,11 +60,8 @@ import java.util.Set;
 /**
  * Composes projection history for the node - the only path that writes an archive.
  *
- * <p>Still separate from {@link HistoryArchiveService}, but not for the original reason.
- * That service once orchestrated the replay-worker pipeline this replaced, and the two ran
- * side by side while the old path served as a differential oracle. The pipeline is gone;
- * what remains there is the read facade, which opens the archive this service wrote and
- * answers historical queries over it. Writing and reading stay apart because they fail
+ * <p>Separate from {@link HistoryArchiveService}, which is now only the read facade over the
+ * archive this service writes. Writing and reading stay apart because they fail
  * differently: a sink that cannot commit must pause ingestion, while a reader that cannot
  * open must not.
  *
@@ -236,8 +233,7 @@ public class ProjectionHistoryService implements AutoCloseable {
      *
      * <p>Byron networks number the first canonical chain block 1; block 0 is the epoch boundary
      * block, which is not a canonical chain block. Shelley-only and devnet chains begin at 0.
-     * This mirrors {@code HistoryArchiveService.firstCanonicalBlockNumber} exactly - the two
-     * pipelines must attribute genesis to the same coordinate or every genesis row differs.
+     * This is the one canonical attribution rule used by projection genesis capture.
      */
     private volatile long firstCanonicalBlock;
 
@@ -1199,7 +1195,7 @@ public class ProjectionHistoryService implements AutoCloseable {
     }
 
     /**
-     * Sink-engine settings the projection path owns independently of the legacy archive.
+     * Sink-engine settings the projection writer owns independently of the read facade.
      *
      * <p>Only keys that were explicitly configured are passed through, so an unset key keeps
      * the engine's own default rather than this method's idea of one.
@@ -2220,15 +2216,11 @@ public class ProjectionHistoryService implements AutoCloseable {
     /**
      * Cross-dataset consistency point, derived from the projection's own receipts.
      *
-     * <p>The legacy watermark is computed from {@code archive_coverage}, which the projection
-     * never writes. Reporting that here once the projection is the primary writer would say
-     * "nothing is archived" over a complete archive - the false absence the ADR forbids.
-     *
      * <p>The projection's answer is also stronger: every required section for a block range
      * commits in one transaction with its receipt, so the committed coordinate is a consistency
      * point across all datasets by construction rather than by intersection.
      *
-     * @return empty when the projection is not the primary writer, so the caller can fall back
+     * @return empty when projection history is disabled or unavailable
      */
     public Optional<Map<String, Object>> consistencyPoint(Set<com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId> requested) {
         if (!enabled || projectionSink == null) return Optional.empty();
@@ -2355,16 +2347,13 @@ public class ProjectionHistoryService implements AutoCloseable {
             // The honest upper bound on how long a final block can take to become queryable.
             coverage.put("maxCommitLatency", policy.maxLinger(active.nearTip()).toString());
         }
-        // ADR-039 Phase 6 requires this to be stated rather than discovered. The projection does
-        // not build the SQLite tx-hash locator the replay worker did, so a lookup by transaction hash
-        // falls back to a full-range scan of the transactions table. The result is correct - the
-        // locator was only ever an accelerator, and the fallback query is the authoritative one -
-        // but it is O(archive), not O(1), until a derived index exists.
+        // The read facade builds a best-effort tx-hash locator when it opens. It is an accelerator,
+        // never coverage authority: a missing or stale hint falls back to the pinned transaction
+        // table, preserving correctness while the projection continues to append.
         coverage.put("transactionHashLookup", Map.of(
-                "mode", "full-scan",
+                "mode", "derived-hint-with-authoritative-fallback",
                 "correct", true,
-                "note", "no derived tx-hash index is built for projection archives; lookup by hash"
-                        + " scans the transactions table and is not suitable for hot paths"));
+                "note", "a missing or stale locator hint scans the pinned transactions table"));
         legacyStagingFailure().ifPresent(detail -> {
             coverage.put("epochStagingError", detail);
             coverage.put("epochStagingFailureActive",
