@@ -64,7 +64,8 @@ Yano's initial goal is to fill three roles:
 ```
 
 See [Building and testing Yano](docs/BUILD_AND_TEST.md) for the test tiers,
-single-suite commands, and packaged-distribution checks.
+single-suite commands, and packaged-distribution checks. Preview-to-preview migration notes
+are in [Upgrading preview releases](docs/UPGRADING.md).
 
 ### Run a preprod relay (default profile)
 

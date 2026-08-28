@@ -24,13 +24,13 @@ public final class JdbcArchiveRepositorySet implements ArchiveRepositorySet {
     /**
      * Table holding ADR-039 projection receipts, when this archive was written by the projection.
      *
-     * <p>The projection never writes {@code archive_coverage} — that table describes replay-worker
-     * jobs. Its equivalent truth is the receipt log, where every required section for a block
+     * <p>The projection receipt log is the coverage authority for block datasets: every required section for a block
      * range committed in one transaction, so a committed range covers every projected dataset
      * uniformly. Without this, coverage over a projection archive reads as empty and every query
      * fails "history coverage is incomplete" over data that is fully present.
      */
     private final String receiptsTable;
+    private final String epochCoverageTable;
 
     public JdbcArchiveRepositorySet(Function<ArchiveReadSession, Connection> connections,
                                     String tablePrefix, String coverageTable) {
@@ -39,10 +39,17 @@ public final class JdbcArchiveRepositorySet implements ArchiveRepositorySet {
 
     public JdbcArchiveRepositorySet(Function<ArchiveReadSession, Connection> connections,
                                     String tablePrefix, String coverageTable, String receiptsTable) {
+        this(connections, tablePrefix, coverageTable, receiptsTable, null);
+    }
+
+    public JdbcArchiveRepositorySet(Function<ArchiveReadSession, Connection> connections,
+                                    String tablePrefix, String coverageTable, String receiptsTable,
+                                    String epochCoverageTable) {
         this.receiptsTable = receiptsTable;
+        this.epochCoverageTable = epochCoverageTable;
         this.connections = Objects.requireNonNull(connections, "connections");
         this.tablePrefix = Objects.requireNonNull(tablePrefix, "tablePrefix");
-        this.coverageTable = Objects.requireNonNull(coverageTable, "coverageTable");
+        this.coverageTable = coverageTable;
     }
 
     @Override
@@ -140,40 +147,56 @@ public final class JdbcArchiveRepositorySet implements ArchiveRepositorySet {
         }
 
         private ArchiveCoverage coverage(Connection connection, long generation) throws SQLException {
-            String sql = "SELECT projection_version,source_kind,range_start,range_end FROM "
-                    + coverageTable + " WHERE dataset=? ORDER BY range_start";
             List<ArchiveRange> ranges = new ArrayList<>();
             int projectionVersion = schema.projectionVersion();
+            if (coverageTable != null) {
+                String sql = "SELECT projection_version,source_kind,range_start,range_end FROM "
+                        + coverageTable + " WHERE dataset=? ORDER BY range_start";
+                try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                    statement.setString(1, dataset.name());
+                    try (ResultSet result = statement.executeQuery()) {
+                        while (result.next()) {
+                            projectionVersion = result.getInt(1);
+                            SourceKind kind = SourceKind.valueOf(result.getString(2));
+                            ranges.add(kind == SourceKind.BLOCK
+                                    ? new BlockRange(result.getLong(3), result.getLong(4))
+                                    : new EpochRange(result.getLong(3), result.getLong(4)));
+                        }
+                    }
+                }
+            }
+            // A caller may supply an older coverage table for compatibility, but current
+            // projection reads pass none and derive block coverage from receipts. Epoch coverage
+            // comes only from durable COMPLETE outcomes, never from a block-range inference.
+            if (ranges.isEmpty() && receiptsTable != null && dataset.sourceKind() == SourceKind.BLOCK) {
+                ranges.addAll(receiptCoverage(connection));
+            } else if (ranges.isEmpty() && epochCoverageTable != null
+                    && dataset.sourceKind() == SourceKind.EPOCH) {
+                ranges.addAll(epochCoverage(connection));
+            }
+            return new ArchiveCoverage(dataset, projectionVersion, generation, merge(ranges));
+        }
+
+        /** COMPLETE semantic epochs recorded atomically with projection artifact rows. */
+        private List<ArchiveRange> epochCoverage(Connection connection) throws SQLException {
+            List<ArchiveRange> ranges = new ArrayList<>();
+            String sql = "SELECT DISTINCT semantic_epoch FROM " + epochCoverageTable
+                    + " WHERE dataset=? AND outcome='COMPLETE' ORDER BY semantic_epoch";
             try (PreparedStatement statement = connection.prepareStatement(sql)) {
                 statement.setString(1, dataset.name());
                 try (ResultSet result = statement.executeQuery()) {
                     while (result.next()) {
-                        projectionVersion = result.getInt(1);
-                        SourceKind kind = SourceKind.valueOf(result.getString(2));
-                        ranges.add(kind == SourceKind.BLOCK
-                                ? new BlockRange(result.getLong(3), result.getLong(4))
-                                : new EpochRange(result.getLong(3), result.getLong(4)));
+                        long epoch = result.getLong(1);
+                        ranges.add(new EpochRange(epoch, epoch));
                     }
                 }
             }
-            // Fall back to the receipt log only when the worker wrote nothing. Preferring
-            // receipts unconditionally would mask a genuinely incomplete legacy archive; falling
-            // back only on an empty result keeps the legacy answer authoritative wherever it
-            // exists, which the Phase 7 oracle run depends on.
-            // Receipts prove BLOCK ranges. An epoch dataset is asked about in epoch terms, and a
-            // receipt cannot say which epochs a block range contains, so epoch coverage is left
-            // empty rather than fabricated - those reads fail closed instead of answering from
-            // coverage nobody proved.
-            if (ranges.isEmpty() && receiptsTable != null && dataset.sourceKind() == SourceKind.BLOCK) {
-                ranges.addAll(receiptCoverage(connection));
-            }
-            return new ArchiveCoverage(dataset, projectionVersion, generation, merge(ranges));
+            return ranges;
         }
 
         /** Contiguous block ranges the projection has durably committed. */
         private List<ArchiveRange> receiptCoverage(Connection connection) throws SQLException {
             List<ArchiveRange> ranges = new ArrayList<>();
-            // Absent on any archive the legacy worker wrote, which is the normal case.
             String unqualified = receiptsTable.substring(receiptsTable.lastIndexOf('.') + 1);
             try (PreparedStatement exists = connection.prepareStatement(
                     "SELECT 1 FROM information_schema.tables WHERE table_name = ? LIMIT 1")) {

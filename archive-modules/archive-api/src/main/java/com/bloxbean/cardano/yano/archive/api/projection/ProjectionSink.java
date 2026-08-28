@@ -1,6 +1,8 @@
 package com.bloxbean.cardano.yano.archive.api.projection;
 
 import java.util.Optional;
+import java.util.List;
+import java.util.Map;
 
 /**
  * The one configured authoritative historical store for this node (ADR-039 §13).
@@ -20,6 +22,58 @@ public interface ProjectionSink extends AutoCloseable {
      * A sink that cannot read a required section must fail here, not at first use.
      */
     void initialize(ProjectionIdentity expected);
+
+    /**
+     * Install or verify the selected epoch-artifact contracts and enrollment lifetime.
+     * Implementations must make prospective additions idempotent and refuse removals or
+     * changed contracts.
+     */
+    default void initializeArtifacts(ProjectionArtifactIdentity identity,
+                                     ProjectionArtifactEnrollments enrollments) {
+        if (!identity.isEmpty()) {
+            throw new UnsupportedOperationException("sink does not support epoch artifacts");
+        }
+    }
+
+    /** Complete semantic-epoch ranges committed atomically with artifact rows. */
+    default Map<com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId,
+            List<com.bloxbean.cardano.yano.archive.api.ArchiveRange>> epochArtifactCoverage() {
+        return Map.of();
+    }
+
+    /** Commit a positive GAP outcome idempotently; a conflicting outcome must fail closed. */
+    default void recordEpochArtifactGap(EpochArtifactGap gap) {
+        throw new UnsupportedOperationException("sink does not support epoch-artifact gaps");
+    }
+
+    /** Durable point gaps currently held by the sink. */
+    default List<EpochArtifactGap> epochArtifactGaps() {
+        return List.of();
+    }
+
+    /** Whether this exact semantic epoch and canonical boundary point is durably COMPLETE. */
+    default boolean hasCompleteEpochArtifact(
+            com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId dataset,
+            int semanticEpoch, long boundarySlot, byte[] boundaryHash) {
+        return false;
+    }
+
+    /** Upsert the compact range of later boundaries missed while a dataset is paused. */
+    default void recordEpochArtifactGapInterval(EpochArtifactGapInterval interval) {
+        throw new UnsupportedOperationException("sink does not support epoch-artifact gap intervals");
+    }
+
+    default List<EpochArtifactGapInterval> epochArtifactGapIntervals() { return List.of(); }
+
+    /** Atomically replace the sink's compact pause intervals with authoritative outbox state. */
+    default void replaceEpochArtifactGapIntervals(List<EpochArtifactGapInterval> intervals) {
+        if (!intervals.isEmpty()) {
+            throw new UnsupportedOperationException("sink does not support epoch-artifact gap intervals");
+        }
+    }
+
+    /** Remove non-canonical epoch outcomes after an exact-point rollback. */
+    default void rollbackEpochArtifactCoverage(long slot, byte[] hash, boolean origin) { }
 
     /** Greatest contiguous committed block envelope, or {@link ProjectionCoordinate#NONE}. */
     ProjectionCoordinate coordinate();
