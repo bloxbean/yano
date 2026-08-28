@@ -920,6 +920,17 @@ final class PluginContextFacades {
         }
 
         @Override
+        public boolean acceptByronUtxoOutput(
+                UtxoFilterContext ctx,
+                com.bloxbean.cardano.yaci.core.model.byron.ByronMainBlock block,
+                com.bloxbean.cardano.yaci.core.model.byron.ByronTx tx) {
+            return callbacks.callOrElse(CURRENT_GENERATION,
+                    () -> PluginThreadContext.call(loader,
+                            () -> delegate.acceptByronUtxoOutput(ctx, block, tx)),
+                    false);
+        }
+
+        @Override
         public int priority() {
             return callbacks.callOrElse(CURRENT_GENERATION,
                     () -> PluginThreadContext.call(loader, delegate::priority),

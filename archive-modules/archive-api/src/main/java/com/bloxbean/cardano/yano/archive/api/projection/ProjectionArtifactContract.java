@@ -88,11 +88,18 @@ public record ProjectionArtifactContract(ArchiveDatasetId dataset,
         return dataset.name().toLowerCase(java.util.Locale.ROOT).replace('_', '-');
     }
 
+    /** Operator-facing versioned selector, e.g. {@code reward:v1}. */
+    public String selector() {
+        return wireName() + ":v" + schemaVersion;
+    }
+
     /**
-     * Whether an archive lacking this artifact can gain it without being rebuilt.
+     * Whether an archive can backfill this artifact retroactively without being rebuilt.
      *
-     * <p>Only {@link ProjectionArtifactReconstructibility#RECONSTRUCTIBLE} qualifies: the other
-     * two depend on state the boundary held and the node no longer has.
+     * <p>This is not ADR-044 prospective enrollment: every class may join at its next eligible
+     * boundary with the earlier prefix marked {@code NOT_PROJECTED}. Only
+     * {@link ProjectionArtifactReconstructibility#RECONSTRUCTIBLE} can potentially fill already
+     * passed epochs, and even then only when retained-source coverage is proven.
      */
     public boolean addableToAnExistingArchive() {
         return reconstructibility == ProjectionArtifactReconstructibility.RECONSTRUCTIBLE;

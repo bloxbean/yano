@@ -34,6 +34,8 @@ class StorageFilterChainTest {
         var chain = new StorageFilterChain(List.of(rejectAll));
         assertFalse(chain.isEmpty());
         assertFalse(chain.acceptUtxoOutput(ctx("addr1", null), null, null));
+        assertTrue(chain.acceptByronUtxoOutput(ctx("Ae2", null), null, null),
+                "existing Shelley-only filters default-accept Byron");
     }
 
     @Test

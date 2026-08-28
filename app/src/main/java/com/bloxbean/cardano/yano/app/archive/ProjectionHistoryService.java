@@ -2,9 +2,12 @@ package com.bloxbean.cardano.yano.app.archive;
 
 import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
+import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.ChainQuery;
 import com.bloxbean.cardano.yano.api.LedgerQuery;
 import com.bloxbean.cardano.yano.api.config.YanoConfig;
+import com.bloxbean.cardano.yano.api.util.EpochSlotCalc;
+import com.bloxbean.cardano.yano.runtime.config.DefaultEpochParamProvider;
 import com.bloxbean.cardano.yano.runtime.config.NetworkGenesisConfig;
 import com.bloxbean.cardano.yano.api.archive.ProjectionCfNames;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
@@ -29,11 +32,14 @@ import com.bloxbean.cardano.yano.archive.core.projection.CanonicalProjectionColl
 import com.bloxbean.cardano.yano.archive.core.projection.ProjectionChunking;
 import com.bloxbean.cardano.yano.archive.core.projection.ProjectionContributorHealth;
 import com.bloxbean.cardano.yano.archive.core.projection.ProjectionMaintenanceSchedule;
+import com.bloxbean.cardano.yano.archive.core.projection.ProjectionActivationException;
 import com.bloxbean.cardano.yano.archive.core.projection.ProjectionOutboxStats;
 import com.bloxbean.cardano.yano.archive.core.projection.ProjectionOutboxStore;
 import com.bloxbean.cardano.yano.archive.core.projection.ProjectionSinkLifecycle;
 import com.bloxbean.cardano.yano.archive.core.projection.ProjectionStartupGuard;
+import com.bloxbean.cardano.yano.archive.core.projection.ProjectionRestartReconciler;
 import com.bloxbean.cardano.yano.runtime.assembly.Yano;
+import com.bloxbean.cardano.yano.runtime.maintenance.RuntimeMaintenanceGate;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.Config;
@@ -45,6 +51,7 @@ import org.slf4j.LoggerFactory;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -53,11 +60,8 @@ import java.util.Set;
 /**
  * Composes projection history for the node - the only path that writes an archive.
  *
- * <p>Still separate from {@link HistoryArchiveService}, but not for the original reason.
- * That service once orchestrated the replay-worker pipeline this replaced, and the two ran
- * side by side while the old path served as a differential oracle. The pipeline is gone;
- * what remains there is the read facade, which opens the archive this service wrote and
- * answers historical queries over it. Writing and reading stay apart because they fail
+ * <p>Separate from {@link HistoryArchiveService}, which is now only the read facade over the
+ * archive this service writes. Writing and reading stay apart because they fail
  * differently: a sink that cannot commit must pause ingestion, while a reader that cannot
  * open must not.
  *
@@ -74,6 +78,12 @@ public class ProjectionHistoryService implements AutoCloseable {
     private volatile ProjectionOutboxStore outbox;
     private volatile CanonicalProjectionCollector collector;
     private volatile ProjectionIdentity identity;
+    private volatile com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactIdentity
+            selectedArtifacts = com.bloxbean.cardano.yano.archive.api.projection
+                    .ProjectionArtifactIdentity.NONE;
+    private volatile com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactEnrollments
+            artifactEnrollments = com.bloxbean.cardano.yano.archive.api.projection
+                    .ProjectionArtifactEnrollments.NONE;
 
     /**
      * Why initialisation stopped, when it did.
@@ -113,6 +123,9 @@ public class ProjectionHistoryService implements AutoCloseable {
 
     private final java.util.concurrent.atomic.AtomicLong stagedBytesVersion =
             new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.ConcurrentMap<String, String> drainedGapVersions =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private volatile String drainedIntervalSetVersion;
 
     private static final long STAGED_BYTES_TTL_NANOS = java.time.Duration.ofSeconds(5).toNanos();
     private volatile ArchiveSafetyWindows safetyWindows;
@@ -188,10 +201,11 @@ public class ProjectionHistoryService implements AutoCloseable {
      * path for them, not a legacy remnant.
      */
     private static java.util.Set<com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset>
-            stagedFileDatasets() {
+            stagedFileDatasets(
+                    com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactIdentity selected) {
         var staged = java.util.EnumSet.noneOf(
                 com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset.class);
-        com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactContracts.shipped()
+        selected
                 .contracts().values().stream()
                 .filter(contract -> contract.representation()
                         == com.bloxbean.cardano.yano.archive.api.projection
@@ -219,8 +233,7 @@ public class ProjectionHistoryService implements AutoCloseable {
      *
      * <p>Byron networks number the first canonical chain block 1; block 0 is the epoch boundary
      * block, which is not a canonical chain block. Shelley-only and devnet chains begin at 0.
-     * This mirrors {@code HistoryArchiveService.firstCanonicalBlockNumber} exactly - the two
-     * pipelines must attribute genesis to the same coordinate or every genesis row differs.
+     * This is the one canonical attribution rule used by projection genesis capture.
      */
     private volatile long firstCanonicalBlock;
 
@@ -277,19 +290,27 @@ public class ProjectionHistoryService implements AutoCloseable {
             return;
         }
 
+        // An explicit section selection needs no durable state to resolve. Reject an
+        // incompatible filter before requiring/opening RocksDB, so plugin and built-in filter
+        // preflight remains an initialization check rather than a storage-side failure.
+        if (config.getOptionalValue(YanoPropertyKeys.History.PROJECTION_SECTIONS, String.class)
+                .isPresent()) {
+            verifyCompleteUtxoRequirement(configuredSections(Optional.empty()), yano);
+        }
+
         var access = yano.chainstateRocksAccess().orElseThrow(() -> new IllegalStateException(
                 "projection history requires a RocksDB-backed chain state; the outbox must share the"
                         + " chainstate database so contributor writes are atomic with their source state"));
 
-        RocksDB db = (RocksDB) access.getDb();
-        outbox = new ProjectionOutboxStore(db,
-                handle(access, ProjectionCfNames.PROJ_HEADER),
-                handle(access, ProjectionCfNames.PROJ_SECTION),
-                handle(access, ProjectionCfNames.PROJ_META),
-                handle(access, ProjectionCfNames.PROJ_ARTIFACT));
+        outbox = new ProjectionOutboxStore(
+                () -> (RocksDB) access.getDb(),
+                name -> handle(access, name));
 
         sink = config.getOptionalValue(YanoPropertyKeys.History.PROJECTION_SINK, String.class)
                 .orElse("none").trim().toLowerCase();
+
+        Set<ProjectionSectionType> required = configuredSections(outbox.identityFingerprint());
+        verifyCompleteUtxoRequirement(required, yano);
 
         NetworkGenesisConfig genesis;
         try {
@@ -302,14 +323,20 @@ public class ProjectionHistoryService implements AutoCloseable {
         var network = new ArchiveNetworkIdentity(Math.toIntExact(genesis.getNetworkMagic()),
                 genesisHash(nodeConfig));
         firstCanonicalBlock = genesis.hasByronGenesis() ? 1L : 0L;
+        int firstPostByronEpoch = resolveFirstPostByronEpoch(genesis, nodeConfig);
+        ArtifactSelectionPlan artifactPlan = resolveArtifactSelection(
+                chain, ledger, firstPostByronEpoch);
+        selectedArtifacts = artifactPlan.identity();
+        artifactEnrollments = artifactPlan.enrollments();
         // Which datasets this node projects. The default is every shipped block dataset:
         // a fresh sync that silently omitted one would produce an archive that looks healthy
         // while a whole dataset is missing, and the omission is undiscoverable later because
         // the sections cannot be added without resyncing.
-        Set<ProjectionSectionType> required = configuredSections();
         identity = new ProjectionIdentity(network, sink, 1, required);
 
-        long tipBlock = chain.getLocalTip() == null ? 0 : chain.getLocalTip().getBlockNumber();
+        var localTip = chain.getLocalTip();
+        boolean chainHasTip = localTip != null;
+        long tipBlock = chainHasTip ? localTip.getBlockNumber() : 0;
         Optional<ProjectionIdentity> storedIdentity = outbox.identityFingerprint()
                 .filter(fingerprint -> fingerprint.equals(identity.fingerprint()))
                 .map(ignored -> identity);
@@ -346,11 +373,15 @@ public class ProjectionHistoryService implements AutoCloseable {
                 tipBlock, hasStoredIdentity, storedIdentity,
                 sinkEmpty, sinkIdentity, sinkCoordinate, required, acknowledgedThrough));
 
-        outbox.putIdentity(identity);
-        verifyArtifactContracts(sinkEmpty && acknowledgedThrough < 0, chain, ledger);
-
+        validateArtifactSelection(artifactPlan,
+                sinkEmpty && acknowledgedThrough < 0 && !chainHasTip, yano);
+        outbox.putProjectionSelection(identity, artifactPlan.identity(), artifactPlan.enrollments());
+        if (projectionSink != null) {
+            projectionSink.initializeArtifacts(selectedArtifacts, artifactEnrollments);
+            reconcileEpochCoverageToCanonicalTip(chain);
+        }
         installEpochArtifacts(yano, chain, ledger, network.networkMagic());
-        installEpochStagingForUnmigratedDatasets(chain, ledger, network);
+        installSelectedEpochStaging(chain, ledger, network, firstPostByronEpoch);
 
         safetyWindows = ArchiveSafetyWindows.resolve(genesis.getSecurityParam(),
                 autoLong(YanoPropertyKeys.History.ROLLBACK_RETENTION_BLOCKS),
@@ -429,6 +460,27 @@ public class ProjectionHistoryService implements AutoCloseable {
     }
 
     /**
+     * Resolve the staging era threshold without depending on RuntimeNode.start() having already
+     * propagated genesis values back into the mutable node configuration. Projection history is
+     * initialized before that lifecycle step by the packaged application.
+     */
+    static int resolveFirstPostByronEpoch(NetworkGenesisConfig genesis, YanoConfig nodeConfig) {
+        Long configuredStart = nodeConfig.getConfiguredFirstNonByronSlot();
+        if (configuredStart != null && configuredStart < 0) {
+            throw new IllegalArgumentException("firstNonByronSlot must be non-negative");
+        }
+        long firstNonByronSlot = configuredStart != null
+                ? configuredStart
+                : DefaultEpochParamProvider.resolveFirstNonByronSlot(
+                        genesis.getNetworkMagic(), genesis.hasByronGenesis());
+        return new EpochSlotCalc(
+                genesis.getEpochLength(),
+                genesis.getByronSlotsPerEpoch(),
+                firstNonByronSlot)
+                .firstNonByronEpoch();
+    }
+
+    /**
      * Open the configured primary sink and start the ordered drain loop.
      *
      * <p>{@code sink=none} is a supported measurement mode: the producer runs and the outbox
@@ -472,65 +524,197 @@ public class ProjectionHistoryService implements AutoCloseable {
 
 
 
-    /**
-     * Refuse an archive whose epoch artifacts differ from what this build captures.
-     *
-     * <p>The section fingerprint cannot carry this: artifacts are referenced from envelopes, not
-     * named in the identity, so two nodes capturing different artifact sets produce the same
-     * fingerprint. Without this check the archive would keep reporting an artifact nobody was
-     * still maintaining, or claim one it never captured.
-     */
-    private void verifyArtifactContracts(boolean freshArchive, ChainQuery chain, LedgerQuery ledger) {
-        var shipped = com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactContracts.shipped();
-        var stored = com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactIdentity
-                .parse(outbox.artifactIdentityWire().orElse(""));
+    private record ArtifactSelectionPlan(
+            com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactIdentity identity,
+            com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactEnrollments enrollments,
+            java.util.List<com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactEnrollment>
+                    additions,
+            boolean storedMarkerPresent) { }
 
-        if (outbox.artifactIdentityWire().isEmpty() && !freshArchive) {
-            // An archive written before artifacts existed. Adding them mid-archive would leave
-            // every earlier epoch permanently missing, so it is a rebuild, not an upgrade.
-            throw new IllegalStateException("this archive predates epoch artifacts and holds blocks"
-                    + " already; enabling " + shipped.wireForm() + " requires a fresh sync");
+    /** Resolve configuration against the durable contract before any contributor or drain starts. */
+    private ArtifactSelectionPlan resolveArtifactSelection(ChainQuery chain, LedgerQuery ledger,
+                                                           int firstPostByronEpoch) {
+        var shipped = com.bloxbean.cardano.yano.archive.api.projection
+                .ProjectionArtifactContracts.shipped();
+        Optional<String> storedWire = outbox.artifactIdentityWire();
+        var stored = storedWire
+                .map(com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactIdentity::parse)
+                .orElse(com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactIdentity.NONE);
+
+        Optional<String> configured = config.getOptionalValue(
+                YanoPropertyKeys.History.PROJECTION_EPOCH_ARTIFACTS, String.class);
+        var requested = configured.isEmpty()
+                ? (storedWire.isPresent() ? stored : shipped)
+                : parseArtifactSelection(configured.orElseThrow(), shipped);
+
+        java.util.List<String> removed = new java.util.ArrayList<>();
+        java.util.List<String> changed = new java.util.ArrayList<>();
+        for (var entry : stored.contracts().entrySet()) {
+            var mine = requested.contractFor(entry.getKey());
+            if (mine.isEmpty()) removed.add(entry.getValue().selector());
+            else if (!mine.get().equals(entry.getValue())) changed.add(entry.getValue().selector());
+        }
+        if (!removed.isEmpty() || !changed.isEmpty()) {
+            throw new IllegalStateException("projection artifact selection differs from this archive: removed="
+                    + removed + ", contractChanged=" + changed
+                    + "; removal and representation/codec changes require a fresh archive");
         }
 
-        // An empty archive has no epochs to cover, so the coverage rule is vacuous there. A
-        // populated one must prove the sources still exist, and the default coverage proves nothing.
-        int throughEpoch = freshArchive ? -1 : currentEpoch(chain, ledger);
-        shipped.refuseToOpen(stored,
-                        com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactCoverage.NONE,
-                        0, throughEpoch)
-                .ifPresent(reason -> { throw new IllegalStateException(
-                        "projection artifacts do not match this archive: " + reason); });
+        var enrollmentValues = new java.util.EnumMap<com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId,
+                com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactEnrollment>(
+                com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.class);
+        Optional<String> storedEnrollmentsWire = outbox.artifactEnrollmentsWire();
+        if (storedEnrollmentsWire.isPresent()) {
+            var persisted = com.bloxbean.cardano.yano.archive.api.projection
+                    .ProjectionArtifactEnrollments.parse(storedEnrollmentsWire.orElseThrow());
+            persisted.requireMatches(stored);
+            enrollmentValues.putAll(persisted.values());
+        } else if (storedWire.isPresent()) {
+            stored.contracts().keySet().forEach(dataset -> enrollmentValues.put(dataset,
+                    new com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactEnrollment(
+                            dataset, java.util.OptionalInt.empty(),
+                            com.bloxbean.cardano.yano.archive.api.projection
+                                    .ProjectionArtifactEnrollmentOrigin.LEGACY_UNKNOWN)));
+        }
 
-        outbox.putArtifactIdentity(shipped.wireForm());
+        int currentEpoch = localEpoch(chain, ledger);
+        var additions = new java.util.ArrayList<com.bloxbean.cardano.yano.archive.api.projection
+                .ProjectionArtifactEnrollment>();
+        for (var contract : requested.contracts().values()) {
+            if (enrollmentValues.containsKey(contract.dataset())) continue;
+            var origin = storedWire.isPresent()
+                    ? com.bloxbean.cardano.yano.archive.api.projection
+                            .ProjectionArtifactEnrollmentOrigin.PROSPECTIVE_JOIN
+                    : com.bloxbean.cardano.yano.archive.api.projection
+                            .ProjectionArtifactEnrollmentOrigin.FRESH;
+            int projectedFrom = firstEligibleArtifactEpoch(
+                    contract, currentEpoch, firstPostByronEpoch);
+            var enrollment = new com.bloxbean.cardano.yano.archive.api.projection
+                    .ProjectionArtifactEnrollment(contract.dataset(),
+                    java.util.OptionalInt.of(projectedFrom), origin);
+            enrollmentValues.put(contract.dataset(), enrollment);
+            if (origin == com.bloxbean.cardano.yano.archive.api.projection
+                    .ProjectionArtifactEnrollmentOrigin.PROSPECTIVE_JOIN) {
+                additions.add(enrollment);
+            }
+        }
+
+        var enrollments = new com.bloxbean.cardano.yano.archive.api.projection
+                .ProjectionArtifactEnrollments(enrollmentValues);
+        enrollments.requireMatches(requested);
+        additions.sort(java.util.Comparator.comparing(
+                com.bloxbean.cardano.yano.archive.api.projection
+                        .ProjectionArtifactEnrollment::wireName));
+        return new ArtifactSelectionPlan(requested, enrollments, List.copyOf(additions),
+                storedWire.isPresent());
     }
 
-    /** Current epoch, or a value that keeps the coverage rule engaged when it cannot be read. */
-    private int currentEpoch(ChainQuery chain, LedgerQuery ledger) {
+    private com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactIdentity
+            parseArtifactSelection(String configured,
+                    com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactIdentity shipped) {
         try {
-            var tip = chain.getLocalTip();
-            if (tip == null) return Integer.MAX_VALUE;
+            return EpochArtifactSelectionParser.parse(configured, shipped);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException(
+                    YanoPropertyKeys.History.PROJECTION_EPOCH_ARTIFACTS + ": " + e.getMessage(), e);
+        }
+    }
+
+    private int localEpoch(ChainQuery chain, LedgerQuery ledger) {
+        var tip = chain.getLocalTip();
+        if (tip == null) return -1;
+        try {
             return Math.toIntExact(ledger.slotToEpoch(tip.getSlot()));
         } catch (RuntimeException e) {
-            // Fail closed: returning 0 would make the range empty and skip the coverage check.
-            log.warn("ADR-039 could not read the current epoch; treating artifact coverage as unproven");
-            return Integer.MAX_VALUE;
+            throw new IllegalStateException("cannot resolve the current semantic epoch for artifact enrollment", e);
         }
     }
 
-    /**
-     * Install the epoch-artifact contributor and the reader that serves it.
-     *
-     * <p>Deliberately not configurable. Artifact datasets are not sections, so they do not enter
-     * the projection fingerprint: a node that ran with epoch artifacts disabled and was later
-     * restarted with them enabled would present the same fingerprint while its {@code epoch_stakes}
-     * table had a hole, and the startup guard could not see it. Always-on removes the failure mode
-     * rather than detecting it.
-     */
+    static int firstEligibleArtifactEpoch(
+            com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactContract contract,
+            int currentEpoch, int firstPostByronEpoch) {
+        Objects.requireNonNull(contract, "contract");
+        if (currentEpoch < -1 || firstPostByronEpoch < 0) {
+            throw new IllegalArgumentException("invalid epoch enrollment coordinates");
+        }
+
+        // The boundary pipeline does not assign one universal semantic epoch. The delegation
+        // snapshot produced at E -> E+1 describes E, while rewards, governance and the final pot
+        // describe E+1. Deriving this from the actual producer contract is what prevents a join
+        // during epoch 520 from silently skipping the still-capturable epoch-stake snapshot 520.
+        if (contract.dataset()
+                == com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.EPOCH_STAKE) {
+            return Math.max(currentEpoch, firstPostByronEpoch);
+        }
+
+        int eraFloor = Math.addExact(firstPostByronEpoch, 1);
+        if (contract.dataset()
+                == com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.ADA_POT) {
+            // EpochBoundaryProcessor publishes the final pot only from epoch 2. This matters on
+            // Shelley-only/devnet networks whose first post-Byron epoch is zero.
+            eraFloor = Math.max(2, eraFloor);
+        }
+        return Math.max(Math.addExact(currentEpoch, 1), eraFloor);
+    }
+
+    private void validateArtifactSelection(ArtifactSelectionPlan plan, boolean freshArchive, Yano yano) {
+        if (!plan.storedMarkerPresent() && !freshArchive) {
+            throw new IllegalStateException("this populated archive has no epoch-artifact identity; "
+                    + "a fresh sync is required before selecting " + plan.identity().wireForm());
+        }
+        boolean joiningStaged = plan.additions().stream().anyMatch(addition ->
+                plan.identity().contractFor(addition.dataset())
+                        .map(contract -> contract.representation()
+                                == com.bloxbean.cardano.yano.archive.api.projection
+                                        .ProjectionArtifactRepresentation.STAGED_FILE)
+                        .orElse(false));
+        if (joiningStaged && legacyStagingFailure().isPresent()) {
+            throw new IllegalStateException("cannot join a staged epoch artifact while "
+                    + "epoch-source/FAILED exists; rebuild or explicitly audit and acknowledge "
+                    + "the legacy failure first");
+        }
+        validateArtifactProducers(plan.identity(), yano);
+        for (var addition : plan.additions()) {
+            log.warn("ADR-044 joining epoch artifact {} from epoch {}; earlier epochs are "
+                            + "NOT_PROJECTED. Inspect /history/coverage; use a fresh archive for "
+                            + "genesis-complete history.",
+                    addition.wireName(), addition.projectedFromEpoch().orElseThrow());
+        }
+    }
+
+    private void validateArtifactProducers(
+            com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactIdentity selected,
+            Yano yano) {
+        if (selected.isEmpty()) return;
+        if (yano.accountStateStoreForArtifacts().isEmpty()) {
+            throw new IllegalStateException("selected epoch artifacts require yano.account-state.enabled=true");
+        }
+        requireProducer(selected, com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.EPOCH_STAKE,
+                YanoPropertyKeys.EpochSnapshot.AMOUNTS_ENABLED);
+        requireProducer(selected, com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.ADA_POT,
+                YanoPropertyKeys.Ledger.ADAPOT_ENABLED);
+        requireProducer(selected, com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.REWARD,
+                YanoPropertyKeys.Ledger.REWARDS_ENABLED);
+        requireProducer(selected, com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.DREP_DISTRIBUTION,
+                YanoPropertyKeys.Ledger.GOVERNANCE_ENABLED);
+        requireProducer(selected,
+                com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.GOVERNANCE_PROPOSAL_STATUS,
+                YanoPropertyKeys.Ledger.GOVERNANCE_ENABLED);
+    }
+
+    private void requireProducer(
+            com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactIdentity selected,
+            com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId dataset, String property) {
+        if (selected.contractFor(dataset).isPresent()
+                && !config.getOptionalValue(property, Boolean.class).orElse(false)) {
+            throw new IllegalStateException(dataset.logicalName() + " is selected but producer "
+                    + property + " is disabled");
+        }
+    }
+
+    /** Install only readers and contributors covered by the persisted ADR-044 enrollment. */
     private void installEpochArtifacts(Yano yano, ChainQuery chain, LedgerQuery ledger, long networkMagic) {
         var clamp = yano.snapshotRetentionClamp();
-        var store = yano.accountStateStoreForArtifacts().orElseThrow(() -> new IllegalStateException(
-                "projection history requires an account-state store: epoch artifacts are read from the"
-                        + " delegation snapshot the epoch boundary persists"));
 
         int pageSize = config.getOptionalValue(
                 YanoPropertyKeys.History.PROJECTION_ARTIFACT_PAGE_ROWS, Integer.class).orElse(50_000);
@@ -556,10 +740,18 @@ public class ProjectionHistoryService implements AutoCloseable {
 
         var readers = new java.util.LinkedHashMap<com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId,
                 com.bloxbean.cardano.yano.archive.api.projection.ArchiveArtifactReader>();
-        readers.put(com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.EPOCH_STAKE,
-                new EpochSnapshotArtifactReader(store, clamp, pageSize, networkMagic, boundaryFacts));
-        readers.put(com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.ADA_POT,
-                new AdaPotArtifactReader(networkMagic, boundaryFacts));
+        if (selectedArtifacts.contractFor(
+                com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.EPOCH_STAKE).isPresent()) {
+            var store = yano.accountStateStoreForArtifacts().orElseThrow(() ->
+                    new IllegalStateException("epoch-stake is selected but the account-state store is absent"));
+            readers.put(com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.EPOCH_STAKE,
+                    new EpochSnapshotArtifactReader(store, clamp, pageSize, networkMagic, boundaryFacts));
+        }
+        if (selectedArtifacts.contractFor(
+                com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.ADA_POT).isPresent()) {
+            readers.put(com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.ADA_POT,
+                    new AdaPotArtifactReader(networkMagic, boundaryFacts));
+        }
 
         // Datasets whose evidence is a staged file share one reader; each is bound to its own
         // source so a reference can only ever be served from the dataset that produced it.
@@ -570,32 +762,43 @@ public class ProjectionHistoryService implements AutoCloseable {
                 com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.REWARD,
                 com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.DREP_DISTRIBUTION,
                 com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.GOVERNANCE_PROPOSAL_STATUS)) {
-            stagedSources.put(dataset, stagedEvidenceSource(dataset));
+            if (selectedArtifacts.contractFor(dataset).isPresent()) {
+                stagedSources.put(dataset, stagedEvidenceSource(dataset));
+            }
         }
-        var stagedReader = new StagedEpochArtifactReader(stagedSources);
-        stagedSources.keySet().forEach(dataset -> readers.put(dataset, stagedReader));
+        if (!stagedSources.isEmpty()) {
+            var stagedReader = new StagedEpochArtifactReader(stagedSources);
+            stagedSources.keySet().forEach(dataset -> readers.put(dataset, stagedReader));
+        }
 
         artifactReader = new RoutingArtifactReader(readers);
 
-        // The state version is inherited from the replay worker's format exactly. Both wrote it into
-        // source_state_version, and a mismatch would make identical data look like it came from
-        // different producers.
-        var collector = new com.bloxbean.cardano.yano.archive.core.projection.EpochArtifactCollector(
-                outbox, clamp, true,
-                com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas
-                        .schema(com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.EPOCH_STAKE)
-                        .projectionVersion(),
-                // Base only: the collector appends the per-dataset part, matching the replay
-                // worker's "snapshot" for epoch stake and "final" for the ada pot.
-                "ledger-boundary-v1");
-
-        if (!yano.installEpochArtifactContributor(collector)) {
-            throw new IllegalStateException("could not install the epoch artifact contributor;"
-                    + " epoch datasets would be silently missing from the archive");
+        var direct = selectedArtifacts.contracts().keySet().stream()
+                .filter(dataset -> dataset == com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.EPOCH_STAKE
+                        || dataset == com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.ADA_POT)
+                .collect(java.util.stream.Collectors.toUnmodifiableMap(
+                        dataset -> dataset, this::projectedFromOrLegacyZero));
+        if (!direct.isEmpty()) {
+            // The state version is inherited from the replay worker's format exactly.
+            var directCollector = new com.bloxbean.cardano.yano.archive.core.projection
+                    .EpochArtifactCollector(outbox, clamp, direct,
+                    com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas
+                            .schema(com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.EPOCH_STAKE)
+                            .projectionVersion(), "ledger-boundary-v1");
+            if (!yano.installEpochArtifactContributor(directCollector)) {
+                throw new IllegalStateException("could not install the selected direct epoch artifact contributor");
+            }
         }
-        log.info("ADR-039 epoch artifacts enabled ({}, {} rows per artifact page)",
-                com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactContracts
-                        .shipped().wireForm(), pageSize);
+        log.info("ADR-044 epoch artifacts selected ({}, {} rows per artifact page)",
+                selectedArtifacts.wireForm().isEmpty() ? "none" : selectedArtifacts.wireForm(), pageSize);
+    }
+
+    private int projectedFromOrLegacyZero(
+            com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId dataset) {
+        return artifactEnrollments.enrollmentFor(dataset)
+                .flatMap(enrollment -> enrollment.projectedFromEpoch().isPresent()
+                        ? Optional.of(enrollment.projectedFromEpoch().getAsInt()) : Optional.empty())
+                .orElse(0);
     }
 
 
@@ -689,26 +892,25 @@ public class ProjectionHistoryService implements AutoCloseable {
     }
 
 
-    /**
-     * Keep staged epoch files flowing for datasets the projection cannot yet serve.
-     *
-     * <p>Strictly transitional. Every dataset here is one the projection has not migrated, and
-     * the whole method disappears in Phase 7b once the set is empty.
-     */
-    private void installEpochStagingForUnmigratedDatasets(ChainQuery chain, LedgerQuery ledger,
-                                                          ArchiveNetworkIdentity network) {
-        var pending = stagedFileDatasets();
+    /** Install durable staged-file capture for the selected reward/governance datasets. */
+    private void installSelectedEpochStaging(ChainQuery chain, LedgerQuery ledger,
+                                             ArchiveNetworkIdentity network,
+                                             int firstPostByronEpoch) {
+        var pending = stagedFileDatasets(selectedArtifacts);
         if (pending.isEmpty()) {
             log.info("ADR-039 no epoch dataset uses staged-file evidence; staging is not installed");
             return;
         }
+        var floors = pending.stream().collect(java.util.stream.Collectors.toUnmodifiableMap(
+                dataset -> dataset,
+                dataset -> projectedFromOrLegacyZero(
+                        com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.valueOf(dataset.name()))));
         epochStaging = new EpochArchiveStagingService(chain, ledger, network,
-                historyDirectory.resolve("epoch-source"), pending);
+                historyDirectory.resolve("epoch-source"), pending, firstPostByronEpoch, floors);
 
-        // The other half of the migration. A staging class that writes files nobody references
-        // is not a migration: durable evidence has to become an outbox reference, get committed
-        // by the sink, and only then be released. This is where the first link is made, and it
-        // fires strictly AFTER the evidence is fsynced, so a reference always implies durability.
+        // Durable evidence must become an outbox reference, be committed by the sink, and only
+        // then be released. This callback fires strictly after the evidence is fsynced, so a
+        // reference always implies durability.
         epochStaging.setStagedArtifactListener((job, evidence) -> {
             try {
                 stageStagedFileArtifact(job, evidence);
@@ -723,8 +925,68 @@ public class ProjectionHistoryService implements AutoCloseable {
             }
         });
 
+        // ADR-045: a dataset-specific failure becomes a canonical durable GAP before ledger
+        // synchronization is allowed to continue. Other staged datasets remain active.
+        epochStaging.setDatasetFailureListener(new EpochArchiveStagingService.DatasetFailureListener() {
+            @Override
+            public void failed(
+                    com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset dataset,
+                    int semanticEpoch,
+                    com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Boundary boundary,
+                    Exception failure) {
+                var canonical = chain.getCanonicalBlockReference(boundary.blockNumber())
+                        .orElseThrow(() -> new IllegalStateException(
+                                "canonical boundary is unavailable while recording epoch gap at block "
+                                        + boundary.blockNumber()));
+                if (canonical.slot() != boundary.slot()) {
+                    throw new IllegalStateException("canonical boundary slot changed while recording epoch gap");
+                }
+                var archiveDataset = com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId
+                        .valueOf(dataset.name());
+                outbox.recordEpochArtifactGap(new com.bloxbean.cardano.yano.archive.api.projection
+                        .EpochArtifactGap(archiveDataset, semanticEpoch, boundary.blockNumber(),
+                        boundary.slot(), canonical.blockHash(), failureClass(failure),
+                        failure.getMessage(), Instant.now()));
+            }
+
+            @Override
+            public void missed(
+                    com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset dataset,
+                    com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Boundary boundary) {
+                var canonical = chain.getCanonicalBlockReference(boundary.blockNumber())
+                        .orElseThrow(() -> new IllegalStateException(
+                                "canonical paused boundary is unavailable at block "
+                                        + boundary.blockNumber()));
+                outbox.recordPausedEpoch(
+                        com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.valueOf(dataset.name()),
+                        boundary.newEpoch(), boundary.slot(), canonical.blockHash());
+            }
+        });
+        for (var dataset : pending) {
+            var archiveDataset = com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId
+                    .valueOf(dataset.name());
+            if (outbox.epochArtifactCaptureState(archiveDataset)
+                    == com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactCaptureState.PAUSED) {
+                String detail = outbox.epochArtifactGaps().stream()
+                        .filter(gap -> gap.dataset() == archiveDataset)
+                        .reduce((first, second) -> second)
+                        .map(com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap::detail)
+                        .orElse("paused after an epoch-artifact gap");
+                epochStaging.restorePaused(dataset, detail);
+            }
+        }
+
         ledger.setEpochArchiveStagingSink(epochStaging);
         log.info("ADR-039 staged-file evidence enabled for {} dataset(s): {}", pending.size(), pending);
+    }
+
+    private static String failureClass(Throwable failure) {
+        if (failure instanceof java.nio.file.FileSystemException) return "filesystem";
+        if (failure instanceof java.io.IOException) return "io";
+        if (failure instanceof com.bloxbean.cardano.yano.archive.api.ArchiveBatchCapacityException) {
+            return "capacity";
+        }
+        return "capture";
     }
 
 
@@ -825,6 +1087,7 @@ public class ProjectionHistoryService implements AutoCloseable {
                 this::commonRollbackFloorSlot);
 
         reconcileGenesis(chain);
+        reconcileOutboxToCanonicalTipBeforeDrain(chain);
 
         // Durable lease reconciliation, before any drain or prune can run. Leases live in memory;
         // the outbox's surviving artifact references are what actually survives a crash.
@@ -845,6 +1108,30 @@ public class ProjectionHistoryService implements AutoCloseable {
                 sink, interval);
     }
 
+    private void reconcileOutboxToCanonicalTipBeforeDrain(ChainQuery chain) {
+        var tip = chain.getLocalTip();
+        com.bloxbean.cardano.yano.api.CanonicalBlockReference bodyTip = tip == null ? null
+                : new com.bloxbean.cardano.yano.api.CanonicalBlockReference(
+                        tip.getBlockNumber(), tip.getSlot(), tip.getBlockHash());
+        long removed = ProjectionRestartReconciler.reconcile(outbox, projectionSink.coordinate(),
+                bodyTip, runtimeYano::canonicalBlockReference, identity.requiredSections());
+        if (removed > 0) {
+            log.info("ADR-042 pre-drain reconciliation removed {} non-canonical pending envelope(s)",
+                    removed);
+        }
+    }
+
+    private void reconcileEpochCoverageToCanonicalTip(ChainQuery chain) {
+        var tip = chain.getLocalTip();
+        if (tip == null) {
+            projectionSink.rollbackEpochArtifactCoverage(0, null, true);
+            outbox.rollbackEpochArtifactGaps(0, null, true);
+            return;
+        }
+        projectionSink.rollbackEpochArtifactCoverage(tip.getSlot(), tip.getBlockHash(), false);
+        outbox.rollbackEpochArtifactGaps(tip.getSlot(), tip.getBlockHash(), false);
+    }
+
     /**
      * Sections to project, defaulting to <strong>every shipped block dataset</strong>.
      *
@@ -856,11 +1143,26 @@ public class ProjectionHistoryService implements AutoCloseable {
      *
      * <p>Fails on an unknown name rather than projecting less than asked for.
      */
-    private Set<ProjectionSectionType> configuredSections() {
-        String configured = config.getOptionalValue(
-                YanoPropertyKeys.History.PROJECTION_SECTIONS, String.class).orElse("").trim();
-        if (configured.isEmpty()) {
+    private Set<ProjectionSectionType> configuredSections(Optional<String> storedFingerprint) {
+        Optional<String> configuredValue = config.getOptionalValue(
+                YanoPropertyKeys.History.PROJECTION_SECTIONS, String.class);
+        if (configuredValue.isEmpty()) {
+            if (storedFingerprint.isPresent()) {
+                try {
+                    return ProjectionIdentity.parseFingerprint(storedFingerprint.orElseThrow())
+                            .requiredSections();
+                } catch (RuntimeException e) {
+                    throw new IllegalStateException("stored projection identity is malformed; "
+                            + "the archive cannot preserve its omitted section selection and must be rebuilt", e);
+                }
+            }
             return java.util.Set.of(ProjectionSectionType.values());
+        }
+        String configured = configuredValue.orElseThrow().trim();
+        if (configured.isEmpty()) {
+            throw new IllegalArgumentException(
+                    YanoPropertyKeys.History.PROJECTION_SECTIONS
+                            + " was set but blank; name at least one versioned section");
         }
         var byWireName = java.util.Arrays.stream(ProjectionSectionType.values())
                 .collect(java.util.stream.Collectors.toMap(ProjectionSectionType::wireName, t -> t));
@@ -882,8 +1184,18 @@ public class ProjectionHistoryService implements AutoCloseable {
         return Set.copyOf(selected);
     }
 
+    private void verifyCompleteUtxoRequirement(Set<ProjectionSectionType> required, Yano yano) {
+        List<String> configuredFilters = yano.configuredUtxoStorageFilters();
+        if (required.contains(ProjectionSectionType.ADDRESS_TRANSACTION)
+                && !configuredFilters.isEmpty()) {
+            throw new ProjectionActivationException(
+                    "address-transaction projection requires a complete UTXO store, but canonical "
+                            + "UTXO filtering is configured: " + configuredFilters);
+        }
+    }
+
     /**
-     * Sink-engine settings the projection path owns independently of the legacy archive.
+     * Sink-engine settings the projection writer owns independently of the read facade.
      *
      * <p>Only keys that were explicitly configured are passed through, so an unset key keeps
      * the engine's own default rather than this method's idea of one.
@@ -954,32 +1266,46 @@ public class ProjectionHistoryService implements AutoCloseable {
     private void drainLoop(long idleIntervalMillis) {
         while (draining) {
             try {
-                // Genesis must be durable before any block range is committed, or the archive
-                // would hold blocks against a distribution it never captured.
-                captureGenesisIfPossible();
+                RuntimeMaintenanceGate.ReadLease readLease = runtimeYano.maintenanceGate()
+                        .map(gate -> gate.enterRead("projection outbox drain"))
+                        .orElse(null);
+                boolean workPending = false;
+                // Snapshot restore replaces RocksDB and every native CF handle. Holding the
+                // shared runtime read lease makes the restore wait for this pass to finish;
+                // DefaultUtxoStore then refreshes the contributor/outbox before the exclusive
+                // maintenance lease is released.
+                try (readLease) {
+                    // Genesis must be durable before any block range is committed, or the archive
+                    // would hold blocks against a distribution it never captured.
+                    captureGenesisIfPossible();
 
-                ProjectionSinkLifecycle lifecycle = sinkLifecycle;
-                if (lifecycle == null || lifecycle.isClosed()) {
-                    Thread.sleep(idleIntervalMillis);
-                    continue;
-                }
-                // Every sink touch happens under the lifecycle lock, so shutdown can prove
-                // nothing is in flight before it closes anything.
-                ProjectionConsumerResult result = lifecycle.use(ignored -> consumer.drainOnce());
-                if (result.madeProgress()) {
-                    drainedBatches.increment();
-                    drainedBlocks.add(result.lastBlock() - result.firstBlock() + 1);
+                    ProjectionSinkLifecycle lifecycle = sinkLifecycle;
+                    if (lifecycle != null && !lifecycle.isClosed()) {
+                        drainEpochArtifactGaps(lifecycle);
+                        // Every sink touch happens under the lifecycle lock, so shutdown can prove
+                        // nothing is in flight before it closes anything.
+                        ProjectionConsumerResult result = lifecycle.use(ignored -> consumer.drainOnce());
+                        if (result.madeProgress()) {
+                            drainedBatches.increment();
+                            drainedBlocks.add(result.lastBlock() - result.firstBlock() + 1);
+                            // A corrected replay may have atomically replaced GAP with COMPLETE.
+                            drainedGapVersions.clear();
+                        }
+                        workPending = result.workPending();
+                        if (!workPending) {
+                            if (result.outcome() == ProjectionConsumerResult.Outcome.PAUSED) {
+                                log.warn("ADR-039 projection drain paused: {}",
+                                        result.detail().orElse("unknown"));
+                            } else {
+                                runMaintenanceIfDue();
+                            }
+                        }
+                    }
                 }
                 // Keep draining while envelopes are still waiting, even when this pass only
                 // accumulated. Backing off mid-bootstrap because nothing was committed yet
                 // would idle the loop through the whole backlog.
-                if (result.workPending()) continue;
-
-                if (result.outcome() == ProjectionConsumerResult.Outcome.PAUSED) {
-                    log.warn("ADR-039 projection drain paused: {}", result.detail().orElse("unknown"));
-                } else {
-                    runMaintenanceIfDue();
-                }
+                if (workPending) continue;
                 Thread.sleep(idleIntervalMillis);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -996,6 +1322,53 @@ public class ProjectionHistoryService implements AutoCloseable {
                 }
             }
         }
+    }
+
+    /** Copy durable outbox GAP intent into the sink before ordinary artifact drain. */
+    private void drainEpochArtifactGaps(ProjectionSinkLifecycle lifecycle) {
+        // A crash after the sink atomically repaired rows/coverage but before the RocksDB
+        // acknowledgement leaves stale outbox intent. Remove it before synchronizing intervals,
+        // otherwise startup would re-expand the just-repaired sink range.
+        int repaired = lifecycle.use(sink -> outbox.acknowledgeRepairsAlreadyComplete(
+                sink::hasCompleteEpochArtifact));
+        if (repaired > 0) drainedGapVersions.clear();
+        var outboxGaps = outbox.epochArtifactGaps();
+        var outboxIntervals = outbox.epochArtifactGapIntervals();
+
+        for (var gap : outboxGaps) {
+            String key = gap.dataset().name() + '/' + gap.semanticEpoch();
+            String version = gapVersion(gap);
+            if (version.equals(drainedGapVersions.get(key))) continue;
+            lifecycle.use(sink -> {
+                sink.recordEpochArtifactGap(gap);
+                return null;
+            });
+            drainedGapVersions.put(key, version);
+        }
+        String intervalSetVersion = outboxIntervals.stream().map(interval ->
+                        interval.dataset().name() + '/' + interval.causedByEpoch() + '/'
+                                + intervalVersion(interval))
+                .sorted().collect(java.util.stream.Collectors.joining("|"));
+        if (!intervalSetVersion.equals(drainedIntervalSetVersion)) {
+            var authoritative = outboxIntervals;
+            lifecycle.use(sink -> {
+                sink.replaceEpochArtifactGapIntervals(authoritative);
+                return null;
+            });
+            drainedIntervalSetVersion = intervalSetVersion;
+        }
+    }
+
+    private static String gapVersion(
+            com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap gap) {
+        return gap.boundarySlot() + ":" + java.util.HexFormat.of().formatHex(gap.boundaryBlockHash())
+                + ':' + gap.failureClass();
+    }
+
+    private static String intervalVersion(
+            com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGapInterval interval) {
+        return interval.fromEpoch() + ":" + interval.throughEpoch() + ':' + interval.open()
+                + ':' + java.util.HexFormat.of().formatHex(interval.throughBoundaryHash());
     }
 
     /**
@@ -1091,28 +1464,75 @@ public class ProjectionHistoryService implements AutoCloseable {
         bus.subscribe(RollbackEvent.class, ctx -> {
             var target = ctx.event().target();
             if (target == null) return;
-            long removed = collector.rollbackToSlot(target.getSlot());
+            boolean origin = target.getHash() == null;
+            byte[] targetHash = origin ? null : decodeRollbackHash(target.getHash());
+            long removed = collector.rollbackToPoint(target.getSlot(), targetHash, origin);
+            int removedGaps = outbox.rollbackEpochArtifactGaps(target.getSlot(), targetHash, origin);
+            drainedGapVersions.clear();
+            drainedIntervalSetVersion = null;
+            synchronizeStagingCaptureState();
+            ProjectionSinkLifecycle lifecycleForRollback = sinkLifecycle;
+            if (lifecycleForRollback != null && !lifecycleForRollback.isClosed()) {
+                lifecycleForRollback.use(sink -> {
+                    sink.rollbackEpochArtifactCoverage(target.getSlot(), targetHash, origin);
+                    return null;
+                });
+            }
             // Whatever the drain thread has buffered may describe the discarded fork. The
             // flag is observed at its next safe point; taking a lock here would stall the
             // event bus behind an in-flight sink commit.
             ProjectionOutboxConsumer active = consumer;
             if (active != null) active.discardPendingBatch();
-            if (removed > 0) {
+            if (removed > 0 || removedGaps > 0) {
                 // The rollback deleted artifact references along with their envelopes. Re-derive
                 // protection from what actually survives, or the reader would keep a source pinned
                 // for an artifact that no longer exists and pruning would never resume.
                 artifactReader.reconcileAfterRestart(outbox.pendingArtifacts());
                 // Staged epoch files above the rollback point describe a discarded fork. The
-                // cutoff is derived from the surviving tip, since the rollback point is a slot.
+                // cutoff is derived from the surviving canonical tip.
                 var staging = epochStaging;
                 if (staging != null) {
                     var tip = chainQuery == null ? null : chainQuery.getLocalTip();
                     if (tip != null) staging.discardAfterBlock(tip.getBlockNumber());
                 }
-                log.info("ADR-039 rollback to slot {} removed {} pending projection envelope(s)",
-                        target.getSlot(), removed);
+                log.info("ADR-039 rollback to point slot={}, hash={} removed {} pending projection "
+                                + "envelope(s) and {} epoch gap(s)",
+                        target.getSlot(), target.getHash(), removed, removedGaps);
             }
         }, SubscriptionOptions.builder().build());
+    }
+
+    private void synchronizeStagingCaptureState() {
+        var staging = epochStaging;
+        if (staging == null || outbox == null) return;
+        for (var dataset : stagedFileDatasets(selectedArtifacts)) {
+            var archiveDataset = com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId
+                    .valueOf(dataset.name());
+            if (outbox.epochArtifactCaptureState(archiveDataset)
+                    == com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactCaptureState.PAUSED) {
+                String detail = outbox.epochArtifactGaps().stream()
+                        .filter(gap -> gap.dataset() == archiveDataset).reduce((a, b) -> b)
+                        .map(com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap::detail)
+                        .orElse("paused after rollback");
+                staging.restorePaused(dataset, detail);
+            } else {
+                staging.restoreActive(dataset);
+            }
+        }
+    }
+
+    private static byte[] decodeRollbackHash(String hash) {
+        try {
+            byte[] decoded = HexUtil.decodeHexString(hash);
+            if (decoded.length != 32) {
+                throw new IllegalArgumentException("Rollback hash must be exactly 32 bytes");
+            }
+            return decoded;
+        } catch (IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Invalid rollback hash: " + hash, e);
+        }
     }
 
     private static String genesisHash(YanoConfig nodeConfig) {
@@ -1282,6 +1702,11 @@ public class ProjectionHistoryService implements AutoCloseable {
         return enabled;
     }
 
+    /** A refused projection initialization keeps diagnostics live but makes the node unready. */
+    public boolean hasInitializationFailure() {
+        return enabled && initializationError != null;
+    }
+
     public Map<String, Object> status() {
         Map<String, Object> status = new LinkedHashMap<>();
         status.put("enabled", enabled);
@@ -1364,16 +1789,18 @@ public class ProjectionHistoryService implements AutoCloseable {
      */
     private Map<String, Object> artifactStatus() {
         Map<String, Object> status = new LinkedHashMap<>();
-        status.put("artifactContracts",
-                com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactContracts
-                        .shipped().wireForm());
+        status.put("artifactContracts", selectedArtifacts.wireForm());
         var pending = outbox.pendingArtifacts();
         status.put("pendingArtifacts", pending.size());
-        // A staging failure disables every epoch dataset and persists across restarts, so it
-        // cannot be left to the log. Unreported, it is indistinguishable from an archive that
-        // simply has not reached a boundary yet.
-        var staging = epochStaging;
-        if (staging != null) staging.failure().ifPresent(detail -> status.put("epochStagingError", detail));
+        // A shared/legacy staging failure disables every staged-file dataset and persists across
+        // restarts. Unreported, it is indistinguishable from an archive that has not reached a
+        // boundary yet.
+        legacyStagingFailure().ifPresent(detail -> {
+            status.put("epochStagingError", detail);
+            status.put("epochStagingFailureActive",
+                    !stagedFileDatasets(selectedArtifacts).isEmpty());
+        });
+        status.put("epochArtifacts", artifactCoverageEntries(pending));
         // Named rather than implied: the disk budget excludes pinned generations, and a bare
         // zero in the footprint would read as "nothing pinned" when it means "not measured".
         status.put("pinnedGenerationBytesMeasured", footprint().pinnedGenerationsMeasured());
@@ -1387,6 +1814,383 @@ public class ProjectionHistoryService implements AutoCloseable {
         return status;
     }
 
+    private java.util.List<Map<String, Object>> artifactCoverageEntries(
+            java.util.List<com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef> pending) {
+        Map<com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId,
+                List<com.bloxbean.cardano.yano.archive.api.ArchiveRange>> complete =
+                projectionSink == null ? Map.of() : projectionSink.epochArtifactCoverage();
+        var entries = new java.util.ArrayList<Map<String, Object>>();
+        var gaps = new java.util.LinkedHashMap<String,
+                com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap>();
+        if (outbox != null) {
+            outbox.epochArtifactGaps().forEach(gap -> gaps.put(
+                    gap.dataset().name() + '/' + gap.semanticEpoch(), gap));
+        }
+        if (projectionSink != null) {
+            projectionSink.epochArtifactGaps().forEach(gap -> gaps.putIfAbsent(
+                    gap.dataset().name() + '/' + gap.semanticEpoch(), gap));
+        }
+        var intervals = outbox == null
+                ? List.<com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGapInterval>of()
+                : outbox.epochArtifactGapIntervals();
+        var shipped = com.bloxbean.cardano.yano.archive.api.projection
+                .ProjectionArtifactContracts.shipped();
+        shipped.contracts().values().stream()
+                .sorted(java.util.Comparator.comparing(
+                        com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactContract::selector))
+                .forEach(contract -> {
+                    Map<String, Object> value = new LinkedHashMap<>();
+                    value.put("dataset", contract.dataset().logicalName());
+                    value.put("selector", contract.selector());
+                    var enrollment = artifactEnrollments.enrollmentFor(contract.dataset());
+                    value.put("selected", enrollment.isPresent());
+                    if (enrollment.isEmpty()) {
+                        value.put("coverageState", "NOT_SELECTED");
+                    } else {
+                        var enrolled = enrollment.orElseThrow();
+                        value.put("origin", enrolled.origin().name());
+                        if (enrolled.projectedFromEpoch().isPresent()) {
+                            value.put("projectedFromEpoch", enrolled.projectedFromEpoch().getAsInt());
+                            var captureState = outbox.epochArtifactCaptureState(contract.dataset());
+                            value.put("captureState", captureState.name());
+                            value.put("coverageState", captureState.name());
+                        } else {
+                            value.put("coverageState", "UNKNOWN_LEGACY_COVERAGE");
+                        }
+                        var completeRanges = complete.getOrDefault(contract.dataset(), List.of());
+                        value.put("completeRanges", completeRanges.stream().map(range -> Map.of(
+                                        "from", range.startInclusive(),
+                                        "through", range.endInclusive())).toList());
+                        var pendingEpochs = pending.stream()
+                                .filter(ref -> ref.dataset() == contract.dataset())
+                                .map(com.bloxbean.cardano.yano.archive.api.projection
+                                        .ProjectionArtifactRef::semanticEpoch)
+                                .distinct().sorted().toList();
+                        value.put("pendingEpochs", pendingEpochs);
+                        var datasetGaps = gaps.values().stream()
+                                .filter(gap -> gap.dataset() == contract.dataset())
+                                .sorted(java.util.Comparator.comparingInt(
+                                        com.bloxbean.cardano.yano.archive.api.projection
+                                                .EpochArtifactGap::semanticEpoch))
+                                .toList();
+                        value.put("gapCount", datasetGaps.size());
+                        var datasetIntervals = intervals.stream()
+                                .filter(interval -> interval.dataset() == contract.dataset()).toList();
+                        value.put("gapRangeCount", datasetIntervals.size());
+                        value.put("gapRanges", datasetIntervals.stream().map(interval -> Map.of(
+                                "from", interval.fromEpoch(), "through", interval.throughEpoch(),
+                                "open", interval.open(), "causedByEpoch", interval.causedByEpoch(),
+                                "failureClass", interval.failureClass())).toList());
+                        long observed = java.util.stream.LongStream.concat(
+                                        completeRanges.stream().mapToLong(
+                                                com.bloxbean.cardano.yano.archive.api.ArchiveRange::endInclusive),
+                                        java.util.stream.LongStream.concat(
+                                                datasetGaps.stream().mapToLong(gap -> gap.semanticEpoch()),
+                                                datasetIntervals.stream().mapToLong(
+                                                        interval -> interval.throughEpoch())))
+                                .max().orElse(-1);
+                        if (!pendingEpochs.isEmpty()) observed = Math.max(observed, pendingEpochs.getLast());
+                        value.put("observedThroughEpoch", observed);
+                        if (enrolled.projectedFromEpoch().isPresent()) {
+                            long contiguous = contiguousCompleteThrough(
+                                    enrolled.projectedFromEpoch().getAsInt(), completeRanges);
+                            if (contiguous >= 0) value.put("contiguousCompleteThroughEpoch", contiguous);
+                        }
+                        if (!datasetGaps.isEmpty() || !datasetIntervals.isEmpty()) {
+                            int firstGap = Math.min(
+                                    datasetGaps.stream().mapToInt(gap -> gap.semanticEpoch())
+                                            .min().orElse(Integer.MAX_VALUE),
+                                    datasetIntervals.stream().mapToInt(interval -> interval.fromEpoch())
+                                            .min().orElse(Integer.MAX_VALUE));
+                            int lastGap = Math.max(
+                                    datasetGaps.stream().mapToInt(gap -> gap.semanticEpoch())
+                                            .max().orElse(-1),
+                                    datasetIntervals.stream().mapToInt(interval -> interval.throughEpoch())
+                                            .max().orElse(-1));
+                            value.put("firstGapEpoch", firstGap);
+                            value.put("lastGapEpoch", lastGap);
+                        }
+                        value.put("resumeApplicable",
+                                outbox.epochArtifactCaptureState(contract.dataset())
+                                        == com.bloxbean.cardano.yano.archive.api.projection
+                                                .EpochArtifactCaptureState.PAUSED
+                                && stagedFileDatasets(selectedArtifacts).stream()
+                                        .anyMatch(dataset -> dataset.name().equals(contract.dataset().name()))
+                                && legacyStagingFailure().isEmpty());
+                    }
+                    entries.add(Map.copyOf(value));
+                });
+        return List.copyOf(entries);
+    }
+
+    private static long contiguousCompleteThrough(long start,
+            List<com.bloxbean.cardano.yano.archive.api.ArchiveRange> ranges) {
+        long through = start - 1;
+        for (var range : ranges.stream()
+                .sorted(java.util.Comparator.comparingLong(
+                        com.bloxbean.cardano.yano.archive.api.ArchiveRange::startInclusive)).toList()) {
+            if (range.endInclusive() < start) continue;
+            if (range.startInclusive() > through + 1) break;
+            through = Math.max(through, range.endInclusive());
+        }
+        return through >= start ? through : -1;
+    }
+
+    /** Resume future capture for a paused selected staged dataset; existing gaps remain. */
+    public synchronized Map<String, Object> resumeEpochArtifact(
+            com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId dataset) {
+        Objects.requireNonNull(dataset, "dataset");
+        if (!initialized || !enabled) throw new IllegalStateException("projection history is not initialized");
+        if (artifactEnrollments.enrollmentFor(dataset).isEmpty()) {
+            throw new IllegalArgumentException(dataset.logicalName() + " is not selected in this archive");
+        }
+        if (outbox.epochArtifactCaptureState(dataset)
+                != com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactCaptureState.PAUSED) {
+            throw new IllegalStateException(dataset.logicalName() + " is not paused");
+        }
+        com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset stagingDataset;
+        try {
+            stagingDataset = com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset
+                    .valueOf(dataset.name());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException(dataset.logicalName()
+                    + " does not use resumable staged-file capture", e);
+        }
+        if (!stagedFileDatasets(selectedArtifacts).contains(stagingDataset) || epochStaging == null) {
+            throw new IllegalArgumentException(dataset.logicalName()
+                    + " does not use resumable staged-file capture");
+        }
+        var tip = chainQuery == null ? null : chainQuery.getLocalTip();
+        if (tip == null || tip.getBlockHash() == null) {
+            throw new IllegalStateException("cannot resume without a canonical full-point tip");
+        }
+        epochStaging.resumeDurably(stagingDataset, () -> outbox.resumeEpochArtifact(
+                dataset, tip.getSlot(), tip.getBlockHash()));
+        log.warn("ADR-045 resumed future {} capture; {} existing gap(s) remain",
+                dataset.logicalName(), outbox.epochArtifactGaps().stream()
+                        .filter(gap -> gap.dataset() == dataset).count());
+        return artifactCoverageEntries(outbox.pendingArtifacts()).stream()
+                .filter(entry -> dataset.logicalName().equals(entry.get("dataset")))
+                .findFirst().orElseThrow();
+    }
+
+    /** Audited operator transition for the pre-ADR-045 unstructured FAILED marker. */
+    public synchronized Map<String, Object> acknowledgeLegacyStagingFailure() {
+        if (historyDirectory == null) throw new IllegalStateException("projection history directory is unresolved");
+        if (epochStaging != null && epochStaging.boundaryOpen()) {
+            throw new IllegalStateException("cannot acknowledge a legacy failure during an epoch boundary");
+        }
+        java.nio.file.Path marker = historyDirectory.resolve("epoch-source").resolve("FAILED");
+        if (!java.nio.file.Files.isRegularFile(marker)) {
+            throw new IllegalStateException("no legacy epoch staging failure marker exists");
+        }
+        java.nio.file.Path audit = marker.resolveSibling("FAILED.acknowledged."
+                + Instant.now().toString().replace(':', '-'));
+        try {
+            java.nio.file.Files.move(marker, audit, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+        } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+            try { java.nio.file.Files.move(marker, audit); }
+            catch (java.io.IOException nested) { throw new IllegalStateException("cannot acknowledge marker", nested); }
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("cannot acknowledge marker", e);
+        }
+        log.warn("ADR-045 legacy epoch staging failure acknowledged by operator; audit copy={}", audit);
+        return Map.of("acknowledged", true, "auditFile", audit.getFileName().toString(),
+                // A staging service that observed the marker keeps its in-memory global latch;
+                // and a future staged enrollment is resolved only during initialization.
+                "restartRequired", true);
+    }
+
+    /** Fail closed before an unbounded epoch-history read can silently skip unavailable epochs. */
+    public void requireCompleteEpochHistory(
+            com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId dataset) {
+        requireCompleteEpochHistory(dataset, null, null);
+    }
+
+    /** Range-aware guard used by epoch snapshot APIs as they move to the archive (ADR-046). */
+    public void requireCompleteEpochHistory(
+            com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId dataset,
+            Integer fromEpoch, Integer throughEpoch) {
+        if (fromEpoch != null && (fromEpoch < 0 || throughEpoch == null || throughEpoch < fromEpoch)) {
+            throw new IllegalArgumentException("epoch history range is invalid");
+        }
+        if (fromEpoch == null && throughEpoch != null) {
+            throw new IllegalArgumentException("from epoch is required when through epoch is supplied");
+        }
+        var enrollment = artifactEnrollments.enrollmentFor(dataset).orElseThrow(() ->
+                new IncompleteEpochHistoryException(dataset, "NOT_SELECTED", List.of(
+                        Map.of("reason", "NOT_SELECTED"))));
+        var missing = new java.util.ArrayList<Map<String, Object>>();
+        boolean stagedDataset = selectedArtifacts.contractFor(dataset)
+                .map(contract -> contract.representation()
+                        == com.bloxbean.cardano.yano.archive.api.projection
+                                .ProjectionArtifactRepresentation.STAGED_FILE)
+                .orElse(false);
+        if (stagedDataset) {
+            legacyStagingFailure().ifPresent(detail -> missing.add(Map.of(
+                    "reason", "UNKNOWN_LEGACY_FAILURE",
+                    "detail", detail,
+                    "repair", "rebuild or acknowledge the audited legacy marker, then restart")));
+        }
+        int projectedFrom = enrollment.projectedFromEpoch().orElse(0);
+        int requestedFrom = fromEpoch != null ? fromEpoch
+                : enrollment.origin() == com.bloxbean.cardano.yano.archive.api.projection
+                        .ProjectionArtifactEnrollmentOrigin.PROSPECTIVE_JOIN ? 0 : projectedFrom;
+        if (enrollment.projectedFromEpoch().isEmpty()) {
+            missing.add(Map.of("reason", "UNKNOWN_LEGACY_COVERAGE"));
+        } else if (requestedFrom < projectedFrom && (fromEpoch != null || enrollment.origin()
+                == com.bloxbean.cardano.yano.archive.api.projection
+                        .ProjectionArtifactEnrollmentOrigin.PROSPECTIVE_JOIN)) {
+            missing.add(Map.of("reason", "NOT_PROJECTED", "from", requestedFrom, "through",
+                    Math.min(throughEpoch == null ? projectedFrom - 1 : throughEpoch,
+                            projectedFrom - 1)));
+        }
+        var gaps = new java.util.LinkedHashMap<Integer,
+                com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap>();
+        if (outbox != null) outbox.epochArtifactGaps().stream()
+                .filter(gap -> gap.dataset() == dataset).forEach(gap -> gaps.put(gap.semanticEpoch(), gap));
+        if (projectionSink != null) projectionSink.epochArtifactGaps().stream()
+                .filter(gap -> gap.dataset() == dataset).forEach(gap -> gaps.putIfAbsent(gap.semanticEpoch(), gap));
+        int observed = gaps.keySet().stream().mapToInt(Integer::intValue).max().orElse(-1);
+        var intervals = new java.util.LinkedHashMap<String,
+                com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGapInterval>();
+        if (projectionSink != null) projectionSink.epochArtifactGapIntervals().stream()
+                .filter(interval -> interval.dataset() == dataset)
+                .forEach(interval -> intervals.put(interval.causedByEpoch() + "/" + interval.fromEpoch(), interval));
+        if (outbox != null) outbox.epochArtifactGapIntervals().stream()
+                .filter(interval -> interval.dataset() == dataset)
+                .forEach(interval -> intervals.put(interval.causedByEpoch() + "/" + interval.fromEpoch(), interval));
+        observed = Math.max(observed, intervals.values().stream()
+                .mapToInt(interval -> interval.throughEpoch()).max().orElse(-1));
+        var pending = outbox == null ? List.<Integer>of() : outbox.pendingArtifacts().stream()
+                .filter(ref -> ref.dataset() == dataset)
+                .map(com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef::semanticEpoch)
+                .distinct().sorted().toList();
+        var complete = projectionSink == null ? List.<com.bloxbean.cardano.yano.archive.api.ArchiveRange>of()
+                : projectionSink.epochArtifactCoverage().getOrDefault(dataset, List.of());
+        observed = Math.max(observed, Math.toIntExact(complete.stream()
+                .mapToLong(com.bloxbean.cardano.yano.archive.api.ArchiveRange::endInclusive)
+                .max().orElse(-1)));
+        observed = Math.max(observed, pending.stream().mapToInt(Integer::intValue).max().orElse(-1));
+        int requestedThrough = throughEpoch == null ? Math.max(observed, projectedFrom) : throughEpoch;
+        java.util.function.IntPredicate intersects = epoch -> epoch >= requestedFrom
+                && epoch <= requestedThrough;
+        gaps.values().stream().filter(gap -> intersects.test(gap.semanticEpoch()))
+                .forEach(gap -> missing.add(Map.of("reason", "GAP", "from", gap.semanticEpoch(),
+                        "through", gap.semanticEpoch(), "failureClass", gap.failureClass())));
+        intervals.values().stream().filter(interval -> interval.throughEpoch() >= requestedFrom
+                        && interval.fromEpoch() <= requestedThrough)
+                .forEach(interval -> missing.add(Map.of("reason", "GAP",
+                        "from", Math.max(requestedFrom, interval.fromEpoch()),
+                        "through", Math.min(requestedThrough, interval.throughEpoch()),
+                        "failureClass", interval.failureClass(), "pausedInterval", true)));
+        var requestedPending = pending.stream().filter(intersects::test).limit(100).toList();
+        if (!requestedPending.isEmpty()) {
+            missing.add(Map.of("reason", "PENDING", "epochs", requestedPending));
+        }
+        if (complete.isEmpty() && requestedThrough >= Math.max(requestedFrom, projectedFrom)) {
+            missing.add(Map.of("reason", "PENDING", "detail", "no epoch is complete yet"));
+        } else {
+            int cursor = Math.max(requestedFrom, projectedFrom);
+            var known = new java.util.ArrayList<com.bloxbean.cardano.yano.archive.api.ArchiveRange>(complete);
+            gaps.values().forEach(gap -> known.add(new com.bloxbean.cardano.yano.archive.api.EpochRange(
+                    gap.semanticEpoch(), gap.semanticEpoch())));
+            intervals.values().forEach(interval -> known.add(new com.bloxbean.cardano.yano.archive.api.EpochRange(
+                    interval.fromEpoch(), interval.throughEpoch())));
+            pending.forEach(epoch -> known.add(new com.bloxbean.cardano.yano.archive.api.EpochRange(epoch, epoch)));
+            for (var range : known.stream().sorted(java.util.Comparator.comparingLong(
+                    com.bloxbean.cardano.yano.archive.api.ArchiveRange::startInclusive)).toList()) {
+                if (range.endInclusive() < cursor || range.startInclusive() > requestedThrough) continue;
+                if (range.startInclusive() > cursor) {
+                    missing.add(Map.of("reason", "UNKNOWN", "from", cursor,
+                            "through", Math.min(requestedThrough, range.startInclusive() - 1)));
+                }
+                cursor = Math.max(cursor, Math.toIntExact(range.endInclusive() + 1));
+                if (cursor > requestedThrough) break;
+            }
+            if (cursor <= requestedThrough) {
+                missing.add(Map.of("reason", "UNKNOWN", "from", cursor, "through", requestedThrough));
+            }
+        }
+        if (!missing.isEmpty()) {
+            String reason = missing.stream().map(value -> String.valueOf(value.get("reason")))
+                    .distinct().collect(java.util.stream.Collectors.joining(","));
+            var status = new java.util.LinkedHashMap<String, Object>();
+            status.put("selected", true);
+            enrollment.projectedFromEpoch().ifPresent(value -> status.put("projectedFromEpoch", value));
+            status.put("captureState", outbox == null ? "UNKNOWN"
+                    : outbox.epochArtifactCaptureState(dataset).name());
+            status.put("completeRanges", complete.stream().map(range -> Map.of(
+                    "from", range.startInclusive(), "through", range.endInclusive())).toList());
+            status.put("resumeApplicable", outbox != null
+                    && outbox.epochArtifactCaptureState(dataset)
+                    == com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactCaptureState.PAUSED);
+            throw new IncompleteEpochHistoryException(dataset, reason, missing, status);
+        }
+    }
+
+    /** Low-cardinality values consumed by the Micrometer adapter. */
+    public Map<String, Map<String, Double>> epochArtifactMetrics() {
+        var complete = projectionSink == null
+                ? Map.<com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId,
+                        List<com.bloxbean.cardano.yano.archive.api.ArchiveRange>>of()
+                : projectionSink.epochArtifactCoverage();
+        var gaps = outbox == null ? List.<com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap>of()
+                : outbox.epochArtifactGaps();
+        var intervals = outbox == null
+                ? List.<com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGapInterval>of()
+                : outbox.epochArtifactGapIntervals();
+        var result = new java.util.TreeMap<String, Map<String, Double>>();
+        for (var contract : com.bloxbean.cardano.yano.archive.api.projection
+                .ProjectionArtifactContracts.shipped().contracts().values()) {
+            var dataset = contract.dataset();
+            var enrollment = artifactEnrollments.enrollmentFor(dataset);
+            var ranges = complete.getOrDefault(dataset, List.of());
+            var datasetGaps = gaps.stream().filter(gap -> gap.dataset() == dataset).toList();
+            double lastComplete = ranges.stream().mapToLong(
+                    com.bloxbean.cardano.yano.archive.api.ArchiveRange::endInclusive).max().orElse(-1);
+            double lastGap = datasetGaps.stream().mapToInt(
+                    com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap::semanticEpoch)
+                    .max().orElse(-1);
+            double lastInterval = intervals.stream().filter(interval -> interval.dataset() == dataset)
+                    .mapToInt(com.bloxbean.cardano.yano.archive.api.projection
+                            .EpochArtifactGapInterval::throughEpoch).max().orElse(-1);
+            var values = new java.util.LinkedHashMap<String, Double>();
+            values.put("selected", enrollment.isPresent() ? 1d : 0d);
+            values.put("paused", outbox != null && outbox.epochArtifactCaptureState(dataset)
+                    == com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactCaptureState.PAUSED
+                    ? 1d : 0d);
+            values.put("projectedFrom", enrollment.isPresent()
+                    && enrollment.orElseThrow().projectedFromEpoch().isPresent()
+                    ? (double) enrollment.orElseThrow().projectedFromEpoch().getAsInt() : Double.NaN);
+            values.put("lastComplete", lastComplete);
+            values.put("observedThrough", Math.max(lastComplete, Math.max(lastGap, lastInterval)));
+            values.put("gaps", (double) datasetGaps.size());
+            values.put("gapRanges", (double) intervals.stream()
+                    .filter(interval -> interval.dataset() == dataset).count());
+            for (String failureClass : List.of("io", "filesystem", "capacity", "capture")) {
+                values.put("gaps." + failureClass, (double) datasetGaps.stream()
+                        .filter(gap -> failureClass.equals(gap.failureClass())).count());
+            }
+            result.put(dataset.logicalName(), Map.copyOf(values));
+        }
+        return Map.copyOf(result);
+    }
+
+    private Optional<String> legacyStagingFailure() {
+        var staging = epochStaging;
+        if (staging != null && staging.failure().isPresent()) return staging.failure();
+        var directory = historyDirectory;
+        if (directory == null) return Optional.empty();
+        java.nio.file.Path marker = directory.resolve("epoch-source").resolve("FAILED");
+        if (!java.nio.file.Files.isRegularFile(marker)) return Optional.empty();
+        try {
+            return Optional.of(java.nio.file.Files.readString(marker));
+        } catch (java.io.IOException e) {
+            return Optional.of("legacy epoch staging failure marker is unreadable: " + e.getMessage());
+        }
+    }
+
     /**
      * Datasets this archive can answer for: every projected section plus every captured artifact.
      *
@@ -1397,8 +2201,7 @@ public class ProjectionHistoryService implements AutoCloseable {
         if (!enabled || identity == null) return Set.of();
         var covered = new java.util.LinkedHashSet<com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId>();
         identity.requiredSections().forEach(section -> covered.add(section.dataset()));
-        com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactContracts.shipped()
-                .contracts().keySet().forEach(covered::add);
+        selectedArtifacts.contracts().keySet().forEach(covered::add);
         return Set.copyOf(covered);
     }
 
@@ -1413,15 +2216,11 @@ public class ProjectionHistoryService implements AutoCloseable {
     /**
      * Cross-dataset consistency point, derived from the projection's own receipts.
      *
-     * <p>The legacy watermark is computed from {@code archive_coverage}, which the projection
-     * never writes. Reporting that here once the projection is the primary writer would say
-     * "nothing is archived" over a complete archive - the false absence the ADR forbids.
-     *
      * <p>The projection's answer is also stronger: every required section for a block range
      * commits in one transaction with its receipt, so the committed coordinate is a consistency
      * point across all datasets by construction rather than by intersection.
      *
-     * @return empty when the projection is not the primary writer, so the caller can fall back
+     * @return empty when projection history is disabled or unavailable
      */
     public Optional<Map<String, Object>> consistencyPoint(Set<com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId> requested) {
         if (!enabled || projectionSink == null) return Optional.empty();
@@ -1439,10 +2238,9 @@ public class ProjectionHistoryService implements AutoCloseable {
 
         // Every required section is committed for the same range, so a dataset the caller asked
         // for is either covered by that range or not projected at all.
+        var covered = coveredDatasets();
         var missing = requested.stream()
-                .filter(dataset -> dataset.sourceKind() == com.bloxbean.cardano.yano.archive.api.SourceKind.BLOCK)
-                .filter(dataset -> identity.requiredSections().stream()
-                        .noneMatch(section -> section.dataset() == dataset))
+                .filter(dataset -> !covered.contains(dataset))
                 .map(com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId::logicalName)
                 .sorted()
                 .toList();
@@ -1450,6 +2248,21 @@ public class ProjectionHistoryService implements AutoCloseable {
             value.put("available", false);
             value.put("reason", "not projected by this archive: " + String.join(", ", missing));
             return Optional.of(value);
+        }
+
+        // A selected epoch dataset is not necessarily complete: it may have joined
+        // prospectively or carry a durable gap. The block receipt coordinate alone cannot prove
+        // epoch-history completeness.
+        for (var dataset : requested) {
+            if (dataset.sourceKind() != com.bloxbean.cardano.yano.archive.api.SourceKind.EPOCH) continue;
+            try {
+                requireCompleteEpochHistory(dataset);
+            } catch (IncompleteEpochHistoryException incomplete) {
+                value.put("available", false);
+                value.put("reason", incomplete.getMessage());
+                value.put("epochCoverage", incomplete.response());
+                return Optional.of(value);
+            }
         }
 
         if (!genesisComplete) {
@@ -1508,9 +2321,8 @@ public class ProjectionHistoryService implements AutoCloseable {
         coverage.put("identity", identity.fingerprint());
         coverage.put("sections", identity.requiredSections().stream()
                 .map(ProjectionSectionType::wireName).sorted().toList());
-        coverage.put("artifactContracts",
-                com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactContracts
-                        .shipped().wireForm());
+        coverage.put("artifactContracts", selectedArtifacts.wireForm());
+        coverage.put("epochArtifacts", artifactCoverageEntries(outbox.pendingArtifacts()));
 
         long committedThrough = -1;
         if (projectionSink != null) {
@@ -1535,25 +2347,69 @@ public class ProjectionHistoryService implements AutoCloseable {
             // The honest upper bound on how long a final block can take to become queryable.
             coverage.put("maxCommitLatency", policy.maxLinger(active.nearTip()).toString());
         }
-        // ADR-039 Phase 6 requires this to be stated rather than discovered. The projection does
-        // not build the SQLite tx-hash locator the replay worker did, so a lookup by transaction hash
-        // falls back to a full-range scan of the transactions table. The result is correct - the
-        // locator was only ever an accelerator, and the fallback query is the authoritative one -
-        // but it is O(archive), not O(1), until a derived index exists.
+        // The read facade builds a best-effort tx-hash locator when it opens. It is an accelerator,
+        // never coverage authority: a missing or stale hint falls back to the pinned transaction
+        // table, preserving correctness while the projection continues to append.
         coverage.put("transactionHashLookup", Map.of(
-                "mode", "full-scan",
+                "mode", "derived-hint-with-authoritative-fallback",
                 "correct", true,
-                "note", "no derived tx-hash index is built for projection archives; lookup by hash"
-                        + " scans the transactions table and is not suitable for hot paths"));
-        var stagingService = epochStaging;
-        if (stagingService != null) {
-            // Surfaced beside coverage because it bounds what the archive will ever hold: no
-            // further epoch artifacts are produced once staging has failed.
-            stagingService.failure().ifPresent(detail -> coverage.put("epochStagingError", detail));
-        }
+                "note", "a missing or stale locator hint scans the pinned transactions table"));
+        legacyStagingFailure().ifPresent(detail -> {
+            coverage.put("epochStagingError", detail);
+            coverage.put("epochStagingFailureActive",
+                    !stagedFileDatasets(selectedArtifacts).isEmpty());
+        });
         coverage.put("note", "blocks above queryableThroughBlock are not yet committed to the"
                 + " archive; treat them as unknown rather than absent");
         return coverage;
+    }
+
+    /** Bounded canonical gap detail; the summary endpoint never emits an unbounded failure list. */
+    public Map<String, Object> coverageDetails(
+            com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId dataset,
+            Integer fromEpoch, Integer toEpoch, Integer offset, Integer limit) {
+        Objects.requireNonNull(dataset, "dataset");
+        int from = fromEpoch == null ? 0 : fromEpoch;
+        int through = toEpoch == null ? Integer.MAX_VALUE : toEpoch;
+        int skip = offset == null ? 0 : offset;
+        int pageSize = limit == null ? 50 : limit;
+        if (from < 0 || through < from) {
+            throw new IllegalArgumentException("epoch detail range is invalid");
+        }
+        if (skip < 0 || pageSize < 1 || pageSize > 200) {
+            throw new IllegalArgumentException("offset must be non-negative and limit must be 1..200");
+        }
+        Map<String, Object> result = new LinkedHashMap<>(coverage());
+        if (!enabled || !initialized) return Map.copyOf(result);
+        var all = new java.util.LinkedHashMap<String, Map<String, Object>>();
+        outbox.epochArtifactGaps().stream()
+                .filter(gap -> gap.dataset() == dataset
+                        && gap.semanticEpoch() >= from && gap.semanticEpoch() <= through)
+                .forEach(gap -> all.put("point/" + gap.semanticEpoch(), Map.of(
+                        "kind", "POINT", "from", gap.semanticEpoch(), "through", gap.semanticEpoch(),
+                        "blockNumber", gap.boundaryBlockNumber(), "slot", gap.boundarySlot(),
+                        "blockHash", java.util.HexFormat.of().formatHex(gap.boundaryBlockHash()),
+                        "failureClass", gap.failureClass(), "detail", gap.detail())));
+        outbox.epochArtifactGapIntervals().stream()
+                .filter(interval -> interval.dataset() == dataset
+                        && interval.throughEpoch() >= from && interval.fromEpoch() <= through)
+                .forEach(interval -> all.put("range/" + interval.causedByEpoch() + '/'
+                                + interval.fromEpoch(), Map.of(
+                        "kind", "PAUSED_RANGE", "from", interval.fromEpoch(),
+                        "through", interval.throughEpoch(), "open", interval.open(),
+                        "causedByEpoch", interval.causedByEpoch(),
+                        "failureClass", interval.failureClass())));
+        var ordered = all.values().stream()
+                .sorted(java.util.Comparator.<Map<String, Object>>comparingInt(
+                                value -> ((Number) value.get("from")).intValue())
+                        .thenComparing(value -> String.valueOf(value.get("kind"))))
+                .toList();
+        result.put("gapDetail", Map.of(
+                "dataset", dataset.logicalName(), "fromEpoch", from,
+                "toEpoch", through == Integer.MAX_VALUE ? "latest" : through,
+                "offset", skip, "limit", pageSize, "total", ordered.size(),
+                "items", ordered.stream().skip(skip).limit(pageSize).toList()));
+        return Map.copyOf(result);
     }
 
     @Override

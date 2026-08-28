@@ -7,10 +7,12 @@ import com.bloxbean.cardano.yaci.core.model.TransactionOutput;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.archive.ConsumedOutputAddresses;
 import com.bloxbean.cardano.yano.api.archive.PointerCredentialSource;
+import com.bloxbean.cardano.yano.archive.core.address.ArchiveAddressParser;
+import com.bloxbean.cardano.yano.archive.core.address.ArchiveAddressParser.PointerLookup;
+import com.bloxbean.cardano.yano.archive.core.address.ArchiveAddressParser.ResolvedStakeCredential;
 import com.bloxbean.cardano.yano.archive.core.address.AddressKeyCodec;
 import com.bloxbean.cardano.yano.archive.core.dataset.AddressParticipationFact;
 import com.bloxbean.cardano.yano.archive.core.dataset.AddressSubjectRows;
-import com.bloxbean.cardano.yano.archive.core.dataset.AddressTransactionDataset;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -44,14 +46,13 @@ final class ProjectionAddressParticipation {
                                             ConsumedOutputAddresses consumed,
                                             AddressKeyCodec addressKeys,
                                             PointerCredentialSource pointerSource) {
-        AddressTransactionDataset.PointerLookup pointers = coordinate -> {
+        PointerLookup pointers = coordinate -> {
             var credential = ProjectionPointerResolution.resolveCoordinate(
                     new PointerCredentialSource.PointerCoordinate(coordinate.slot(),
                             coordinate.txIndex(), coordinate.certIndex()),
                     blockSlot, pointerSource);
             return credential == null ? null
-                    : new com.bloxbean.cardano.yano.archive.core.address.SequentialPointerResolver
-                            .ResolvedStakeCredential(
+                    : new ResolvedStakeCredential(
                             ProjectionPointerResolution.credentialTypeNameOf(credential),
                             ProjectionPointerResolution.credentialHashOf(credential));
         };
@@ -103,8 +104,8 @@ final class ProjectionAddressParticipation {
 
     private static AddressSubjectRows.Participant participant(String address, int era,
                                                               AddressKeyCodec addressKeys,
-                                                              AddressTransactionDataset.PointerLookup pointers) {
-        var parts = AddressTransactionDataset.parse(address, era, addressKeys, pointers);
+                                                              PointerLookup pointers) {
+        var parts = ArchiveAddressParser.parse(address, era, addressKeys, pointers);
         return new AddressSubjectRows.Participant(parts.addressKey(), parts.displayAddress(),
                 parts.paymentCredential(), parts.stakeCredentialType(), parts.stakeCredential());
     }

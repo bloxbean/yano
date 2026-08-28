@@ -33,22 +33,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class YanoProducerTest {
 
     @Test
-    void removedSynchronousAccountHistoryConfigIsRejectedEvenWhenFalse() {
-        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
-        producer.removedAccountHistoryEnabled = Optional.of(false);
-
-        IllegalArgumentException error = assertThrows(
-                IllegalArgumentException.class,
-                producer::rejectRemovedAccountHistoryConfig);
-
-        // The replacement it names must itself be accepted. The previous wording pointed at
-        // yano.history.enabled and yano.history.datasets.*, both of which are now rejected, so
-        // an operator who followed the message hit a second startup failure.
-        assertEquals("yano.account-history.enabled was removed; remove it and set "
-                + "yano.history.projection.enabled=true instead", error.getMessage());
-    }
-
-    @Test
     void pluginPolicyIsMappedWithoutDroppingAllowDenyOrReservedFlag() {
         var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
         producer.appConfig = new PresentConfig(Map.of(

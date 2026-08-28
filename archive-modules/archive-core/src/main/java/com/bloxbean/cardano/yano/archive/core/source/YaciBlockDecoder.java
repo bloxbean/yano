@@ -62,12 +62,12 @@ public final class YaciBlockDecoder implements CanonicalBlockDecoder<Block> {
      * a normalized Byron block is, and cannot drift apart.
      */
     private Block decodeByron(byte[] body, long blockNumber, CanonicalBlockReference reference) {
-        try {
+        if (StoredBlockUtil.requireByronEnvelopeKind(body)
+                == StoredBlockUtil.ByronEnvelopeKind.MAIN) {
             var byron = ByronBlockSerializer.INSTANCE.deserialize(body);
             return ByronBlockNormalizer.normalizeMain(byron, blockNumber, reference.blockHash());
-        } catch (Exception notMainBlock) {
-            var ebb = ByronEbBlockSerializer.INSTANCE.deserialize(body);
-            return ByronBlockNormalizer.normalizeEpochBoundary(ebb, blockNumber, reference.blockHash());
         }
+        var ebb = ByronEbBlockSerializer.INSTANCE.deserialize(body);
+        return ByronBlockNormalizer.normalizeEpochBoundary(ebb, blockNumber, reference.blockHash());
     }
 }

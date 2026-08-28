@@ -201,6 +201,12 @@ public final class YanoPropertyKeys {
         public static final String INDEXING_STRATEGY = "yano.utxo.indexingStrategy";
         public static final String DELTA_SELF_CONTAINED = "yano.utxo.delta.selfContained";
         public static final String APPLY_ASYNC = "yano.utxo.applyAsync";
+        /**
+         * One-shot startup migration for an existing, unmarked full-history database.
+         * Ignored after the Byron-main capability marker has been established.
+         */
+        public static final String REBUILD_UNMARKED_FROM_GENESIS =
+                "yano.utxo.rebuild-unmarked-from-genesis";
 
         private Utxo() {
         }
@@ -266,10 +272,9 @@ public final class YanoPropertyKeys {
         }
     }
 
-    /** Optional asynchronous history/archive settings (ADR-034). */
+    /** Projection archive and read-facade settings. */
     public static final class History {
         public static final String PREFIX = "yano.history.";
-        public static final String ENABLED = PREFIX + "enabled";
         public static final String DIR = PREFIX + "dir";
         public static final String ENGINE = PREFIX + "archive.engine";
         public static final String FINALITY_BLOCKS = PREFIX + "archive.finality-blocks";
@@ -322,6 +327,14 @@ public final class YanoPropertyKeys {
          * <p>Example legacy value: {@code transaction:v1,utxo-history:v1}.
          */
         public static final String PROJECTION_SECTIONS = PREFIX + "projection.sections";
+
+        /**
+         * Comma-separated versioned epoch-artifact selectors, or {@code all}/{@code none}.
+         * Omission means all shipped artifacts for a fresh archive and preserves the persisted
+         * enrollment for an existing archive (ADR-044).
+         */
+        public static final String PROJECTION_EPOCH_ARTIFACTS =
+                PREFIX + "projection.epoch-artifacts";
 
         /** Rows read per epoch-artifact page. Bounds the drain's working set, not what is written. */
         public static final String PROJECTION_ARTIFACT_PAGE_ROWS = PREFIX + "projection.artifact.page-rows";

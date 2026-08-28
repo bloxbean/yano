@@ -3,6 +3,7 @@ package com.bloxbean.cardano.yano.runtime.utxo;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yano.api.bootstrap.BootstrapUtxo;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
+import com.bloxbean.cardano.yano.api.events.ByronMainBlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
 
 import java.math.BigInteger;
@@ -11,6 +12,9 @@ import java.util.Map;
 
 public interface UtxoStoreWriter {
     void applyBlock(BlockAppliedEvent e);
+    default void applyByronBlock(ByronMainBlockAppliedEvent e) {
+        // Compatibility no-op for custom stores that have not opted into Byron state.
+    }
     void rollbackTo(RollbackEvent e);
     void reconcile(ChainState chainState);
     boolean isEnabled();

@@ -9,6 +9,7 @@ import com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRepres
 
 import java.util.Objects;
 import java.util.OptionalLong;
+import java.util.Set;
 
 /**
  * Records an epoch-stake artifact as a reference to the delegation snapshot the boundary already
@@ -27,7 +28,7 @@ public final class EpochArtifactCollector implements EpochArtifactContributor {
 
     private final ProjectionOutboxStore outbox;
     private final SnapshotRetentionClamp clamp;
-    private final boolean enabled;
+    private final java.util.Map<ArchiveDatasetId, Integer> projectedFrom;
     private final int sourceCodecVersion;
     /**
      * Base of the state version; each dataset appends its own part.
@@ -42,22 +43,48 @@ public final class EpochArtifactCollector implements EpochArtifactContributor {
     public EpochArtifactCollector(ProjectionOutboxStore outbox, SnapshotRetentionClamp clamp,
                                        boolean enabled, int sourceCodecVersion,
                                        String sourceStateBase) {
+        this(outbox, clamp, enabled
+                        ? Set.of(ArchiveDatasetId.EPOCH_STAKE, ArchiveDatasetId.ADA_POT)
+                        : Set.of(),
+                sourceCodecVersion, sourceStateBase);
+    }
+
+    public EpochArtifactCollector(ProjectionOutboxStore outbox, SnapshotRetentionClamp clamp,
+                                  Set<ArchiveDatasetId> selected, int sourceCodecVersion,
+                                  String sourceStateBase) {
+        this(outbox, clamp, selected.stream().collect(java.util.stream.Collectors.toUnmodifiableMap(
+                dataset -> dataset, ignored -> 0)), sourceCodecVersion, sourceStateBase);
+    }
+
+    public EpochArtifactCollector(ProjectionOutboxStore outbox, SnapshotRetentionClamp clamp,
+                                  java.util.Map<ArchiveDatasetId, Integer> projectedFrom,
+                                  int sourceCodecVersion, String sourceStateBase) {
         this.outbox = Objects.requireNonNull(outbox, "outbox");
         this.clamp = clamp == null ? SnapshotRetentionClamp.NONE : clamp;
-        this.enabled = enabled;
+        Objects.requireNonNull(projectedFrom, "projectedFrom");
+        if (!Set.of(ArchiveDatasetId.EPOCH_STAKE, ArchiveDatasetId.ADA_POT)
+                .containsAll(projectedFrom.keySet())) {
+            throw new IllegalArgumentException("direct collector only supports epoch-stake and ada-pot: "
+                    + projectedFrom.keySet());
+        }
+        if (projectedFrom.values().stream().anyMatch(epoch -> epoch == null || epoch < 0)) {
+            throw new IllegalArgumentException("projected-from epochs must be non-negative");
+        }
+        this.projectedFrom = java.util.Map.copyOf(projectedFrom);
         this.sourceCodecVersion = sourceCodecVersion;
         this.sourceStateBase = Objects.requireNonNull(sourceStateBase, "sourceStateBase");
     }
 
     @Override
     public boolean enabled() {
-        return enabled;
+        return !projectedFrom.isEmpty();
     }
 
     @Override
     public void contributeEpochStake(int epoch, long boundarySlot, long boundaryBlockNumber,
                                      long rowCount, ProjectionStagingWriter writer) {
-        if (!enabled) return;
+        Integer enrollmentFloor = projectedFrom.get(ArchiveDatasetId.EPOCH_STAKE);
+        if (enrollmentFloor == null || epoch < enrollmentFloor) return;
         if (boundaryBlockNumber < 0 || boundarySlot < 0) {
             // Without the producing coordinate the finality gate cannot decide when this artifact
             // becomes eligible, and an artifact that is never eligible silently pins its snapshot.
@@ -94,7 +121,8 @@ public final class EpochArtifactCollector implements EpochArtifactContributor {
     @Override
     public void contributeAdaPot(int epoch, long boundarySlot, long boundaryBlockNumber,
                                  long[] values, ProjectionStagingWriter writer) {
-        if (!enabled) return;
+        Integer enrollmentFloor = projectedFrom.get(ArchiveDatasetId.ADA_POT);
+        if (enrollmentFloor == null || epoch < enrollmentFloor) return;
         if (boundaryBlockNumber < 0 || boundarySlot < 0) {
             throw new IllegalStateException("ada-pot artifact for epoch " + epoch
                     + " has no boundary coordinate; the transition must set it before staging");

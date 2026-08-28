@@ -304,6 +304,17 @@ public final class YanoDevnetAssembly {
         }
 
         @Override
+        public java.util.List<String> configuredUtxoStorageFilters() {
+            return delegate.configuredUtxoStorageFilters();
+        }
+
+        @Override
+        public java.util.Optional<com.bloxbean.cardano.yano.api.CanonicalBlockReference>
+                canonicalBlockReference(long blockNumber) {
+            return delegate.canonicalBlockReference(blockNumber);
+        }
+
+        @Override
         public boolean installEpochArtifactContributor(
                 com.bloxbean.cardano.yano.api.archive.EpochArtifactContributor contributor) {
             return delegate.installEpochArtifactContributor(contributor);

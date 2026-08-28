@@ -1,16 +1,17 @@
 package com.bloxbean.cardano.yano.app.archive;
 
-import com.bloxbean.cardano.yano.api.ChainQuery;
 import com.bloxbean.cardano.yano.archive.core.config.ArchiveEngine;
-import com.bloxbean.cardano.yano.api.LedgerQuery;
+import com.bloxbean.cardano.yano.archive.api.ArchiveIdentity;
 import org.eclipse.microprofile.config.Config;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -47,8 +48,7 @@ class RemovedHistoryConfigTest {
     }
 
     private static void initialize(Map<String, String> values) {
-        new HistoryArchiveService(configOf(values))
-                .initialize(mock(ChainQuery.class), mock(LedgerQuery.class), null);
+        new HistoryArchiveService(configOf(values)).initialize();
     }
 
     private static Map<String, String> with(String key, String value) {
@@ -92,6 +92,25 @@ class RemovedHistoryConfigTest {
                 .hasMessageContaining("yano.history.projection.enabled=true");
     }
 
+    @Test
+    void theLegacyEnableFlagIsRejectedEvenWhenFalse() {
+        HistoryArchiveService service = new HistoryArchiveService(
+                configOf(with("yano.history.enabled", "false")));
+
+        assertThatThrownBy(service::initialize)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("yano.history.projection.enabled=true");
+        assertThat(service.hasInitializationFailure()).isTrue();
+        assertThat(service.status()).containsKey("error");
+    }
+
+    @Test
+    void removedSynchronousAccountHistoryFlagIsRejectedEvenWhenFalse() {
+        assertThatThrownBy(() -> initialize(with("yano.account-history.enabled", "false")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("yano.history.projection.enabled=true");
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {
             // Live projection configuration that merely shares a word with the dead keys. A
@@ -124,9 +143,9 @@ class RemovedHistoryConfigTest {
         var field = HistoryArchiveService.class.getDeclaredField("REMOVED_WORKER_PREFIXES");
         field.setAccessible(true);
         @SuppressWarnings("unchecked")
-        java.util.List<String> production = (java.util.List<String>) field.get(null);
+        List<String> production = (List<String>) field.get(null);
 
-        java.util.List<String> covered = java.util.List.of(
+        List<String> covered = List.of(
                 "yano.history.worker.", "yano.history.hot-store.", "yano.history.start-mode",
                 "yano.history.datasets.", "yano.history.maintenance.", "yano.history.archive.sqlite.");
 
@@ -146,9 +165,8 @@ class RemovedHistoryConfigTest {
         values.put("yano.history.archive.engine", "sqlite");
 
         assertThatThrownBy(() -> new HistoryArchiveService(configOf(values))
-                .initializeProjectionReads(null,
-                        mock(com.bloxbean.cardano.yano.archive.api.ArchiveIdentity.class),
-                        java.util.Set.of(), () -> 0L))
+                .initializeProjectionReads(
+                        mock(ArchiveIdentity.class), Set.of(), () -> 0L, ignored -> { }))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("yano.history.archive.engine=sqlite is not supported")
                 .hasMessageContaining("ducklake");

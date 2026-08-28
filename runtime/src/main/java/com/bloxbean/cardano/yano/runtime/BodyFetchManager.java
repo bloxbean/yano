@@ -24,6 +24,7 @@ import com.bloxbean.cardano.yano.api.events.GenesisBlockEvent;
 import com.bloxbean.cardano.yano.api.events.PostEpochTransitionEvent;
 import com.bloxbean.cardano.yano.api.events.PreEpochTransitionEvent;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
+import com.bloxbean.cardano.yano.api.events.ByronMainBlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.ByronBlockProjectionEvent;
 import com.bloxbean.cardano.yano.api.events.BlockReceivedEvent;
 import com.bloxbean.cardano.yano.api.events.RollbackEvent;
@@ -31,8 +32,8 @@ import com.bloxbean.cardano.yano.api.events.TipChangedEvent;
 import com.bloxbean.cardano.yano.api.genesis.GenesisBootstrapData;
 import com.bloxbean.cardano.yano.runtime.apply.UnrecoverableApplyException;
 import com.bloxbean.cardano.yano.runtime.chain.ChainStateRecovery;
+import com.bloxbean.cardano.yano.runtime.chain.ChainStateRollback;
 import com.bloxbean.cardano.yano.runtime.chain.EraMetadataStore;
-import com.bloxbean.cardano.yano.runtime.chain.OriginRollbackCapable;
 import com.bloxbean.cardano.yano.p2p.peer.PeerHealth;
 import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidationContext;
 import com.bloxbean.cardano.yano.runtime.sync.validation.BodyValidationException;
@@ -893,14 +894,13 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
             // Detect epoch transition and publish PreEpochTransitionEvent BEFORE BlockAppliedEvent
             publishEpochTransitionEventsIfNeeded(slot, blockNumber);
 
+            // Native Byron UTXO application runs before the compatibility event.
+            // EBBs have no equivalent event because they carry no transactions.
+            eventBus.publish(new ByronMainBlockAppliedEvent(
+                    slot, blockNumber, hash, byronBlock), appMeta, appOptions);
+
             // Publish BlockApplied after storage
             eventBus.publish(new BlockAppliedEvent(Era.Byron, slot, blockNumber, hash, null), appMeta, appOptions);
-            // ADR-039: carry the already-decoded Byron block to projection history on a
-            // dedicated type. BlockAppliedEvent's null block stays a Byron/EBB sentinel
-            // for its existing consumers; this adds a subscriber-free cost when history
-            // is disabled.
-            eventBus.publish(ByronBlockProjectionEvent.main(slot, blockNumber, hash,
-                    byronBlock.getHeader().getPrevBlock(), byronBlock), appMeta, appOptions);
             recordBodyApplied(slot, blockNumber);
 
             // Publish TipChanged if tip advanced
@@ -1194,7 +1194,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
             return;
         }
 
-        chainState.rollbackTo(rollbackSlot);
+        ChainStateRollback.rollbackToPoint(chainState, ChainStateRollback.pointOf(tipBeforeStore));
         ChainTip currentTip = chainState.getTip();
         if (!sameTip(currentTip, tipBeforeStore)) {
             throw new IllegalStateException("ChainState rollback ended at "
@@ -1203,11 +1203,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
     }
 
     private void rollbackChainStateToOrigin() {
-        if (chainState instanceof OriginRollbackCapable originRollback) {
-            originRollback.rollbackToOrigin();
-            return;
-        }
-        chainState.rollbackTo(0L);
+        ChainStateRollback.rollbackToPoint(chainState, Point.ORIGIN);
     }
 
     private static boolean sameTip(ChainTip left, ChainTip right) {

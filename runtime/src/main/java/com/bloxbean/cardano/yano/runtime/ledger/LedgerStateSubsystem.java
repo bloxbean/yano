@@ -280,9 +280,16 @@ public final class LedgerStateSubsystem implements Subsystem {
 
         eraMetadataStore.setEraStartSlot(event.era().getValue(), event.slot());
 
-        if (event.era().getValue() > com.bloxbean.cardano.yaci.core.model.Era.Byron.getValue()
-                && utxoStoreSupplier.get() instanceof DefaultUtxoStore defaultUtxo
-                && eraMetadataStore.getShelleyStartUtxoTotal().isEmpty()) {
+        if (event.era().getValue() > com.bloxbean.cardano.yaci.core.model.Era.Byron.getValue()) {
+            captureShelleyStartUtxoTotalIfNeeded();
+        }
+    }
+
+    private void captureShelleyStartUtxoTotalIfNeeded() {
+        if (eraMetadataStore == null || eraMetadataStore.getShelleyStartUtxoTotal().isPresent()) {
+            return;
+        }
+        if (utxoStoreSupplier.get() instanceof DefaultUtxoStore defaultUtxo) {
             BigInteger total = defaultUtxo.computeTotalUtxoLovelace();
             eraMetadataStore.setShelleyStartUtxoTotal(total);
             log.info("Captured Shelley-start UTXO total at era transition: {} lovelace", total);
@@ -333,6 +340,7 @@ public final class LedgerStateSubsystem implements Subsystem {
                     runtimeOptions.globals(), YanoPropertyKeys.AccountState.ENABLED, false);
             NetworkGenesisConfig networkGenesisConfig = resolveNetworkGenesisConfig();
             refreshGenesisBootstrapData(networkGenesisConfig);
+            wireUtxoMetadataDependencies();
 
             if (accountStateEnabled) {
                 initializeAccountState(networkGenesisConfig);
@@ -341,6 +349,15 @@ public final class LedgerStateSubsystem implements Subsystem {
             }
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to initialize ledger-state subsystem", t);
+        }
+    }
+
+    private void wireUtxoMetadataDependencies() {
+        if (utxoStoreSupplier.get() instanceof DefaultUtxoStore defaultUtxoStore) {
+            if (byronMetadataStore != null) {
+                defaultUtxoStore.wireAllegraBootstrapRemoval(byronMetadataStore);
+            }
+            defaultUtxoStore.setShelleyStartBoundaryCapture(this::captureShelleyStartUtxoTotalIfNeeded);
         }
     }
 
@@ -544,11 +561,6 @@ public final class LedgerStateSubsystem implements Subsystem {
                 cfNetConfig);
         defaultStore.setEpochBoundaryProcessor(epochBoundaryProcessor);
         epochBoundaryProcessor.setSnapshotCreator(defaultStore);
-
-        if (utxoStoreSupplier.get() instanceof DefaultUtxoStore defaultUtxoStore
-                && byronMetadataStore != null) {
-            defaultUtxoStore.wireAllegraBootstrapRemoval(byronMetadataStore);
-        }
 
         boolean exitOnCalcError = resolveBoolean(
                 runtimeOptions.globals(), YanoPropertyKeys.Ledger.EXIT_ON_EPOCH_CALC_ERROR, false);

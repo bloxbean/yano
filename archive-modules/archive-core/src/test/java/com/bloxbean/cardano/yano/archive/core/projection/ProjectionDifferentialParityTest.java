@@ -25,8 +25,8 @@ import com.bloxbean.cardano.yano.archive.api.projection.ProjectionIdentity;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionSectionType;
 import com.bloxbean.cardano.yano.archive.core.dataset.BlockSourceContext;
 import com.bloxbean.cardano.yano.archive.core.dataset.StandardBlockDatasets;
-import com.bloxbean.cardano.yano.archive.core.dataset.UtxoHistoryDataset;
 import com.bloxbean.cardano.yano.archive.core.dataset.UtxoHistoryFact;
+import com.bloxbean.cardano.yano.archive.core.dataset.UtxoHistoryRows;
 import com.bloxbean.cardano.yano.archive.core.source.YaciBlockArchiveDecoder;
 import com.bloxbean.cardano.yano.archive.core.source.YaciUtxoHistoryDecoder;
 import org.junit.jupiter.api.AfterEach;
@@ -164,7 +164,7 @@ class ProjectionDifferentialParityTest {
         StandardBlockDatasets.accountEvents().derive(job(ArchiveDatasetId.ACCOUNT_EVENT), txFacts, rows::add);
 
         var utxoFacts = new YaciUtxoHistoryDecoder(slot -> slot / 100, slot -> 1_600_000_000L + slot).project(ctx);
-        new UtxoHistoryDataset().derive(job(ArchiveDatasetId.UTXO_HISTORY), utxoFacts, rows::add);
+        UtxoHistoryRows.emit(job(ArchiveDatasetId.UTXO_HISTORY), utxoFacts, rows::add);
         return rows;
     }
 
@@ -202,7 +202,7 @@ class ProjectionDifferentialParityTest {
         var utxoSection = envelope.section(ProjectionSectionType.UTXO_HISTORY).orElseThrow();
         UtxoHistoryFact utxoFact =
                 ProjectionFactCodec.decodeUtxoHistory(ProjectionChunking.join(utxoSection.chunks()));
-        new UtxoHistoryDataset().derive(job(ArchiveDatasetId.UTXO_HISTORY),
+        UtxoHistoryRows.emit(job(ArchiveDatasetId.UTXO_HISTORY),
                 new BlockSourceContext<>(100, 2000, 20, Instant.ofEpochSecond(1_600_002_000L),
                         HexUtil.decodeHexString(hex(0x0b, 32)), HexUtil.decodeHexString(hex(0x0a, 32)), utxoFact),
                 rows::add);

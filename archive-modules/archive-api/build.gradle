@@ -1,14 +1,11 @@
 plugins {
     id 'java-library'
-    id 'java-test-fixtures'
 }
 
 dependencies {
     api project(':core-api')
     integrationTestImplementation libs.duckdb.jdbc
     integrationTestImplementation libs.sqlite.jdbc
-    testFixturesApi libs.junit.jupiter.api
-    testFixturesApi libs.assertj.core
 }
 
 tasks.register('archiveLayoutBenchmark', JavaExec) {

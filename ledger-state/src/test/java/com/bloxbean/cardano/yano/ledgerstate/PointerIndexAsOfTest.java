@@ -90,6 +90,26 @@ class PointerIndexAsOfTest {
     }
 
     @Test
+    void reRegistrationKeepsTheOldCoordinateDeadAndTheNewCoordinateLive() throws Exception {
+        indexDeregistration(CRED_A, 75, 0, 0);
+
+        assertThat(store.deregisteredWithin(credential(CRED_A), at(50, 0, 0),
+                PointerCoordinate.endOfBlock(100))).isTrue();
+        assertThat(store.deregisteredWithin(credential(CRED_A), at(90, 0, 0),
+                PointerCoordinate.endOfBlock(100))).isFalse();
+    }
+
+    @Test
+    void sameBlockReRegistrationUsesTheFullCertificateCoordinate() throws Exception {
+        indexDeregistration(CRED_A, 100, 1, 0);
+
+        assertThat(store.deregisteredWithin(credential(CRED_A), at(50, 0, 0),
+                PointerCoordinate.endOfBlock(100))).isTrue();
+        assertThat(store.deregisteredWithin(credential(CRED_A), at(100, 2, 0),
+                PointerCoordinate.endOfBlock(100))).isFalse();
+    }
+
+    @Test
     void anotherCredentialsDeregistrationIsIgnored() throws Exception {
         indexDeregistration(CRED_B, 75, 0, 0);
         assertThat(store.deregisteredWithin(credential(CRED_A), at(50, 0, 0),
