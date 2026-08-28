@@ -23,6 +23,7 @@ import com.bloxbean.cardano.yano.api.account.AccountStateReadStore;
 import com.bloxbean.cardano.yano.api.account.AccountStateStore;
 import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.account.OpCertCounterState;
+import com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.model.ProtocolParamsSnapshot;
 import com.bloxbean.cardano.yano.api.util.CostModelUtil;
@@ -34,7 +35,6 @@ import com.bloxbean.cardano.yano.api.genesis.GenesisDelegation;
 import com.bloxbean.cardano.yano.api.genesis.GenesisPool;
 import com.bloxbean.cardano.yano.api.genesis.ShelleyGenesisBootstrap;
 import com.bloxbean.cardano.yano.api.utxo.StakeBalanceView;
-import com.bloxbean.cardano.yano.api.utxo.StakeBalanceConsistencyException;
 import com.bloxbean.cardano.yano.api.utxo.StakeCredentialBalance;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
@@ -173,6 +173,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     // Epoch boundary completion tracking — stores the last completed step for crash recovery.
     // Format: 8 bytes (epoch as int, step as int). Steps: 0=started, 1=rewards, 2=snapshot, 3=poolreap, 4=governance, 5=complete
     private static final byte[] META_BOUNDARY_STEP = "meta.boundary_step".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] META_BOUNDARY_COORDINATES =
+            "meta.boundary.coordinates.v1".getBytes(StandardCharsets.UTF_8);
     private static final byte[] MARKER_PV10_REVERSE_REBUILD = "meta.pv10_drep_reverse_rebuild".getBytes(StandardCharsets.UTF_8);
     private static final byte[] META_LAST_APPLIED_SLOT = "meta.last_applied_slot".getBytes(StandardCharsets.UTF_8);
     private static final byte[] META_EPOCH_BOUNDARY_STATE_VERSION =
@@ -490,9 +492,13 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         this.chainBlockReader = chainBlockReader;
     }
 
-    public Optional<StakeBalanceView> openBoundaryStakeBalanceView() {
+    public Optional<StakeBalanceView> openBoundaryStakeBalanceView(int snapshotEpoch) {
         if (utxoState == null || chainBlockReader == null || archiveBoundary == null) {
             return Optional.empty();
+        }
+        if (archiveBoundary.previousEpoch() != snapshotEpoch) {
+            throw new IllegalStateException("Boundary coordinates belong to previous epoch "
+                    + archiveBoundary.previousEpoch() + " while opening snapshot epoch " + snapshotEpoch);
         }
         long expectedBlockNumber = archiveBoundary.blockNumber() - 1;
         if (expectedBlockNumber < 0) return Optional.empty();
@@ -515,7 +521,13 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
      * Set the balance aggregation mode: "full-scan" (default) or "incremental".
      */
     public void setBalanceMode(String mode) {
-        this.balanceMode = mode;
+        String normalized = mode == null ? "auto" : mode.trim().toLowerCase(Locale.ROOT);
+        if (normalized.equals("full-scan")) normalized = "scan";
+        if (!normalized.equals("auto") && !normalized.equals("index")
+                && !normalized.equals("scan")) {
+            throw new IllegalArgumentException("Unsupported epoch stake source: " + mode);
+        }
+        this.balanceMode = normalized;
     }
     private String balanceMode = "auto";
 
@@ -574,9 +586,13 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
     @Override
     public void prepareEpochBoundary(int previousEpoch, int newEpoch, long slot, long blockNumber) {
-        archiveBoundary = new com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Boundary(
+        archiveBoundary = new EpochArchiveStagingSink.Boundary(
                 previousEpoch, newEpoch, slot, blockNumber);
         if (epochBoundaryProcessor != null) epochBoundaryProcessor.setBoundaryCoordinates(archiveBoundary);
+    }
+
+    void restoreBoundaryCoordinates(EpochArchiveStagingSink.Boundary boundary) {
+        archiveBoundary = Objects.requireNonNull(boundary, "boundary");
     }
 
     /**
@@ -4083,15 +4099,11 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         PointerAddressResolver ptrResolver = conwayEraAtBoundary ? null : pointerAddressResolver;
         long epochLastSlot = slotForEpochStart(epoch + 1) - 1;
 
-        if ("incremental".equals(balanceMode)) {
-            log.warn("Incremental stake balance aggregation is disabled for correctness; "
-                    + "falling back to full UTXO snapshot scan for epoch {}", epoch);
-        }
         return stakeSnapshotService.aggregateStakeBalances(utxoState, ptrResolver, epochLastSlot);
     }
 
     public boolean shouldUseOrderedStakeBalanceIndex(int epoch) {
-        if ("full-scan".equalsIgnoreCase(balanceMode)) {
+        if ("scan".equals(balanceMode)) {
             return false;
         }
         boolean available = stakeSnapshotService != null && stakeSnapshotService.isEnabled()
@@ -4107,7 +4119,21 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     }
 
     public boolean requiresPointerStakeOverlay(int epoch) {
-        return !isConwayOrLater(epoch + 1) && shouldUseOrderedStakeBalanceIndex(epoch);
+        return !isConwayOrLater(epoch + 1);
+    }
+
+    public boolean probeOrderedStakeBalanceIndex(int epoch) {
+        if (!shouldUseOrderedStakeBalanceIndex(epoch)) return false;
+        try (StakeBalanceView view = openBoundaryStakeBalanceView(epoch)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Coordinate-bound stake balance view is unavailable"))) {
+            return true;
+        } catch (RuntimeException failure) {
+            if ("index".equals(balanceMode)) throw failure;
+            log.warn("Stake balance index is unavailable before boundary mutation for epoch {}; "
+                    + "selecting the historical UTXO scan: {}", epoch, failure.getMessage());
+            return false;
+        }
     }
 
     public Map<UtxoBalanceAggregator.CredentialKey, BigInteger> aggregatePointerUtxoBalances(int epoch) {
@@ -4134,6 +4160,13 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
      */
     public java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> createAndCommitDelegationSnapshot(
             int epoch, java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> precomputedUtxoBalances) {
+        return createAndCommitDelegationSnapshot(epoch, precomputedUtxoBalances,
+                shouldUseOrderedStakeBalanceIndex(epoch));
+    }
+
+    public java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> createAndCommitDelegationSnapshot(
+            int epoch, java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> precomputedUtxoBalances,
+            boolean useOrderedStakeIndex) {
         java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> utxoBalances = null;
         StakeBalanceView stakeBalanceView = null;
         var archiveWriter = archiveStaging.enabled(
@@ -4144,26 +4177,14 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 log.info("Delegation snapshot generation for epoch {} is already complete", epoch);
                 return null;
             }
-            prepareSnapshotGeneration(epoch);
-            if (shouldUseOrderedStakeBalanceIndex(epoch)) {
-                try {
-                    stakeBalanceView = openBoundaryStakeBalanceView().orElse(null);
-                } catch (StakeBalanceConsistencyException consistencyFailure) {
-                    if ("index".equalsIgnoreCase(balanceMode)) throw consistencyFailure;
-                    log.warn("Stake balance index does not match boundary epoch {}; "
-                                    + "falling back to the historical UTXO view: {}",
-                            epoch, consistencyFailure.getMessage());
-                }
+            if (useOrderedStakeIndex) {
+                stakeBalanceView = openBoundaryStakeBalanceView(epoch).orElse(null);
                 if (stakeBalanceView == null) {
-                    if ("index".equalsIgnoreCase(balanceMode)) {
-                        throw new IllegalStateException(
-                                "Stake balance index became unavailable before snapshot creation");
-                    }
-                    // A pre-Conway precomputed value is only the pointer overlay. It cannot
-                    // substitute for the full view when the coordinate-bound index is stale.
-                    precomputedUtxoBalances = null;
+                    throw new IllegalStateException(
+                            "Stake balance index became unavailable after boundary source selection");
                 }
             }
+            prepareSnapshotGeneration(epoch);
             try (SnapshotGenerationWriter writer = new SnapshotGenerationWriter(epoch)) {
                 utxoBalances = createDelegationSnapshot(epoch, writer, precomputedUtxoBalances,
                         stakeBalanceView, archiveWriter);
@@ -4989,7 +5010,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
     private long readRocksDbLongProperty(String property) {
         try {
-            return db.getLongProperty(property);
+            return db.getAggregatedLongProperty(property);
         } catch (Exception ignored) {
             return -1;
         }
@@ -5341,6 +5362,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 int boundaryEpoch = ByteBuffer.wrap(boundaryVal).order(ByteOrder.BIG_ENDIAN).getInt();
                 if (boundaryEpoch > targetEpoch) {
                     batch.delete(cfState, META_BOUNDARY_STEP);
+                    batch.delete(cfState, META_BOUNDARY_COORDINATES);
                     log.info("Cleared stale boundary step for epoch {} (rolled back to epoch {})",
                             boundaryEpoch, targetEpoch);
                 }
@@ -5443,6 +5465,42 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             throw new RuntimeException("Failed to read boundary state", e);
         }
         return null;
+    }
+
+    public Optional<EpochArchiveStagingSink.Boundary> getBoundaryCoordinates(int epoch) {
+        try {
+            byte[] value = db.get(cfState, META_BOUNDARY_COORDINATES);
+            if (value == null) return Optional.empty();
+            if (value.length != 24) {
+                throw new IllegalStateException(
+                        "Malformed boundary coordinate metadata length: " + value.length);
+            }
+            ByteBuffer buffer = ByteBuffer.wrap(value).order(ByteOrder.BIG_ENDIAN);
+            EpochArchiveStagingSink.Boundary boundary = new EpochArchiveStagingSink.Boundary(
+                    buffer.getInt(), buffer.getInt(), buffer.getLong(), buffer.getLong());
+            return boundary.newEpoch() == epoch ? Optional.of(boundary) : Optional.empty();
+        } catch (RocksDBException e) {
+            throw new IllegalStateException("Failed to read boundary coordinates", e);
+        }
+    }
+
+    public void setBoundaryStarted(EpochArchiveStagingSink.Boundary boundary) {
+        Objects.requireNonNull(boundary, "boundary");
+        if (boundary.newEpoch() != boundary.previousEpoch() + 1) {
+            throw new IllegalArgumentException("Boundary epochs are not consecutive: " + boundary);
+        }
+        byte[] coordinates = ByteBuffer.allocate(24).order(ByteOrder.BIG_ENDIAN)
+                .putInt(boundary.previousEpoch()).putInt(boundary.newEpoch())
+                .putLong(boundary.slot()).putLong(boundary.blockNumber()).array();
+        try (WriteBatch batch = new WriteBatch();
+             WriteOptions options = new WriteOptions().setSync(true)) {
+            setBoundaryStepBatch(boundary.newEpoch(), EpochBoundaryProcessor.STEP_STARTED, batch);
+            batch.put(cfState, META_BOUNDARY_COORDINATES, coordinates);
+            db.write(options, batch);
+        } catch (RocksDBException e) {
+            throw new IllegalStateException(
+                    "Failed to persist boundary start for epoch " + boundary.newEpoch(), e);
+        }
     }
 
     /**

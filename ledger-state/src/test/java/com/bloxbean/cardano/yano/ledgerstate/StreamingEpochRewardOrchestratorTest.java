@@ -20,7 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class StreamingEpochRewardOrchestratorTest {
     @Test
-    void poolAtATimeOuterLoopMatchesCfEpochCalculation() {
+    void poolAtATimeOuterLoopMatchesCfEpochCalculationWithNonObftBlockSubstitution() {
         String poolId = "42".repeat(28);
         String rewardAddress = "0:" + "11".repeat(28);
         String memberAddress = "0:" + "22".repeat(28);
@@ -38,11 +38,11 @@ class StreamingEpochRewardOrchestratorTest {
                 .fixedCost(BigInteger.valueOf(340_000_000L))
                 .pledge(BigInteger.valueOf(100_000_000L)).build();
         ProtocolParameters parameters = ProtocolParameters.builder()
-                .decentralisation(BigDecimal.ZERO).treasuryGrowRate(new BigDecimal("0.2"))
+                .decentralisation(new BigDecimal("0.5")).treasuryGrowRate(new BigDecimal("0.2"))
                 .monetaryExpandRate(new BigDecimal("0.003")).optimalPoolCount(500)
                 .poolOwnerInfluence(new BigDecimal("0.3")).build();
         Epoch epochInfo = Epoch.builder().number(8).fees(BigInteger.valueOf(1_000_000L))
-                .blockCount(100).nonOBFTBlockCount(100)
+                .blockCount(100).nonOBFTBlockCount(80)
                 .activeStake(BigInteger.valueOf(1_000_000_000L)).build();
         NetworkConfig network = NetworkConfig.builder()
                 .networkMagic(1).totalLovelace(BigInteger.valueOf(45_000_000_000_000_000L))

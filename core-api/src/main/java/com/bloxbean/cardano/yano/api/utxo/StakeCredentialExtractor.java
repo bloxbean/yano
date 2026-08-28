@@ -35,9 +35,15 @@ public final class StakeCredentialExtractor {
             try {
                 return new Address(HexUtil.decodeHexString(addressText));
             } catch (Exception hexFailure) {
-                // Byron/bootstrap and malformed addresses do not contribute stake.
-                // Every caller deliberately shares this behavior so scan, rebuild and
-                // incremental maintenance cannot disagree about a stored representation.
+                if (addressText.startsWith("addr1") || addressText.startsWith("addr_test1")) {
+                    IllegalArgumentException failure = new IllegalArgumentException(
+                            "Malformed Shelley payment address: " + addressText, textFailure);
+                    failure.addSuppressed(hexFailure);
+                    throw failure;
+                }
+                // Byron/bootstrap and malformed non-Shelley representations do not
+                // contribute stake. All paths share this behavior so scan, rebuild and
+                // incremental maintenance cannot disagree.
                 return null;
             }
         }

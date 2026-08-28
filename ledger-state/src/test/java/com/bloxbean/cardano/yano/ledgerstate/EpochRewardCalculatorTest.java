@@ -8,6 +8,7 @@ import org.cardanofoundation.rewards.calculation.config.NetworkConfig;
 import org.cardanofoundation.rewards.calculation.domain.ProtocolParameters;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.Map;
@@ -15,6 +16,7 @@ import java.util.Optional;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class EpochRewardCalculatorTest {
 
@@ -22,11 +24,28 @@ class EpochRewardCalculatorTest {
     void exposesNormalizedRewardModeForBoundaryTelemetry() {
         var calculator = new EpochRewardCalculator(null, null, null, true);
 
-        assertThat(calculator.rewardMode()).isEqualTo("streaming");
+        assertThat(calculator.rewardMode()).isEqualTo("legacy");
 
         calculator.setRewardMode(" LEGACY ");
 
         assertThat(calculator.rewardMode()).isEqualTo("legacy");
+    }
+
+    @Test
+    void legacyModeFailsClosedWhenStreamingProgressExists() throws Exception {
+        var calculator = new EpochRewardCalculator(null, null, null, true);
+        Field progress = EpochRewardCalculator.class.getDeclaredField("rewardResumeAfterPool");
+        progress.setAccessible(true);
+        progress.set(calculator, "42".repeat(28));
+
+        assertThatThrownBy(() -> calculator.validateRewardResumePath(177, true))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("must remain streaming");
+
+        calculator.setRewardMode("streaming");
+        assertThatThrownBy(() -> calculator.validateRewardResumePath(177, false))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("pool-major snapshot");
     }
 
     @Test

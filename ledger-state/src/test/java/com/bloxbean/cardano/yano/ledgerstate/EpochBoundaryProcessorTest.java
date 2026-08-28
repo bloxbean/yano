@@ -1,9 +1,11 @@
 package com.bloxbean.cardano.yano.ledgerstate;
 
+import com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink;
 import com.bloxbean.cardano.yano.ledgerstate.test.TestRocksDBHelper;
 import org.cardanofoundation.rewards.calculation.config.NetworkConfig;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Field;
@@ -13,7 +15,6 @@ import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.mockito.Mockito.mock;
 
 class EpochBoundaryProcessorTest {
 
@@ -88,6 +89,50 @@ class EpochBoundaryProcessorTest {
 
             method.invoke(processor, 1);
             assertThat(adaPotTracker.getAdaPot(0)).isPresent();
+        }
+    }
+
+    @Test
+    void interruptedBoundaryRestoresCoordinatesBeforeConwayResume() throws Exception {
+        try (var rocks = TestRocksDBHelper.create(tempDir)) {
+            var store = new DefaultAccountStateStore(
+                    rocks.db(), rocks.cfSupplier(),
+                    LoggerFactory.getLogger(EpochBoundaryProcessorTest.class), true);
+            var boundary = new EpochArchiveStagingSink.Boundary(
+                    176, 177, 74_822_412L, 2_844_154L);
+            store.setBoundaryStarted(boundary);
+            store.setBoundaryStep(177, EpochBoundaryProcessor.STEP_SNAPSHOT);
+            var processor = new EpochBoundaryProcessor(null, null, null, null, 1L,
+                    EpochRewardCalculator.resolveNetworkConfig(1L)) {
+                @Override
+                public void processEpochBoundary(int previousEpoch, int newEpoch) {
+                    assertThat(previousEpoch).isEqualTo(176);
+                    assertThat(newEpoch).isEqualTo(177);
+                }
+            };
+            processor.setSnapshotCreator(store);
+
+            processor.recoverInterruptedBoundary();
+
+            Field field = EpochBoundaryProcessor.class.getDeclaredField("archiveBoundary");
+            field.setAccessible(true);
+            assertThat(field.get(processor)).isEqualTo(boundary);
+        }
+    }
+
+    @Test
+    void interruptedBoundaryWithoutCoordinatesFailsClosed() throws Exception {
+        try (var rocks = TestRocksDBHelper.create(tempDir)) {
+            var store = new DefaultAccountStateStore(
+                    rocks.db(), rocks.cfSupplier(),
+                    LoggerFactory.getLogger(EpochBoundaryProcessorTest.class), true);
+            store.setBoundaryStep(177, EpochBoundaryProcessor.STEP_SNAPSHOT);
+            var processor = new EpochBoundaryProcessor(null, null, null, null, 1L,
+                    EpochRewardCalculator.resolveNetworkConfig(1L));
+            processor.setSnapshotCreator(store);
+
+            assertThat(assertThrows(IllegalStateException.class, processor::recoverInterruptedBoundary))
+                    .hasMessageContaining("no persisted coordinates");
         }
     }
 }

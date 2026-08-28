@@ -25,7 +25,7 @@ quarkus:
 yano:
   exit-on-epoch-calc-error: false # Auto verify adapot values for all known epochs (for public networks), exit if any mismatch found
   epoch-boundary:
-    reward-mode: streaming
+    reward-mode: legacy
     max-batch-operations: 10000
     max-batch-bytes: 4194304
 #  rollback-retention-epochs: 20

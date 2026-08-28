@@ -387,12 +387,8 @@ public final class LedgerStateSubsystem implements Subsystem {
                 chainBlockReader, rocksAccess, runtimeOptions.globals(), log, epochParamProvider);
         this.accountStateStore = AccountStateStoreDiscovery.discover(
                 storeContext, Thread.currentThread().getContextClassLoader());
-        if (config.isEnableClient()) {
-            this.accountStateReconcilePending = true;
-            log.info("Account state store initialized; reconciliation deferred until startup recovery");
-        } else {
-            reconcileAccountStateStore();
-        }
+        this.accountStateReconcilePending = true;
+        log.info("Account state store initialized; reconciliation deferred until startup recovery");
 
         if (accountStateStore instanceof DefaultAccountStateStore defaultStore) {
             wireDefaultAccountStateStore(defaultStore, networkGenesisConfig);
@@ -401,9 +397,6 @@ public final class LedgerStateSubsystem implements Subsystem {
         this.accountStateEventHandler = new AccountStateEventHandler(eventBus, accountStateStore);
         log.info("Account state store initialized ({}); event handler registered",
                 accountStateStore.getClass().getSimpleName());
-        if (!config.isEnableClient()) {
-            publishDirectStartGenesisBootstrapIfNeeded();
-        }
     }
 
     private void wireDefaultAccountStateStore(DefaultAccountStateStore defaultStore,
@@ -512,7 +505,7 @@ public final class LedgerStateSubsystem implements Subsystem {
         rewardCalcInstance.setEraProvider(eraService);
         Object rewardMode = runtimeOptions.globals().get(
                 YanoPropertyKeys.AccountState.EPOCH_REWARD_MODE);
-        rewardCalcInstance.setRewardMode(rewardMode != null ? String.valueOf(rewardMode) : "streaming");
+        rewardCalcInstance.setRewardMode(rewardMode != null ? String.valueOf(rewardMode) : "legacy");
         rewardCalcInstance.setBatchLimits(
                 resolveInt(runtimeOptions.globals(),
                         YanoPropertyKeys.AccountState.EPOCH_SNAPSHOT_MAX_BATCH_OPERATIONS, 10_000),
@@ -520,7 +513,7 @@ public final class LedgerStateSubsystem implements Subsystem {
                         YanoPropertyKeys.AccountState.EPOCH_SNAPSHOT_MAX_BATCH_BYTES, 4 * 1024 * 1024));
         defaultStore.setRewardCalculator(rewardCalcInstance);
         log.info("Epoch reward calculator enabled (mode={})",
-                rewardMode != null ? rewardMode : "streaming");
+                rewardMode != null ? rewardMode : "legacy");
         return rewardCalcInstance;
     }
 

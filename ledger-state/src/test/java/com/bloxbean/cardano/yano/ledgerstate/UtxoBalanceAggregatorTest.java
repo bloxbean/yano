@@ -73,11 +73,11 @@ class UtxoBalanceAggregatorTest {
     }
 
     @Test
-    void malformedShelleyPaymentAddressDoesNotCreateStakeCredential() {
+    void malformedShelleyPaymentAddressFailsClosed() {
         UtxoBalanceAggregator aggregator = new UtxoBalanceAggregator();
         UtxoState utxoState = new SingleUtxoState("addr1notavalidchecksum", BigInteger.valueOf(42_000_000L));
 
-        assertTrue(aggregator.aggregateBalances(utxoState).isEmpty());
+        assertThrows(IllegalArgumentException.class, () -> aggregator.aggregateBalances(utxoState));
     }
 
     @Test

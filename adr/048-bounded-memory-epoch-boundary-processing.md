@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted for implementation; mainnet rollout gates remain open
 
 ## Date
 
@@ -48,12 +48,12 @@ bounded streams while preserving the existing ledger order and outputs.
    a streaming calculator/consumer contract. It will retain only one pool's
    delegators and reward outputs at a time.
 4. The clean chainstate uses the first explicit boundary journal format (`v1`)
-   from genesis. Atomic mode writes one v1 chunk per phase and retains current
-   recovery/rollback semantics. After the index and low-risk graph reductions
-   are measured, reward, snapshot and governance writes use multiple bounded
-   chunks plus resumable rollback-v1 only if native batches/journals remain a
-   material contributor or are required for the 600 MiB target. Readers never
-   treat a partial generation or boundary as complete.
+   from genesis. Reward and snapshot populations on mainnet are already large
+   enough that their key/value plus reverse-journal lower bound exceeds the
+   50 MiB component budget, so the clean format uses bounded chunks and
+   resumable rollback-v1 from the outset. There is no second atomic boundary
+   mode to maintain in preview software. Readers never treat a partial
+   generation or boundary as complete.
 5. Phase 0 will separate Java/native-image heap growth from RocksDB native
    memory by independently pinning heap size and RocksDB background concurrency.
    If RocksDB is a material or host-size-dependent contributor, shared cache,
@@ -686,18 +686,14 @@ A design that runs the whole reward calculation twice to avoid retaining output
 is rejected because it can add approximately 50–100% calculation time. The
 selected design is one logical calculation with streaming output.
 
-### 6. Conditionally chunk state mutation and rollback journals
+### 6. Chunk state mutation and rollback journals
 
-Every `epoch-boundary-state-v1` store writes the versioned `delta-v1` key with
-sequence zero for each current atomic phase. Until the trigger below fires, that
-is only a storage-envelope change: phase mutation, step markers and rollback
-remain atomic/current. This prevents old unversioned entries from coexisting with
-later bounded v1 chunks.
+Every `epoch-boundary-state-v1` store writes chunk-aware `delta-v1` entries and
+uses the same progress and rollback protocol. This prevents old unversioned
+entries or an alternative atomic-mode state machine from coexisting with bounded
+v1 chunks.
 
-The multi-chunk recovery/rollback rewrite is not on the unconditional critical
-path. After Phases 1–3, repeat the phase attribution on the same mainnet
-checkpoints. Section 6's bounded mode is triggered before default rollout if any
-of the following remains true:
+The original conditional design used the following triggers:
 
 - reward commit, snapshot write, governance write or rollback contributes more
   than 50 MiB incremental RSS above its input live set;
@@ -708,11 +704,17 @@ of the following remains true:
 - the overall 600 MiB target cannot be met and the residual is attributed to
   monolithic persistence.
 
-If none is true, retain current phase-wide atomic writes and rollback for this
-ADR, publish the evidence, and defer this section. Pool-major projection or later
-reward orchestration must rerun the trigger before adding enough persisted rows
-to invalidate that result. If triggered, replace the single phase-wide batch
-with a bounded writer that owns:
+The trigger is accepted before implementation from a conservative serialized
+lower bound, not from an unmeasured RSS claim. Mainnet snapshot/reward phases
+contain more than one million credential facts; key bytes plus value and reverse
+journal metadata exceed 50 bytes per fact, already exceeding the 50 MiB
+component budget before Java/native batch overhead. Because preview chainstates
+resync into the clean v1 format, maintaining a second atomic implementation
+would add recovery branches without providing a production compatibility
+benefit. Phase 0 and mainnet acceptance still measure actual RSS and performance;
+this source-level trigger does not waive those gates.
+
+Replace the single phase-wide batch with a bounded writer that owns:
 
 - a native `WriteBatch`;
 - a bounded `List<DeltaOp>`;
@@ -724,8 +726,7 @@ The writer flushes at the lower of the configured operation and byte limits.
 Each flush atomically commits mutations, the encoded reverse delta, the chunk
 sequence and the resume cursor.
 
-Journal-v1 keys are versioned and chunk-aware; only `delta-v1` sequence zero is
-written in atomic mode, while the progress keys are enabled with bounded mode:
+Journal-v1 keys are versioned and chunk-aware:
 
 ```text
 delta-v1/[boundary slot][phase][chunk sequence] -> reverse operations
@@ -764,6 +765,12 @@ compatibility rule.
 
 #### Recovery
 
+- The initial synchronous commit stores `STEP_STARTED` together with the exact
+  `(previous epoch, new epoch, boundary slot, boundary block number)` metadata.
+  Startup restores this boundary context before resuming any phase; a missing or
+  mismatched coordinate fails closed. The coordinate-bound stake view resolves
+  the corresponding canonical block hash through the durable chain reader and
+  still requires an exact number/slot/hash match.
 - Before the first chunk, persist `boundary IN_PROGRESS` and
   `phase IN_PROGRESS`.
 - After each chunk, the reverse delta and next cursor are durable in the same
@@ -880,9 +887,11 @@ After the live-set changes, final tuning additionally:
   optional archive maintenance concurrently with the epoch peak; and
 - retains headroom for code pages, thread stacks, native batches and GC copying.
 
-An initial 320–384 MiB heap range may be evaluated for a 600 MiB RSS target, but
-the committed default is selected from measured live-set and OOM/recovery tests.
-The ADR does not declare that range safe in advance.
+An initial 320–384 MiB heap range may be evaluated for a 600 MiB RSS target. A
+352 MiB preprod run completed the boundary itself but subsequently OOMed on an
+ordinary heavy block, so the implementation uses a configurable 384 MiB native
+default while the mainnet gate remains open. The cap is a safety guardrail, not
+evidence that every mainnet workload fits it.
 
 ### 8. Configuration and rollout modes
 
@@ -959,7 +968,10 @@ Likely touch points:
 
 This phase first introduces the shared canonical address/credential extractor,
 uses it in incremental writes, rebuild and scan, and introduces a versioned index
-readiness marker in the new chainstate format. It persists
+readiness marker in the new chainstate format. The ADR marker is version 2 so a
+pre-shared-extractor version-1 index is never accepted as complete; malformed
+Shelley-prefixed addresses fail closed while supported Byron representations are
+excluded consistently. It persists
 `META_LAST_APPLIED_HASH` atomically with block/slot and adds the dedicated
 snapshot latest-deregistration index and marker. It then adds the
 coordinate-bound cursor and phase-scoped account merge views. It also initializes
@@ -1014,21 +1026,18 @@ governance peak incremental RSS is below 100 MiB above the regular-sync baseline
 Exit gate: identical reward/artifact digests and no reward phase slowdown above
 5%. Document the memory recovered before proceeding.
 
-### Phase 4 — Conditional bounded persistence and rollback-v1
+### Phase 4 — Bounded persistence and rollback-v1
 
-1. Repeat persistence/rollback attribution after Phases 1–3 and evaluate every
-   Section 6 trigger.
-2. If no trigger fires, publish evidence and defer this phase without changing
-   recovery/rollback semantics.
-3. If triggered, implement the bounded writer, journal-v1, resume cursors, read
+1. Record the Section 6 serialized-size trigger and repeat persistence/rollback
+   attribution after Phases 1–3 for tuning evidence.
+2. Implement the bounded writer, journal-v1, resume cursors, read
    gate, explicit phase descriptor table and rollback-v1 coordinator.
-4. Implement snapshot-generation cleanup and the COMPLETE publication protocol
+3. Implement snapshot-generation cleanup and the COMPLETE publication protocol
    for snapshot/reward artifacts.
 
-Exit gate when triggered: exhaustive forward/rollback fault injection, bounded
-restart and rollback acceptance, snapshot cleanup and artifact parity, and v1
-forward/rollback RSS within their component/process budgets. When deferred, the
-exit artifact is the measured trigger decision and current recovery tests.
+Exit gate: exhaustive forward/rollback fault injection, bounded restart and
+rollback acceptance, snapshot cleanup and artifact parity, and v1
+forward/rollback RSS within their component/process budgets.
 
 ### Phase 5 — Pool-major inputs and Yano reward orchestration
 
@@ -1041,6 +1050,12 @@ exit artifact is the measured trigger decision and current recovery tests.
 4. Implement the Yano-owned outer reward orchestrator over the existing public
    per-pool CF API and feed it from the pool-major iterator.
 5. Integrate bounded reward staging with ADR-039/045 publication semantics.
+
+The orchestrator must preserve the CF epoch wrapper's historical block-count
+rule: when `0 < d < 0.8`, every per-pool calculation receives the non-OBFT block
+count; otherwise it receives the total block count. A golden test with unequal
+counts in that decentralization range is required before the streaming mode can
+be used for pre-Vasil mainnet epochs.
 
 Exit gate: every reward-required input generation is complete or forces legacy
 reward mode; exact reward/AdaPot and CF epoch-level scalar parity passes; disk
@@ -1482,8 +1497,8 @@ mainnet path.
 
 - Mainnet credential populations no longer determine heap size for current
   stake snapshot and DRep calculation.
-- Reward input/output becomes bounded by one pool; persistence becomes bounded by
-  one chunk when the measured journal trigger is met.
+- Reward input/output becomes bounded by one pool; persistence is bounded by one
+  configured chunk.
 - Explicit heap and RocksDB budgets stop peak RSS from scaling materially with
   host RAM or core count.
 - Ordered compact reads should recover or improve snapshot time.
@@ -1499,8 +1514,8 @@ mainnet path.
 - Existing non-empty preview chainstate cannot be opened by the accepted format;
   operators must retain/backup it if needed and sync a separate v1 store from
   genesis.
-- If triggered, chunking replaces phase-wide atomic visibility with durable
-  progress plus a read gate. Recovery and rollback logic become more complex.
+- Chunking replaces phase-wide atomic visibility with durable progress plus a
+  read gate. Recovery and rollback logic become more complex.
 - Yano owns the epoch-level outer reward orchestration and must track semantic
   changes when updating the pinned CF dependency.
 - Multiple implementations coexist during rollout and expand the temporary test
@@ -1555,11 +1570,10 @@ ledger semantics without rebuilding the non-pointer credential map.
 
 ### Keep one giant atomic RocksDB batch
 
-Selected while post-Phase-3 attribution shows phase persistence stays within its
-component and process budgets; this minimizes recovery/rollback change. Rejected
-only when a Section 6 trigger proves the native batch, Java delta/overlay,
-journal or rollback is material. In that case, chunking with durable progress
-and read gating is required.
+Rejected for the clean preview format. The serialized lower bound of mainnet
+snapshot/reward facts already exceeds the component budget, and carrying atomic
+and chunked recovery modes would increase the consensus-critical proof surface.
+Chunking with durable progress and read gating is required.
 
 ### Preserve the unversioned journal with a mixed v2 decoder
 

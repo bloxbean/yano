@@ -20,7 +20,7 @@ import org.slf4j.LoggerFactory;
 import java.math.BigInteger;
 import java.nio.ByteOrder;
 import java.util.*;
-import java.util.function.Supplier;
+import java.util.function.IntFunction;
 
 /**
  * Computes DRep stake distribution at epoch boundaries.
@@ -57,7 +57,7 @@ public class DRepDistributionCalculator {
     private ColumnFamilyHandle cfState;
     private ColumnFamilyHandle cfEpochSnapshot;
     private final GovernanceStateStore governanceStore;
-    private Supplier<Optional<StakeBalanceView>> stakeBalanceViewSupplier;
+    private IntFunction<Optional<StakeBalanceView>> stakeBalanceViewSupplier;
 
     public DRepDistributionCalculator(RocksDB db, ColumnFamilyHandle cfState,
                                       ColumnFamilyHandle cfEpochSnapshot,
@@ -79,7 +79,7 @@ public class DRepDistributionCalculator {
     }
 
     public void setStakeBalanceViewSupplier(
-            Supplier<Optional<StakeBalanceView>> stakeBalanceViewSupplier) {
+            IntFunction<Optional<StakeBalanceView>> stakeBalanceViewSupplier) {
         this.stakeBalanceViewSupplier = stakeBalanceViewSupplier;
     }
 
@@ -109,7 +109,7 @@ public class DRepDistributionCalculator {
         Map<DRepDistKey, BigInteger> distribution = new HashMap<>();
         StakeBalanceView stakeBalanceView = null;
         if (utxoBalances == null && stakeBalanceViewSupplier != null) {
-            stakeBalanceView = stakeBalanceViewSupplier.get()
+            stakeBalanceView = stakeBalanceViewSupplier.apply(snapshotEpoch)
                     .orElseThrow(() -> new IllegalStateException(
                             "Coordinate-bound stake balance view is unavailable for DRep distribution"));
         }

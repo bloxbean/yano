@@ -5,6 +5,7 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class StakeCredentialExtractorTest {
     private static final String BASE_ADDRESS =
@@ -24,11 +25,13 @@ class StakeCredentialExtractorTest {
     }
 
     @Test
-    void nonStakeAndMalformedLegacyAddressesDoNotCreateCredentials() {
+    void nonStakeLegacyAddressesAreSkippedAndMalformedShelleyFailsClosed() {
         assertThat(StakeCredentialExtractor.extractNonPointer(
                 "DdzFFzCqrhsxabc-not-a-valid-byron-checksum")).isNull();
-        assertThat(StakeCredentialExtractor.extractNonPointer(
-                "addr1notavalidchecksum")).isNull();
+        assertThatThrownBy(() -> StakeCredentialExtractor.extractNonPointer(
+                "addr1notavalidchecksum"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Malformed Shelley payment address");
         assertThat(StakeCredentialExtractor.extractNonPointer(null)).isNull();
     }
 }

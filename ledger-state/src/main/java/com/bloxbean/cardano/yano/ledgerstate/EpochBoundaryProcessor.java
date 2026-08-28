@@ -226,6 +226,7 @@ public class EpochBoundaryProcessor {
         int step = lastState[1];
         if (step >= STEP_STARTED && step < STEP_COMPLETE) {
             log.info("Recovering interrupted epoch boundary for epoch {} (stopped at step {})", epoch, step);
+            restorePersistedBoundaryCoordinates(epoch);
             processEpochBoundary(epoch - 1, epoch);
         }
 
@@ -233,6 +234,19 @@ public class EpochBoundaryProcessor {
         // from a completed boundary whose PostEpochTransition was not replayed (e.g.,
         // restart from an auto-checkpoint taken between STEP_COMPLETE and PostEpochTransition).
         snapshotCreator.creditPendingRewardRest();
+    }
+
+    private void restorePersistedBoundaryCoordinates(int epoch) {
+        EpochArchiveStagingSink.Boundary boundary = snapshotCreator.getBoundaryCoordinates(epoch)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Interrupted boundary " + epoch
+                                + " has no persisted coordinates; resync is required"));
+        if (boundary.previousEpoch() != epoch - 1) {
+            throw new IllegalStateException(
+                    "Persisted boundary coordinates do not match epoch " + epoch);
+        }
+        snapshotCreator.restoreBoundaryCoordinates(boundary);
+        setBoundaryCoordinates(boundary);
     }
 
     public void processEpochBoundary(int previousEpoch, int newEpoch) {
@@ -261,7 +275,13 @@ public class EpochBoundaryProcessor {
             if (lastState != null && lastState[0] == newEpoch - 1 && lastState[1] < STEP_COMPLETE) {
                 log.warn("Previous boundary for epoch {} was incomplete (step {}), re-processing first",
                         lastState[0], lastState[1]);
+                EpochArchiveStagingSink.Boundary currentBoundary = archiveBoundary;
+                restorePersistedBoundaryCoordinates(newEpoch - 1);
                 processEpochBoundary(newEpoch - 2, newEpoch - 1);
+                if (currentBoundary != null) {
+                    snapshotCreator.restoreBoundaryCoordinates(currentBoundary);
+                    setBoundaryCoordinates(currentBoundary);
+                }
             }
         }
 
@@ -309,12 +329,18 @@ public class EpochBoundaryProcessor {
 
         // Mark boundary as started
         if (snapshotCreator != null && resumeFromStep <= STEP_STARTED) {
-            snapshotCreator.setBoundaryStep(newEpoch, STEP_STARTED);
+            EpochArchiveStagingSink.Boundary boundary = archiveBoundary;
+            if (boundary == null || boundary.previousEpoch() != previousEpoch
+                    || boundary.newEpoch() != newEpoch) {
+                throw new IllegalStateException("Exact boundary coordinates are unavailable for "
+                        + previousEpoch + " -> " + newEpoch);
+            }
+            snapshotCreator.setBoundaryStarted(boundary);
         }
 
         boolean orderedStakeIndex = snapshotCreator != null
                 && resumeFromStep <= STEP_SNAPSHOT
-                && snapshotCreator.shouldUseOrderedStakeBalanceIndex(previousEpoch);
+                && snapshotCreator.probeOrderedStakeBalanceIndex(previousEpoch);
 
         // 1. Finalize protocol parameters for the new epoch
         try (var ignored = telemetry.phase("params")) {
@@ -363,7 +389,8 @@ public class EpochBoundaryProcessor {
 
         // 3. Calculate rewards (skip if already committed from a previous interrupted run)
         try (var ignored = telemetry.phase("rewards",
-                shouldCalculateRewards(newEpoch) ? rewardCalculator.rewardMode() + "-reward" : "disabled")) {
+                shouldCalculateRewards(newEpoch)
+                        ? rewardCalculator.executionModeForEpoch(newEpoch) + "-reward" : "disabled")) {
             if (resumeFromStep <= STEP_REWARDS) {
                 if (shouldCalculateRewards(newEpoch)) {
                     calculateAndStoreRewards(previousEpoch, newEpoch, null);
@@ -396,7 +423,8 @@ public class EpochBoundaryProcessor {
                                     "Epoch UTXO scan failed", e.getCause());
                         }
                     }
-                    utxoBalances = snapshotCreator.createAndCommitDelegationSnapshot(previousEpoch, precomputedBalances);
+                    utxoBalances = snapshotCreator.createAndCommitDelegationSnapshot(
+                            previousEpoch, precomputedBalances, orderedStakeIndex);
                 }
                 if (snapshotCreator != null) {
                     snapshotCreator.setBoundaryStep(newEpoch, STEP_SNAPSHOT);
@@ -457,7 +485,8 @@ public class EpochBoundaryProcessor {
                 if (governanceEpochProcessor != null) {
                     try {
                         govResult = governanceEpochProcessor.processEpochBoundaryAndCommit(
-                                previousEpoch, newEpoch, utxoBalances, null);
+                                previousEpoch, newEpoch,
+                                orderedStakeIndex ? null : utxoBalances, null);
                     } catch (Exception e) {
                         log.error("Governance epoch processing failed for {} → {}: {}",
                                 previousEpoch, newEpoch, e.getMessage(), e);

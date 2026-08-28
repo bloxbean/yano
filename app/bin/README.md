@@ -100,7 +100,7 @@ JAVA_OPTS="-Xmx4g -Xms2g" ./yano.sh start
 ```
 
 `JAVA_OPTS` is honored by both distributions. Native launches use a measured
-352 MiB maximum heap by default; set `YANO_NATIVE_MAX_HEAP`, or put an explicit
+384 MiB maximum heap by default; set `YANO_NATIVE_MAX_HEAP`, or put an explicit
 `-Xmx` in `JAVA_OPTS`, to override it:
 
 ```bash

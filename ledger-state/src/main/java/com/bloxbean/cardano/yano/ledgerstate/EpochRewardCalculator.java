@@ -58,7 +58,7 @@ public class EpochRewardCalculator {
     // Optional era metadata for reward-rule decisions. NetworkConfig hardfork epochs are fallback only.
     private volatile EraProvider eraProvider;
     private volatile Integer loggedEffectiveVasilHardforkEpoch;
-    private volatile String rewardMode = "streaming";
+    private volatile String rewardMode = "legacy";
 
     // CF NetworkConfig — built once from genesis at startup, or resolved per-magic (legacy)
     private volatile NetworkConfig cfNetworkConfig;
@@ -143,7 +143,7 @@ public class EpochRewardCalculator {
     }
 
     public void setRewardMode(String rewardMode) {
-        String normalized = rewardMode == null ? "streaming"
+        String normalized = rewardMode == null ? "legacy"
                 : rewardMode.trim().toLowerCase(Locale.ROOT);
         if (!normalized.equals("legacy") && !normalized.equals("streaming")) {
             throw new IllegalArgumentException("Unsupported epoch reward mode: " + rewardMode);
@@ -153,6 +153,11 @@ public class EpochRewardCalculator {
 
     String rewardMode() {
         return rewardMode;
+    }
+
+    String executionModeForEpoch(int epoch) {
+        return "streaming".equals(rewardMode) && hasCompletePoolMajorSnapshot(epoch - 4)
+                ? "streaming" : "legacy";
     }
 
     public void setBatchLimits(int maxOperations, int maxBytes) {
@@ -381,7 +386,9 @@ public class EpochRewardCalculator {
         // Fees collected during epoch N-2 (stored in epoch fees for stakeEpoch)
         var fees = getEpochFees(stakeEpoch);
 
-        if ("streaming".equals(rewardMode) && hasCompletePoolMajorSnapshot(snapshotKey)) {
+        boolean streamingSnapshotAvailable = hasCompletePoolMajorSnapshot(snapshotKey);
+        validateRewardResumePath(epoch, streamingSnapshotAvailable);
+        if ("streaming".equals(rewardMode) && streamingSnapshotAvailable) {
             return Optional.of(calculateAndDistributeStreaming(
                     epoch, stakeEpoch, feeEpoch, snapshotKey, prevTreasury, prevReserves,
                     paramProvider, networkMagic, networkConfig, protocolParams,
@@ -533,6 +540,14 @@ public class EpochRewardCalculator {
     private boolean hasCompletePoolMajorSnapshot(int snapshotEpoch) {
         return accountStateStore != null
                 && accountStateStore.isPoolMajorSnapshotComplete(snapshotEpoch);
+    }
+
+    void validateRewardResumePath(int epoch, boolean streamingSnapshotAvailable) {
+        if (rewardResumeAfterPool != null
+                && (!"streaming".equals(rewardMode) || !streamingSnapshotAvailable)) {
+            throw new IllegalStateException("A bounded streaming reward calculation is in progress for epoch "
+                    + epoch + "; reward-mode must remain streaming and its pool-major snapshot must remain available");
+        }
     }
 
     private EpochCalculationResult calculateAndDistributeStreaming(

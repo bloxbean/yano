@@ -123,7 +123,7 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
             final long blockCacheBytes = getLong(
                     YanoPropertyKeys.RocksDb.BLOCK_CACHE_BYTES,
                     "YANO_ROCKSDB_BLOCK_CACHE_BYTES",
-                    64L * 1024 * 1024);
+                    32L * 1024 * 1024);
             final long writeBufferBytes = getLong(
                     YanoPropertyKeys.RocksDb.WRITE_BUFFER_BYTES,
                     "YANO_ROCKSDB_WRITE_BUFFER_BYTES",
@@ -178,8 +178,8 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                 utxoDeltaOpts = buildSequentialCfOptions(sharedBlockCache);    // utxo_block_delta
 
                 // Log effective CF tuning plan for visibility
-                log.info("RocksDB CF tuning: utxo_unspent/utxo_spent => point-lookup (ZSTD, bloom≈10bpk, whole-key, pin L0, partitioned filters)");
-                log.info("RocksDB CF tuning: utxo_addr => prefix-scan (ZSTD, prefixExtractor=28, memtablePrefixBloom≈0.10, bloom≈10bpk, pin L0, partitioned filters)");
+                log.info("RocksDB CF tuning: utxo_unspent/utxo_spent => point-lookup (ZSTD, bloom≈10bpk, whole-key, evictable L0, partitioned filters)");
+                log.info("RocksDB CF tuning: utxo_addr => prefix-scan (ZSTD, prefixExtractor=28, memtablePrefixBloom≈0.10, bloom≈10bpk, evictable L0, partitioned filters)");
                 log.info("RocksDB CF tuning: utxo_block_delta => sequential (ZSTD)");
             } else {
                 log.info("RocksDB tuning disabled via flag; using defaults for CF options");
@@ -383,7 +383,7 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
         BlockBasedTableConfig table = new BlockBasedTableConfig();
         table.setFilterPolicy(new BloomFilter(10, false)); // ~10 bits/key
         table.setWholeKeyFiltering(true);
-        table.setPinL0FilterAndIndexBlocksInCache(true);
+        table.setPinL0FilterAndIndexBlocksInCache(false);
         table.setPartitionFilters(true);
         configureSharedCache(table, cache);
         opts.setTableFormatConfig(table);
@@ -408,7 +408,7 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
         BlockBasedTableConfig table = new BlockBasedTableConfig();
         table.setFilterPolicy(new BloomFilter(10, false));
         table.setWholeKeyFiltering(false);
-        table.setPinL0FilterAndIndexBlocksInCache(true);
+        table.setPinL0FilterAndIndexBlocksInCache(false);
         table.setPartitionFilters(true);
         configureSharedCache(table, cache);
         opts.setTableFormatConfig(table);

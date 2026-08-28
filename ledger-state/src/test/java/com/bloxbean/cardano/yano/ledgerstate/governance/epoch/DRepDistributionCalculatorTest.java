@@ -120,7 +120,7 @@ class DRepDistributionCalculatorTest {
         var expected = calculator.calculate(230, balances, Map.of());
 
         var coordinate = new CanonicalBlockReference(1, 10, new byte[32]);
-        calculator.setStakeBalanceViewSupplier(() -> Optional.of(new ListStakeBalanceView(
+        calculator.setStakeBalanceViewSupplier(snapshotEpoch -> Optional.of(new ListStakeBalanceView(
                 coordinate,
                 List.of(row(CRED2, 200), row(CRED1, 100)))));
         var resumed = calculator.calculate(230, null, Map.of());

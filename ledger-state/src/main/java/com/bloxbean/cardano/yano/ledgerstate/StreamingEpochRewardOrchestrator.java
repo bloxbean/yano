@@ -12,6 +12,7 @@ import org.cardanofoundation.rewards.calculation.domain.ProtocolParameters;
 import org.cardanofoundation.rewards.calculation.domain.RetiredPool;
 import org.cardanofoundation.rewards.calculation.domain.TreasuryCalculationResult;
 
+import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -53,6 +54,7 @@ final class StreamingEpochRewardOrchestrator {
                 retiredPools, deregistered, mirCertificates, List.of(), List.of(),
                 lateDeregistered, registeredSinceLast, registeredUntilNow,
                 sharedPoolRewardAddresses, deregisteredOnBoundary, networkConfig);
+        int effectiveBlockCount = effectiveBlockCount(protocolParameters, epochInfo);
 
         BigInteger distributed = initialDistributed;
         BigInteger unspendable = initialUnspendable;
@@ -76,7 +78,7 @@ final class StreamingEpochRewardOrchestrator {
                     && sharedPoolRewardAddresses.contains(pool.getPoolId());
 
             PoolRewardCalculationResult result = PoolRewardsCalculation.calculatePoolRewardInEpoch(
-                    pool.getPoolId(), pool, epochInfo.getBlockCount(), protocolParameters,
+                    pool.getPoolId(), pool, effectiveBlockCount, protocolParameters,
                     scalarBaseline.getTotalAdaInCirculation(), epochInfo.getActiveStake(),
                     scalarBaseline.getTotalPoolRewardsPot(), pool.getOwnerActiveStake(),
                     pool.getOwners(), poolDeregistered, sharedPoolWithoutReward,
@@ -114,6 +116,16 @@ final class StreamingEpochRewardOrchestrator {
                 .totalRewardsPot(scalarBaseline.getTotalRewardsPot())
                 .totalPoolRewardsPot(scalarBaseline.getTotalPoolRewardsPot())
                 .build();
+    }
+
+    private static int effectiveBlockCount(ProtocolParameters protocolParameters, Epoch epochInfo) {
+        BigDecimal decentralisation = protocolParameters.getDecentralisation();
+        if (decentralisation != null
+                && decentralisation.compareTo(BigDecimal.ZERO) > 0
+                && decentralisation.compareTo(BigDecimal.valueOf(0.8)) < 0) {
+            return epochInfo.getNonOBFTBlockCount();
+        }
+        return epochInfo.getBlockCount();
     }
 
     private static Set<String> intersection(Set<String> source, Set<String> poolCredentials) {

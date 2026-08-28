@@ -4,7 +4,7 @@ import java.nio.charset.StandardCharsets;
 
 final class StakeBalanceIndexKeys {
     static final byte[] READY_MARKER = "stake_balance_index_ready".getBytes(StandardCharsets.UTF_8);
-    static final byte[] READY_VERSION = {1};
+    static final byte[] READY_VERSION = {2};
 
     private StakeBalanceIndexKeys() {
     }
