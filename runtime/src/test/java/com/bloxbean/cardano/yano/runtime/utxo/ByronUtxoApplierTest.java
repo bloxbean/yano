@@ -284,7 +284,7 @@ class ByronUtxoApplierTest {
                 .inputs(java.util.Set.of(TransactionInput.builder()
                         .transactionId(byronTx).index(0).build()))
                 .outputs(List.of(TransactionOutput.builder()
-                        .address("addr_test1vpxboundary000000000000000000000000000000000")
+                        .address(UtxoTestAddresses.enterprise(1))
                         .amounts(List.of(Amount.builder().unit("lovelace")
                                 .quantity(BigInteger.valueOf(800_000L)).build()))
                         .build()))

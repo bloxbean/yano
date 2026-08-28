@@ -3,6 +3,30 @@
 Date: 2026-08-29
 Branch: `adr-048-bounded-epoch-memory`
 
+## Oracle G1 mainnet follow-up
+
+- Oracle GraalVM 25.3.4.1 G1 reached mainnet epoch 249 with 39 cumulative
+  AdaPot checks passed and zero mismatches.
+- The live run reproduced D2 conclusively. After the epoch-249 streaming reward
+  loop completed, concurrent chunk writers stopped progressing. Two independent
+  native thread samples showed the pipelined write-group follower in
+  `JoinBatchGroup` and its leader indefinitely blocked in
+  `WriteBufferManagerStallWrites`; RocksDB background workers were idle.
+- The corrective change retains the 64 MiB WBM flush-pressure/accounting budget
+  but defaults `allowStall` to false. Operators can restore hard stalls with
+  `yano.rocksdb.write-buffer-allow-stall=true` or
+  `YANO_ROCKSDB_WRITE_BUFFER_ALLOW_STALL=true`. A real RocksDB open test covers
+  both the safe default and explicit override.
+- The shared LRU capacity is now `blockCacheBytes + writeBufferBytes` (96 MiB by
+  default). RocksDB charges memtables to that cache when WBM is cache-backed, so
+  the former 32 MiB cache could not hold the 64 MiB WBM budget while retaining
+  the intended 32 MiB block/index/filter budget.
+- The first full runtime suite exposed 12 tests that still used deliberately
+  malformed pseudo-Bech32 Shelley addresses. ADR-048 correctly rejects those
+  fixtures after the fail-closed extractor change. They now use deterministic,
+  valid testnet enterprise addresses; all affected UTXO classes and the complete
+  `:core-api:test :runtime:test` gate pass.
+
 Please review the current working tree after commits `6a86f546`, `f9fe9768` and
 `33d35895`. The next commit contains the fixes below plus final documentation.
 

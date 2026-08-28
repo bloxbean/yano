@@ -191,7 +191,7 @@ class DefaultUtxoStoreTest {
 
     @Test
     void applyValidBlock_thenQueryByAddress_andByOutpoint() {
-        String addr = "addr_test1vpxvalid0000000000000000000000000000000000000000"; // pseudo address
+        String addr = UtxoTestAddresses.enterprise(10);
         TransactionOutput out0 = TransactionOutput.builder()
                 .address(addr)
                 .amounts(List.of(lovelaceAmount(1000)))
@@ -221,7 +221,7 @@ class DefaultUtxoStoreTest {
     @Test
     void forEachUtxoAtSlotRestoresOutputSpentAfterTarget() throws Exception {
         String boundaryAddress = BASE_ADDR_WITH_STAKE;
-        String futureAddress = "addr_test1vpxfuture00000000000000000000000000000000000";
+        String futureAddress = UtxoTestAddresses.enterprise(11);
         String createdHash = "31".repeat(32);
         TransactionBody created = TransactionBody.builder()
                 .txHash(createdHash)
@@ -292,8 +292,8 @@ class DefaultUtxoStoreTest {
 
     @Test
     void applyInvalidBlock_usesCollateralAndReturn_only() {
-        String addrA = "addr_test1vpxcollat000000000000000000000000000000000000";
-        String addrRet = "addr_test1vpxreturn0000000000000000000000000000000000";
+        String addrA = UtxoTestAddresses.enterprise(12);
+        String addrRet = UtxoTestAddresses.enterprise(13);
 
         TransactionOutput seedOut = TransactionOutput.builder()
                 .address(addrA)
@@ -332,7 +332,7 @@ class DefaultUtxoStoreTest {
 
     @Test
     void rollbackRevertsCreatedAndRestoresSpent() {
-        String addr = "addr_test1vpxrollback00000000000000000000000000000000000";
+        String addr = UtxoTestAddresses.enterprise(14);
 
         TransactionBody tx1 = TransactionBody.builder()
                 .txHash("01".repeat(32))
@@ -543,7 +543,7 @@ class DefaultUtxoStoreTest {
 
     @Test
     void pruneRespectsRollbackWindowForSpent() {
-        String addr = "addr_test1vpxprune00000000000000000000000000000000000000";
+        String addr = UtxoTestAddresses.enterprise(15);
         TransactionBody tx1 = TransactionBody.builder()
                 .txHash("f1".repeat(32))
                 .outputs(List.of(TransactionOutput.builder().address(addr)
@@ -721,7 +721,7 @@ class DefaultUtxoStoreTest {
 
     @Test
     void rollbackCapableStore_rollbackToSlot() {
-        String addr = "addr_test1vpxrollback00000000000000000000000000000000000";
+        String addr = UtxoTestAddresses.enterprise(16);
         TransactionBody tx1 = TransactionBody.builder()
                 .txHash("01".repeat(32))
                 .outputs(List.of(TransactionOutput.builder().address(addr)
@@ -899,7 +899,7 @@ class DefaultUtxoStoreTest {
                 .inputs(Set.of(TransactionInput.builder()
                         .transactionId(bootstrapTxHash).index(0).build()))
                 .outputs(List.of(TransactionOutput.builder()
-                        .address("addr_test1vpxsteal00000000000000000000000000000000000000")
+                        .address(UtxoTestAddresses.enterprise(17))
                         .amounts(List.of(lovelaceAmount(500_000_000))).build()))
                 .build();
         Block allegraBlock = Block.builder().era(Era.Allegra)
@@ -915,8 +915,7 @@ class DefaultUtxoStoreTest {
 
         // The "steal" output should NOT exist — the spend should have been rejected
         // because the input was filtered as a removed bootstrap outpoint
-        var stealUtxos = store.getUtxosByAddress(
-                "addr_test1vpxsteal00000000000000000000000000000000000000", 1, 10);
+        var stealUtxos = store.getUtxosByAddress(UtxoTestAddresses.enterprise(17), 1, 10);
         // The tx output may still be created (outputs are processed independently of inputs),
         // but the input spend was treated as prev=null, so no spentRef was recorded for it
         // through the normal spend path. The bootstrap UTXO was removed via Allegra path.
@@ -1062,9 +1061,9 @@ class DefaultUtxoStoreTest {
         // added to intraBlockOutputs, so a spend of it later in the same block resolved to
         // nothing and was skipped — leaving a phantom unspent output, a stale address index and
         // an overstated stake balance. Observed on preprod block 1,809,762.
-        String collateralAddr = "addr_test1vpxcollateral000000000000000000000000000000000";
+        String collateralAddr = UtxoTestAddresses.enterprise(18);
         String returnAddr = BASE_ADDR_WITH_STAKE;   // has a stake part, so the balance is checked
-        String spentToAddr = "addr_test1vpxspentto00000000000000000000000000000000000";
+        String spentToAddr = UtxoTestAddresses.enterprise(19);
         StakeCred stakeCred = stakeCred(returnAddr);
         String fundingTxHash = "aa".repeat(32);
 
@@ -1105,9 +1104,9 @@ class DefaultUtxoStoreTest {
     void collateralReturnSpentByAnInvalidTransactionIsAlsoAccountedFor() {
         // The consuming transaction can itself be invalid, which routes the spend through the
         // collateral-input branch instead of the ordinary-input branch. Both must resolve.
-        String collateralAddr = "addr_test1vpxcollateral2000000000000000000000000000000";
+        String collateralAddr = UtxoTestAddresses.enterprise(20);
         String returnAddr = BASE_ADDR_WITH_STAKE;
-        String spentToAddr = "addr_test1vpxspentto20000000000000000000000000000000000";
+        String spentToAddr = UtxoTestAddresses.enterprise(21);
         StakeCred stakeCred = stakeCred(returnAddr);
         String fundingTxHash = "a1".repeat(32);
 
@@ -1128,9 +1127,9 @@ class DefaultUtxoStoreTest {
         // The fix adds state inside the block's write batch, so it must survive the rollback and
         // replay path unchanged — otherwise a fork near such a block would leave the store in a
         // different place depending on how it got there.
-        String collateralAddr = "addr_test1vpxcollateral3000000000000000000000000000000";
+        String collateralAddr = UtxoTestAddresses.enterprise(22);
         String returnAddr = BASE_ADDR_WITH_STAKE;
-        String spentToAddr = "addr_test1vpxspentto30000000000000000000000000000000000";
+        String spentToAddr = UtxoTestAddresses.enterprise(23);
         StakeCred stakeCred = stakeCred(returnAddr);
         String fundingTxHash = "a2".repeat(32);
 

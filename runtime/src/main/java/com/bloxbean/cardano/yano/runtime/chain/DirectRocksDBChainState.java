@@ -71,6 +71,7 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
     private RocksDB db;
     private Cache sharedBlockCache;
     private WriteBufferManager sharedWriteBufferManager;
+    private long sharedBlockCacheCapacityBytes;
     private final String dbPath;
     private final LegacyColumnFamilyDropper legacyColumnFamilyDropper;
     private List<ColumnFamilyHandle> openedColumnFamilyHandles = List.of();
@@ -128,6 +129,10 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                     YanoPropertyKeys.RocksDb.WRITE_BUFFER_BYTES,
                     "YANO_ROCKSDB_WRITE_BUFFER_BYTES",
                     64L * 1024 * 1024);
+            final boolean writeBufferAllowStall = getBool(
+                    YanoPropertyKeys.RocksDb.WRITE_BUFFER_ALLOW_STALL,
+                    "YANO_ROCKSDB_WRITE_BUFFER_ALLOW_STALL",
+                    false);
             final int maxBackgroundJobs = getInt(
                     YanoPropertyKeys.RocksDb.MAX_BACKGROUND_JOBS,
                     "YANO_ROCKSDB_MAX_BACKGROUND_JOBS",
@@ -155,9 +160,13 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                     .setMaxOpenFiles(256)
                     .setKeepLogFileNum(5);
             if (tuningEnabled) {
-                sharedBlockCache = new LRUCache(blockCacheBytes);
+                // When a WriteBufferManager is backed by a Cache, RocksDB charges
+                // memtable usage to that cache. Preserve the configured block-cache
+                // budget by sizing the shared cache for both consumers.
+                sharedBlockCacheCapacityBytes = Math.addExact(blockCacheBytes, writeBufferBytes);
+                sharedBlockCache = new LRUCache(sharedBlockCacheCapacityBytes);
                 sharedWriteBufferManager = new WriteBufferManager(
-                        writeBufferBytes, sharedBlockCache, true);
+                        writeBufferBytes, sharedBlockCache, writeBufferAllowStall);
                 dbOptions
                         .setAllowConcurrentMemtableWrite(true)
                         .setIncreaseParallelism(Math.min(cores, maxBackgroundJobs))
@@ -288,9 +297,12 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
             openedColumnFamilyHandles = new ArrayList<>(cfHandles);
 
             log.info("RocksDB initialized at: {} (tuningEnabled={}, pipelinedWrite={}, atomicFlush={}, "
-                            + "parallelism={}, blockCacheBytes={}, writeBufferBytes={}, maxBackgroundJobs={})",
+                            + "parallelism={}, blockCacheBytes={}, sharedCacheCapacityBytes={}, writeBufferBytes={}, "
+                            + "writeBufferAllowStall={}, maxBackgroundJobs={})",
                     dbPath, tuningEnabled, pipelined && tuningEnabled, atomic && tuningEnabled,
-                    Math.min(cores, maxBackgroundJobs), blockCacheBytes, writeBufferBytes,
+                    Math.min(cores, maxBackgroundJobs), blockCacheBytes, sharedBlockCacheCapacityBytes,
+                    writeBufferBytes,
+                    writeBufferAllowStall,
                     maxBackgroundJobs);
 
         } catch (Exception e) {
@@ -366,6 +378,14 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
             throw new IllegalArgumentException(sysProp + " exceeds integer range");
         }
         return (int) value;
+    }
+
+    boolean isWriteBufferStallEnabled() {
+        return sharedWriteBufferManager != null && sharedWriteBufferManager.allowStall();
+    }
+
+    long sharedBlockCacheCapacityBytes() {
+        return sharedBlockCacheCapacityBytes;
     }
 
     private ColumnFamilyDescriptor descriptor(String name, boolean tuningEnabled) {
@@ -444,6 +464,7 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
             sharedBlockCache.close();
             sharedBlockCache = null;
         }
+        sharedBlockCacheCapacityBytes = 0;
     }
 
     @Override

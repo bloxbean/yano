@@ -589,6 +589,8 @@ public final class YanoPropertyKeys {
         public static final String TUNING_ENABLED = "yano.rocksdb.tuning.enabled";
         public static final String BLOCK_CACHE_BYTES = "yano.rocksdb.block-cache-bytes";
         public static final String WRITE_BUFFER_BYTES = "yano.rocksdb.write-buffer-bytes";
+        public static final String WRITE_BUFFER_ALLOW_STALL =
+                "yano.rocksdb.write-buffer-allow-stall";
         public static final String MAX_BACKGROUND_JOBS = "yano.rocksdb.max-background-jobs";
 
         private RocksDb() {

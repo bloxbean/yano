@@ -69,8 +69,8 @@ class UtxoFilterIntegrationTest {
 
     @Test
     void filterByAddress_onlyMatchingUtxosStored() {
-        String allowedAddr = "addr_test1vpxallowed00000000000000000000000000000000000";
-        String blockedAddr = "addr_test1vpxblocked00000000000000000000000000000000000";
+        String allowedAddr = UtxoTestAddresses.enterprise(4);
+        String blockedAddr = UtxoTestAddresses.enterprise(5);
 
         // Configure filter to only allow one address
         var filter = new AddressUtxoFilter(Set.of(allowedAddr), Set.of());
@@ -112,9 +112,7 @@ class UtxoFilterIntegrationTest {
         var filter = new AddressUtxoFilter(Set.of(), Set.of(credHash));
         store.setFilterChain(new StorageFilterChain(List.of(filter)));
 
-        // addr_test1... with matching cred won't match since we're using pseudo addresses
-        // but we can test that non-matching addresses are filtered out
-        String nonMatchAddr = "addr_test1vpxnomatch0000000000000000000000000000000000";
+        String nonMatchAddr = UtxoTestAddresses.enterprise(6);
         TransactionBody tx = TransactionBody.builder()
                 .txHash("cc".repeat(32))
                 .outputs(List.of(
@@ -138,8 +136,8 @@ class UtxoFilterIntegrationTest {
     @Test
     void noFilter_allUtxosStored() {
         // No filter chain set — all outputs should be stored
-        String addr1 = "addr_test1vpxone000000000000000000000000000000000000000";
-        String addr2 = "addr_test1vpxtwo000000000000000000000000000000000000000";
+        String addr1 = UtxoTestAddresses.enterprise(7);
+        String addr2 = UtxoTestAddresses.enterprise(8);
 
         TransactionBody tx = TransactionBody.builder()
                 .txHash("ee".repeat(32))
@@ -168,7 +166,7 @@ class UtxoFilterIntegrationTest {
         var filter = new AddressUtxoFilter(Set.of(), Set.of());
         store.setFilterChain(new StorageFilterChain(List.of(filter)));
 
-        String addr = "addr_test1vpxempty00000000000000000000000000000000000000";
+        String addr = UtxoTestAddresses.enterprise(9);
         TransactionBody tx = TransactionBody.builder()
                 .txHash("11".repeat(32))
                 .outputs(List.of(
