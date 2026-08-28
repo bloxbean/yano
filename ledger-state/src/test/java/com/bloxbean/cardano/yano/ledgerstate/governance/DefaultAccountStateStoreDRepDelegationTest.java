@@ -74,6 +74,8 @@ class DefaultAccountStateStoreDRepDelegationTest {
     @BeforeEach
     void setUp() throws Exception {
         rocks = TestRocksDBHelper.create(tempDir);
+        new DefaultAccountStateStore(rocks.db(), rocks.cfSupplier(),
+                org.slf4j.LoggerFactory.getLogger(DefaultAccountStateStore.class), true);
         govStore = rocks.governanceStore();
     }
 

@@ -109,6 +109,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     static final byte PREFIX_ACCT_DEREG_COORD = 0x16;
     /** Latest deregistration coordinate per credential, complete from genesis in state v1. */
     static final byte PREFIX_ACCT_LAST_DEREG_COORD = 0x17;
+    /** Credential-major mirror of the authoritative stake event log for bounded reward queries. */
+    static final byte PREFIX_STAKE_EVENT_BY_CREDENTIAL = 0x18;
 
     /** Durable marker: the as-of pointer index has been maintained from genesis. */
     static final byte[] META_POINTER_INDEX_GENESIS =
@@ -151,6 +153,11 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     private static final byte[] META_TOTAL_DEPOSITED = "total_dep".getBytes(StandardCharsets.UTF_8);
     private static final byte[] META_LAST_APPLIED_BLOCK = "meta.last_block".getBytes(StandardCharsets.UTF_8);
     private static final byte[] META_LAST_SNAPSHOT_EPOCH = "meta.last_snapshot_epoch".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] META_SNAPSHOT_GENERATION_PREFIX =
+            "meta.snapshot.generation.".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] SNAPSHOT_GENERATION_BUILDING = {1, 0};
+    private static final byte SNAPSHOT_GENERATION_COMPLETE = 1;
+    private static final byte POOL_MAJOR_SNAPSHOT_PREFIX = (byte) 0xFF;
     private static final byte[] META_GENESIS_STAKING_BOOTSTRAP = "meta.genesis_staking_bootstrap".getBytes(StandardCharsets.UTF_8);
     private static final String GENESIS_STAKING_BOOTSTRAP_VERSION = "v1";
     // Reserved snapshot epoch for Haskell's direct-start initial ssStakeMark.
@@ -173,6 +180,13 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     private static final byte[] META_SNAPSHOT_DEREG_INDEX_VERSION =
             "meta.snapshot_dereg_index_version".getBytes(StandardCharsets.UTF_8);
     private static final byte[] SNAPSHOT_DEREG_INDEX_VERSION = {1};
+    private static final byte[] META_REWARD_EVENT_INDEX_VERSION =
+            "meta.reward_event_index_version".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] REWARD_EVENT_INDEX_VERSION = {1};
+    private static final byte[] META_REWARD_PROGRESS =
+            "meta.reward.progress.v1".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] META_ROLLBACK_TARGET_SLOT =
+            "meta.rollback.v1.target-slot".getBytes(StandardCharsets.UTF_8);
     // Configurable retention — instance fields read from config, defaults match previous constants.
     // Retain snapshots for enough epochs so the background epoch boundary processor can read them.
     // During fast sync, the main thread creates snapshots and prunes old ones rapidly while
@@ -180,6 +194,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     // we need at least N + 3 (snapshotKey = epoch - 3) epochs of retention.
     private final int epochBlockDataRetentionLag;
     private final int snapshotRetentionEpochs;
+    private final int snapshotMaxBatchOperations;
+    private final int snapshotMaxBatchBytes;
 
     // Delta op types
     public static final byte OP_PUT = 0x01;
@@ -205,17 +221,41 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     public static final byte PHASE_GOV_RATIFY = 5;
     public static final byte PHASE_POOLREAP = 6;
 
-    // Reverse execution order for boundary phases — used by rollbackInternal()
-    // to undo same-slot phases correctly regardless of phase-byte numbering.
-    // Execution order: MIR → REWARDS → POOLREAP → GOV_ENACT → GOV_RATIFY → SPENDABLE_REST
-    private static final byte[] BOUNDARY_PHASE_REVERSE_ORDER = {
-        PHASE_SPENDABLE_REST,
-        PHASE_GOV_RATIFY,
-        PHASE_GOV_ENACT,
-        PHASE_POOLREAP,
-        PHASE_REWARDS,
-        PHASE_MIR
-    };
+    // Persisted phase order is declarative: phase byte values are identifiers, not ordering.
+    private static final List<BoundaryPhaseDescriptor> BOUNDARY_PHASES = List.of(
+            new BoundaryPhaseDescriptor(PHASE_MIR, 0, "mir"),
+            new BoundaryPhaseDescriptor(PHASE_REWARDS, 1, "rewards"),
+            new BoundaryPhaseDescriptor(PHASE_POOLREAP, 2, "pool-reap"),
+            new BoundaryPhaseDescriptor(PHASE_GOV_ENACT, 3, "governance-enact"),
+            new BoundaryPhaseDescriptor(PHASE_GOV_RATIFY, 4, "governance-ratify"),
+            new BoundaryPhaseDescriptor(PHASE_SPENDABLE_REST, 5, "spendable-rest"));
+    private static final byte[] BOUNDARY_PHASE_REVERSE_ORDER = boundaryPhaseReverseOrder();
+
+    record BoundaryPhaseDescriptor(byte id, int forwardOrder, String name) {
+    }
+
+    private static byte[] boundaryPhaseReverseOrder() {
+        if (BOUNDARY_PHASES.stream().map(BoundaryPhaseDescriptor::id).distinct().count()
+                != BOUNDARY_PHASES.size()
+                || BOUNDARY_PHASES.stream().map(BoundaryPhaseDescriptor::forwardOrder)
+                .distinct().count() != BOUNDARY_PHASES.size()) {
+            throw new ExceptionInInitializerError(
+                    "Boundary phase descriptor ids and order must be unique");
+        }
+        List<BoundaryPhaseDescriptor> reversed = BOUNDARY_PHASES.stream()
+                .sorted(Comparator.comparingInt(
+                        BoundaryPhaseDescriptor::forwardOrder).reversed())
+                .toList();
+        byte[] result = new byte[reversed.size()];
+        for (int index = 0; index < reversed.size(); index++) {
+            result[index] = reversed.get(index).id();
+        }
+        return result;
+    }
+
+    static List<BoundaryPhaseDescriptor> boundaryPhaseDescriptors() {
+        return BOUNDARY_PHASES;
+    }
 
     /**
      * Per-batch overlay of in-flight cfState values.
@@ -330,7 +370,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         this.cfBoundaryDelta = supplier.handle(AccountStateCfNames.ACCT_BOUNDARY_DELTA);
         this.cfEpochSnapshot = supplier.handle(AccountStateCfNames.EPOCH_DELEG_SNAPSHOT);
         this.pointerAddressResolver = new PointerAddressResolver(db, cfState);
-        this.readStore = new DefaultAccountStateReadStore(db, cfEpochSnapshot, () -> governanceBlockProcessor, log);
+        this.readStore = new DefaultAccountStateReadStore(
+                db, cfState, cfEpochSnapshot, () -> governanceBlockProcessor, log);
         this.opCertCounterTracker = new OpCertCounterTracker(db, cfState);
         this.epochBlockDataRetentionLag = getInt(config,
                 YanoPropertyKeys.AccountState.EPOCH_BLOCK_DATA_RETENTION_LAG,
@@ -338,7 +379,33 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         this.snapshotRetentionEpochs = getInt(config,
                 YanoPropertyKeys.AccountState.SNAPSHOT_RETENTION_EPOCHS,
                 DEFAULT_SNAPSHOT_RETENTION_EPOCHS);
+        this.snapshotMaxBatchOperations = getInt(config,
+                YanoPropertyKeys.AccountState.EPOCH_SNAPSHOT_MAX_BATCH_OPERATIONS,
+                10_000);
+        this.snapshotMaxBatchBytes = getInt(config,
+                YanoPropertyKeys.AccountState.EPOCH_SNAPSHOT_MAX_BATCH_BYTES,
+                4 * 1024 * 1024);
+        if (snapshotMaxBatchOperations <= 0 || snapshotMaxBatchBytes <= 0) {
+            throw new IllegalArgumentException("Epoch snapshot batch limits must be positive");
+        }
         initializeEpochBoundaryStateV1();
+        resumeInterruptedRollbackIfPresent();
+    }
+
+    private void resumeInterruptedRollbackIfPresent() {
+        if (!enabled || db == null || cfState == null) return;
+        try {
+            byte[] marker = db.get(cfState, META_ROLLBACK_TARGET_SLOT);
+            if (marker == null) return;
+            if (marker.length != 8) {
+                throw new IllegalStateException("Malformed rollback-v1 target marker");
+            }
+            long target = ByteBuffer.wrap(marker).order(ByteOrder.BIG_ENDIAN).getLong();
+            log.warn("Resuming interrupted account-state rollback-v1 to slot {}", target);
+            rollbackInternal(target);
+        } catch (RocksDBException e) {
+            throw new IllegalStateException("Failed to inspect rollback-v1 marker", e);
+        }
     }
 
     private void initializeEpochBoundaryStateV1() {
@@ -350,6 +417,11 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                         SNAPSHOT_DEREG_INDEX_VERSION)) {
                     throw new IllegalStateException(
                             "epoch-boundary state v1 is missing its snapshot deregistration index marker");
+                }
+                if (!Arrays.equals(db.get(cfState, META_REWARD_EVENT_INDEX_VERSION),
+                        REWARD_EVENT_INDEX_VERSION)) {
+                    throw new IllegalStateException(
+                            "epoch-boundary state v1 is missing its reward event index marker; resync is required");
                 }
                 return;
             }
@@ -364,6 +436,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                         EPOCH_BOUNDARY_STATE_VERSION);
                 batch.put(cfState, META_SNAPSHOT_DEREG_INDEX_VERSION,
                         SNAPSHOT_DEREG_INDEX_VERSION);
+                batch.put(cfState, META_REWARD_EVENT_INDEX_VERSION,
+                        REWARD_EVENT_INDEX_VERSION);
                 db.write(options, batch);
             }
         } catch (RocksDBException e) {
@@ -577,7 +651,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         }
 
         this.pointerAddressResolver = new PointerAddressResolver(db, cfState);
-        this.readStore = new DefaultAccountStateReadStore(db, cfEpochSnapshot, () -> governanceBlockProcessor, log);
+        this.readStore = new DefaultAccountStateReadStore(
+                db, cfState, cfEpochSnapshot, () -> governanceBlockProcessor, log);
         if (opCertCounterTracker != null) {
             opCertCounterTracker.reinitialize(db, cfState);
         } else {
@@ -887,6 +962,19 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         ByteBuffer.wrap(key, 11, 2).order(ByteOrder.BIG_ENDIAN).putShort((short) certIdx);
         key[13] = (byte) credType;
         System.arraycopy(hash, 0, key, 14, hash.length);
+        return key;
+    }
+
+    static byte[] credentialStakeEventKey(int credType, String credHash,
+                                          long slot, int txIdx, int certIdx) {
+        byte[] hash = HexUtil.decodeHexString(credHash);
+        byte[] key = new byte[1 + 1 + hash.length + 8 + 2 + 2];
+        key[0] = PREFIX_STAKE_EVENT_BY_CREDENTIAL;
+        key[1] = (byte) credType;
+        System.arraycopy(hash, 0, key, 2, hash.length);
+        ByteBuffer.wrap(key, 30, 8).order(ByteOrder.BIG_ENDIAN).putLong(slot);
+        ByteBuffer.wrap(key, 38, 2).order(ByteOrder.BIG_ENDIAN).putShort((short) txIdx);
+        ByteBuffer.wrap(key, 40, 2).order(ByteOrder.BIG_ENDIAN).putShort((short) certIdx);
         return key;
     }
 
@@ -1628,6 +1716,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
      * Read a previous epoch's delegation snapshot for incremental balance aggregation.
      */
     private java.util.Map<String, AccountStateCborCodec.EpochDelegSnapshot> readStakeSnapshot(int epoch) {
+        ensureSnapshotReadable(epoch);
         java.util.Map<String, AccountStateCborCodec.EpochDelegSnapshot> snapshot = new java.util.HashMap<>();
         byte[] epochPrefix = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(epoch).array();
         try (RocksIterator it = db.newIterator(cfEpochSnapshot)) {
@@ -1637,6 +1726,10 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 if (key.length < 5) break;
                 int keyEpoch = ByteBuffer.wrap(key, 0, 4).order(ByteOrder.BIG_ENDIAN).getInt();
                 if (keyEpoch != epoch) break;
+                if (key.length != 33) {
+                    it.next();
+                    continue;
+                }
                 int credType = key[4] & 0xFF;
                 String credHash = HexUtil.encodeHexString(java.util.Arrays.copyOfRange(key, 5, key.length));
                 snapshot.put(credType + ":" + credHash,
@@ -1659,6 +1752,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
      * @return rows up to {@code limit}, and the key to continue from, or null when exhausted
      */
     public EpochSnapshotPage readEpochDelegSnapshotPage(int epoch, byte[] afterKey, int limit) {
+        ensureSnapshotReadable(epoch);
         List<EpochSnapshotRow> rows = new ArrayList<>(Math.min(limit, 1024));
         byte[] nextKey = null;
         byte[] lastIncluded = null;
@@ -1675,6 +1769,10 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 if (key.length < 5) break;
                 int keyEpoch = ByteBuffer.wrap(key, 0, 4).order(ByteOrder.BIG_ENDIAN).getInt();
                 if (keyEpoch != epoch) break;
+                if (key.length != 33) {
+                    it.next();
+                    continue;
+                }
                 // The cursor is the last row INCLUDED, because resuming skips the key it is
                 // given. Handing back the first unread row instead would skip exactly one row
                 // per page - invisible whenever an epoch fits in a single page, and silently
@@ -1704,6 +1802,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
     @Override
     public Optional<String> getEpochDelegation(int epoch, int credType, String credentialHash) {
+        ensureSnapshotReadable(epoch);
         try {
             byte[] epochBytes = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(epoch).array();
             byte[] hash = HexUtil.decodeHexString(credentialHash);
@@ -1723,6 +1822,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
     @Override
     public List<LedgerStateProvider.EpochDelegator> getPoolDelegatorsAtEpoch(int epoch, String poolHash) {
+        ensureSnapshotReadable(epoch);
         List<LedgerStateProvider.EpochDelegator> result = new ArrayList<>();
         try {
             byte[] epochPrefix = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(epoch).array();
@@ -1733,6 +1833,10 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                     if (key.length < 5) break;
                     int keyEpoch = ByteBuffer.wrap(key, 0, 4).order(ByteOrder.BIG_ENDIAN).getInt();
                     if (keyEpoch != epoch) break;
+                    if (key.length != 33) {
+                        it.next();
+                        continue;
+                    }
 
                     var snapshot = AccountStateCborCodec.decodeEpochDelegSnapshot(it.value());
                     if (snapshot.poolHash().equals(poolHash)) {
@@ -2222,6 +2326,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
      */
     public com.bloxbean.cardano.yano.ledgerstate.governance.epoch.GovernanceEpochProcessor.PoolStakeData
     resolvePoolStakeForEpoch(int epoch) throws RocksDBException {
+        ensureSnapshotReadable(epoch);
         java.util.Map<String, BigInteger> poolStakes = new java.util.HashMap<>();
         java.util.Map<String, Integer> poolDRepDelegation = new java.util.HashMap<>();
 
@@ -2236,6 +2341,10 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 if (key.length < 5) break;
                 int keyEpoch = java.nio.ByteBuffer.wrap(key, 0, 4).order(java.nio.ByteOrder.BIG_ENDIAN).getInt();
                 if (keyEpoch != epoch) break;
+                if (key.length != 33) {
+                    it.next();
+                    continue;
+                }
 
                 var snapshot = AccountStateCborCodec.decodeEpochDelegSnapshot(it.value());
                 String poolHash = snapshot.poolHash();
@@ -2510,6 +2619,9 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                     batch.put(cfState, acctRegSlotKey(credType, credHash),
                             ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(genesisSlot).array());
                     batch.put(cfState, stakeEventKey(genesisSlot, 0, certIdx, credType, credHash),
+                            AccountStateCborCodec.encodeStakeEvent(AccountStateCborCodec.EVENT_REGISTRATION));
+                    batch.put(cfState, credentialStakeEventKey(
+                                    credType, credHash, genesisSlot, 0, certIdx),
                             AccountStateCborCodec.encodeStakeEvent(AccountStateCborCodec.EVENT_REGISTRATION));
                     batch.put(cfState, poolDelegKey(credType, credHash),
                             AccountStateCborCodec.encodePoolDelegation(delegation.poolHash(),
@@ -3386,6 +3498,10 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         byte[] eventVal = AccountStateCborCodec.encodeStakeEvent(AccountStateCborCodec.EVENT_REGISTRATION);
         batch.put(cfState, eventKey, eventVal);
         deltaOps.add(new DeltaOp(OP_PUT, eventKey, null));
+        byte[] credentialEventKey = credentialStakeEventKey(
+                ct, cred.getHash(), slot, txIdx, certIdx);
+        batch.put(cfState, credentialEventKey, eventVal);
+        deltaOps.add(new DeltaOp(OP_PUT, credentialEventKey, null));
 
         // Persist pointer address mapping in RocksDB (survives restarts).
         // Pointer addresses are only relevant pre-Conway (removed in Conway era per CIP-0019).
@@ -3466,6 +3582,10 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         byte[] eventVal = AccountStateCborCodec.encodeStakeEvent(AccountStateCborCodec.EVENT_DEREGISTRATION);
         batch.put(cfState, eventKey, eventVal);
         deltaOps.add(new DeltaOp(OP_PUT, eventKey, null));
+        byte[] credentialEventKey = credentialStakeEventKey(
+                ct, cred.getHash(), slot, txIdx, certIdx);
+        batch.put(cfState, credentialEventKey, eventVal);
+        deltaOps.add(new DeltaOp(OP_PUT, credentialEventKey, null));
 
         // Derived credential-major index over the deregistration just recorded above, so
         // pointer resolution can seek rather than scan. Same batch and same delta op as the
@@ -3999,16 +4119,23 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         var archiveWriter = archiveStaging.enabled(
                 com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset.EPOCH_STAKE)
                 ? archiveStaging.openStake(epoch) : null;
-        try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
+        try {
+            if (isSnapshotGenerationComplete(epoch)) {
+                log.info("Delegation snapshot generation for epoch {} is already complete", epoch);
+                return null;
+            }
+            prepareSnapshotGeneration(epoch);
             if (precomputedUtxoBalances == null && shouldUseOrderedStakeBalanceIndex(epoch)) {
                 stakeBalanceView = openBoundaryStakeBalanceView()
                         .orElseThrow(() -> new IllegalStateException(
                                 "Stake balance index became unavailable before snapshot creation"));
             }
-            utxoBalances = createDelegationSnapshot(epoch, batch, precomputedUtxoBalances,
-                    stakeBalanceView, archiveWriter);
-            db.write(wo, batch);
-            if (archiveWriter != null) archiveWriter.commit();
+            try (SnapshotGenerationWriter writer = new SnapshotGenerationWriter(epoch)) {
+                utxoBalances = createDelegationSnapshot(epoch, writer, precomputedUtxoBalances,
+                        stakeBalanceView, archiveWriter);
+                if (archiveWriter != null) archiveWriter.commit();
+                writer.complete();
+            }
         } catch (Exception ex) {
             log.error("Failed to create delegation snapshot for epoch {}: {}", epoch, ex.toString());
             throw new RuntimeException("Failed to create delegation snapshot for epoch " + epoch, ex);
@@ -4027,7 +4154,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     }
 
     private java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> createDelegationSnapshot(
-            int epoch, WriteBatch batch,
+            int epoch, SnapshotGenerationWriter writer,
             java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> precomputedUtxoBalances,
             StakeBalanceView stakeBalanceView,
             com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.FactWriter<
@@ -4126,7 +4253,9 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
         OrderedStakeLookup orderedStake = stakeBalanceView != null
                 ? new OrderedStakeLookup(stakeBalanceView) : null;
-        try (RocksIterator it = db.newIterator(cfState)) {
+        try (OrderedAccountLookup orderedAccount = stakeBalanceView != null
+                     ? new OrderedAccountLookup() : null;
+             RocksIterator it = db.newIterator(cfState)) {
             it.seek(new byte[]{PREFIX_POOL_DELEG});
             while (it.isValid()) {
                 byte[] key = it.key();
@@ -4136,8 +4265,10 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 String credHash = HexUtil.encodeHexString(Arrays.copyOfRange(key, 2, key.length));
 
                 // Only include registered stake credentials (must have PREFIX_ACCT entry)
-                byte[] acctKey = accountKey(credType, credHash);
-                byte[] acctVal = db.get(cfState, acctKey);
+                byte[] credentialSuffix = Arrays.copyOfRange(key, 1, key.length);
+                byte[] acctVal = orderedAccount != null
+                        ? orderedAccount.accountValue(credentialSuffix)
+                        : db.get(cfState, accountKey(credType, credHash));
                 if (acctVal == null) {
                     skippedUnregistered++;
                     it.next();
@@ -4168,8 +4299,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 // credential was re-registered later — a new delegation would be needed.
                 long[] latestDereg;
                 if (orderedStake != null) {
-                    byte[] latestDeregValue = db.get(cfState,
-                            acctLastDeregCoordKey(credType, credHash));
+                    byte[] latestDeregValue = orderedAccount.latestDeregistration(
+                            credentialSuffix);
                     latestDereg = latestDeregValue != null
                             ? decodeStakeCoordinate(latestDeregValue) : null;
                 } else {
@@ -4192,7 +4323,9 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 // Skip delegations that predate the credential's current registration.
                 // This catches stale delegations from before a deregistration/re-registration
                 // cycle, even when the deregistration stake event has been pruned.
-                byte[] acctRegSlotVal = db.get(cfState, acctRegSlotKey(credType, credHash));
+                byte[] acctRegSlotVal = orderedAccount != null
+                        ? orderedAccount.registrationSlot(credentialSuffix)
+                        : db.get(cfState, acctRegSlotKey(credType, credHash));
                 if (acctRegSlotVal != null) {
                     long acctRegSlot = ByteBuffer.wrap(acctRegSlotVal).order(ByteOrder.BIG_ENDIAN).getLong();
                     if (deleg.slot() < acctRegSlot) {
@@ -4233,7 +4366,20 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 System.arraycopy(key, 1, snapshotKey, 4, key.length - 1);
 
                 byte[] snapshotVal = AccountStateCborCodec.encodeEpochDelegSnapshot(deleg.poolHash(), stakeAmount);
-                batch.put(cfEpochSnapshot, snapshotKey, snapshotVal);
+                writer.put(snapshotKey, snapshotVal);
+
+                byte[] poolHash = HexUtil.decodeHexString(deleg.poolHash());
+                if (poolHash.length != 28) {
+                    throw new IllegalStateException("Invalid pool hash length in snapshot: "
+                            + poolHash.length);
+                }
+                byte[] poolMajorKey = new byte[4 + 1 + 28 + 1 + 28];
+                System.arraycopy(epochBytes, 0, poolMajorKey, 0, 4);
+                poolMajorKey[4] = POOL_MAJOR_SNAPSHOT_PREFIX;
+                System.arraycopy(poolHash, 0, poolMajorKey, 5, 28);
+                poolMajorKey[33] = (byte) credType;
+                System.arraycopy(key, 2, poolMajorKey, 34, 28);
+                writer.put(poolMajorKey, AccountStateCborCodec.encodePoolMajorStake(stakeAmount));
                 count++;
 
                 if (archiveWriter != null) archiveWriter.append(
@@ -4244,33 +4390,148 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 it.next();
             }
         }
-
-        // ADR-039: stage the artifact reference in the SAME batch as the snapshot it points at,
-        // so neither can become durable without the other.
-        if (epochArtifacts.enabled()) {
-            var boundary = archiveBoundary;
-            if (boundary == null) {
-                throw new IllegalStateException("epoch boundary was not prepared before the delegation"
-                        + " snapshot for epoch " + epoch + "; the artifact would have no coordinate");
-            }
-            epochArtifacts.contributeEpochStake(epoch, boundary.slot(), boundary.blockNumber(),
-                    count, (cfName, key, value) -> {
-                        try {
-                            batch.put(rocksHandles.handle(cfName), key, value);
-                        } catch (RocksDBException e) {
-                            throw new RuntimeException("failed to stage epoch artifact reference", e);
-                        }
-                    });
-        }
-
-        byte[] epochMeta = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(epoch).array();
-        batch.put(cfState, META_LAST_SNAPSHOT_EPOCH, epochMeta);
+        writer.setRowCount(count);
         log.info("Created delegation snapshot for epoch {} ({} delegations, amounts={}, skipped: {} unregistered, {} zero-balance, {} retired-pool, {} stale-delegation, {} dereg-after-deleg)",
                 epoch, count, orderedStake != null || utxoBalances != null,
                 skippedUnregistered, skippedZeroBalance, skippedRetiredPool,
                 skippedStaleDelegation, skippedDeregAfterDeleg);
 
         return utxoBalances;
+    }
+
+    private boolean isSnapshotGenerationComplete(int epoch) throws RocksDBException {
+        byte[] marker = db.get(cfState, snapshotGenerationKey(epoch));
+        return marker != null && marker.length >= 2
+                && marker[0] == 1 && marker[1] == SNAPSHOT_GENERATION_COMPLETE;
+    }
+
+    boolean isPoolMajorSnapshotComplete(int epoch) {
+        try {
+            return isSnapshotGenerationComplete(epoch);
+        } catch (RocksDBException e) {
+            throw new IllegalStateException("Failed to read snapshot generation marker", e);
+        }
+    }
+
+    private void prepareSnapshotGeneration(int epoch) throws RocksDBException {
+        byte[] markerKey = snapshotGenerationKey(epoch);
+        if (db.get(cfState, markerKey) != null) {
+            deleteSnapshotEpochRange(epoch);
+        }
+        try (WriteBatch batch = new WriteBatch();
+             WriteOptions options = new WriteOptions().setSync(true)) {
+            batch.put(cfState, markerKey, SNAPSHOT_GENERATION_BUILDING);
+            db.write(options, batch);
+        }
+    }
+
+    private void deleteSnapshotEpochRange(int epoch) throws RocksDBException {
+        byte[] start = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(epoch).array();
+        byte[] end = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(epoch + 1).array();
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
+            batch.deleteRange(cfEpochSnapshot, start, end);
+            db.write(options, batch);
+        }
+    }
+
+    static byte[] snapshotGenerationKey(int epoch) {
+        byte[] key = Arrays.copyOf(META_SNAPSHOT_GENERATION_PREFIX,
+                META_SNAPSHOT_GENERATION_PREFIX.length + 4);
+        ByteBuffer.wrap(key, META_SNAPSHOT_GENERATION_PREFIX.length, 4)
+                .order(ByteOrder.BIG_ENDIAN).putInt(epoch);
+        return key;
+    }
+
+    private void ensureSnapshotReadable(int epoch) {
+        try {
+            byte[] marker = db.get(cfState, snapshotGenerationKey(epoch));
+            if (marker != null && (marker.length < 2
+                    || marker[1] != SNAPSHOT_GENERATION_COMPLETE)) {
+                throw new IllegalStateException(
+                        "Epoch snapshot " + epoch + " is still BUILDING");
+            }
+        } catch (RocksDBException e) {
+            throw new IllegalStateException("Failed to read snapshot generation status", e);
+        }
+    }
+
+    private final class SnapshotGenerationWriter implements AutoCloseable {
+        private final int epoch;
+        private WriteBatch batch = new WriteBatch();
+        private int operations;
+        private int estimatedBytes;
+        private int rowCount;
+        private boolean complete;
+
+        private SnapshotGenerationWriter(int epoch) {
+            this.epoch = epoch;
+        }
+
+        private void put(byte[] key, byte[] value) throws RocksDBException {
+            batch.put(cfEpochSnapshot, key, value);
+            operations++;
+            estimatedBytes += key.length + value.length + 16;
+            if (operations >= snapshotMaxBatchOperations
+                    || estimatedBytes >= snapshotMaxBatchBytes) {
+                flush();
+            }
+        }
+
+        private void setRowCount(int rowCount) {
+            this.rowCount = rowCount;
+        }
+
+        private void flush() throws RocksDBException {
+            if (operations == 0) return;
+            try (WriteOptions options = new WriteOptions()) {
+                db.write(options, batch);
+            }
+            batch.close();
+            batch = new WriteBatch();
+            operations = 0;
+            estimatedBytes = 0;
+        }
+
+        private void complete() throws RocksDBException {
+            flush();
+            try (WriteBatch finalBatch = new WriteBatch();
+                 WriteOptions options = new WriteOptions().setSync(true)) {
+                if (epochArtifacts.enabled()) {
+                    var boundary = archiveBoundary;
+                    if (boundary == null) {
+                        throw new IllegalStateException("epoch boundary was not prepared before the delegation"
+                                + " snapshot for epoch " + epoch + "; the artifact would have no coordinate");
+                    }
+                    epochArtifacts.contributeEpochStake(epoch, boundary.slot(), boundary.blockNumber(),
+                            rowCount, (cfName, key, value) -> {
+                                try {
+                                    finalBatch.put(rocksHandles.handle(cfName), key, value);
+                                } catch (RocksDBException e) {
+                                    throw new RuntimeException("failed to stage epoch artifact reference", e);
+                                }
+                            });
+                }
+                byte[] completeValue = ByteBuffer.allocate(10).order(ByteOrder.BIG_ENDIAN)
+                        .put((byte) 1).put(SNAPSHOT_GENERATION_COMPLETE)
+                        .putLong(rowCount).array();
+                finalBatch.put(cfState, snapshotGenerationKey(epoch), completeValue);
+                finalBatch.put(cfState, META_LAST_SNAPSHOT_EPOCH,
+                        ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(epoch).array());
+                db.write(options, finalBatch);
+            }
+            complete = true;
+        }
+
+        @Override
+        public void close() {
+            if (batch != null) {
+                batch.close();
+                batch = null;
+            }
+            if (!complete) {
+                log.warn("Snapshot generation for epoch {} remains BUILDING and will be rebuilt", epoch);
+            }
+        }
     }
 
     private static long[] decodeStakeCoordinate(byte[] value) {
@@ -4320,6 +4581,78 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     }
 
     /**
+     * Ordered merge adapter for the three credential-major account inputs used by SNAP.
+     * Pool delegations are already visited in credential order, so each input iterator
+     * only advances and never performs a point lookup per credential.
+     */
+    private final class OrderedAccountLookup implements AutoCloseable {
+        private final Snapshot snapshot = db.getSnapshot();
+        private final ReadOptions options = new ReadOptions()
+                .setFillCache(false)
+                .setSnapshot(snapshot);
+        private final RocksIterator accounts = db.newIterator(cfState, options);
+        private final RocksIterator registrationSlots = db.newIterator(cfState, options);
+        private final RocksIterator latestDeregistrations = db.newIterator(cfState, options);
+
+        private OrderedAccountLookup() {
+            accounts.seek(new byte[]{PREFIX_ACCT});
+            registrationSlots.seek(new byte[]{PREFIX_ACCT_REG_SLOT});
+            latestDeregistrations.seek(new byte[]{PREFIX_ACCT_LAST_DEREG_COORD});
+        }
+
+        private byte[] accountValue(byte[] credentialSuffix) {
+            return valueFor(accounts, PREFIX_ACCT, credentialSuffix);
+        }
+
+        private byte[] registrationSlot(byte[] credentialSuffix) {
+            return valueFor(registrationSlots, PREFIX_ACCT_REG_SLOT, credentialSuffix);
+        }
+
+        private byte[] latestDeregistration(byte[] credentialSuffix) {
+            return valueFor(latestDeregistrations, PREFIX_ACCT_LAST_DEREG_COORD,
+                    credentialSuffix);
+        }
+
+        private byte[] valueFor(RocksIterator iterator, byte prefix,
+                                byte[] credentialSuffix) {
+            while (iterator.isValid()) {
+                byte[] indexKey = iterator.key();
+                if (indexKey.length != credentialSuffix.length + 1
+                        || indexKey[0] != prefix) {
+                    return null;
+                }
+                int comparison = compareUnsigned(indexKey, 1,
+                        credentialSuffix, 0, credentialSuffix.length);
+                if (comparison >= 0) {
+                    return comparison == 0 ? iterator.value().clone() : null;
+                }
+                iterator.next();
+            }
+            return null;
+        }
+
+        @Override
+        public void close() {
+            latestDeregistrations.close();
+            registrationSlots.close();
+            accounts.close();
+            options.close();
+            db.releaseSnapshot(snapshot);
+        }
+    }
+
+    private static int compareUnsigned(byte[] left, int leftOffset,
+                                       byte[] right, int rightOffset, int length) {
+        for (int index = 0; index < length; index++) {
+            int comparison = Integer.compare(
+                    left[leftOffset + index] & 0xFF,
+                    right[rightOffset + index] & 0xFF);
+            if (comparison != 0) return comparison;
+        }
+        return 0;
+    }
+
+    /**
      * Epoch below which snapshots may not be pruned, because an archive still references them.
      *
      * <p>ADR-039 projects epoch stake by *referencing* the delegation snapshot rather than copying
@@ -4331,6 +4664,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
      * back epochs an archive has actually claimed; it is released as soon as the sink acknowledges.
      */
     private volatile int protectedSnapshotFloorEpoch = -1;
+    private Runnable rollbackChunkCommitHook = () -> { };
 
     /**
      * Stage the ADA-pot artifact together with the pot value it describes.
@@ -4404,16 +4738,13 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             if (oldestToKeep <= 0) return;
         }
 
-        try (RocksIterator it = db.newIterator(cfEpochSnapshot)) {
-            it.seekToFirst();
-            while (it.isValid()) {
-                byte[] key = it.key();
-                if (key.length < 4) break;
-                int epoch = ByteBuffer.wrap(key, 0, 4).order(ByteOrder.BIG_ENDIAN).getInt();
-                if (epoch >= oldestToKeep) break;
-                batch.delete(cfEpochSnapshot, key);
-                it.next();
-            }
+        byte[] firstOrdinaryEpoch = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN)
+                .putInt(0).array();
+        byte[] keepFrom = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN)
+                .putInt(oldestToKeep).array();
+        batch.deleteRange(cfEpochSnapshot, firstOrdinaryEpoch, keepFrom);
+        for (int epoch = 0; epoch < oldestToKeep; epoch++) {
+            batch.delete(cfState, snapshotGenerationKey(epoch));
         }
     }
 
@@ -4540,6 +4871,55 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         //       Verify with devnet testing and add handling if needed.
 
         return registered;
+    }
+
+    CredentialEventSummary getCredentialEventSummary(String credential,
+                                                      long stabilityCutoff,
+                                                      long boundaryCutoff,
+                                                      long registeredSinceCutoff,
+                                                      long registeredUntilCutoff) {
+        int separator = credential.indexOf(':');
+        if (separator <= 0) return CredentialEventSummary.EMPTY;
+        int credentialType = Integer.parseInt(credential.substring(0, separator));
+        String credentialHash = credential.substring(separator + 1);
+        byte[] prefix = Arrays.copyOf(credentialStakeEventKey(
+                credentialType, credentialHash, 0, 0, 0), 30);
+        int lastAtStability = -1;
+        int lastAtBoundary = -1;
+        boolean registeredSince = false;
+        boolean registeredUntil = false;
+        long maximumCutoff = Math.max(Math.max(stabilityCutoff, boundaryCutoff),
+                Math.max(registeredSinceCutoff, registeredUntilCutoff));
+
+        try (ReadOptions options = new ReadOptions().setFillCache(false);
+             RocksIterator iterator = db.newIterator(cfState, options)) {
+            iterator.seek(prefix);
+            while (iterator.isValid() && startsWith(iterator.key(), prefix)) {
+                byte[] key = iterator.key();
+                long slot = ByteBuffer.wrap(key, 30, 8).order(ByteOrder.BIG_ENDIAN).getLong();
+                if (slot >= maximumCutoff) break;
+                int event = AccountStateCborCodec.decodeStakeEvent(iterator.value());
+                if (slot < stabilityCutoff) lastAtStability = event;
+                if (slot < boundaryCutoff) lastAtBoundary = event;
+                if (event == AccountStateCborCodec.EVENT_REGISTRATION) {
+                    if (slot < registeredSinceCutoff) registeredSince = true;
+                    if (slot < registeredUntilCutoff) registeredUntil = true;
+                }
+                iterator.next();
+            }
+        }
+        return new CredentialEventSummary(
+                lastAtStability == AccountStateCborCodec.EVENT_DEREGISTRATION,
+                lastAtBoundary == AccountStateCborCodec.EVENT_DEREGISTRATION,
+                registeredSince, registeredUntil);
+    }
+
+    record CredentialEventSummary(boolean deregisteredAtStability,
+                                  boolean deregisteredAtBoundary,
+                                  boolean registeredSince,
+                                  boolean registeredUntil) {
+        private static final CredentialEventSummary EMPTY =
+                new CredentialEventSummary(false, false, false, false);
     }
 
     // --- Rollback ---
@@ -4678,27 +5058,6 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         rollbackInternal(targetSlot);
     }
 
-    /**
-     * Undo boundary delta entries for a single slot in explicit reverse execution order.
-     * Within each phase entry, ops are also undone in reverse order.
-     */
-    private void undoBoundaryPhasesInOrder(Map<Byte, byte[]> phaseEntries, WriteBatch batch)
-            throws RocksDBException {
-        for (byte phase : BOUNDARY_PHASE_REVERSE_ORDER) {
-            byte[] encoded = phaseEntries.get(phase);
-            if (encoded == null) continue;
-            DecodedDelta delta = decodeDelta(encoded);
-            for (int i = delta.ops.size() - 1; i >= 0; i--) {
-                DeltaOp op = delta.ops.get(i);
-                if (op.prevValue != null) {
-                    batch.put(cfState, op.key, op.prevValue);
-                } else {
-                    batch.delete(cfState, op.key);
-                }
-            }
-        }
-    }
-
     private boolean isValidBlockDelta(RocksIterator it) {
         return it.isValid();
     }
@@ -4747,26 +5106,47 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         }
     }
 
-    private void undoBoundaryDeltaSlot(RocksIterator it, WriteBatch batch) throws RocksDBException {
-        long slot = currentBoundaryDeltaSlot(it);
-        Map<Byte, byte[]> phaseEntries = new HashMap<>();
-
-        while (isValidBoundaryDelta(it) && currentBoundaryDeltaSlot(it) == slot) {
-            byte[] key = it.key();
-            byte phase = key[8];
-            if (phaseEntries.containsKey(phase)) {
-                log.warn("Duplicate boundary delta entry for slot {} phase {} — overwriting", slot, phase);
+    private void undoBoundaryDeltaSlotBounded(long slot) throws RocksDBException {
+        for (byte phase : BOUNDARY_PHASE_REVERSE_ORDER) {
+            while (true) {
+                byte[] seek = ByteBuffer.allocate(13).order(ByteOrder.BIG_ENDIAN)
+                        .putLong(slot).put(phase).putInt(Integer.MAX_VALUE).array();
+                byte[] key;
+                byte[] encoded;
+                try (RocksIterator iterator = db.newIterator(cfBoundaryDelta)) {
+                    iterator.seekForPrev(seek);
+                    if (!iterator.isValid()) break;
+                    key = iterator.key().clone();
+                    if (key.length < 9 || currentBoundaryDeltaSlot(iterator) != slot
+                            || key[8] != phase) break;
+                    encoded = iterator.value().clone();
+                }
+                DecodedDelta delta = decodeDelta(encoded);
+                try (WriteBatch chunk = new WriteBatch(); WriteOptions options = new WriteOptions()) {
+                    for (int i = delta.ops.size() - 1; i >= 0; i--) {
+                        DeltaOp operation = delta.ops.get(i);
+                        if (operation.prevValue != null) {
+                            chunk.put(cfState, operation.key, operation.prevValue);
+                        } else {
+                            chunk.delete(cfState, operation.key);
+                        }
+                    }
+                    chunk.delete(cfBoundaryDelta, key);
+                    db.write(options, chunk);
+                    rollbackChunkCommitHook.run();
+                }
             }
-            phaseEntries.put(phase, it.value().clone());
-            batch.delete(cfBoundaryDelta, key);
-            it.prev();
         }
-
-        undoBoundaryPhasesInOrder(phaseEntries, batch);
     }
 
     private void rollbackInternal(long targetSlot) {
         if (!enabled) return;
+
+        try {
+            ensureRollbackMarker(targetSlot);
+        } catch (RocksDBException e) {
+            throw new RuntimeException("Failed to start rollback-v1", e);
+        }
 
         try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions();
              RocksIterator it = db.newIterator(cfDelta);
@@ -4803,10 +5183,21 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 }
 
                 if (blockSlot == nextSlot) {
-                    undoBlockDeltaEntry(it, batch);
+                    try (WriteBatch chunk = new WriteBatch(); WriteOptions chunkOptions = new WriteOptions()) {
+                        undoBlockDeltaEntry(it, chunk);
+                        db.write(chunkOptions, chunk);
+                        rollbackChunkCommitHook.run();
+                    }
                 }
                 if (boundarySlot == nextSlot) {
-                    undoBoundaryDeltaSlot(bdIt, batch);
+                    undoBoundaryDeltaSlotBounded(boundarySlot);
+                    // This iterator predates the bounded commits and therefore still sees
+                    // the deleted keys. Walk its pinned view past the completed slot instead
+                    // of seeking back to the same stale last key.
+                    while (isValidBoundaryDelta(bdIt)
+                            && currentBoundaryDeltaSlot(bdIt) == boundarySlot) {
+                        bdIt.prev();
+                    }
                 }
             }
 
@@ -4821,14 +5212,14 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 // Delete snapshots for epochs >= targetEpoch.
                 // Snapshot E is created during boundary E -> E+1. After rollback to epoch E,
                 // that boundary no longer exists, so snapshot E is stale and must be deleted.
-                try (RocksIterator snapIt = db.newIterator(cfEpochSnapshot)) {
-                    byte[] seekKey = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN)
-                            .putInt(targetEpoch).array();
-                    snapIt.seek(seekKey);
-                    while (snapIt.isValid()) {
-                        batch.delete(cfEpochSnapshot, snapIt.key());
-                        snapIt.next();
-                    }
+                for (int snapshotEpoch = targetEpoch; snapshotEpoch <= lastSnapshot;
+                     snapshotEpoch++) {
+                    byte[] start = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN)
+                            .putInt(snapshotEpoch).array();
+                    byte[] end = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN)
+                            .putInt(snapshotEpoch + 1).array();
+                    batch.deleteRange(cfEpochSnapshot, start, end);
+                    batch.delete(cfState, snapshotGenerationKey(snapshotEpoch));
                 }
 
                 // Delete AdaPot entries for epochs > targetEpoch
@@ -4875,6 +5266,30 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 }
             }
 
+            // BUILDING generations deliberately do not advance META_LAST_SNAPSHOT_EPOCH,
+            // so discover and remove them independently during rollback-v1.
+            try (RocksIterator generationIterator = db.newIterator(cfState)) {
+                generationIterator.seek(META_SNAPSHOT_GENERATION_PREFIX);
+                while (generationIterator.isValid()
+                        && startsWith(generationIterator.key(), META_SNAPSHOT_GENERATION_PREFIX)) {
+                    byte[] generationKey = generationIterator.key();
+                    if (generationKey.length == META_SNAPSHOT_GENERATION_PREFIX.length + 4) {
+                        int generationEpoch = ByteBuffer.wrap(generationKey,
+                                        META_SNAPSHOT_GENERATION_PREFIX.length, 4)
+                                .order(ByteOrder.BIG_ENDIAN).getInt();
+                        if (generationEpoch >= targetEpoch) {
+                            byte[] start = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN)
+                                    .putInt(generationEpoch).array();
+                            byte[] end = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN)
+                                    .putInt(generationEpoch + 1).array();
+                            batch.deleteRange(cfEpochSnapshot, start, end);
+                            batch.delete(cfState, generationKey);
+                        }
+                    }
+                    generationIterator.next();
+                }
+            }
+
             // Clear stale boundary-step marker if it refers to an epoch beyond the rollback target.
             // Without this, recoverInterruptedBoundary() would attempt to resume a future epoch's
             // boundary processing that was already rolled back.
@@ -4896,9 +5311,20 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             // a pending protocol update tx.
             if (paramTracker != null && paramTracker.isEnabled()) {
                 paramTracker.addRollbackOps(targetSlot, targetEpoch, batch);
+            } else {
+                ColumnFamilyHandle epochParams = cfSupplier.handle(
+                        AccountStateCfNames.EPOCH_PARAMS);
+                EpochParamTracker.RollbackDeleteCounts counts =
+                        EpochParamTracker.addRollbackOps(
+                                db, epochParams, targetSlot, targetEpoch, batch);
+                if (counts.pending() > 0 || counts.finalized() > 0) {
+                    log.info("Startup rollback-v1 queued deletion of {} pending + {} finalized epoch param keys",
+                            counts.pending(), counts.finalized());
+                }
             }
 
             updateRollbackMetadata(batch, retainedBlock, retainedSlot);
+            batch.delete(cfState, META_ROLLBACK_TARGET_SLOT);
 
             db.write(wo, batch);
 
@@ -4911,6 +5337,27 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         } catch (Exception ex) {
             throw new RuntimeException("Account state rollback to slot " + targetSlot + " failed", ex);
         }
+    }
+
+    private void ensureRollbackMarker(long targetSlot) throws RocksDBException {
+        byte[] existing = db.get(cfState, META_ROLLBACK_TARGET_SLOT);
+        if (existing != null) {
+            if (existing.length != 8
+                    || ByteBuffer.wrap(existing).order(ByteOrder.BIG_ENDIAN).getLong() != targetSlot) {
+                throw new IllegalStateException(
+                        "A different rollback-v1 target is already in progress");
+            }
+            return;
+        }
+        try (WriteOptions options = new WriteOptions().setSync(true)) {
+            db.put(cfState, options, META_ROLLBACK_TARGET_SLOT,
+                    ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN)
+                            .putLong(targetSlot).array());
+        }
+    }
+
+    void setRollbackChunkCommitHook(Runnable hook) {
+        rollbackChunkCommitHook = hook != null ? hook : () -> { };
     }
 
     // --- Reconcile ---
@@ -5073,6 +5520,13 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 it.next();
             }
         }
+        try {
+            if (db.get(cfState, META_REWARD_PROGRESS) != null) {
+                phases.remove(PHASE_REWARDS);
+            }
+        } catch (RocksDBException e) {
+            throw new IllegalStateException("Failed to inspect reward phase progress", e);
+        }
         return phases;
     }
 
@@ -5129,9 +5583,14 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
      * @param phase one of PHASE_REWARDS, PHASE_MIR, PHASE_SPENDABLE_REST, PHASE_GOV_ENACT, PHASE_GOV_RATIFY
      */
     public void commitBoundaryDelta(long slot, byte phase, WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
+        commitBoundaryDelta(slot, phase, 0, batch, deltaOps);
+    }
+
+    public void commitBoundaryDelta(long slot, byte phase, int sequence,
+                                    WriteBatch batch, List<DeltaOp> deltaOps) throws RocksDBException {
         if (deltaOps.isEmpty()) return;
-        byte[] key = ByteBuffer.allocate(9).order(ByteOrder.BIG_ENDIAN)
-                .putLong(slot).put(phase).array();
+        byte[] key = ByteBuffer.allocate(13).order(ByteOrder.BIG_ENDIAN)
+                .putLong(slot).put(phase).putInt(sequence).array();
         byte[] val = encodeDelta(slot, deltaOps);
         batch.put(cfBoundaryDelta, key, val);
     }
@@ -5145,6 +5604,11 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         // Format: slot(8) + numOps(4) + [opType(1) + keyLen(2) + key(N) + prevLen(2) + prev(M)]*
         int size = 8 + 4;
         for (DeltaOp op : ops) {
+            if (op.key.length > 0xFFFF
+                    || (op.prevValue != null && op.prevValue.length > 0xFFFF)) {
+                throw new IllegalArgumentException(
+                        "Boundary delta v1 cannot encode keys or values larger than 65535 bytes");
+            }
             size += 1 + 2 + op.key.length + 2 + (op.prevValue != null ? op.prevValue.length : 0);
         }
 

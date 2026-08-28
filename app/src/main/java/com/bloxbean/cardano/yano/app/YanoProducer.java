@@ -349,6 +349,15 @@ public class YanoProducer {
     int accountStateSnapshotRetentionEpochs;
     @ConfigProperty(name = YanoPropertyKeys.AccountState.STAKE_BALANCE_INDEX_ENABLED, defaultValue = "true")
     boolean stakeBalanceIndexEnabled;
+    @ConfigProperty(name = YanoPropertyKeys.AccountState.EPOCH_SNAPSHOT_MAX_BATCH_OPERATIONS,
+            defaultValue = "10000")
+    int epochBoundaryMaxBatchOperations;
+    @ConfigProperty(name = YanoPropertyKeys.AccountState.EPOCH_SNAPSHOT_MAX_BATCH_BYTES,
+            defaultValue = "4194304")
+    int epochBoundaryMaxBatchBytes;
+    @ConfigProperty(name = YanoPropertyKeys.AccountState.EPOCH_REWARD_MODE,
+            defaultValue = "streaming")
+    String epochRewardMode;
     // Epoch subsystem config
     @ConfigProperty(name = YanoPropertyKeys.EpochSnapshot.AMOUNTS_ENABLED, defaultValue = "false")
     boolean epochSnapshotAmountsEnabled;
@@ -719,6 +728,11 @@ public class YanoProducer {
         // Account state
         globals.put(YanoPropertyKeys.AccountState.ENABLED, accountStateEnabled);
         globals.put(YanoPropertyKeys.AccountState.STAKE_BALANCE_INDEX_ENABLED, stakeBalanceIndexEnabled);
+        globals.put(YanoPropertyKeys.AccountState.EPOCH_SNAPSHOT_MAX_BATCH_OPERATIONS,
+                epochBoundaryMaxBatchOperations);
+        globals.put(YanoPropertyKeys.AccountState.EPOCH_SNAPSHOT_MAX_BATCH_BYTES,
+                epochBoundaryMaxBatchBytes);
+        globals.put(YanoPropertyKeys.AccountState.EPOCH_REWARD_MODE, epochRewardMode);
 
         // Epoch subsystems
         globals.put(YanoPropertyKeys.EpochSnapshot.AMOUNTS_ENABLED, epochSnapshotAmountsEnabled);

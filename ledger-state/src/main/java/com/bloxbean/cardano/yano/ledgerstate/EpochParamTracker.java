@@ -661,6 +661,21 @@ public class EpochParamTracker implements EpochParamProvider {
     public void addRollbackOps(long targetSlot, int targetEpoch, WriteBatch batch) throws RocksDBException {
         if (db == null || cfEpochParams == null) return;
 
+        RollbackDeleteCounts counts = addRollbackOps(
+                db, cfEpochParams, targetSlot, targetEpoch, batch);
+        if (counts.pending() > 0 || counts.finalized() > 0) {
+            log.info("Rollback to slot {}/epoch {}: queued deletion of {} pending + {} finalized epoch param keys",
+                    targetSlot, targetEpoch, counts.pending(), counts.finalized());
+        }
+    }
+
+    static RollbackDeleteCounts addRollbackOps(RocksDB db,
+                                                ColumnFamilyHandle cfEpochParams,
+                                                long targetSlot,
+                                                int targetEpoch,
+                                                WriteBatch batch) throws RocksDBException {
+        if (db == null || cfEpochParams == null) return new RollbackDeleteCounts(0, 0);
+
         int deletedPending = 0;
         int deletedFinalized = 0;
 
@@ -693,10 +708,10 @@ public class EpochParamTracker implements EpochParamProvider {
             }
         }
 
-        if (deletedPending > 0 || deletedFinalized > 0) {
-            log.info("Rollback to slot {}/epoch {}: queued deletion of {} pending + {} finalized epoch param keys",
-                    targetSlot, targetEpoch, deletedPending, deletedFinalized);
-        }
+        return new RollbackDeleteCounts(deletedPending, deletedFinalized);
+    }
+
+    record RollbackDeleteCounts(int pending, int finalized) {
     }
 
     /**

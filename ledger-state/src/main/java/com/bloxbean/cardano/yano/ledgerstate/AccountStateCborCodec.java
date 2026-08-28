@@ -249,6 +249,14 @@ public final class AccountStateCborCodec {
         return new EpochDelegSnapshot(poolHash, amount);
     }
 
+    static byte[] encodePoolMajorStake(BigInteger amount) {
+        return CborSerializationUtil.serialize(new UnsignedInteger(amount), true);
+    }
+
+    static BigInteger decodePoolMajorStake(byte[] bytes) {
+        return CborSerializationUtil.toBigInteger(CborSerializationUtil.deserializeOne(bytes));
+    }
+
     // --- Pool Block Count (prefix 0x50): {0: blockCount(uint)} ---
 
     static byte[] encodePoolBlockCount(long blockCount) {

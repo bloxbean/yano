@@ -505,8 +505,17 @@ public final class LedgerStateSubsystem implements Subsystem {
         rewardCalcInstance.setLedgerStateProvider(defaultStore);
         rewardCalcInstance.setAccountStateStore(defaultStore);
         rewardCalcInstance.setEraProvider(eraService);
+        Object rewardMode = runtimeOptions.globals().get(
+                YanoPropertyKeys.AccountState.EPOCH_REWARD_MODE);
+        rewardCalcInstance.setRewardMode(rewardMode != null ? String.valueOf(rewardMode) : "streaming");
+        rewardCalcInstance.setBatchLimits(
+                resolveInt(runtimeOptions.globals(),
+                        YanoPropertyKeys.AccountState.EPOCH_SNAPSHOT_MAX_BATCH_OPERATIONS, 10_000),
+                resolveInt(runtimeOptions.globals(),
+                        YanoPropertyKeys.AccountState.EPOCH_SNAPSHOT_MAX_BATCH_BYTES, 4 * 1024 * 1024));
         defaultStore.setRewardCalculator(rewardCalcInstance);
-        log.info("Epoch reward calculator enabled");
+        log.info("Epoch reward calculator enabled (mode={})",
+                rewardMode != null ? rewardMode : "streaming");
         return rewardCalcInstance;
     }
 
@@ -836,6 +845,18 @@ public final class LedgerStateSubsystem implements Subsystem {
             return Boolean.parseBoolean(String.valueOf(value));
         }
         return def;
+    }
+
+    private static int resolveInt(Map<String, Object> globals, String key, int defaultValue) {
+        Object value = globals.get(key);
+        if (value instanceof Number number) return number.intValue();
+        if (value != null) {
+            try {
+                return Integer.parseInt(String.valueOf(value));
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return defaultValue;
     }
 
     private static long parseLong(Object obj, long def) {

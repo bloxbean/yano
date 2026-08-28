@@ -18,6 +18,7 @@ import org.slf4j.LoggerFactory;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Optional;
 import java.util.List;
@@ -124,6 +125,19 @@ class OrderedStakeSnapshotTest {
                     rocks.db().get(rocks.cfSnapshot(), snapshotKey));
             assertThat(snapshot.poolHash()).isEqualTo(POOL_HASH);
             assertThat(snapshot.amount()).isEqualTo(BigInteger.valueOf(1_050));
+
+            byte[] poolMajorKey = new byte[62];
+            ByteBuffer.wrap(poolMajorKey).order(ByteOrder.BIG_ENDIAN).putInt(9).put((byte) 0xFF)
+                    .put(HexUtil.decodeHexString(POOL_HASH)).put((byte) 0)
+                    .put(HexUtil.decodeHexString(CREDENTIAL_HASH));
+            assertThat(AccountStateCborCodec.decodePoolMajorStake(
+                    rocks.db().get(rocks.cfSnapshot(), poolMajorKey)))
+                    .isEqualTo(BigInteger.valueOf(1_050));
+            byte[] generationKey = ByteBuffer.allocate("meta.snapshot.generation.".length() + 4)
+                    .put("meta.snapshot.generation.".getBytes(StandardCharsets.UTF_8))
+                    .putInt(9).array();
+            assertThat(rocks.db().get(rocks.cfState(), generationKey))
+                    .startsWith((byte) 1, (byte) 1);
             assertThat(view.advance()).isFalse();
         }
     }

@@ -27,6 +27,8 @@ class StakeCredentialExtractorTest {
     void nonStakeAndMalformedLegacyAddressesDoNotCreateCredentials() {
         assertThat(StakeCredentialExtractor.extractNonPointer(
                 "DdzFFzCqrhsxabc-not-a-valid-byron-checksum")).isNull();
+        assertThat(StakeCredentialExtractor.extractNonPointer(
+                "addr1notavalidchecksum")).isNull();
         assertThat(StakeCredentialExtractor.extractNonPointer(null)).isNull();
     }
 }

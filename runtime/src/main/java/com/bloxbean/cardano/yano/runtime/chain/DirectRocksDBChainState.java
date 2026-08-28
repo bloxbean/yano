@@ -37,6 +37,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -68,6 +69,8 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
             Long.getLong(YanoPropertyKeys.Chain.RECOVERY_HEADER_SCAN_BLOCKS, 100_000L);
 
     private RocksDB db;
+    private Cache sharedBlockCache;
+    private WriteBufferManager sharedWriteBufferManager;
     private final String dbPath;
     private final LegacyColumnFamilyDropper legacyColumnFamilyDropper;
     private List<ColumnFamilyHandle> openedColumnFamilyHandles = List.of();
@@ -113,9 +116,22 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
     private void openDb() {
         DBOptions dbOptions = null;
         final List<ColumnFamilyHandle> cfHandles = new ArrayList<>();
+        final List<ColumnFamilyOptions> cfOptions = new ArrayList<>();
         try {
             // Determine if tuning is enabled (system property or env override)
             final boolean tuningEnabled = isRocksTuningEnabled();
+            final long blockCacheBytes = getLong(
+                    YanoPropertyKeys.RocksDb.BLOCK_CACHE_BYTES,
+                    "YANO_ROCKSDB_BLOCK_CACHE_BYTES",
+                    64L * 1024 * 1024);
+            final long writeBufferBytes = getLong(
+                    YanoPropertyKeys.RocksDb.WRITE_BUFFER_BYTES,
+                    "YANO_ROCKSDB_WRITE_BUFFER_BYTES",
+                    64L * 1024 * 1024);
+            final int maxBackgroundJobs = getInt(
+                    YanoPropertyKeys.RocksDb.MAX_BACKGROUND_JOBS,
+                    "YANO_ROCKSDB_MAX_BACKGROUND_JOBS",
+                    2);
             // Select write behavior (mutually exclusive when enabled)
             boolean pipelined = getBool(
                     YanoPropertyKeys.RocksDb.PIPELINED_WRITE,
@@ -139,9 +155,15 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                     .setMaxOpenFiles(256)
                     .setKeepLogFileNum(5);
             if (tuningEnabled) {
+                sharedBlockCache = new LRUCache(blockCacheBytes);
+                sharedWriteBufferManager = new WriteBufferManager(
+                        writeBufferBytes, sharedBlockCache, true);
                 dbOptions
                         .setAllowConcurrentMemtableWrite(true)
-                        .setIncreaseParallelism(cores);
+                        .setIncreaseParallelism(Math.min(cores, maxBackgroundJobs))
+                        .setMaxBackgroundJobs(maxBackgroundJobs)
+                        .setDbWriteBufferSize(writeBufferBytes)
+                        .setWriteBufferManager(sharedWriteBufferManager);
                 if (pipelined) dbOptions.setEnablePipelinedWrite(true);
                 if (atomic) dbOptions.setAtomicFlush(true);
             }
@@ -151,9 +173,9 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
             ColumnFamilyOptions utxoAddrPrefix = null;
             ColumnFamilyOptions utxoDeltaOpts = null;
             if (tuningEnabled) {
-                utxoPointLookup = buildPointLookupCfOptions(); // utxo_unspent, utxo_spent
-                utxoAddrPrefix = buildPrefixScanCfOptions(28); // utxo_addr
-                utxoDeltaOpts = buildSequentialCfOptions();    // utxo_block_delta
+                utxoPointLookup = buildPointLookupCfOptions(sharedBlockCache); // utxo_unspent, utxo_spent
+                utxoAddrPrefix = buildPrefixScanCfOptions(28, sharedBlockCache); // utxo_addr
+                utxoDeltaOpts = buildSequentialCfOptions(sharedBlockCache);    // utxo_block_delta
 
                 // Log effective CF tuning plan for visibility
                 log.info("RocksDB CF tuning: utxo_unspent/utxo_spent => point-lookup (ZSTD, bloom≈10bpk, whole-key, pin L0, partitioned filters)");
@@ -168,14 +190,14 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
             // state is made available to the rest of the runtime (ADR-042).
             boolean legacyByronProjectionCf = existingColumnFamily(LEGACY_PROJ_BYRON_UTXO);
             final List<ColumnFamilyDescriptor> cfDescriptors = new ArrayList<>(Arrays.asList(
-                    new ColumnFamilyDescriptor(RocksDB.DEFAULT_COLUMN_FAMILY),
-                    new ColumnFamilyDescriptor("blocks".getBytes()),
-                    new ColumnFamilyDescriptor("headers".getBytes()),
-                    new ColumnFamilyDescriptor("number_by_slot".getBytes()),
-                    new ColumnFamilyDescriptor("slot_by_number".getBytes()),
-                    new ColumnFamilyDescriptor("slot_to_hash".getBytes()),
-                    new ColumnFamilyDescriptor("metadata".getBytes()),
-                    new ColumnFamilyDescriptor("ebb_by_slot0".getBytes()),
+                    descriptor(RocksDB.DEFAULT_COLUMN_FAMILY, tuningEnabled),
+                    descriptor("blocks", tuningEnabled),
+                    descriptor("headers", tuningEnabled),
+                    descriptor("number_by_slot", tuningEnabled),
+                    descriptor("slot_by_number", tuningEnabled),
+                    descriptor("slot_to_hash", tuningEnabled),
+                    descriptor("metadata", tuningEnabled),
+                    descriptor("ebb_by_slot0", tuningEnabled),
                     // UTXO CFs (tuned or defaults)
                     new ColumnFamilyDescriptor(
                             UtxoCfNames.UTXO_UNSPENT.getBytes(),
@@ -189,29 +211,38 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                     new ColumnFamilyDescriptor(
                             UtxoCfNames.UTXO_BLOCK_DELTA.getBytes(),
                             tuningEnabled ? utxoDeltaOpts : new ColumnFamilyOptions()),
-                    new ColumnFamilyDescriptor(UtxoCfNames.UTXO_META.getBytes()),
-                    new ColumnFamilyDescriptor(UtxoCfNames.SCRIPT_REF.getBytes()),
+                    descriptor(UtxoCfNames.UTXO_META, tuningEnabled),
+                    descriptor(UtxoCfNames.SCRIPT_REF, tuningEnabled),
                     new ColumnFamilyDescriptor(
                             UtxoCfNames.UTXO_STAKE_BALANCE.getBytes(),
                             tuningEnabled ? utxoPointLookup : new ColumnFamilyOptions()),
                     // Account state CFs
-                    new ColumnFamilyDescriptor(AccountStateCfNames.ACCT_STATE.getBytes()),
-                    new ColumnFamilyDescriptor(AccountStateCfNames.ACCT_DELTA.getBytes()),
-                    new ColumnFamilyDescriptor(AccountStateCfNames.ACCT_BOUNDARY_DELTA.getBytes()),
-                    new ColumnFamilyDescriptor(AccountStateCfNames.EPOCH_DELEG_SNAPSHOT.getBytes()),
-                    new ColumnFamilyDescriptor(AccountStateCfNames.EPOCH_PARAMS.getBytes()),
+                    descriptor(AccountStateCfNames.ACCT_STATE, tuningEnabled),
+                    descriptor(AccountStateCfNames.ACCT_DELTA, tuningEnabled),
+                    descriptor(AccountStateCfNames.ACCT_BOUNDARY_DELTA, tuningEnabled),
+                    descriptor(AccountStateCfNames.EPOCH_DELEG_SNAPSHOT, tuningEnabled),
+                    descriptor(AccountStateCfNames.EPOCH_PARAMS, tuningEnabled),
                     // Canonical projection outbox (ADR-039). Declared here so a contributor
                     // can write its section inside the same WriteBatch as the state it was
                     // derived from. Created on open, so a node that never enables history
                     // simply leaves them empty.
-                    new ColumnFamilyDescriptor(ProjectionCfNames.PROJ_HEADER.getBytes(), buildSequentialCfOptions()),
-                    new ColumnFamilyDescriptor(ProjectionCfNames.PROJ_SECTION.getBytes(), buildSequentialCfOptions()),
-                    new ColumnFamilyDescriptor(ProjectionCfNames.PROJ_META.getBytes()),
-                    new ColumnFamilyDescriptor(ProjectionCfNames.PROJ_ARTIFACT.getBytes())
+                    new ColumnFamilyDescriptor(ProjectionCfNames.PROJ_HEADER.getBytes(),
+                            buildSequentialCfOptions(tuningEnabled ? sharedBlockCache : null)),
+                    new ColumnFamilyDescriptor(ProjectionCfNames.PROJ_SECTION.getBytes(),
+                            buildSequentialCfOptions(tuningEnabled ? sharedBlockCache : null)),
+                    descriptor(ProjectionCfNames.PROJ_META, tuningEnabled),
+                    descriptor(ProjectionCfNames.PROJ_ARTIFACT, tuningEnabled)
             ));
             if (legacyByronProjectionCf) {
                 cfDescriptors.add(new ColumnFamilyDescriptor(
                         LEGACY_PROJ_BYRON_UTXO.getBytes(StandardCharsets.UTF_8)));
+            }
+            var seenOptions = Collections.newSetFromMap(
+                    new IdentityHashMap<ColumnFamilyOptions, Boolean>());
+            for (ColumnFamilyDescriptor descriptor : cfDescriptors) {
+                if (seenOptions.add(descriptor.getOptions())) {
+                    cfOptions.add(descriptor.getOptions());
+                }
             }
 
             // Open database
@@ -256,8 +287,11 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
 
             openedColumnFamilyHandles = new ArrayList<>(cfHandles);
 
-            log.info("RocksDB initialized at: {} (tuningEnabled={}, pipelinedWrite={}, atomicFlush={}, parallelism={})",
-                    dbPath, tuningEnabled, pipelined && tuningEnabled, atomic && tuningEnabled, cores);
+            log.info("RocksDB initialized at: {} (tuningEnabled={}, pipelinedWrite={}, atomicFlush={}, "
+                            + "parallelism={}, blockCacheBytes={}, writeBufferBytes={}, maxBackgroundJobs={})",
+                    dbPath, tuningEnabled, pipelined && tuningEnabled, atomic && tuningEnabled,
+                    Math.min(cores, maxBackgroundJobs), blockCacheBytes, writeBufferBytes,
+                    maxBackgroundJobs);
 
         } catch (Exception e) {
             cfHandles.forEach(handle -> {
@@ -274,8 +308,10 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                 }
                 db = null;
             }
+            closeNativeMemoryBudgets();
             throw new RuntimeException("Failed to initialize RocksDB", e);
         } finally {
+            cfOptions.forEach(ColumnFamilyOptions::close);
             if (dbOptions != null) {
                 dbOptions.close();
             }
@@ -315,7 +351,33 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
         return defVal;
     }
 
-    private static ColumnFamilyOptions buildPointLookupCfOptions() {
+    private static long getLong(String sysProp, String envVar, long defaultValue) {
+        String value = System.getProperty(sysProp);
+        if (value == null) value = System.getenv(envVar);
+        if (value == null || value.isBlank()) return defaultValue;
+        long parsed = Long.parseLong(value);
+        if (parsed <= 0) throw new IllegalArgumentException(sysProp + " must be positive");
+        return parsed;
+    }
+
+    private static int getInt(String sysProp, String envVar, int defaultValue) {
+        long value = getLong(sysProp, envVar, defaultValue);
+        if (value > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException(sysProp + " exceeds integer range");
+        }
+        return (int) value;
+    }
+
+    private ColumnFamilyDescriptor descriptor(String name, boolean tuningEnabled) {
+        return descriptor(name.getBytes(StandardCharsets.UTF_8), tuningEnabled);
+    }
+
+    private ColumnFamilyDescriptor descriptor(byte[] name, boolean tuningEnabled) {
+        return new ColumnFamilyDescriptor(name,
+                tuningEnabled ? buildSequentialCfOptions(sharedBlockCache) : new ColumnFamilyOptions());
+    }
+
+    private static ColumnFamilyOptions buildPointLookupCfOptions(Cache cache) {
         ColumnFamilyOptions opts = new ColumnFamilyOptions();
         opts.setCompressionType(CompressionType.ZSTD_COMPRESSION);
         BlockBasedTableConfig table = new BlockBasedTableConfig();
@@ -323,11 +385,12 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
         table.setWholeKeyFiltering(true);
         table.setPinL0FilterAndIndexBlocksInCache(true);
         table.setPartitionFilters(true);
+        configureSharedCache(table, cache);
         opts.setTableFormatConfig(table);
         return opts;
     }
 
-    private static ColumnFamilyOptions buildPrefixScanCfOptions(int prefixLen) {
+    private static ColumnFamilyOptions buildPrefixScanCfOptions(int prefixLen, Cache cache) {
         ColumnFamilyOptions opts = new ColumnFamilyOptions();
         opts.setCompressionType(CompressionType.ZSTD_COMPRESSION);
         // Try to set a fixed prefix extractor if available in this RocksJava version
@@ -347,16 +410,40 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
         table.setWholeKeyFiltering(false);
         table.setPinL0FilterAndIndexBlocksInCache(true);
         table.setPartitionFilters(true);
+        configureSharedCache(table, cache);
         opts.setTableFormatConfig(table);
         return opts;
     }
 
     private static ColumnFamilyOptions buildSequentialCfOptions() {
+        return buildSequentialCfOptions(null);
+    }
+
+    private static ColumnFamilyOptions buildSequentialCfOptions(Cache cache) {
         ColumnFamilyOptions opts = new ColumnFamilyOptions();
         opts.setCompressionType(CompressionType.ZSTD_COMPRESSION);
         BlockBasedTableConfig table = new BlockBasedTableConfig();
+        configureSharedCache(table, cache);
         opts.setTableFormatConfig(table);
         return opts;
+    }
+
+    private static void configureSharedCache(BlockBasedTableConfig table, Cache cache) {
+        if (cache == null) return;
+        table.setBlockCache(cache);
+        table.setCacheIndexAndFilterBlocks(true);
+        table.setCacheIndexAndFilterBlocksWithHighPriority(true);
+    }
+
+    private void closeNativeMemoryBudgets() {
+        if (sharedWriteBufferManager != null) {
+            sharedWriteBufferManager.close();
+            sharedWriteBufferManager = null;
+        }
+        if (sharedBlockCache != null) {
+            sharedBlockCache.close();
+            sharedBlockCache = null;
+        }
     }
 
     @Override
@@ -2117,6 +2204,7 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                 db = null;
             }
         }
+        closeNativeMemoryBudgets();
     }
 
     // Helper methods

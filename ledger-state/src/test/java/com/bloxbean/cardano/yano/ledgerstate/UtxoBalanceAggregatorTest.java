@@ -12,7 +12,6 @@ import java.util.function.BiConsumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class UtxoBalanceAggregatorTest {
@@ -73,11 +72,11 @@ class UtxoBalanceAggregatorTest {
     }
 
     @Test
-    void malformedShelleyPaymentAddressStillFails() {
+    void malformedShelleyPaymentAddressDoesNotCreateStakeCredential() {
         UtxoBalanceAggregator aggregator = new UtxoBalanceAggregator();
         UtxoState utxoState = new SingleUtxoState("addr1notavalidchecksum", BigInteger.valueOf(42_000_000L));
 
-        assertThrows(RuntimeException.class, () -> aggregator.aggregateBalances(utxoState));
+        assertTrue(aggregator.aggregateBalances(utxoState).isEmpty());
     }
 
     @Test
