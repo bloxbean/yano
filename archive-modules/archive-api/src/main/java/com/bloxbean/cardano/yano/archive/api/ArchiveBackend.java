@@ -2,22 +2,12 @@ package com.bloxbean.cardano.yano.archive.api;
 
 import java.util.Optional;
 import java.util.OptionalLong;
-import java.util.UUID;
 
-/** Backend-neutral atomic archive storage contract. */
+/** Backend-neutral, generation-pinned archive read contract. */
 public interface ArchiveBackend extends AutoCloseable {
     ArchiveIdentity identity();
 
     ArchiveCapabilities capabilities();
-
-    /**
-     * Starts an atomic job. Repeating a committed deterministic job is
-     * idempotent: commit must return the original receipt and must not append
-     * duplicate rows.
-     */
-    ArchiveWriteSession begin(ArchiveJob job);
-
-    Optional<ArchiveReceipt> findReceipt(UUID jobId);
 
     ArchiveCoverage coverage(ArchiveDatasetId dataset);
 
@@ -46,31 +36,7 @@ public interface ArchiveBackend extends AutoCloseable {
         return repositories().records(ArchiveDatasetId.TRANSACTION).query(session, query).rows().stream().findFirst();
     }
 
-    void invalidate(ArchiveDatasetId dataset, ArchiveRange range);
-
-    /**
-     * Invalidates whole epoch jobs whose canonical boundary is later than the
-     * supplied rollback slot. Epoch numbers alone are insufficient because a
-     * boundary block can be rolled back while the target remains in that epoch.
-     *
-     * @return number of committed jobs removed
-     */
-    int invalidateEpochJobsAfterSlot(ArchiveDatasetId dataset, long rollbackSlot);
-
-    void applyRetention(ArchiveDatasetId dataset, ArchiveRetentionCutoff cutoff);
-
-    void maintain(ArchiveMaintenanceBudget budget);
-
     ArchiveHealth health();
-
-    /**
-     * Scheduling-only view of writer/capacity contention. Waiting for a resource
-     * is normal, so it is reported here rather than through {@link #health()},
-     * which stays reserved for actual archive failures.
-     */
-    default ArchiveResourceDiagnostics resourceDiagnostics() {
-        return ArchiveResourceDiagnostics.empty();
-    }
 
     @Override
     void close();

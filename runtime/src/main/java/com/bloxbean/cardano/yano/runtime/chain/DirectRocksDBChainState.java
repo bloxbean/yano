@@ -39,6 +39,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
 
@@ -57,6 +58,7 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
     private static final byte[] TIP_KEY = "tip".getBytes(StandardCharsets.UTF_8);
     private static final byte[] HEADER_TIP_KEY = "header_tip".getBytes(StandardCharsets.UTF_8);
     private static final byte[] EPOCH_NONCE_STATE_KEY = "epoch_nonce_state".getBytes(StandardCharsets.UTF_8);
+    private static final String LEGACY_PROJ_BYRON_UTXO = "proj_byron_utxo";
 
     //For read apis
     private static final byte[] EPOCH_NONCE_KEY_PREFIX = "epoch_nonce_by_epoch_".getBytes(StandardCharsets.UTF_8);
@@ -67,6 +69,8 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
 
     private RocksDB db;
     private final String dbPath;
+    private final LegacyColumnFamilyDropper legacyColumnFamilyDropper;
+    private List<ColumnFamilyHandle> openedColumnFamilyHandles = List.of();
 
     // Column families (mutable for snapshot restore / reopen)
     private ColumnFamilyHandle blocksHandle;
@@ -87,8 +91,19 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
     }
 
     public DirectRocksDBChainState(String dbPath) {
+        this(dbPath, RocksDB::dropColumnFamily);
+    }
+
+    DirectRocksDBChainState(String dbPath, LegacyColumnFamilyDropper legacyColumnFamilyDropper) {
         this.dbPath = dbPath;
+        this.legacyColumnFamilyDropper = Objects.requireNonNull(
+                legacyColumnFamilyDropper, "legacyColumnFamilyDropper");
         openDb();
+    }
+
+    @FunctionalInterface
+    interface LegacyColumnFamilyDropper {
+        void drop(RocksDB db, ColumnFamilyHandle handle) throws RocksDBException;
     }
 
     /**
@@ -96,6 +111,8 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
      * Assigns all column family handles and populates the name→handle map.
      */
     private void openDb() {
+        DBOptions dbOptions = null;
+        final List<ColumnFamilyHandle> cfHandles = new ArrayList<>();
         try {
             // Determine if tuning is enabled (system property or env override)
             final boolean tuningEnabled = isRocksTuningEnabled();
@@ -116,7 +133,7 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
 
             // Configure RocksDB (global)
             final int cores = Math.max(2, Runtime.getRuntime().availableProcessors());
-            final DBOptions dbOptions = new DBOptions()
+            dbOptions = new DBOptions()
                     .setCreateIfMissing(true)
                     .setCreateMissingColumnFamilies(true)
                     .setMaxOpenFiles(256)
@@ -146,8 +163,11 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                 log.info("RocksDB tuning disabled via flag; using defaults for CF options");
             }
 
-            // Column family descriptors
-            final List<ColumnFamilyDescriptor> cfDescriptors = Arrays.asList(
+            // Column family descriptors. The legacy Byron projection resolver is opened
+            // only when an existing database contains it, then dropped before this chain
+            // state is made available to the rest of the runtime (ADR-042).
+            boolean legacyByronProjectionCf = existingColumnFamily(LEGACY_PROJ_BYRON_UTXO);
+            final List<ColumnFamilyDescriptor> cfDescriptors = new ArrayList<>(Arrays.asList(
                     new ColumnFamilyDescriptor(RocksDB.DEFAULT_COLUMN_FAMILY),
                     new ColumnFamilyDescriptor("blocks".getBytes()),
                     new ColumnFamilyDescriptor("headers".getBytes()),
@@ -187,14 +207,14 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                     new ColumnFamilyDescriptor(ProjectionCfNames.PROJ_HEADER.getBytes(), buildSequentialCfOptions()),
                     new ColumnFamilyDescriptor(ProjectionCfNames.PROJ_SECTION.getBytes(), buildSequentialCfOptions()),
                     new ColumnFamilyDescriptor(ProjectionCfNames.PROJ_META.getBytes()),
-                    new ColumnFamilyDescriptor(ProjectionCfNames.PROJ_ARTIFACT.getBytes()),
-                    // Keys here are transaction hashes, so point lookups rather than the
-                    // sequential scan the header/section families are tuned for.
-                    new ColumnFamilyDescriptor(ProjectionCfNames.PROJ_BYRON_UTXO.getBytes())
-            );
+                    new ColumnFamilyDescriptor(ProjectionCfNames.PROJ_ARTIFACT.getBytes())
+            ));
+            if (legacyByronProjectionCf) {
+                cfDescriptors.add(new ColumnFamilyDescriptor(
+                        LEGACY_PROJ_BYRON_UTXO.getBytes(StandardCharsets.UTF_8)));
+            }
 
             // Open database
-            final List<ColumnFamilyHandle> cfHandles = new ArrayList<>();
             db = RocksDB.open(dbOptions, dbPath, cfDescriptors, cfHandles);
 
             // Assign handles (skip default at index 0)
@@ -218,11 +238,58 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                 cfByName.put(name, cfHandles.get(i));
             }
 
+            if (legacyByronProjectionCf) {
+                ColumnFamilyHandle legacyHandle = cfByName.remove(LEGACY_PROJ_BYRON_UTXO);
+                if (legacyHandle == null) {
+                    throw new IllegalStateException("Legacy Byron projection CF was detected but not opened");
+                }
+                try {
+                    legacyColumnFamilyDropper.drop(db, legacyHandle);
+                    log.info("Removed obsolete RocksDB column family {}", LEGACY_PROJ_BYRON_UTXO);
+                } finally {
+                    // Remove by identity while the native handle is still live. RocksJava's
+                    // equals() calls getID(), which asserts after close.
+                    cfHandles.removeIf(candidate -> candidate == legacyHandle);
+                    legacyHandle.close();
+                }
+            }
+
+            openedColumnFamilyHandles = new ArrayList<>(cfHandles);
+
             log.info("RocksDB initialized at: {} (tuningEnabled={}, pipelinedWrite={}, atomicFlush={}, parallelism={})",
                     dbPath, tuningEnabled, pipelined && tuningEnabled, atomic && tuningEnabled, cores);
 
         } catch (Exception e) {
+            cfHandles.forEach(handle -> {
+                try {
+                    handle.close();
+                } catch (Exception ignored) {
+                }
+            });
+            openedColumnFamilyHandles = List.of();
+            if (db != null) {
+                try {
+                    db.close();
+                } catch (Exception ignored) {
+                }
+                db = null;
+            }
             throw new RuntimeException("Failed to initialize RocksDB", e);
+        } finally {
+            if (dbOptions != null) {
+                dbOptions.close();
+            }
+        }
+    }
+
+    private boolean existingColumnFamily(String name) throws RocksDBException {
+        Path path = Path.of(dbPath);
+        if (!Files.exists(path.resolve("CURRENT"))) return false;
+        try (Options options = new Options()) {
+            for (byte[] columnFamily : RocksDB.listColumnFamilies(options, dbPath)) {
+                if (name.equals(new String(columnFamily, StandardCharsets.UTF_8))) return true;
+            }
+            return false;
         }
     }
 
@@ -548,7 +615,18 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
         if (blockNumber < 0) return Optional.empty();
         try {
             byte[] slotBytes = db.get(slotByNumberHandle, longToBytes(blockNumber));
-            if (slotBytes == null) return Optional.empty();
+            if (slotBytes == null) {
+                // The genesis EBB is the only EBB that can own an otherwise unclaimed
+                // projection coordinate. Later EBBs share the preceding main block's
+                // difficulty and that main block owns slot_by_number.
+                if (blockNumber != 0) return Optional.empty();
+                try (RocksIterator it = db.newIterator(ebbBySlot0Handle)) {
+                    it.seekToFirst();
+                    if (!it.isValid()) return Optional.empty();
+                    return Optional.of(new CanonicalBlockReference(
+                            blockNumber, bytesToLong(it.key()), it.value()));
+                }
+            }
             long slot = bytesToLong(slotBytes);
             byte[] blockHash = db.get(slotToHashHandle, longToBytes(slot));
             return blockHash == null
@@ -2022,17 +2100,22 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
      * Close the database connection
      */
     public void close() {
-        try {
-            blocksHandle.close();
-            headersHandle.close();
-            numberBySlotHandle.close();
-            slotByNumberHandle.close();
-            slotToHashHandle.close();
-            metadataHandle.close();
-            ebbBySlot0Handle.close();
-            db.close();
-        } catch (Exception e) {
-            log.error("Failed to close RocksDB", e);
+        for (ColumnFamilyHandle handle : openedColumnFamilyHandles) {
+            try {
+                handle.close();
+            } catch (Exception e) {
+                log.warn("Failed to close RocksDB column-family handle", e);
+            }
+        }
+        openedColumnFamilyHandles = List.of();
+        if (db != null) {
+            try {
+                db.close();
+            } catch (Exception e) {
+                log.error("Failed to close RocksDB", e);
+            } finally {
+                db = null;
+            }
         }
     }
 

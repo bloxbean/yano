@@ -7,7 +7,6 @@ import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 import java.util.Optional;
-import java.util.OptionalLong;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -18,31 +17,29 @@ import static org.mockito.Mockito.when;
 
 class HistoryResourceTest {
     @Test
-    void returnsOneFinalizedWatermarkForTheSelectedDatasets() {
+    void returnsConflictWhenProjectionHistoryIsUnavailable() {
         HistoryArchiveService service = mock(HistoryArchiveService.class);
-        when(service.finalizedWatermark(any(), eq(1L), eq(OptionalLong.empty()), eq(OptionalLong.empty())))
-                .thenReturn(Map.of("generation", 9L, "toBlock", 100L));
         HistoryResource resource = new HistoryResource();
         resource.history = service;
         resource.projection = notPrimary();
 
         var response = resource.watermark("transaction,account_event", 1L, null, null);
 
-        assertThat(response.getStatus()).isEqualTo(200);
-        assertThat(response.getEntity()).isEqualTo(Map.of("generation", 9L, "toBlock", 100L));
+        assertThat(response.getStatus()).isEqualTo(409);
+        assertThat(response.getEntity()).isEqualTo(
+                Map.of("error", "projection history is unavailable"));
     }
 
     @Test
-    void defaultsToAllEnabledBlockDatasetsAndCanonicalStart() {
+    void defaultsToAllEnabledBlockDatasets() {
         HistoryArchiveService service = mock(HistoryArchiveService.class);
         when(service.enabledBlockDatasets()).thenReturn(Set.of(ArchiveDatasetId.TRANSACTION));
-        when(service.firstCanonicalHistoryBlock()).thenReturn(1L);
-        when(service.finalizedWatermark(eq(Set.of(ArchiveDatasetId.TRANSACTION)), eq(1L),
-                eq(OptionalLong.empty()), eq(OptionalLong.empty())))
-                .thenReturn(Map.of("toBlock", 50L));
+        ProjectionHistoryService projection = mock(ProjectionHistoryService.class);
+        when(projection.consistencyPoint(eq(Set.of(ArchiveDatasetId.TRANSACTION))))
+                .thenReturn(Optional.of(Map.of("toBlock", 50L)));
         HistoryResource resource = new HistoryResource();
         resource.history = service;
-        resource.projection = notPrimary();
+        resource.projection = projection;
 
         assertThat(resource.watermark(null, null, null, null).getStatus()).isEqualTo(200);
     }
@@ -58,7 +55,7 @@ class HistoryResourceTest {
         assertThat(response.getStatus()).isEqualTo(400);
     }
 
-    /** A projection that is not the primary writer, so the legacy watermark answers. */
+    /** Projection history is disabled or could not initialize. */
     private static ProjectionHistoryService notPrimary() {
         ProjectionHistoryService projection = mock(ProjectionHistoryService.class);
         when(projection.consistencyPoint(any())).thenReturn(Optional.empty());
@@ -84,5 +81,34 @@ class HistoryResourceTest {
         assertThat(response.getEntity()).isEqualTo(Map.of("source", "projection", "toBlock", 5_079_957L));
         // The legacy path must not even be consulted.
         org.mockito.Mockito.verifyNoInteractions(legacy);
+    }
+
+    @Test
+    void resumeReturnsDatasetStatusAndConflictsWhenNotPaused() {
+        ProjectionHistoryService projection = mock(ProjectionHistoryService.class);
+        when(projection.resumeEpochArtifact(ArchiveDatasetId.REWARD))
+                .thenReturn(Map.of("dataset", "reward", "captureState", "ACTIVE"));
+        HistoryResource resource = new HistoryResource();
+        resource.history = mock(HistoryArchiveService.class);
+        resource.projection = projection;
+
+        assertThat(resource.resume("reward").getStatus()).isEqualTo(200);
+        when(projection.resumeEpochArtifact(ArchiveDatasetId.REWARD))
+                .thenThrow(new IllegalStateException("reward is not paused"));
+        assertThat(resource.resume("reward").getStatus()).isEqualTo(409);
+        assertThat(resource.resume("unknown").getStatus()).isEqualTo(400);
+    }
+
+    @Test
+    void coverageDetailIsBoundedAndRejectsUnknownDatasets() {
+        ProjectionHistoryService projection = mock(ProjectionHistoryService.class);
+        when(projection.coverageDetails(ArchiveDatasetId.REWARD, 400, 500, 0, 25))
+                .thenReturn(Map.of("gapDetail", Map.of("total", 1)));
+        HistoryResource resource = new HistoryResource();
+        resource.history = mock(HistoryArchiveService.class);
+        resource.projection = projection;
+
+        assertThat(resource.coverage("reward", 400, 500, 0, 25).getStatus()).isEqualTo(200);
+        assertThat(resource.coverage("unknown", null, null, null, null).getStatus()).isEqualTo(400);
     }
 }

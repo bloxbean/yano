@@ -244,6 +244,20 @@ class DefaultUtxoStoreTest {
     }
 
     @Test
+    void continuityCacheTracksTheRetainedPointAfterRollback() {
+        Block empty = Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of()).invalidTransactions(List.of()).build();
+        publishBlock(199, 1, "e1".repeat(32), empty);
+        publishBlock(200, 2, "e2".repeat(32), empty);
+
+        publishRollback(199);
+        assertEquals(1L, store.readLastAppliedBlock());
+        publishBlock(201, 2, "e3".repeat(32), empty);
+
+        assertEquals(0L, store.getMetrics().get("apply.continuityWarnings"));
+    }
+
+    @Test
     void stakeBalanceIndexTracksApplySpendAndRollback() {
         StakeCred stakeCred = stakeCred(BASE_ADDR_WITH_STAKE);
         assertTrue(store.isStakeBalanceIndexEnabled());

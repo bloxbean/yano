@@ -40,6 +40,20 @@ class ArchiveContractsTest {
     }
 
     @Test
+    void rewardUsesItsEarnedEpochAsTheCanonicalPhysicalEpoch() {
+        var schema = ArchiveSchemas.schema(ArchiveDatasetId.REWARD);
+        var rewards = schema.tables().getFirst();
+
+        assertThat(rewards.columns()).extracting(column -> column.name())
+                .contains("epoch", "spendable_epoch")
+                .doesNotContain("earned_epoch");
+        assertThat(rewards.primaryKey())
+                .containsExactly("stake_credential", "epoch", "reward_type", "source_id");
+        assertThat(schema.paginationOrder())
+                .containsExactly("epoch", "stake_credential", "reward_type", "source_id");
+    }
+
+    @Test
     void utxoHistoryKeepsOutputAndNativeAssetsNormalized() {
         var schema = ArchiveSchemas.schema(ArchiveDatasetId.UTXO_HISTORY);
         assertThat(schema.tables())

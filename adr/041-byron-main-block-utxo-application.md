@@ -51,18 +51,17 @@ stake credential, and AdaPot verification compares treasury and reserves rather
 than enforcing a global UTXO conservation invariant. Those facts mask the live
 UTXO defect; they do not make the state correct.
 
-The archive projection work has a separate requirement. It consumes native
-Byron blocks through `ByronBlockProjectionEvent`, including EBB classification
-and projection-specific duplicate-coordinate handling. That archive event is
-not a suitable live-ledger contract: it is projection-named, has different EBB
-semantics, and owns projection-specific state.
+As amended by ADR-042, the archive projection consumes Byron main blocks from
+`ByronMainBlockAppliedEvent` inside this UTXO batch. EBBs alone retain the
+dedicated `ByronBlockProjectionEvent` because they have no UTXO transition.
 
 ### Constraints
 
 - Do not change the established meaning of `BlockAppliedEvent.block() == null`
   for Byron and EBB consumers without a complete subscriber migration.
-- Do not activate Shelley-only account, stake, nonce, governance, app-chain, or
-  projection logic for Byron transactions.
+- Do not activate Shelley-only account, stake, nonce, governance, or app-chain
+  logic for Byron transactions. The era-neutral projection hook may consume the
+  UTXO transition as specified by ADR-042.
 - Keep the existing Shelley+ `DefaultUtxoStore.applyBlock` path stable. This
   change must not turn it into an era-branching method with many Byron special
   cases.
@@ -719,7 +718,8 @@ move metadata to a non-state-changing slot.
 
 Rejected. Projection and live UTXO application have different ownership,
 atomicity, failure, and EBB requirements. A projection-named carrier must not
-become the runtime ledger contract by accident.
+become the runtime ledger contract by accident. ADR-042 therefore uses the
+existing UTXO event for main blocks and narrows this carrier to EBBs.
 
 ### Continue storing only Byron genesis UTXOs
 

@@ -16,6 +16,11 @@ import com.bloxbean.cardano.yaci.core.model.TransactionOutput;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yano.api.events.ByronMainBlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
+import com.bloxbean.cardano.yano.api.archive.CanonicalProjectionContributor;
+import com.bloxbean.cardano.yano.api.archive.ConsumedOutputAddresses;
+import com.bloxbean.cardano.yano.api.archive.ProjectionCfNames;
+import com.bloxbean.cardano.yano.api.archive.ProjectionStagingWriter;
+import com.bloxbean.cardano.yano.api.events.ByronBlockProjectionEvent;
 import com.bloxbean.cardano.yano.api.plugin.StorageFilter;
 import com.bloxbean.cardano.yano.api.plugin.UtxoFilterContext;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
@@ -34,6 +39,8 @@ import java.math.BigInteger;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -110,6 +117,67 @@ class ByronUtxoApplierTest {
         assertThat(store.getUtxo(new Outpoint(GENESIS_AVVM_TX, 0))).isPresent();
         assertThat(store.getUtxo(new Outpoint(firstHash, 0))).isEmpty();
         assertThat(store.getUtxo(new Outpoint(secondHash, 0))).isEmpty();
+    }
+
+    @Test
+    void projectionAndByronUtxoCommitInOneBatchWithConsumedAddresses() throws Exception {
+        seedMainnetAvvmOutput();
+        String firstHash = hex(0x71);
+        String secondHash = hex(0x72);
+        AtomicReference<String> genesisAddress = new AtomicReference<>();
+        AtomicReference<String> intraBlockAddress = new AtomicReference<>();
+        byte[] markerKey = "adr042.atomic".getBytes(StandardCharsets.UTF_8);
+        store.setProjectionContributor(new TestContributor() {
+            @Override
+            public boolean needsConsumedOutputAddresses() { return true; }
+
+            @Override
+            public void contributeByronMainBlock(ByronMainBlockAppliedEvent event,
+                                                 ConsumedOutputAddresses consumed,
+                                                 ProjectionStagingWriter writer) {
+                genesisAddress.set(consumed.addressOf(GENESIS_AVVM_TX, 0));
+                intraBlockAddress.set(consumed.addressOf(firstHash, 0));
+                writer.put(ProjectionCfNames.PROJ_META, markerKey, new byte[]{1});
+            }
+        });
+
+        store.applyByronBlock(event(60L, 6L, hex(0x73), block(List.of(
+                tx(firstHash, List.of(input(GENESIS_AVVM_TX)), BYRON_ADDRESS, 900_000L),
+                tx(secondHash, List.of(input(firstHash)), GENESIS_AVVM_ADDRESS, 800_000L)))));
+
+        assertThat(genesisAddress.get()).isEqualTo(GENESIS_AVVM_ADDRESS);
+        assertThat(intraBlockAddress.get()).isEqualTo(BYRON_ADDRESS);
+        ColumnFamilyHandle projectionMeta = (ColumnFamilyHandle) chain.getColumnFamilyHandle(
+                ProjectionCfNames.PROJ_META);
+        assertThat(store.getDb().get(projectionMeta, markerKey)).containsExactly(1);
+        assertThat(store.getUtxo(new Outpoint(secondHash, 0))).isPresent();
+    }
+
+    @Test
+    void projectionFailureRollsBackByronUtxoDeltaCursorAndProjectionWrites() throws Exception {
+        seedMainnetAvvmOutput();
+        byte[] markerKey = "adr042.must-not-commit".getBytes(StandardCharsets.UTF_8);
+        store.setProjectionContributor(new TestContributor() {
+            @Override
+            public void contributeByronMainBlock(ByronMainBlockAppliedEvent event,
+                                                 ConsumedOutputAddresses consumed,
+                                                 ProjectionStagingWriter writer) {
+                writer.put(ProjectionCfNames.PROJ_META, markerKey, new byte[]{1});
+                throw new IllegalStateException("synthetic projection failure");
+            }
+        });
+        String txHash = hex(0x74);
+
+        assertThatThrownBy(() -> store.applyByronBlock(event(61L, 7L, hex(0x75), block(List.of(
+                tx(txHash, List.of(input(GENESIS_AVVM_TX)), BYRON_ADDRESS, 900_000L))))))
+                .hasRootCauseMessage("synthetic projection failure");
+
+        ColumnFamilyHandle projectionMeta = (ColumnFamilyHandle) chain.getColumnFamilyHandle(
+                ProjectionCfNames.PROJ_META);
+        assertThat(store.getDb().get(projectionMeta, markerKey)).isNull();
+        assertThat(store.getUtxo(new Outpoint(GENESIS_AVVM_TX, 0))).isPresent();
+        assertThat(store.getUtxo(new Outpoint(txHash, 0))).isEmpty();
+        assertThat(store.getLastAppliedBlock()).isZero();
     }
 
     @Test
@@ -234,6 +302,34 @@ class ByronUtxoApplierTest {
         assertThat(store.getLatestAppliedPoint().blockHash()).isEqualTo(byronHash);
     }
 
+    @Test
+    void shelleyProjectionCapturesAddressOfNativeByronOutputWithoutArchiveResolver() {
+        String byronTx = hex(0x76);
+        store.applyByronBlock(event(70L, 8L, hex(0x77), block(List.of(
+                tx(byronTx, List.of(), BYRON_ADDRESS, 900_000L)))));
+        AtomicReference<String> consumedAddress = new AtomicReference<>();
+        store.setProjectionContributor(new TestContributor() {
+            @Override public boolean needsConsumedOutputAddresses() { return true; }
+
+            @Override
+            public void contributeBlock(BlockAppliedEvent event, ConsumedOutputAddresses consumed,
+                                        ProjectionStagingWriter writer) {
+                consumedAddress.set(consumed.addressOf(byronTx, 0));
+            }
+        });
+        String shelleyTx = hex(0x78);
+        TransactionBody transaction = TransactionBody.builder().txHash(shelleyTx)
+                .inputs(java.util.Set.of(TransactionInput.builder()
+                        .transactionId(byronTx).index(0).build()))
+                .outputs(List.of()).build();
+        Block shelley = Block.builder().era(Era.Shelley)
+                .transactionBodies(List.of(transaction)).invalidTransactions(List.of()).build();
+
+        store.applyBlock(new BlockAppliedEvent(Era.Shelley, 71L, 9L, hex(0x79), shelley));
+
+        assertThat(consumedAddress.get()).isEqualTo(BYRON_ADDRESS);
+    }
+
     private void seedMainnetAvvmOutput() {
         store.storeByronGenesisUtxos(
                 Map.of(GENESIS_AVVM_ADDRESS, BigInteger.valueOf(1_000_000L)),
@@ -283,5 +379,13 @@ class ByronUtxoApplierTest {
 
     private static String hex(int value) {
         return String.format("%02x", value).repeat(32);
+    }
+
+    private abstract static class TestContributor implements CanonicalProjectionContributor {
+        @Override public boolean enabled() { return true; }
+        @Override public void contributeBlock(BlockAppliedEvent event, ProjectionStagingWriter writer) { }
+        @Override public void contributeByronBlock(ByronBlockProjectionEvent event,
+                                                   ProjectionStagingWriter writer) { }
+        @Override public void rollbackFrom(long fromBlockNumber) { }
     }
 }

@@ -55,14 +55,15 @@ final class ByronUtxoApplier {
         this.log = log;
     }
 
-    ApplyResult stageBlock(ByronMainBlockAppliedEvent event, WriteBatch batch) throws RocksDBException {
+    ApplyResult stageBlock(ByronMainBlockAppliedEvent event, WriteBatch batch,
+                           ConsumedAddressCapture consumedAddresses) throws RocksDBException {
         List<UtxoDeltaCodec.OutRef> created = new ArrayList<>();
         List<UtxoDeltaCodec.OutRef> spent = new ArrayList<>();
         Map<String, byte[]> intraBlockOutputs = new HashMap<>();
         Set<String> consumedInputs = new HashSet<>();
         ByronMainBlock block = event.block();
         var payloads = block.getBody() != null ? block.getBody().getTxPayload() : null;
-        if (payloads == null) return new ApplyResult(created, spent, 0);
+        if (payloads == null) return new ApplyResult(created, spent, 0, consumedAddresses.view());
 
         int filteredOutputs = 0;
         for (var payload : payloads) {
@@ -72,7 +73,8 @@ final class ByronUtxoApplier {
 
             if (tx.getInputs() != null) {
                 for (ByronTxIn input : tx.getInputs()) {
-                    stageInput(event, input, batch, intraBlockOutputs, consumedInputs, spent);
+                    stageInput(event, input, batch, intraBlockOutputs, consumedInputs, spent,
+                            consumedAddresses);
                 }
             }
 
@@ -101,10 +103,11 @@ final class ByronUtxoApplier {
                     stageOutput(batch, tx.getTxHash(), outputIndex, address,
                             event.slot(), value, created);
                     intraBlockOutputs.put(outpointId(tx.getTxHash(), outputIndex), value);
+                    consumedAddresses.recordCreated(tx.getTxHash(), outputIndex, address);
                 }
             }
         }
-        return new ApplyResult(created, spent, filteredOutputs);
+        return new ApplyResult(created, spent, filteredOutputs, consumedAddresses.view());
     }
 
     GenesisResult stageGenesisOutputs(Map<String, BigInteger> nonAvvmBalances,
@@ -133,7 +136,8 @@ final class ByronUtxoApplier {
                             WriteBatch batch,
                             Map<String, byte[]> intraBlockOutputs,
                             Set<String> consumedInputs,
-                            List<UtxoDeltaCodec.OutRef> spent) throws RocksDBException {
+                            List<UtxoDeltaCodec.OutRef> spent,
+                            ConsumedAddressCapture consumedAddresses) throws RocksDBException {
         if (input == null) throw new IllegalStateException("Null Byron transaction input");
         requireHash(input.getTxId(), "Byron input transaction id");
         byte[] key = UtxoKeyUtil.outpointKey(input.getTxId(), input.getIndex());
@@ -161,6 +165,7 @@ final class ByronUtxoApplier {
         batch.put(cfSpent, key, UtxoCborCodec.wrapSpent(previous, event.slot()));
         batch.delete(cfUnspent, key);
         UtxoCborCodec.StoredUtxo stored = UtxoCborCodec.decodeUtxoRecord(previous);
+        consumedAddresses.recordSpent(input.getTxId(), input.getIndex(), stored);
         if (indexAddressHash) {
             byte[] addressIndex = UtxoKeyUtil.addressIndexKey(
                     UtxoKeyUtil.addrHash28(stored.address), stored.slot,
@@ -233,7 +238,8 @@ final class ByronUtxoApplier {
 
     record ApplyResult(List<UtxoDeltaCodec.OutRef> created,
                        List<UtxoDeltaCodec.OutRef> spent,
-                       int filteredOutputs) {}
+                       int filteredOutputs,
+                       com.bloxbean.cardano.yano.api.archive.ConsumedOutputAddresses consumedAddresses) {}
 
     record GenesisResult(List<byte[]> allOutpointKeys, List<byte[]> avvmOutpointKeys) {}
 }

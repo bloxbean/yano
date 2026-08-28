@@ -24,7 +24,16 @@ final class ProjectionOutboxKeys {
     static final byte[] META_ARTIFACT_SEALED = "artifact-sealed".getBytes(StandardCharsets.UTF_8);
     /** Artifact contracts, kept apart from the section fingerprint they cannot be part of. */
     static final byte[] META_ARTIFACTS = "artifacts".getBytes(StandardCharsets.UTF_8);
+    /** Versioned projected-from epoch and origin for every selected artifact. */
+    static final byte[] META_ARTIFACT_ENROLLMENTS =
+            "artifact-enrollments".getBytes(StandardCharsets.UTF_8);
     private static final String CURSOR_PREFIX = "cursor/";
+    private static final byte[] EPOCH_GAP_PREFIX = "epoch-gap/".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] EPOCH_STATE_PREFIX = "epoch-state/".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] EPOCH_PAUSE_CAUSE_PREFIX =
+            "epoch-pause-cause/".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] EPOCH_INTERVAL_PREFIX = "epoch-gap-interval/".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] EPOCH_RESUME_PREFIX = "epoch-resume/".getBytes(StandardCharsets.UTF_8);
 
     /** Cursor for the contributor that writes canonical block identity. */
     static final byte[] META_CURSOR_IDENTITY = (CURSOR_PREFIX + "identity").getBytes(StandardCharsets.UTF_8);
@@ -54,6 +63,44 @@ final class ProjectionOutboxKeys {
 
     static byte[] cursorKey(ProjectionSectionType type) {
         return (CURSOR_PREFIX + type.wireName()).getBytes(StandardCharsets.UTF_8);
+    }
+
+    static byte[] epochGapPrefix() { return EPOCH_GAP_PREFIX.clone(); }
+
+    static byte[] epochGapKey(String dataset, int epoch) {
+        byte[] name = dataset.getBytes(StandardCharsets.UTF_8);
+        return ByteBuffer.allocate(EPOCH_GAP_PREFIX.length + name.length + 1 + 4)
+                .order(ByteOrder.BIG_ENDIAN).put(EPOCH_GAP_PREFIX).put(name).put((byte) '/')
+                .putInt(epoch).array();
+    }
+
+    static byte[] epochStatePrefix() { return EPOCH_STATE_PREFIX.clone(); }
+
+    static byte[] epochStateKey(String dataset) {
+        byte[] name = dataset.getBytes(StandardCharsets.UTF_8);
+        return ByteBuffer.allocate(EPOCH_STATE_PREFIX.length + name.length)
+                .put(EPOCH_STATE_PREFIX).put(name).array();
+    }
+
+    static byte[] epochPauseCauseKey(String dataset) {
+        byte[] name = dataset.getBytes(StandardCharsets.UTF_8);
+        return ByteBuffer.allocate(EPOCH_PAUSE_CAUSE_PREFIX.length + name.length)
+                .put(EPOCH_PAUSE_CAUSE_PREFIX).put(name).array();
+    }
+
+    static byte[] epochIntervalPrefix() { return EPOCH_INTERVAL_PREFIX.clone(); }
+
+    static byte[] epochIntervalKey(String dataset, int causedByEpoch) {
+        byte[] name = dataset.getBytes(StandardCharsets.UTF_8);
+        return ByteBuffer.allocate(EPOCH_INTERVAL_PREFIX.length + name.length + 1 + 4)
+                .order(ByteOrder.BIG_ENDIAN).put(EPOCH_INTERVAL_PREFIX).put(name).put((byte) '/')
+                .putInt(causedByEpoch).array();
+    }
+
+    static byte[] epochResumeKey(String dataset) {
+        byte[] name = dataset.getBytes(StandardCharsets.UTF_8);
+        return ByteBuffer.allocate(EPOCH_RESUME_PREFIX.length + name.length)
+                .put(EPOCH_RESUME_PREFIX).put(name).array();
     }
 
     /**
