@@ -131,8 +131,8 @@ Detailed evidence is in
   `965712b8c3cadd31c6559505905d72160e536e39afb5c20c80894bc0eda1c4c5`)
   is syncing mainnet from `/Volumes/data2/yano-try/mainnet` with streaming
   rewards and `exit-on-epoch-calc-error=true`.
-- AdaPot verification has passed every unique epoch from 209 through 287
-  (79 epochs), with zero mismatches.
+- AdaPot verification has passed every unique epoch from 209 through 289
+  (81 epochs), with zero mismatches.
 - `-Xmx384m` is not viable: epoch 284 exhausted the G1 heap during streaming
   rewards at about 406.6 MiB used, then rollback also ran out of heap. The
   preserved log is `yano.log.oom-xmx384-epoch284-20260829T064928`.
@@ -144,7 +144,16 @@ Detailed evidence is in
   validation passed, block 6,154,758 was replayed into UTXO state, account state
   reconciled, and nonce state restored at the body tip. Epoch 287 then passed
   AdaPot in 165.8 seconds with 687.0 MiB peak heap and no new fatal signal.
-- Current warmed RSS is about 1.26 GiB. This is far below the former 6–8 GiB
-  native peaks, but it does **not** meet the original 500–600 MiB target. The
-  measured live set proves that target needs more implementation work; reducing
-  only the runtime heap limit causes correctness-threatening OOM recovery.
+- `-Xmx768m` is also not viable. Epoch 288 passed AdaPot, but the following
+  ordinary `BlockAppliedEvent` exhausted the heap at block 6,209,981 and its
+  rollback could not complete. The preserved log is
+  `yano.log.oom-xmx768-block6209981-20260829T072112`.
+- The same chainstate was recovered without deletion at `-Xmx1536m`: integrity
+  validation passed, UTXO replayed block 6,209,981, account state reconciled,
+  and nonce state restored at that body tip. Epoch 289 then passed AdaPot in
+  138.3 seconds and normal sync resumed with no new fatal signal.
+- Post-boundary RSS has ranged from about 1.25 GiB after collection to 2.06 GiB
+  immediately after epoch 289. This is below the former 6–8 GiB native peaks,
+  but it does **not** meet the original 500–600 MiB target. The measured live
+  set proves that target needs more implementation work; reducing only the
+  runtime heap limit causes correctness-threatening OOM recovery.
