@@ -1,5 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.chain;
 
+import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
+import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.runtime.blockproducer.NonceStateSnapshot;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -62,6 +64,86 @@ class DirectRocksDBChainStateRollbackTest {
     }
 
     @Test
+    void pointRollbackToEbbRemovesSameSlotSuccessorMain() {
+        byte[] main1 = hash(1);
+        byte[] ebb = hash(2);
+        byte[] main2 = hash(3);
+        storeMain(main1, 1L, 30L);
+        storeEbb(ebb, 1L, 40L);
+        storeMain(main2, 2L, 40L);
+
+        chainState.rollbackTo(new Point(40L, HexUtil.encodeHexString(ebb)));
+
+        assertThat(chainState.getTip().getBlockHash()).isEqualTo(ebb);
+        assertThat(chainState.getHeaderTip().getBlockHash()).isEqualTo(ebb);
+        assertThat(chainState.getBlock(ebb)).isNotNull();
+        assertThat(chainState.getBlockHeader(ebb)).isNotNull();
+        assertThat(chainState.getBlock(main2)).isNull();
+        assertThat(chainState.getBlockHeader(main2)).isNull();
+        assertThat(chainState.getBlockByNumber(2L)).isNull();
+    }
+
+    @Test
+    void pointRollbackToSameSlotMainRetainsMainAndEbb() {
+        byte[] main1 = hash(4);
+        byte[] ebb = hash(5);
+        byte[] main2 = hash(6);
+        storeMain(main1, 1L, 30L);
+        storeEbb(ebb, 1L, 40L);
+        storeMain(main2, 2L, 40L);
+
+        chainState.rollbackTo(new Point(40L, HexUtil.encodeHexString(main2)));
+
+        assertThat(chainState.getTip().getBlockHash()).isEqualTo(main2);
+        assertThat(chainState.getHeaderTip().getBlockHash()).isEqualTo(main2);
+        assertThat(chainState.getBlock(ebb)).isNotNull();
+        assertThat(chainState.getBlock(main2)).isNotNull();
+    }
+
+    @Test
+    void headerOnlyPointRollbackToEbbRemovesSameSlotMainHeader() {
+        byte[] main1 = hash(7);
+        byte[] ebb = hash(8);
+        byte[] main2 = hash(9);
+        storeMain(main1, 1L, 30L);
+        storeEbb(ebb, 1L, 40L);
+        chainState.storeBlockHeader(main2, 2L, 40L, new byte[]{9});
+
+        chainState.rollbackTo(new Point(40L, HexUtil.encodeHexString(ebb)));
+
+        assertThat(chainState.getTip().getBlockHash()).isEqualTo(ebb);
+        assertThat(chainState.getHeaderTip().getBlockHash()).isEqualTo(ebb);
+        assertThat(chainState.getBlockHeader(main2)).isNull();
+        assertThat(chainState.getBlock(ebb)).isNotNull();
+    }
+
+    @Test
+    void pointOriginClearsEbbBodiesAndHeaders() {
+        byte[] main = hash(10);
+        byte[] ebb = hash(11);
+        storeMain(main, 1L, 30L);
+        storeEbb(ebb, 1L, 40L);
+
+        chainState.rollbackTo(Point.ORIGIN);
+
+        assertThat(chainState.getTip()).isNull();
+        assertThat(chainState.getHeaderTip()).isNull();
+        assertThat(chainState.getBlock(ebb)).isNull();
+        assertThat(chainState.getBlockHeader(ebb)).isNull();
+    }
+
+    @Test
+    void slotZeroWithHashIsARealPointNotOrigin() {
+        byte[] genesisEbb = hash(12);
+        storeEbb(genesisEbb, 0L, 0L);
+
+        chainState.rollbackTo(new Point(0L, HexUtil.encodeHexString(genesisEbb)));
+
+        assertThat(chainState.getTip()).isNotNull();
+        assertThat(chainState.getTip().getBlockHash()).isEqualTo(genesisEbb);
+    }
+
+    @Test
     void epochNonceCheckpointsRoundTripOrderAndPrune() {
         NonceStateSnapshot checkpoint1 = new NonceStateSnapshot(10L, 1L, hash(1), new byte[]{1});
         NonceStateSnapshot checkpoint2 = new NonceStateSnapshot(20L, 2L, hash(2), new byte[]{2});
@@ -121,5 +203,15 @@ class DirectRocksDBChainStateRollbackTest {
         byte[] bytes = new byte[32];
         bytes[31] = (byte) suffix;
         return bytes;
+    }
+
+    private void storeMain(byte[] hash, long number, long slot) {
+        chainState.storeBlockHeader(hash, number, slot, new byte[]{hash[31]});
+        chainState.storeBlock(hash, number, slot, new byte[]{hash[31]});
+    }
+
+    private void storeEbb(byte[] hash, long number, long slot) {
+        chainState.storeByronEbHeader(hash, number, slot, new byte[]{hash[31]});
+        chainState.storeBlock(hash, number, slot, new byte[]{hash[31]});
     }
 }

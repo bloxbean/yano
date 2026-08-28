@@ -9,7 +9,6 @@ import com.bloxbean.cardano.yano.api.account.AccountHistoryProvider;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
 import com.bloxbean.cardano.yano.app.api.ApiGroup;
-import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import com.bloxbean.cardano.yano.app.api.addresses.dto.AddressSummaryDto;
 import com.bloxbean.cardano.yano.app.api.addresses.dto.AddressTxDto;
 import com.bloxbean.cardano.yano.app.api.utxos.dto.AmountDto;
@@ -72,17 +71,10 @@ public class AddressResource {
                                            boolean usePaymentCredential) {
         AccountHistoryProvider history = historyProvider();
         if (history == null || !history.isEnabled() || !history.isAddressTxEnabled()) {
-            String error;
-            if (historyArchive != null && historyArchive.datasetBuilding(ArchiveDatasetId.ADDRESS_TRANSACTION)) {
-                error = "Address transaction history is still building";
-            } else if (historyArchive != null && historyArchive.datasetFailed(ArchiveDatasetId.ADDRESS_TRANSACTION)) {
-                error = "Address transaction history is unavailable after a non-retryable failure";
-            } else {
-                error = "Address transaction history disabled "
-                        + "(set yano.history.projection.enabled=true; if "
-                        + "yano.history.projection.sections is set it must include "
-                        + "address-transaction:v1)";
-            }
+            String error = "Address transaction history is unavailable or not selected "
+                    + "(set yano.history.projection.enabled=true; if "
+                    + "yano.history.projection.sections is set it must include "
+                    + "address-transaction:v1)";
             return Response.status(Response.Status.SERVICE_UNAVAILABLE)
                     .entity(Map.of("error", error))
                     .build();

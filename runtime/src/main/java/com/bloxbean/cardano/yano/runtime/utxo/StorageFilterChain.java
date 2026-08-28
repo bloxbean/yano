@@ -2,6 +2,8 @@ package com.bloxbean.cardano.yano.runtime.utxo;
 
 import com.bloxbean.cardano.yaci.core.model.Block;
 import com.bloxbean.cardano.yaci.core.model.TransactionBody;
+import com.bloxbean.cardano.yaci.core.model.byron.ByronMainBlock;
+import com.bloxbean.cardano.yaci.core.model.byron.ByronTx;
 import com.bloxbean.cardano.yano.api.plugin.StorageFilter;
 import com.bloxbean.cardano.yano.api.plugin.UtxoFilterContext;
 
@@ -28,6 +30,15 @@ public final class StorageFilterChain {
     public boolean acceptUtxoOutput(UtxoFilterContext ctx, Block block, TransactionBody txBody) {
         for (StorageFilter filter : filters) {
             if (!filter.acceptUtxoOutput(ctx, block, txBody)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    public boolean acceptByronUtxoOutput(UtxoFilterContext ctx, ByronMainBlock block, ByronTx tx) {
+        for (StorageFilter filter : filters) {
+            if (!filter.acceptByronUtxoOutput(ctx, block, tx)) {
                 return false;
             }
         }

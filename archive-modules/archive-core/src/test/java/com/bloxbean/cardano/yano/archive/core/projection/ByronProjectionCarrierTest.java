@@ -15,6 +15,7 @@ import com.bloxbean.cardano.yaci.core.model.byron.ByronTxOut;
 import com.bloxbean.cardano.yaci.core.model.byron.payload.ByronTxPayload;
 import com.bloxbean.cardano.yano.api.archive.ProjectionCfNames;
 import com.bloxbean.cardano.yano.api.events.ByronBlockProjectionEvent;
+import com.bloxbean.cardano.yano.api.events.ByronMainBlockAppliedEvent;
 import com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId;
 import com.bloxbean.cardano.yano.archive.api.ArchiveJob;
 import com.bloxbean.cardano.yano.archive.api.ArchiveNetworkIdentity;
@@ -48,16 +49,14 @@ import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Drives genuine {@link ByronMainBlock} and {@link ByronEbBlock} values through the
- * dedicated ADR-039 projection carrier.
+ * ADR-042 main-block contributor and the EBB-only ADR-039 carrier.
  *
- * <p>Byron is roughly a third of mainnet and has no live-path source at all: the UTXO
- * store returns immediately on the {@code block() == null} sentinel and never applies a
- * Byron transaction. So this path is the only way those blocks become projectable, and
- * the EBB case is what keeps the archive's contiguous coordinate from stopping dead at
- * the first epoch boundary.
+ * <p>Byron is roughly a third of mainnet. Main blocks now contribute from the live UTXO
+ * apply batch; EBBs retain the dedicated carrier because they have no UTXO transition.
  */
 class ByronProjectionCarrierTest {
     static { RocksDB.loadLibrary(); }
@@ -153,13 +152,30 @@ class ByronProjectionCarrierTest {
         }
     }
 
+    private void contribute(ByronMainBlockAppliedEvent event) {
+        try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
+            collector.contributeByronMainBlock(event,
+                    com.bloxbean.cardano.yano.api.archive.ConsumedOutputAddresses.NONE,
+                    ProjectionOutboxStore.batchWriter(batch, store.handles()));
+            db.write(options, batch);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private static ByronMainBlockAppliedEvent mainEvent(long slot, long blockNumber,
+                                                         String blockHash, String ignoredParent,
+                                                         ByronMainBlock block) {
+        return new ByronMainBlockAppliedEvent(slot, blockNumber, blockHash, block);
+    }
+
     // ----------------------------------------------------------------- the cases
 
     @Test
     void aGenuineByronMainBlockProducesAProjectableEnvelope() {
         var byron = mainBlock(43200, hex(0x0a, 32),
                 List.of(transaction(hex(0x11, 32), hex(0x22, 32), 0, 1_000_000)));
-        contribute(ByronBlockProjectionEvent.main(43200, 500, hex(0x0b, 32), hex(0x0a, 32), byron));
+        contribute(mainEvent(43200, 500, hex(0x0b, 32), hex(0x0a, 32), byron));
 
         var envelope = store.readEnvelope(500, REQUIRED).orElseThrow();
         assertThat(envelope.header().blockKind()).isEqualTo(ProjectionBlockKind.BYRON_MAIN);
@@ -176,7 +192,7 @@ class ByronProjectionCarrierTest {
     void byronTransactionFeeIsNullBecauseByronCarriesNone() {
         var byron = mainBlock(43200, hex(0x0a, 32),
                 List.of(transaction(hex(0x11, 32), hex(0x22, 32), 0, 1_000_000)));
-        contribute(ByronBlockProjectionEvent.main(43200, 500, hex(0x0b, 32), hex(0x0a, 32), byron));
+        contribute(mainEvent(43200, 500, hex(0x0b, 32), hex(0x0a, 32), byron));
 
         var envelope = store.readEnvelope(500, REQUIRED).orElseThrow();
         var facts = ProjectionFactCodec.decodeTransactions(ProjectionChunking.join(
@@ -198,7 +214,7 @@ class ByronProjectionCarrierTest {
     void byronOutputsKeepTheirRawBase58Address() {
         var byron = mainBlock(43200, hex(0x0a, 32),
                 List.of(transaction(hex(0x11, 32), hex(0x22, 32), 0, 1_000_000)));
-        contribute(ByronBlockProjectionEvent.main(43200, 500, hex(0x0b, 32), hex(0x0a, 32), byron));
+        contribute(mainEvent(43200, 500, hex(0x0b, 32), hex(0x0a, 32), byron));
 
         var envelope = store.readEnvelope(500, REQUIRED).orElseThrow();
         var fact = ProjectionFactCodec.decodeUtxoHistory(ProjectionChunking.join(
@@ -212,7 +228,7 @@ class ByronProjectionCarrierTest {
     void byronHasNoCollateralReferenceInputsDatumsOrRedeemers() {
         var byron = mainBlock(43200, hex(0x0a, 32),
                 List.of(transaction(hex(0x11, 32), hex(0x22, 32), 0, 1_000_000)));
-        contribute(ByronBlockProjectionEvent.main(43200, 500, hex(0x0b, 32), hex(0x0a, 32), byron));
+        contribute(mainEvent(43200, 500, hex(0x0b, 32), hex(0x0a, 32), byron));
 
         var fact = ProjectionFactCodec.decodeUtxoHistory(ProjectionChunking.join(
                 store.readEnvelope(500, REQUIRED).orElseThrow()
@@ -237,11 +253,11 @@ class ByronProjectionCarrierTest {
 
     @Test
     void anEbbBetweenTwoMainBlocksKeepsTheCoordinateContiguous() {
-        contribute(ByronBlockProjectionEvent.main(21580, 498, hex(0x0d, 32), hex(0x08, 32),
+        contribute(mainEvent(21580, 498, hex(0x0d, 32), hex(0x08, 32),
                 mainBlock(21580, hex(0x08, 32), List.of(transaction(hex(0x31, 32), hex(0x32, 32), 0, 5)))));
         contribute(ByronBlockProjectionEvent.epochBoundary(21600, 499, hex(0x0c, 32), hex(0x0d, 32),
                 epochBoundaryBlock(21600, hex(0x0d, 32))));
-        contribute(ByronBlockProjectionEvent.main(21620, 500, hex(0x0b, 32), hex(0x0c, 32),
+        contribute(mainEvent(21620, 500, hex(0x0b, 32), hex(0x0c, 32),
                 mainBlock(21620, hex(0x0c, 32), List.of(transaction(hex(0x33, 32), hex(0x34, 32), 0, 6)))));
 
         // No hole: every block in 498..500 has a readable envelope.
@@ -249,6 +265,84 @@ class ByronProjectionCarrierTest {
             assertThat(store.readEnvelope(block, REQUIRED)).as("block %d", block).isPresent();
         }
         assertThat(store.completeThrough(REQUIRED)).isEqualTo(500);
+    }
+
+    @Test
+    void anEbbAtThePrecedingMainDifficultyIsAValidatedNoop() {
+        contribute(mainEvent(21599, 498, hex(0x0d, 32), hex(0x08, 32),
+                mainBlock(21599, hex(0x08, 32), List.of())));
+        contribute(ByronBlockProjectionEvent.epochBoundary(21600, 498, hex(0x0c, 32),
+                hex(0x0d, 32), epochBoundaryBlock(21600, hex(0x0d, 32))));
+        contribute(mainEvent(21620, 499, hex(0x0b, 32), hex(0x0c, 32),
+                mainBlock(21620, hex(0x0c, 32), List.of())));
+
+        assertThat(store.readEnvelope(498, REQUIRED).orElseThrow().header().blockKind())
+                .isEqualTo(ProjectionBlockKind.BYRON_MAIN);
+        assertThat(store.readEnvelope(499, REQUIRED)).isPresent();
+        assertThat(store.completeThrough(REQUIRED)).isEqualTo(499);
+    }
+
+    @Test
+    void acknowledgedReplaySkipsEvenWhenBodyHashDiffers() {
+        var block = mainBlock(43200, hex(0x0a, 32), List.of());
+        contribute(mainEvent(43200, 500, hex(0x0b, 32), hex(0x0a, 32), block));
+        store.acknowledgeThrough(500);
+
+        contribute(mainEvent(43200, 500, hex(0x7b, 32), hex(0x0a, 32), block));
+
+        assertThat(store.acknowledgedThrough()).isEqualTo(500);
+        assertThat(store.identityCursor()).isEqualTo(500);
+    }
+
+    @Test
+    void completeSameHashReplayIsIdempotentAndDifferentHashFailsClosed() {
+        var block = mainBlock(43200, hex(0x0a, 32), List.of());
+        contribute(mainEvent(43200, 500, hex(0x0b, 32), hex(0x0a, 32), block));
+        contribute(mainEvent(43200, 500, hex(0x0b, 32), hex(0x0a, 32), block));
+
+        assertThat(store.identityCursor()).isEqualTo(500);
+        assertThatThrownBy(() -> contribute(mainEvent(43200, 500, hex(0x7b, 32),
+                hex(0x0a, 32), block)))
+                .hasRootCauseInstanceOf(ProjectionOutboxException.class)
+                .hasStackTraceContaining("hash mismatch");
+        assertThat(store.identityCursor()).isEqualTo(500);
+    }
+
+    @Test
+    void incompleteSameHashReplayRepairsOnlyMissingSectionWithoutRewindingCursors() throws Exception {
+        var block = mainBlock(43200, hex(0x0a, 32), List.of());
+        contribute(mainEvent(43200, 500, hex(0x0b, 32), hex(0x0a, 32), block));
+        var sectionHandle = store.handles().apply(ProjectionCfNames.PROJ_SECTION);
+        db.delete(sectionHandle, ProjectionOutboxKeys.sectionManifestKey(
+                500, ProjectionSectionType.TRANSACTION));
+        db.delete(sectionHandle, ProjectionOutboxKeys.sectionChunkKey(
+                500, ProjectionSectionType.TRANSACTION, 0));
+        assertThat(store.readEnvelope(500, REQUIRED)).isEmpty();
+
+        contribute(mainEvent(43200, 500, hex(0x0b, 32), hex(0x0a, 32), block));
+
+        assertThat(store.readEnvelope(500, REQUIRED)).isPresent();
+        assertThat(store.identityCursor()).isEqualTo(500);
+        assertThat(store.contributorCursor(ProjectionSectionType.TRANSACTION)).isEqualTo(500);
+        assertThat(store.contributorCursor(ProjectionSectionType.UTXO_HISTORY)).isEqualTo(500);
+    }
+
+    @Test
+    void missingIdentityInsideCursorFailsAndNewCoordinateAboveCursorContributes() throws Exception {
+        var block = mainBlock(43200, hex(0x0a, 32), List.of());
+        contribute(mainEvent(43200, 500, hex(0x0b, 32), hex(0x0a, 32), block));
+        db.delete(store.handles().apply(ProjectionCfNames.PROJ_HEADER),
+                ProjectionOutboxKeys.blockKey(500));
+
+        assertThatThrownBy(() -> contribute(mainEvent(43200, 500, hex(0x0b, 32),
+                hex(0x0a, 32), block)))
+                .hasRootCauseInstanceOf(ProjectionOutboxException.class)
+                .hasStackTraceContaining("inside the durable identity cursor");
+
+        contribute(mainEvent(43220, 501, hex(0x0e, 32), hex(0x0b, 32),
+                mainBlock(43220, hex(0x0b, 32), List.of())));
+        assertThat(store.readEnvelope(501, REQUIRED)).isPresent();
+        assertThat(store.identityCursor()).isEqualTo(501);
     }
 
     @Test
@@ -262,7 +356,7 @@ class ByronProjectionCarrierTest {
 
     @Test
     void anEmptyByronMainBlockStillProducesAnEnvelope() {
-        contribute(ByronBlockProjectionEvent.main(43200, 501, hex(0x0e, 32), hex(0x0b, 32),
+        contribute(mainEvent(43200, 501, hex(0x0e, 32), hex(0x0b, 32),
                 mainBlock(43200, hex(0x0b, 32), List.of())));
         var envelope = store.readEnvelope(501, REQUIRED).orElseThrow();
         assertThat(envelope.header().blockKind()).isEqualTo(ProjectionBlockKind.BYRON_MAIN);
@@ -306,5 +400,17 @@ class ByronProjectionCarrierTest {
                                 java.util.Set.of(ProjectionSectionType.TRANSACTION)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("cannot");
+    }
+
+    @Test
+    void byronProjectionEventApiCanRepresentOnlyEpochBoundaryBlocks() {
+        assertThat(java.util.Arrays.stream(ByronBlockProjectionEvent.class.getDeclaredMethods())
+                .map(java.lang.reflect.Method::getName))
+                .contains("epochBoundary", "epochBoundaryBlock")
+                .doesNotContain("main", "mainBlock", "isEpochBoundary");
+        assertThatThrownBy(() -> ByronBlockProjectionEvent.epochBoundary(
+                0, 0, hex(0, 32), hex(0, 32), null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("epoch-boundary block");
     }
 }

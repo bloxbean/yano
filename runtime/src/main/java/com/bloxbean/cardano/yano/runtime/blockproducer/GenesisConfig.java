@@ -109,6 +109,16 @@ public class GenesisConfig {
         return new GenesisConfig(funds, protocolParams, byronBalances, shelley, byron);
     }
 
+    public Map<String, BigInteger> getByronNonAvvmBalances() {
+        return byronGenesisData != null && byronGenesisData.nonAvvmBalances() != null
+                ? byronGenesisData.nonAvvmBalances() : Collections.emptyMap();
+    }
+
+    public Map<String, BigInteger> getByronAvvmBalances() {
+        return byronGenesisData != null && byronGenesisData.avvmBalances() != null
+                ? byronGenesisData.avvmBalances() : Collections.emptyMap();
+    }
+
     /**
      * Return a copy with an updated Shelley systemStart while preserving all
      * other parsed genesis values. Used by devnet past-time-travel mode after

@@ -23,7 +23,8 @@ import java.util.concurrent.ConcurrentSkipListMap;
  */
 @Slf4j
 public class InMemoryChainState implements ChainState, NonceStateStore,
-        ByronEbHeaderStore, OriginRollbackCapable, ArchiveChainStateCapabilities {
+        ByronEbHeaderStore, OriginRollbackCapable, PointRollbackCapable,
+        NearestPointLookup, ArchiveChainStateCapabilities {
     // Use hex string keys instead of byte[] to ensure proper equals/hashCode behavior
     private Map<String, byte[]> blockStore = new ConcurrentHashMap<>();
     private Map<String, byte[]> blockHeaderStore = new ConcurrentHashMap<>();
@@ -49,10 +50,13 @@ public class InMemoryChainState implements ChainState, NonceStateStore,
     public void storeBlock(byte[] blockHash, Long blockNumber, Long slot, byte[] block) {
         String key = toHex(blockHash);
         blockStore.put(key, block);
-        blockHeaderStore.put(key, block);
-        blockHashByNumber.put(blockNumber, blockHash);
-        blockNumberBySlot.put(slot, blockNumber);
-        indexMainHeader(blockHash, blockNumber, slot);
+        boolean ebb = slot != null && java.util.Arrays.equals(ebbHeaderHashBySlot.get(slot), blockHash);
+        if (!ebb) {
+            blockHeaderStore.put(key, block);
+            blockHashByNumber.put(blockNumber, blockHash);
+            blockNumberBySlot.put(slot, blockNumber);
+            indexMainHeader(blockHash, blockNumber, slot);
+        }
         tip = new ChainTip(slot, blockHash, blockNumber);
     }
 
@@ -101,9 +105,16 @@ public class InMemoryChainState implements ChainState, NonceStateStore,
     @Override
     public Optional<CanonicalBlockReference> getCanonicalBlockReference(long blockNumber) {
         byte[] hash = blockHashByNumber.get(blockNumber);
-        if (hash == null) return Optional.empty();
+        if (hash == null) {
+            if (blockNumber != 0) return Optional.empty();
+            return ebbHeaderNumberBySlot.entrySet().stream()
+                    .filter(entry -> entry.getValue() == blockNumber)
+                    .findFirst()
+                    .map(entry -> new CanonicalBlockReference(
+                            blockNumber, entry.getKey(), ebbHeaderHashBySlot.get(entry.getKey())));
+        }
         return blockNumberBySlot.entrySet().stream()
-                .filter(entry -> entry.getValue() == blockNumber)
+                .filter(entry -> java.util.Objects.equals(entry.getValue(), blockNumber))
                 .findFirst()
                 .map(entry -> new CanonicalBlockReference(blockNumber, entry.getKey(), hash));
     }
@@ -118,35 +129,39 @@ public class InMemoryChainState implements ChainState, NonceStateStore,
 
     @Override
     public void rollbackTo(Long slot) {
-        headerHashBySlot.tailMap(slot, false).forEach((headerSlot, blockHash) -> {
-            String key = toHex(blockHash);
-            blockHeaderStore.remove(key);
-            removeHashValue(headerHashByNumber, blockHash);
-            headerNumberBySlot.remove(headerSlot);
-        });
-        headerHashBySlot.tailMap(slot, false).clear();
-        headerNumberBySlot.tailMap(slot, false).clear();
+        Point target = findNearestPointAtOrBefore(slot);
+        if (target == null) {
+            if (slot != null && slot == 0L && tip == null && headerTip == null) return;
+            throw new IllegalArgumentException("No canonical main-block point at or before slot " + slot);
+        }
+        rollbackTo(target);
+    }
 
-        ebbHeaderHashBySlot.tailMap(slot, false).forEach((headerSlot, blockHash) ->
-                blockHeaderStore.remove(toHex(blockHash)));
-        ebbHeaderHashBySlot.tailMap(slot, false).clear();
-        ebbHeaderNumberBySlot.tailMap(slot, false).clear();
+    @Override
+    public synchronized void rollbackTo(Point target) {
+        if (target == null) throw new IllegalArgumentException("Rollback target is required");
+        if (target.getHash() == null) {
+            rollbackToOrigin();
+            return;
+        }
 
-        // Get all body block numbers greater than the provided slot
-        blockNumberBySlot.tailMap(slot, false).forEach((blockSlot, blockNumber) -> {
-            byte[] blockHash = blockHashByNumber.get(blockNumber);
-            if (blockHash != null) {
-                String key = toHex(blockHash);
-                blockStore.remove(key);
-                blockHashByNumber.remove(blockNumber);
-            }
-        });
+        ResolvedPoint resolved = resolvePoint(target);
+        ChainTip currentBodyTip = tip;
+        boolean headerOnly = currentBodyTip == null || compare(resolved, resolveTip(currentBodyTip)) > 0;
 
-        // Remove the entries from blockNumberBySlot where slots are greater than the provided slot
-        blockNumberBySlot.tailMap(slot, false).clear();
+        if (!headerOnly) {
+            removeMainBodiesAfter(resolved);
+            removeEbbBodiesAfter(resolved);
+            tip = resolved.toTip();
+        }
 
-        tip = bodyTipAtOrBefore(slot);
-        headerTip = headerTipAtOrBefore(slot);
+        removeMainHeadersAfter(resolved);
+        removeEbbHeadersAfter(resolved);
+        headerTip = resolved.toTip();
+
+        if (!samePoint(headerTip, resolved) || (!headerOnly && !samePoint(tip, resolved))) {
+            throw new IllegalStateException("In-memory rollback did not finish at requested point " + target);
+        }
     }
 
     private ChainTip bodyTipAtOrBefore(Long slot) {
@@ -353,6 +368,124 @@ public class InMemoryChainState implements ChainState, NonceStateStore,
             if (blockNumber != null) {
                 headerNumberBySlot.put(slot, blockNumber);
             }
+        }
+    }
+
+    @Override
+    public Point findNearestPointAtOrBefore(long slot) {
+        var entry = headerHashBySlot.floorEntry(slot);
+        if (entry == null) return null;
+        return new Point(entry.getKey(), HexUtil.encodeHexString(entry.getValue()));
+    }
+
+    private ResolvedPoint resolvePoint(Point point) {
+        byte[] requested;
+        try {
+            requested = HexUtil.decodeHexString(point.getHash());
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Invalid rollback hash: " + point.getHash(), e);
+        }
+        if (requested.length != 32) {
+            throw new IllegalArgumentException("Rollback hash must be exactly 32 bytes");
+        }
+
+        long slot = point.getSlot();
+        byte[] mainHash = headerHashBySlot.get(slot);
+        if (java.util.Arrays.equals(mainHash, requested)) {
+            long number = headerNumberBySlot.getOrDefault(slot, -1L);
+            return new ResolvedPoint(slot, number, requested, false);
+        }
+        byte[] ebbHash = ebbHeaderHashBySlot.get(slot);
+        if (java.util.Arrays.equals(ebbHash, requested)) {
+            long number = ebbHeaderNumberBySlot.getOrDefault(slot, inferEbbNumber(slot));
+            return new ResolvedPoint(slot, number, requested, true);
+        }
+        throw new IllegalArgumentException("Rollback point is not canonical at slot " + slot);
+    }
+
+    private ResolvedPoint resolveTip(ChainTip chainTip) {
+        if (chainTip == null || chainTip.getBlockHash() == null) return null;
+        boolean ebb = java.util.Arrays.equals(
+                ebbHeaderHashBySlot.get(chainTip.getSlot()), chainTip.getBlockHash());
+        return new ResolvedPoint(chainTip.getSlot(), chainTip.getBlockNumber(),
+                chainTip.getBlockHash(), ebb);
+    }
+
+    private long inferEbbNumber(long slot) {
+        Long sameSlotMain = headerNumberBySlot.get(slot);
+        if (sameSlotMain != null) return Math.max(0L, sameSlotMain - 1L);
+        var previous = headerNumberBySlot.lowerEntry(slot);
+        return previous != null ? previous.getValue() : 0L;
+    }
+
+    private void removeMainHeadersAfter(ResolvedPoint target) {
+        for (var entry : new ArrayList<>(headerHashBySlot.tailMap(target.slot(), true).entrySet())) {
+            if (!isMainAfter(entry.getKey(), entry.getValue(), target)) continue;
+            long slot = entry.getKey();
+            byte[] hash = entry.getValue();
+            blockHeaderStore.remove(toHex(hash));
+            removeHashValue(headerHashByNumber, hash);
+            headerNumberBySlot.remove(slot);
+            headerHashBySlot.remove(slot);
+        }
+    }
+
+    private void removeEbbHeadersAfter(ResolvedPoint target) {
+        for (var entry : new ArrayList<>(ebbHeaderHashBySlot.tailMap(target.slot(), true).entrySet())) {
+            if (!isEbbAfter(entry.getKey(), entry.getValue(), target)) continue;
+            blockHeaderStore.remove(toHex(entry.getValue()));
+            ebbHeaderNumberBySlot.remove(entry.getKey());
+            ebbHeaderHashBySlot.remove(entry.getKey());
+        }
+    }
+
+    private void removeMainBodiesAfter(ResolvedPoint target) {
+        for (var entry : new ArrayList<>(blockNumberBySlot.tailMap(target.slot(), true).entrySet())) {
+            long slot = entry.getKey();
+            long number = entry.getValue();
+            byte[] hash = blockHashByNumber.get(number);
+            if (!isMainAfter(slot, hash, target)) continue;
+            if (hash != null) blockStore.remove(toHex(hash));
+            blockHashByNumber.remove(number);
+            blockNumberBySlot.remove(slot);
+        }
+    }
+
+    private void removeEbbBodiesAfter(ResolvedPoint target) {
+        for (var entry : new ArrayList<>(ebbHeaderHashBySlot.tailMap(target.slot(), true).entrySet())) {
+            if (isEbbAfter(entry.getKey(), entry.getValue(), target)) {
+                blockStore.remove(toHex(entry.getValue()));
+            }
+        }
+    }
+
+    private static boolean isMainAfter(long slot, byte[] hash, ResolvedPoint target) {
+        if (slot != target.slot()) return slot > target.slot();
+        return target.ebb() || !java.util.Arrays.equals(hash, target.hash());
+    }
+
+    private static boolean isEbbAfter(long slot, byte[] hash, ResolvedPoint target) {
+        if (slot != target.slot()) return slot > target.slot();
+        return target.ebb() && !java.util.Arrays.equals(hash, target.hash());
+    }
+
+    private static int compare(ResolvedPoint left, ResolvedPoint right) {
+        if (right == null) return 1;
+        int slot = Long.compare(left.slot(), right.slot());
+        if (slot != 0) return slot;
+        if (left.ebb() == right.ebb()) return 0;
+        return left.ebb() ? -1 : 1;
+    }
+
+    private static boolean samePoint(ChainTip tip, ResolvedPoint point) {
+        return tip != null
+                && tip.getSlot() == point.slot()
+                && java.util.Arrays.equals(tip.getBlockHash(), point.hash());
+    }
+
+    private record ResolvedPoint(long slot, long blockNumber, byte[] hash, boolean ebb) {
+        ChainTip toTip() {
+            return new ChainTip(slot, hash, blockNumber);
         }
     }
 

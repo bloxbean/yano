@@ -9,6 +9,8 @@ import com.bloxbean.cardano.yano.archive.api.schema.ArchiveValueType;
 import com.bloxbean.cardano.yano.archive.api.ArchiveRowCodec;
 import com.bloxbean.cardano.yano.archive.api.projection.ArchiveArtifactReader;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactRef;
+import com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactIdentity;
+import com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactEnrollments;
 import com.bloxbean.cardano.yano.archive.api.schema.ArchiveSchemas;
 import java.time.Duration;
 import java.util.Comparator;
@@ -77,6 +79,8 @@ public final class DuckLakeProjectionSink implements ProjectionSink {
     private final Map<String, ArchiveTableSchema> tables;
 
     private volatile ProjectionIdentity identity;
+    private volatile ProjectionArtifactIdentity artifactIdentity = ProjectionArtifactIdentity.NONE;
+    private volatile ProjectionArtifactEnrollments artifactEnrollments = ProjectionArtifactEnrollments.NONE;
     private volatile ProjectionSinkHealth health = ProjectionSinkHealth.ready();
 
     public DuckLakeProjectionSink(DuckDbManager manager, DuckLakeArchiveConfig config) {
@@ -134,6 +138,433 @@ public final class DuckLakeProjectionSink implements ProjectionSink {
     }
 
     @Override
+    public void initializeArtifacts(ProjectionArtifactIdentity expected,
+                                    ProjectionArtifactEnrollments enrollments) {
+        Objects.requireNonNull(expected, "expected");
+        Objects.requireNonNull(enrollments, "enrollments");
+        enrollments.requireMatches(expected);
+        try (DuckDbLease lease = manager.acquire(DuckDbWorkload.BULK_CATCH_UP,
+                config.acquireTimeout())) {
+            Connection connection = lease.connection();
+            DuckLakeSql.attach(connection, config, null, false);
+            try {
+                installArtifacts(connection, expected, enrollments);
+            } finally {
+                DuckLakeSql.detach(connection);
+            }
+        } catch (SQLException e) {
+            throw new ProjectionSinkException("failed to initialize DuckLake epoch artifacts", e);
+        }
+        this.artifactIdentity = expected;
+        this.artifactEnrollments = enrollments;
+    }
+
+    private void installArtifacts(Connection connection, ProjectionArtifactIdentity expected,
+                                  ProjectionArtifactEnrollments enrollments) throws SQLException {
+        ProjectionArtifactIdentity stored = storedArtifactIdentity(connection)
+                .map(ProjectionArtifactIdentity::parse).orElse(ProjectionArtifactIdentity.NONE);
+        Map<com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId,
+                com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactEnrollment>
+                storedEnrollments = storedArtifactEnrollments(connection);
+        for (var entry : stored.contracts().entrySet()) {
+            var requested = expected.contractFor(entry.getKey()).orElseThrow(() ->
+                    new ProjectionSinkException("DuckLake archive holds " + entry.getValue().wireName()
+                            + " but the requested artifact set removes it"));
+            if (!requested.equals(entry.getValue())) {
+                throw new ProjectionSinkException("DuckLake artifact contract changed for "
+                        + entry.getValue().wireName() + "; a rebuild is required");
+            }
+            var persistedEnrollment = storedEnrollments.get(entry.getKey());
+            var requestedEnrollment = enrollments.enrollmentFor(entry.getKey()).orElseThrow();
+            if (persistedEnrollment != null && !persistedEnrollment.equals(requestedEnrollment)) {
+                throw new ProjectionSinkException("DuckLake artifact enrollment changed for "
+                        + entry.getValue().wireName() + " from " + persistedEnrollment.wireForm()
+                        + " to " + requestedEnrollment.wireForm());
+            }
+        }
+
+        try (Statement sql = connection.createStatement()) {
+            sql.execute("BEGIN TRANSACTION");
+        }
+        try {
+            try (Statement sql = connection.createStatement()) {
+                for (var contract : expected.contracts().values()) {
+                    for (ArchiveTableSchema table : ArchiveSchemas.schema(contract.dataset()).tables()) {
+                        sql.execute(DuckLakeSql.createTable(table));
+                        if (table.columns().stream().anyMatch(column -> column.name().equals("epoch"))) {
+                            try {
+                                sql.execute("ALTER TABLE history_lake."
+                                        + DuckLakeSql.name(table.physicalName())
+                                        + " SET PARTITIONED BY (epoch)");
+                            } catch (SQLException e) {
+                                String message = e.getMessage();
+                                if (message == null || !message.toLowerCase().contains("partition")) throw e;
+                            }
+                        }
+                    }
+                }
+                sql.execute("DELETE FROM history_lake."
+                        + DuckLakeProjectionSchema.ARTIFACT_IDENTITY_TABLE);
+                sql.execute("DELETE FROM history_lake."
+                        + DuckLakeProjectionSchema.ARTIFACT_ENROLLMENT_TABLE);
+            }
+            try (PreparedStatement insert = connection.prepareStatement(
+                    "INSERT INTO history_lake." + DuckLakeProjectionSchema.ARTIFACT_IDENTITY_TABLE
+                            + " VALUES (?, ?)")) {
+                insert.setString(1, expected.wireForm());
+                insert.setTimestamp(2, Timestamp.from(Instant.now()));
+                insert.executeUpdate();
+            }
+            try (PreparedStatement insert = connection.prepareStatement(
+                    "INSERT INTO history_lake." + DuckLakeProjectionSchema.ARTIFACT_ENROLLMENT_TABLE
+                            + " VALUES (?, ?, ?, ?)")) {
+                for (var enrollment : enrollments.values().values()) {
+                    insert.setString(1, enrollment.dataset().name());
+                    if (enrollment.projectedFromEpoch().isPresent()) {
+                        insert.setInt(2, enrollment.projectedFromEpoch().getAsInt());
+                    } else {
+                        insert.setNull(2, java.sql.Types.INTEGER);
+                    }
+                    insert.setString(3, enrollment.origin().name());
+                    insert.setTimestamp(4, Timestamp.from(Instant.now()));
+                    insert.executeUpdate();
+                }
+            }
+            try (Statement sql = connection.createStatement()) {
+                sql.execute("COMMIT");
+            }
+        } catch (SQLException | RuntimeException e) {
+            try (Statement sql = connection.createStatement()) {
+                sql.execute("ROLLBACK");
+            } catch (SQLException ignored) { }
+            throw e;
+        }
+    }
+
+    private Optional<String> storedArtifactIdentity(Connection connection) throws SQLException {
+        try (Statement sql = connection.createStatement(); ResultSet rows = sql.executeQuery(
+                "SELECT wire_form FROM history_lake."
+                        + DuckLakeProjectionSchema.ARTIFACT_IDENTITY_TABLE
+                        + " ORDER BY installed_at DESC LIMIT 1")) {
+            return rows.next() ? Optional.of(rows.getString(1)) : Optional.empty();
+        }
+    }
+
+    private Map<com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId,
+            com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactEnrollment>
+            storedArtifactEnrollments(Connection connection) throws SQLException {
+        var result = new java.util.EnumMap<com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId,
+                com.bloxbean.cardano.yano.archive.api.projection.ProjectionArtifactEnrollment>(
+                com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.class);
+        try (Statement sql = connection.createStatement(); ResultSet rows = sql.executeQuery(
+                "SELECT dataset, projected_from_epoch, origin FROM history_lake."
+                        + DuckLakeProjectionSchema.ARTIFACT_ENROLLMENT_TABLE)) {
+            while (rows.next()) {
+                var dataset = com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.valueOf(rows.getString(1));
+                int projected = rows.getInt(2);
+                java.util.OptionalInt projectedFrom = rows.wasNull()
+                        ? java.util.OptionalInt.empty() : java.util.OptionalInt.of(projected);
+                result.put(dataset, new com.bloxbean.cardano.yano.archive.api.projection
+                        .ProjectionArtifactEnrollment(dataset, projectedFrom,
+                        com.bloxbean.cardano.yano.archive.api.projection
+                                .ProjectionArtifactEnrollmentOrigin.valueOf(rows.getString(3))));
+            }
+        }
+        return Map.copyOf(result);
+    }
+
+    @Override
+    public Map<com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId,
+            List<com.bloxbean.cardano.yano.archive.api.ArchiveRange>> epochArtifactCoverage() {
+        var result = new java.util.EnumMap<com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId,
+                List<com.bloxbean.cardano.yano.archive.api.ArchiveRange>>(
+                com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.class);
+        try (DuckDbLease lease = manager.acquire(DuckDbWorkload.STEADY, config.acquireTimeout())) {
+            Connection connection = lease.connection();
+            DuckLakeSql.attach(connection, config, null, true);
+            try (Statement sql = connection.createStatement(); ResultSet rows = sql.executeQuery(
+                    "SELECT dataset, semantic_epoch FROM history_lake."
+                            + DuckLakeProjectionSchema.EPOCH_COVERAGE_TABLE
+                            + " WHERE outcome='COMPLETE' ORDER BY dataset, semantic_epoch")) {
+                var epochs = new java.util.EnumMap<com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId,
+                        java.util.List<Long>>(com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.class);
+                while (rows.next()) {
+                    var dataset = com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId
+                            .valueOf(rows.getString(1));
+                    epochs.computeIfAbsent(dataset, ignored -> new java.util.ArrayList<>())
+                            .add(rows.getLong(2));
+                }
+                epochs.forEach((dataset, values) -> result.put(dataset, mergeEpochs(values)));
+            } finally {
+                DuckLakeSql.detach(connection);
+            }
+        } catch (SQLException e) {
+            throw new ProjectionSinkException("failed to read epoch artifact coverage", e);
+        }
+        return Map.copyOf(result);
+    }
+
+    @Override
+    public void recordEpochArtifactGap(
+            com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap gap) {
+        Objects.requireNonNull(gap, "gap");
+        if (artifactIdentity.contractFor(gap.dataset()).isEmpty()) {
+            throw new ProjectionSinkException("cannot record a gap for unselected " + gap.dataset());
+        }
+        try (DuckDbLease lease = manager.acquire(DuckDbWorkload.BULK_CATCH_UP,
+                config.acquireTimeout())) {
+            Connection connection = lease.connection();
+            DuckLakeSql.attach(connection, config, null, false);
+            try {
+                try (PreparedStatement existing = connection.prepareStatement(
+                        "SELECT boundary_block_number, boundary_slot, boundary_hash, outcome, "
+                                + "failure_class FROM history_lake."
+                                + DuckLakeProjectionSchema.EPOCH_COVERAGE_TABLE
+                                + " WHERE dataset=? AND semantic_epoch=?")) {
+                    existing.setString(1, gap.dataset().name());
+                    existing.setInt(2, gap.semanticEpoch());
+                    try (ResultSet rows = existing.executeQuery()) {
+                        if (rows.next()) {
+                            boolean same = rows.getLong(1) == gap.boundaryBlockNumber()
+                                    && rows.getLong(2) == gap.boundarySlot()
+                                    && java.util.Arrays.equals(rows.getBytes(3), gap.boundaryBlockHash())
+                                    && "GAP".equals(rows.getString(4))
+                                    && gap.failureClass().equals(rows.getString(5));
+                            if (!same) throw new ProjectionSinkException(
+                                    "conflicting epoch outcome for " + gap.dataset()
+                                            + " epoch " + gap.semanticEpoch());
+                            if (rows.next()) throw new ProjectionSinkException(
+                                    "duplicate epoch outcomes for " + gap.dataset()
+                                            + " epoch " + gap.semanticEpoch());
+                            return;
+                        }
+                    }
+                }
+                try (PreparedStatement insert = connection.prepareStatement(
+                        "INSERT INTO history_lake." + DuckLakeProjectionSchema.EPOCH_COVERAGE_TABLE
+                                + " VALUES (?, ?, ?, ?, ?, 'GAP', NULL, NULL, ?, ?, ?)")) {
+                    insert.setString(1, gap.dataset().name());
+                    insert.setInt(2, gap.semanticEpoch());
+                    insert.setLong(3, gap.boundaryBlockNumber());
+                    insert.setLong(4, gap.boundarySlot());
+                    insert.setBytes(5, gap.boundaryBlockHash());
+                    insert.setString(6, gap.failureClass());
+                    insert.setString(7, gap.detail());
+                    insert.setTimestamp(8, Timestamp.from(gap.recordedAt()));
+                    insert.executeUpdate();
+                }
+            } finally {
+                DuckLakeSql.detach(connection);
+            }
+        } catch (SQLException e) {
+            throw new ProjectionSinkException("failed to record epoch-artifact gap", e);
+        }
+    }
+
+    @Override
+    public List<com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap>
+            epochArtifactGaps() {
+        List<com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap> result =
+                new java.util.ArrayList<>();
+        try (DuckDbLease lease = manager.acquire(DuckDbWorkload.STEADY, config.acquireTimeout())) {
+            Connection connection = lease.connection();
+            DuckLakeSql.attach(connection, config, null, true);
+            try (Statement sql = connection.createStatement(); ResultSet rows = sql.executeQuery(
+                    "SELECT dataset, semantic_epoch, boundary_block_number, boundary_slot, "
+                            + "boundary_hash, failure_class, failure_detail, recorded_at "
+                            + "FROM history_lake." + DuckLakeProjectionSchema.EPOCH_COVERAGE_TABLE
+                            + " WHERE outcome='GAP' ORDER BY dataset, semantic_epoch")) {
+                while (rows.next()) {
+                    result.add(new com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGap(
+                            com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.valueOf(rows.getString(1)),
+                            rows.getInt(2), rows.getLong(3), rows.getLong(4), rows.getBytes(5),
+                            rows.getString(6), rows.getString(7), rows.getTimestamp(8).toInstant()));
+                }
+            } finally {
+                DuckLakeSql.detach(connection);
+            }
+        } catch (SQLException e) {
+            throw new ProjectionSinkException("failed to read epoch-artifact gaps", e);
+        }
+        return List.copyOf(result);
+    }
+
+    @Override
+    public boolean hasCompleteEpochArtifact(
+            com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId dataset,
+            int semanticEpoch, long boundarySlot, byte[] boundaryHash) {
+        Objects.requireNonNull(dataset, "dataset");
+        Objects.requireNonNull(boundaryHash, "boundaryHash");
+        try (DuckDbLease lease = manager.acquire(DuckDbWorkload.STEADY, config.acquireTimeout())) {
+            Connection connection = lease.connection();
+            DuckLakeSql.attach(connection, config, null, true);
+            try (PreparedStatement query = connection.prepareStatement(
+                    "SELECT outcome, boundary_slot, boundary_hash FROM history_lake."
+                            + DuckLakeProjectionSchema.EPOCH_COVERAGE_TABLE
+                            + " WHERE dataset=? AND semantic_epoch=?")) {
+                query.setString(1, dataset.name());
+                query.setInt(2, semanticEpoch);
+                try (ResultSet rows = query.executeQuery()) {
+                    if (!rows.next()) return false;
+                    boolean matches = "COMPLETE".equals(rows.getString(1))
+                            && rows.getLong(2) == boundarySlot
+                            && java.util.Arrays.equals(rows.getBytes(3), boundaryHash);
+                    if (rows.next()) throw new ProjectionSinkException(
+                            "duplicate epoch outcomes for " + dataset + " epoch " + semanticEpoch);
+                    return matches;
+                }
+            } finally {
+                DuckLakeSql.detach(connection);
+            }
+        } catch (SQLException e) {
+            throw new ProjectionSinkException("failed to verify exact epoch artifact coverage", e);
+        }
+    }
+
+    @Override
+    public void recordEpochArtifactGapInterval(
+            com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGapInterval interval) {
+        replaceEpochArtifactGapIntervals(java.util.stream.Stream.concat(
+                        epochArtifactGapIntervals().stream().filter(existing ->
+                                existing.dataset() != interval.dataset()
+                                        || existing.causedByEpoch() != interval.causedByEpoch()),
+                        java.util.stream.Stream.of(interval)).toList());
+    }
+
+    @Override
+    public void replaceEpochArtifactGapIntervals(
+            List<com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGapInterval> intervals) {
+        Objects.requireNonNull(intervals, "intervals");
+        intervals.forEach(interval -> {
+            if (artifactIdentity.contractFor(interval.dataset()).isEmpty()) {
+                throw new ProjectionSinkException("cannot record a gap interval for unselected "
+                        + interval.dataset());
+            }
+        });
+        try (DuckDbLease lease = manager.acquire(DuckDbWorkload.BULK_CATCH_UP,
+                config.acquireTimeout())) {
+            Connection connection = lease.connection();
+            DuckLakeSql.attach(connection, config, null, false);
+            try (Statement sql = connection.createStatement()) { sql.execute("BEGIN TRANSACTION"); }
+            try {
+                try (Statement delete = connection.createStatement()) {
+                    delete.execute("DELETE FROM history_lake."
+                            + DuckLakeProjectionSchema.EPOCH_GAP_INTERVAL_TABLE);
+                }
+                insertGapIntervals(connection, intervals);
+                try (Statement sql = connection.createStatement()) { sql.execute("COMMIT"); }
+            } catch (SQLException | RuntimeException e) {
+                try (Statement sql = connection.createStatement()) { sql.execute("ROLLBACK"); }
+                catch (SQLException ignored) { }
+                throw e;
+            } finally {
+                DuckLakeSql.detach(connection);
+            }
+        } catch (SQLException e) {
+            throw new ProjectionSinkException("failed to replace epoch-artifact gap intervals", e);
+        }
+    }
+
+    private static void insertGapIntervals(Connection connection,
+            List<com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGapInterval> intervals)
+            throws SQLException {
+        try (PreparedStatement insert = connection.prepareStatement(
+                "INSERT INTO history_lake." + DuckLakeProjectionSchema.EPOCH_GAP_INTERVAL_TABLE
+                        + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
+            for (var interval : intervals) {
+                insert.setString(1, interval.dataset().name());
+                insert.setInt(2, interval.fromEpoch()); insert.setInt(3, interval.throughEpoch());
+                insert.setLong(4, interval.fromBoundarySlot()); insert.setBytes(5, interval.fromBoundaryHash());
+                insert.setLong(6, interval.throughBoundarySlot()); insert.setBytes(7, interval.throughBoundaryHash());
+                insert.setBoolean(8, interval.open()); insert.setInt(9, interval.causedByEpoch());
+                insert.setString(10, interval.failureClass()); insert.setTimestamp(11, Timestamp.from(Instant.now()));
+                insert.executeUpdate();
+            }
+        }
+    }
+
+    @Override
+    public List<com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactGapInterval>
+            epochArtifactGapIntervals() {
+        var result = new java.util.ArrayList<com.bloxbean.cardano.yano.archive.api.projection
+                .EpochArtifactGapInterval>();
+        try (DuckDbLease lease = manager.acquire(DuckDbWorkload.STEADY, config.acquireTimeout())) {
+            Connection connection = lease.connection();
+            DuckLakeSql.attach(connection, config, null, true);
+            try (Statement sql = connection.createStatement(); ResultSet rows = sql.executeQuery(
+                    "SELECT dataset, from_epoch, through_epoch, from_slot, from_hash, through_slot, "
+                            + "through_hash, is_open, caused_by_epoch, failure_class FROM history_lake."
+                            + DuckLakeProjectionSchema.EPOCH_GAP_INTERVAL_TABLE
+                            + " ORDER BY dataset, caused_by_epoch")) {
+                while (rows.next()) result.add(new com.bloxbean.cardano.yano.archive.api.projection
+                        .EpochArtifactGapInterval(
+                        com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId.valueOf(rows.getString(1)),
+                        rows.getInt(2), rows.getInt(3), rows.getLong(4), rows.getBytes(5),
+                        rows.getLong(6), rows.getBytes(7), rows.getBoolean(8), rows.getInt(9), rows.getString(10)));
+            } finally { DuckLakeSql.detach(connection); }
+        } catch (SQLException e) {
+            throw new ProjectionSinkException("failed to read epoch-artifact gap intervals", e);
+        }
+        return List.copyOf(result);
+    }
+
+    @Override
+    public void rollbackEpochArtifactCoverage(long slot, byte[] hash, boolean origin) {
+        if (!origin && (hash == null || hash.length == 0)) {
+            throw new IllegalArgumentException("non-origin rollback requires a hash");
+        }
+        try (DuckDbLease lease = manager.acquire(DuckDbWorkload.BULK_CATCH_UP,
+                config.acquireTimeout())) {
+            Connection connection = lease.connection();
+            DuckLakeSql.attach(connection, config, null, false);
+            try (PreparedStatement delete = connection.prepareStatement(origin
+                    ? "DELETE FROM history_lake." + DuckLakeProjectionSchema.EPOCH_COVERAGE_TABLE
+                    : "DELETE FROM history_lake." + DuckLakeProjectionSchema.EPOCH_COVERAGE_TABLE
+                            + " WHERE boundary_slot > ? OR (boundary_slot = ? AND boundary_hash != ?)")) {
+                if (!origin) {
+                    delete.setLong(1, slot);
+                    delete.setLong(2, slot);
+                    delete.setBytes(3, hash);
+                }
+                delete.executeUpdate();
+            } finally {
+                DuckLakeSql.detach(connection);
+            }
+            // Intervals are resumable summaries. Remove any whose endpoint is no longer
+            // canonical; the authoritative outbox immediately re-upserts a shortened survivor.
+            DuckLakeSql.attach(connection, config, null, false);
+            try (PreparedStatement delete = connection.prepareStatement(origin
+                    ? "DELETE FROM history_lake." + DuckLakeProjectionSchema.EPOCH_GAP_INTERVAL_TABLE
+                    : "DELETE FROM history_lake." + DuckLakeProjectionSchema.EPOCH_GAP_INTERVAL_TABLE
+                            + " WHERE through_slot > ? OR (through_slot = ? AND through_hash != ?)")) {
+                if (!origin) { delete.setLong(1, slot); delete.setLong(2, slot); delete.setBytes(3, hash); }
+                delete.executeUpdate();
+            } finally { DuckLakeSql.detach(connection); }
+        } catch (SQLException e) {
+            throw new ProjectionSinkException("failed to roll back epoch-artifact coverage", e);
+        }
+    }
+
+    private static List<com.bloxbean.cardano.yano.archive.api.ArchiveRange> mergeEpochs(
+            List<Long> values) {
+        if (values.isEmpty()) return List.of();
+        var distinct = values.stream().distinct().sorted().toList();
+        var ranges = new java.util.ArrayList<com.bloxbean.cardano.yano.archive.api.ArchiveRange>();
+        long start = distinct.getFirst();
+        long end = start;
+        for (int i = 1; i < distinct.size(); i++) {
+            long next = distinct.get(i);
+            if (next == end + 1) end = next;
+            else {
+                ranges.add(new com.bloxbean.cardano.yano.archive.api.EpochRange(start, end));
+                start = end = next;
+            }
+        }
+        ranges.add(new com.bloxbean.cardano.yano.archive.api.EpochRange(start, end));
+        return List.copyOf(ranges);
+    }
+
+    @Override
     public ProjectionCoordinate coordinate() {
         // The greatest contiguous committed block is derived from receipts, not from the
         // maximum row present: a partially visible range must never look committed.
@@ -142,17 +573,30 @@ public final class DuckLakeProjectionSink implements ProjectionSink {
             DuckLakeSql.attach(connection, config, null, true);
             try (Statement sql = connection.createStatement();
                  ResultSet rs = sql.executeQuery(
-                         "SELECT first_block, last_block FROM history_lake.projection_receipts ORDER BY first_block")) {
+                         "SELECT first_block, last_block, last_slot, last_block_hash, last_envelope_id "
+                                 + "FROM history_lake.projection_receipts ORDER BY first_block")) {
                 long contiguousThrough = -1;
+                long lastSlot = -1;
+                byte[] lastHash = null;
+                String lastEnvelopeId = null;
                 while (rs.next()) {
                     long first = rs.getLong(1);
                     long last = rs.getLong(2);
                     if (first != contiguousThrough + 1) break;
                     contiguousThrough = last;
+                    lastSlot = rs.getLong(3);
+                    boolean missingSlot = rs.wasNull();
+                    lastHash = rs.getBytes(4);
+                    lastEnvelopeId = rs.getString(5);
+                    if (missingSlot || lastHash == null || lastHash.length == 0) {
+                        throw new ProjectionSinkException("projection receipt ending at block " + last
+                                + " predates exact sink-point persistence; rebuild this preview archive "
+                                + "instead of accepting an unverifiable restart coordinate");
+                    }
                 }
                 return contiguousThrough < 0 ? ProjectionCoordinate.NONE
-                        : new ProjectionCoordinate(contiguousThrough, contiguousThrough,
-                                new byte[]{1}, "committed");
+                        : new ProjectionCoordinate(contiguousThrough, lastSlot,
+                                lastHash, lastEnvelopeId);
             } finally {
                 DuckLakeSql.detach(connection);
             }
@@ -233,6 +677,10 @@ public final class DuckLakeProjectionSink implements ProjectionSink {
                 .thenComparingInt(ProjectionArtifactRef::semanticEpoch));
 
         for (ProjectionArtifactRef ref : ordered) {
+            if (artifactIdentity.contractFor(ref.dataset()).isEmpty()) {
+                throw new ProjectionSinkException("batch references unselected epoch artifact "
+                        + ref.dataset());
+            }
             // An artifact with no declared row count cannot be verified at all: a truncated read
             // would commit silently and the epoch would be permanently short. Refuse it.
             if (ref.expectedRowCount().isEmpty()) {
@@ -441,6 +889,8 @@ public final class DuckLakeProjectionSink implements ProjectionSink {
             }
 
             insertReceipt(connection, batch, rowCounts, committedAt);
+            insertEpochCoverage(connection, batch, committedAt);
+            applyIntervalRepairs(connection, batch.intervalRepairs());
 
             try (Statement sql = connection.createStatement()) {
                 sql.execute("COMMIT");
@@ -468,10 +918,112 @@ public final class DuckLakeProjectionSink implements ProjectionSink {
         }
     }
 
+    private void applyIntervalRepairs(Connection connection,
+            List<com.bloxbean.cardano.yano.archive.api.projection.EpochArtifactIntervalRepair> repairs)
+            throws SQLException {
+        for (var repair : repairs) {
+            try (PreparedStatement delete = connection.prepareStatement(
+                    "DELETE FROM history_lake." + DuckLakeProjectionSchema.EPOCH_GAP_INTERVAL_TABLE
+                            + " WHERE dataset=? AND caused_by_epoch=?")) {
+                delete.setString(1, repair.dataset().name());
+                delete.setInt(2, repair.causedByEpoch());
+                delete.executeUpdate();
+            }
+            insertGapIntervals(connection, repair.survivingSegments());
+        }
+    }
+
+    private void insertEpochCoverage(Connection connection, ProjectionRowBatch batch,
+                                     Instant recordedAt) throws SQLException {
+        record Key(com.bloxbean.cardano.yano.archive.api.ArchiveDatasetId dataset, int epoch,
+                   long block, long slot) { }
+        Map<Key, Long> complete = new LinkedHashMap<>();
+        Map<Key, List<byte[]>> digests = new LinkedHashMap<>();
+        for (ProjectionArtifactRef ref : batch.artifacts()) {
+            long rows = ref.expectedRowCount().orElseThrow(() -> new ProjectionSinkException(
+                    "artifact " + ref.dataset() + " epoch " + ref.semanticEpoch()
+                            + " has no row count for coverage"));
+            var key = new Key(ref.dataset(), ref.semanticEpoch(), ref.producingBlockNumber(),
+                    ref.producingSlot());
+            complete.merge(key, rows, Long::sum);
+            digests.computeIfAbsent(key, ignored -> new java.util.ArrayList<>())
+                    .add(ref.contentDigest().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        }
+        if (complete.isEmpty()) return;
+        try (PreparedStatement insert = connection.prepareStatement(
+                "INSERT INTO history_lake." + DuckLakeProjectionSchema.EPOCH_COVERAGE_TABLE
+                        + " VALUES (?, ?, ?, ?, ?, 'COMPLETE', ?, ?, NULL, NULL, ?)")) {
+            for (var entry : complete.entrySet()) {
+                Key key = entry.getKey();
+                byte[] hash = batch.canonicalBlockHashes().get(key.block());
+                if (hash == null || hash.length == 0) {
+                    throw new ProjectionSinkException("canonical hash is missing for epoch artifact "
+                            + key.dataset() + " at block " + key.block());
+                }
+                // A verified corrected replay repairs a point GAP atomically: artifact rows have
+                // already been staged in this transaction, and the GAP is replaced by COMPLETE
+                // before the same transaction commits. An existing COMPLETE is never rewritten.
+                try (PreparedStatement existing = connection.prepareStatement(
+                        "SELECT outcome, boundary_block_number, boundary_slot, boundary_hash "
+                                + "FROM history_lake."
+                                + DuckLakeProjectionSchema.EPOCH_COVERAGE_TABLE
+                                + " WHERE dataset=? AND semantic_epoch=?")) {
+                    existing.setString(1, key.dataset().name());
+                    existing.setInt(2, key.epoch());
+                    try (ResultSet rows = existing.executeQuery()) {
+                        if (rows.next()) {
+                            String outcome = rows.getString(1);
+                            long gapBlock = rows.getLong(2);
+                            long gapSlot = rows.getLong(3);
+                            byte[] gapHash = rows.getBytes(4);
+                            boolean duplicate = rows.next();
+                            if (!"GAP".equals(outcome) || duplicate) {
+                                throw new ProjectionSinkException("epoch artifact " + key.dataset()
+                                        + " epoch " + key.epoch() + " already has outcome " + outcome);
+                            }
+                            if (gapBlock != key.block() || gapSlot != key.slot()
+                                    || !java.util.Arrays.equals(gapHash, hash)) {
+                                throw new ProjectionSinkException("epoch artifact repair for "
+                                        + key.dataset() + " epoch " + key.epoch()
+                                        + " does not match the canonical GAP point");
+                            }
+                            try (PreparedStatement delete = connection.prepareStatement(
+                                    "DELETE FROM history_lake."
+                                            + DuckLakeProjectionSchema.EPOCH_COVERAGE_TABLE
+                                            + " WHERE dataset=? AND semantic_epoch=? AND outcome='GAP'")) {
+                                delete.setString(1, key.dataset().name());
+                                delete.setInt(2, key.epoch());
+                                delete.executeUpdate();
+                            }
+                        }
+                    }
+                }
+                insert.setString(1, key.dataset().name());
+                insert.setInt(2, key.epoch());
+                insert.setLong(3, key.block());
+                insert.setLong(4, key.slot());
+                insert.setBytes(5, hash);
+                insert.setLong(6, entry.getValue());
+                insert.setString(7, com.bloxbean.cardano.yano.archive.api.projection
+                        .ProjectionDigest.ofChunks(digests.get(key)));
+                insert.setTimestamp(8, Timestamp.from(recordedAt));
+                insert.executeUpdate();
+            }
+        }
+    }
+
     private void insertReceipt(Connection connection, ProjectionRowBatch batch,
                                Map<String, Long> rowCounts, Instant committedAt) throws SQLException {
+        byte[] lastHash = batch.canonicalBlockHashes().get(batch.lastBlock());
+        if (lastHash == null || lastHash.length == 0) {
+            throw new ProjectionSinkException("projection batch ending at block " + batch.lastBlock()
+                    + " has no canonical endpoint hash");
+        }
         try (PreparedStatement insert = connection.prepareStatement(
-                "INSERT INTO history_lake.projection_receipts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
+                "INSERT INTO history_lake.projection_receipts "
+                        + "(first_block,last_block,block_count,identity_fingerprint,first_envelope_id,"
+                        + "last_envelope_id,ordered_digest,row_counts,committed_at,last_slot,last_block_hash) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
             insert.setLong(1, batch.firstBlock());
             insert.setLong(2, batch.lastBlock());
             insert.setLong(3, batch.blockCount());
@@ -481,6 +1033,8 @@ public final class DuckLakeProjectionSink implements ProjectionSink {
             insert.setString(7, batch.orderedDigest());
             insert.setString(8, encodeCounts(rowCounts));
             insert.setTimestamp(9, Timestamp.from(committedAt));
+            insert.setLong(10, batch.lastSlot());
+            insert.setBytes(11, lastHash);
             insert.executeUpdate();
         }
     }

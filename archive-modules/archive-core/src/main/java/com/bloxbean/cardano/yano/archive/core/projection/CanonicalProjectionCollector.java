@@ -8,6 +8,7 @@ import com.bloxbean.cardano.yano.api.archive.ConsumedOutputAddresses;
 import com.bloxbean.cardano.yano.api.archive.ProjectionStagingWriter;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.ByronBlockProjectionEvent;
+import com.bloxbean.cardano.yano.api.events.ByronMainBlockAppliedEvent;
 import com.bloxbean.cardano.yano.archive.api.ArchiveNetworkIdentity;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionBlockKind;
 import com.bloxbean.cardano.yano.archive.api.projection.ProjectionEnvelopeHeader;
@@ -20,8 +21,10 @@ import com.bloxbean.cardano.yano.archive.core.source.YaciBlockArchiveDecoder;
 import com.bloxbean.cardano.yano.archive.core.source.YaciUtxoHistoryDecoder;
 
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.LongUnaryOperator;
 
 /**
@@ -49,6 +52,11 @@ public final class CanonicalProjectionCollector implements CanonicalProjectionCo
     private final boolean enabled;
     /** Authoritative pointer mapping, owned by the account-state contributor. */
     private final PointerCredentialSource pointerSource;
+
+    @Override
+    public void reinitializeAfterSnapshotRestore() {
+        outbox.reinitializeAfterSnapshotRestore();
+    }
 
     public CanonicalProjectionCollector(ProjectionOutboxStore outbox, ProjectionIdentity identity,
                                         LongUnaryOperator slotToEpoch, LongUnaryOperator slotToUnixTime) {
@@ -154,25 +162,49 @@ public final class CanonicalProjectionCollector implements CanonicalProjectionCo
     public void contributeByronBlock(ByronBlockProjectionEvent event, ProjectionStagingWriter writer) {
         if (!enabled) return;
         byte[] blockHash = HexUtil.decodeHexString(event.blockHash());
-
-        if (event.isEpochBoundary()) {
-            // An EBB carries no transactions but occupies a block number. It contributes an
-            // empty envelope and advances every required contributor, so the sink's greatest
-            // contiguous coordinate can move past it instead of stopping there forever.
-            Block normalized = ByronBlockNormalizer.normalizeEpochBoundary(
-                    event.epochBoundaryBlock(), event.blockNumber(), blockHash);
-            var context = context(event.blockNumber(), event.slot(), event.blockHash(), normalized);
-            outbox.putBlockIdentity(writer, header(context, ProjectionBlockKind.BYRON_EBB));
-            for (ProjectionSectionType type : identity.requiredSections()) {
-                outbox.advanceContributor(writer, type, event.blockNumber());
+        var existing = outbox.blockIdentity(event.blockNumber());
+        if (existing.isPresent()) {
+            ProjectionEnvelopeHeader claimed = existing.get();
+            if (claimed.blockKind() == ProjectionBlockKind.BYRON_EBB
+                    && !Arrays.equals(claimed.blockHash(), blockHash)) {
+                throw new ProjectionOutboxException("Byron EBB hash mismatch at projection block "
+                        + event.blockNumber());
+            }
+            if (claimed.blockKind() != ProjectionBlockKind.BYRON_EBB
+                    && claimed.blockKind() != ProjectionBlockKind.BYRON_MAIN) {
+                throw new ProjectionOutboxException("Byron EBB coordinate " + event.blockNumber()
+                        + " is occupied by " + claimed.blockKind());
             }
             return;
         }
 
-        Block normalized = ByronBlockNormalizer.normalizeMain(
-                event.mainBlock(), event.blockNumber(), blockHash);
-        contribute(context(event.blockNumber(), event.slot(), event.blockHash(), normalized),
-                ProjectionBlockKind.BYRON_MAIN, writer);
+        Block normalized = ByronBlockNormalizer.normalizeEpochBoundary(
+                event.epochBoundaryBlock(), event.blockNumber(), blockHash);
+        var context = context(event.blockNumber(), event.slot(), event.blockHash(), normalized);
+        outbox.putBlockIdentity(writer, header(context, ProjectionBlockKind.BYRON_EBB));
+        for (ProjectionSectionType type : identity.requiredSections()) {
+            outbox.advanceContributor(writer, type, event.blockNumber());
+        }
+    }
+
+    @Override
+    public void contributeByronMainBlock(ByronMainBlockAppliedEvent event,
+                                         ConsumedOutputAddresses consumed,
+                                         ProjectionStagingWriter writer) {
+        if (!enabled) return;
+        this.consumedAddresses = consumed == null ? ConsumedOutputAddresses.NONE : consumed;
+        try {
+            Block normalized = ByronBlockNormalizer.normalizeMain(event.block(), event.blockNumber(),
+                    HexUtil.decodeHexString(event.blockHash()));
+            contribute(context(event.blockNumber(), event.slot(), event.blockHash(), normalized),
+                    ProjectionBlockKind.BYRON_MAIN, writer);
+        } finally {
+            this.consumedAddresses = ConsumedOutputAddresses.NONE;
+        }
+    }
+
+    private ConsumedOutputAddresses addressResolution() {
+        return consumedAddresses;
     }
 
     @Override
@@ -190,16 +222,51 @@ public final class CanonicalProjectionCollector implements CanonicalProjectionCo
         return outbox.rollbackToSlot(rollbackSlot, identity.requiredSections());
     }
 
+    /** Roll back pending projection state to the exact canonical point. */
+    public long rollbackToPoint(long rollbackSlot, byte[] rollbackHash, boolean origin) {
+        return outbox.rollbackToPoint(
+                rollbackSlot, rollbackHash, origin, identity.requiredSections());
+    }
+
     // ---------------------------------------------------------------- internals
 
     private void contribute(BlockSourceContext<Block> context, ProjectionBlockKind kind,
                             ProjectionStagingWriter writer) {
-        outbox.putBlockIdentity(writer, header(context, kind));
+        ContributionPlan plan = contributionPlan(context);
+        if (plan.skip()) return;
+        if (plan.writeIdentity()) outbox.putBlockIdentity(writer, header(context, kind));
 
-        for (ProjectionSectionType type : identity.requiredSections()) {
+        for (ProjectionSectionType type : plan.sections()) {
             // Every required section is buildable: the constructor rejected any that is not.
             outbox.putSection(writer, context.blockNumber(), buildSection(type, context));
         }
+    }
+
+    private ContributionPlan contributionPlan(BlockSourceContext<Block> context) {
+        long blockNumber = context.blockNumber();
+        if (blockNumber <= outbox.acknowledgedThrough()) return ContributionPlan.SKIP;
+
+        var existing = outbox.blockIdentity(blockNumber);
+        if (existing.isPresent()) {
+            if (!Arrays.equals(existing.get().blockHash(), context.blockHash())) {
+                throw new ProjectionOutboxException("projection replay hash mismatch at block "
+                        + blockNumber);
+            }
+            Set<ProjectionSectionType> missing =
+                    outbox.missingSections(blockNumber, identity.requiredSections());
+            return missing.isEmpty() ? ContributionPlan.SKIP
+                    : new ContributionPlan(false, false, missing);
+        }
+        if (blockNumber <= outbox.identityCursor()) {
+            throw new ProjectionOutboxException("projection identity is missing at block " + blockNumber
+                    + " inside the durable identity cursor " + outbox.identityCursor());
+        }
+        return new ContributionPlan(false, true, identity.requiredSections());
+    }
+
+    private record ContributionPlan(boolean skip, boolean writeIdentity,
+                                    Set<ProjectionSectionType> sections) {
+        private static final ContributionPlan SKIP = new ContributionPlan(true, false, Set.of());
     }
 
     private ProjectionSection buildSection(ProjectionSectionType type, BlockSourceContext<Block> context) {
@@ -225,14 +292,14 @@ public final class CanonicalProjectionCollector implements CanonicalProjectionCo
             }
             // ADDRESS_TRANSACTION still needs input-address resolution at capture time, the way
             // pointer addresses did: UtxoHistoryFact.Input carries the consumed outpoint but not
-            // the address it belonged to. Unreachable: the constructor rejects an identity that
-            // requires a section this collector cannot build.
+            // the address it belonged to.
             case ADDRESS_TRANSACTION -> {
                 // Consumed inputs were resolved during apply, while the outputs they spend were
-                // still current; outputs are parsed here with the same parser the live path
-                // uses. The sink therefore needs neither the block nor the UTXO set.
+                // still current. The shared capture covers Byron and Shelley-family blocks;
+                // outputs are parsed here with the same parser the live path uses. The sink
+                // therefore needs neither the block nor the UTXO set.
                 var fact = ProjectionAddressParticipation.resolve(context.block(), context.slot(),
-                        consumedAddresses, ADDRESS_KEYS, pointerSource);
+                        addressResolution(), ADDRESS_KEYS, pointerSource);
                 long rows = fact.transactions().stream()
                         .mapToLong(tx -> tx.participations().size()).sum();
                 yield section(type, ProjectionFactCodec.encodeAddressParticipations(fact), rows);

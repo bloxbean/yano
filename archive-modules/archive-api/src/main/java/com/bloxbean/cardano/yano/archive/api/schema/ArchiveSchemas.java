@@ -75,13 +75,13 @@ public final class ArchiveSchemas {
                         l("epoch"), l("block_time"), uuid("archive_job_id")),
                 order("block_number", "tx_index", "output_index", "tx_hash")));
         schemas.put(ArchiveDatasetId.REWARD, dataset(ArchiveDatasetId.REWARD, 1,
-                table("rewards", pk("stake_credential", "earned_epoch", "reward_type", "source_id"),
+                table("rewards", pk("stake_credential", "epoch", "reward_type", "source_id"),
                         b("stake_credential"), s("stake_credential_type"), s("stake_address"),
                         bn("pool_hash"), s("reward_type"),
-                        l("earned_epoch"), l("spendable_epoch"), l("amount"), s("source_id"),
+                        l("epoch"), l("spendable_epoch"), l("amount"), s("source_id"),
                         b("boundary_block_hash"), l("boundary_block_number"), l("boundary_slot"),
                         l("boundary_block_time"), uuid("archive_job_id")),
-                order("earned_epoch", "stake_credential", "reward_type", "source_id")));
+                order("epoch", "stake_credential", "reward_type", "source_id")));
         schemas.put(ArchiveDatasetId.EPOCH_STAKE, dataset(ArchiveDatasetId.EPOCH_STAKE, 1,
                 table("epoch_stakes", pk("epoch", "stake_credential"), l("epoch"), s("stake_credential_type"),
                         b("stake_credential"), s("stake_address"), bn("pool_hash"), l("amount"), b("boundary_block_hash"),

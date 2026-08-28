@@ -181,13 +181,26 @@ final class RuntimeYano implements Yano, DevnetRuntimeProvider {
     @Override
     public boolean installProjectionContributor(
             com.bloxbean.cardano.yano.api.archive.CanonicalProjectionContributor contributor) {
-        return chainQuery instanceof com.bloxbean.cardano.yano.runtime.internal.RuntimeNode node
+        return chainQuery instanceof RuntimeNode node
                 && node.installProjectionContributor(contributor);
     }
 
     @Override
+    public java.util.List<String> configuredUtxoStorageFilters() {
+        return chainQuery instanceof RuntimeNode node
+                ? node.configuredUtxoStorageFilters() : java.util.List.of();
+    }
+
+    @Override
+    public java.util.Optional<com.bloxbean.cardano.yano.api.CanonicalBlockReference>
+            canonicalBlockReference(long blockNumber) {
+        return chainQuery instanceof RuntimeNode node
+                ? node.getCanonicalBlockReference(blockNumber) : java.util.Optional.empty();
+    }
+
+    @Override
     public java.util.Optional<com.bloxbean.cardano.yano.api.db.RocksDbAccess> chainstateRocksAccess() {
-        return chainQuery instanceof com.bloxbean.cardano.yano.runtime.internal.RuntimeNode node
+        return chainQuery instanceof RuntimeNode node
                 ? node.chainstateRocksAccess() : java.util.Optional.empty();
     }
 

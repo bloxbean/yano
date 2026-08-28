@@ -27,5 +27,6 @@ public final class ProjectionCfNames {
     /** Epoch-artifact references and their durable leases. */
     public static final String PROJ_ARTIFACT = "proj_artifact";
 
-    public static final String[] ALL = {PROJ_HEADER, PROJ_SECTION, PROJ_META, PROJ_ARTIFACT};
+    public static final String[] ALL =
+            {PROJ_HEADER, PROJ_SECTION, PROJ_META, PROJ_ARTIFACT};
 }

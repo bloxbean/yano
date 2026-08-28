@@ -50,7 +50,7 @@ class DuckLakeGenesisBootstrapTest {
         config = new DuckLakeArchiveConfig(root.resolve("catalog.sqlite"), root.resolve("data"),
                 Duration.ofSeconds(30), 10, 10, 16L * 1024 * 1024, 100_000,
                 Duration.ofHours(168), Duration.ofHours(24));
-        backend = DuckLakeHistoryArchiveBackend.open(
+        backend = DuckLakeHistoryArchiveBackend.openReadOnly(
                 new ArchiveIdentity(UUID.randomUUID(), "ducklake", 1, 1, "fixture-genesis"),
                 config, DuckDbManagerConfig.defaults(root.resolve("tmp")),
                 new PackagedDuckDbExtensionLoader(temp.resolve("extensions")));

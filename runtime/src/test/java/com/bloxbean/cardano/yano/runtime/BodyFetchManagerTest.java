@@ -6,6 +6,10 @@ import com.bloxbean.cardano.yaci.core.model.Era;
 import com.bloxbean.cardano.yaci.core.model.HeaderBody;
 import com.bloxbean.cardano.yaci.core.model.byron.ByronEbBlock;
 import com.bloxbean.cardano.yaci.core.model.byron.ByronMainBlock;
+import com.bloxbean.cardano.yaci.core.model.byron.ByronBlockBody;
+import com.bloxbean.cardano.yaci.core.model.byron.ByronBlockCons;
+import com.bloxbean.cardano.yaci.core.model.byron.ByronBlockHead;
+import com.bloxbean.cardano.yaci.core.model.Epoch;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Tip;
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
@@ -13,7 +17,10 @@ import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.helper.PeerClient;
 import com.bloxbean.cardano.yaci.helper.model.Transaction;
 import com.bloxbean.cardano.yano.api.SyncPhase;
+import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
+import com.bloxbean.cardano.yano.api.events.ByronMainBlockAppliedEvent;
 import com.bloxbean.cardano.yano.runtime.chain.InMemoryChainState;
+import com.bloxbean.cardano.yano.runtime.events.PropagatingEventBus;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
@@ -24,6 +31,10 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.math.BigInteger;
+import java.util.ArrayList;
+import com.bloxbean.cardano.yaci.events.impl.SimpleEventBus;
+import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -43,6 +54,7 @@ class BodyFetchManagerTest {
     private BodyFetchManager bodyFetchManager;
     private MockPeerClient mockPeerClient;
     private InMemoryChainState chainState;
+    private SimpleEventBus eventBus;
     
     // Test configuration
     private static final int GAP_THRESHOLD = 5;
@@ -56,10 +68,11 @@ class BodyFetchManagerTest {
         mockPeerClient = new MockPeerClient();
         mockPeerClient.setRunning(true);
         
+        eventBus = new SimpleEventBus();
         bodyFetchManager = new BodyFetchManager(
             mockPeerClient, 
             chainState,
-            new com.bloxbean.cardano.yaci.events.impl.SimpleEventBus(), 
+            eventBus,
             GAP_THRESHOLD, 
             MAX_BATCH_SIZE, 
             MONITORING_INTERVAL,
@@ -72,6 +85,7 @@ class BodyFetchManagerTest {
         if (bodyFetchManager != null && bodyFetchManager.isRunning()) {
             bodyFetchManager.stop();
         }
+        if (eventBus != null) eventBus.close();
     }
     
     @Test
@@ -347,15 +361,52 @@ class BodyFetchManagerTest {
     @Test
     @DisplayName("Test BlockChainDataListener - Byron block handling")
     void testByronBlockHandling() {
-        ByronMainBlock byronBlock = createTestByronMainBlock(1000L, 500L, "byron1234567890abcdef1234567890abcdef1234567890abcdef123456789012");
+        String hash = "ab".repeat(32);
+        ByronMainBlock byronBlock = createTestByronMainBlock(1000L, 1L, hash);
+        List<String> order = new ArrayList<>();
+        eventBus.subscribe(ByronMainBlockAppliedEvent.class, ignored -> order.add("native"),
+                SubscriptionOptions.builder().build());
+        eventBus.subscribe(BlockAppliedEvent.class, ignored -> order.add("compatibility"),
+                SubscriptionOptions.builder().build());
         
         assertEquals(0, bodyFetchManager.getStatus().bodiesReceived);
         
-        // Null/incomplete Byron block should fail fast without incrementing metrics
-        assertThrows(RuntimeException.class, () -> bodyFetchManager.onByronBlock(byronBlock));
-        
-        assertEquals(0, bodyFetchManager.getStatus().bodiesReceived, "Failed Byron block should not increment count");
-        assertEquals(0, bodyFetchManager.getStatus().totalBlocksFetched, "Failed Byron block should not increment count");
+        bodyFetchManager.onByronBlock(byronBlock);
+
+        assertEquals(1, bodyFetchManager.getStatus().bodiesReceived);
+        assertEquals(1, bodyFetchManager.getStatus().totalBlocksFetched);
+        assertEquals(List.of("native", "compatibility"), order);
+    }
+
+    @Test
+    void failedByronDerivedApplyCompensatesToExactSameSlotEbbPoint() {
+        byte[] priorMain = hexToBytes("01".repeat(32));
+        byte[] ebb = hexToBytes("02".repeat(32));
+        byte[] failedMain = hexToBytes("03".repeat(32));
+        chainState.storeBlockHeader(priorMain, 1L, 30L, new byte[]{1});
+        chainState.storeBlock(priorMain, 1L, 30L, new byte[]{1});
+        chainState.storeByronEbHeader(ebb, 1L, 40L, new byte[]{2});
+        chainState.storeBlock(ebb, 1L, 40L, new byte[]{2});
+        PropagatingEventBus propagatingBus = new PropagatingEventBus();
+        BodyFetchManager manager = new BodyFetchManager(
+                mockPeerClient, chainState, propagatingBus,
+                GAP_THRESHOLD, MAX_BATCH_SIZE, MONITORING_INTERVAL, 1000);
+        try {
+            propagatingBus.subscribe(ByronMainBlockAppliedEvent.class,
+                    ignored -> { throw new IllegalStateException("derived apply failed"); },
+                    SubscriptionOptions.builder().build());
+
+            ByronMainBlock successor = createTestByronMainBlock(40L, 2L,
+                    com.bloxbean.cardano.yaci.core.util.HexUtil.encodeHexString(failedMain));
+
+            assertThrows(RuntimeException.class, () -> manager.applyByronBlock(successor));
+            assertArrayEquals(ebb, chainState.getTip().getBlockHash());
+            assertEquals(40L, chainState.getTip().getSlot());
+            assertNull(chainState.getBlock(failedMain));
+            assertNotNull(chainState.getBlock(ebb));
+        } finally {
+            propagatingBus.close();
+        }
     }
     
     @Test
@@ -515,8 +566,18 @@ class BodyFetchManagerTest {
     }
     
     private ByronMainBlock createTestByronMainBlock(long absoluteSlot, long blockNumber, String hash) {
-        // For testing, return null to exercise fail-fast invalid Byron handling.
-        return null;
+        return ByronMainBlock.builder()
+                .header(ByronBlockHead.builder()
+                        .prevBlock("00".repeat(32))
+                        .blockHash(hash)
+                        .consensusData(ByronBlockCons.builder()
+                                .slotId(Epoch.builder().epoch(0).slot(absoluteSlot).build())
+                                .difficulty(BigInteger.valueOf(blockNumber))
+                                .build())
+                        .build())
+                .body(ByronBlockBody.builder().txPayload(List.of()).build())
+                .cbor("00")
+                .build();
     }
     
     private ByronEbBlock createTestByronEbBlock(long absoluteSlot, long blockNumber, String hash) {

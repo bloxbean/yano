@@ -205,171 +205,21 @@ tasks.named('check') {
     dependsOn tasks.named('verifyAdr013Slf4jAlignment')
 }
 
-def repositorySplitAllocationFile = layout.projectDirectory.file(
-        'config/repository-split/allocation-v1.json')
-def repositorySplitAllocation = new groovy.json.JsonSlurper().parse(
-        repositorySplitAllocationFile.asFile)
-def repositoryModuleByPath = repositorySplitAllocation.modules.collectEntries { module ->
-    [(module.sourcePath.toString()): module]
+def firstPartyPluginManifestTemplates = fileTree(rootProject.projectDir) {
+    include 'appchain/**/src/main/resources/META-INF/yano/plugins/*.json'
 }
-tasks.register('verifyRepositorySplitAllocation') {
+def firstPartyPluginManifestTemplateFiles = firstPartyPluginManifestTemplates.files
+
+tasks.register('verifyFirstPartyPluginManifestTemplates') {
     group = 'verification'
-    description = 'Validates the repository module, path, debt, and regression ownership manifest.'
-    inputs.file(repositorySplitAllocationFile)
+    description = 'Validates generated-version placeholders in first-party plugin manifests.'
+    inputs.files(firstPartyPluginManifestTemplateFiles)
 
     doLast {
-        def manifest = new groovy.json.JsonSlurper().parse(
-                repositorySplitAllocationFile.asFile)
         def failures = []
-        def allowedDispositions = [
-                'retain', 'move', 'split', 'temporary-retain'
-        ] as Set
-
-        if (manifest.schemaVersion != 1) {
-            failures.add("schemaVersion must be 1, found ${manifest.schemaVersion}")
-        }
-        if (manifest.sourceRepository != 'yano'
-                || manifest.downstreamRepository != 'yano-x') {
-            failures.add('repository identities must be yano -> yano-x')
-        }
-        if (!(manifest.sourceCommit ==~ /[0-9a-f]{40}/)) {
-            failures.add('sourceCommit must be a full lowercase Git commit id')
-        }
-
-        def owners = manifest.owners?.keySet() ?: [] as Set
-        def modules = manifest.modules ?: []
-        def duplicateValues = { values ->
-            values.groupBy { it }.findAll { value, occurrences ->
-                value != null && occurrences.size() > 1
-            }.keySet().sort()
-        }
-        duplicateValues(modules*.sourcePath).each {
-            failures.add("duplicate sourcePath ${it}")
-        }
-        duplicateValues(modules*.sourceDirectory).each {
-            failures.add("duplicate sourceDirectory ${it}")
-        }
-        duplicateValues(modules*.targetPath).each {
-            failures.add("duplicate targetPath ${it}")
-        }
-        duplicateValues(modules*.targetDirectory).each {
-            failures.add("duplicate targetDirectory ${it}")
-        }
-        duplicateValues(modules*.artifactId).each {
-            failures.add("duplicate artifactId ${it}")
-        }
-
-        def expectedModules = modules.findAll {
-            it.disposition in ['retain', 'temporary-retain']
-        }
-        def declaredProjects = expectedModules.collectEntries { module ->
-            [(module.sourcePath): module]
-        }
-        def actualProjects = rootProject.subprojects.collectEntries { candidate ->
-            def relativeDirectory = rootProject.projectDir.toPath()
-                    .relativize(candidate.projectDir.toPath()).toString()
-                    .replace(File.separatorChar, '/' as char)
-            [(candidate.path): relativeDirectory]
-        }
-        (actualProjects.keySet() - declaredProjects.keySet()).sort().each {
-            failures.add("unclassified Gradle project ${it} (${actualProjects[it]})")
-        }
-        (declaredProjects.keySet() - actualProjects.keySet()).sort().each {
-            failures.add("manifest project ${it} is not included by settings.gradle")
-        }
-
-        modules.each { module ->
-            def label = module.sourcePath ?: '<missing sourcePath>'
-            if (!(module.disposition in allowedDispositions)) {
-                failures.add("${label} has invalid disposition ${module.disposition}")
-            }
-            if (!(module.owner in owners)) {
-                failures.add("${label} has unknown owner ${module.owner}")
-            }
-            def sourceDirectory = module.sourceDirectory == null ? null
-                    : layout.projectDirectory.dir(module.sourceDirectory).asFile
-            if (!module.sourceDirectory) {
-                failures.add("${label} has no sourceDirectory")
-            } else if (module.disposition != 'move' && !sourceDirectory.isDirectory()) {
-                failures.add("${label} sourceDirectory does not exist: ${module.sourceDirectory}")
-            }
-            if (actualProjects[label]
-                    && actualProjects[label] != module.sourceDirectory) {
-                failures.add("${label} directory is ${actualProjects[label]}, manifest says "
-                        + module.sourceDirectory)
-            }
-            if (!module.targetPath || !module.targetDirectory
-                    || !module.publicationType) {
-                failures.add("${label} is missing target/publication metadata")
-            }
-            if (module.disposition == 'move') {
-                if (module.owner != 'yano-x') {
-                    failures.add("${label} moves downstream but owner is ${module.owner}")
-                }
-                if (!module.artifactId?.startsWith('yano-x-')) {
-                    failures.add("${label} downstream artifact must start with yano-x-")
-                }
-                if (!module.targetPath.startsWith(':')
-                        || !module.targetPath.substring(1).contains(':')) {
-                    failures.add("${label} must use a hierarchical Yano X targetPath")
-                }
-            }
-            if (module.publicationType == 'runtime-plugin'
-                    && !module.pluginBundleId) {
-                failures.add("${label} runtime plugin is missing pluginBundleId")
-            }
-            if (module.disposition == 'split'
-                    && (!module.splitTargets || module.splitTargets.size() < 2)) {
-                failures.add("${label} split allocation needs at least two explicit outcomes")
-            }
-        }
-
-        def pathAllocations = manifest.pathAllocations ?: []
-        duplicateValues(pathAllocations*.prefix).each {
-            failures.add("duplicate path allocation ${it}")
-        }
-        pathAllocations.each { allocation ->
-            if (!allocation.prefix || !(allocation.owner in owners)
-                    || !(allocation.disposition in allowedDispositions)
-                    || !allocation.reason) {
-                failures.add("invalid path allocation ${allocation}")
-            }
-        }
-
-        def moduleRoots = modules*.sourceDirectory
-        def allocationPrefixes = pathAllocations*.prefix
-        def trackedFiles = providers.exec {
-            workingDir rootProject.projectDir
-            commandLine 'git', 'ls-files'
-        }.standardOutput.asText.get().readLines().findAll { trackedPath ->
-            !trackedPath.isBlank() && rootProject.file(trackedPath).isFile()
-        }
-        modules.findAll { it.disposition == 'move' }.each { module ->
-            def movedPaths = trackedFiles.findAll { trackedPath ->
-                trackedPath == module.sourceDirectory
-                        || trackedPath.startsWith(module.sourceDirectory + '/')
-            }
-            if (!movedPaths.isEmpty()) {
-                failures.add("${module.sourcePath} still owns moved tracked paths: "
-                        + movedPaths.take(5))
-            }
-        }
-        trackedFiles.each { trackedPath ->
-            def ownedByModule = moduleRoots.any { moduleRoot ->
-                trackedPath == moduleRoot || trackedPath.startsWith(moduleRoot + '/')
-            }
-            def ownedByPathRule = allocationPrefixes.any { prefix ->
-                trackedPath == prefix || trackedPath.startsWith(prefix)
-            }
-            if (!ownedByModule && !ownedByPathRule) {
-                failures.add("tracked path has no repository allocation owner: ${trackedPath}")
-            }
-        }
-
-        def firstPartyManifestFiles = fileTree(rootProject.projectDir) {
-            include 'appchain/**/src/main/resources/META-INF/yano/plugins/*.json'
-        }.files.sort { left, right -> left.path <=> right.path }
-        firstPartyManifestFiles.each { manifestFile ->
+        firstPartyPluginManifestTemplateFiles.sort { left, right ->
+            left.path <=> right.path
+        }.each { manifestFile ->
             def manifestTemplate = manifestFile.getText('UTF-8')
             def pluginManifest = new groovy.json.JsonSlurper().parseText(manifestTemplate)
             if (pluginManifest.version != '${pluginVersion}') {
@@ -385,52 +235,17 @@ tasks.register('verifyRepositorySplitAllocation') {
                         + " has ${templateKeys.sort()}")
             }
         }
-        def debt = manifest.technicalDebt ?: []
-        def expectedDebtIds = (1..23).collect { "P${it}" } as Set
-        if ((debt*.id as Set) != expectedDebtIds) {
-            failures.add("technicalDebt ids must be P1-P23, found ${(debt*.id).sort()}")
-        }
-        debt.each { item ->
-            if (!(item.owner in owners) || !(item.targetPhase ==~ /[A-F]/)
-                    || !item.action || !item.regressionGuard
-                    || item.status != 'resolved') {
-                failures.add("technical debt ${item.id} is not fully classified and resolved")
-            }
-        }
-
-        def cutoverSuiteIds = [
-                'yano-unit',
-                'yano-build',
-                'yano-jvm-package',
-                'yano-native',
-                'yano-x-unit',
-                'yano-x-distribution',
-                'yano-x-devtools',
-                'yano-x-studio'
-        ] as Set
-        def suites = manifest.regressionSuites ?: []
-        if ((suites*.id as Set) != cutoverSuiteIds) {
-            failures.add('regressionSuites must contain the final Yano/Yano X cutover gates')
-        }
-        suites.each { suite ->
-            if (!suite.id || !(suite.repository in ['yano', 'yano-x'])
-                    || !suite.command || !suite.protects) {
-                failures.add("invalid regression suite ${suite}")
-            }
-        }
-
         if (!failures.isEmpty()) {
-            throw new GradleException('Repository allocation verification failed:\n - '
+            throw new GradleException('First-party plugin manifest template verification failed:\n - '
                     + failures.join('\n - '))
         }
-        logger.lifecycle(
-                'Repository allocation verified after cutover: {} configured projects, {} tracked paths, {} resolved debt items, {} suites',
-                expectedModules.size(), trackedFiles.size(), debt.size(), suites.size())
+        logger.lifecycle('First-party plugin manifest templates verified: {} files',
+                firstPartyPluginManifestTemplateFiles.size())
     }
 }
 
 tasks.named('check') {
-    dependsOn tasks.named('verifyRepositorySplitAllocation')
+    dependsOn tasks.named('verifyFirstPartyPluginManifestTemplates')
 }
 
 tasks.register('verifyLegacyAccountHistoryRemoved') {
@@ -487,49 +302,57 @@ tasks.named('check') {
     dependsOn tasks.named('verifyLegacyAccountHistoryRemoved')
 }
 
-tasks.register('verifyLeanHostDependencyBoundary') {
+tasks.register('verifyLegacyHistoryReplayRemoved') {
     group = 'verification'
-    description = 'Rejects Yano X allocated projects from the Yano host runtime graph.'
-    inputs.file(repositorySplitAllocationFile)
-    dependsOn tasks.named('verifyRepositorySplitAllocation')
+    description = 'Prevents the removed replay-worker archive and backend write API from returning.'
 
     doLast {
-        def manifest = new groovy.json.JsonSlurper().parse(
-                repositorySplitAllocationFile.asFile)
-        def allocations = manifest.modules.collectEntries { module ->
-            [(module.sourcePath): module]
-        }
-        def allowed = ['retain', 'temporary-retain'] as Set
-        def resolvedProjects = project(':app').configurations
-                .getByName('runtimeClasspath')
-                .incoming.resolutionResult.allComponents
-                .findAll { component ->
-                    component.id instanceof
-                            org.gradle.api.artifacts.component.ProjectComponentIdentifier
-                }.collect { component ->
-                    (component.id as
-                            org.gradle.api.artifacts.component.ProjectComponentIdentifier)
-                            .projectPath
-                }.toSet()
-        def failures = resolvedProjects.findAll { projectPath ->
-            def allocation = allocations[projectPath]
-            allocation == null || !(allocation.disposition in allowed)
-        }.sort().collect { projectPath ->
-            def disposition = allocations[projectPath]?.disposition ?: 'unclassified'
-            "${projectPath} (${disposition})"
+        def forbiddenPaths = [
+                'archive-modules/archive-core/src/main/java/com/bloxbean/cardano/yano/archive/core/config/ArchiveConfiguration.java',
+                'archive-modules/archive-core/src/main/java/com/bloxbean/cardano/yano/archive/core/config/ArchiveStartMode.java',
+                'archive-modules/archive-core/src/main/java/com/bloxbean/cardano/yano/archive/core/dataset/AddressTransactionDataset.java',
+                'archive-modules/archive-core/src/main/java/com/bloxbean/cardano/yano/archive/core/dataset/UtxoHistoryDataset.java',
+                'archive-modules/archive-api/src/main/java/com/bloxbean/cardano/yano/archive/api/ArchiveMaintenanceBudget.java',
+                'archive-modules/archive-api/src/main/java/com/bloxbean/cardano/yano/archive/api/ArchiveWriteSession.java',
+                'archive-modules/archive-api/src/main/java/com/bloxbean/cardano/yano/archive/api/ArchiveReceipt.java',
+                'archive-modules/archive-api/src/main/java/com/bloxbean/cardano/yano/archive/api/ArchiveRetentionCutoff.java',
+                'archive-modules/archive-store-ducklake/src/main/java/com/bloxbean/cardano/yano/archive/ducklake/DuckLakeWriteSession.java'
+        ]
+        def failures = forbiddenPaths.findAll { file(it).exists() }
+                .collect { "removed replay path exists: ${it}" }
+        def forbiddenTokens = [
+                'RocksDbHotHistoryStore',
+                'HotHistoryStore',
+                'ArchiveProgressStore',
+                'ArchiveTrack',
+                'SequentialOutpointResolver',
+                'SequentialPointerResolver',
+                'ArchiveMaintenanceBudget',
+                'ArchiveWriteSession',
+                'ArchiveRetentionCutoff',
+                'ArchiveReceipt',
+                'DuckLakeWriteSession'
+        ]
+        fileTree(rootProject.projectDir) {
+            include '**/src/main/**/*.java'
+            exclude '**/build/**'
+        }.files.each { source ->
+            def text = source.getText('UTF-8')
+            forbiddenTokens.each { token ->
+                if (text.contains(token)) {
+                    failures.add("${rootProject.projectDir.toPath().relativize(source.toPath())} contains ${token}")
+                }
+            }
         }
         if (!failures.isEmpty()) {
-            throw new GradleException('Lean app runtime graph reaches Yano X projects:\n - '
+            throw new GradleException('Legacy history replay removal verification failed:\n - '
                     + failures.join('\n - '))
         }
-        logger.lifecycle(
-                'Host dependency boundary passed: {} retained runtime projects',
-                resolvedProjects.size())
     }
 }
 
 tasks.named('check') {
-    dependsOn tasks.named('verifyLeanHostDependencyBoundary')
+    dependsOn tasks.named('verifyLegacyHistoryReplayRemoved')
 }
 
 ext.ossrhUsername = System.getenv('MAVEN_USERNAME')
@@ -629,8 +452,7 @@ subprojects {
 
     // Only configure library-specific settings for non-application modules
     if (!(project.name in nonLibraryModules)) {
-        def allocatedArtifactId = repositoryModuleByPath[project.path]
-                ?.artifactId?.toString() ?: 'yano-' + project.name
+        def allocatedArtifactId = 'yano-' + project.name
         tasks.named('jar') {
             archiveBaseName = allocatedArtifactId
         }
