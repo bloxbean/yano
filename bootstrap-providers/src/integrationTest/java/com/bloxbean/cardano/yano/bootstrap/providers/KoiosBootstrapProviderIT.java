@@ -16,8 +16,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 class KoiosBootstrapProviderIT {
     private static final Logger log = LoggerFactory.getLogger(KoiosBootstrapProviderIT.class);
 
-    private static final String ADDRESS =
-            "addr_test1qryvgass5dsrf2kxl3vgfz76uhp83kv5lagzcp29tcana68ca5aqa6swlq6llfamln09tal7n5kvt4275ckwedpt4v7q48uhex";
     private static final String STAKE_ADDRESS =
             "stake_test1up86nkhqymgqmf0536q82wm6x9g3x53qhjggch0jka3wdkq5v3fa0";
 
@@ -57,15 +55,20 @@ class KoiosBootstrapProviderIT {
 
     @Test
     void testGetUtxosByAddress() {
-        List<BootstrapUtxo> utxos = provider.getUtxosByAddress(ADDRESS);
+        BootstrapUtxo known = knownUtxo();
+        List<BootstrapUtxo> utxos = provider.getUtxosByAddress(known.address());
         log.info("UTXOs by address: count={}", utxos.size());
         utxos.forEach(u -> log.info("  utxo: {}#{} lovelace={} assets={}", u.txHash(), u.outputIndex(), u.lovelace(), u.assets().size()));
 
         assertThat(utxos).isNotEmpty();
+        assertThat(utxos).anySatisfy(u -> {
+            assertThat(u.txHash()).isEqualTo(known.txHash());
+            assertThat(u.outputIndex()).isEqualTo(known.outputIndex());
+        });
         utxos.forEach(u -> {
             assertThat(u.txHash()).isNotNull().isNotEmpty();
             assertThat(u.outputIndex()).isGreaterThanOrEqualTo(0);
-            assertThat(u.address()).isEqualTo(ADDRESS);
+            assertThat(u.address()).isEqualTo(known.address());
             assertThat(u.lovelace()).isPositive();
         });
     }
@@ -87,11 +90,7 @@ class KoiosBootstrapProviderIT {
 
     @Test
     void testGetUtxo() {
-        // First get a known UTXO from the address
-        List<BootstrapUtxo> utxos = provider.getUtxosByAddress(ADDRESS);
-        assertThat(utxos).isNotEmpty();
-
-        BootstrapUtxo known = utxos.get(0);
+        BootstrapUtxo known = knownUtxo();
         log.info("Looking up specific UTXO: {}#{}", known.txHash(), known.outputIndex());
 
         BootstrapUtxo fetched = provider.getUtxo(known.txHash(), known.outputIndex());
@@ -102,5 +101,11 @@ class KoiosBootstrapProviderIT {
         assertThat(fetched.address()).isNotNull().isNotEmpty();
         assertThat(fetched.lovelace()).isPositive();
         log.info("Fetched UTXO: addr={} lovelace={}", fetched.address(), fetched.lovelace());
+    }
+
+    private static BootstrapUtxo knownUtxo() {
+        List<BootstrapUtxo> utxos = provider.getUtxosByStakeAddress(STAKE_ADDRESS);
+        assertThat(utxos).isNotEmpty();
+        return utxos.getFirst();
     }
 }

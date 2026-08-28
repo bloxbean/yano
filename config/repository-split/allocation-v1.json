@@ -911,6 +911,7 @@
     { "prefix": "config/repository-split/", "disposition": "retain", "owner": "architecture", "reason": "Cutover source of truth" },
     { "prefix": "config/release-license-overrides-v1.json", "disposition": "retain", "owner": "build-release", "reason": "Deterministic release SBOM license metadata" },
     { "prefix": ".gitignore", "disposition": "retain", "owner": "build-release", "reason": "Repository metadata" },
+    { "prefix": "AGENTS.md", "disposition": "retain", "owner": "build-release", "reason": "Repository-wide implementation guidance" },
     { "prefix": "LICENSE", "disposition": "retain", "owner": "build-release", "reason": "Repository and distribution license" },
     { "prefix": "README.md", "disposition": "split", "owner": "architecture", "reason": "Rewrite repository-specific entry points" },
     { "prefix": "build.gradle", "disposition": "split", "owner": "build-release", "reason": "Remove downstream module wiring from Yano and create independent Yano X build" },
