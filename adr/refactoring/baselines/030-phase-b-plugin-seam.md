@@ -61,6 +61,10 @@ The final full acceptance command was:
   -PskipSigning=true --no-parallel
 ```
 
+The repository-allocation and lean-boundary tasks in this historical command were cutover guards.
+They were retired after the Yano/Yano-X split completed; the remaining build and plugin-contract
+checks continue in the current build.
+
 Project parallelism is disabled for the combined acceptance run because multiple networking test
 tasks reserve ephemeral ports. A parallel attempt completed 1,303 of 1,304 retained runtime tests
 and timed out waiting for one Classic JMT peer connection; that test passed immediately in
