@@ -124,3 +124,27 @@ Please review the current working tree after commits `6a86f546`, `f9fe9768` and
 
 Detailed evidence is in
 `adr/reports/adr-048-phases-4-6-implementation-validation-2026-08-28.md`.
+
+## 2026-08-29 Oracle GraalVM G1 mainnet continuation
+
+- The Oracle GraalVM 25.3.4.1 G1 native binary (SHA-256
+  `965712b8c3cadd31c6559505905d72160e536e39afb5c20c80894bc0eda1c4c5`)
+  is syncing mainnet from `/Volumes/data2/yano-try/mainnet` with streaming
+  rewards and `exit-on-epoch-calc-error=true`.
+- AdaPot verification has passed every unique epoch from 209 through 287
+  (79 epochs), with zero mismatches.
+- `-Xmx384m` is not viable: epoch 284 exhausted the G1 heap during streaming
+  rewards at about 406.6 MiB used, then rollback also ran out of heap. The
+  preserved log is `yano.log.oom-xmx384-epoch284-20260829T064928`.
+- `-Xmx512m` recovered epoch 284, passed epochs 285 and 286, but then exhausted
+  heap in the following `BlockAppliedEvent`; epoch 286 had already measured a
+  499.0 MiB peak. Its preserved log is
+  `yano.log.oom-xmx512-block6154758-20260829T070453`.
+- The same chainstate was recovered without deletion at `-Xmx768m`: integrity
+  validation passed, block 6,154,758 was replayed into UTXO state, account state
+  reconciled, and nonce state restored at the body tip. Epoch 287 then passed
+  AdaPot in 165.8 seconds with 687.0 MiB peak heap and no new fatal signal.
+- Current warmed RSS is about 1.26 GiB. This is far below the former 6–8 GiB
+  native peaks, but it does **not** meet the original 500–600 MiB target. The
+  measured live set proves that target needs more implementation work; reducing
+  only the runtime heap limit causes correctness-threatening OOM recovery.
