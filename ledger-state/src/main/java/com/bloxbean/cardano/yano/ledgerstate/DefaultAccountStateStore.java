@@ -34,6 +34,7 @@ import com.bloxbean.cardano.yano.api.genesis.GenesisDelegation;
 import com.bloxbean.cardano.yano.api.genesis.GenesisPool;
 import com.bloxbean.cardano.yano.api.genesis.ShelleyGenesisBootstrap;
 import com.bloxbean.cardano.yano.api.utxo.StakeBalanceView;
+import com.bloxbean.cardano.yano.api.utxo.StakeBalanceConsistencyException;
 import com.bloxbean.cardano.yano.api.utxo.StakeCredentialBalance;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
@@ -4072,7 +4073,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
      *              (epoch+1). At the 645 -> 646 Conway transition on preview, the mark
      *              snapshot is still labeled 645 but must already exclude pointer stake.
      */
-    public java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> aggregateUtxoBalances(int epoch) {
+    public Map<UtxoBalanceAggregator.CredentialKey, BigInteger> aggregateUtxoBalances(int epoch) {
         if (stakeSnapshotService == null || !stakeSnapshotService.isEnabled() || utxoState == null) return null;
         // Conway detection: use the boundary epoch (epoch+1), not the snapshot label.
         // The snapshot labeled E is created at the E -> E+1 boundary, and if E+1 is Conway,
@@ -4090,7 +4091,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     }
 
     public boolean shouldUseOrderedStakeBalanceIndex(int epoch) {
-        if (!isConwayOrLater(epoch + 1) || "full-scan".equalsIgnoreCase(balanceMode)) {
+        if ("full-scan".equalsIgnoreCase(balanceMode)) {
             return false;
         }
         boolean available = stakeSnapshotService != null && stakeSnapshotService.isEnabled()
@@ -4103,6 +4104,25 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                     "Strict epoch snapshot index mode is unavailable at epoch " + epoch);
         }
         return available;
+    }
+
+    public boolean requiresPointerStakeOverlay(int epoch) {
+        return !isConwayOrLater(epoch + 1) && shouldUseOrderedStakeBalanceIndex(epoch);
+    }
+
+    public Map<UtxoBalanceAggregator.CredentialKey, BigInteger> aggregatePointerUtxoBalances(int epoch) {
+        if (stakeSnapshotService == null || !stakeSnapshotService.isEnabled()
+                || utxoState == null) {
+            throw new IllegalStateException(
+                    "Stake snapshot service is unavailable for pre-Conway pointer overlay");
+        }
+        if (pointerAddressResolver == null) {
+            throw new IllegalStateException(
+                    "Pointer resolver is unavailable for pre-Conway pointer overlay");
+        }
+        long epochLastSlot = slotForEpochStart(epoch + 1) - 1;
+        return stakeSnapshotService.aggregatePointerStakeBalances(
+                utxoState, pointerAddressResolver, epochLastSlot);
     }
 
     /**
@@ -4125,10 +4145,24 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 return null;
             }
             prepareSnapshotGeneration(epoch);
-            if (precomputedUtxoBalances == null && shouldUseOrderedStakeBalanceIndex(epoch)) {
-                stakeBalanceView = openBoundaryStakeBalanceView()
-                        .orElseThrow(() -> new IllegalStateException(
-                                "Stake balance index became unavailable before snapshot creation"));
+            if (shouldUseOrderedStakeBalanceIndex(epoch)) {
+                try {
+                    stakeBalanceView = openBoundaryStakeBalanceView().orElse(null);
+                } catch (StakeBalanceConsistencyException consistencyFailure) {
+                    if ("index".equalsIgnoreCase(balanceMode)) throw consistencyFailure;
+                    log.warn("Stake balance index does not match boundary epoch {}; "
+                                    + "falling back to the historical UTXO view: {}",
+                            epoch, consistencyFailure.getMessage());
+                }
+                if (stakeBalanceView == null) {
+                    if ("index".equalsIgnoreCase(balanceMode)) {
+                        throw new IllegalStateException(
+                                "Stake balance index became unavailable before snapshot creation");
+                    }
+                    // A pre-Conway precomputed value is only the pointer overlay. It cannot
+                    // substitute for the full view when the coordinate-bound index is stale.
+                    precomputedUtxoBalances = null;
+                }
             }
             try (SnapshotGenerationWriter writer = new SnapshotGenerationWriter(epoch)) {
                 utxoBalances = createDelegationSnapshot(epoch, writer, precomputedUtxoBalances,
@@ -4204,8 +4238,9 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
         // Pre-build map: credential → latest deregistration position (slot, txIdx, certIdx)
         // Used to detect delegations invalidated by a subsequent deregistration.
+        boolean orderedAccountInputs = isSnapshotDeregistrationIndexReady();
         java.util.Map<CredentialKey, long[]> latestDeregistrations = null;
-        if (stakeBalanceView == null) {
+        if (!orderedAccountInputs) {
             latestDeregistrations = new java.util.HashMap<>();
             try (RocksIterator deregIt = db.newIterator(cfState)) {
                 deregIt.seek(new byte[]{PREFIX_STAKE_EVENT});
@@ -4253,7 +4288,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
         OrderedStakeLookup orderedStake = stakeBalanceView != null
                 ? new OrderedStakeLookup(stakeBalanceView) : null;
-        try (OrderedAccountLookup orderedAccount = stakeBalanceView != null
+        try (OrderedAccountLookup orderedAccount = orderedAccountInputs
                      ? new OrderedAccountLookup() : null;
              RocksIterator it = db.newIterator(cfState)) {
             it.seek(new byte[]{PREFIX_POOL_DELEG});
@@ -4298,7 +4333,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 // slot, then txIndex, then certIndex), the delegation is stale even if the
                 // credential was re-registered later — a new delegation would be needed.
                 long[] latestDereg;
-                if (orderedStake != null) {
+                if (orderedAccount != null) {
                     byte[] latestDeregValue = orderedAccount.latestDeregistration(
                             credentialSuffix);
                     latestDereg = latestDeregValue != null
@@ -4343,6 +4378,11 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                     byte[] credentialHash = Arrays.copyOfRange(key, 2, key.length);
                     java.math.BigInteger utxoBal = orderedStake.balanceFor(
                             credType, credentialHash);
+                    if (utxoBalances != null) {
+                        var credKey = new UtxoBalanceAggregator.CredentialKey(credType, credHash);
+                        utxoBal = utxoBal.add(utxoBalances.getOrDefault(
+                                credKey, java.math.BigInteger.ZERO));
+                    }
                     var acctData = AccountStateCborCodec.decodeStakeAccount(acctVal);
                     stakeAmount = utxoBal.add(acctData.reward());
                     if (stakeAmount.signum() == 0) skippedZeroBalance++;

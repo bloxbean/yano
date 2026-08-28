@@ -80,14 +80,16 @@ public interface UtxoState {
     }
 
     /**
-     * Iterate over unspent UTXOs created at or before {@code maxSlot},
-     * using a consistent point-in-time snapshot of the UTXO store.
+     * Iterate over UTXOs that were unspent at {@code maxSlot}, using a
+     * consistent point-in-time snapshot of the UTXO store.
      * <p>
      * This provides a deterministic view even if other threads are
-     * concurrently modifying the UTXO store (e.g., during fast-sync).
-     * Only UTXOs whose creation slot is ≤ maxSlot are included.
+     * concurrently modifying the UTXO store (e.g., during fast-sync or
+     * epoch-boundary crash recovery). Implementations whose durable tip is
+     * newer than {@code maxSlot} must restore outputs spent after the target
+     * slot, or fail closed when the required history is unavailable.
      *
-     * @param maxSlot  only include UTXOs created at or before this slot
+     * @param maxSlot  ledger slot at which each returned output must be unspent
      * @param consumer receives (bech32 address, lovelace amount) per UTXO
      */
     default void forEachUtxoAtSlot(long maxSlot, java.util.function.BiConsumer<String, java.math.BigInteger> consumer) {

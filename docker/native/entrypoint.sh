@@ -35,6 +35,7 @@ seed_network_config
 NATIVE_JAVA_OPTS=""
 JAVA_OPTS_DROPPED=""
 JAVA_OPTS_UNVERIFIED=""
+NATIVE_HAS_MAX_HEAP="false"
 for opt in ${JAVA_OPTS:-}; do
   case "$opt" in
     -javaagent*|-agentlib*|-agentpath*|--add-*|--enable-preview)
@@ -42,6 +43,9 @@ for opt in ${JAVA_OPTS:-}; do
       ;;
     -D*|-Xmx*|-Xms*|-Xss*|-XX:*|-verbose*)
       NATIVE_JAVA_OPTS="${NATIVE_JAVA_OPTS} ${opt}"
+      case "$opt" in
+        -Xmx*) NATIVE_HAS_MAX_HEAP="true" ;;
+      esac
       ;;
     -X*)
       JAVA_OPTS_UNVERIFIED="${JAVA_OPTS_UNVERIFIED} ${opt}"
@@ -52,6 +56,10 @@ for opt in ${JAVA_OPTS:-}; do
       ;;
   esac
 done
+
+if [ "$NATIVE_HAS_MAX_HEAP" = "false" ]; then
+  NATIVE_JAVA_OPTS="${NATIVE_JAVA_OPTS} -Xmx${YANO_NATIVE_MAX_HEAP:-352m}"
+fi
 
 if [ -n "$JAVA_OPTS_DROPPED" ]; then
   echo "Warning: dropping JAVA_OPTS entries a native image cannot implement:${JAVA_OPTS_DROPPED}" >&2

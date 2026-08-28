@@ -239,6 +239,14 @@ public final class LedgerStateSubsystem implements Subsystem {
         }
 
         try {
+            // A block body is durably stored before its epoch-transition events run. If the
+            // process dies inside the boundary, UTXO/account reconciliation would otherwise
+            // apply that first new-epoch block before SNAP resumes. Finish the journaled
+            // boundary against the still-canonical pre-block derived state first.
+            if (epochBoundaryProcessor != null) {
+                epochBoundaryProcessor.recoverInterruptedBoundary();
+            }
+
             if (utxoRecovery != null) {
                 utxoRecovery.run();
             }
@@ -246,9 +254,6 @@ public final class LedgerStateSubsystem implements Subsystem {
             if (accountStateReconcilePending) {
                 reconcileAccountStateStore();
                 accountStateReconcilePending = false;
-            }
-            if (epochBoundaryProcessor != null) {
-                epochBoundaryProcessor.recoverInterruptedBoundary();
             }
 
             publishDirectStartGenesisBootstrapIfNeeded();

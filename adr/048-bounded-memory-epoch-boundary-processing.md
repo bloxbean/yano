@@ -36,13 +36,14 @@ Proposed
 Yano will replace epoch-boundary whole-state materialization with ordered,
 bounded streams while preserving the existing ledger order and outputs.
 
-1. At a Conway-or-later boundary, the mark snapshot and DRep distribution will
-   read the existing complete `utxo_stake_balance` index through a consistent,
-   ordered cursor. They will not decode every live UTXO or build a
-   credential-to-balance map.
-2. Before Conway, or whenever the index is disabled, filtered, incomplete or
-   unavailable, Yano will retain the pointer-aware full-UTXO fallback. It will
-   run serially and without populating the RocksDB block cache.
+1. The mark snapshot and DRep distribution will read the existing complete
+   `utxo_stake_balance` index through a consistent, ordered cursor. At a
+   pre-Conway boundary, a serial UTXO pass contributes only the small set of
+   resolved pointer-address balances that the index deliberately excludes. No
+   path materializes non-pointer UTXO balances into a network-sized map.
+2. Whenever the index is disabled, filtered, incomplete or unavailable, Yano
+   retains the pointer-aware full-UTXO compatibility fallback. It runs serially
+   and without populating the RocksDB block cache.
 3. Historical reward calculation will gain a pool-major snapshot projection and
    a streaming calculator/consumer contract. It will retain only one pool's
    delegators and reward outputs at a time.
@@ -185,12 +186,12 @@ exactly the UTXO stake state after the final applied block of E and before the
 first applied block of E+1. It is therefore available at mark-snapshot time.
 
 The existing index deliberately excludes pointer stake references. Conway and
-later ignore pointer-address stake for this purpose, so the index is a valid
-source for current mainnet Conway boundaries. Pre-Conway snapshots must still
-resolve effective pointer credentials. A fresh historical sync must therefore
-use the existing pointer-aware scan until the boundary is Conway-or-later,
-unless a future version explicitly extends and proves pointer support in the
-index.
+later ignore pointer-address stake for this purpose, so the index is sufficient
+by itself for current mainnet Conway boundaries. Pre-Conway snapshots still
+resolve effective pointer credentials. They use the ordered index for all base
+and script stake credentials and overlay only balances from pointer-address
+UTXOs discovered by a serial, cache-bypassing pass. The pointer overlay is
+normally tiny; if its resolver is unavailable, the boundary fails closed.
 
 ## Decision drivers
 
@@ -215,7 +216,8 @@ index.
    epoch transition succeeds, matching current synchronous behavior.
 3. Reward, SNAP, POOLREAP and governance order must not change.
 4. The current-epoch stake index may be used only when its readiness and source
-   completeness are proven and the era's pointer semantics match the index.
+   completeness are proven. Before Conway, its pointer-excluding semantics must
+   be completed by a coordinate-bound, resolver-backed pointer-only overlay.
 5. Index absence must be explicit. An absent index row means zero only inside a
    proven-complete index view; it must not mean zero when the index is unready.
 6. Snapshot rows include zero-balance registered delegators because pool owners
@@ -465,15 +467,16 @@ stake-credential classification to one shared implementation used by:
 
 - incremental stake-index writes;
 - stake-index startup rebuild;
-- the full-UTXO differential/fallback scan; and
+- the full-UTXO differential/fallback and pointer-overlay scans; and
 - test or migration oracles.
 
 The shared extractor distinguishes parsing/classification from era policy.
-Pointer resolution remains available only to the pre-Conway scan; the current
-index continues to exclude pointers. Byron, enterprise and reward addresses
-remain non-contributors. Invalid Shelley payment-address representations fail
-the rebuild/boundary instead of being silently dropped, while known Byron
-representations remain explicitly skippable.
+Pointer resolution remains available only to the pre-Conway full scan and
+pointer-only overlay; the current index continues to exclude pointers. Byron,
+enterprise and reward addresses remain non-contributors. Invalid Shelley
+payment-address representations fail the rebuild/boundary instead of being
+silently dropped, while known Byron representations remain explicitly
+skippable.
 
 Changing the extractor increments the stake-index schema/readiness version and
 invalidates any mismatched ready marker. In the accepted clean v1 chainstate it
@@ -563,11 +566,11 @@ may remain in memory because their cardinality is bounded by representatives and
 pools rather than stake credentials. If measurement disproves that assumption,
 they receive the same generation/chunk treatment in a later phase.
 
-The old UTXO scan remains the only path before Conway. If a Conway boundary
-cannot open a complete index view, `auto` mode logs a reason and uses the
-pointer-aware scan. Strict validation mode fails before SNAP instead of silently
-falling back, allowing operators to prove that a mainnet run exercised the new
-path.
+Before Conway, the ordered path merges its base/script balances with a
+pointer-only overlay from the same boundary coordinate. If any boundary cannot
+open a complete index view, `auto` mode logs a reason and uses the pointer-aware
+full scan. Strict validation mode fails before SNAP instead of silently falling
+back, allowing operators to prove that a run exercised the bounded path.
 
 ### 5. Remove avoidable reward graph duplication
 
@@ -896,15 +899,17 @@ yano:
 
 Semantics:
 
-- `auto` uses the index only when era, readiness and source completeness allow it;
-  unsupported era or an index unavailable before view creation logs the reason
-  and selects the scan. After either source starts opening a view, a canonical
-  coordinate failure is fatal and never triggers a cross-source fallback.
+- `auto` uses the index when readiness and source completeness allow it, adding
+  a pointer-only overlay before Conway. An index unavailable before view
+  creation logs the reason and selects the full scan. A canonical coordinate
+  failure discovered while opening the phase-scoped view may select the
+  historical full view only before any snapshot mutation; failure of either
+  selected source is fatal.
 - `index` is strict and fails the boundary before mutation if the complete view
   cannot be opened. It is used for acceptance and operations that require a
   proven bounded path.
-- `scan` preserves the legacy pointer-aware source for differential testing and
-  pre-Conway sync.
+- `scan` preserves the legacy pointer-aware source for differential and
+  compatibility testing.
 - `legacy` and `streaming` select reward implementations while both are shipped.
 - Batch limits apply only when the measured Section 6 trigger enables
   journal-v1; atomic mode ignores them.
@@ -968,6 +973,9 @@ rather than a hex string (not a record whose `byte[]` uses identity equality),
 and remove the 300-second timeout-then-inline-rescan behavior. A scan
 future is awaited once; an execution failure fails the boundary, and a configured
 watchdog may cancel/fail it, but Yano never starts a second concurrent full scan.
+For pre-Conway epochs, the same serial pass keeps only pointer-address balances
+and merges that bounded overlay with the ordered base index. Missing pointer
+resolution fails closed.
 
 Exit gate: ordered cursor tests pass for empty, populated, filtered, disabled,
 coordinate-mismatch and rollback states. Old non-empty chainstate rejection is
@@ -1055,10 +1063,10 @@ boundaries on each supported native reference memory class.
 
 ### Phase 7 — Cleanup
 
-Remove the full credential map handoff, parallel scan executor, obsolete reward
-adapters and temporary comparison flags after the compatibility window. Retain
-the pre-Conway/unready full-scan implementation unless pointer-correct index
-coverage is separately accepted.
+Remove the full credential map handoff, obsolete reward adapters and temporary
+comparison flags after the compatibility window. Retain the serial scan executor
+for the pre-Conway pointer overlay and the unready/differential full-scan
+implementation.
 
 ## Test plan
 
@@ -1125,14 +1133,15 @@ coverage is separately accepted.
   writes, startup rebuild and the scan oracle.
 - A malformed Shelley payment address fails index maintenance/rebuild; an
   explicitly recognized Byron address is skipped consistently.
-- Pre-Conway pointer UTXOs resolve through the fallback and are included exactly
-  as before.
+- Pre-Conway pointer UTXOs resolve through the pointer-only overlay and are
+  included exactly as before without retaining non-pointer balances.
 - Conway-or-later pointer UTXOs are excluded by both old and index paths.
-- `stake-source: index` rejects a pre-Conway boundary.
-- `stake-source: auto` chooses scan before Conway, index for a ready Conway
-  boundary and scan for an unready Conway boundary.
-- `stake-source: auto` fails rather than scanning when a ready index view cannot
-  prove the expected canonical coordinate.
+- `stake-source: index` accepts a pre-Conway boundary only with a complete index,
+  an exact coordinate and an available pointer resolver.
+- `stake-source: auto` chooses index plus pointer overlay before Conway, index
+  alone for a ready Conway boundary and full scan for an unready boundary.
+- A pointer overlay never retains a non-pointer credential and fails closed when
+  its resolver or historical UTXO coordinate is unavailable.
 
 #### Streaming snapshot merge
 
@@ -1392,8 +1401,8 @@ configuration, chain point and archive selection.
   restored together on rollback.
 - SNAP consumes the dedicated latest-deregistration index only with complete
   version evidence; pointer-index cleanup cannot change its result.
-- Pre-Conway pointer behavior is unchanged and never uses the current
-  pointer-excluding index accidentally.
+- Pre-Conway pointer behavior is unchanged: the pointer-excluding index is
+  always paired with the resolver-backed pointer overlay.
 - No incomplete generation or projection gap is reported as empty/complete;
   `BUILDING` is pending and cannot advance last-snapshot metadata or publish an
   artifact reference.
@@ -1460,10 +1469,12 @@ the total JVM and native boundary stays within the 5% measurement tolerance.
 If it does not, the new path does not become the default without revising this
 decision.
 
-Serializing the existing full UTXO scan alone could add its documented 30–60
-seconds because it would no longer overlap rewards. That behavior is retained
-only for pre-Conway or unready fallback and is not the expected mainnet Conway
-path.
+Serializing the existing full UTXO compatibility scan alone could add its
+documented 30–60 seconds because it would no longer overlap rewards. Normal
+pre-Conway processing still visits each UTXO to identify pointers, but retains
+only pointer balances and overlaps that pass with rewards. The network-sized
+map is retained only for unready/differential fallback and is not the expected
+mainnet path.
 
 ## Consequences
 
@@ -1536,10 +1547,11 @@ genesis coverage on upgraded stores and has a cleanup API that deletes history.
 SNAP instead uses a dedicated latest-deregistration index with its own versioned
 completeness evidence and authoritative event-log repair source.
 
-### Use the live index before Conway
+### Use the live index alone before Conway
 
-Rejected because it excludes pointer stake references. The fallback remains
-until a separately versioned pointer-correct index is implemented and proven.
+Rejected because it excludes pointer stake references. The accepted design
+pairs it with a coordinate-bound pointer-only overlay, preserving pointer-era
+ledger semantics without rebuilding the non-pointer credential map.
 
 ### Keep one giant atomic RocksDB batch
 

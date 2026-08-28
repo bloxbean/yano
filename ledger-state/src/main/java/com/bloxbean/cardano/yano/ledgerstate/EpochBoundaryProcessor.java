@@ -352,15 +352,18 @@ public class EpochBoundaryProcessor {
         try (var ignored = telemetry.phase("snapshot-input-start",
                 orderedStakeIndex ? "stake-index" : "utxo-scan")) {
             if (snapshotCreator != null && resumeFromStep <= STEP_SNAPSHOT
-                    && !orderedStakeIndex) {
+                    && (!orderedStakeIndex
+                    || snapshotCreator.requiresPointerStakeOverlay(previousEpoch))) {
                 final int snapshotEpoch = previousEpoch;
-                utxoBalancesFuture = utxoScanExecutor.submit(() -> snapshotCreator.aggregateUtxoBalances(snapshotEpoch));
+                utxoBalancesFuture = utxoScanExecutor.submit(() -> orderedStakeIndex
+                        ? snapshotCreator.aggregatePointerUtxoBalances(snapshotEpoch)
+                        : snapshotCreator.aggregateUtxoBalances(snapshotEpoch));
             }
         }
 
         // 3. Calculate rewards (skip if already committed from a previous interrupted run)
         try (var ignored = telemetry.phase("rewards",
-                shouldCalculateRewards(newEpoch) ? "legacy-reward" : "disabled")) {
+                shouldCalculateRewards(newEpoch) ? rewardCalculator.rewardMode() + "-reward" : "disabled")) {
             if (resumeFromStep <= STEP_REWARDS) {
                 if (shouldCalculateRewards(newEpoch)) {
                     calculateAndStoreRewards(previousEpoch, newEpoch, null);

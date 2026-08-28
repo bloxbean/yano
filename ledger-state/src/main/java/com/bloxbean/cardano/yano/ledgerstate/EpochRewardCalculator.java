@@ -151,6 +151,10 @@ public class EpochRewardCalculator {
         this.rewardMode = normalized;
     }
 
+    String rewardMode() {
+        return rewardMode;
+    }
+
     public void setBatchLimits(int maxOperations, int maxBytes) {
         if (maxOperations <= 0 || maxBytes <= 0) {
             throw new IllegalArgumentException("Reward batch limits must be positive");

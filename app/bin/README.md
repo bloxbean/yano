@@ -93,10 +93,19 @@ YANO_SERVER_PORT=3001 ./yano.sh start
 YANO_REMOTE_HOST=localhost YANO_REMOTE_PORT=3001 ./yano.sh start
 ```
 
-### JVM Options (JAR mode only)
+### Runtime memory options
 
 ```bash
 JAVA_OPTS="-Xmx4g -Xms2g" ./yano.sh start
+```
+
+`JAVA_OPTS` is honored by both distributions. Native launches use a measured
+352 MiB maximum heap by default; set `YANO_NATIVE_MAX_HEAP`, or put an explicit
+`-Xmx` in `JAVA_OPTS`, to override it:
+
+```bash
+YANO_NATIVE_MAX_HEAP=512m ./yano.sh start
+JAVA_OPTS="-Xmx512m" ./yano.sh start
 ```
 
 ### Extra Runtime Arguments
@@ -107,7 +116,8 @@ JAVA_OPTS="-Xmx4g -Xms2g" ./yano.sh start
 YANO_EXTRA_ARGS="-Xmx4g" ./yano.sh start
 ```
 
-The startup script prints the effective `JAVA_OPTS` and `YANO_EXTRA_ARGS` values before launching Yano.
+The startup script prints the configured `JAVA_OPTS` and `YANO_EXTRA_ARGS`
+values before launching Yano.
 
 ### Config Files
 

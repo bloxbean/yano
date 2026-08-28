@@ -1086,7 +1086,12 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
 
         EpochParamProvider epochParamProvider = epochParamProviderSupplier.get();
         if (bodyFetchManager != null && epochParamProvider != null) {
-            int rolledBackEpoch = epochParamProvider.getEpochSlotCalc().slotToEpoch(rollbackSlot);
+            // A reconnect intersection may roll back only the header cursor while
+            // its point is still ahead of durable body apply. Epoch transitions
+            // follow applied bodies, so seeding from that header point would skip
+            // every boundary between the body tip and the cached header tip.
+            long resumeSlot = durableEpochResumeSlot(rollbackSlot, chainState.getTip());
+            int rolledBackEpoch = epochParamProvider.getEpochSlotCalc().slotToEpoch(resumeSlot);
             bodyFetchManager.initializePreviousEpoch(rolledBackEpoch);
         }
 
@@ -2407,6 +2412,10 @@ public final class SyncSubsystem implements Subsystem, PeerSessionCallbacks {
             return true;
         }
         return false;
+    }
+
+    static long durableEpochResumeSlot(long rollbackSlot, ChainTip durableBodyTip) {
+        return durableBodyTip != null ? durableBodyTip.getSlot() : rollbackSlot;
     }
 
     private void reconcileSyncPhaseAfterRollback(BodyFetchManager bodyFetchManager) {

@@ -518,18 +518,15 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     @Override
     public void forEachUtxoAtSlot(long maxSlot, java.util.function.BiConsumer<String, BigInteger> consumer) {
         if (!enabled || db == null) return;
-        // Use a RocksDB snapshot for a consistent point-in-time view.
-        // This is cheap (just a reference count increment) and guarantees we don't see
-        // UTXOs being added/removed by concurrent block processing.
         org.rocksdb.Snapshot snapshot = db.getSnapshot();
         try (org.rocksdb.ReadOptions readOptions = new org.rocksdb.ReadOptions()
                 .setSnapshot(snapshot).setFillCache(false);
              RocksIterator it = db.newIterator(cfUnspent, readOptions)) {
+            long latestSlot = readLastAppliedSlot(readOptions);
             it.seekToFirst();
             while (it.isValid()) {
                 try {
                     var stored = UtxoCborCodec.decodeUtxoRecord(it.value());
-                    // Only include UTXOs created at or before the epoch's last slot
                     if (stored.slot <= maxSlot) {
                         consumer.accept(stored.address, stored.lovelace);
                     }
@@ -538,9 +535,65 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                 }
                 it.next();
             }
+
+            // A historical caller can observe a UTXO tip newer than its target boundary.
+            // Creation-slot filtering removes future outputs, but the live set alone cannot
+            // recover an output that existed at the boundary and was spent afterward. Replay
+            // retained post-boundary spend deltas into this read-only view. The normal
+            // boundary path has latestSlot <= maxSlot and pays no delta-scan cost.
+            if (latestSlot > maxSlot) {
+                restorePostTargetSpends(maxSlot, latestSlot, readOptions, consumer);
+            }
+        } catch (RocksDBException e) {
+            throw new IllegalStateException("Failed to read UTXO view at slot " + maxSlot, e);
         } finally {
             db.releaseSnapshot(snapshot);
         }
+    }
+
+    private void restorePostTargetSpends(long maxSlot,
+                                         long latestSlot,
+                                         ReadOptions readOptions,
+                                         java.util.function.BiConsumer<String, BigInteger> consumer)
+            throws RocksDBException {
+        try (RocksIterator deltas = db.newIterator(cfDelta, readOptions)) {
+            deltas.seekToFirst();
+            if (!deltas.isValid()) {
+                throw historicalUtxoViewUnavailable(maxSlot, latestSlot, "delta log is empty");
+            }
+            UtxoDeltaCodec.Decoded first = UtxoDeltaCodec.decode(deltas.value());
+            long historyFloor = first.slot();
+            if (maxSlot < historyFloor) {
+                throw historicalUtxoViewUnavailable(maxSlot, latestSlot,
+                        "history floor is slot " + historyFloor);
+            }
+
+            for (; deltas.isValid(); deltas.next()) {
+                UtxoDeltaCodec.Decoded delta = UtxoDeltaCodec.decode(deltas.value());
+                if (delta.slot() <= maxSlot) continue;
+                for (UtxoDeltaCodec.OutRef ref : delta.spent()) {
+                    byte[] outpoint = UtxoKeyUtil.outpointKey(ref.txHash(), ref.index());
+                    byte[] spentValue = db.get(cfSpent, readOptions, outpoint);
+                    if (spentValue == null) {
+                        throw historicalUtxoViewUnavailable(maxSlot, latestSlot,
+                                "missing spent record " + ref.txHash() + "#" + ref.index()
+                                        + " from block " + delta.blockNumber());
+                    }
+                    UtxoCborCodec.StoredUtxo stored =
+                            UtxoCborCodec.decodeSpentUtxoRecord(spentValue);
+                    if (stored.slot <= maxSlot) {
+                        consumer.accept(stored.address, stored.lovelace);
+                    }
+                }
+            }
+        }
+    }
+
+    private static IllegalStateException historicalUtxoViewUnavailable(long maxSlot,
+                                                                         long latestSlot,
+                                                                         String reason) {
+        return new IllegalStateException("Cannot reconstruct UTXO view at slot " + maxSlot
+                + " from current slot " + latestSlot + ": " + reason);
     }
 
     @Override
@@ -2451,8 +2504,14 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     }
 
     private long readLastAppliedSlot() {
+        try (ReadOptions readOptions = new ReadOptions()) {
+            return readLastAppliedSlot(readOptions);
+        }
+    }
+
+    private long readLastAppliedSlot(ReadOptions readOptions) {
         try {
-            byte[] v = db.get(cfMeta, META_LAST_APPLIED_SLOT);
+            byte[] v = db.get(cfMeta, readOptions, META_LAST_APPLIED_SLOT);
             if (v == null) return 0L;
             if (v.length != 8) {
                 throw new IllegalStateException("Malformed UTXO last applied slot metadata length: " + v.length);

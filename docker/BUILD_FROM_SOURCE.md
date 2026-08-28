@@ -215,7 +215,10 @@ Then restart:
 ./yano.sh restart
 ```
 
-`JAVA_OPTS` applies only to the JVM image. For native-image runtime flags, use `YANO_EXTRA_ARGS`.
+`JAVA_OPTS` is honored by both image flavors. The native image defaults to a
+352 MiB maximum heap; set `YANO_NATIVE_MAX_HEAP`, or provide `-Xmx` in
+`JAVA_OPTS`, to override it. `YANO_EXTRA_ARGS` remains available for additional
+runtime arguments.
 
 ## Useful Cleanup
 

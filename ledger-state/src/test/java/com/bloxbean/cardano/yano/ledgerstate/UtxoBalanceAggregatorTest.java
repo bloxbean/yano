@@ -12,6 +12,7 @@ import java.util.function.BiConsumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class UtxoBalanceAggregatorTest {
@@ -95,6 +96,64 @@ class UtxoBalanceAggregatorTest {
         var balances = aggregator.aggregateBalances(utxoState, unresolved, -1);
 
         assertTrue(balances.isEmpty());
+    }
+
+    @Test
+    void pointerOverlayDoesNotMaterializeNonPointerCredentials() {
+        UtxoBalanceAggregator aggregator = new UtxoBalanceAggregator();
+        String pointerAddress =
+                "addr1gxrgsz5tkx0vsapdhyrk09w9zplhllr94zy70vycpll2egsvpsxqgnmy5k";
+        String baseAddressHex = "00" + PAYMENT_HASH + "33".repeat(28);
+        UtxoState utxoState = new UtxoState() {
+            @Override
+            public List<Utxo> getUtxosByAddress(String address, int page, int pageSize) {
+                return List.of();
+            }
+
+            @Override
+            public List<Utxo> getUtxosByPaymentCredential(String credential, int page, int pageSize) {
+                return List.of();
+            }
+
+            @Override
+            public Optional<Utxo> getUtxo(Outpoint outpoint) {
+                return Optional.empty();
+            }
+
+            @Override
+            public void forEachUtxo(BiConsumer<String, BigInteger> consumer) {
+                consumer.accept(baseAddressHex, BigInteger.valueOf(99_000_000L));
+                consumer.accept(pointerAddress, BigInteger.valueOf(42_000_000L));
+            }
+
+            @Override
+            public boolean isEnabled() {
+                return true;
+            }
+        };
+        PointerAddressResolver resolver = new PointerAddressResolver(null, null) {
+            @Override
+            public StakeCredential resolve(long slot, int txIndex, int certIndex) {
+                return new StakeCredential(0, STAKE_HASH);
+            }
+        };
+
+        var balances = aggregator.aggregatePointerBalances(utxoState, resolver, -1);
+
+        assertEquals(1, balances.size());
+        assertEquals(BigInteger.valueOf(42_000_000L),
+                balances.get(new UtxoBalanceAggregator.CredentialKey(0, STAKE_HASH)));
+    }
+
+    @Test
+    void pointerOverlayFailsClosedWithoutResolver() {
+        UtxoBalanceAggregator aggregator = new UtxoBalanceAggregator();
+        UtxoState utxoState = new SingleUtxoState(
+                "addr1gxrgsz5tkx0vsapdhyrk09w9zplhllr94zy70vycpll2egsvpsxqgnmy5k",
+                BigInteger.valueOf(42_000_000L));
+
+        assertThrows(IllegalStateException.class,
+                () -> aggregator.aggregatePointerBalances(utxoState, null, -1));
     }
 
     private record SingleUtxoState(String address, BigInteger lovelace) implements UtxoState {

@@ -50,6 +50,27 @@ public class UtxoBalanceAggregator {
     public Map<CredentialKey, BigInteger> aggregateBalances(UtxoState utxoState,
                                                             PointerAddressResolver pointerResolver,
                                                             long maxSlot) {
+        return aggregateBalances(utxoState, pointerResolver, maxSlot, false);
+    }
+
+    /**
+     * Aggregate only pre-Conway pointer-address stake. The maintained stake-balance
+     * index already contains every non-pointer credential, so this scan keeps only
+     * the normally tiny pointer overlay instead of rebuilding the network-sized map.
+     */
+    public Map<CredentialKey, BigInteger> aggregatePointerBalances(
+            UtxoState utxoState, PointerAddressResolver pointerResolver, long maxSlot) {
+        if (pointerResolver == null) {
+            throw new IllegalStateException(
+                    "Pointer resolver is required for a pre-Conway stake overlay");
+        }
+        return aggregateBalances(utxoState, pointerResolver, maxSlot, true);
+    }
+
+    private Map<CredentialKey, BigInteger> aggregateBalances(UtxoState utxoState,
+                                                              PointerAddressResolver pointerResolver,
+                                                              long maxSlot,
+                                                              boolean pointerOnly) {
         Map<CredentialKey, BigInteger> balances = new HashMap<>();
         long[] count = {0};
         long[] skipped = {0};
@@ -71,6 +92,7 @@ public class UtxoBalanceAggregator {
             }
 
             AddressType addrType = address.getAddressType();
+            if (pointerOnly && addrType != AddressType.Ptr) return;
             if (addrType == AddressType.Ptr && pointerResolver == null) {
                 // Conway and later exclude pointer stake from snapshots.
                 skipped[0]++;
@@ -99,9 +121,10 @@ public class UtxoBalanceAggregator {
         }
 
         long elapsed = System.currentTimeMillis() - start;
-        log.info("UTXO balance aggregation complete: {} UTXOs processed, {} skipped, {} credentials, " +
+        log.info("{} UTXO balance aggregation complete: {} UTXOs processed, {} skipped, {} credentials, " +
                         "{} pointer resolved, {} pointer failed, {} Byron/no-stake skipped, {}ms",
-                count[0], skipped[0], balances.size(), pointerResolved[0], pointerFailed[0], byronSkipped[0], elapsed);
+                pointerOnly ? "Pointer" : "Full", count[0], skipped[0], balances.size(),
+                pointerResolved[0], pointerFailed[0], byronSkipped[0], elapsed);
 
         return balances;
     }

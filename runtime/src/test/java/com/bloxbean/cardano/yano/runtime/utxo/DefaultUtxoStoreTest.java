@@ -219,6 +219,78 @@ class DefaultUtxoStoreTest {
     }
 
     @Test
+    void forEachUtxoAtSlotRestoresOutputSpentAfterTarget() throws Exception {
+        String boundaryAddress = BASE_ADDR_WITH_STAKE;
+        String futureAddress = "addr_test1vpxfuture00000000000000000000000000000000000";
+        String createdHash = "31".repeat(32);
+        TransactionBody created = TransactionBody.builder()
+                .txHash(createdHash)
+                .outputs(List.of(TransactionOutput.builder().address(boundaryAddress)
+                        .amounts(List.of(lovelaceAmount(2_471_796_694L))).build()))
+                .build();
+        publishBlock(100, 1, "41".repeat(32), Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(created)).invalidTransactions(List.of()).build());
+
+        TransactionBody spent = TransactionBody.builder()
+                .txHash("32".repeat(32))
+                .inputs(Set.of(TransactionInput.builder().transactionId(createdHash).index(0).build()))
+                .outputs(List.of(TransactionOutput.builder().address(futureAddress)
+                        .amounts(List.of(lovelaceAmount(2_471_500_000L))).build()))
+                .build();
+        publishBlock(102, 2, "42".repeat(32), Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(spent)).invalidTransactions(List.of()).build());
+
+        Map<String, BigInteger> balances = new HashMap<>();
+        store.forEachUtxoAtSlot(100,
+                (address, lovelace) -> balances.merge(address, lovelace, BigInteger::add));
+
+        assertEquals(BigInteger.valueOf(2_471_796_694L), balances.get(boundaryAddress));
+        assertFalse(balances.containsKey(futureAddress),
+                "an output created after the target slot must not enter the historical view");
+    }
+
+    @Test
+    void forEachUtxoAtSlotFailsClosedWhenSpentHistoryIsMissing() throws Exception {
+        String createdHash = "51".repeat(32);
+        TransactionBody created = TransactionBody.builder()
+                .txHash(createdHash)
+                .outputs(List.of(TransactionOutput.builder().address(BASE_ADDR_WITH_STAKE)
+                        .amounts(List.of(lovelaceAmount(1_000_000))).build()))
+                .build();
+        publishBlock(100, 1, "61".repeat(32), Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(created)).invalidTransactions(List.of()).build());
+
+        TransactionBody spent = TransactionBody.builder()
+                .txHash("52".repeat(32))
+                .inputs(Set.of(TransactionInput.builder().transactionId(createdHash).index(0).build()))
+                .outputs(List.of())
+                .build();
+        publishBlock(102, 2, "62".repeat(32), Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(spent)).invalidTransactions(List.of()).build());
+        chain.rocks().db().delete(chain.rocks().handle(UtxoCfNames.UTXO_SPENT),
+                UtxoKeyUtil.outpointKey(createdHash, 0));
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> store.forEachUtxoAtSlot(100, (address, lovelace) -> { }));
+        assertTrue(failure.getMessage().contains("missing spent record"));
+    }
+
+    @Test
+    void forEachUtxoAtSlotFailsClosedBeforeOldestRetainedDelta() {
+        TransactionBody created = TransactionBody.builder()
+                .txHash("71".repeat(32))
+                .outputs(List.of(TransactionOutput.builder().address(BASE_ADDR_WITH_STAKE)
+                        .amounts(List.of(lovelaceAmount(1_000_000))).build()))
+                .build();
+        publishBlock(100, 1, "72".repeat(32), Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(created)).invalidTransactions(List.of()).build());
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> store.forEachUtxoAtSlot(99, (address, lovelace) -> { }));
+        assertTrue(failure.getMessage().contains("history floor is slot 100"));
+    }
+
+    @Test
     void applyInvalidBlock_usesCollateralAndReturn_only() {
         String addrA = "addr_test1vpxcollat000000000000000000000000000000000000";
         String addrRet = "addr_test1vpxreturn0000000000000000000000000000000000";

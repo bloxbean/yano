@@ -10,8 +10,8 @@ import java.util.Map;
 /**
  * Enhances delegation snapshots with UTXO-derived stake amounts.
  * <p>
- * At epoch boundary, iterates all UTXOs to compute per-credential lovelace balances,
- * then merges with existing delegation snapshot to produce a full stake distribution.
+ * At epoch boundary, either aggregates the full UTXO set for compatibility or
+ * computes the small pre-Conway pointer overlay for the ordered stake index.
  * <p>
  * This is disabled by default. When enabled, the epoch delegation snapshot value
  * changes from {0: poolHash} to {0: poolHash, 1: amount}.
@@ -58,6 +58,12 @@ public class EpochStakeSnapshotService {
             UtxoState utxoState, PointerAddressResolver pointerResolver, long maxSlot) {
         if (!enabled) return Map.of();
         return aggregator.aggregateBalances(utxoState, pointerResolver, maxSlot);
+    }
+
+    public Map<UtxoBalanceAggregator.CredentialKey, BigInteger> aggregatePointerStakeBalances(
+            UtxoState utxoState, PointerAddressResolver pointerResolver, long maxSlot) {
+        if (!enabled) return Map.of();
+        return aggregator.aggregatePointerBalances(utxoState, pointerResolver, maxSlot);
     }
 
     /**

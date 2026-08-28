@@ -19,6 +19,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 class EpochRewardCalculatorTest {
 
     @Test
+    void exposesNormalizedRewardModeForBoundaryTelemetry() {
+        var calculator = new EpochRewardCalculator(null, null, null, true);
+
+        assertThat(calculator.rewardMode()).isEqualTo("streaming");
+
+        calculator.setRewardMode(" LEGACY ");
+
+        assertThat(calculator.rewardMode()).isEqualTo("legacy");
+    }
+
+    @Test
     void rewardProtocolParamsNormalizeRemovedDecentralizationToZero() {
         EpochParamProvider provider = new EpochParamProvider() {
             @Override
