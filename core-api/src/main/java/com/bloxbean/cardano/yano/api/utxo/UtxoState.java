@@ -1,5 +1,6 @@
 package com.bloxbean.cardano.yano.api.utxo;
 
+import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
 import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
 
@@ -143,6 +144,16 @@ public interface UtxoState {
      * This is UTXO-only and does not include withdrawable rewards.
      */
     default Optional<BigInteger> getUtxoBalanceByStakeCredential(int credType, String credentialHash) {
+        return Optional.empty();
+    }
+
+    /**
+     * Open the complete live stake-balance index at an exact canonical
+     * coordinate. Disabled, filtered or unready stores return empty. A store
+     * that is ready but cannot prove the coordinate fails closed with
+     * {@link StakeBalanceConsistencyException}.
+     */
+    default Optional<StakeBalanceView> openStakeBalanceView(CanonicalBlockReference expectedCoordinate) {
         return Optional.empty();
     }
 }

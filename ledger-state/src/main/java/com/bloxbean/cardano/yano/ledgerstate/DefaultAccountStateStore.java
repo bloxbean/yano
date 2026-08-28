@@ -16,6 +16,7 @@ import com.bloxbean.cardano.yaci.core.types.UnitInterval;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.ChainBlockReader;
+import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.model.CredentialKey;
 import com.bloxbean.cardano.yano.api.account.AccountStateReadStore;
@@ -32,6 +33,9 @@ import com.bloxbean.cardano.yano.api.genesis.GenesisBootstrapData;
 import com.bloxbean.cardano.yano.api.genesis.GenesisDelegation;
 import com.bloxbean.cardano.yano.api.genesis.GenesisPool;
 import com.bloxbean.cardano.yano.api.genesis.ShelleyGenesisBootstrap;
+import com.bloxbean.cardano.yano.api.utxo.StakeBalanceView;
+import com.bloxbean.cardano.yano.api.utxo.StakeCredentialBalance;
+import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import com.bloxbean.cardano.yaci.core.protocol.chainsync.messages.Point;
 import org.rocksdb.*;
 import org.slf4j.Logger;
@@ -103,6 +107,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
      * order identical to coordinate order, so an ordered seek is an ordered coordinate scan.
      */
     static final byte PREFIX_ACCT_DEREG_COORD = 0x16;
+    /** Latest deregistration coordinate per credential, complete from genesis in state v1. */
+    static final byte PREFIX_ACCT_LAST_DEREG_COORD = 0x17;
 
     /** Durable marker: the as-of pointer index has been maintained from genesis. */
     static final byte[] META_POINTER_INDEX_GENESIS =
@@ -161,6 +167,12 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     private static final byte[] META_BOUNDARY_STEP = "meta.boundary_step".getBytes(StandardCharsets.UTF_8);
     private static final byte[] MARKER_PV10_REVERSE_REBUILD = "meta.pv10_drep_reverse_rebuild".getBytes(StandardCharsets.UTF_8);
     private static final byte[] META_LAST_APPLIED_SLOT = "meta.last_applied_slot".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] META_EPOCH_BOUNDARY_STATE_VERSION =
+            "meta.epoch_boundary_state_version".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] EPOCH_BOUNDARY_STATE_VERSION = {1};
+    private static final byte[] META_SNAPSHOT_DEREG_INDEX_VERSION =
+            "meta.snapshot_dereg_index_version".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] SNAPSHOT_DEREG_INDEX_VERSION = {1};
     // Configurable retention — instance fields read from config, defaults match previous constants.
     // Retain snapshots for enough epochs so the background epoch boundary processor can read them.
     // During fast sync, the main thread creates snapshots and prunes old ones rapidly while
@@ -255,7 +267,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     private volatile EpochRewardCalculator rewardCalculator;
     private volatile EpochParamTracker paramTracker;
     private volatile EpochBoundaryProcessor epochBoundaryProcessor;
-    private volatile com.bloxbean.cardano.yano.api.utxo.UtxoState utxoState;
+    private volatile UtxoState utxoState;
+    private volatile ChainBlockReader chainBlockReader;
     private volatile long networkMagic;
     private PointerAddressResolver pointerAddressResolver; // initialized after RocksDB opens
 
@@ -325,6 +338,54 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         this.snapshotRetentionEpochs = getInt(config,
                 YanoPropertyKeys.AccountState.SNAPSHOT_RETENTION_EPOCHS,
                 DEFAULT_SNAPSHOT_RETENTION_EPOCHS);
+        initializeEpochBoundaryStateV1();
+    }
+
+    private void initializeEpochBoundaryStateV1() {
+        if (!enabled || db == null || cfState == null) return;
+        try {
+            byte[] version = db.get(cfState, META_EPOCH_BOUNDARY_STATE_VERSION);
+            if (Arrays.equals(version, EPOCH_BOUNDARY_STATE_VERSION)) {
+                if (!Arrays.equals(db.get(cfState, META_SNAPSHOT_DEREG_INDEX_VERSION),
+                        SNAPSHOT_DEREG_INDEX_VERSION)) {
+                    throw new IllegalStateException(
+                            "epoch-boundary state v1 is missing its snapshot deregistration index marker");
+                }
+                return;
+            }
+            if (version != null || !isAccountStateEmpty()) {
+                throw new IllegalStateException(
+                        "This preview build requires epoch-boundary state v1. The existing non-empty "
+                                + "account chainstate is not compatible; retain a backup and resync into "
+                                + "a new chainstate directory.");
+            }
+            try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions().setSync(true)) {
+                batch.put(cfState, META_EPOCH_BOUNDARY_STATE_VERSION,
+                        EPOCH_BOUNDARY_STATE_VERSION);
+                batch.put(cfState, META_SNAPSHOT_DEREG_INDEX_VERSION,
+                        SNAPSHOT_DEREG_INDEX_VERSION);
+                db.write(options, batch);
+            }
+        } catch (RocksDBException e) {
+            throw new IllegalStateException("Failed to initialize epoch-boundary state v1", e);
+        }
+    }
+
+    private boolean isAccountStateEmpty() {
+        try (RocksIterator iterator = db.newIterator(cfState)) {
+            iterator.seekToFirst();
+            return !iterator.isValid();
+        }
+    }
+
+    boolean isSnapshotDeregistrationIndexReady() {
+        try {
+            return Arrays.equals(db.get(cfState, META_SNAPSHOT_DEREG_INDEX_VERSION),
+                    SNAPSHOT_DEREG_INDEX_VERSION);
+        } catch (RocksDBException e) {
+            throw new IllegalStateException(
+                    "Failed to read snapshot deregistration index version", e);
+        }
     }
 
     // --- Optional subsystem wiring ---
@@ -346,8 +407,26 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
      * Set the UtxoState reference for UTXO balance aggregation at epoch boundary.
      * Must be called before epoch snapshots with amounts are needed.
      */
-    public void setUtxoState(com.bloxbean.cardano.yano.api.utxo.UtxoState utxoState) {
+    public void setUtxoState(UtxoState utxoState) {
         this.utxoState = utxoState;
+    }
+
+    public void setChainBlockReader(ChainBlockReader chainBlockReader) {
+        this.chainBlockReader = chainBlockReader;
+    }
+
+    public Optional<StakeBalanceView> openBoundaryStakeBalanceView() {
+        if (utxoState == null || chainBlockReader == null || archiveBoundary == null) {
+            return Optional.empty();
+        }
+        long expectedBlockNumber = archiveBoundary.blockNumber() - 1;
+        if (expectedBlockNumber < 0) return Optional.empty();
+        CanonicalBlockReference expected = chainBlockReader
+                .getCanonicalBlockReference(expectedBlockNumber)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Canonical predecessor is unavailable for epoch boundary block "
+                                + archiveBoundary.blockNumber()));
+        return utxoState.openStakeBalanceView(expected);
     }
 
     /**
@@ -363,7 +442,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     public void setBalanceMode(String mode) {
         this.balanceMode = mode;
     }
-    private String balanceMode = "full-scan";
+    private String balanceMode = "auto";
 
     /**
      * Set the AdaPot tracker for treasury/reserves tracking.
@@ -1370,6 +1449,21 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             }
         }
         return credentials;
+    }
+
+    @Override
+    public boolean isStakeCredentialRegistered(String credential) {
+        if (credential == null) return false;
+        int separator = credential.indexOf(':');
+        if (separator <= 0 || separator == credential.length() - 1) return false;
+        try {
+            int credentialType = Integer.parseInt(credential.substring(0, separator));
+            return db.get(cfState, accountKey(
+                    credentialType, credential.substring(separator + 1))) != null;
+        } catch (Exception e) {
+            throw new IllegalStateException(
+                    "Failed to read stake credential registration", e);
+        }
     }
 
     // --- AdaPot queries ---
@@ -3043,6 +3137,20 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         return key;
     }
 
+    private static byte[] acctLastDeregCoordKey(int credType, String credHash) {
+        byte[] hash = HexUtil.decodeHexString(credHash);
+        byte[] key = new byte[2 + hash.length];
+        key[0] = PREFIX_ACCT_LAST_DEREG_COORD;
+        key[1] = (byte) credType;
+        System.arraycopy(hash, 0, key, 2, hash.length);
+        return key;
+    }
+
+    private static byte[] encodeStakeCoordinate(long slot, int txIdx, int certIdx) {
+        return ByteBuffer.allocate(12).order(ByteOrder.BIG_ENDIAN)
+                .putLong(slot).putShort((short) txIdx).putShort((short) certIdx).array();
+    }
+
     // ------------------------------------------------------------------
     // ADR-039 as-of pointer resolution
     // ------------------------------------------------------------------
@@ -3365,6 +3473,14 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         byte[] deregKey = acctDeregCoordKey(ct, cred.getHash(), slot, txIdx, certIdx);
         batch.put(cfState, deregKey, EMPTY_MARKER);
         deltaOps.add(new DeltaOp(OP_PUT, deregKey, null));
+
+        // Snapshot-specific latest-deregistration index. Unlike the pointer-history
+        // index above, this entry is never removed by pointer cleanup and its v1
+        // completeness marker is established only on a clean chainstate.
+        byte[] latestDeregKey = acctLastDeregCoordKey(ct, cred.getHash());
+        byte[] latestDeregPrev = db.get(cfState, latestDeregKey);
+        batch.put(cfState, latestDeregKey, encodeStakeCoordinate(slot, txIdx, certIdx));
+        deltaOps.add(new DeltaOp(OP_PUT, latestDeregKey, latestDeregPrev));
 
         return depositRefund;
     }
@@ -3853,6 +3969,22 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         return stakeSnapshotService.aggregateStakeBalances(utxoState, ptrResolver, epochLastSlot);
     }
 
+    public boolean shouldUseOrderedStakeBalanceIndex(int epoch) {
+        if (!isConwayOrLater(epoch + 1) || "full-scan".equalsIgnoreCase(balanceMode)) {
+            return false;
+        }
+        boolean available = stakeSnapshotService != null && stakeSnapshotService.isEnabled()
+                && utxoState != null && utxoState.isStakeBalanceIndexReady()
+                && isSnapshotDeregistrationIndexReady()
+                && chainBlockReader != null && archiveBoundary != null
+                && archiveBoundary.blockNumber() > 0;
+        if (!available && "index".equalsIgnoreCase(balanceMode)) {
+            throw new IllegalStateException(
+                    "Strict epoch snapshot index mode is unavailable at epoch " + epoch);
+        }
+        return available;
+    }
+
     /**
      * Create and commit the delegation snapshot. Returns the UTXO balance aggregation
      * so it can be reused for DRep distribution calculation (which needs actual balances
@@ -3863,17 +3995,25 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     public java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> createAndCommitDelegationSnapshot(
             int epoch, java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> precomputedUtxoBalances) {
         java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> utxoBalances = null;
+        StakeBalanceView stakeBalanceView = null;
         var archiveWriter = archiveStaging.enabled(
                 com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset.EPOCH_STAKE)
                 ? archiveStaging.openStake(epoch) : null;
         try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
-            utxoBalances = createDelegationSnapshot(epoch, batch, precomputedUtxoBalances, archiveWriter);
+            if (precomputedUtxoBalances == null && shouldUseOrderedStakeBalanceIndex(epoch)) {
+                stakeBalanceView = openBoundaryStakeBalanceView()
+                        .orElseThrow(() -> new IllegalStateException(
+                                "Stake balance index became unavailable before snapshot creation"));
+            }
+            utxoBalances = createDelegationSnapshot(epoch, batch, precomputedUtxoBalances,
+                    stakeBalanceView, archiveWriter);
             db.write(wo, batch);
             if (archiveWriter != null) archiveWriter.commit();
         } catch (Exception ex) {
             log.error("Failed to create delegation snapshot for epoch {}: {}", epoch, ex.toString());
             throw new RuntimeException("Failed to create delegation snapshot for epoch " + epoch, ex);
         } finally {
+            if (stakeBalanceView != null) stakeBalanceView.close();
             if (archiveWriter != null) archiveWriter.close();
         }
         return utxoBalances;
@@ -3889,6 +4029,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     private java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> createDelegationSnapshot(
             int epoch, WriteBatch batch,
             java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> precomputedUtxoBalances,
+            StakeBalanceView stakeBalanceView,
             com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.FactWriter<
                     com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.StakeFact> archiveWriter)
             throws RocksDBException {
@@ -3936,34 +4077,38 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
         // Pre-build map: credential → latest deregistration position (slot, txIdx, certIdx)
         // Used to detect delegations invalidated by a subsequent deregistration.
-        java.util.Map<CredentialKey, long[]> latestDeregistrations = new java.util.HashMap<>();
-        try (RocksIterator deregIt = db.newIterator(cfState)) {
-            deregIt.seek(new byte[]{PREFIX_STAKE_EVENT});
-            while (deregIt.isValid()) {
-                byte[] dk = deregIt.key();
-                if (dk.length < 14 || dk[0] != PREFIX_STAKE_EVENT) break;
-                int eventType = AccountStateCborCodec.decodeStakeEvent(deregIt.value());
-                if (eventType == AccountStateCborCodec.EVENT_DEREGISTRATION) {
-                    long evSlot = ByteBuffer.wrap(dk, 1, 8).order(ByteOrder.BIG_ENDIAN).getLong();
-                    int evTxIdx = ByteBuffer.wrap(dk, 9, 2).order(ByteOrder.BIG_ENDIAN).getShort() & 0xFFFF;
-                    int evCertIdx = ByteBuffer.wrap(dk, 11, 2).order(ByteOrder.BIG_ENDIAN).getShort() & 0xFFFF;
-                    int evCredType = dk[13] & 0xFF;
-                    String evCredHash = HexUtil.encodeHexString(Arrays.copyOfRange(dk, 14, dk.length));
-                    var credKey = CredentialKey.of(evCredType, evCredHash);
+        java.util.Map<CredentialKey, long[]> latestDeregistrations = null;
+        if (stakeBalanceView == null) {
+            latestDeregistrations = new java.util.HashMap<>();
+            try (RocksIterator deregIt = db.newIterator(cfState)) {
+                deregIt.seek(new byte[]{PREFIX_STAKE_EVENT});
+                while (deregIt.isValid()) {
+                    byte[] dk = deregIt.key();
+                    if (dk.length < 14 || dk[0] != PREFIX_STAKE_EVENT) break;
+                    int eventType = AccountStateCborCodec.decodeStakeEvent(deregIt.value());
+                    if (eventType == AccountStateCborCodec.EVENT_DEREGISTRATION) {
+                        long evSlot = ByteBuffer.wrap(dk, 1, 8).order(ByteOrder.BIG_ENDIAN).getLong();
+                        int evTxIdx = ByteBuffer.wrap(dk, 9, 2).order(ByteOrder.BIG_ENDIAN).getShort() & 0xFFFF;
+                        int evCertIdx = ByteBuffer.wrap(dk, 11, 2).order(ByteOrder.BIG_ENDIAN).getShort() & 0xFFFF;
+                        int evCredType = dk[13] & 0xFF;
+                        String evCredHash = HexUtil.encodeHexString(Arrays.copyOfRange(dk, 14, dk.length));
+                        var credKey = CredentialKey.of(evCredType, evCredHash);
 
-                    long[] existing = latestDeregistrations.get(credKey);
-                    if (existing == null
-                            || evSlot > existing[0]
-                            || (evSlot == existing[0] && evTxIdx > existing[1])
-                            || (evSlot == existing[0] && evTxIdx == existing[1] && evCertIdx > existing[2])) {
-                        latestDeregistrations.put(credKey, new long[]{evSlot, evTxIdx, evCertIdx});
+                        long[] existing = latestDeregistrations.get(credKey);
+                        if (existing == null
+                                || evSlot > existing[0]
+                                || (evSlot == existing[0] && evTxIdx > existing[1])
+                                || (evSlot == existing[0] && evTxIdx == existing[1] && evCertIdx > existing[2])) {
+                            latestDeregistrations.put(credKey, new long[]{evSlot, evTxIdx, evCertIdx});
+                        }
                     }
+                    deregIt.next();
                 }
-                deregIt.next();
             }
-        }
-        if (!latestDeregistrations.isEmpty()) {
-            log.debug("Pre-built deregistration map: {} credentials with deregistrations", latestDeregistrations.size());
+            if (!latestDeregistrations.isEmpty()) {
+                log.debug("Pre-built deregistration map: {} credentials with deregistrations",
+                        latestDeregistrations.size());
+            }
         }
 
         // Allegra bootstrap UTXO removal is self-contained in DefaultUtxoStore.applyBlock().
@@ -3973,11 +4118,14 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
         // Use pre-computed UTXO balances if available (from parallel scan), otherwise compute inline.
         java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> utxoBalances = precomputedUtxoBalances;
-        if (utxoBalances == null && stakeSnapshotService != null && stakeSnapshotService.isEnabled() && utxoState != null) {
+        if (stakeBalanceView == null && utxoBalances == null
+                && stakeSnapshotService != null && stakeSnapshotService.isEnabled() && utxoState != null) {
             // Fallback: compute inline. Era not available here — uses protocol version fallback.
             utxoBalances = aggregateUtxoBalances(epoch);
         }
 
+        OrderedStakeLookup orderedStake = stakeBalanceView != null
+                ? new OrderedStakeLookup(stakeBalanceView) : null;
         try (RocksIterator it = db.newIterator(cfState)) {
             it.seek(new byte[]{PREFIX_POOL_DELEG});
             while (it.isValid()) {
@@ -4018,8 +4166,16 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 // If a credential was deregistered AFTER the delegation was made (comparing
                 // slot, then txIndex, then certIndex), the delegation is stale even if the
                 // credential was re-registered later — a new delegation would be needed.
-                var deregKey = CredentialKey.of(credType, credHash);
-                long[] latestDereg = latestDeregistrations.get(deregKey);
+                long[] latestDereg;
+                if (orderedStake != null) {
+                    byte[] latestDeregValue = db.get(cfState,
+                            acctLastDeregCoordKey(credType, credHash));
+                    latestDereg = latestDeregValue != null
+                            ? decodeStakeCoordinate(latestDeregValue) : null;
+                } else {
+                    var deregKey = CredentialKey.of(credType, credHash);
+                    latestDereg = latestDeregistrations.get(deregKey);
+                }
                 if (latestDereg != null) {
                     long dSlot = latestDereg[0];
                     long dTxIdx = latestDereg[1];
@@ -4050,7 +4206,14 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 // reward_rest (proposal refunds, treasury withdrawals) is already credited to
                 // PREFIX_ACCT.reward in PostEpochTransition, so it's included in rewardBal.
                 java.math.BigInteger stakeAmount = java.math.BigInteger.ZERO;
-                if (utxoBalances != null) {
+                if (orderedStake != null) {
+                    byte[] credentialHash = Arrays.copyOfRange(key, 2, key.length);
+                    java.math.BigInteger utxoBal = orderedStake.balanceFor(
+                            credType, credentialHash);
+                    var acctData = AccountStateCborCodec.decodeStakeAccount(acctVal);
+                    stakeAmount = utxoBal.add(acctData.reward());
+                    if (stakeAmount.signum() == 0) skippedZeroBalance++;
+                } else if (utxoBalances != null) {
                     var credKey = new UtxoBalanceAggregator.CredentialKey(credType, credHash);
                     java.math.BigInteger utxoBal = utxoBalances.getOrDefault(credKey, java.math.BigInteger.ZERO);
                     var acctData = AccountStateCborCodec.decodeStakeAccount(acctVal);
@@ -4103,9 +4266,57 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         byte[] epochMeta = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(epoch).array();
         batch.put(cfState, META_LAST_SNAPSHOT_EPOCH, epochMeta);
         log.info("Created delegation snapshot for epoch {} ({} delegations, amounts={}, skipped: {} unregistered, {} zero-balance, {} retired-pool, {} stale-delegation, {} dereg-after-deleg)",
-                epoch, count, utxoBalances != null, skippedUnregistered, skippedZeroBalance, skippedRetiredPool, skippedStaleDelegation, skippedDeregAfterDeleg);
+                epoch, count, orderedStake != null || utxoBalances != null,
+                skippedUnregistered, skippedZeroBalance, skippedRetiredPool,
+                skippedStaleDelegation, skippedDeregAfterDeleg);
 
         return utxoBalances;
+    }
+
+    private static long[] decodeStakeCoordinate(byte[] value) {
+        if (value.length != 12) {
+            throw new IllegalStateException(
+                    "Malformed latest stake deregistration coordinate length: " + value.length);
+        }
+        ByteBuffer buffer = ByteBuffer.wrap(value).order(ByteOrder.BIG_ENDIAN);
+        return new long[]{buffer.getLong(), buffer.getShort() & 0xFFFF,
+                buffer.getShort() & 0xFFFF};
+    }
+
+    private static final class OrderedStakeLookup {
+        private final StakeBalanceView view;
+        private StakeCredentialBalance current;
+        private boolean exhausted;
+
+        private OrderedStakeLookup(StakeBalanceView view) {
+            this.view = view;
+            advance();
+        }
+
+        private BigInteger balanceFor(int credentialType, byte[] credentialHash) {
+            while (!exhausted && compareCurrent(credentialType, credentialHash) < 0) {
+                advance();
+            }
+            return !exhausted && compareCurrent(credentialType, credentialHash) == 0
+                    ? current.lovelace() : BigInteger.ZERO;
+        }
+
+        private int compareCurrent(int credentialType, byte[] credentialHash) {
+            int typeCompare = Integer.compare(
+                    current.credential().credentialType(), credentialType);
+            if (typeCompare != 0) return typeCompare;
+            return Arrays.compareUnsigned(
+                    current.credential().credentialHash(), credentialHash);
+        }
+
+        private void advance() {
+            if (view.advance()) {
+                current = view.current();
+            } else {
+                current = null;
+                exhausted = true;
+            }
+        }
     }
 
     /**
@@ -4236,6 +4447,12 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
      */
     @Override
     public Set<String> getDeregisteredAccountsInSlotRange(long startSlot, long endSlot) {
+        return getDeregisteredAccountsInSlotRange(startSlot, endSlot, null);
+    }
+
+    @Override
+    public Set<String> getDeregisteredAccountsInSlotRange(
+            long startSlot, long endSlot, Set<String> relevantCredentials) {
         // Track last event per credential using LinkedHashMap
         Map<String, Integer> lastEvent = new LinkedHashMap<>();
 
@@ -4254,6 +4471,10 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 int credType = key[13] & 0xFF;
                 String credHash = HexUtil.encodeHexString(Arrays.copyOfRange(key, 14, key.length));
                 String credKey = credType + ":" + credHash;
+                if (relevantCredentials != null && !relevantCredentials.contains(credKey)) {
+                    it.next();
+                    continue;
+                }
                 int eventType = AccountStateCborCodec.decodeStakeEvent(it.value());
                 lastEvent.put(credKey, eventType);
                 it.next();
@@ -4334,6 +4555,24 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     @Override
     public String storeName() {
         return "accountStateStore";
+    }
+
+    EpochBoundaryTelemetry.RocksDbMemory captureEpochBoundaryRocksDbMemory() {
+        if (db == null) return EpochBoundaryTelemetry.RocksDbMemory.UNAVAILABLE;
+        return new EpochBoundaryTelemetry.RocksDbMemory(
+                readRocksDbLongProperty("rocksdb.block-cache-usage"),
+                readRocksDbLongProperty("rocksdb.block-cache-pinned-usage"),
+                readRocksDbLongProperty("rocksdb.cur-size-all-mem-tables"),
+                readRocksDbLongProperty("rocksdb.estimate-table-readers-mem"),
+                readRocksDbLongProperty("rocksdb.estimate-pending-compaction-bytes"));
+    }
+
+    private long readRocksDbLongProperty(String property) {
+        try {
+            return db.getLongProperty(property);
+        } catch (Exception ignored) {
+            return -1;
+        }
     }
 
     @Override

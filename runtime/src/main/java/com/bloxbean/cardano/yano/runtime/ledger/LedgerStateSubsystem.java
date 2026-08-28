@@ -403,6 +403,7 @@ public final class LedgerStateSubsystem implements Subsystem {
 
     private void wireDefaultAccountStateStore(DefaultAccountStateStore defaultStore,
                                               NetworkGenesisConfig networkGenesisConfig) {
+        defaultStore.setChainBlockReader(chainBlockReader);
         UtxoState utxoState = utxoStateSupplier.get();
         if (utxoState != null) {
             defaultStore.setUtxoState(utxoState);
@@ -413,7 +414,7 @@ public final class LedgerStateSubsystem implements Subsystem {
         if (snapshotAmountsEnabled) {
             defaultStore.setStakeSnapshotService(new EpochStakeSnapshotService(true));
             String balMode = String.valueOf(runtimeOptions.globals()
-                    .getOrDefault(YanoPropertyKeys.EpochSnapshot.BALANCE_MODE, "full-scan"));
+                    .getOrDefault(YanoPropertyKeys.EpochSnapshot.BALANCE_MODE, "auto"));
             defaultStore.setBalanceMode(balMode);
             log.info("Epoch stake snapshot amounts enabled (balance-mode={})", balMode);
         }
@@ -617,6 +618,7 @@ public final class LedgerStateSubsystem implements Subsystem {
             var dropService = new com.bloxbean.cardano.yano.ledgerstate.governance.ratification.ProposalDropService();
             var drepDistCalc = new com.bloxbean.cardano.yano.ledgerstate.governance.epoch.DRepDistributionCalculator(
                     rocksDb, cfState, cfSnapshot, govStore);
+            drepDistCalc.setStakeBalanceViewSupplier(defaultStore::openBoundaryStakeBalanceView);
             var drepExpiryCalc = new com.bloxbean.cardano.yano.ledgerstate.governance.epoch.DRepExpiryCalculator();
 
             var govEpochProcessor = new com.bloxbean.cardano.yano.ledgerstate.governance.epoch.GovernanceEpochProcessor(

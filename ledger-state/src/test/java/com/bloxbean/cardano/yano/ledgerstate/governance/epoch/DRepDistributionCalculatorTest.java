@@ -6,6 +6,10 @@ import com.bloxbean.cardano.yano.ledgerstate.governance.GovernanceStateStore;
 import com.bloxbean.cardano.yano.ledgerstate.governance.model.DRepStateRecord;
 import com.bloxbean.cardano.yano.ledgerstate.test.TestRocksDBHelper;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
+import com.bloxbean.cardano.yano.api.utxo.StakeBalanceView;
+import com.bloxbean.cardano.yano.api.utxo.StakeCredentialBalance;
+import com.bloxbean.cardano.yano.api.utxo.StakeCredentialId;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
 import org.rocksdb.WriteBatch;
@@ -101,6 +105,32 @@ class DRepDistributionCalculatorTest {
     // ===== Tests =====
 
     @Test
+    void coordinateBoundViewMatchesNoCrashMapAndDoesNotReusePoolSnapshotAmounts() throws Exception {
+        registerDRep(0, DREP_A, 200, 84974395L);
+        storeDRepDelegation(0, CRED1, 0, DREP_A, 85000000L);
+        storeDRepDelegation(0, CRED2, 0, DREP_A, 85000001L);
+        storeStakeAccount(0, CRED1, BigInteger.valueOf(7), BigInteger.valueOf(2_000_000));
+        storeStakeAccount(0, CRED2, BigInteger.valueOf(11), BigInteger.valueOf(2_000_000));
+
+        var balances = Map.of(
+                new com.bloxbean.cardano.yano.ledgerstate.UtxoBalanceAggregator.CredentialKey(0, CRED1),
+                BigInteger.valueOf(100),
+                new com.bloxbean.cardano.yano.ledgerstate.UtxoBalanceAggregator.CredentialKey(0, CRED2),
+                BigInteger.valueOf(200));
+        var expected = calculator.calculate(230, balances, Map.of());
+
+        var coordinate = new CanonicalBlockReference(1, 10, new byte[32]);
+        calculator.setStakeBalanceViewSupplier(() -> Optional.of(new ListStakeBalanceView(
+                coordinate,
+                List.of(row(CRED2, 200), row(CRED1, 100)))));
+        var resumed = calculator.calculate(230, null, Map.of());
+
+        assertThat(resumed).isEqualTo(expected);
+        assertThat(resumed.get(new DRepDistributionCalculator.DRepDistKey(0, DREP_A)))
+                .isEqualTo(BigInteger.valueOf(318));
+    }
+
+    @Test
     @DisplayName("Basic distribution: two delegators to one DRep")
     void basic_twoDelegatorsOneDRep() throws Exception {
         // Register DRep A
@@ -124,6 +154,43 @@ class DRepDistributionCalculatorTest {
         var key = new DRepDistributionCalculator.DRepDistKey(0, DREP_A);
         assertThat(dist).containsKey(key);
         assertThat(dist.get(key)).isEqualTo(BigInteger.valueOf(150_000_000)); // 100M + 50M
+    }
+
+    private static StakeCredentialBalance row(String hash, long lovelace) {
+        return new StakeCredentialBalance(
+                new StakeCredentialId(0, HexUtil.decodeHexString(hash)),
+                BigInteger.valueOf(lovelace));
+    }
+
+    private static final class ListStakeBalanceView implements StakeBalanceView {
+        private final CanonicalBlockReference coordinate;
+        private final List<StakeCredentialBalance> rows;
+        private int index = -1;
+
+        private ListStakeBalanceView(CanonicalBlockReference coordinate,
+                                     List<StakeCredentialBalance> rows) {
+            this.coordinate = coordinate;
+            this.rows = rows;
+        }
+
+        @Override
+        public CanonicalBlockReference coordinate() {
+            return coordinate;
+        }
+
+        @Override
+        public boolean advance() {
+            return ++index < rows.size();
+        }
+
+        @Override
+        public StakeCredentialBalance current() {
+            return rows.get(index);
+        }
+
+        @Override
+        public void close() {
+        }
     }
 
     @Test

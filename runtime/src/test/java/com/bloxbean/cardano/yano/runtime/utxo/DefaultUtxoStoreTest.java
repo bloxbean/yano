@@ -8,6 +8,8 @@ import com.bloxbean.cardano.yaci.events.api.EventBus;
 import com.bloxbean.cardano.yaci.events.impl.SimpleEventBus;
 import com.bloxbean.cardano.yaci.events.api.EventMetadata;
 import com.bloxbean.cardano.yaci.events.api.PublishOptions;
+import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
+import com.bloxbean.cardano.yano.api.utxo.StakeBalanceConsistencyException;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
 import com.bloxbean.cardano.yano.runtime.chain.DirectRocksDBChainState;
 import com.bloxbean.cardano.yano.runtime.db.UtxoCfNames;
@@ -136,6 +138,47 @@ class DefaultUtxoStoreTest {
 
         RuntimeException slotEx = assertThrows(RuntimeException.class, store::getLatestAppliedSlot);
         assertTrue(slotEx.getMessage().contains("Failed to read UTXO latest applied slot"));
+    }
+
+    @Test
+    void orderedStakeBalanceViewIsCoordinateBoundAndRollbackRestoresHash() {
+        TransactionBody tx1 = TransactionBody.builder()
+                .txHash("d1".repeat(32))
+                .outputs(List.of(TransactionOutput.builder()
+                        .address(BASE_ADDR_WITH_STAKE)
+                        .amounts(List.of(lovelaceAmount(1_234))).build()))
+                .build();
+        Block block1 = Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(tx1)).invalidTransactions(List.of()).build();
+        String hash1 = "e1".repeat(32);
+        publishBlock(100, 1, hash1, block1);
+
+        var expected1 = new CanonicalBlockReference(1, 100, HexUtil.decodeHexString(hash1));
+        try (var view = store.openStakeBalanceView(expected1).orElseThrow()) {
+            assertEquals(expected1.blockNumber(), view.coordinate().blockNumber());
+            assertEquals(expected1.slot(), view.coordinate().slot());
+            assertArrayEquals(expected1.blockHash(), view.coordinate().blockHash());
+            assertTrue(view.advance());
+            assertEquals(BigInteger.valueOf(1_234), view.current().lovelace());
+            assertEquals(28, view.current().credential().credentialHash().length);
+            assertFalse(view.advance());
+        }
+
+        var wrongHash = new CanonicalBlockReference(1, 100,
+                HexUtil.decodeHexString("ef".repeat(32)));
+        assertThrows(StakeBalanceConsistencyException.class,
+                () -> store.openStakeBalanceView(wrongHash));
+
+        Block block2 = Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of()).invalidTransactions(List.of()).build();
+        publishBlock(102, 2, "e2".repeat(32), block2);
+        store.rollbackToPoint(new Point(100, hash1));
+
+        try (var view = store.openStakeBalanceView(expected1).orElseThrow()) {
+            assertArrayEquals(expected1.blockHash(), view.coordinate().blockHash());
+            assertTrue(view.advance());
+            assertEquals(BigInteger.valueOf(1_234), view.current().lovelace());
+        }
     }
 
     @Test

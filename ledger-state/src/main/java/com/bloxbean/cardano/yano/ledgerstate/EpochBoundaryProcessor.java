@@ -21,7 +21,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ExecutionException;
 
 /**
  * Orchestrates epoch boundary processing across the three-phase epoch transition sequence
@@ -70,6 +70,9 @@ public class EpochBoundaryProcessor {
 
     // Last verification error (null = OK). Queryable via REST endpoint.
     private volatile VerificationError lastVerificationError;
+
+    // Last completed or failed boundary attribution report (ADR-048 Phase 0).
+    private volatile EpochBoundaryTelemetry.BoundarySummary lastBoundaryTelemetry;
 
     // Allegra bootstrap UTXO removal is now self-contained in DefaultUtxoStore.applyBlock().
     // No callback needed — removal happens automatically on the first Allegra-era block.
@@ -175,6 +178,10 @@ public class EpochBoundaryProcessor {
         return lastVerificationError;
     }
 
+    public EpochBoundaryTelemetry.BoundarySummary getLastBoundaryTelemetry() {
+        return lastBoundaryTelemetry;
+    }
+
     public void setEpochArchiveStagingSink(EpochArchiveStagingSink sink) {
         this.archiveStaging = sink != null ? sink : EpochArchiveStagingSink.NOOP;
         if (rewardCalculator != null) {
@@ -243,7 +250,10 @@ public class EpochBoundaryProcessor {
                     + previousEpoch + " -> " + newEpoch);
         }
 
-        long start = System.currentTimeMillis();
+        var telemetry = EpochBoundaryTelemetry.start(log, previousEpoch, newEpoch, snapshotCreator);
+        boolean completed = false;
+        try {
+            long start = System.currentTimeMillis();
 
         // Check that the previous epoch boundary completed. If not, re-process it first.
         if (snapshotCreator != null && newEpoch >= 3) {
@@ -302,91 +312,118 @@ public class EpochBoundaryProcessor {
             snapshotCreator.setBoundaryStep(newEpoch, STEP_STARTED);
         }
 
+        boolean orderedStakeIndex = snapshotCreator != null
+                && resumeFromStep <= STEP_SNAPSHOT
+                && snapshotCreator.shouldUseOrderedStakeBalanceIndex(previousEpoch);
+
         // 1. Finalize protocol parameters for the new epoch
-        if (paramTracker != null && paramTracker.isEnabled()) {
-            paramTracker.finalizeEpoch(newEpoch);
+        try (var ignored = telemetry.phase("params")) {
+            if (paramTracker != null && paramTracker.isEnabled()) {
+                paramTracker.finalizeEpoch(newEpoch);
+            }
+
+            // Log effective params for verification against yaci-store epoch_param
+            EpochParamProvider effectiveParams = (paramTracker != null && paramTracker.isEnabled())
+                    ? paramTracker : paramProvider;
+            log.info("Epoch {} params: protoVer={}.{}, d={}, nOpt={}, rho={}, tau={}, a0={}, minPoolCost={}",
+                    newEpoch, effectiveParams.getProtocolMajor(newEpoch), effectiveParams.getProtocolMinor(newEpoch),
+                    effectiveParams.getDecentralization(newEpoch), effectiveParams.getNOpt(newEpoch),
+                    effectiveParams.getRho(newEpoch), effectiveParams.getTau(newEpoch),
+                    effectiveParams.getA0(newEpoch), effectiveParams.getMinPoolCost(newEpoch));
         }
 
-        // Log effective params for verification against yaci-store epoch_param
-        EpochParamProvider effectiveParams = (paramTracker != null && paramTracker.isEnabled())
-                ? paramTracker : paramProvider;
-        log.info("Epoch {} params: protoVer={}.{}, d={}, nOpt={}, rho={}, tau={}, a0={}, minPoolCost={}",
-                newEpoch, effectiveParams.getProtocolMajor(newEpoch), effectiveParams.getProtocolMinor(newEpoch),
-                effectiveParams.getDecentralization(newEpoch), effectiveParams.getNOpt(newEpoch),
-                effectiveParams.getRho(newEpoch), effectiveParams.getTau(newEpoch),
-                effectiveParams.getA0(newEpoch), effectiveParams.getMinPoolCost(newEpoch));
-
         // 2. Bootstrap AdaPot at the Shelley start epoch (before any reward calculation)
-        bootstrapAdaPotIfNeeded(newEpoch);
+        try (var ignored = telemetry.phase("adapot-bootstrap")) {
+            bootstrapAdaPotIfNeeded(newEpoch);
+        }
 
         // 2a. Allegra bootstrap UTXO removal is now self-contained in
         // DefaultUtxoStore.applyBlock() — triggered automatically when era >= Allegra.
 
         // 2b. Credit spendable MIR reward_rest to account balances BEFORE reward calculation.
-        if (snapshotCreator != null && resumeFromStep <= STEP_STARTED) {
-            snapshotCreator.creditMirRewardRest(newEpoch);
+        try (var ignored = telemetry.phase("mir-credit")) {
+            if (snapshotCreator != null && resumeFromStep <= STEP_STARTED) {
+                snapshotCreator.creditMirRewardRest(newEpoch);
+            }
         }
 
         // Start UTXO balance scan in parallel (read-only, independent of reward calc).
         Future<java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger>> utxoBalancesFuture = null;
-        if (snapshotCreator != null && resumeFromStep <= STEP_SNAPSHOT) {
-            final int snapshotEpoch = previousEpoch;
-            utxoBalancesFuture = utxoScanExecutor.submit(() -> snapshotCreator.aggregateUtxoBalances(snapshotEpoch));
+        try (var ignored = telemetry.phase("snapshot-input-start",
+                orderedStakeIndex ? "stake-index" : "utxo-scan")) {
+            if (snapshotCreator != null && resumeFromStep <= STEP_SNAPSHOT
+                    && !orderedStakeIndex) {
+                final int snapshotEpoch = previousEpoch;
+                utxoBalancesFuture = utxoScanExecutor.submit(() -> snapshotCreator.aggregateUtxoBalances(snapshotEpoch));
+            }
         }
 
         // 3. Calculate rewards (skip if already committed from a previous interrupted run)
-        if (resumeFromStep <= STEP_REWARDS) {
-            if (shouldCalculateRewards(newEpoch)) {
-                calculateAndStoreRewards(previousEpoch, newEpoch, null);
+        try (var ignored = telemetry.phase("rewards",
+                shouldCalculateRewards(newEpoch) ? "legacy-reward" : "disabled")) {
+            if (resumeFromStep <= STEP_REWARDS) {
+                if (shouldCalculateRewards(newEpoch)) {
+                    calculateAndStoreRewards(previousEpoch, newEpoch, null);
+                }
+                // Step marker AFTER all outputs (reward credits + AdaPot) are durable
+                if (snapshotCreator != null) {
+                    snapshotCreator.setBoundaryStep(newEpoch, STEP_REWARDS);
+                }
+            } else {
+                log.info("Skipping reward calc for epoch {} (already committed in previous run)", newEpoch);
             }
-            // Step marker AFTER all outputs (reward credits + AdaPot) are durable
-            if (snapshotCreator != null) {
-                snapshotCreator.setBoundaryStep(newEpoch, STEP_REWARDS);
-            }
-        } else {
-            log.info("Skipping reward calc for epoch {} (already committed in previous run)", newEpoch);
         }
 
         // 4. SNAP: Wait for parallel UTXO scan, then create delegation snapshot.
         java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> utxoBalances = null;
-        if (resumeFromStep <= STEP_SNAPSHOT) {
-            if (snapshotCreator != null) {
-                java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> precomputedBalances = null;
-                if (utxoBalancesFuture != null) {
-                    try {
-                        precomputedBalances = utxoBalancesFuture.get(300, TimeUnit.SECONDS);
-                    } catch (Exception e) {
-                        log.warn("Parallel UTXO balance scan failed, falling back to inline: {}", e.getMessage());
+        try (var ignored = telemetry.phase("snapshot-write",
+                orderedStakeIndex ? "stake-index" : "utxo-scan")) {
+            if (resumeFromStep <= STEP_SNAPSHOT) {
+                if (snapshotCreator != null) {
+                    java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> precomputedBalances = null;
+                    if (utxoBalancesFuture != null) {
+                        try {
+                            precomputedBalances = utxoBalancesFuture.get();
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new IllegalStateException(
+                                    "Interrupted while awaiting the epoch UTXO scan", e);
+                        } catch (ExecutionException e) {
+                            throw new IllegalStateException(
+                                    "Epoch UTXO scan failed", e.getCause());
+                        }
                     }
+                    utxoBalances = snapshotCreator.createAndCommitDelegationSnapshot(previousEpoch, precomputedBalances);
                 }
-                utxoBalances = snapshotCreator.createAndCommitDelegationSnapshot(previousEpoch, precomputedBalances);
+                if (snapshotCreator != null) {
+                    snapshotCreator.setBoundaryStep(newEpoch, STEP_SNAPSHOT);
+                }
+            } else {
+                log.info("Skipping snapshot for epoch {} (already committed in previous run)", previousEpoch);
             }
-            if (snapshotCreator != null) {
-                snapshotCreator.setBoundaryStep(newEpoch, STEP_SNAPSHOT);
-            }
-        } else {
-            log.info("Skipping snapshot for epoch {} (already committed in previous run)", previousEpoch);
         }
 
         // 4b. POOLREAP: Pool deposit refunds (after snapshot, before governance).
         //     Delta-journaled via boundary delta for rollback safety.
-        if (resumeFromStep <= STEP_POOLREAP) {
-            if (rewardCalculator != null && rewardCalculator.isEnabled()) {
-                long boundarySlot = snapshotCreator != null ? snapshotCreator.slotForEpochStart(newEpoch) : 0;
-                rewardCalculator.beginRewardBatch(newEpoch, "pool-reap");
-                rewardCalculator.processPoolDepositRefunds(newEpoch);
-                try {
-                    rewardCalculator.commitRewardBatch(boundarySlot, DefaultAccountStateStore.PHASE_POOLREAP);
-                } catch (org.rocksdb.RocksDBException e) {
-                    throw new RuntimeException("Failed to commit pool refund boundary delta for epoch " + newEpoch, e);
+        try (var ignored = telemetry.phase("pool-reap")) {
+            if (resumeFromStep <= STEP_POOLREAP) {
+                if (rewardCalculator != null && rewardCalculator.isEnabled()) {
+                    long boundarySlot = snapshotCreator != null ? snapshotCreator.slotForEpochStart(newEpoch) : 0;
+                    rewardCalculator.beginRewardBatch(newEpoch, "pool-reap");
+                    rewardCalculator.processPoolDepositRefunds(newEpoch);
+                    try {
+                        rewardCalculator.commitRewardBatch(boundarySlot, DefaultAccountStateStore.PHASE_POOLREAP);
+                    } catch (org.rocksdb.RocksDBException e) {
+                        throw new RuntimeException("Failed to commit pool refund boundary delta for epoch " + newEpoch, e);
+                    }
                 }
+                // Step marker AFTER pool refund commits are durable
+                if (snapshotCreator != null) {
+                    snapshotCreator.setBoundaryStep(newEpoch, STEP_POOLREAP);
+                }
+            } else {
+                log.info("Skipping pool refunds for epoch {} (already committed in previous run)", newEpoch);
             }
-            // Step marker AFTER pool refund commits are durable
-            if (snapshotCreator != null) {
-                snapshotCreator.setBoundaryStep(newEpoch, STEP_POOLREAP);
-            }
-        } else {
-            log.info("Skipping pool refunds for epoch {} (already committed in previous run)", newEpoch);
         }
 
         // 4c. PV10 hardfork: rebuild DRep delegation reverse index.
@@ -395,72 +432,80 @@ public class EpochBoundaryProcessor {
         // Only runs when Conway-or-later AND PV10+. No PV10 work in pre-Conway transitions.
         EpochParamProvider ep = (paramTracker != null && paramTracker.isEnabled())
                 ? paramTracker : paramProvider;
-        if (snapshotCreator != null && resumeFromStep <= STEP_GOVERNANCE && governanceEpochProcessor != null
-                && snapshotCreator.isConwayOrLater(newEpoch) && ep.getProtocolMajor(newEpoch) >= 10) {
-            try {
-                Set<String> registeredDRepIds = governanceEpochProcessor.getRegisteredDRepIds();
-                snapshotCreator.rebuildDRepDelegReverseIndexIfNeeded(newEpoch, registeredDRepIds, ep);
-            } catch (Exception e) {
-                // Consensus-critical: if rebuild fails, governance must not run with stale reverse index
-                throw new RuntimeException("PV10 reverse-index rebuild failed at epoch " + newEpoch, e);
+        try (var ignored = telemetry.phase("pv10-drep-reverse-index")) {
+            if (snapshotCreator != null && resumeFromStep <= STEP_GOVERNANCE && governanceEpochProcessor != null
+                    && snapshotCreator.isConwayOrLater(newEpoch) && ep.getProtocolMajor(newEpoch) >= 10) {
+                try {
+                    Set<String> registeredDRepIds = governanceEpochProcessor.getRegisteredDRepIds();
+                    snapshotCreator.rebuildDRepDelegReverseIndexIfNeeded(newEpoch, registeredDRepIds, ep);
+                } catch (Exception e) {
+                    // Consensus-critical: if rebuild fails, governance must not run with stale reverse index
+                    throw new RuntimeException("PV10 reverse-index rebuild failed at epoch " + newEpoch, e);
+                }
             }
         }
 
         // 5. Conway governance epoch processing (ratify, enact, expire, refund)
         // reward_rest from previous boundaries is already credited to PREFIX_ACCT.reward
         // in PostEpochTransition, so DRep distribution picks it up from account balances.
-        GovernanceEpochProcessor.GovernanceEpochResult govResult = null;
-        if (resumeFromStep <= STEP_GOVERNANCE) {
-            if (governanceEpochProcessor != null) {
-                try {
-                    govResult = governanceEpochProcessor.processEpochBoundaryAndCommit(
-                            previousEpoch, newEpoch, utxoBalances, null);
-                } catch (Exception e) {
-                    log.error("Governance epoch processing failed for {} → {}: {}",
-                            previousEpoch, newEpoch, e.getMessage(), e);
-                    throw new RuntimeException("Governance epoch processing failed for "
-                            + previousEpoch + " -> " + newEpoch, e);
+        try (var ignored = telemetry.phase("governance")) {
+            GovernanceEpochProcessor.GovernanceEpochResult govResult = null;
+            if (resumeFromStep <= STEP_GOVERNANCE) {
+                if (governanceEpochProcessor != null) {
+                    try {
+                        govResult = governanceEpochProcessor.processEpochBoundaryAndCommit(
+                                previousEpoch, newEpoch, utxoBalances, null);
+                    } catch (Exception e) {
+                        log.error("Governance epoch processing failed for {} → {}: {}",
+                                previousEpoch, newEpoch, e.getMessage(), e);
+                        throw new RuntimeException("Governance epoch processing failed for "
+                                + previousEpoch + " -> " + newEpoch, e);
+                    }
                 }
+            } else {
+                log.info("Skipping governance for epoch {} (already committed in previous run)", newEpoch);
             }
-        } else {
-            log.info("Skipping governance for epoch {} (already committed in previous run)", newEpoch);
-        }
 
-        // 6. Governance treasury delta to AdaPot is now applied atomically inside
-        //    GovernanceEpochProcessor Phase 2 batch (via AdaPotBatchAdjuster).
+            // 6. Governance treasury delta to AdaPot is now applied atomically inside
+            //    GovernanceEpochProcessor Phase 2 batch (via AdaPotBatchAdjuster).
 
-        // Step marker AFTER governance commits (including AdaPot adjustment) are all durable
-        if (resumeFromStep <= STEP_GOVERNANCE && snapshotCreator != null) {
-            snapshotCreator.setBoundaryStep(newEpoch, STEP_GOVERNANCE);
+            // Step marker AFTER governance commits (including AdaPot adjustment) are all durable
+            if (resumeFromStep <= STEP_GOVERNANCE && snapshotCreator != null) {
+                snapshotCreator.setBoundaryStep(newEpoch, STEP_GOVERNANCE);
+            }
         }
 
         // 7. Verify final AdaPot (after both reward calculation and governance adjustment)
-        if (adaPotTracker != null && adaPotTracker.isEnabled() && newEpoch >= 2) {
-            var finalPot = adaPotTracker.getAdaPot(newEpoch);
-            if (finalPot.isPresent()) {
-                verifyAdaPot(newEpoch, finalPot.get().treasury(), finalPot.get().reserves());
+        try (var ignored = telemetry.phase("artifact-finalize")) {
+            if (adaPotTracker != null && adaPotTracker.isEnabled() && newEpoch >= 2) {
+                var finalPot = adaPotTracker.getAdaPot(newEpoch);
+                if (finalPot.isPresent()) {
+                    verifyAdaPot(newEpoch, finalPot.get().treasury(), finalPot.get().reserves());
 
-                // ADR-039: record the artifact against the same final value the legacy staging
-                // path below writes, so both pipelines describe the identical pot.
-                if (snapshotCreator != null) {
-                    snapshotCreator.contributeAdaPotArtifact(newEpoch, finalPot.get());
-                }
+                    // ADR-039: record the artifact against the same final value the legacy staging
+                    // path below writes, so both pipelines describe the identical pot.
+                    if (snapshotCreator != null) {
+                        snapshotCreator.contributeAdaPotArtifact(newEpoch, finalPot.get());
+                    }
 
-                if (archiveStaging.enabled(EpochArchiveStagingSink.Dataset.ADA_POT)) {
-                    var p = finalPot.get();
-                    try (var writer = archiveStaging.openAdaPot(newEpoch)) {
-                        writer.append(new EpochArchiveStagingSink.AdaPotFact(
-                                p.treasury(), p.reserves(), p.deposits(), p.fees(),
-                                p.distributed(), p.undistributed(), p.rewardsPot(), p.poolRewardsPot()));
-                        writer.commit();
+                    if (archiveStaging.enabled(EpochArchiveStagingSink.Dataset.ADA_POT)) {
+                        var p = finalPot.get();
+                        try (var writer = archiveStaging.openAdaPot(newEpoch)) {
+                            writer.append(new EpochArchiveStagingSink.AdaPotFact(
+                                    p.treasury(), p.reserves(), p.deposits(), p.fees(),
+                                    p.distributed(), p.undistributed(), p.rewardsPot(), p.poolRewardsPot()));
+                            writer.commit();
+                        }
                     }
                 }
             }
         }
 
         // Mark boundary as fully complete
-        if (snapshotCreator != null) {
-            snapshotCreator.setBoundaryStep(newEpoch, STEP_COMPLETE);
+        try (var ignored = telemetry.phase("complete")) {
+            if (snapshotCreator != null) {
+                snapshotCreator.setBoundaryStep(newEpoch, STEP_COMPLETE);
+            }
         }
 
         long elapsed = System.currentTimeMillis() - start;
@@ -474,6 +519,10 @@ public class EpochBoundaryProcessor {
             } catch (Exception e) {
                 log.warn("Auto-checkpoint failed for epoch {}: {}", newEpoch, e.getMessage());
             }
+        }
+            completed = true;
+        } finally {
+            lastBoundaryTelemetry = telemetry.finish(completed);
         }
     }
 

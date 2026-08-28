@@ -352,7 +352,7 @@ public class YanoProducer {
     // Epoch subsystem config
     @ConfigProperty(name = YanoPropertyKeys.EpochSnapshot.AMOUNTS_ENABLED, defaultValue = "false")
     boolean epochSnapshotAmountsEnabled;
-    @ConfigProperty(name = YanoPropertyKeys.EpochSnapshot.BALANCE_MODE, defaultValue = "full-scan")
+    @ConfigProperty(name = YanoPropertyKeys.EpochSnapshot.BALANCE_MODE, defaultValue = "auto")
     String balanceMode; // "full-scan" or "incremental"
     @ConfigProperty(name = YanoPropertyKeys.Ledger.ADAPOT_ENABLED, defaultValue = "false")
     boolean adapotEnabled;

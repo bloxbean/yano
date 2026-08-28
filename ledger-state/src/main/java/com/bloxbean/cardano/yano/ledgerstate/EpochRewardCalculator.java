@@ -549,7 +549,7 @@ public class EpochRewardCalculator {
             int epoch) {
 
         // Group delegators by pool
-        Map<String, List<Delegator>> poolDelegators = new HashMap<>();
+        Map<String, HashSet<Delegator>> poolDelegators = new HashMap<>();
         Map<String, BigInteger> poolActiveStake = new HashMap<>();
 
         for (var entry : snapshot.entrySet()) {
@@ -559,7 +559,7 @@ public class EpochRewardCalculator {
 
             String stakeAddr = entry.getKey(); // "credType:credHash"
 
-            poolDelegators.computeIfAbsent(poolHash, _ -> new ArrayList<>())
+            poolDelegators.computeIfAbsent(poolHash, _ -> new HashSet<>())
                     .add(Delegator.builder()
                             .stakeAddress(stakeAddr)
                             .activeStake(amount)
@@ -579,7 +579,7 @@ public class EpochRewardCalculator {
             double margin = 0.0;
             BigInteger fixedCost = BigInteger.ZERO;
             BigInteger pledge = BigInteger.ZERO;
-            Set<String> owners = new HashSet<>();
+            HashSet<String> owners = new HashSet<>();
 
             if (ledgerStateProvider != null) {
                 var poolParamsOpt = ledgerStateProvider.getPoolParams(poolHash, epoch);
@@ -619,10 +619,10 @@ public class EpochRewardCalculator {
                     .poolId(poolHash)
                     .blockCount(blocks)
                     .activeStake(poolActiveStake.getOrDefault(poolHash, BigInteger.ZERO))
-                    .delegators(new HashSet<>(poolEntry.getValue()))
+                    .delegators(poolEntry.getValue())
                     .epoch(epoch)
                     .rewardAddress(rewardAddress)
-                    .owners(new HashSet<>(owners))
+                    .owners(owners)
                     .ownerActiveStake(ownerActiveStake)
                     .poolFees(BigInteger.ZERO)
                     .margin(BigDecimal.valueOf(margin))
@@ -867,6 +867,41 @@ public class EpochRewardCalculator {
             HashSet<String> registeredUntilNow
     ) {}
 
+    /** Read-only union view; avoids copying every snapshot credential into another set. */
+    private static final class RelevantCredentialsView extends AbstractSet<String> {
+        private final Set<String> snapshotCredentials;
+        private final Set<String> poolRewardAddresses;
+
+        private RelevantCredentialsView(Set<String> snapshotCredentials,
+                                        Set<String> poolRewardAddresses) {
+            this.snapshotCredentials = snapshotCredentials;
+            this.poolRewardAddresses = poolRewardAddresses;
+        }
+
+        @Override
+        public boolean contains(Object value) {
+            return snapshotCredentials.contains(value) || poolRewardAddresses.contains(value);
+        }
+
+        @Override
+        public Iterator<String> iterator() {
+            return java.util.stream.Stream.concat(
+                            snapshotCredentials.stream(),
+                            poolRewardAddresses.stream()
+                                    .filter(value -> !snapshotCredentials.contains(value)))
+                    .iterator();
+        }
+
+        @Override
+        public int size() {
+            int uniquePoolAddresses = 0;
+            for (String value : poolRewardAddresses) {
+                if (!snapshotCredentials.contains(value)) uniquePoolAddresses++;
+            }
+            return snapshotCredentials.size() + uniquePoolAddresses;
+        }
+    }
+
     /**
      * Build MIR certificates for the cf-rewards library by aggregating per-epoch per-pot totals.
      * Uses feeEpoch (epoch - 1) matching Yaci Store's convention:
@@ -911,14 +946,13 @@ public class EpochRewardCalculator {
                                           List<PoolState> poolStates,
                                           Set<RetiredPool> retiredPools) {
 
-        var registeredNow = ledgerStateProvider != null
-                ? ledgerStateProvider.getAllRegisteredCredentials()
-                : Set.<String>of();
-
         // Check if event-based queries are available
         boolean hasEventQueries = ledgerStateProvider != null && accountStateStore != null;
 
         if (!hasEventQueries) {
+            var registeredNow = ledgerStateProvider != null
+                    ? ledgerStateProvider.getAllRegisteredCredentials()
+                    : Set.<String>of();
             // Fallback: snapshot diff (no temporal precision)
             var deregistered = new HashSet<String>();
             for (String credKey : stakeSnapshot.keySet()) {
@@ -953,22 +987,6 @@ public class EpochRewardCalculator {
         HashSet<String> lateDeregistered;
         HashSet<String> deregisteredOnBoundary;
 
-        if (postBabbage) {
-            // Post-Babbage: all deregistrations from snapshot epoch to epoch boundary
-            deregistered = new HashSet<>(
-                    ledgerStateProvider.getDeregisteredAccountsInSlotRange(deregScanStartSlot, feeEpochEndSlot));
-            lateDeregistered = new HashSet<>();
-            deregisteredOnBoundary = new HashSet<>(deregistered);
-        } else {
-            // Pre-Babbage: split by stability window
-            deregistered = new HashSet<>(
-                    ledgerStateProvider.getDeregisteredAccountsInSlotRange(deregScanStartSlot, stabilityWindowSlot));
-            deregisteredOnBoundary = new HashSet<>(
-                    ledgerStateProvider.getDeregisteredAccountsInSlotRange(deregScanStartSlot, feeEpochEndSlot));
-            lateDeregistered = new HashSet<>(deregisteredOnBoundary);
-            lateDeregistered.removeAll(deregistered);
-        }
-
         // Pool reward addresses for registered since last / until now
         // Build early so we can include them in the deregistered fallback check
         Set<String> poolRewardAddresses = new HashSet<>();
@@ -983,12 +1001,34 @@ public class EpochRewardCalculator {
             }
         }
 
+        Set<String> relevantCredentials = new RelevantCredentialsView(
+                stakeSnapshot.keySet(), poolRewardAddresses);
+
+        if (postBabbage) {
+            deregistered = new HashSet<>(
+                    ledgerStateProvider.getDeregisteredAccountsInSlotRange(
+                            deregScanStartSlot, feeEpochEndSlot, relevantCredentials));
+            lateDeregistered = new HashSet<>();
+            // These sets are semantically identical post-Babbage and read-only in
+            // cf-rewards; sharing avoids a network-sized duplicate HashSet.
+            deregisteredOnBoundary = deregistered;
+        } else {
+            deregistered = new HashSet<>(
+                    ledgerStateProvider.getDeregisteredAccountsInSlotRange(
+                            deregScanStartSlot, stabilityWindowSlot, relevantCredentials));
+            deregisteredOnBoundary = new HashSet<>(
+                    ledgerStateProvider.getDeregisteredAccountsInSlotRange(
+                            deregScanStartSlot, feeEpochEndSlot, relevantCredentials));
+            lateDeregistered = new HashSet<>(deregisteredOnBoundary);
+            lateDeregistered.removeAll(deregistered);
+        }
+
         // Fallback: credentials in snapshot or pool reward addresses that are not currently
         // registered but were not caught by the event scan (e.g., deregistered before the
         // event retention window, or genesis accounts without events).
         // This matches yaci-store's behavior of checking all history up to the epoch boundary.
         for (String credKey : stakeSnapshot.keySet()) {
-            if (!registeredNow.contains(credKey)
+            if (!ledgerStateProvider.isStakeCredentialRegistered(credKey)
                     && !deregistered.contains(credKey)
                     && !deregisteredOnBoundary.contains(credKey)) {
                 deregisteredOnBoundary.add(credKey);
@@ -1079,6 +1119,7 @@ public class EpochRewardCalculator {
 
     public Map<String, AccountStateCborCodec.EpochDelegSnapshot> getStakeSnapshot(int epoch) {
         Map<String, AccountStateCborCodec.EpochDelegSnapshot> snapshot = new HashMap<>();
+        Map<String, String> canonicalPoolHashes = new HashMap<>();
         byte[] epochPrefix = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(epoch).array();
 
         try (var it = db.newIterator(cfEpochSnapshot)) {
@@ -1091,8 +1132,12 @@ public class EpochRewardCalculator {
 
                 int credType = key[4] & 0xFF;
                 String credHash = HexUtil.encodeHexString(Arrays.copyOfRange(key, 5, key.length));
+                var decoded = AccountStateCborCodec.decodeEpochDelegSnapshot(it.value());
+                String poolHash = canonicalPoolHashes.computeIfAbsent(
+                        decoded.poolHash(), keyValue -> keyValue);
                 snapshot.put(credType + ":" + credHash,
-                        AccountStateCborCodec.decodeEpochDelegSnapshot(it.value()));
+                        new AccountStateCborCodec.EpochDelegSnapshot(
+                                poolHash, decoded.amount()));
                 it.next();
             }
         }

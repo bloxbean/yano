@@ -8,6 +8,8 @@ import com.bloxbean.cardano.yano.ledgerstate.governance.GovernanceStateStore.Cre
 import com.bloxbean.cardano.yano.ledgerstate.governance.model.DRepStateRecord;
 import com.bloxbean.cardano.yano.ledgerstate.governance.model.GovActionRecord;
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionId;
+import com.bloxbean.cardano.yano.api.utxo.StakeBalanceView;
+import com.bloxbean.cardano.yano.api.utxo.StakeCredentialBalance;
 import org.rocksdb.RocksDB;
 import org.rocksdb.ColumnFamilyHandle;
 import org.rocksdb.RocksIterator;
@@ -18,6 +20,7 @@ import org.slf4j.LoggerFactory;
 import java.math.BigInteger;
 import java.nio.ByteOrder;
 import java.util.*;
+import java.util.function.Supplier;
 
 /**
  * Computes DRep stake distribution at epoch boundaries.
@@ -54,6 +57,7 @@ public class DRepDistributionCalculator {
     private ColumnFamilyHandle cfState;
     private ColumnFamilyHandle cfEpochSnapshot;
     private final GovernanceStateStore governanceStore;
+    private Supplier<Optional<StakeBalanceView>> stakeBalanceViewSupplier;
 
     public DRepDistributionCalculator(RocksDB db, ColumnFamilyHandle cfState,
                                       ColumnFamilyHandle cfEpochSnapshot,
@@ -72,6 +76,11 @@ public class DRepDistributionCalculator {
         this.cfState = cfState;
         this.cfEpochSnapshot = cfEpochSnapshot;
         log.info("DRepDistributionCalculator reinitialized after snapshot restore");
+    }
+
+    public void setStakeBalanceViewSupplier(
+            Supplier<Optional<StakeBalanceView>> stakeBalanceViewSupplier) {
+        this.stakeBalanceViewSupplier = stakeBalanceViewSupplier;
     }
 
     /**
@@ -98,6 +107,14 @@ public class DRepDistributionCalculator {
                                                            BigInteger> utxoBalances,
                                                    Map<String, BigInteger> spendableRewardRest) throws RocksDBException {
         Map<DRepDistKey, BigInteger> distribution = new HashMap<>();
+        StakeBalanceView stakeBalanceView = null;
+        if (utxoBalances == null && stakeBalanceViewSupplier != null) {
+            stakeBalanceView = stakeBalanceViewSupplier.get()
+                    .orElseThrow(() -> new IllegalStateException(
+                            "Coordinate-bound stake balance view is unavailable for DRep distribution"));
+        }
+        OrderedStakeLookup orderedStake = stakeBalanceView != null
+                ? new OrderedStakeLookup(stakeBalanceView) : null;
 
         // Pre-compute DRep states for delegation validation.
         // Per Amaru (governance.rs lines 94-117): include DRep if registeredAt > previousDeregistration.
@@ -131,7 +148,8 @@ public class DRepDistributionCalculator {
 
         // Iterate all DRep delegations
         byte[] seekKey = new byte[]{DefaultAccountStateStore.PREFIX_DREP_DELEG};
-        try (RocksIterator it = db.newIterator(cfState)) {
+        try (StakeBalanceView closeableView = stakeBalanceView;
+             RocksIterator it = db.newIterator(cfState)) {
             it.seek(seekKey);
             while (it.isValid()) {
                 byte[] key = it.key();
@@ -168,7 +186,10 @@ public class DRepDistributionCalculator {
                 // Use actual UTXO balances (all credentials) rather than pool delegation snapshot
                 // (which only has pool-delegated credentials). This matches Haskell/DBSync behavior.
                 BigInteger stake = BigInteger.ZERO;
-                if (utxoBalances != null) {
+                if (orderedStake != null) {
+                    stake = orderedStake.balanceFor(
+                            credType, Arrays.copyOfRange(key, 2, key.length));
+                } else if (utxoBalances != null) {
                     var credentialKey = new com.bloxbean.cardano.yano.ledgerstate.UtxoBalanceAggregator.CredentialKey(credType, credHash);
                     stake = utxoBalances.getOrDefault(credentialKey, BigInteger.ZERO);
                 } else {
@@ -209,6 +230,42 @@ public class DRepDistributionCalculator {
                 credCount, skippedDrep, skippedAcct, proposalDepositsByCredential.size());
 
         return distribution;
+    }
+
+    private static final class OrderedStakeLookup {
+        private final StakeBalanceView view;
+        private StakeCredentialBalance current;
+        private boolean exhausted;
+
+        private OrderedStakeLookup(StakeBalanceView view) {
+            this.view = view;
+            advance();
+        }
+
+        private BigInteger balanceFor(int credentialType, byte[] credentialHash) {
+            while (!exhausted && compareCurrent(credentialType, credentialHash) < 0) {
+                advance();
+            }
+            return !exhausted && compareCurrent(credentialType, credentialHash) == 0
+                    ? current.lovelace() : BigInteger.ZERO;
+        }
+
+        private int compareCurrent(int credentialType, byte[] credentialHash) {
+            int typeCompare = Integer.compare(
+                    current.credential().credentialType(), credentialType);
+            if (typeCompare != 0) return typeCompare;
+            return Arrays.compareUnsigned(
+                    current.credential().credentialHash(), credentialHash);
+        }
+
+        private void advance() {
+            if (view.advance()) {
+                current = view.current();
+            } else {
+                current = null;
+                exhausted = true;
+            }
+        }
     }
 
     /**

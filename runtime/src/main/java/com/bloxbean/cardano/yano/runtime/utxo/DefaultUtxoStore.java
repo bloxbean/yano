@@ -2,8 +2,6 @@ package com.bloxbean.cardano.yano.runtime.utxo;
 
 import co.nstant.in.cbor.model.Map;
 import co.nstant.in.cbor.model.UnsignedInteger;
-import com.bloxbean.cardano.client.address.Address;
-import com.bloxbean.cardano.client.address.AddressType;
 import com.bloxbean.cardano.client.api.util.ReferenceScriptUtil;
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.yaci.core.common.Constants;
@@ -16,8 +14,14 @@ import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
+import com.bloxbean.cardano.yano.api.utxo.StakeBalanceConsistencyException;
+import com.bloxbean.cardano.yano.api.utxo.StakeBalanceView;
+import com.bloxbean.cardano.yano.api.utxo.StakeCredentialBalance;
+import com.bloxbean.cardano.yano.api.utxo.StakeCredentialExtractor;
+import com.bloxbean.cardano.yano.api.utxo.StakeCredentialId;
 import com.bloxbean.cardano.yano.api.utxo.model.AssetAmount;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
 import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
@@ -518,7 +522,8 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         // This is cheap (just a reference count increment) and guarantees we don't see
         // UTXOs being added/removed by concurrent block processing.
         org.rocksdb.Snapshot snapshot = db.getSnapshot();
-        try (org.rocksdb.ReadOptions readOptions = new org.rocksdb.ReadOptions().setSnapshot(snapshot);
+        try (org.rocksdb.ReadOptions readOptions = new org.rocksdb.ReadOptions()
+                .setSnapshot(snapshot).setFillCache(false);
              RocksIterator it = db.newIterator(cfUnspent, readOptions)) {
             it.seekToFirst();
             while (it.isValid()) {
@@ -610,6 +615,72 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         }
     }
 
+    @Override
+    public Optional<StakeBalanceView> openStakeBalanceView(CanonicalBlockReference expectedCoordinate) {
+        java.util.Objects.requireNonNull(expectedCoordinate, "expectedCoordinate");
+        if (!enabled || !stakeBalanceIndexEnabled || !hasCompleteStakeBalanceSource()
+                || db == null || cfMeta == null || cfStakeBalance == null) {
+            return Optional.empty();
+        }
+
+        Snapshot snapshot = db.getSnapshot();
+        ReadOptions readOptions = new ReadOptions().setSnapshot(snapshot).setFillCache(false);
+        RocksIterator iterator = null;
+        try {
+            if (!StakeBalanceIndexKeys.isCurrent(db.get(cfMeta, readOptions,
+                    StakeBalanceIndexKeys.READY_MARKER))) {
+                readOptions.close();
+                db.releaseSnapshot(snapshot);
+                return Optional.empty();
+            }
+
+            CanonicalBlockReference actual = readStakeBalanceCoordinate(readOptions);
+            requireSameCoordinate(expectedCoordinate, actual);
+            iterator = db.newIterator(cfStakeBalance, readOptions);
+            return Optional.of(new RocksStakeBalanceView(
+                    db, snapshot, readOptions, iterator, actual));
+        } catch (StakeBalanceConsistencyException e) {
+            if (iterator != null) iterator.close();
+            readOptions.close();
+            db.releaseSnapshot(snapshot);
+            throw e;
+        } catch (Exception e) {
+            if (iterator != null) iterator.close();
+            readOptions.close();
+            db.releaseSnapshot(snapshot);
+            throw new StakeBalanceConsistencyException(
+                    "Failed to open coordinate-bound stake balance view", e);
+        }
+    }
+
+    private CanonicalBlockReference readStakeBalanceCoordinate(ReadOptions readOptions)
+            throws RocksDBException {
+        byte[] blockBytes = db.get(cfMeta, readOptions, META_LAST_APPLIED_BLOCK);
+        byte[] slotBytes = db.get(cfMeta, readOptions, META_LAST_APPLIED_SLOT);
+        byte[] hashBytes = db.get(cfMeta, readOptions, META_LAST_APPLIED_HASH);
+        if (blockBytes == null || blockBytes.length != Long.BYTES
+                || slotBytes == null || slotBytes.length != Long.BYTES
+                || hashBytes == null || hashBytes.length != 32) {
+            throw new StakeBalanceConsistencyException(
+                    "UTXO stake index coordinate metadata is missing or malformed");
+        }
+        long block = ByteBuffer.wrap(blockBytes).order(ByteOrder.BIG_ENDIAN).getLong();
+        long slot = ByteBuffer.wrap(slotBytes).order(ByteOrder.BIG_ENDIAN).getLong();
+        return new CanonicalBlockReference(block, slot, hashBytes);
+    }
+
+    private static void requireSameCoordinate(CanonicalBlockReference expected,
+                                              CanonicalBlockReference actual) {
+        if (expected.blockNumber() != actual.blockNumber()
+                || expected.slot() != actual.slot()
+                || !Arrays.equals(expected.blockHash(), actual.blockHash())) {
+            throw new StakeBalanceConsistencyException(
+                    "UTXO stake index coordinate mismatch: expected block="
+                            + expected.blockNumber() + " slot=" + expected.slot()
+                            + ", actual block=" + actual.blockNumber() + " slot=" + actual.slot());
+        }
+    }
+
     private boolean isUnfilteredUtxoStore() {
         StorageFilterChain fc = this.filterChain;
         return fc == null || fc.isEmpty();
@@ -627,13 +698,15 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                 return;
             }
 
-            if (db.get(cfMeta, StakeBalanceIndexKeys.READY_MARKER) != null) {
+            if (StakeBalanceIndexKeys.isCurrent(
+                    db.get(cfMeta, StakeBalanceIndexKeys.READY_MARKER))) {
                 stakeBalanceIndexReady = true;
                 return;
             }
 
             if (isColumnFamilyEmpty(cfUnspent) && isColumnFamilyEmpty(cfDelta)) {
-                db.put(cfMeta, StakeBalanceIndexKeys.READY_MARKER, new byte[]{1});
+                db.put(cfMeta, StakeBalanceIndexKeys.READY_MARKER,
+                        StakeBalanceIndexKeys.READY_VERSION);
                 stakeBalanceIndexReady = true;
                 return;
             }
@@ -655,21 +728,23 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
 
     private void markStakeBalanceIndexReady(WriteBatch batch) throws RocksDBException {
         if (stakeBalanceIndexEnabled && cfMeta != null && hasCompleteStakeBalanceSource()) {
-            batch.put(cfMeta, StakeBalanceIndexKeys.READY_MARKER, new byte[]{1});
+            batch.put(cfMeta, StakeBalanceIndexKeys.READY_MARKER,
+                    StakeBalanceIndexKeys.READY_VERSION);
         }
     }
 
     private void markStakeBalanceIndexReadyNow() {
         if (!stakeBalanceIndexEnabled || cfMeta == null || !hasCompleteStakeBalanceSource()) return;
         try {
-            db.put(cfMeta, StakeBalanceIndexKeys.READY_MARKER, new byte[]{1});
+            db.put(cfMeta, StakeBalanceIndexKeys.READY_MARKER,
+                    StakeBalanceIndexKeys.READY_VERSION);
             stakeBalanceIndexReady = true;
         } catch (RocksDBException e) {
             log.warn("Failed to mark stake balance index ready: {}", e.toString());
         }
     }
 
-    private java.util.Map<StakeCredentialKey, BigInteger> newStakeBalanceDeltaMap() {
+    private java.util.Map<StakeCredentialId, BigInteger> newStakeBalanceDeltaMap() {
         return shouldMaintainStakeBalanceIndex() ? new HashMap<>() : null;
     }
 
@@ -677,16 +752,16 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         return enabled && stakeBalanceIndexEnabled && cfStakeBalance != null && hasCompleteStakeBalanceSource();
     }
 
-    private void addStakeBalanceDelta(java.util.Map<StakeCredentialKey, BigInteger> deltas,
+    private void addStakeBalanceDelta(java.util.Map<StakeCredentialId, BigInteger> deltas,
                                       String address, BigInteger delta) {
         if (deltas == null || address == null || delta == null || delta.signum() == 0) return;
-        StakeCredentialKey key = stakeCredentialKey(address);
+        StakeCredentialId key = StakeCredentialExtractor.extractNonPointer(address);
         if (key == null) return;
         deltas.merge(key, delta, BigInteger::add);
     }
 
     private void applyStakeBalanceDeltas(WriteBatch batch,
-                                         java.util.Map<StakeCredentialKey, BigInteger> deltas) throws RocksDBException {
+                                         java.util.Map<StakeCredentialId, BigInteger> deltas) throws RocksDBException {
         if (!shouldMaintainStakeBalanceIndex()) {
             invalidateStakeBalanceIndex(batch);
             return;
@@ -702,7 +777,8 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             BigInteger updated = current.add(delta);
             if (updated.signum() < 0) {
                 log.warn("Stake balance index underflow for {}:{}, current={}, delta={}; clamping to zero",
-                        entry.getKey().credType(), entry.getKey().credHash(), current, delta);
+                        entry.getKey().credentialType(),
+                        HexUtil.encodeHexString(entry.getKey().credentialHash()), current, delta);
                 updated = BigInteger.ZERO;
             }
 
@@ -741,33 +817,11 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         return val != null ? decodeStakeBalance(val) : BigInteger.ZERO;
     }
 
-    private static StakeCredentialKey stakeCredentialKey(String addressStr) {
-        try {
-            Address address = new Address(addressStr);
-            if (address.getAddressType() == AddressType.Ptr) {
-                return null;
-            }
-            byte[] stakeHash = address.getDelegationCredentialHash().orElse(null);
-            if (stakeHash == null || stakeHash.length != 28) {
-                return null;
-            }
-            return new StakeCredentialKey(stakeCredentialType(address), HexUtil.encodeHexString(stakeHash));
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    private static int stakeCredentialType(Address address) {
-        int typeNibble = ((address.getBytes()[0] & 0xFF) >> 4) & 0x0F;
-        return switch (typeNibble) {
-            case 0, 1 -> 0;
-            case 2, 3 -> 1;
-            default -> 0;
-        };
-    }
-
-    private static byte[] stakeBalanceKey(StakeCredentialKey key) {
-        return stakeBalanceKey(key.credType(), key.credHash());
+    private static byte[] stakeBalanceKey(StakeCredentialId key) {
+        byte[] result = new byte[1 + StakeCredentialId.HASH_LENGTH];
+        result[0] = (byte) key.credentialType();
+        System.arraycopy(key.credentialHash(), 0, result, 1, StakeCredentialId.HASH_LENGTH);
+        return result;
     }
 
     private static byte[] stakeBalanceKey(int credType, String credentialHash) {
@@ -792,7 +846,99 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         return CborSerializationUtil.toBigInteger(CborSerializationUtil.deserializeOne(bytes));
     }
 
-    private record StakeCredentialKey(int credType, String credHash) {}
+    private static final class RocksStakeBalanceView implements StakeBalanceView {
+        private final RocksDB db;
+        private final Snapshot snapshot;
+        private final ReadOptions readOptions;
+        private final RocksIterator iterator;
+        private final CanonicalBlockReference coordinate;
+        private StakeCredentialBalance current;
+        private boolean started;
+        private boolean closed;
+
+        private RocksStakeBalanceView(RocksDB db,
+                                      Snapshot snapshot,
+                                      ReadOptions readOptions,
+                                      RocksIterator iterator,
+                                      CanonicalBlockReference coordinate) {
+            this.db = db;
+            this.snapshot = snapshot;
+            this.readOptions = readOptions;
+            this.iterator = iterator;
+            this.coordinate = coordinate;
+        }
+
+        @Override
+        public CanonicalBlockReference coordinate() {
+            return coordinate;
+        }
+
+        @Override
+        public boolean advance() {
+            requireOpen();
+            if (!started) {
+                iterator.seekToFirst();
+                started = true;
+            } else {
+                iterator.next();
+            }
+            if (!iterator.isValid()) {
+                try {
+                    iterator.status();
+                } catch (RocksDBException e) {
+                    throw new StakeBalanceConsistencyException(
+                            "Stake balance index iteration failed", e);
+                }
+                current = null;
+                return false;
+            }
+
+            byte[] key = iterator.key();
+            if (key.length != 1 + StakeCredentialId.HASH_LENGTH) {
+                throw new StakeBalanceConsistencyException(
+                        "Malformed stake balance key length: " + key.length);
+            }
+            int credentialType = key[0] & 0xFF;
+            byte[] credentialHash = Arrays.copyOfRange(key, 1, key.length);
+            BigInteger lovelace;
+            try {
+                lovelace = decodeStakeBalance(iterator.value());
+            } catch (Exception e) {
+                throw new StakeBalanceConsistencyException(
+                        "Malformed stake balance value", e);
+            }
+            if (lovelace.signum() <= 0) {
+                throw new StakeBalanceConsistencyException(
+                        "Stake balance index contains a non-positive row");
+            }
+            current = new StakeCredentialBalance(
+                    new StakeCredentialId(credentialType, credentialHash), lovelace);
+            return true;
+        }
+
+        @Override
+        public StakeCredentialBalance current() {
+            requireOpen();
+            if (current == null) {
+                throw new IllegalStateException("advance() has not produced a row");
+            }
+            return current;
+        }
+
+        @Override
+        public void close() {
+            if (closed) return;
+            closed = true;
+            current = null;
+            iterator.close();
+            readOptions.close();
+            db.releaseSnapshot(snapshot);
+        }
+
+        private void requireOpen() {
+            if (closed) throw new IllegalStateException("stake balance view is closed");
+        }
+    }
 
     @Override
     public synchronized void applyByronBlock(ByronMainBlockAppliedEvent event) {
@@ -906,7 +1052,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             List<TransactionBody> txs = block.getTransactionBodies();
             List<UtxoDeltaCodec.OutRef> createdRefs = new ArrayList<>();
             List<UtxoDeltaCodec.OutRef> spentRefs = new ArrayList<>();
-            java.util.Map<StakeCredentialKey, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
+            java.util.Map<StakeCredentialId, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
             int filteredOutputs = 0;
 
             // Write Allegra bootstrap removals into this block's WriteBatch (atomic with delta)
@@ -1192,6 +1338,18 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                 ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(slot).array());
         batch.put(cfMeta, META_LAST_APPLIED_BLOCK,
                 ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(blockNumber).array());
+        batch.put(cfMeta, META_LAST_APPLIED_HASH, decodeCanonicalHash(blockHash));
+    }
+
+    private static byte[] decodeCanonicalHash(String blockHash) {
+        if (blockHash == null || blockHash.isBlank()) {
+            throw new IllegalArgumentException("Canonical block hash is required");
+        }
+        byte[] hash = HexUtil.decodeHexString(blockHash);
+        if (hash.length != 32) {
+            throw new IllegalArgumentException("Canonical block hash must be exactly 32 bytes");
+        }
+        return hash;
     }
 
     private void observeApplyContinuity(long blockNumber, long slot, String blockHash, String eraLabel) {
@@ -1286,7 +1444,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         int stored = 0;
 
         try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
-            java.util.Map<StakeCredentialKey, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
+            java.util.Map<StakeCredentialId, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
             for (var entry : shelleyFunds.entrySet()) {
                 String hexAddr = entry.getKey();
                 BigInteger lovelace = entry.getValue();
@@ -1397,7 +1555,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         java.util.Map<String, BigInteger> shelley = shelleyFunds != null
                 ? shelleyFunds : java.util.Map.of();
         try (WriteBatch batch = new WriteBatch(); WriteOptions options = new WriteOptions()) {
-            java.util.Map<StakeCredentialKey, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
+            java.util.Map<StakeCredentialId, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
             for (var entry : shelley.entrySet()) {
                 var output = com.bloxbean.cardano.yano.api.genesis.GenesisUtxos.shelley(
                         entry.getKey(), entry.getValue(), networkMagic, blockNumber, slot, blockHash);
@@ -1712,7 +1870,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             WriteBatch batch,
             java.util.List<byte[]> previousValues) throws RocksDBException {
         BigInteger removedTotal = BigInteger.ZERO;
-        java.util.Map<StakeCredentialKey, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
+        java.util.Map<StakeCredentialId, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
         for (byte[] outKey : outpointKeys) {
             byte[] val = db.get(cfUnspent, outKey);
             if (val == null) continue; // already spent/removed
@@ -1785,7 +1943,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                     batch.put(cfAddr, pIdx, new byte[0]);
                 }
             }
-            java.util.Map<StakeCredentialKey, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
+            java.util.Map<StakeCredentialId, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
             addStakeBalanceDelta(stakeBalanceDeltas, address, BigInteger.valueOf(lovelace));
             applyStakeBalanceDeltas(batch, stakeBalanceDeltas);
 
@@ -1805,7 +1963,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
 
         try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
             List<UtxoDeltaCodec.OutRef> created = new ArrayList<>();
-            java.util.Map<StakeCredentialKey, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
+            java.util.Map<StakeCredentialId, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
 
             for (var utxo : utxos) {
                 // Convert BootstrapAsset list to Amount list for encoding
@@ -1865,6 +2023,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
                     ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(slot).array());
             batch.put(cfMeta, META_LAST_APPLIED_BLOCK,
                     ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(blockNumber).array());
+            batch.put(cfMeta, META_LAST_APPLIED_HASH, decodeCanonicalHash(blockHash));
             applyStakeBalanceDeltas(batch, stakeBalanceDeltas);
 
             db.write(wo, batch);
@@ -2096,6 +2255,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
 
     private static final byte[] META_LAST_APPLIED_SLOT = "meta.last_applied_slot".getBytes(StandardCharsets.UTF_8);
     private static final byte[] META_LAST_APPLIED_BLOCK = "meta.last_applied_block".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] META_LAST_APPLIED_HASH = "meta.last_applied_hash".getBytes(StandardCharsets.UTF_8);
     private static final byte[] META_PRUNE_DELTA_CURSOR = "prune.delta.cursor".getBytes(StandardCharsets.UTF_8);
     private static final byte[] META_PRUNE_SPENT_CURSOR = "prune.spent.cursor".getBytes(StandardCharsets.UTF_8);
 
@@ -2104,7 +2264,7 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         try (WriteBatch batch = new WriteBatch();
              WriteOptions wo = new WriteOptions();
              RocksIterator it = db.newIterator(cfDelta)) {
-            java.util.Map<StakeCredentialKey, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
+            java.util.Map<StakeCredentialId, BigInteger> stakeBalanceDeltas = newStakeBalanceDeltaMap();
             UtxoDeltaCodec.Decoded retained = null;
             it.seekToLast();
             while (it.isValid()) {
@@ -2178,7 +2338,8 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             }
             updateRollbackMetadata(batch,
                     retained != null ? retained.blockNumber() : null,
-                    retained != null ? retained.slot() : null);
+                    retained != null ? retained.slot() : null,
+                    retained != null ? retained.blockHash() : null);
             applyStakeBalanceDeltas(batch, stakeBalanceDeltas);
             db.write(wo, batch);
             rememberRollbackContinuity(retained);
@@ -2226,15 +2387,18 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         }
     }
 
-    private void updateRollbackMetadata(WriteBatch batch, Long retainedBlock, Long retainedSlot) throws RocksDBException {
-        if (retainedBlock != null && retainedSlot != null) {
+    private void updateRollbackMetadata(WriteBatch batch, Long retainedBlock, Long retainedSlot,
+                                        String retainedHash) throws RocksDBException {
+        if (retainedBlock != null && retainedSlot != null && retainedHash != null) {
             batch.put(cfMeta, META_LAST_APPLIED_SLOT,
                     ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(retainedSlot).array());
             batch.put(cfMeta, META_LAST_APPLIED_BLOCK,
                     ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(retainedBlock).array());
+            batch.put(cfMeta, META_LAST_APPLIED_HASH, decodeCanonicalHash(retainedHash));
         } else {
             batch.delete(cfMeta, META_LAST_APPLIED_SLOT);
             batch.delete(cfMeta, META_LAST_APPLIED_BLOCK);
+            batch.delete(cfMeta, META_LAST_APPLIED_HASH);
         }
     }
 

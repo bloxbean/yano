@@ -3,6 +3,8 @@ package com.bloxbean.cardano.yano.ledgerstate;
 import com.bloxbean.cardano.client.address.Address;
 import com.bloxbean.cardano.client.address.AddressType;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import com.bloxbean.cardano.yano.api.utxo.StakeCredentialExtractor;
+import com.bloxbean.cardano.yano.api.utxo.StakeCredentialId;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -61,7 +63,7 @@ public class UtxoBalanceAggregator {
             count[0]++;
             if (lovelace == null || lovelace.signum() <= 0) return;
 
-            Address address = parseAddressOrNull(addressStr);
+            Address address = StakeCredentialExtractor.parseAddressOrNull(addressStr);
             if (address == null) {
                 skipped[0]++;
                 byronSkipped[0]++;
@@ -116,7 +118,7 @@ public class UtxoBalanceAggregator {
      * @return credential key, or null
      */
     public CredentialKey extractCredential(String addressStr, PointerAddressResolver pointerResolver) {
-        Address address = parseAddressOrNull(addressStr);
+        Address address = StakeCredentialExtractor.parseAddressOrNull(addressStr);
         return address != null ? extractCredential(address, addressStr, pointerResolver) : null;
     }
 
@@ -134,44 +136,10 @@ public class UtxoBalanceAggregator {
             return resolvePointerAddress(address, addressStr, pointerResolver);
         }
 
-        byte[] delegationHash = address.getDelegationCredentialHash().orElse(null);
-        if (delegationHash == null || delegationHash.length != 28) return null;
-
-        int credType = getStakeCredType(address);
-        String credHash = com.bloxbean.cardano.yaci.core.util.HexUtil.encodeHexString(delegationHash);
-        return new CredentialKey(credType, credHash);
-    }
-
-    private static Address parseAddressOrNull(String addressStr) {
-        try {
-            return new Address(addressStr);
-        } catch (Exception e) {
-            Address hexAddress = parseShelleyHexAddressOrNull(addressStr);
-            if (hexAddress != null) {
-                return hexAddress;
-            }
-            if (!isShelleyPaymentAddress(addressStr)) {
-                // Legacy Byron/bootstrap UTXOs are base58 and never carry stake
-                // credentials. Some of those addresses are not accepted by CCL's
-                // checksum parser, so skip them for stake aggregation.
-                return null;
-            }
-            throw new IllegalStateException("Failed to parse UTXO address for stake aggregation: " + addressStr, e);
-        }
-    }
-
-    private static boolean isShelleyPaymentAddress(String addressStr) {
-        return addressStr != null
-                && (addressStr.startsWith("addr1") || addressStr.startsWith("addr_test1"));
-    }
-
-    private static Address parseShelleyHexAddressOrNull(String addressStr) {
-        if (addressStr == null || addressStr.isBlank()) return null;
-        try {
-            return new Address(HexUtil.decodeHexString(addressStr));
-        } catch (Exception ignored) {
-            return null;
-        }
+        StakeCredentialId credential = StakeCredentialExtractor.extractDelegationCredential(address);
+        if (credential == null) return null;
+        return new CredentialKey(credential.credentialType(),
+                HexUtil.encodeHexString(credential.credentialHash()));
     }
 
     /**
@@ -201,21 +169,4 @@ public class UtxoBalanceAggregator {
         }
     }
 
-    /**
-     * Determine the stake credential type from a CCL Address.
-     * Returns 0 for key hash, 1 for script hash.
-     */
-    private static int getStakeCredType(Address address) {
-        byte header = address.getBytes()[0];
-        int typeNibble = (header >> 4) & 0x0F;
-        return switch (typeNibble) {
-            case 0, 1 -> 0; // StakeKeyHash
-            case 2, 3 -> 1; // StakeScriptHash
-            case 4 -> 0;    // Pointer + KeyHash payment
-            case 5 -> 1;    // Pointer + ScriptHash payment
-            case 0x0E -> 0; // Reward key hash
-            case 0x0F -> 1; // Reward script hash
-            default -> 0;
-        };
-    }
 }
