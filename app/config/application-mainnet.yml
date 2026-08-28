@@ -3,7 +3,8 @@
 yano:
   network: mainnet
   remote:
-    host: backbone.cardano.iog.io
+#   host: backbone.cardano.iog.io
+    host: backbone.mainnet.cardanofoundation.org
     port: 3001
     protocol-magic: 764824073
   genesis:
