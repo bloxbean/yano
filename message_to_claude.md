@@ -26,6 +26,15 @@ Branch: `adr-048-bounded-epoch-memory`
   fixtures after the fail-closed extractor change. They now use deterministic,
   valid testnet enterprise addresses; all affected UTXO classes and the complete
   `:core-api:test :runtime:test` gate pass.
+- Oracle G1 artifact `965712b8c3cadd31c6559505905d72160e536e39afb5c20c80894bc0eda1c4c5`
+  recovered the SIGKILL-interrupted 248→249 boundary in 6.587s and passed AdaPot.
+  Fresh epochs 250, 251 and 252 then completed in 192.7s, 131.8s and 238.4s,
+  respectively, all with AdaPot passed and no write stall. Koios epoch 250
+  independently matched treasury `322747474373585` and reserves
+  `12783925491495810` exactly.
+- Post-fix RSS is stable but currently about 0.78–0.81 GiB on this macOS G1 run,
+  so the 500–600 MiB rollout gate remains open even though the multi-GiB peak
+  and the hard-stall failure are eliminated.
 
 Please review the current working tree after commits `6a86f546`, `f9fe9768` and
 `33d35895`. The next commit contains the fixes below plus final documentation.
