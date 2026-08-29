@@ -266,6 +266,7 @@ public class EpochBoundaryProcessor {
         }
 
         var telemetry = EpochBoundaryTelemetry.start(log, previousEpoch, newEpoch, snapshotCreator);
+        AccountStateCborCodec.resetFastPathFallbackCount();
         boolean completed = false;
         try {
             long start = System.currentTimeMillis();
@@ -579,6 +580,8 @@ public class EpochBoundaryProcessor {
         }
             completed = true;
         } finally {
+            long fastPathFallbacks = AccountStateCborCodec.drainFastPathFallbackCount();
+            log.info("cbor_fast_path_fallbacks epoch={} count={}", newEpoch, fastPathFallbacks);
             lastBoundaryTelemetry = telemetry.finish(completed);
         }
     }

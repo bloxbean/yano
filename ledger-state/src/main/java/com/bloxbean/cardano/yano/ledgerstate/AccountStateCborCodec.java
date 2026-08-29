@@ -7,12 +7,15 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import java.math.BigInteger;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * CBOR codec for account state values stored in RocksDB.
  * Uses integer-keyed CBOR maps, same pattern as UtxoCborCodec.
  */
 public final class AccountStateCborCodec {
+    private static final AtomicLong FAST_PATH_FALLBACKS = new AtomicLong();
+
     private AccountStateCborCodec() {}
 
     // --- Stake Account (prefix 0x01): {0: reward(uint), 1: deposit(uint)} ---
@@ -37,6 +40,7 @@ public final class AccountStateCborCodec {
             reader.requireEnd();
             return new StakeAccount(reward, deposit);
         } catch (FastPathFallback ignored) {
+            recordFastPathFallback();
             return decodeStakeAccountGeneric(bytes);
         }
     }
@@ -273,6 +277,7 @@ public final class AccountStateCborCodec {
             reader.requireEnd();
             return new EpochDelegSnapshot(poolHash, amount);
         } catch (FastPathFallback ignored) {
+            recordFastPathFallback();
             return decodeEpochDelegSnapshotGeneric(bytes);
         }
     }
@@ -301,6 +306,7 @@ public final class AccountStateCborCodec {
             reader.requireEnd();
             return poolHash;
         } catch (FastPathFallback ignored) {
+            recordFastPathFallback();
             return decodeEpochDelegSnapshotPoolHashGeneric(bytes);
         }
     }
@@ -321,6 +327,7 @@ public final class AccountStateCborCodec {
             reader.requireEnd();
             return amount;
         } catch (FastPathFallback ignored) {
+            recordFastPathFallback();
             return decodePoolMajorStakeGeneric(bytes);
         }
     }
@@ -407,6 +414,7 @@ public final class AccountStateCborCodec {
             reader.requireEnd();
             return event;
         } catch (FastPathFallback ignored) {
+            recordFastPathFallback();
             return decodeStakeEventGeneric(bytes);
         }
     }
@@ -414,6 +422,18 @@ public final class AccountStateCborCodec {
     static int decodeStakeEventGeneric(byte[] bytes) {
         Map map = (Map) CborSerializationUtil.deserializeOne(bytes);
         return CborSerializationUtil.toInt(map.get(new UnsignedInteger(0)));
+    }
+
+    static void resetFastPathFallbackCount() {
+        FAST_PATH_FALLBACKS.set(0);
+    }
+
+    static long drainFastPathFallbackCount() {
+        return FAST_PATH_FALLBACKS.getAndSet(0);
+    }
+
+    private static void recordFastPathFallback() {
+        FAST_PATH_FALLBACKS.incrementAndGet();
     }
 
     // --- Accumulated Reward (prefix 0x54): {0: earnedEpoch(uint), 1: type(uint), 2: amount(uint), 3: poolHash(bstr)} ---

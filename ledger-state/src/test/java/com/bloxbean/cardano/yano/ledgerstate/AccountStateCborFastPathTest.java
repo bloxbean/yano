@@ -68,6 +68,27 @@ class AccountStateCborFastPathTest {
     }
 
     @Test
+    void canonicalWriterOutputsNeverUseGenericFallback() {
+        AccountStateCborCodec.resetFastPathFallbackCount();
+        for (BigInteger value : representativeUnsignedValues()) {
+            byte[] account = AccountStateCborCodec.encodeStakeAccount(value, value);
+            byte[] snapshot = AccountStateCborCodec.encodeEpochDelegSnapshot(POOL_HASH, value);
+            byte[] poolMajor = AccountStateCborCodec.encodePoolMajorStake(value);
+
+            AccountStateCborCodec.decodeStakeAccount(account);
+            AccountStateCborCodec.decodeEpochDelegSnapshot(snapshot);
+            AccountStateCborCodec.decodeEpochDelegSnapshotPoolHash(snapshot);
+            AccountStateCborCodec.decodePoolMajorStake(poolMajor);
+        }
+        AccountStateCborCodec.decodeStakeEvent(
+                AccountStateCborCodec.encodeStakeEvent(AccountStateCborCodec.EVENT_REGISTRATION));
+        AccountStateCborCodec.decodeStakeEvent(
+                AccountStateCborCodec.encodeStakeEvent(AccountStateCborCodec.EVENT_DEREGISTRATION));
+
+        assertThat(AccountStateCborCodec.drainFastPathFallbackCount()).isZero();
+    }
+
+    @Test
     void malformedInputsStillFailClosed() {
         byte[] truncatedStakeAccount = new byte[]{(byte) 0xa2, 0x00, 0x01, 0x01};
         byte[] wrongStakeAccountShape = new byte[]{(byte) 0x82, 0x01, 0x02};
