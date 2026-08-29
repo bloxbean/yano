@@ -190,6 +190,98 @@ class EpochRewardCalculatorTest {
     }
 
     @Test
+    void boundaryPoolParamsMemoCachesHitsAndMissesByPoolAndEpoch() {
+        var provider = new PoolParamsProvider(Set.of("pool1"));
+        var calculator = new EpochRewardCalculator(null, null, null, true);
+        calculator.setLedgerStateProvider(provider);
+
+        calculator.beginBoundaryPoolParamsMemo();
+        assertThat(calculator.getPoolParamsAtEpoch("pool1", 10)).isPresent();
+        assertThat(calculator.getPoolParamsAtEpoch("pool1", 10)).isPresent();
+        assertThat(calculator.getPoolParamsAtEpoch("missing", 10)).isEmpty();
+        assertThat(calculator.getPoolParamsAtEpoch("missing", 10)).isEmpty();
+        assertThat(calculator.getPoolParamsAtEpoch("pool1", 11)).isPresent();
+
+        assertThat(provider.historicalCalls).isEqualTo(3);
+
+        assertThat(calculator.getPoolParams("pool1")).isPresent();
+        assertThat(calculator.getPoolParams("pool1")).isPresent();
+        assertThat(provider.currentCalls).isEqualTo(2);
+        assertThat(provider.historicalCalls).isEqualTo(3);
+
+        calculator.clearBoundaryPoolParamsMemo();
+        assertThat(calculator.getPoolParamsAtEpoch("pool1", 10)).isPresent();
+        assertThat(provider.historicalCalls).isEqualTo(4);
+    }
+
+    @Test
+    void calculateAndDistributeClearsPoolParamsMemoAfterEarlyReturnAndFailure() {
+        var calculator = new EpochRewardCalculator(null, null, null, true);
+        calculator.setCfNetworkConfig(NetworkConfig.builder()
+                .networkMagic(42)
+                .shelleyStartEpoch(10)
+                .vasilHardforkEpoch(999)
+                .build());
+
+        EpochParamProvider parameters = new EpochParamProvider() {
+            @Override
+            public BigInteger getKeyDeposit(long epoch) {
+                return BigInteger.ZERO;
+            }
+
+            @Override
+            public BigInteger getPoolDeposit(long epoch) {
+                return BigInteger.ZERO;
+            }
+        };
+
+        assertThat(calculator.calculateAndDistribute(
+                10, BigInteger.ZERO, BigInteger.ZERO, parameters, 42)).isEmpty();
+        calculator.beginBoundaryPoolParamsMemo();
+        calculator.clearBoundaryPoolParamsMemo();
+
+        calculator.setCfNetworkConfig(NetworkConfig.builder()
+                .networkMagic(42)
+                .shelleyStartEpoch(0)
+                .vasilHardforkEpoch(999)
+                .build());
+        EpochParamProvider failingParameters = new EpochParamProvider() {
+            @Override
+            public BigInteger getKeyDeposit(long epoch) {
+                return BigInteger.ZERO;
+            }
+
+            @Override
+            public BigInteger getPoolDeposit(long epoch) {
+                return BigInteger.ZERO;
+            }
+
+            @Override
+            public BigDecimal getDecentralization(long epoch) {
+                throw new IllegalStateException("parameter lookup failed");
+            }
+        };
+
+        assertThatThrownBy(() -> calculator.calculateAndDistribute(
+                12, BigInteger.ZERO, BigInteger.ZERO, failingParameters, 42))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("parameter lookup failed");
+        calculator.beginBoundaryPoolParamsMemo();
+        calculator.clearBoundaryPoolParamsMemo();
+    }
+
+    @Test
+    void snapshotRestoreClearsBoundaryPoolParamsMemo() {
+        var calculator = new EpochRewardCalculator(null, null, null, true);
+
+        calculator.beginBoundaryPoolParamsMemo();
+        calculator.reinitialize(null, null, null);
+
+        calculator.beginBoundaryPoolParamsMemo();
+        calculator.clearBoundaryPoolParamsMemo();
+    }
+
+    @Test
     void postVasilRewardRulesIgnoreObsoleteDecentralizationAndUsePoolBlockCount() {
         var calculator = new EpochRewardCalculator(null, null, null, true);
         calculator.setEraProvider(firstBabbageEpoch(2));
@@ -365,6 +457,8 @@ class EpochRewardCalculatorTest {
 
     private static final class PoolParamsProvider implements LedgerStateProvider {
         private final Set<String> registeredPools;
+        private int currentCalls;
+        private int historicalCalls;
 
         private PoolParamsProvider(Set<String> registeredPools) {
             this.registeredPools = registeredPools;
@@ -416,7 +510,18 @@ class EpochRewardCalculatorTest {
         }
 
         @Override
+        public Optional<PoolParams> getPoolParams(String poolHash) {
+            currentCalls++;
+            return poolParams(poolHash);
+        }
+
+        @Override
         public Optional<PoolParams> getPoolParams(String poolHash, int epoch) {
+            historicalCalls++;
+            return poolParams(poolHash);
+        }
+
+        private Optional<PoolParams> poolParams(String poolHash) {
             if (!registeredPools.contains(poolHash)) {
                 return Optional.empty();
             }

@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.ledgerstate;
 
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.EpochParamProvider;
+import com.bloxbean.cardano.yano.api.account.LedgerStateProvider;
 import com.bloxbean.cardano.yano.api.account.RewardType;
 import com.bloxbean.cardano.yano.api.era.EraProvider;
 import com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink;
@@ -51,7 +52,10 @@ public class EpochRewardCalculator {
     private volatile boolean enabled;
 
     // Optional reference for querying retired pools and registered credentials
-    private volatile com.bloxbean.cardano.yano.api.account.LedgerStateProvider ledgerStateProvider;
+    private volatile LedgerStateProvider ledgerStateProvider;
+    // Reward calculation is serialized on the boundary thread, so this invocation-local map
+    // deliberately needs no synchronization and must never survive a boundary or restore.
+    private Map<PoolParamsAtEpochKey, Optional<LedgerStateProvider.PoolParams>> boundaryPoolParamsMemo;
 
     // Optional reference to the account state store for slot/epoch helpers and event queries
     private volatile DefaultAccountStateStore accountStateStore;
@@ -115,6 +119,7 @@ public class EpochRewardCalculator {
             rewardStateOverlay.clear();
             rewardStateOverlay = null;
         }
+        clearBoundaryPoolParamsMemo();
         log.info("EpochRewardCalculator reinitialized after snapshot restore");
     }
 
@@ -126,7 +131,7 @@ public class EpochRewardCalculator {
         this.cfNetworkConfig = config;
     }
 
-    public void setLedgerStateProvider(com.bloxbean.cardano.yano.api.account.LedgerStateProvider provider) {
+    public void setLedgerStateProvider(LedgerStateProvider provider) {
         this.ledgerStateProvider = provider;
     }
 
@@ -362,6 +367,22 @@ public class EpochRewardCalculator {
             long networkMagic) {
 
         if (!enabled) return Optional.empty();
+
+        beginBoundaryPoolParamsMemo();
+        try {
+            return calculateAndDistributeInternal(
+                    epoch, prevTreasury, prevReserves, paramProvider, networkMagic);
+        } finally {
+            clearBoundaryPoolParamsMemo();
+        }
+    }
+
+    private Optional<EpochCalculationResult> calculateAndDistributeInternal(
+            int epoch,
+            BigInteger prevTreasury,
+            BigInteger prevReserves,
+            EpochParamProvider paramProvider,
+            long networkMagic) {
 
         int stakeEpoch = epoch - 2; // snapshot epoch (N-2)
         int feeEpoch = epoch - 1;   // fee collection epoch (N-1), used for deregistration slot ranges
@@ -686,7 +707,7 @@ public class EpochRewardCalculator {
                 previousPool = pool;
                 String poolHash = HexUtil.encodeHexString(pool);
                 String rewardAddress = ledgerStateProvider != null
-                        ? ledgerStateProvider.getPoolParams(poolHash, poolParamsEpoch)
+                        ? getPoolParamsAtEpoch(poolHash, poolParamsEpoch)
                         .map(params -> extractCredKeyFromRewardAddress(
                                 params.rewardAccount(), poolHash))
                         .orElse(poolHash)
@@ -844,7 +865,7 @@ public class EpochRewardCalculator {
 
         long count = 0;
         for (var entry : blockCounts.entrySet()) {
-            if (ledgerStateProvider.getPoolParams(entry.getKey(), stakeEpoch).isPresent()) {
+            if (getPoolParamsAtEpoch(entry.getKey(), stakeEpoch).isPresent()) {
                 count += entry.getValue();
             }
         }
@@ -872,7 +893,7 @@ public class EpochRewardCalculator {
             long count = 0;
             for (var entry : blockCounts.entrySet()) {
                 if (ledgerStateProvider != null
-                        && ledgerStateProvider.getPoolParams(entry.getKey(), stakeEpoch).isPresent()) {
+                        && getPoolParamsAtEpoch(entry.getKey(), stakeEpoch).isPresent()) {
                     count += entry.getValue();
                 }
             }
@@ -930,7 +951,7 @@ public class EpochRewardCalculator {
         HashSet<String> owners = new HashSet<>();
 
         if (ledgerStateProvider != null) {
-            var poolParamsOpt = ledgerStateProvider.getPoolParams(poolHash, epoch);
+            var poolParamsOpt = getPoolParamsAtEpoch(poolHash, epoch);
             if (poolParamsOpt.isPresent()) {
                 var params = poolParamsOpt.get();
                 rewardAddress = extractCredKeyFromRewardAddress(params.rewardAccount(), poolHash);
@@ -2071,9 +2092,38 @@ public class EpochRewardCalculator {
      * Get pool registration parameters for a specific pool.
      * Delegates to the LedgerStateProvider.
      */
-    public Optional<com.bloxbean.cardano.yano.api.account.LedgerStateProvider.PoolParams> getPoolParams(String poolHash) {
+    public Optional<LedgerStateProvider.PoolParams> getPoolParams(String poolHash) {
         if (ledgerStateProvider == null) return Optional.empty();
         return ledgerStateProvider.getPoolParams(poolHash);
+    }
+
+    void beginBoundaryPoolParamsMemo() {
+        if (boundaryPoolParamsMemo != null) {
+            throw new IllegalStateException("Boundary pool-parameter memo is already active");
+        }
+        boundaryPoolParamsMemo = new HashMap<>();
+    }
+
+    void clearBoundaryPoolParamsMemo() {
+        if (boundaryPoolParamsMemo != null) {
+            boundaryPoolParamsMemo.clear();
+            boundaryPoolParamsMemo = null;
+        }
+    }
+
+    Optional<LedgerStateProvider.PoolParams> getPoolParamsAtEpoch(String poolHash, int epoch) {
+        var provider = ledgerStateProvider;
+        if (provider == null) return Optional.empty();
+        if (boundaryPoolParamsMemo == null) {
+            return provider.getPoolParams(poolHash, epoch);
+        }
+        var key = new PoolParamsAtEpochKey(poolHash, epoch);
+        return boundaryPoolParamsMemo.computeIfAbsent(key,
+                ignored -> Objects.requireNonNull(provider.getPoolParams(poolHash, epoch),
+                        "LedgerStateProvider.getPoolParams must return Optional.empty(), not null"));
+    }
+
+    private record PoolParamsAtEpochKey(String poolHash, int epoch) {
     }
 
     /**
