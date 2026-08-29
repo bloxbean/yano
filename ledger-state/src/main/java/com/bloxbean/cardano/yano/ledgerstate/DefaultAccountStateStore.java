@@ -749,6 +749,10 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         return key;
     }
 
+    static byte[] accountKey(BoundaryCredentialKey credential) {
+        return credential.storageKey(PREFIX_ACCT);
+    }
+
     static byte[] poolDelegKey(int credType, String credHash) {
         byte[] hash = HexUtil.decodeHexString(credHash);
         byte[] key = new byte[1 + 1 + hash.length];
@@ -930,6 +934,10 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         return key;
     }
 
+    static byte[] accumulatedRewardKey(BoundaryCredentialKey credential) {
+        return credential.storageKey(PREFIX_ACCUMULATED_REWARD);
+    }
+
     /**
      * Build stake event key: [0x55][slot(8 BE)][txIdx(2 BE)][certIdx(2 BE)][credType(1)][credHash(28)]
      * Slot-first ordering enables efficient range scans for "all events in slot range".
@@ -992,6 +1000,17 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         key[0] = PREFIX_STAKE_EVENT_BY_CREDENTIAL;
         key[1] = (byte) credType;
         System.arraycopy(hash, 0, key, 2, hash.length);
+        ByteBuffer.wrap(key, 30, 8).order(ByteOrder.BIG_ENDIAN).putLong(slot);
+        ByteBuffer.wrap(key, 38, 2).order(ByteOrder.BIG_ENDIAN).putShort((short) txIdx);
+        ByteBuffer.wrap(key, 40, 2).order(ByteOrder.BIG_ENDIAN).putShort((short) certIdx);
+        return key;
+    }
+
+    static byte[] credentialStakeEventKey(BoundaryCredentialKey credential,
+                                          long slot, int txIdx, int certIdx) {
+        byte[] key = new byte[1 + BoundaryCredentialKey.SUFFIX_LENGTH + 8 + 2 + 2];
+        key[0] = PREFIX_STAKE_EVENT_BY_CREDENTIAL;
+        credential.copySuffixTo(key, 1);
         ByteBuffer.wrap(key, 30, 8).order(ByteOrder.BIG_ENDIAN).putLong(slot);
         ByteBuffer.wrap(key, 38, 2).order(ByteOrder.BIG_ENDIAN).putShort((short) txIdx);
         ByteBuffer.wrap(key, 40, 2).order(ByteOrder.BIG_ENDIAN).putShort((short) certIdx);

@@ -615,12 +615,12 @@ public class EpochRewardCalculator {
                     accounts.deregisteredOnBoundary(), networkConfig,
                     rewardResumeAfterPool, rewardResumeDistributed,
                     rewardResumeUnspendable,
-                    (poolResult, totals, replayed) -> {
+                    (poolInput, poolResult, totals, replayed) -> {
                         if (replayed) {
                             stagePoolRewardFacts(epoch, poolResult);
                         } else {
-                            prefetchPoolRewardState(poolResult);
-                            distributePoolReward(epoch, poolResult);
+                            distributePrefetchedPoolReward(
+                                    epoch, poolInput, poolResult);
                             maybeFlushRewardChunk(poolResult.getPoolId(), totals);
                         }
                     });
@@ -1050,15 +1050,17 @@ public class EpochRewardCalculator {
             HashSet<Delegator> delegators = new HashSet<>();
             HashSet<String> deregistered = new HashSet<>();
             HashSet<String> lateDeregistered = new HashSet<>();
+            Map<String, BoundaryCredentialKey> credentialKeys = new HashMap<>();
             BigInteger activeStake = BigInteger.ZERO;
 
             while (iterator.isValid() && startsWith(iterator.key(), prefix)
-                    && Arrays.equals(poolBytes,
-                    Arrays.copyOfRange(iterator.key(), 5, 33))) {
+                    && Arrays.equals(iterator.key(), 5, 33,
+                    poolBytes, 0, BoundaryCredentialKey.HASH_LENGTH)) {
                 byte[] key = iterator.key();
-                int credentialType = key[33] & 0xFF;
-                String credential = credentialType + ":"
-                        + HexUtil.encodeHexString(Arrays.copyOfRange(key, 34, 62));
+                BoundaryCredentialKey credentialKey =
+                        BoundaryCredentialKey.fromKey(key, 33);
+                String credential = credentialKey.address();
+                credentialKeys.put(credential, credentialKey);
                 BigInteger amount = AccountStateCborCodec.decodePoolMajorStake(iterator.value());
                 delegators.add(Delegator.builder()
                         .stakeAddress(credential).activeStake(amount).build());
@@ -1078,6 +1080,8 @@ public class EpochRewardCalculator {
 
             PoolState pool = buildPoolState(poolHash, delegators, activeStake,
                     blockCounts, poolParamsEpoch);
+            credentialKeys.computeIfAbsent(pool.getRewardAddress(),
+                    BoundaryCredentialKey::fromAddress);
             if (accounts.deregistered().contains(pool.getRewardAddress())) {
                 deregistered.add(pool.getRewardAddress());
             }
@@ -1085,7 +1089,7 @@ public class EpochRewardCalculator {
                 lateDeregistered.add(pool.getRewardAddress());
             }
             next = new StreamingEpochRewardOrchestrator.PoolRewardInput(
-                    pool, deregistered, lateDeregistered);
+                    pool, deregistered, lateDeregistered, credentialKeys);
         }
 
         private int rewardFlagsFor(byte[] poolMajorKey) {
@@ -1165,9 +1169,8 @@ public class EpochRewardCalculator {
                             | REWARD_FLAG_DEREGISTERED_AT_BOUNDARY;
                 }
 
-                var snapshotValue = AccountStateCborCodec.decodeEpochDelegSnapshot(
+                byte[] poolHash = AccountStateCborCodec.decodeEpochDelegSnapshotPoolHash(
                         snapshotRows.value());
-                byte[] poolHash = HexUtil.decodeHexString(snapshotValue.poolHash());
                 if (poolHash.length != 28) {
                     throw new IllegalStateException(
                             "Invalid pool hash length in reward snapshot: " + poolHash.length);
@@ -1419,6 +1422,13 @@ public class EpochRewardCalculator {
 
     private int[] distributePoolReward(int epoch,
                                        org.cardanofoundation.rewards.calculation.domain.PoolRewardCalculationResult poolResult) {
+        return distributePoolReward(epoch, poolResult, null);
+    }
+
+    private int[] distributePoolReward(
+            int epoch,
+            org.cardanofoundation.rewards.calculation.domain.PoolRewardCalculationResult poolResult,
+            PrefetchedPoolRewardState prefetched) {
         int earnedEpoch = epoch - 2;
         String poolId = poolResult.getPoolId();
         int leaderCount = 0;
@@ -1427,8 +1437,13 @@ public class EpochRewardCalculator {
         if (leaderReward != null && leaderReward.signum() > 0
                 && poolResult.getRewardAddress() != null) {
             try {
-                creditRewardByAddress(poolResult.getRewardAddress(), leaderReward,
-                        earnedEpoch, RewardType.LEADER, poolId);
+                if (prefetched != null) {
+                    creditPrefetchedReward(poolResult.getRewardAddress(), leaderReward,
+                            earnedEpoch, RewardType.LEADER, poolId, prefetched);
+                } else {
+                    creditRewardByAddress(poolResult.getRewardAddress(), leaderReward,
+                            earnedEpoch, RewardType.LEADER, poolId);
+                }
                 leaderCount++;
             } catch (RocksDBException e) {
                 throw new RuntimeException("Failed to credit leader reward for pool " + poolId, e);
@@ -1438,8 +1453,13 @@ public class EpochRewardCalculator {
             for (var reward : poolResult.getMemberRewards()) {
                 if (reward.getAmount() == null || reward.getAmount().signum() <= 0) continue;
                 try {
-                    creditRewardByAddress(reward.getStakeAddress(), reward.getAmount(),
-                            earnedEpoch, RewardType.MEMBER, poolId);
+                    if (prefetched != null) {
+                        creditPrefetchedReward(reward.getStakeAddress(), reward.getAmount(),
+                                earnedEpoch, RewardType.MEMBER, poolId, prefetched);
+                    } else {
+                        creditRewardByAddress(reward.getStakeAddress(), reward.getAmount(),
+                                earnedEpoch, RewardType.MEMBER, poolId);
+                    }
                     memberCount++;
                 } catch (RocksDBException e) {
                     throw new RuntimeException("Failed to credit member reward for pool " + poolId, e);
@@ -1449,64 +1469,118 @@ public class EpochRewardCalculator {
         return new int[]{leaderCount, memberCount};
     }
 
-    private void prefetchPoolRewardState(PoolRewardCalculationResult poolResult) {
-        if (rewardStateOverlay == null) return;
+    int[] distributePrefetchedPoolReward(
+            int epoch,
+            StreamingEpochRewardOrchestrator.PoolRewardInput poolInput,
+            PoolRewardCalculationResult poolResult) {
+        PrefetchedPoolRewardState prefetched =
+                prefetchPoolRewardState(poolInput, poolResult);
+        return distributePoolReward(epoch, poolResult, prefetched);
+    }
 
-        List<byte[]> keys = new ArrayList<>();
-        HashSet<String> credentials = new HashSet<>();
+    private PrefetchedPoolRewardState prefetchPoolRewardState(
+            StreamingEpochRewardOrchestrator.PoolRewardInput poolInput,
+            PoolRewardCalculationResult poolResult) {
+        if (rewardStateOverlay == null) {
+            throw new IllegalStateException("Reward state prefetch requires an active reward batch");
+        }
+
+        byte[] poolHash = HexUtil.decodeHexString(poolResult.getPoolId());
+        if (poolHash.length != BoundaryCredentialKey.HASH_LENGTH) {
+            throw new IllegalStateException(
+                    "Invalid reward pool hash length: " + poolHash.length);
+        }
+        Map<BoundaryCredentialKey, AccountStateCborCodec.StakeAccount> accounts =
+                new HashMap<>();
+        Map<String, BoundaryCredentialKey> credentialKeys =
+                poolInput.credentialKeys();
+        List<RewardPrefetchKey> keys = new ArrayList<>();
+        HashSet<BoundaryCredentialKey> credentials = new HashSet<>();
         BigInteger leaderReward = poolResult.getOperatorReward();
         if (leaderReward != null && leaderReward.signum() > 0
                 && poolResult.getRewardAddress() != null) {
             addRewardStatePrefetchKeys(
-                    poolResult.getRewardAddress(), credentials, keys);
+                    poolResult.getRewardAddress(), credentialKeys,
+                    credentials, keys, accounts);
         }
         if (poolResult.getMemberRewards() != null) {
             for (var reward : poolResult.getMemberRewards()) {
                 if (reward.getAmount() != null && reward.getAmount().signum() > 0) {
                     addRewardStatePrefetchKeys(
-                            reward.getStakeAddress(), credentials, keys);
+                            reward.getStakeAddress(), credentialKeys,
+                            credentials, keys, accounts);
                 }
             }
         }
-        if (keys.isEmpty()) return;
+        PrefetchedPoolRewardState prefetched = new PrefetchedPoolRewardState(
+                credentialKeys, accounts, poolHash);
+        if (keys.isEmpty()) return prefetched;
 
         List<ColumnFamilyHandle> columnFamilies = new ArrayList<>(keys.size());
+        List<byte[]> storageKeys = new ArrayList<>(keys.size());
         for (int index = 0; index < keys.size(); index++) {
             columnFamilies.add(cfState);
+            storageKeys.add(keys.get(index).storageKey());
         }
         try {
-            List<byte[]> values = db.multiGetAsList(columnFamilies, keys);
+            List<byte[]> values = db.multiGetAsList(columnFamilies, storageKeys);
             if (values.size() != keys.size()) {
                 throw new IllegalStateException(
                         "Reward state MultiGet returned an unexpected value count");
             }
             for (int index = 0; index < keys.size(); index++) {
-                rewardStateOverlay.put(keys.get(index), values.get(index));
+                RewardPrefetchKey key = keys.get(index);
+                byte[] value = values.get(index);
+                rewardStateOverlay.put(key.storageKey(), value);
+                if (key.account() && value != null) {
+                    accounts.put(key.credential(),
+                            AccountStateCborCodec.decodeStakeAccount(value));
+                }
             }
         } catch (RocksDBException failure) {
             throw new IllegalStateException(
                     "Failed to prefetch reward account state for pool "
                             + poolResult.getPoolId(), failure);
         }
+        return prefetched;
     }
 
     private void addRewardStatePrefetchKeys(
-            String address, Set<String> credentials, List<byte[]> keys) {
-        int credentialType = 0;
-        String credentialHash = address;
-        int separator = address.indexOf(':');
-        if (separator >= 0) {
-            credentialType = Integer.parseInt(address.substring(0, separator));
-            credentialHash = address.substring(separator + 1);
+            String address,
+            Map<String, BoundaryCredentialKey> poolCredentialKeys,
+            Set<BoundaryCredentialKey> credentials,
+            List<RewardPrefetchKey> keys,
+            Map<BoundaryCredentialKey, AccountStateCborCodec.StakeAccount> accounts) {
+        BoundaryCredentialKey credential = poolCredentialKeys.get(address);
+        if (credential == null) {
+            throw new IllegalStateException(
+                    "Missing byte credential for reward address " + address);
         }
-        if (!credentials.add(credentialType + ":" + credentialHash)) return;
+        if (!credentials.add(credential)) return;
 
-        byte[] accountKey = DefaultAccountStateStore.accountKey(
-                credentialType, credentialHash);
-        if (!rewardStateOverlay.contains(accountKey)) keys.add(accountKey);
-        byte[] rewardKey = DefaultAccountStateStore.accumulatedRewardKey(
-                credentialType, credentialHash);
-        if (!rewardStateOverlay.contains(rewardKey)) keys.add(rewardKey);
+        byte[] accountKey = DefaultAccountStateStore.accountKey(credential);
+        if (rewardStateOverlay.contains(accountKey)) {
+            byte[] value = rewardStateOverlay.get(accountKey);
+            if (value != null) {
+                accounts.put(credential, AccountStateCborCodec.decodeStakeAccount(value));
+            }
+        } else {
+            keys.add(new RewardPrefetchKey(accountKey, credential, true));
+        }
+        byte[] rewardKey = DefaultAccountStateStore.accumulatedRewardKey(credential);
+        if (!rewardStateOverlay.contains(rewardKey)) {
+            keys.add(new RewardPrefetchKey(rewardKey, credential, false));
+        }
+    }
+
+    private record RewardPrefetchKey(
+            byte[] storageKey, BoundaryCredentialKey credential, boolean account) {
+    }
+
+    private record PrefetchedPoolRewardState(
+            Map<String, BoundaryCredentialKey> credentialKeys,
+            Map<BoundaryCredentialKey, AccountStateCborCodec.StakeAccount> accounts,
+            byte[] poolHash) {
     }
 
     private void stagePoolRewardFacts(int epoch,
@@ -1564,6 +1638,54 @@ public class EpochRewardCalculator {
         }
 
         creditReward(credType, credHash, amount, earnedEpoch, type, poolId);
+    }
+
+    private void creditPrefetchedReward(
+            String address, BigInteger amount, int earnedEpoch,
+            RewardType rewardType, String poolHash,
+            PrefetchedPoolRewardState prefetched) throws RocksDBException {
+        if (amount == null || amount.signum() <= 0) return;
+        if (rewardBatch == null) {
+            throw new IllegalStateException(
+                    "creditReward called without an active reward batch — call beginRewardBatch() first");
+        }
+
+        BoundaryCredentialKey credential = prefetched.credentialKeys().get(address);
+        if (credential == null) {
+            throw new IllegalStateException(
+                    "Missing byte credential for reward address " + address);
+        }
+        byte[] accountKey = DefaultAccountStateStore.accountKey(credential);
+        AccountStateCborCodec.StakeAccount account =
+                prefetched.accounts().get(credential);
+        if (account != null) {
+            BigInteger newReward = account.reward().add(amount);
+            byte[] newValue = AccountStateCborCodec.encodeStakeAccount(
+                    newReward, account.deposit());
+            accountStateStore.putStateWithDelta(accountKey, newValue,
+                    rewardBatch, rewardDeltaOps, rewardStateOverlay);
+            prefetched.accounts().put(credential,
+                    new AccountStateCborCodec.StakeAccount(newReward, account.deposit()));
+        }
+
+        byte[] rewardKey = DefaultAccountStateStore.accumulatedRewardKey(credential);
+        byte[] rewardValue = AccountStateCborCodec.encodeAccumulatedReward(
+                earnedEpoch, rewardType.ordinal(), amount, prefetched.poolHash());
+        accountStateStore.putStateWithDelta(rewardKey, rewardValue,
+                rewardBatch, rewardDeltaOps, rewardStateOverlay);
+
+        if (rewardArchiveWriter != null) {
+            int separator = address.indexOf(':');
+            String credentialHash = separator >= 0
+                    ? address.substring(separator + 1) : address;
+            int spendableEpoch = archiveBoundary != null
+                    ? archiveBoundary.newEpoch() : earnedEpoch + 2;
+            String sourceId = poolHash != null && !poolHash.isBlank()
+                    ? poolHash : "ledger";
+            rewardArchiveWriter.append(new EpochArchiveStagingSink.RewardFact(
+                    credential.credentialType(), credentialHash, poolHash,
+                    rewardType.name(), earnedEpoch, spendableEpoch, amount, sourceId));
+        }
     }
 
     /**

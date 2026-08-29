@@ -17,6 +17,7 @@ import java.math.BigInteger;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -88,7 +89,8 @@ final class StreamingEpochRewardOrchestrator {
                 distributed = distributed.add(zeroIfNull(result.getDistributedPoolReward()));
                 unspendable = unspendable.add(zeroIfNull(result.getUnspendableEarnedRewards()));
             }
-            sink.accept(result, new RunningTotals(distributed, unspendable), replayed);
+            sink.accept(input, result,
+                    new RunningTotals(distributed, unspendable), replayed);
         }
 
         BigInteger undistributed = scalarBaseline.getTotalPoolRewardsPot().subtract(distributed);
@@ -141,9 +143,15 @@ final class StreamingEpochRewardOrchestrator {
     }
 
     record PoolRewardInput(PoolState pool, Set<String> deregistered,
-                           Set<String> lateDeregistered) {
+                           Set<String> lateDeregistered,
+                           Map<String, BoundaryCredentialKey> credentialKeys) {
+        PoolRewardInput(PoolState pool, Set<String> deregistered,
+                        Set<String> lateDeregistered) {
+            this(pool, deregistered, lateDeregistered, Map.of());
+        }
+
         static PoolRewardInput fromLegacy(PoolState pool) {
-            return new PoolRewardInput(pool, null, null);
+            return new PoolRewardInput(pool, null, null, Map.of());
         }
     }
 
@@ -152,7 +160,8 @@ final class StreamingEpochRewardOrchestrator {
 
     @FunctionalInterface
     interface PoolResultSink {
-        void accept(PoolRewardCalculationResult result, RunningTotals totals,
+        void accept(PoolRewardInput input, PoolRewardCalculationResult result,
+                    RunningTotals totals,
                     boolean replayed);
     }
 }

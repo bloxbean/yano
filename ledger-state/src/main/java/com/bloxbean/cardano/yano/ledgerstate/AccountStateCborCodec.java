@@ -249,6 +249,11 @@ public final class AccountStateCborCodec {
         return new EpochDelegSnapshot(poolHash, amount);
     }
 
+    static byte[] decodeEpochDelegSnapshotPoolHash(byte[] bytes) {
+        Map map = (Map) CborSerializationUtil.deserializeOne(bytes);
+        return ((ByteString) map.get(new UnsignedInteger(0))).getBytes();
+    }
+
     static byte[] encodePoolMajorStake(BigInteger amount) {
         return CborSerializationUtil.serialize(new UnsignedInteger(amount), true);
     }
@@ -336,12 +341,20 @@ public final class AccountStateCborCodec {
     record AccumulatedReward(int earnedEpoch, int type, BigInteger amount, String poolHash) {}
 
     static byte[] encodeAccumulatedReward(AccumulatedReward reward) {
+        byte[] poolHash = reward.poolHash() != null
+                ? HexUtil.decodeHexString(reward.poolHash()) : null;
+        return encodeAccumulatedReward(
+                reward.earnedEpoch(), reward.type(), reward.amount(), poolHash);
+    }
+
+    static byte[] encodeAccumulatedReward(
+            int earnedEpoch, int type, BigInteger amount, byte[] poolHash) {
         Map map = new Map();
-        map.put(new UnsignedInteger(0), new UnsignedInteger(reward.earnedEpoch()));
-        map.put(new UnsignedInteger(1), new UnsignedInteger(reward.type()));
-        map.put(new UnsignedInteger(2), new UnsignedInteger(reward.amount()));
-        if (reward.poolHash() != null) {
-            map.put(new UnsignedInteger(3), new ByteString(HexUtil.decodeHexString(reward.poolHash())));
+        map.put(new UnsignedInteger(0), new UnsignedInteger(earnedEpoch));
+        map.put(new UnsignedInteger(1), new UnsignedInteger(type));
+        map.put(new UnsignedInteger(2), new UnsignedInteger(amount));
+        if (poolHash != null) {
+            map.put(new UnsignedInteger(3), new ByteString(poolHash));
         }
         return CborSerializationUtil.serialize(map, true);
     }

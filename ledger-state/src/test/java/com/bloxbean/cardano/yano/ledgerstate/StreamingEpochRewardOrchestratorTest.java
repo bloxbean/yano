@@ -69,7 +69,7 @@ class StreamingEpochRewardOrchestratorTest {
                 List.of(StreamingEpochRewardOrchestrator.PoolRewardInput.fromLegacy(pool)).iterator(),
                 empty, registered, registered, empty, empty, network,
                 null, BigInteger.ZERO, BigInteger.ZERO,
-                (poolResult, totals, replayed) -> streamedPools.add(poolResult));
+                (input, poolResult, totals, replayed) -> streamedPools.add(poolResult));
 
         assertThat(actual.getTreasury()).isEqualTo(expected.getTreasury());
         assertThat(actual.getReserves()).isEqualTo(expected.getReserves());
@@ -95,7 +95,7 @@ class StreamingEpochRewardOrchestratorTest {
                 poolId, expected.getTotalDistributedRewards(),
                 expected.getPoolRewardCalculationResults().getFirst()
                         .getUnspendableEarnedRewards(),
-                (poolResult, totals, replayed) -> replayFlags.add(replayed));
+                (input, poolResult, totals, replayed) -> replayFlags.add(replayed));
         assertThat(replayFlags).containsExactly(true);
         assertThat(resumed.getTreasury()).isEqualTo(expected.getTreasury());
         assertThat(resumed.getReserves()).isEqualTo(expected.getReserves());
@@ -174,7 +174,8 @@ class StreamingEpochRewardOrchestratorTest {
                 List.of(), inputs.iterator(), lateDeregistered, registeredSince,
                 registeredUntil, empty, deregisteredOnBoundary, network,
                 null, BigInteger.ZERO, BigInteger.ZERO,
-                (result, totals, replayed) -> actualPools.put(result.getPoolId(), result));
+                (input, result, totals, replayed) ->
+                        actualPools.put(result.getPoolId(), result));
 
         assertThat(actual.getTreasury()).isEqualTo(expected.getTreasury());
         assertThat(actual.getReserves()).isEqualTo(expected.getReserves());
