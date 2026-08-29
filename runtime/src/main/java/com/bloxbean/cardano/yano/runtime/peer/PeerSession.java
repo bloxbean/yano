@@ -369,10 +369,16 @@ public class PeerSession {
         if (!closeExistingLedgerApplyProcessor(Duration.ofSeconds(5))) {
             throw new IllegalStateException("Previous LedgerApplyProcessor did not reach a safe stop");
         }
-        ledgerApplyProcessor = new LedgerApplyProcessor(chainState, callbacks::requestPeerRecovery);
+        LedgerApplyProcessor.Policy policy = LedgerApplyProcessor.Policy.defaults();
+        ledgerApplyProcessor = new LedgerApplyProcessor(chainState, callbacks::requestPeerRecovery, policy);
         ledgerGeneration = ledgerApplyProcessor.openGeneration();
         ledgerApplyProcessor.start();
-        log.info("🧾 LedgerApplyProcessor started for generation {}", ledgerGeneration);
+        log.info("🧾 LedgerApplyProcessor started for generation {} "
+                        + "(maxQueuedItems={}, maxQueuedDecodedBytes={}, reservedControlSlots={})",
+                ledgerGeneration,
+                policy.maxQueuedItems(),
+                policy.maxQueuedDecodedBytes(),
+                policy.reservedControlSlots());
     }
 
     private void stopExistingBodyFetchManager() {

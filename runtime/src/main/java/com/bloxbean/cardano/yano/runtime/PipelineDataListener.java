@@ -506,7 +506,7 @@ public class PipelineDataListener implements BlockChainDataListener {
     }
 
     private void enqueueApply(String description, long estimatedBytes, LedgerApplyProcessor.ApplyWork work) {
-        CompletableFuture<LedgerApplyProcessor.Outcome> future = ledgerApplyProcessor.enqueueApplyBlock(
+        CompletableFuture<LedgerApplyProcessor.Outcome> future = ledgerApplyProcessor.enqueueApplyBlockBackpressured(
                 ledgerGeneration,
                 description,
                 estimatedBytes,
