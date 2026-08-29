@@ -239,6 +239,12 @@ public final class LedgerStateSubsystem implements Subsystem {
         }
 
         try {
+            if (accountStateStore instanceof DefaultAccountStateStore defaultStore) {
+                UtxoState utxoState = utxoStateSupplier.get();
+                defaultStore.completeEpochBoundaryStateV2(
+                        utxoState != null && utxoState.isPointerIndexReadyAtCurrentCoordinate());
+            }
+
             // A block body is durably stored before its epoch-transition events run. If the
             // process dies inside the boundary, UTXO/account reconciliation would otherwise
             // apply that first new-epoch block before SNAP resumes. Finish the journaled

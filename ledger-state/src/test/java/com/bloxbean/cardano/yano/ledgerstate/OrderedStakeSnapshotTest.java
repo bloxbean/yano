@@ -7,6 +7,7 @@ import com.bloxbean.cardano.yano.api.era.EraProvider;
 import com.bloxbean.cardano.yano.api.utxo.PointerAddressId;
 import com.bloxbean.cardano.yano.api.utxo.PointerIndexPreparation;
 import com.bloxbean.cardano.yano.api.utxo.PointerUtxo;
+import com.bloxbean.cardano.yano.api.utxo.PointerUtxoView;
 import com.bloxbean.cardano.yano.api.utxo.StakeBalanceView;
 import com.bloxbean.cardano.yano.api.utxo.StakeCredentialBalance;
 import com.bloxbean.cardano.yano.api.utxo.StakeCredentialId;
@@ -26,7 +27,6 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -249,7 +249,7 @@ class OrderedStakeSnapshotTest {
     }
 
     @Test
-    void backfillBoundaryUsesOverlayFromBackfillPassWithoutRereadingPointerIndex() throws Exception {
+    void pointerIndexBoundaryReadsTheCoordinateBoundPointerView() throws Exception {
         try (var rocks = TestRocksDBHelper.create(tempDir)) {
             var store = new DefaultAccountStateStore(rocks.db(), rocks.cfSupplier(),
                     LoggerFactory.getLogger(getClass()), true);
@@ -288,7 +288,9 @@ class OrderedStakeSnapshotTest {
             StakeBalanceView view = new SingleRowStakeBalanceView(coordinate,
                     new StakeCredentialBalance(
                             new StakeCredentialId(0, HexUtil.decodeHexString(CREDENTIAL_HASH)),
-                            BigInteger.ONE));
+                            BigInteger.ONE),
+                    new PointerUtxo(800, BigInteger.TEN,
+                            new PointerAddressId(1, 0, 0)));
             store.setUtxoState(new UtxoState() {
                 @Override
                 public List<Utxo> getUtxosByAddress(String address, int page, int pageSize) {
@@ -309,11 +311,8 @@ class OrderedStakeSnapshotTest {
                 @Override
                 public PointerIndexPreparation preparePointerIndex(
                         CanonicalBlockReference expectedCoordinate,
-                        long maxCreationSlot,
-                        Consumer<PointerUtxo> observer) {
-                    observer.accept(new PointerUtxo(
-                            800, BigInteger.TEN, new PointerAddressId(1, 0, 0)));
-                    return PointerIndexPreparation.ready(true);
+                        long maxCreationSlot) {
+                    return PointerIndexPreparation.available();
                 }
 
                 @Override
@@ -329,7 +328,7 @@ class OrderedStakeSnapshotTest {
             });
 
             try (var input = store.aggregatePointerUtxoBalances(9)) {
-                assertThat(input.path()).isEqualTo("pointer-backfill");
+                assertThat(input.path()).isEqualTo("pointer-index");
                 assertThat(input.balances()).isEmpty();
             }
             assertThat(view.advance()).isFalse();
@@ -374,13 +373,21 @@ class OrderedStakeSnapshotTest {
     private static final class SingleRowStakeBalanceView implements StakeBalanceView {
         private final CanonicalBlockReference coordinate;
         private final StakeCredentialBalance row;
+        private final PointerUtxo pointerRow;
         private int position;
         private boolean closed;
 
         private SingleRowStakeBalanceView(CanonicalBlockReference coordinate,
                                           StakeCredentialBalance row) {
+            this(coordinate, row, null);
+        }
+
+        private SingleRowStakeBalanceView(CanonicalBlockReference coordinate,
+                                          StakeCredentialBalance row,
+                                          PointerUtxo pointerRow) {
             this.coordinate = coordinate;
             this.row = row;
+            this.pointerRow = pointerRow;
         }
 
         @Override
@@ -398,6 +405,33 @@ class OrderedStakeSnapshotTest {
         public StakeCredentialBalance current() {
             if (position != 1) throw new IllegalStateException("no current row");
             return row;
+        }
+
+        @Override
+        public Optional<PointerUtxoView> openPointerUtxoView(long maxCreationSlot) {
+            if (pointerRow == null || pointerRow.creationSlot() > maxCreationSlot) {
+                return Optional.empty();
+            }
+            return Optional.of(new PointerUtxoView() {
+                private boolean advanced;
+
+                @Override
+                public boolean advance() {
+                    if (advanced) return false;
+                    advanced = true;
+                    return true;
+                }
+
+                @Override
+                public PointerUtxo current() {
+                    if (!advanced) throw new IllegalStateException("no current pointer row");
+                    return pointerRow;
+                }
+
+                @Override
+                public void close() {
+                }
+            });
         }
 
         @Override

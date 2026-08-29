@@ -204,11 +204,6 @@ public class YanoProducer {
     boolean utxoApplyAsync;
     @ConfigProperty(name = YanoPropertyKeys.Utxo.REBUILD_UNMARKED_FROM_GENESIS, defaultValue = "false")
     boolean utxoRebuildUnmarkedFromGenesis;
-    @ConfigProperty(name = YanoPropertyKeys.Utxo.POINTER_INDEX_BACKFILL, defaultValue = "false")
-    boolean utxoPointerIndexBackfill;
-    @ConfigProperty(name = YanoPropertyKeys.Utxo.POINTER_INDEX_SHADOW_SCAN, defaultValue = "false")
-    boolean utxoPointerIndexShadowScan;
-
     @ConfigProperty(name = YanoPropertyKeys.Metrics.ENABLED, defaultValue = "true")
     boolean metricsEnabled;
     @ConfigProperty(name = YanoPropertyKeys.Metrics.ROCKSDB_SAMPLE_SECONDS, defaultValue = "0")
@@ -649,8 +644,6 @@ public class YanoProducer {
         globals.put(YanoPropertyKeys.Utxo.APPLY_ASYNC, utxoApplyAsync);
         globals.put(YanoPropertyKeys.Utxo.REBUILD_UNMARKED_FROM_GENESIS,
                 utxoRebuildUnmarkedFromGenesis);
-        globals.put(YanoPropertyKeys.Utxo.POINTER_INDEX_BACKFILL, utxoPointerIndexBackfill);
-        globals.put(YanoPropertyKeys.Utxo.POINTER_INDEX_SHADOW_SCAN, utxoPointerIndexShadowScan);
         globals.put(YanoPropertyKeys.Metrics.ENABLED, metricsEnabled);
         globals.put(YanoPropertyKeys.Metrics.ROCKSDB_SAMPLE_SECONDS, metricsSampleRocksDbSeconds);
         globals.put(YanoPropertyKeys.Validation.DEFAULT_VALIDATOR_ENABLED, defaultValidatorEnabled);

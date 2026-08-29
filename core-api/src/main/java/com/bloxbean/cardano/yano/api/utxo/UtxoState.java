@@ -7,7 +7,6 @@ import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
 import java.math.BigInteger;
 import java.util.List;
 import java.util.Optional;
-import java.util.function.Consumer;
 
 /**
  * Public interface for UTXO storage and queries.
@@ -161,31 +160,22 @@ public interface UtxoState {
     }
 
     /**
-     * Prepare the optional pointer-address UTXO index at an exact boundary
-     * coordinate. Implementations may perform an explicitly configured,
-     * bounded one-time backfill. Unavailable indexes must remain fail-closed
-     * and use the historical scan.
+     * Check the optional pointer-address UTXO index at an exact boundary
+     * coordinate. Unavailable indexes must remain fail-closed and use the
+     * historical scan.
      */
     default PointerIndexPreparation preparePointerIndex(
             CanonicalBlockReference expectedCoordinate, long maxCreationSlot) {
-        return preparePointerIndex(expectedCoordinate, maxCreationSlot, ignored -> { });
-    }
-
-    /**
-     * Prepare the pointer index and stream pointer rows observed by a one-time
-     * backfill to the caller. The index covers the full advertised store
-     * coordinate; the observer receives only rows whose creation slot is at or
-     * before {@code maxCreationSlot}. The observer is unused when no backfill runs.
-     */
-    default PointerIndexPreparation preparePointerIndex(
-            CanonicalBlockReference expectedCoordinate,
-            long maxCreationSlot,
-            Consumer<PointerUtxo> backfillObserver) {
         return PointerIndexPreparation.unavailable();
     }
 
-    /** Whether the temporary pointer-index shadow scan is enabled. */
-    default boolean isPointerIndexShadowScanEnabled() {
+    /**
+     * Whether the pointer index has a valid completeness marker at the UTXO
+     * store's current coordinate. Startup uses this to reject chainstates that
+     * predate the index; boundary reads still fail closed to the historical
+     * scan if a later rollback clears the marker.
+     */
+    default boolean isPointerIndexReadyAtCurrentCoordinate() {
         return false;
     }
 }

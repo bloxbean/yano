@@ -65,7 +65,6 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
 
 /**
  * Default UTXO store backed by RocksDB column families.
@@ -93,8 +92,6 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     private final boolean indexAddressHash;
     private final boolean indexPaymentCred;
     private final boolean stakeBalanceIndexEnabled;
-    private final boolean pointerIndexBackfillEnabled;
-    private final boolean pointerIndexShadowScanEnabled;
     private final boolean configuredUtxoFiltersEnabled;
     private volatile boolean stakeBalanceIndexReady;
     private UtxoProcessor processor;
@@ -199,10 +196,6 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         this.indexPaymentCred = payCredIdx;
         this.stakeBalanceIndexEnabled = getBool(
                 config, YanoPropertyKeys.AccountState.STAKE_BALANCE_INDEX_ENABLED, true);
-        this.pointerIndexBackfillEnabled = getBool(
-                config, YanoPropertyKeys.Utxo.POINTER_INDEX_BACKFILL, false);
-        this.pointerIndexShadowScanEnabled = getBool(
-                config, YanoPropertyKeys.Utxo.POINTER_INDEX_SHADOW_SCAN, false);
         this.configuredUtxoFiltersEnabled = getBool(config, YanoPropertyKeys.UtxoFilter.ENABLED, false);
 
         this.processor = new DefaultUtxoProcessor(this.db);
@@ -729,18 +722,9 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     }
 
     @Override
-    public synchronized PointerIndexPreparation preparePointerIndex(
+    public PointerIndexPreparation preparePointerIndex(
             CanonicalBlockReference expectedCoordinate, long maxCreationSlot) {
-        return preparePointerIndex(expectedCoordinate, maxCreationSlot, ignored -> { });
-    }
-
-    @Override
-    public synchronized PointerIndexPreparation preparePointerIndex(
-            CanonicalBlockReference expectedCoordinate,
-            long maxCreationSlot,
-            Consumer<PointerUtxo> backfillObserver) {
         Objects.requireNonNull(expectedCoordinate, "expectedCoordinate");
-        Objects.requireNonNull(backfillObserver, "backfillObserver");
         if (expectedCoordinate.slot() > maxCreationSlot) {
             log.warn("Pointer UTXO index cannot serve a historical cutoff: "
                             + "coordinateSlot={}, maxCreationSlot={}; using pointer scan",
@@ -758,34 +742,30 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
             PointerIndexMarker marker = PointerIndexMarker.decode(
                     db.get(cfMeta, readOptions, PointerIndexMarker.KEY));
             if (marker != null && marker.isUsableAt(actual)) {
-                return PointerIndexPreparation.ready(false);
+                return PointerIndexPreparation.available();
             }
         } catch (RocksDBException e) {
             throw new StakeBalanceConsistencyException(
                     "Failed to inspect pointer index marker", e);
         }
-
-        if (!pointerIndexBackfillEnabled) {
-            return PointerIndexPreparation.unavailable();
-        }
-
-        backfillPointerIndex(expectedCoordinate, maxCreationSlot, backfillObserver);
-        return PointerIndexPreparation.ready(true);
+        return PointerIndexPreparation.unavailable();
     }
 
     @Override
-    public boolean isPointerIndexShadowScanEnabled() {
-        return pointerIndexShadowScanEnabled;
-    }
-
-    /** TODO(#97): remove after the pre-Conway clone trial. */
-    private void backfillPointerIndex(CanonicalBlockReference expectedCoordinate,
-                                      long maxCreationSlot,
-                                      Consumer<PointerUtxo> backfillObserver) {
-        new PointerIndexBackfill(
-                db, cfUnspent, cfPointer, cfMeta,
-                this::readStakeBalanceCoordinate, log)
-                .run(expectedCoordinate, maxCreationSlot, backfillObserver);
+    public boolean isPointerIndexReadyAtCurrentCoordinate() {
+        if (!enabled || db == null || cfMeta == null || cfPointer == null
+                || !hasCompleteStakeBalanceSource()) {
+            return false;
+        }
+        try (ReadOptions readOptions = new ReadOptions().setFillCache(false)) {
+            CanonicalBlockReference actual = readStakeBalanceCoordinate(readOptions);
+            PointerIndexMarker marker = PointerIndexMarker.decode(
+                    db.get(cfMeta, readOptions, PointerIndexMarker.KEY));
+            return marker != null && marker.isUsableAt(actual);
+        } catch (RocksDBException e) {
+            throw new StakeBalanceConsistencyException(
+                    "Failed to inspect pointer index marker", e);
+        }
     }
 
     private CanonicalBlockReference readStakeBalanceCoordinate(ReadOptions readOptions)

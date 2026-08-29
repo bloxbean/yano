@@ -179,7 +179,8 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     private static final byte[] META_LAST_APPLIED_SLOT = "meta.last_applied_slot".getBytes(StandardCharsets.UTF_8);
     private static final byte[] META_EPOCH_BOUNDARY_STATE_VERSION =
             "meta.epoch_boundary_state_version".getBytes(StandardCharsets.UTF_8);
-    private static final byte[] EPOCH_BOUNDARY_STATE_VERSION = {1};
+    private static final byte[] EPOCH_BOUNDARY_STATE_VERSION_V1 = {1};
+    private static final byte[] EPOCH_BOUNDARY_STATE_VERSION = {2};
     private static final byte[] META_SNAPSHOT_DEREG_INDEX_VERSION =
             "meta.snapshot_dereg_index_version".getBytes(StandardCharsets.UTF_8);
     private static final byte[] SNAPSHOT_DEREG_INDEX_VERSION = {1};
@@ -391,7 +392,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         if (snapshotMaxBatchOperations <= 0 || snapshotMaxBatchBytes <= 0) {
             throw new IllegalArgumentException("Epoch snapshot batch limits must be positive");
         }
-        initializeEpochBoundaryStateV1();
+        initializeEpochBoundaryStateV2();
         resumeInterruptedRollbackIfPresent();
     }
 
@@ -411,26 +412,18 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         }
     }
 
-    private void initializeEpochBoundaryStateV1() {
+    private void initializeEpochBoundaryStateV2() {
         if (!enabled || db == null || cfState == null) return;
         try {
             byte[] version = db.get(cfState, META_EPOCH_BOUNDARY_STATE_VERSION);
-            if (Arrays.equals(version, EPOCH_BOUNDARY_STATE_VERSION)) {
-                if (!Arrays.equals(db.get(cfState, META_SNAPSHOT_DEREG_INDEX_VERSION),
-                        SNAPSHOT_DEREG_INDEX_VERSION)) {
-                    throw new IllegalStateException(
-                            "epoch-boundary state v1 is missing its snapshot deregistration index marker");
-                }
-                if (!Arrays.equals(db.get(cfState, META_REWARD_EVENT_INDEX_VERSION),
-                        REWARD_EVENT_INDEX_VERSION)) {
-                    throw new IllegalStateException(
-                            "epoch-boundary state v1 is missing its reward event index marker; resync is required");
-                }
+            if (Arrays.equals(version, EPOCH_BOUNDARY_STATE_VERSION)
+                    || Arrays.equals(version, EPOCH_BOUNDARY_STATE_VERSION_V1)) {
+                requireLegacyEpochBoundaryIndexes();
                 return;
             }
             if (version != null || !isAccountStateEmpty()) {
                 throw new IllegalStateException(
-                        "This preview build requires epoch-boundary state v1. The existing non-empty "
+                        "This preview build requires epoch-boundary state v2. The existing non-empty "
                                 + "account chainstate is not compatible; retain a backup and resync into "
                                 + "a new chainstate directory.");
             }
@@ -444,7 +437,56 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 db.write(options, batch);
             }
         } catch (RocksDBException e) {
-            throw new IllegalStateException("Failed to initialize epoch-boundary state v1", e);
+            throw new IllegalStateException("Failed to initialize epoch-boundary state v2", e);
+        }
+    }
+
+    private void requireLegacyEpochBoundaryIndexes() throws RocksDBException {
+        if (!Arrays.equals(db.get(cfState, META_SNAPSHOT_DEREG_INDEX_VERSION),
+                SNAPSHOT_DEREG_INDEX_VERSION)) {
+            throw new IllegalStateException(
+                    "epoch-boundary state is missing its snapshot deregistration index marker");
+        }
+        if (!Arrays.equals(db.get(cfState, META_REWARD_EVENT_INDEX_VERSION),
+                REWARD_EVENT_INDEX_VERSION)) {
+            throw new IllegalStateException(
+                    "epoch-boundary state is missing its reward event index marker; resync is required");
+        }
+    }
+
+    /**
+     * Complete the preview v1-to-v2 gate after the UTXO store has initialized.
+     * Existing v1 stores are promoted only when their pointer UTXO index has a
+     * usable completeness marker. A v2 store is checked on every startup so a
+     * marker removed by an offline rollback cannot be mistaken for a complete
+     * index after restart.
+     */
+    public void completeEpochBoundaryStateV2(boolean pointerIndexReady) {
+        if (!enabled || db == null || cfState == null) return;
+        if (!pointerIndexReady) {
+            throw new IllegalStateException(
+                    "This preview build requires epoch-boundary state v2 with a complete pointer UTXO index. "
+                            + "The existing chainstate is not compatible; retain a backup and resync into "
+                            + "a new chainstate directory.");
+        }
+        try {
+            byte[] version = db.get(cfState, META_EPOCH_BOUNDARY_STATE_VERSION);
+            if (Arrays.equals(version, EPOCH_BOUNDARY_STATE_VERSION)) {
+                return;
+            }
+            if (!Arrays.equals(version, EPOCH_BOUNDARY_STATE_VERSION_V1)) {
+                throw new IllegalStateException(
+                        "This preview build requires epoch-boundary state v2; resync is required");
+            }
+            try (WriteBatch batch = new WriteBatch();
+                 WriteOptions options = new WriteOptions().setSync(true)) {
+                batch.put(cfState, META_EPOCH_BOUNDARY_STATE_VERSION,
+                        EPOCH_BOUNDARY_STATE_VERSION);
+                db.write(options, batch);
+            }
+            log.info("Promoted epoch-boundary state from v1 to v2 after pointer-index validation");
+        } catch (RocksDBException e) {
+            throw new IllegalStateException("Failed to complete epoch-boundary state v2", e);
         }
     }
 
@@ -4192,38 +4234,17 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         CanonicalBlockReference expected = boundaryStakeCoordinate(epoch)
                 .orElseThrow(() -> new IllegalStateException(
                         "Canonical boundary coordinate is unavailable for pointer overlay"));
-        UtxoBalanceAggregator.PointerAccumulator backfillAccumulator =
-                stakeSnapshotService.newPointerAccumulator(
-                        pointerAddressResolver, "pointer-backfill");
-        var preparation = utxoState.preparePointerIndex(
-                expected, epochLastSlot, backfillAccumulator);
+        var preparation = utxoState.preparePointerIndex(expected, epochLastSlot);
 
         UtxoBalanceAggregator.PointerAggregation primary;
-        UtxoBalanceAggregator.PointerAggregation shadow = null;
         StakeBalanceView boundaryView = null;
         if (preparation.ready()) {
             boundaryView = utxoState.openStakeBalanceView(expected)
                     .orElseThrow(() -> new IllegalStateException(
                             "Coordinate-bound stake balance view became unavailable"));
             try {
-                if (preparation.backfilled()) {
-                    primary = backfillAccumulator.finish();
-                    if (utxoState.isPointerIndexShadowScanEnabled()) {
-                        shadow = stakeSnapshotService.aggregatePointerStakeBalancesFromIndex(
-                                boundaryView, pointerAddressResolver, epochLastSlot);
-                        PointerIndexShadowValidator.requireParity(
-                                log, epoch, shadow, primary, true);
-                    }
-                } else {
-                    primary = stakeSnapshotService.aggregatePointerStakeBalancesFromIndex(
-                            boundaryView, pointerAddressResolver, epochLastSlot);
-                    if (utxoState.isPointerIndexShadowScanEnabled()) {
-                        shadow = stakeSnapshotService.aggregatePointerStakeBalancesWithStats(
-                                utxoState, pointerAddressResolver, epochLastSlot);
-                        PointerIndexShadowValidator.requireParity(
-                                log, epoch, primary, shadow, false);
-                    }
-                }
+                primary = stakeSnapshotService.aggregatePointerStakeBalancesFromIndex(
+                        boundaryView, pointerAddressResolver, epochLastSlot);
             } catch (RuntimeException failure) {
                 boundaryView.close();
                 throw failure;
@@ -4237,9 +4258,9 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         }
 
         lastPointerInputPath = primary.path();
-        log.info("Epoch pointer stake input selected: epoch={}, path={}, backfilled={}, "
-                        + "shadow={}, records={}, resolved={}, failed={}",
-                epoch, primary.path(), preparation.backfilled(), shadow != null,
+        log.info("Epoch pointer stake input selected: epoch={}, path={}, "
+                        + "records={}, resolved={}, failed={}",
+                epoch, primary.path(),
                 primary.records(), primary.resolved(), primary.failed());
         return new BoundaryStakeInput(primary.balances(), boundaryView, primary.path());
     }

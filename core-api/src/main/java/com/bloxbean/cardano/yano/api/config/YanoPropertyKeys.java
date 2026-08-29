@@ -207,13 +207,6 @@ public final class YanoPropertyKeys {
          */
         public static final String REBUILD_UNMARKED_FROM_GENESIS =
                 "yano.utxo.rebuild-unmarked-from-genesis";
-        /** TODO(#97): remove after the pre-Conway clone trial. */
-        public static final String POINTER_INDEX_BACKFILL =
-                "yano.utxo.pointer-index.backfill";
-        /** TODO(#97): remove after the pre-Conway clone trial unless retained for diagnostics. */
-        public static final String POINTER_INDEX_SHADOW_SCAN =
-                "yano.utxo.pointer-index.shadow-scan";
-
         private Utxo() {
         }
     }

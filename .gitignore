@@ -206,3 +206,7 @@ __pycache__/
 /app/chainstate-*.json
 /app/**/*.bak
 /app/**/*.working
+
+# Local Codex/Claude coordination mailboxes
+/message_to_claude.md
+/message_to_codex.md
