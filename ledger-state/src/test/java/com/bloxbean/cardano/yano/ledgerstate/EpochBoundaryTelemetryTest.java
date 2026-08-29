@@ -41,6 +41,7 @@ class EpochBoundaryTelemetryTest {
         assertThat(phase.path()).isEqualTo("legacy-reward");
         assertThat(phase.wallNanos()).isEqualTo(5_000_000L);
         assertThat(phase.cpuNanos()).isEqualTo(10L);
+        assertThat(phase.threadCpuNanos()).isEqualTo(30L);
         assertThat(phase.gcCountDelta()).isEqualTo(2L);
         assertThat(phase.gcTimeMillisDelta()).isEqualTo(4L);
 
@@ -85,6 +86,7 @@ class EpochBoundaryTelemetryTest {
                 1_000L,
                 rss,
                 cpu,
+                cpu * 3,
                 gcCount,
                 gcTime,
                 new EpochBoundaryTelemetry.RocksDbMemory(

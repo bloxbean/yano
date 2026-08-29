@@ -5,6 +5,7 @@ import org.slf4j.Logger;
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryMXBean;
+import java.lang.management.ThreadMXBean;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -27,6 +28,7 @@ import java.util.function.Supplier;
  */
 public final class EpochBoundaryTelemetry {
     private static final MemoryMXBean MEMORY = ManagementFactory.getMemoryMXBean();
+    private static final ThreadMXBean THREADS = ManagementFactory.getThreadMXBean();
 
     private EpochBoundaryTelemetry() {
     }
@@ -60,6 +62,7 @@ public final class EpochBoundaryTelemetry {
                                    long heapMaxBytes,
                                    long rssBytes,
                                    long processCpuNanos,
+                                   long currentThreadCpuNanos,
                                    long gcCount,
                                    long gcTimeMillis,
                                    RocksDbMemory rocksDb) {
@@ -72,11 +75,12 @@ public final class EpochBoundaryTelemetry {
                         heap.getMax(),
                         linuxRssBytes(),
                         sampleProcessCpuNanos(),
+                        sampleCurrentThreadCpuNanos(),
                         totalGcCount(),
                         totalGcTimeMillis(),
                         store != null ? store.captureEpochBoundaryRocksDbMemory() : RocksDbMemory.UNAVAILABLE);
             } catch (Throwable ignored) {
-                return new ResourceSnapshot(-1, -1, -1, -1, -1, -1, -1,
+                return new ResourceSnapshot(-1, -1, -1, -1, -1, -1, -1, -1,
                         RocksDbMemory.UNAVAILABLE);
             }
         }
@@ -91,6 +95,21 @@ public final class EpochBoundaryTelemetry {
                 // Management extensions are optional in native images.
             }
             return -1;
+        }
+
+        private static long sampleCurrentThreadCpuNanos() {
+            try {
+                if (!THREADS.isCurrentThreadCpuTimeSupported()) {
+                    return -1;
+                }
+                if (!THREADS.isThreadCpuTimeEnabled()) {
+                    THREADS.setThreadCpuTimeEnabled(true);
+                }
+                return THREADS.getCurrentThreadCpuTime();
+            } catch (Throwable ignored) {
+                // Thread CPU accounting is optional in native images.
+                return -1;
+            }
         }
 
         private static long totalGcCount() {
@@ -139,6 +158,7 @@ public final class EpochBoundaryTelemetry {
                                String path,
                                long wallNanos,
                                long cpuNanos,
+                               long threadCpuNanos,
                                long gcCountDelta,
                                long gcTimeMillisDelta,
                                ResourceSnapshot before,
@@ -232,19 +252,22 @@ public final class EpochBoundaryTelemetry {
             updatePeak(after);
             long wallNanos = Math.max(0, nanoTime.getAsLong() - phaseStartedNanos);
             long cpuNanos = delta(before.processCpuNanos(), after.processCpuNanos());
+            long threadCpuNanos = delta(
+                    before.currentThreadCpuNanos(), after.currentThreadCpuNanos());
             long gcCountDelta = delta(before.gcCount(), after.gcCount());
             long gcTimeDelta = delta(before.gcTimeMillis(), after.gcTimeMillis());
-            PhaseSummary summary = new PhaseSummary(name, path, wallNanos, cpuNanos,
+            PhaseSummary summary = new PhaseSummary(name, path, wallNanos, cpuNanos, threadCpuNanos,
                     gcCountDelta, gcTimeDelta, before, after);
             phases.put(name, summary);
             log.info("epoch_boundary_phase previous_epoch={} new_epoch={} phase={} path={} wall_ms={} "
-                            + "cpu_ms={} heap_used_before_bytes={} heap_used_after_bytes={} "
+                            + "cpu_ms={} thread_cpu_ms={} heap_used_before_bytes={} heap_used_after_bytes={} "
                             + "heap_committed_after_bytes={} rss_after_bytes={} gc_count_delta={} "
                             + "gc_time_ms_delta={} rocksdb_block_cache_bytes={} rocksdb_pinned_bytes={} "
                             + "rocksdb_memtable_bytes={} rocksdb_table_reader_bytes={} "
                             + "rocksdb_pending_compaction_bytes={}",
                     previousEpoch, newEpoch, name, path, nanosToMillis(wallNanos),
-                    nanosToMillis(cpuNanos), before.heapUsedBytes(), after.heapUsedBytes(),
+                    nanosToMillis(cpuNanos), nanosToMillis(threadCpuNanos),
+                    before.heapUsedBytes(), after.heapUsedBytes(),
                     after.heapCommittedBytes(), after.rssBytes(), gcCountDelta, gcTimeDelta,
                     after.rocksDb().blockCacheBytes(), after.rocksDb().pinnedBlockCacheBytes(),
                     after.rocksDb().memtableBytes(), after.rocksDb().tableReaderBytes(),
@@ -254,13 +277,14 @@ public final class EpochBoundaryTelemetry {
         private void logSnapshot(String phase, String path, ResourceSnapshot sample) {
             log.info("epoch_boundary_phase previous_epoch={} new_epoch={} phase={} path={} "
                             + "heap_used_bytes={} heap_committed_bytes={} heap_max_bytes={} "
-                            + "rss_bytes={} process_cpu_nanos={} gc_count={} gc_time_ms={} "
+                            + "rss_bytes={} process_cpu_nanos={} thread_cpu_nanos={} gc_count={} gc_time_ms={} "
                             + "rocksdb_block_cache_bytes={} rocksdb_pinned_bytes={} "
                             + "rocksdb_memtable_bytes={} rocksdb_table_reader_bytes={} "
                             + "rocksdb_pending_compaction_bytes={}",
                     previousEpoch, newEpoch, phase, path,
                     sample.heapUsedBytes(), sample.heapCommittedBytes(), sample.heapMaxBytes(),
-                    sample.rssBytes(), sample.processCpuNanos(), sample.gcCount(), sample.gcTimeMillis(),
+                    sample.rssBytes(), sample.processCpuNanos(), sample.currentThreadCpuNanos(),
+                    sample.gcCount(), sample.gcTimeMillis(),
                     sample.rocksDb().blockCacheBytes(), sample.rocksDb().pinnedBlockCacheBytes(),
                     sample.rocksDb().memtableBytes(), sample.rocksDb().tableReaderBytes(),
                     sample.rocksDb().pendingCompactionBytes());
@@ -273,6 +297,7 @@ public final class EpochBoundaryTelemetry {
                     maxAvailable(peak.heapMaxBytes(), candidate.heapMaxBytes()),
                     maxAvailable(peak.rssBytes(), candidate.rssBytes()),
                     maxAvailable(peak.processCpuNanos(), candidate.processCpuNanos()),
+                    maxAvailable(peak.currentThreadCpuNanos(), candidate.currentThreadCpuNanos()),
                     maxAvailable(peak.gcCount(), candidate.gcCount()),
                     maxAvailable(peak.gcTimeMillis(), candidate.gcTimeMillis()),
                     new RocksDbMemory(
@@ -284,7 +309,7 @@ public final class EpochBoundaryTelemetry {
         }
 
         private static ResourceSnapshot unavailableSnapshot() {
-            return new ResourceSnapshot(-1, -1, -1, -1, -1, -1, -1,
+            return new ResourceSnapshot(-1, -1, -1, -1, -1, -1, -1, -1,
                     RocksDbMemory.UNAVAILABLE);
         }
 

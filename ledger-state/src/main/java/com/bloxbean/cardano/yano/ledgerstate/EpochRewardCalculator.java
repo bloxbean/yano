@@ -420,7 +420,7 @@ public class EpochRewardCalculator {
             return Optional.of(calculateAndDistributeStreaming(
                     epoch, stakeEpoch, feeEpoch, snapshotKey, prevTreasury, prevReserves,
                     paramProvider, networkMagic, networkConfig, protocolParams,
-                    blockCounts, totalBlocks, fees, start));
+                    paramEpoch, blockCounts, totalBlocks, fees, start));
         }
         if ("streaming".equals(rewardMode)) {
             log.info("Pool-major snapshot {} is unavailable; using legacy reward path", snapshotKey);
@@ -447,10 +447,7 @@ public class EpochRewardCalculator {
         var rewardRules = resolveRewardRuleContext(epoch, stakeEpoch, protocolParams,
                 blockCounts, totalBlocks, networkConfig);
         protocolParams = rewardRules.protocolParameters();
-        if (rewardRules.postVasilRewardRules()) {
-            log.info("Epoch {} post-Vasil reward rules: rawBlocks={}, poolBlocks={}, paramEpoch={}",
-                    epoch, totalBlocks, rewardRules.blockCount(), paramEpoch);
-        }
+        logPostVasilRewardRules(epoch, totalBlocks, rewardRules, paramEpoch);
 
         var epochInfo = Epoch.builder()
                 .number(stakeEpoch)
@@ -583,12 +580,13 @@ public class EpochRewardCalculator {
             BigInteger previousTreasury, BigInteger previousReserves,
             EpochParamProvider paramProvider, long networkMagic,
             NetworkConfig networkConfig, ProtocolParameters protocolParameters,
-            Map<String, Long> blockCounts, long totalBlocks, BigInteger fees,
+            int paramEpoch, Map<String, Long> blockCounts, long totalBlocks, BigInteger fees,
             long startMillis) {
         BigInteger totalActiveStake = totalPoolMajorStake(snapshotKey);
         var rewardRules = resolveRewardRuleContext(epoch, stakeEpoch, protocolParameters,
                 blockCounts, totalBlocks, networkConfig);
         protocolParameters = rewardRules.protocolParameters();
+        logPostVasilRewardRules(epoch, totalBlocks, rewardRules, paramEpoch);
         var epochInfo = Epoch.builder()
                 .number(stakeEpoch)
                 .fees(fees)
@@ -645,6 +643,14 @@ public class EpochRewardCalculator {
             }
         }
         return total;
+    }
+
+    private void logPostVasilRewardRules(int epoch, long totalBlocks,
+                                         RewardRuleContext rewardRules, int paramEpoch) {
+        if (rewardRules.postVasilRewardRules()) {
+            log.info("Epoch {} post-Vasil reward rules: rawBlocks={}, poolBlocks={}, paramEpoch={}",
+                    epoch, totalBlocks, rewardRules.blockCount(), paramEpoch);
+        }
     }
 
     private StreamingAccountContext buildStreamingAccountContext(
