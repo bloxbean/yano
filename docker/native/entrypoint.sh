@@ -58,7 +58,7 @@ for opt in ${JAVA_OPTS:-}; do
 done
 
 if [ "$NATIVE_HAS_MAX_HEAP" = "false" ]; then
-  NATIVE_JAVA_OPTS="${NATIVE_JAVA_OPTS} -Xmx${YANO_NATIVE_MAX_HEAP:-384m}"
+  NATIVE_JAVA_OPTS="${NATIVE_JAVA_OPTS} -Xmx${YANO_NATIVE_MAX_HEAP:-1536m}"
 fi
 
 if [ -n "$JAVA_OPTS_DROPPED" ]; then

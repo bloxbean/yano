@@ -65,7 +65,7 @@ Environment:
                    JVM agents and module-system flags cannot exist in a native
                    image and are dropped with a warning.
   YANO_NATIVE_MAX_HEAP
-                   Native default maximum heap (default: 384m). An explicit
+                   Native default maximum heap (default: 1536m). An explicit
                    -Xmx in JAVA_OPTS overrides this value.
   YANO_EXTRA_ARGS  Extra runtime args for jar and native distributions
 
@@ -357,7 +357,7 @@ collect_native_java_opts() {
     done
 
     if [ "$has_max_heap" = "false" ]; then
-        NATIVE_JAVA_OPTS[${#NATIVE_JAVA_OPTS[@]}]="-Xmx${YANO_NATIVE_MAX_HEAP:-384m}"
+        NATIVE_JAVA_OPTS[${#NATIVE_JAVA_OPTS[@]}]="-Xmx${YANO_NATIVE_MAX_HEAP:-1536m}"
     fi
 
     if [ -n "$dropped" ]; then
