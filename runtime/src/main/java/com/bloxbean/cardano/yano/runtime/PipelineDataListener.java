@@ -25,6 +25,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -52,7 +53,14 @@ public class PipelineDataListener implements BlockChainDataListener {
     private final LedgerApplyProcessor ledgerApplyProcessor;
     private final long ledgerGeneration;
     private final AtomicInteger activeRollbackCallbacks = new AtomicInteger();
+    private final AtomicInteger lastAdmittedTransitionEpoch = new AtomicInteger(-1);
     private final Object rollbackCallbackDrainMonitor = new Object();
+
+    private record EpochBoundaryQueueHold(int epoch,
+                                          int initialQueueDepth,
+                                          long initialQueuedBytes,
+                                          long startedNanos) {
+    }
 
     /**
      * Create a new PipelineDataListener
@@ -187,8 +195,10 @@ public class PipelineDataListener implements BlockChainDataListener {
         }
         try {
             recordShelleyBodyReceived(block);
+            EpochBoundaryQueueHold boundaryHold = epochBoundaryQueueHold(slot);
 
             LedgerApplyProcessor.ApplyWork apply = () -> {
+                logDrainedEpochBoundaryQueue(boundaryHold, slot, blockNumber);
                 // Delegate block body processing to BodyFetchManager
                 BodyFetchManager.BlockApplyResult result = bodyFetchManager.applyBlock(era, block, transactions);
                 if (result == BodyFetchManager.BlockApplyResult.SKIPPED_STALE) {
@@ -203,7 +213,13 @@ public class PipelineDataListener implements BlockChainDataListener {
                 return LedgerApplyProcessor.Outcome.APPLIED;
             };
             if (hasLedgerApplyProcessor()) {
-                enqueueApply("Shelley block " + blockNumber, estimatedCborBytes(block != null ? block.getCbor() : null), apply);
+                String description = "Shelley block " + blockNumber;
+                CompletableFuture<LedgerApplyProcessor.Outcome> future = enqueueApply(
+                        description,
+                        estimatedCborBytes(block != null ? block.getCbor() : null),
+                        apply,
+                        boundaryHold != null);
+                awaitEpochBoundaryQueueHold(boundaryHold, description, future);
             } else {
                 runImmediateApply(apply);
             }
@@ -228,8 +244,10 @@ public class PipelineDataListener implements BlockChainDataListener {
         }
         try {
             recordByronBodyReceived(byronBlock);
+            EpochBoundaryQueueHold boundaryHold = epochBoundaryQueueHold(slot);
 
             LedgerApplyProcessor.ApplyWork apply = () -> {
+                logDrainedEpochBoundaryQueue(boundaryHold, slot, blockNumber);
                 // Delegate Byron block processing to BodyFetchManager
                 BodyFetchManager.BlockApplyResult result = bodyFetchManager.applyByronBlock(byronBlock);
                 if (result == BodyFetchManager.BlockApplyResult.SKIPPED_STALE) {
@@ -244,8 +262,13 @@ public class PipelineDataListener implements BlockChainDataListener {
                 return LedgerApplyProcessor.Outcome.APPLIED;
             };
             if (hasLedgerApplyProcessor()) {
-                enqueueApply("Byron block " + blockNumber,
-                        estimatedCborBytes(byronBlock != null ? byronBlock.getCbor() : null), apply);
+                String description = "Byron block " + blockNumber;
+                CompletableFuture<LedgerApplyProcessor.Outcome> future = enqueueApply(
+                        description,
+                        estimatedCborBytes(byronBlock != null ? byronBlock.getCbor() : null),
+                        apply,
+                        boundaryHold != null);
+                awaitEpochBoundaryQueueHold(boundaryHold, description, future);
             } else {
                 runImmediateApply(apply);
             }
@@ -270,8 +293,10 @@ public class PipelineDataListener implements BlockChainDataListener {
         }
         try {
             recordByronEbBodyReceived(byronEbBlock);
+            EpochBoundaryQueueHold boundaryHold = epochBoundaryQueueHold(slot);
 
             LedgerApplyProcessor.ApplyWork apply = () -> {
+                logDrainedEpochBoundaryQueue(boundaryHold, slot, blockNumber);
                 // Delegate Byron EB block processing to BodyFetchManager
                 BodyFetchManager.BlockApplyResult result = bodyFetchManager.applyByronEbBlock(byronEbBlock);
                 if (result == BodyFetchManager.BlockApplyResult.SKIPPED_STALE) {
@@ -286,8 +311,13 @@ public class PipelineDataListener implements BlockChainDataListener {
                 return LedgerApplyProcessor.Outcome.APPLIED;
             };
             if (hasLedgerApplyProcessor()) {
-                enqueueApply("Byron EB block " + blockNumber,
-                        estimatedCborBytes(byronEbBlock != null ? byronEbBlock.getCbor() : null), apply);
+                String description = "Byron EB block " + blockNumber;
+                CompletableFuture<LedgerApplyProcessor.Outcome> future = enqueueApply(
+                        description,
+                        estimatedCborBytes(byronEbBlock != null ? byronEbBlock.getCbor() : null),
+                        apply,
+                        boundaryHold != null);
+                awaitEpochBoundaryQueueHold(boundaryHold, description, future);
             } else {
                 runImmediateApply(apply);
             }
@@ -380,6 +410,7 @@ public class PipelineDataListener implements BlockChainDataListener {
     public void onRollback(Point point) {
         enterRollbackCallback();
         try {
+            lastAdmittedTransitionEpoch.set(-1);
             Runnable work = () -> {
                 if (peerHealth != null) {
                     peerHealth.markBodyFetchCompleted();
@@ -505,13 +536,89 @@ public class PipelineDataListener implements BlockChainDataListener {
                 && status.lastBodyAppliedAtMillis() == 0;
     }
 
-    private void enqueueApply(String description, long estimatedBytes, LedgerApplyProcessor.ApplyWork work) {
-        CompletableFuture<LedgerApplyProcessor.Outcome> future = ledgerApplyProcessor.enqueueApplyBlockBackpressured(
-                ledgerGeneration,
-                description,
-                estimatedBytes,
-                work);
+    private CompletableFuture<LedgerApplyProcessor.Outcome> enqueueApply(String description,
+                                                                          long estimatedBytes,
+                                                                          LedgerApplyProcessor.ApplyWork work) {
+        return enqueueApply(description, estimatedBytes, work, false);
+    }
+
+    private CompletableFuture<LedgerApplyProcessor.Outcome> enqueueApply(String description,
+                                                                          long estimatedBytes,
+                                                                          LedgerApplyProcessor.ApplyWork work,
+                                                                          boolean waitForQueueDrain) {
+        CompletableFuture<LedgerApplyProcessor.Outcome> future = waitForQueueDrain
+                ? ledgerApplyProcessor.enqueueApplyBlockAfterQueueDrain(
+                        ledgerGeneration,
+                        description,
+                        estimatedBytes,
+                        work)
+                : ledgerApplyProcessor.enqueueApplyBlockBackpressured(
+                        ledgerGeneration,
+                        description,
+                        estimatedBytes,
+                        work);
         observeControlFuture(description, future);
+        return future;
+    }
+
+    private EpochBoundaryQueueHold epochBoundaryQueueHold(Long slot) {
+        if (!hasLedgerApplyProcessor() || slot == null) {
+            return null;
+        }
+        int pendingEpoch = bodyFetchManager.pendingEpochTransitionForSlot(slot);
+        if (pendingEpoch < 0) {
+            return null;
+        }
+        if (lastAdmittedTransitionEpoch.getAndSet(pendingEpoch) == pendingEpoch) {
+            return null;
+        }
+        LedgerApplyProcessor.Status status = ledgerApplyProcessor.status();
+        if (status.dataQueueDepth() == 0) {
+            return null;
+        }
+        return new EpochBoundaryQueueHold(
+                pendingEpoch,
+                status.dataQueueDepth(),
+                status.queuedDecodedBytes(),
+                System.nanoTime());
+    }
+
+    private void logDrainedEpochBoundaryQueue(EpochBoundaryQueueHold hold, Long slot, Long blockNumber) {
+        if (hold == null) {
+            return;
+        }
+        LedgerApplyProcessor.Status status = ledgerApplyProcessor.status();
+        log.info("Ledger apply queue drained ({} items, {} bytes) before epoch {} boundary: "
+                        + "slot={}, block={}, remainingQueueDepth={}, remainingQueuedDecodedBytes={}",
+                hold.initialQueueDepth(),
+                hold.initialQueuedBytes(),
+                hold.epoch(),
+                slot,
+                blockNumber,
+                status.dataQueueDepth(),
+                status.queuedDecodedBytes());
+    }
+
+    private void awaitEpochBoundaryQueueHold(EpochBoundaryQueueHold hold,
+                                             String description,
+                                             CompletableFuture<LedgerApplyProcessor.Outcome> future) {
+        if (hold == null) {
+            return;
+        }
+        try {
+            LedgerApplyProcessor.Outcome outcome = future.join();
+            long waitedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - hold.startedNanos());
+            log.info("Ledger apply producer resumed after epoch boundary: epoch={}, description={}, "
+                            + "waitedMs={}, outcome={}",
+                    hold.epoch(), description, waitedMillis, outcome);
+        } catch (CancellationException e) {
+            lastAdmittedTransitionEpoch.compareAndSet(hold.epoch(), -1);
+            log.debug("Epoch boundary queue hold cancelled after generation close: epoch={}, description={}",
+                    hold.epoch(), description);
+        } catch (CompletionException e) {
+            log.warn("Epoch boundary queue hold failed: epoch={}, description={}, error={}",
+                    hold.epoch(), description, e.toString());
+        }
     }
 
     private void observeControlFuture(String description, CompletableFuture<LedgerApplyProcessor.Outcome> future) {

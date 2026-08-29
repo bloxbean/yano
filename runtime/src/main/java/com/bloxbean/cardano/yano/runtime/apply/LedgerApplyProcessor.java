@@ -359,12 +359,38 @@ public final class LedgerApplyProcessor implements AutoCloseable {
         return enqueueApplyBlock(generation, description, estimatedBytes, work, true);
     }
 
+    /**
+     * Enqueues the first block of a new epoch only after all older queued data
+     * work has been claimed by the apply worker.
+     *
+     * <p>The caller may wait for the returned future to prevent later decoded
+     * blocks from being admitted while this transition block performs synchronous
+     * epoch-boundary processing. Generation close, rollback/recovery close, processor
+     * shutdown, and interruption release the admission wait with the same semantics
+     * as ordinary queue-capacity backpressure.</p>
+     */
+    public CompletableFuture<Outcome> enqueueApplyBlockAfterQueueDrain(long generation,
+                                                                        String description,
+                                                                        long estimatedBytes,
+                                                                        ApplyWork work) {
+        WorkItem item = applyBlockItem(generation, description, estimatedBytes, work);
+        return enqueueDataAfterQueueDrain(item);
+    }
+
     private CompletableFuture<Outcome> enqueueApplyBlock(long generation,
                                                          String description,
                                                          long estimatedBytes,
                                                          ApplyWork work,
                                                          boolean waitForCapacity) {
-        WorkItem item = new WorkItem(
+        WorkItem item = applyBlockItem(generation, description, estimatedBytes, work);
+        return waitForCapacity ? enqueueDataBackpressured(item) : enqueueData(item);
+    }
+
+    private WorkItem applyBlockItem(long generation,
+                                    String description,
+                                    long estimatedBytes,
+                                    ApplyWork work) {
+        return new WorkItem(
                 WorkKind.APPLY_BLOCK,
                 generation,
                 description,
@@ -373,7 +399,6 @@ public final class LedgerApplyProcessor implements AutoCloseable {
                 false,
                 Objects.requireNonNull(work, "work"),
                 new CompletableFuture<>());
-        return waitForCapacity ? enqueueDataBackpressured(item) : enqueueData(item);
     }
 
     /**
@@ -773,6 +798,39 @@ public final class LedgerApplyProcessor implements AutoCloseable {
                         item.future().cancel(false);
                     } else {
                         rejectDataItem(item, "Interrupted while waiting for ledger apply queue capacity");
+                    }
+                    return item.future();
+                }
+            }
+        }
+    }
+
+    private CompletableFuture<Outcome> enqueueDataAfterQueueDrain(WorkItem item) {
+        synchronized (accountingLock) {
+            if (item.estimatedBytes() > policy.maxQueuedDecodedBytes()) {
+                rejectDataItem(item, "Ledger apply item exceeds decoded-byte queue limit");
+                return item.future();
+            }
+            while (true) {
+                if (closing.get() || generations.get(item.generation()) != GenerationState.OPEN) {
+                    item.future().cancel(false);
+                    return item.future();
+                }
+                if (dataQueue.isEmpty() && hasDataCapacityLocked(item.estimatedBytes())) {
+                    queuedDecodedBytes += item.estimatedBytes();
+                    if (dataQueue.offer(item)) {
+                        return item.future();
+                    }
+                    queuedDecodedBytes -= item.estimatedBytes();
+                }
+                try {
+                    accountingLock.wait(1_000L);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    if (closing.get() || generations.get(item.generation()) != GenerationState.OPEN) {
+                        item.future().cancel(false);
+                    } else {
+                        rejectDataItem(item, "Interrupted while waiting for ledger apply queue drain");
                     }
                     return item.future();
                 }

@@ -612,6 +612,102 @@ class LedgerApplyProcessorTest {
     }
 
     @Test
+    void epochBoundaryAdmissionWaitsUntilOlderQueueIsEmpty() throws Exception {
+        processor = newProcessor(10, 1024, 1);
+        long generation = processor.openGeneration();
+        CountDownLatch firstStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch secondStarted = new CountDownLatch(1);
+        CountDownLatch releaseSecond = new CountDownLatch(1);
+        CountDownLatch admissionStarted = new CountDownLatch(1);
+
+        CompletableFuture<LedgerApplyProcessor.Outcome> first = processor.enqueueApplyBlock(
+                generation, "B1", 10, () -> {
+                    firstStarted.countDown();
+                    assertTrue(releaseFirst.await(5, TimeUnit.SECONDS));
+                    return LedgerApplyProcessor.Outcome.APPLIED;
+                });
+        CompletableFuture<LedgerApplyProcessor.Outcome> second = processor.enqueueApplyBlock(
+                generation, "B2", 10, () -> {
+                    secondStarted.countDown();
+                    assertTrue(releaseSecond.await(5, TimeUnit.SECONDS));
+                    return LedgerApplyProcessor.Outcome.APPLIED;
+                });
+        processor.start();
+        assertTrue(firstStarted.await(5, TimeUnit.SECONDS));
+
+        CompletableFuture<CompletableFuture<LedgerApplyProcessor.Outcome>> admission =
+                CompletableFuture.supplyAsync(() -> {
+                    admissionStarted.countDown();
+                    return processor.enqueueApplyBlockAfterQueueDrain(
+                            generation, "epoch-boundary", 10,
+                            () -> LedgerApplyProcessor.Outcome.APPLIED);
+                });
+        assertTrue(admissionStarted.await(5, TimeUnit.SECONDS));
+        Thread.sleep(Duration.ofMillis(100));
+        assertFalse(admission.isDone());
+        assertEquals(1, processor.status().dataQueueDepth());
+
+        releaseFirst.countDown();
+        assertTrue(secondStarted.await(5, TimeUnit.SECONDS));
+        CompletableFuture<LedgerApplyProcessor.Outcome> boundary = admission.get(5, TimeUnit.SECONDS);
+        assertEquals(1, processor.status().dataQueueDepth());
+        assertEquals("B2", processor.status().currentItem());
+
+        releaseSecond.countDown();
+        assertEquals(LedgerApplyProcessor.Outcome.APPLIED, get(first));
+        assertEquals(LedgerApplyProcessor.Outcome.APPLIED, get(second));
+        assertEquals(LedgerApplyProcessor.Outcome.APPLIED, get(boundary));
+        assertTrue(recoveryReasons.isEmpty());
+    }
+
+    @Test
+    void rollbackCloseReleasesProducerWaitingForEpochQueueDrain() throws Exception {
+        processor = newProcessor(10, 1024, 2);
+        long generation = processor.openGeneration();
+        CountDownLatch firstStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch admissionStarted = new CountDownLatch(1);
+        CountDownLatch rollbackApplied = new CountDownLatch(1);
+
+        processor.enqueueApplyBlock(generation, "B1", 10, () -> {
+            firstStarted.countDown();
+            assertTrue(releaseFirst.await(5, TimeUnit.SECONDS));
+            return LedgerApplyProcessor.Outcome.APPLIED;
+        });
+        processor.enqueueApplyBlock(
+                generation, "B2", 10, () -> LedgerApplyProcessor.Outcome.APPLIED);
+        processor.start();
+        assertTrue(firstStarted.await(5, TimeUnit.SECONDS));
+
+        CompletableFuture<CompletableFuture<LedgerApplyProcessor.Outcome>> admission =
+                CompletableFuture.supplyAsync(() -> {
+                    admissionStarted.countDown();
+                    return processor.enqueueApplyBlockAfterQueueDrain(
+                            generation, "epoch-boundary", 10,
+                            () -> LedgerApplyProcessor.Outcome.APPLIED);
+                });
+        assertTrue(admissionStarted.await(5, TimeUnit.SECONDS));
+        Thread.sleep(Duration.ofMillis(100));
+        assertFalse(admission.isDone());
+
+        CompletableFuture<LedgerApplyProcessor.Outcome> rollback = processor.enqueueRollbackAndClose(
+                generation,
+                "rollback",
+                rollbackApplied::countDown);
+        CompletableFuture<LedgerApplyProcessor.Outcome> boundary = admission.get(5, TimeUnit.SECONDS);
+        assertTrue(boundary.isCancelled());
+        assertEquals(0, processor.status().dataQueueDepth());
+        assertEquals(0, processor.status().queuedDecodedBytes());
+
+        releaseFirst.countDown();
+        assertEquals(LedgerApplyProcessor.Outcome.COMPLETED, get(rollback));
+        assertTrue(rollbackApplied.await(5, TimeUnit.SECONDS));
+        assertFalse(processor.isGenerationOpen(generation));
+        assertTrue(recoveryReasons.isEmpty());
+    }
+
+    @Test
     void recoveryBarrierWaitsForRunningApplyBeforeReadingTip() throws Exception {
         processor = newProcessor(10, 1024 * 1024, 8);
         long generation = processor.openGeneration();

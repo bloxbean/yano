@@ -256,6 +256,20 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
     }
 
     /**
+     * Returns the target epoch when the supplied slot would trigger the next
+     * ledger epoch boundary, or {@code -1} when no transition is pending.
+     *
+     * <p>This is intentionally based on the last epoch applied by this manager,
+     * not on the network/header tip. The body pipeline can therefore stop
+     * admitting future decoded blocks before it queues the transition block.</p>
+     */
+    int pendingEpochTransitionForSlot(long slot) {
+        int currentEpoch = epochForSlot(slot);
+        int appliedEpoch = previousEpoch;
+        return appliedEpoch >= 0 && currentEpoch > appliedEpoch ? currentEpoch : -1;
+    }
+
+    /**
      * Stop the body fetch manager.
      */
     public void stop() {
