@@ -20,6 +20,11 @@ def isJacksonModule = { String group ->
 configurations.configureEach {
     exclude group: 'org.slf4j', module: 'slf4j-reload4j'
     exclude group: 'ch.qos.reload4j', module: 'reload4j'
+    // This cross-platform Scribe dependency packages a replacement
+    // java.time.zone.TzdbZoneRulesProvider. The JVM already supplies that
+    // provider, and Oracle Native Image 25.3 correctly rejects the duplicate
+    // JDK-owned class on the application classpath.
+    exclude group: 'io.github.cquiroz', module: 'scala-java-time-tzdb_3'
     // Keep the Quarkus host and every opt-in connector on the same SLF4J API
     // patch even when first-party bundles are not included.
     resolutionStrategy.force(libs.slf4j.api.get())
