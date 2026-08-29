@@ -187,7 +187,8 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                 utxoDeltaOpts = buildSequentialCfOptions(sharedBlockCache);    // utxo_block_delta
 
                 // Log effective CF tuning plan for visibility
-                log.info("RocksDB CF tuning: utxo_unspent/utxo_spent => point-lookup (ZSTD, bloom≈10bpk, whole-key, evictable L0, partitioned filters)");
+                log.info("RocksDB CF tuning: utxo_unspent/utxo_spent/utxo_stake_balance/utxo_pointer "
+                        + "=> point-lookup (ZSTD, bloom≈10bpk, whole-key, evictable L0, partitioned filters)");
                 log.info("RocksDB CF tuning: utxo_addr => prefix-scan (ZSTD, prefixExtractor=28, memtablePrefixBloom≈0.10, bloom≈10bpk, evictable L0, partitioned filters)");
                 log.info("RocksDB CF tuning: utxo_block_delta => sequential (ZSTD)");
             } else {
@@ -224,6 +225,9 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                     descriptor(UtxoCfNames.SCRIPT_REF, tuningEnabled),
                     new ColumnFamilyDescriptor(
                             UtxoCfNames.UTXO_STAKE_BALANCE.getBytes(),
+                            tuningEnabled ? utxoPointLookup : new ColumnFamilyOptions()),
+                    new ColumnFamilyDescriptor(
+                            UtxoCfNames.UTXO_POINTER.getBytes(),
                             tuningEnabled ? utxoPointLookup : new ColumnFamilyOptions()),
                     // Account state CFs
                     descriptor(AccountStateCfNames.ACCT_STATE, tuningEnabled),

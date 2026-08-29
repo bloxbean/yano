@@ -9,6 +9,7 @@ import com.bloxbean.cardano.yaci.events.impl.SimpleEventBus;
 import com.bloxbean.cardano.yaci.events.api.EventMetadata;
 import com.bloxbean.cardano.yaci.events.api.PublishOptions;
 import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
+import com.bloxbean.cardano.yano.api.utxo.PointerUtxo;
 import com.bloxbean.cardano.yano.api.utxo.StakeBalanceConsistencyException;
 import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
 import com.bloxbean.cardano.yano.runtime.chain.DirectRocksDBChainState;
@@ -36,6 +37,8 @@ import static org.junit.jupiter.api.Assertions.*;
 class DefaultUtxoStoreTest {
     private static final String BASE_ADDR_WITH_STAKE =
             "addr_test1qz2fxv2umyhttkxyxp8x0dlpdt3k6cwng5pxj3jhsydzer3jcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwq2ytjqp";
+    private static final String POINTER_ADDRESS =
+            "addr1gxrgsz5tkx0vsapdhyrk09w9zplhllr94zy70vycpll2egsvpsxqgnmy5k";
 
     private File tempDir;
     private DirectRocksDBChainState chain;
@@ -179,6 +182,396 @@ class DefaultUtxoStoreTest {
             assertTrue(view.advance());
             assertEquals(BigInteger.valueOf(1_234), view.current().lovelace());
         }
+    }
+
+    @Test
+    void pointerIndexTracksCreateSpendAndRollbackInUtxoBatch() throws Exception {
+        String txHash = "91".repeat(32);
+        TransactionBody create = TransactionBody.builder()
+                .txHash(txHash)
+                .outputs(List.of(TransactionOutput.builder()
+                        .address(POINTER_ADDRESS)
+                        .amounts(List.of(lovelaceAmount(42_000_000L)))
+                        .build()))
+                .build();
+        String hash1 = "92".repeat(32);
+        publishBlock(100, 1, hash1, Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(create)).invalidTransactions(List.of()).build());
+
+        ColumnFamilyHandle pointerCf = chain.rocks().handle(UtxoCfNames.UTXO_POINTER);
+        byte[] outpoint = UtxoKeyUtil.outpointKey(txHash, 0);
+        var indexed = PointerUtxoCodec.decode(chain.rocks().db().get(pointerCf, outpoint));
+        assertEquals(100, indexed.creationSlot());
+        assertEquals(BigInteger.valueOf(42_000_000L), indexed.lovelace());
+
+        TransactionBody spend = TransactionBody.builder()
+                .txHash("93".repeat(32))
+                .inputs(Set.of(TransactionInput.builder()
+                        .transactionId(txHash).index(0).build()))
+                .outputs(List.of())
+                .build();
+        publishBlock(101, 2, "94".repeat(32), Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(spend)).invalidTransactions(List.of()).build());
+        assertNull(chain.rocks().db().get(pointerCf, outpoint));
+
+        store.rollbackToPoint(new Point(100, hash1));
+        var restored = PointerUtxoCodec.decode(chain.rocks().db().get(pointerCf, outpoint));
+        assertEquals(indexed, restored);
+
+        store.rollbackToPoint(Point.ORIGIN);
+        assertNull(chain.rocks().db().get(pointerCf, outpoint));
+    }
+
+    @Test
+    void unresolvablePointerPayloadDoesNotAbortApplyAndMirrorsSpendRollback() throws Exception {
+        String address = unresolvablePointerAddress();
+        String txHash = "95".repeat(32);
+        TransactionBody create = TransactionBody.builder()
+                .txHash(txHash)
+                .outputs(List.of(TransactionOutput.builder()
+                        .address(address)
+                        .amounts(List.of(lovelaceAmount(43_000_000L)))
+                        .build()))
+                .build();
+        String createHash = "96".repeat(32);
+
+        assertDoesNotThrow(() -> publishBlock(100, 1, createHash,
+                Block.builder().era(Era.Babbage)
+                        .transactionBodies(List.of(create))
+                        .invalidTransactions(List.of()).build()));
+
+        ColumnFamilyHandle pointerCf = chain.rocks().handle(UtxoCfNames.UTXO_POINTER);
+        byte[] outpoint = UtxoKeyUtil.outpointKey(txHash, 0);
+        PointerUtxo indexed = PointerUtxoCodec.decode(
+                chain.rocks().db().get(pointerCf, outpoint));
+        assertFalse(indexed.resolvable());
+
+        TransactionBody spend = TransactionBody.builder()
+                .txHash("97".repeat(32))
+                .inputs(Set.of(TransactionInput.builder()
+                        .transactionId(txHash).index(0).build()))
+                .outputs(List.of())
+                .build();
+        publishBlock(101, 2, "98".repeat(32), Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(spend)).invalidTransactions(List.of()).build());
+        assertNull(chain.rocks().db().get(pointerCf, outpoint));
+
+        store.rollbackToPoint(new Point(100, createHash));
+        PointerUtxo restored = PointerUtxoCodec.decode(
+                chain.rocks().db().get(pointerCf, outpoint));
+        assertFalse(restored.resolvable());
+        assertEquals(indexed, restored);
+
+        store.rollbackToPoint(Point.ORIGIN);
+        assertNull(chain.rocks().db().get(pointerCf, outpoint));
+    }
+
+    @Test
+    void pointerBackfillPublishesMarkerLastAndRollbackBelowItFailsClosed() throws Exception {
+        String txHash = "a7".repeat(32);
+        TransactionBody create = TransactionBody.builder()
+                .txHash(txHash)
+                .outputs(List.of(TransactionOutput.builder()
+                        .address(POINTER_ADDRESS)
+                        .amounts(List.of(lovelaceAmount(33_000_000L)))
+                        .build()))
+                .build();
+        String hash1 = "a8".repeat(32);
+        publishBlock(100, 1, hash1, Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(create)).invalidTransactions(List.of()).build());
+        String hash2 = "a9".repeat(32);
+        publishBlock(200, 2, hash2, Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of()).invalidTransactions(List.of()).build());
+
+        ColumnFamilyHandle pointerCf = chain.rocks().handle(UtxoCfNames.UTXO_POINTER);
+        ColumnFamilyHandle metaCf = chain.rocks().handle(UtxoCfNames.UTXO_META);
+        byte[] outpoint = UtxoKeyUtil.outpointKey(txHash, 0);
+        chain.rocks().db().delete(pointerCf, outpoint);
+        chain.rocks().db().delete(metaCf, PointerIndexMarker.KEY);
+
+        store.close();
+        Map<String, Object> config = new HashMap<>();
+        config.put("yano.utxo.enabled", true);
+        config.put("yano.utxo.rollbackWindow", 500);
+        config.put("yano.utxo.pointer-index.backfill", true);
+        store = new DefaultUtxoStore(chain,
+                LoggerFactory.getLogger(DefaultUtxoStoreTest.class), config);
+
+        var expected = new CanonicalBlockReference(
+                2, 200, HexUtil.decodeHexString(hash2));
+        List<PointerUtxo> observed = new ArrayList<>();
+        var preparation = store.preparePointerIndex(expected, 200, observed::add);
+
+        assertTrue(preparation.ready());
+        assertTrue(preparation.backfilled());
+        assertEquals(1, observed.size());
+        assertNotNull(chain.rocks().db().get(metaCf, PointerIndexMarker.KEY));
+        try (var stakeView = store.openStakeBalanceView(expected).orElseThrow();
+             var pointerView = stakeView.openPointerUtxoView(200).orElseThrow()) {
+            assertTrue(pointerView.advance());
+            assertEquals(observed.getFirst(), pointerView.current());
+            assertFalse(pointerView.advance());
+        }
+
+        store.rollbackToPoint(new Point(100, hash1));
+        assertNotNull(chain.rocks().db().get(pointerCf, outpoint));
+        assertNull(chain.rocks().db().get(metaCf, PointerIndexMarker.KEY),
+                "rollback below the backfill coordinate must force scan fallback");
+    }
+
+    @Test
+    void missingPointerMarkerFallsBackWhenBackfillIsDisabled() {
+        TransactionBody create = TransactionBody.builder()
+                .txHash("b1".repeat(32))
+                .outputs(List.of(TransactionOutput.builder()
+                        .address(POINTER_ADDRESS)
+                        .amounts(List.of(lovelaceAmount(11_000_000L)))
+                        .build()))
+                .build();
+        String blockHash = "b2".repeat(32);
+        publishBlock(100, 1, blockHash, Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(create)).invalidTransactions(List.of()).build());
+        var expected = new CanonicalBlockReference(
+                1, 100, HexUtil.decodeHexString(blockHash));
+
+        var preparation = store.preparePointerIndex(expected, 100);
+
+        assertFalse(preparation.ready());
+        try (var view = store.openStakeBalanceView(expected).orElseThrow()) {
+            assertTrue(view.openPointerUtxoView(100).isEmpty());
+        }
+    }
+
+    @Test
+    void malformedOrFuturePointerMarkerFallsBackWithoutExposingIndex() throws Exception {
+        String blockHash = "b3".repeat(32);
+        publishBlock(100, 1, blockHash, Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(pointerOutputTransaction(
+                        "b4".repeat(32), 12_000_000L)))
+                .invalidTransactions(List.of()).build());
+        var expected = new CanonicalBlockReference(
+                1, 100, HexUtil.decodeHexString(blockHash));
+        ColumnFamilyHandle metaCf = chain.rocks().handle(UtxoCfNames.UTXO_META);
+        List<byte[]> unusableMarkers = List.of(
+                new byte[]{1, 2, 3},
+                PointerIndexMarker.encode(PointerIndexMarker.at(
+                        new CanonicalBlockReference(2, 200, new byte[32]))));
+
+        for (byte[] marker : unusableMarkers) {
+            chain.rocks().db().put(metaCf, PointerIndexMarker.KEY, marker);
+            assertFalse(store.preparePointerIndex(expected, 100).ready());
+            try (var view = store.openStakeBalanceView(expected).orElseThrow()) {
+                assertTrue(view.openPointerUtxoView(100).isEmpty());
+            }
+        }
+    }
+
+    @Test
+    void pointerIndexRefusesCoordinateAfterHistoricalCutoff() throws Exception {
+        String oldTxHash = "ba".repeat(32);
+        String newTxHash = "bb".repeat(32);
+        publishBlock(100, 1, "bc".repeat(32), Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(pointerOutputTransaction(oldTxHash, 10_000_000L)))
+                .invalidTransactions(List.of()).build());
+        String currentHash = "bd".repeat(32);
+        publishBlock(200, 2, currentHash, Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(pointerOutputTransaction(newTxHash, 20_000_000L)))
+                .invalidTransactions(List.of()).build());
+
+        ColumnFamilyHandle pointerCf = chain.rocks().handle(UtxoCfNames.UTXO_POINTER);
+        ColumnFamilyHandle metaCf = chain.rocks().handle(UtxoCfNames.UTXO_META);
+        var coordinate = new CanonicalBlockReference(
+                2, 200, HexUtil.decodeHexString(currentHash));
+        chain.rocks().db().put(metaCf, PointerIndexMarker.KEY,
+                PointerIndexMarker.encode(PointerIndexMarker.at(coordinate)));
+        try (var stakeView = store.openStakeBalanceView(coordinate).orElseThrow()) {
+            assertTrue(stakeView.openPointerUtxoView(100).isEmpty(),
+                    "the current index cannot reconstruct UTXOs spent after a historical cutoff");
+        }
+
+        clearColumnFamily(chain, pointerCf);
+        chain.rocks().db().delete(metaCf, PointerIndexMarker.KEY);
+        reopenStoreWithPointerBackfill();
+
+        List<PointerUtxo> boundaryRows = new ArrayList<>();
+        var preparation = store.preparePointerIndex(coordinate, 100, boundaryRows::add);
+
+        assertFalse(preparation.ready());
+        assertTrue(boundaryRows.isEmpty());
+        assertNull(chain.rocks().db().get(metaCf, PointerIndexMarker.KEY));
+        assertTrue(columnFamilyEntries(chain, UtxoCfNames.UTXO_POINTER).isEmpty());
+    }
+
+    @Test
+    void interruptedBackfillLeavesMarkerAbsentAndRetryRebuildsCleanly() throws Exception {
+        String txHash = "be".repeat(32);
+        String currentHash = "bf".repeat(32);
+        publishBlock(100, 1, currentHash, Block.builder().era(Era.Babbage)
+                .transactionBodies(List.of(pointerOutputTransaction(txHash, 30_000_000L)))
+                .invalidTransactions(List.of()).build());
+
+        ColumnFamilyHandle pointerCf = chain.rocks().handle(UtxoCfNames.UTXO_POINTER);
+        ColumnFamilyHandle metaCf = chain.rocks().handle(UtxoCfNames.UTXO_META);
+        clearColumnFamily(chain, pointerCf);
+        chain.rocks().db().delete(metaCf, PointerIndexMarker.KEY);
+        reopenStoreWithPointerBackfill();
+        var coordinate = new CanonicalBlockReference(
+                1, 100, HexUtil.decodeHexString(currentHash));
+
+        assertThrows(StakeBalanceConsistencyException.class,
+                () -> store.preparePointerIndex(coordinate, 100, ignored -> {
+                    throw new IllegalStateException("injected interruption");
+                }));
+        assertNull(chain.rocks().db().get(metaCf, PointerIndexMarker.KEY));
+
+        var retry = store.preparePointerIndex(coordinate, 100);
+        assertTrue(retry.ready());
+        assertTrue(retry.backfilled());
+        assertNotNull(chain.rocks().db().get(metaCf, PointerIndexMarker.KEY));
+        assertEquals(1, columnFamilyEntries(chain, UtxoCfNames.UTXO_POINTER).size());
+    }
+
+    @Test
+    void backfilledStoreMatchesFromGenesisIndexBeforeAndAfterFurtherApply() throws Exception {
+        File secondDir = Files.createTempDirectory("yaci-utxo-pointer-backfill-test").toFile();
+        DirectRocksDBChainState secondChain = null;
+        DefaultUtxoStore secondStore = null;
+        try {
+            secondChain = new DirectRocksDBChainState(secondDir.getAbsolutePath());
+            Map<String, Object> baseConfig = new HashMap<>();
+            baseConfig.put("yano.utxo.enabled", true);
+            baseConfig.put("yano.utxo.rollbackWindow", 500);
+            secondStore = new DefaultUtxoStore(secondChain,
+                    LoggerFactory.getLogger(DefaultUtxoStoreTest.class), baseConfig);
+
+            String genesisHash = "00".repeat(32);
+            store.storeGenesisUtxos(Map.of(), 1, 0, 0, genesisHash);
+
+            String firstTxHash = "c1".repeat(32);
+            TransactionBody first = TransactionBody.builder()
+                    .txHash(firstTxHash)
+                    .outputs(List.of(TransactionOutput.builder()
+                            .address(POINTER_ADDRESS)
+                            .amounts(List.of(lovelaceAmount(21_000_000L)))
+                            .build()))
+                    .build();
+            Block firstBlock = Block.builder().era(Era.Babbage)
+                    .transactionBodies(List.of(first)).invalidTransactions(List.of()).build();
+            BlockAppliedEvent firstEvent = new BlockAppliedEvent(
+                    Era.Babbage, 100, 1, "c2".repeat(32), firstBlock);
+            store.applyBlock(firstEvent);
+            secondStore.applyBlock(firstEvent);
+
+            Block secondBlock = Block.builder().era(Era.Babbage)
+                    .transactionBodies(List.of()).invalidTransactions(List.of()).build();
+            String secondHash = "c3".repeat(32);
+            BlockAppliedEvent secondEvent = new BlockAppliedEvent(
+                    Era.Babbage, 200, 2, secondHash, secondBlock);
+            store.applyBlock(secondEvent);
+            secondStore.applyBlock(secondEvent);
+
+            ColumnFamilyHandle secondPointer = secondChain.rocks().handle(UtxoCfNames.UTXO_POINTER);
+            clearColumnFamily(secondChain, secondPointer);
+            secondChain.rocks().db().delete(
+                    secondChain.rocks().handle(UtxoCfNames.UTXO_META),
+                    PointerIndexMarker.KEY);
+            secondStore.close();
+            baseConfig.put("yano.utxo.pointer-index.backfill", true);
+            secondStore = new DefaultUtxoStore(secondChain,
+                    LoggerFactory.getLogger(DefaultUtxoStoreTest.class), baseConfig);
+
+            var coordinate = new CanonicalBlockReference(
+                    2, 200, HexUtil.decodeHexString(secondHash));
+            var preparation = secondStore.preparePointerIndex(coordinate, 200);
+            assertTrue(preparation.ready());
+            assertTrue(preparation.backfilled());
+            assertEquals(columnFamilyEntries(chain, UtxoCfNames.UTXO_POINTER),
+                    columnFamilyEntries(secondChain, UtxoCfNames.UTXO_POINTER));
+            assertTrue(pointerMarkerUsable(chain, coordinate));
+            assertTrue(pointerMarkerUsable(secondChain, coordinate));
+
+            TransactionBody third = TransactionBody.builder()
+                    .txHash("c4".repeat(32))
+                    .inputs(Set.of(TransactionInput.builder()
+                            .transactionId(firstTxHash).index(0).build()))
+                    .outputs(List.of(TransactionOutput.builder()
+                            .address(POINTER_ADDRESS)
+                            .amounts(List.of(lovelaceAmount(20_000_000L)))
+                            .build()))
+                    .build();
+            Block thirdBlock = Block.builder().era(Era.Babbage)
+                    .transactionBodies(List.of(third)).invalidTransactions(List.of()).build();
+            BlockAppliedEvent thirdEvent = new BlockAppliedEvent(
+                    Era.Babbage, 300, 3, "c5".repeat(32), thirdBlock);
+            store.applyBlock(thirdEvent);
+            secondStore.applyBlock(thirdEvent);
+
+            assertEquals(columnFamilyEntries(chain, UtxoCfNames.UTXO_POINTER),
+                    columnFamilyEntries(secondChain, UtxoCfNames.UTXO_POINTER));
+        } finally {
+            if (secondStore != null) secondStore.close();
+            if (secondChain != null) secondChain.close();
+            deleteRecursively(secondDir);
+        }
+    }
+
+    private static boolean pointerMarkerUsable(
+            DirectRocksDBChainState state, CanonicalBlockReference coordinate) throws Exception {
+        byte[] markerBytes = state.rocks().db().get(
+                state.rocks().handle(UtxoCfNames.UTXO_META), PointerIndexMarker.KEY);
+        PointerIndexMarker marker = PointerIndexMarker.decode(markerBytes);
+        return marker != null && marker.isUsableAt(coordinate);
+    }
+
+    private TransactionBody pointerOutputTransaction(String txHash, long lovelace) {
+        return TransactionBody.builder()
+                .txHash(txHash)
+                .outputs(List.of(TransactionOutput.builder()
+                        .address(POINTER_ADDRESS)
+                        .amounts(List.of(lovelaceAmount(lovelace)))
+                        .build()))
+                .build();
+    }
+
+    private static String unresolvablePointerAddress() {
+        byte[] bytes = new byte[1 + 28 + 10];
+        bytes[0] = 0x41;
+        Arrays.fill(bytes, 1, 29, (byte) 0x11);
+        Arrays.fill(bytes, 29, bytes.length, (byte) 0xFF);
+        return new Address(bytes).toBech32();
+    }
+
+    private void reopenStoreWithPointerBackfill() {
+        store.close();
+        Map<String, Object> config = new HashMap<>();
+        config.put("yano.utxo.enabled", true);
+        config.put("yano.utxo.rollbackWindow", 500);
+        config.put("yano.utxo.pointer-index.backfill", true);
+        store = new DefaultUtxoStore(chain,
+                LoggerFactory.getLogger(DefaultUtxoStoreTest.class), config);
+    }
+
+    private static Map<String, String> columnFamilyEntries(
+            DirectRocksDBChainState state, String name) {
+        Map<String, String> entries = new TreeMap<>();
+        try (var iterator = state.rocks().db().newIterator(state.rocks().handle(name))) {
+            for (iterator.seekToFirst(); iterator.isValid(); iterator.next()) {
+                entries.put(HexUtil.encodeHexString(iterator.key()),
+                        HexUtil.encodeHexString(iterator.value()));
+            }
+        }
+        return entries;
+    }
+
+    private static void clearColumnFamily(
+            DirectRocksDBChainState state, ColumnFamilyHandle handle) throws Exception {
+        List<byte[]> keys = new ArrayList<>();
+        try (var iterator = state.rocks().db().newIterator(handle)) {
+            for (iterator.seekToFirst(); iterator.isValid(); iterator.next()) {
+                keys.add(Arrays.copyOf(iterator.key(), iterator.key().length));
+            }
+        }
+        for (byte[] key : keys) state.rocks().db().delete(handle, key);
     }
 
     @Test

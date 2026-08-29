@@ -1,6 +1,9 @@
 package com.bloxbean.cardano.yano.ledgerstate;
 
+import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
 import com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink;
+import com.bloxbean.cardano.yano.api.utxo.StakeBalanceView;
+import com.bloxbean.cardano.yano.api.utxo.StakeCredentialBalance;
 import com.bloxbean.cardano.yano.ledgerstate.test.TestRocksDBHelper;
 import org.cardanofoundation.rewards.calculation.config.NetworkConfig;
 import org.junit.jupiter.api.Test;
@@ -12,6 +15,10 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.math.BigInteger;
 import java.nio.file.Path;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -134,5 +141,43 @@ class EpochBoundaryProcessorTest {
             assertThat(assertThrows(IllegalStateException.class, processor::recoverInterruptedBoundary))
                     .hasMessageContaining("no persisted coordinates");
         }
+    }
+
+    @Test
+    void pendingBoundaryStakeViewIsClosedWhenRewardPathFailsBeforeHandoff() throws Exception {
+        AtomicBoolean closed = new AtomicBoolean();
+        StakeBalanceView view = new StakeBalanceView() {
+            @Override
+            public CanonicalBlockReference coordinate() {
+                return null;
+            }
+
+            @Override
+            public boolean advance() {
+                return false;
+            }
+
+            @Override
+            public StakeCredentialBalance current() {
+                throw new IllegalStateException("not used");
+            }
+
+            @Override
+            public void close() {
+                closed.set(true);
+            }
+        };
+        var input = new DefaultAccountStateStore.BoundaryStakeInput(
+                Map.of(), view, "pointer-index");
+        Future<DefaultAccountStateStore.BoundaryStakeInput> future =
+                CompletableFuture.completedFuture(input);
+        Method closeMethod = EpochBoundaryProcessor.class.getDeclaredMethod(
+                "closeBoundaryStakeInput", Future.class,
+                DefaultAccountStateStore.BoundaryStakeInput.class);
+        closeMethod.setAccessible(true);
+
+        closeMethod.invoke(null, future, null);
+
+        assertThat(closed).isTrue();
     }
 }

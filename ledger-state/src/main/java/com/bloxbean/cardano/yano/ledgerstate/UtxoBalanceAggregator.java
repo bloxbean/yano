@@ -3,6 +3,10 @@ package com.bloxbean.cardano.yano.ledgerstate;
 import com.bloxbean.cardano.client.address.Address;
 import com.bloxbean.cardano.client.address.AddressType;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import com.bloxbean.cardano.yano.api.utxo.PointerAddressId;
+import com.bloxbean.cardano.yano.api.utxo.PointerUtxo;
+import com.bloxbean.cardano.yano.api.utxo.PointerUtxoView;
+import com.bloxbean.cardano.yano.api.utxo.StakeBalanceView;
 import com.bloxbean.cardano.yano.api.utxo.StakeCredentialExtractor;
 import com.bloxbean.cardano.yano.api.utxo.StakeCredentialId;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
@@ -12,6 +16,8 @@ import org.slf4j.LoggerFactory;
 import java.math.BigInteger;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 
 /**
  * Aggregates per-stake-credential lovelace balances by iterating all unspent UTXOs.
@@ -27,6 +33,68 @@ public class UtxoBalanceAggregator {
      * Credential key for aggregation: "credType:credHash".
      */
     public record CredentialKey(int credType, String credHash) {}
+
+    public record PointerAggregation(
+            Map<CredentialKey, BigInteger> balances,
+            long records,
+            long resolved,
+            long failed,
+            String path) {
+    }
+
+    public PointerAccumulator newPointerAccumulator(
+            PointerAddressResolver pointerResolver, String path) {
+        if (pointerResolver == null) {
+            throw new IllegalStateException(
+                    "Pointer resolver is required for a pre-Conway stake overlay");
+        }
+        return new PointerAccumulator(pointerResolver, path);
+    }
+
+    public final class PointerAccumulator implements Consumer<PointerUtxo> {
+        private final PointerAddressResolver pointerResolver;
+        private final String path;
+        private final Map<CredentialKey, BigInteger> balances = new HashMap<>();
+        private final long started = System.currentTimeMillis();
+        private long records;
+        private long resolved;
+        private long failed;
+
+        private PointerAccumulator(PointerAddressResolver pointerResolver, String path) {
+            this.pointerResolver = pointerResolver;
+            this.path = path;
+        }
+
+        @Override
+        public void accept(PointerUtxo pointerUtxo) {
+            records++;
+            if (pointerUtxo.lovelace().signum() <= 0) return;
+            if (!pointerUtxo.resolvable()) {
+                failed++;
+                return;
+            }
+            CredentialKey credential;
+            try {
+                credential = resolvePointer(pointerUtxo.pointer(), pointerResolver);
+            } catch (RuntimeException failure) {
+                credential = null;
+            }
+            if (credential == null) {
+                failed++;
+                return;
+            }
+            resolved++;
+            balances.merge(credential, pointerUtxo.lovelace(), BigInteger::add);
+        }
+
+        public PointerAggregation finish() {
+            log.info("Pointer UTXO aggregation complete: {} records, {} credentials, "
+                            + "{} resolved, {} failed, {}ms, path={}",
+                    records, balances.size(), resolved, failed,
+                    System.currentTimeMillis() - started, path);
+            return new PointerAggregation(balances, records, resolved, failed, path);
+        }
+    }
 
     /**
      * Iterate all UTXOs and aggregate lovelace by stake credential.
@@ -60,17 +128,51 @@ public class UtxoBalanceAggregator {
      */
     public Map<CredentialKey, BigInteger> aggregatePointerBalances(
             UtxoState utxoState, PointerAddressResolver pointerResolver, long maxSlot) {
+        return aggregatePointerBalancesWithStats(utxoState, pointerResolver, maxSlot).balances();
+    }
+
+    public PointerAggregation aggregatePointerBalancesWithStats(
+            UtxoState utxoState, PointerAddressResolver pointerResolver, long maxSlot) {
         if (pointerResolver == null) {
             throw new IllegalStateException(
                     "Pointer resolver is required for a pre-Conway stake overlay");
         }
-        return aggregateBalances(utxoState, pointerResolver, maxSlot, true);
+        return aggregateBalancesWithStats(utxoState, pointerResolver, maxSlot, true);
+    }
+
+    public PointerAggregation aggregatePointerBalancesFromIndex(
+            StakeBalanceView stakeBalanceView,
+            PointerAddressResolver pointerResolver,
+            long maxSlot) {
+        if (pointerResolver == null) {
+            throw new IllegalStateException(
+                    "Pointer resolver is required for a pre-Conway stake overlay");
+        }
+        PointerAccumulator accumulator = newPointerAccumulator(
+                pointerResolver, "pointer-index");
+        try (PointerUtxoView pointerView = stakeBalanceView.openPointerUtxoView(maxSlot)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Coordinate-bound pointer UTXO index is unavailable"))) {
+            while (pointerView.advance()) {
+                accumulator.accept(pointerView.current());
+            }
+        }
+        return accumulator.finish();
     }
 
     private Map<CredentialKey, BigInteger> aggregateBalances(UtxoState utxoState,
                                                               PointerAddressResolver pointerResolver,
                                                               long maxSlot,
                                                               boolean pointerOnly) {
+        return aggregateBalancesWithStats(utxoState, pointerResolver, maxSlot, pointerOnly)
+                .balances();
+    }
+
+    private PointerAggregation aggregateBalancesWithStats(
+            UtxoState utxoState,
+            PointerAddressResolver pointerResolver,
+            long maxSlot,
+            boolean pointerOnly) {
         Map<CredentialKey, BigInteger> balances = new HashMap<>();
         long[] count = {0};
         long[] skipped = {0};
@@ -80,7 +182,7 @@ public class UtxoBalanceAggregator {
         long start = System.currentTimeMillis();
 
         // Use slot-filtered iteration for consistent epoch boundary snapshot
-        java.util.function.BiConsumer<String, java.math.BigInteger> processor = (addressStr, lovelace) -> {
+        BiConsumer<String, BigInteger> processor = (addressStr, lovelace) -> {
             count[0]++;
             if (lovelace == null || lovelace.signum() <= 0) return;
 
@@ -126,7 +228,8 @@ public class UtxoBalanceAggregator {
                 pointerOnly ? "Pointer" : "Full", count[0], skipped[0], balances.size(),
                 pointerResolved[0], pointerFailed[0], byronSkipped[0], elapsed);
 
-        return balances;
+        return new PointerAggregation(balances, count[0], pointerResolved[0],
+                pointerFailed[0], pointerOnly ? "pointer-scan" : "utxo-scan");
     }
 
     /**
@@ -174,22 +277,24 @@ public class UtxoBalanceAggregator {
                                                        String addressStr,
                                                        PointerAddressResolver resolver) {
         try {
-            var ptrAddr = new com.bloxbean.cardano.client.address.PointerAddress(address.getBytes());
-            var pointer = ptrAddr.getPointer();
+            PointerAddressId pointer = StakeCredentialExtractor.extractPointer(address);
             if (pointer == null) {
                 throw new IllegalStateException("Pointer address has no pointer: " + addressStr);
             }
-
-            var cred = resolver.resolve(pointer.getSlot(), pointer.getTxIndex(), pointer.getCertIndex());
-            if (cred == null) {
-                return null;
-            }
-
-            return new CredentialKey(cred.credType(), cred.credHash());
+            return resolvePointer(pointer, resolver);
         } catch (Exception e) {
             log.debug("Failed to resolve pointer address credential: {}", addressStr, e);
             return null;
         }
+    }
+
+    private static CredentialKey resolvePointer(PointerAddressId pointer,
+                                                PointerAddressResolver resolver) {
+        var credential = resolver.resolve(pointer.slot(), pointer.transactionIndex(),
+                pointer.certificateIndex());
+        return credential != null
+                ? new CredentialKey(credential.credType(), credential.credHash())
+                : null;
     }
 
 }

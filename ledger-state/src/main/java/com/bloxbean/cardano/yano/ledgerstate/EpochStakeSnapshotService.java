@@ -1,10 +1,12 @@
 package com.bloxbean.cardano.yano.ledgerstate;
 
+import com.bloxbean.cardano.yano.api.utxo.StakeBalanceView;
 import com.bloxbean.cardano.yano.api.utxo.UtxoState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.math.BigInteger;
+import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -66,6 +68,33 @@ public class EpochStakeSnapshotService {
         return aggregator.aggregatePointerBalances(utxoState, pointerResolver, maxSlot);
     }
 
+    public UtxoBalanceAggregator.PointerAccumulator newPointerAccumulator(
+            PointerAddressResolver pointerResolver, String path) {
+        return aggregator.newPointerAccumulator(pointerResolver, path);
+    }
+
+    public UtxoBalanceAggregator.PointerAggregation aggregatePointerStakeBalancesWithStats(
+            UtxoState utxoState, PointerAddressResolver pointerResolver, long maxSlot) {
+        if (!enabled) {
+            return new UtxoBalanceAggregator.PointerAggregation(
+                    Map.of(), 0, 0, 0, "pointer-scan");
+        }
+        return aggregator.aggregatePointerBalancesWithStats(
+                utxoState, pointerResolver, maxSlot);
+    }
+
+    public UtxoBalanceAggregator.PointerAggregation aggregatePointerStakeBalancesFromIndex(
+            StakeBalanceView stakeBalanceView,
+            PointerAddressResolver pointerResolver,
+            long maxSlot) {
+        if (!enabled) {
+            return new UtxoBalanceAggregator.PointerAggregation(
+                    Map.of(), 0, 0, 0, "pointer-index");
+        }
+        return aggregator.aggregatePointerBalancesFromIndex(
+                stakeBalanceView, pointerResolver, maxSlot);
+    }
+
     /**
      * Incremental balance aggregation: start from previous epoch's snapshot balances,
      * apply UTXO deltas for the current epoch's slot range.
@@ -94,7 +123,7 @@ public class EpochStakeSnapshotService {
         long start = System.currentTimeMillis();
 
         // 1. Seed balances from previous snapshot
-        Map<UtxoBalanceAggregator.CredentialKey, BigInteger> balances = new java.util.HashMap<>();
+        Map<UtxoBalanceAggregator.CredentialKey, BigInteger> balances = new HashMap<>();
         for (var entry : previousSnapshot.entrySet()) {
             String credKey = entry.getKey();
             BigInteger amount = entry.getValue().amount();

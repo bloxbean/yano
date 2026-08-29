@@ -2,6 +2,7 @@ package com.bloxbean.cardano.yano.api.utxo;
 
 import com.bloxbean.cardano.client.address.Address;
 import com.bloxbean.cardano.client.address.AddressType;
+import com.bloxbean.cardano.client.address.PointerAddress;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 
 /**
@@ -18,12 +19,40 @@ public final class StakeCredentialExtractor {
      */
     public static StakeCredentialId extractNonPointer(String addressText) {
         Address address = parseAddressOrNull(addressText);
+        return extractNonPointer(address);
+    }
+
+    /** Extract a non-pointer stake credential from an already parsed address. */
+    public static StakeCredentialId extractNonPointer(Address address) {
         if (address == null) return null;
         AddressType type = address.getAddressType();
         if (type == AddressType.Byron || type == AddressType.Ptr || type == AddressType.Reward) {
             return null;
         }
         return extractDelegationCredential(address);
+    }
+
+    /** Extract the pointer tuple from a pointer address, otherwise {@code null}. */
+    public static PointerAddressId extractPointer(String addressText) {
+        Address address = parseAddressOrNull(addressText);
+        return extractPointer(address);
+    }
+
+    /** Extract the pointer tuple from an already parsed address. */
+    public static PointerAddressId extractPointer(Address address) {
+        if (address == null || address.getAddressType() != AddressType.Ptr) return null;
+        try {
+            var pointer = new PointerAddress(address.getBytes()).getPointer();
+            if (pointer == null) return null;
+            return new PointerAddressId(
+                    pointer.getSlot(), pointer.getTxIndex(), pointer.getCertIndex());
+        } catch (RuntimeException unresolvable) {
+            // Ledger-valid pointer addresses can carry payloads that CCL cannot
+            // represent (malformed variable-nat or an index outside int range).
+            // Writers must retain the UTXO and record it as unresolvable rather
+            // than allowing an address-library exception to abort block apply.
+            return null;
+        }
     }
 
     /** Parse every address representation accepted by the UTXO store. */

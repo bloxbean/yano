@@ -10,4 +10,5 @@ public final class UtxoCfNames {
     public static final String UTXO_META = "utxo_meta";
     public static final String SCRIPT_REF = "script_ref";
     public static final String UTXO_STAKE_BALANCE = "utxo_stake_balance";
+    public static final String UTXO_POINTER = "utxo_pointer";
 }

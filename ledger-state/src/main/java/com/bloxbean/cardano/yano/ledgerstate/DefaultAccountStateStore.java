@@ -493,21 +493,24 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
     }
 
     public Optional<StakeBalanceView> openBoundaryStakeBalanceView(int snapshotEpoch) {
-        if (utxoState == null || chainBlockReader == null || archiveBoundary == null) {
-            return Optional.empty();
-        }
+        if (utxoState == null) return Optional.empty();
+        Optional<CanonicalBlockReference> coordinate = boundaryStakeCoordinate(snapshotEpoch);
+        return coordinate.flatMap(utxoState::openStakeBalanceView);
+    }
+
+    private Optional<CanonicalBlockReference> boundaryStakeCoordinate(int snapshotEpoch) {
+        if (chainBlockReader == null || archiveBoundary == null) return Optional.empty();
         if (archiveBoundary.previousEpoch() != snapshotEpoch) {
             throw new IllegalStateException("Boundary coordinates belong to previous epoch "
                     + archiveBoundary.previousEpoch() + " while opening snapshot epoch " + snapshotEpoch);
         }
         long expectedBlockNumber = archiveBoundary.blockNumber() - 1;
         if (expectedBlockNumber < 0) return Optional.empty();
-        CanonicalBlockReference expected = chainBlockReader
+        return Optional.of(chainBlockReader
                 .getCanonicalBlockReference(expectedBlockNumber)
                 .orElseThrow(() -> new IllegalStateException(
                         "Canonical predecessor is unavailable for epoch boundary block "
-                                + archiveBoundary.blockNumber()));
-        return utxoState.openStakeBalanceView(expected);
+                                + archiveBoundary.blockNumber())));
     }
 
     /**
@@ -4156,7 +4159,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         }
     }
 
-    public Map<UtxoBalanceAggregator.CredentialKey, BigInteger> aggregatePointerUtxoBalances(int epoch) {
+    public BoundaryStakeInput aggregatePointerUtxoBalances(int epoch) {
         if (stakeSnapshotService == null || !stakeSnapshotService.isEnabled()
                 || utxoState == null) {
             throw new IllegalStateException(
@@ -4167,8 +4170,97 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                     "Pointer resolver is unavailable for pre-Conway pointer overlay");
         }
         long epochLastSlot = slotForEpochStart(epoch + 1) - 1;
-        return stakeSnapshotService.aggregatePointerStakeBalances(
-                utxoState, pointerAddressResolver, epochLastSlot);
+        CanonicalBlockReference expected = boundaryStakeCoordinate(epoch)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Canonical boundary coordinate is unavailable for pointer overlay"));
+        UtxoBalanceAggregator.PointerAccumulator backfillAccumulator =
+                stakeSnapshotService.newPointerAccumulator(
+                        pointerAddressResolver, "pointer-backfill");
+        var preparation = utxoState.preparePointerIndex(
+                expected, epochLastSlot, backfillAccumulator);
+
+        UtxoBalanceAggregator.PointerAggregation primary;
+        UtxoBalanceAggregator.PointerAggregation shadow = null;
+        StakeBalanceView boundaryView = null;
+        if (preparation.ready()) {
+            boundaryView = utxoState.openStakeBalanceView(expected)
+                    .orElseThrow(() -> new IllegalStateException(
+                            "Coordinate-bound stake balance view became unavailable"));
+            try {
+                if (preparation.backfilled()) {
+                    primary = backfillAccumulator.finish();
+                    if (utxoState.isPointerIndexShadowScanEnabled()) {
+                        shadow = stakeSnapshotService.aggregatePointerStakeBalancesFromIndex(
+                                boundaryView, pointerAddressResolver, epochLastSlot);
+                        PointerIndexShadowValidator.requireParity(
+                                log, epoch, shadow, primary, true);
+                    }
+                } else {
+                    primary = stakeSnapshotService.aggregatePointerStakeBalancesFromIndex(
+                            boundaryView, pointerAddressResolver, epochLastSlot);
+                    if (utxoState.isPointerIndexShadowScanEnabled()) {
+                        shadow = stakeSnapshotService.aggregatePointerStakeBalancesWithStats(
+                                utxoState, pointerAddressResolver, epochLastSlot);
+                        PointerIndexShadowValidator.requireParity(
+                                log, epoch, primary, shadow, false);
+                    }
+                }
+            } catch (RuntimeException failure) {
+                boundaryView.close();
+                throw failure;
+            }
+        } else {
+            primary = stakeSnapshotService.aggregatePointerStakeBalancesWithStats(
+                    utxoState, pointerAddressResolver, epochLastSlot);
+            boundaryView = openBoundaryStakeBalanceView(epoch)
+                    .orElseThrow(() -> new IllegalStateException(
+                            "Coordinate-bound stake balance view became unavailable"));
+        }
+
+        lastPointerInputPath = primary.path();
+        log.info("Epoch pointer stake input selected: epoch={}, path={}, backfilled={}, "
+                        + "shadow={}, records={}, resolved={}, failed={}",
+                epoch, primary.path(), preparation.backfilled(), shadow != null,
+                primary.records(), primary.resolved(), primary.failed());
+        return new BoundaryStakeInput(primary.balances(), boundaryView, primary.path());
+    }
+
+    public static final class BoundaryStakeInput implements AutoCloseable {
+        private final Map<UtxoBalanceAggregator.CredentialKey, BigInteger> balances;
+        private final StakeBalanceView stakeBalanceView;
+        private final String path;
+
+        public BoundaryStakeInput(
+                Map<UtxoBalanceAggregator.CredentialKey, BigInteger> balances,
+                StakeBalanceView stakeBalanceView,
+                String path) {
+            this.balances = balances;
+            this.stakeBalanceView = stakeBalanceView;
+            this.path = path;
+        }
+
+        public Map<UtxoBalanceAggregator.CredentialKey, BigInteger> balances() {
+            return balances;
+        }
+
+        public StakeBalanceView stakeBalanceView() {
+            return stakeBalanceView;
+        }
+
+        public String path() {
+            return path;
+        }
+
+        @Override
+        public void close() {
+            if (stakeBalanceView != null) stakeBalanceView.close();
+        }
+    }
+
+    private volatile String lastPointerInputPath = "pointer-scan";
+
+    public String lastPointerInputPath() {
+        return lastPointerInputPath;
     }
 
     /**
@@ -4178,17 +4270,26 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
      *
      * @param precomputedUtxoBalances if non-null, skip UTXO scan and use these balances
      */
-    public java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> createAndCommitDelegationSnapshot(
-            int epoch, java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> precomputedUtxoBalances) {
+    public Map<UtxoBalanceAggregator.CredentialKey, BigInteger> createAndCommitDelegationSnapshot(
+            int epoch, Map<UtxoBalanceAggregator.CredentialKey, BigInteger> precomputedUtxoBalances) {
         return createAndCommitDelegationSnapshot(epoch, precomputedUtxoBalances,
                 shouldUseOrderedStakeBalanceIndex(epoch));
     }
 
-    public java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> createAndCommitDelegationSnapshot(
-            int epoch, java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> precomputedUtxoBalances,
+    public Map<UtxoBalanceAggregator.CredentialKey, BigInteger> createAndCommitDelegationSnapshot(
+            int epoch, Map<UtxoBalanceAggregator.CredentialKey, BigInteger> precomputedUtxoBalances,
             boolean useOrderedStakeIndex) {
-        java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> utxoBalances = null;
-        StakeBalanceView stakeBalanceView = null;
+        return createAndCommitDelegationSnapshot(
+                epoch, precomputedUtxoBalances, useOrderedStakeIndex, null);
+    }
+
+    public Map<UtxoBalanceAggregator.CredentialKey, BigInteger> createAndCommitDelegationSnapshot(
+            int epoch,
+            Map<UtxoBalanceAggregator.CredentialKey, BigInteger> precomputedUtxoBalances,
+            boolean useOrderedStakeIndex,
+            StakeBalanceView preopenedStakeBalanceView) {
+        Map<UtxoBalanceAggregator.CredentialKey, BigInteger> utxoBalances = null;
+        StakeBalanceView stakeBalanceView = preopenedStakeBalanceView;
         var archiveWriter = archiveStaging.enabled(
                 com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset.EPOCH_STAKE)
                 ? archiveStaging.openStake(epoch) : null;
@@ -4197,7 +4298,7 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 log.info("Delegation snapshot generation for epoch {} is already complete", epoch);
                 return null;
             }
-            if (useOrderedStakeIndex) {
+            if (useOrderedStakeIndex && stakeBalanceView == null) {
                 stakeBalanceView = openBoundaryStakeBalanceView(epoch).orElse(null);
                 if (stakeBalanceView == null) {
                     throw new IllegalStateException(

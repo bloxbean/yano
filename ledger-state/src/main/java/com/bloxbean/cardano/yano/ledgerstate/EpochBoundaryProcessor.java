@@ -15,13 +15,14 @@ import org.slf4j.LoggerFactory;
 import java.math.BigInteger;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.ExecutionException;
 
 /**
  * Orchestrates epoch boundary processing across the three-phase epoch transition sequence
@@ -374,64 +375,88 @@ public class EpochBoundaryProcessor {
         }
 
         // Start UTXO balance scan in parallel (read-only, independent of reward calc).
-        Future<java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger>> utxoBalancesFuture = null;
+        boolean pointerOverlayRequired = orderedStakeIndex
+                && snapshotCreator != null
+                && snapshotCreator.requiresPointerStakeOverlay(previousEpoch);
+        Future<DefaultAccountStateStore.BoundaryStakeInput> utxoBalancesFuture = null;
         try (var ignored = telemetry.phase("snapshot-input-start",
-                orderedStakeIndex ? "stake-index" : "utxo-scan")) {
+                orderedStakeIndex
+                        ? (pointerOverlayRequired ? "stake-index+pointer-auto" : "stake-index")
+                        : "utxo-scan")) {
             if (snapshotCreator != null && resumeFromStep <= STEP_SNAPSHOT
-                    && (!orderedStakeIndex
-                    || snapshotCreator.requiresPointerStakeOverlay(previousEpoch))) {
+                    && (!orderedStakeIndex || pointerOverlayRequired)) {
                 final int snapshotEpoch = previousEpoch;
                 utxoBalancesFuture = utxoScanExecutor.submit(() -> orderedStakeIndex
                         ? snapshotCreator.aggregatePointerUtxoBalances(snapshotEpoch)
-                        : snapshotCreator.aggregateUtxoBalances(snapshotEpoch));
+                        : new DefaultAccountStateStore.BoundaryStakeInput(
+                                snapshotCreator.aggregateUtxoBalances(snapshotEpoch),
+                                null,
+                                "utxo-scan"));
             }
         }
 
-        // 3. Calculate rewards (skip if already committed from a previous interrupted run)
-        try (var ignored = telemetry.phase("rewards",
-                shouldCalculateRewards(newEpoch)
-                        ? rewardCalculator.executionModeForEpoch(newEpoch) + "-reward" : "disabled")) {
-            if (resumeFromStep <= STEP_REWARDS) {
-                if (shouldCalculateRewards(newEpoch)) {
-                    calculateAndStoreRewards(previousEpoch, newEpoch, null);
-                }
-                // Step marker AFTER all outputs (reward credits + AdaPot) are durable
-                if (snapshotCreator != null) {
-                    snapshotCreator.setBoundaryStep(newEpoch, STEP_REWARDS);
-                }
-            } else {
-                log.info("Skipping reward calc for epoch {} (already committed in previous run)", newEpoch);
-            }
-        }
-
-        // 4. SNAP: Wait for parallel UTXO scan, then create delegation snapshot.
-        java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> utxoBalances = null;
-        try (var ignored = telemetry.phase("snapshot-write",
-                orderedStakeIndex ? "stake-index" : "utxo-scan")) {
-            if (resumeFromStep <= STEP_SNAPSHOT) {
-                if (snapshotCreator != null) {
-                    java.util.Map<UtxoBalanceAggregator.CredentialKey, java.math.BigInteger> precomputedBalances = null;
-                    if (utxoBalancesFuture != null) {
-                        try {
-                            precomputedBalances = utxoBalancesFuture.get();
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            throw new IllegalStateException(
-                                    "Interrupted while awaiting the epoch UTXO scan", e);
-                        } catch (ExecutionException e) {
-                            throw new IllegalStateException(
-                                    "Epoch UTXO scan failed", e.getCause());
-                        }
+        Map<UtxoBalanceAggregator.CredentialKey, BigInteger> utxoBalances = null;
+        DefaultAccountStateStore.BoundaryStakeInput boundaryStakeInput = null;
+        try {
+            // 3. Calculate rewards (skip if already committed from a previous interrupted run)
+            try (var ignored = telemetry.phase("rewards",
+                    shouldCalculateRewards(newEpoch)
+                            ? rewardCalculator.executionModeForEpoch(newEpoch) + "-reward" : "disabled")) {
+                if (resumeFromStep <= STEP_REWARDS) {
+                    if (shouldCalculateRewards(newEpoch)) {
+                        calculateAndStoreRewards(previousEpoch, newEpoch, null);
                     }
-                    utxoBalances = snapshotCreator.createAndCommitDelegationSnapshot(
-                            previousEpoch, precomputedBalances, orderedStakeIndex);
+                    // Step marker AFTER all outputs (reward credits + AdaPot) are durable
+                    if (snapshotCreator != null) {
+                        snapshotCreator.setBoundaryStep(newEpoch, STEP_REWARDS);
+                    }
+                } else {
+                    log.info("Skipping reward calc for epoch {} (already committed in previous run)", newEpoch);
                 }
-                if (snapshotCreator != null) {
-                    snapshotCreator.setBoundaryStep(newEpoch, STEP_SNAPSHOT);
-                }
-            } else {
-                log.info("Skipping snapshot for epoch {} (already committed in previous run)", previousEpoch);
             }
+
+            // 4. SNAP: Wait for parallel UTXO input, then create delegation snapshot.
+            Map<UtxoBalanceAggregator.CredentialKey, BigInteger> precomputedBalances = null;
+            if (utxoBalancesFuture != null) {
+                try (var ignored = telemetry.phase("snapshot-input-wait", "parallel")) {
+                    try {
+                        boundaryStakeInput = utxoBalancesFuture.get();
+                        precomputedBalances = boundaryStakeInput.balances();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(
+                                "Interrupted while awaiting the epoch UTXO input", e);
+                    } catch (ExecutionException e) {
+                        throw new IllegalStateException(
+                                "Epoch UTXO input failed", e.getCause());
+                    }
+                }
+            }
+            String snapshotWritePath = orderedStakeIndex
+                    ? (pointerOverlayRequired
+                            ? "stake-index+" + (boundaryStakeInput != null
+                                    ? boundaryStakeInput.path()
+                                    : snapshotCreator.lastPointerInputPath())
+                            : "stake-index")
+                    : "utxo-scan";
+            try (var ignored = telemetry.phase("snapshot-write", snapshotWritePath)) {
+                if (resumeFromStep <= STEP_SNAPSHOT) {
+                    if (snapshotCreator != null) {
+                        utxoBalances = snapshotCreator.createAndCommitDelegationSnapshot(
+                                previousEpoch, precomputedBalances, orderedStakeIndex,
+                                boundaryStakeInput != null
+                                        ? boundaryStakeInput.stakeBalanceView()
+                                        : null);
+                    }
+                    if (snapshotCreator != null) {
+                        snapshotCreator.setBoundaryStep(newEpoch, STEP_SNAPSHOT);
+                    }
+                } else {
+                    log.info("Skipping snapshot for epoch {} (already committed in previous run)", previousEpoch);
+                }
+            }
+        } finally {
+            closeBoundaryStakeInput(utxoBalancesFuture, boundaryStakeInput);
         }
 
         // 4b. POOLREAP: Pool deposit refunds (after snapshot, before governance).
@@ -565,6 +590,35 @@ public class EpochBoundaryProcessor {
      */
     public void processPostEpochBoundary(int newEpoch) {
         // POOLREAP moved to processEpochBoundary step 4b
+    }
+
+    private static void closeBoundaryStakeInput(
+            Future<DefaultAccountStateStore.BoundaryStakeInput> future,
+            DefaultAccountStateStore.BoundaryStakeInput acquired) {
+        if (acquired != null) {
+            acquired.close();
+            return;
+        }
+        if (future == null) return;
+
+        // A reward failure can occur while the read task is still producing a
+        // coordinate-bound RocksDB view. Await it so that view cannot leak.
+        boolean interrupted = false;
+        try {
+            while (true) {
+                try {
+                    DefaultAccountStateStore.BoundaryStakeInput pending = future.get();
+                    if (pending != null) pending.close();
+                    return;
+                } catch (InterruptedException ignored) {
+                    interrupted = true;
+                } catch (ExecutionException | CancellationException ignored) {
+                    return;
+                }
+            }
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
+        }
     }
 
     /**

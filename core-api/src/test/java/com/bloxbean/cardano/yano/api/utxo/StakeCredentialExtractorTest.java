@@ -10,6 +10,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class StakeCredentialExtractorTest {
     private static final String BASE_ADDRESS =
             "addr_test1qz2fxv2umyhttkxyxp8x0dlpdt3k6cwng5pxj3jhsydzer3jcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwq2ytjqp";
+    private static final String POINTER_ADDRESS =
+            "addr1gxrgsz5tkx0vsapdhyrk09w9zplhllr94zy70vycpll2egsvpsxqgnmy5k";
 
     @Test
     void bech32AndHexRepresentationsProduceIdenticalValueSemanticCredential() {
@@ -32,6 +34,15 @@ class StakeCredentialExtractorTest {
                 "addr1notavalidchecksum"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Malformed Shelley payment address");
-        assertThat(StakeCredentialExtractor.extractNonPointer(null)).isNull();
+        assertThat(StakeCredentialExtractor.extractNonPointer((String) null)).isNull();
+    }
+
+    @Test
+    void pointerBech32AndHexRepresentationsProduceIdenticalTuple() {
+        Address parsed = new Address(POINTER_ADDRESS);
+        String hex = HexUtil.encodeHexString(parsed.getBytes());
+
+        assertThat(StakeCredentialExtractor.extractPointer(POINTER_ADDRESS))
+                .isEqualTo(StakeCredentialExtractor.extractPointer(hex));
     }
 }

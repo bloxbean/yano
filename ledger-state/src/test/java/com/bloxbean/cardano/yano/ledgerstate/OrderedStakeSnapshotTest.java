@@ -4,6 +4,9 @@ import com.bloxbean.cardano.yaci.core.util.HexUtil;
 import com.bloxbean.cardano.yano.api.CanonicalBlockReference;
 import com.bloxbean.cardano.yano.api.ChainBlockReader;
 import com.bloxbean.cardano.yano.api.era.EraProvider;
+import com.bloxbean.cardano.yano.api.utxo.PointerAddressId;
+import com.bloxbean.cardano.yano.api.utxo.PointerIndexPreparation;
+import com.bloxbean.cardano.yano.api.utxo.PointerUtxo;
 import com.bloxbean.cardano.yano.api.utxo.StakeBalanceView;
 import com.bloxbean.cardano.yano.api.utxo.StakeCredentialBalance;
 import com.bloxbean.cardano.yano.api.utxo.StakeCredentialId;
@@ -20,9 +23,10 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.util.Optional;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -241,6 +245,94 @@ class OrderedStakeSnapshotTest {
             var snapshot = AccountStateCborCodec.decodeEpochDelegSnapshot(
                     rocks.db().get(rocks.cfSnapshot(), snapshotKey));
             assertThat(snapshot.amount()).isEqualTo(BigInteger.valueOf(1_250));
+        }
+    }
+
+    @Test
+    void backfillBoundaryUsesOverlayFromBackfillPassWithoutRereadingPointerIndex() throws Exception {
+        try (var rocks = TestRocksDBHelper.create(tempDir)) {
+            var store = new DefaultAccountStateStore(rocks.db(), rocks.cfSupplier(),
+                    LoggerFactory.getLogger(getClass()), true);
+            store.setEraProvider(new EraProvider() {
+                @Override
+                public boolean isConwayOrLater(int epoch) {
+                    return false;
+                }
+            });
+            store.setStakeSnapshotService(new EpochStakeSnapshotService(true));
+
+            byte[] blockHash = HexUtil.decodeHexString("de".repeat(32));
+            var coordinate = new CanonicalBlockReference(9, 900, blockHash);
+            store.setChainBlockReader(new ChainBlockReader() {
+                @Override
+                public com.bloxbean.cardano.yaci.core.storage.ChainTip getLocalTip() {
+                    return null;
+                }
+
+                @Override
+                public byte[] getBlockByNumber(long blockNumber) {
+                    return null;
+                }
+
+                @Override
+                public com.bloxbean.cardano.yaci.core.model.Era getBlockEra(long blockNumber) {
+                    return null;
+                }
+
+                @Override
+                public Optional<CanonicalBlockReference> getCanonicalBlockReference(long blockNumber) {
+                    return blockNumber == 9 ? Optional.of(coordinate) : Optional.empty();
+                }
+            });
+            store.prepareEpochBoundary(9, 10, 1_000, 10);
+            StakeBalanceView view = new SingleRowStakeBalanceView(coordinate,
+                    new StakeCredentialBalance(
+                            new StakeCredentialId(0, HexUtil.decodeHexString(CREDENTIAL_HASH)),
+                            BigInteger.ONE));
+            store.setUtxoState(new UtxoState() {
+                @Override
+                public List<Utxo> getUtxosByAddress(String address, int page, int pageSize) {
+                    return List.of();
+                }
+
+                @Override
+                public List<Utxo> getUtxosByPaymentCredential(
+                        String credential, int page, int pageSize) {
+                    return List.of();
+                }
+
+                @Override
+                public Optional<Utxo> getUtxo(Outpoint outpoint) {
+                    return Optional.empty();
+                }
+
+                @Override
+                public PointerIndexPreparation preparePointerIndex(
+                        CanonicalBlockReference expectedCoordinate,
+                        long maxCreationSlot,
+                        Consumer<PointerUtxo> observer) {
+                    observer.accept(new PointerUtxo(
+                            800, BigInteger.TEN, new PointerAddressId(1, 0, 0)));
+                    return PointerIndexPreparation.ready(true);
+                }
+
+                @Override
+                public Optional<StakeBalanceView> openStakeBalanceView(
+                        CanonicalBlockReference expectedCoordinate) {
+                    return Optional.of(view);
+                }
+
+                @Override
+                public boolean isEnabled() {
+                    return true;
+                }
+            });
+
+            try (var input = store.aggregatePointerUtxoBalances(9)) {
+                assertThat(input.path()).isEqualTo("pointer-backfill");
+                assertThat(input.balances()).isEmpty();
+            }
+            assertThat(view.advance()).isFalse();
         }
     }
 
