@@ -2075,11 +2075,9 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
         try (WriteBatch batch = new WriteBatch(); WriteOptions wo = new WriteOptions()) {
             List<DeltaOp> deltaOps = new ArrayList<>();
 
-            // Track per-credential totals and per-type (pot) raw totals
-            java.util.Map<CredentialKey, BigInteger> perCredentialTotal = new java.util.LinkedHashMap<>();
-            // Track which type each credential belongs to (for per-pot totals after deregistration filter)
-            java.util.Map<CredentialKey, Byte> credentialTypes = new java.util.HashMap<>();
-            java.util.List<byte[]> keysToDelete = new java.util.ArrayList<>();
+            // Keep one aggregate per credential. The first MIR type is retained exactly as
+            // before for the per-pot total after the deregistration filter.
+            Map<CredentialKey, MirCredit> credits = new LinkedHashMap<>();
 
             try (RocksIterator it = db.newIterator(cfState)) {
                 it.seek(new byte[]{PREFIX_REWARD_REST});
@@ -2098,18 +2096,22 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                     }
 
                     var cred = CredentialKey.fromKeyBytes(key, 6);
-
-                    var rest = AccountStateCborCodec.decodeRewardRest(it.value());
+                    byte[] previousValue = it.value();
+                    var rest = AccountStateCborCodec.decodeRewardRest(previousValue);
                     if (rest.amount().signum() > 0) {
-                        perCredentialTotal.merge(cred, rest.amount(), BigInteger::add);
-                        credentialTypes.putIfAbsent(cred, type);
+                        MirCredit existing = credits.get(cred);
+                        credits.put(cred, existing == null
+                                ? new MirCredit(rest.amount(), type)
+                                : new MirCredit(existing.amount().add(rest.amount()), existing.type()));
                     }
-                    keysToDelete.add(Arrays.copyOf(key, key.length));
+                    byte[] storedKey = Arrays.copyOf(key, key.length);
+                    deltaOps.add(new DeltaOp(OP_DELETE, storedKey, previousValue));
+                    batch.delete(cfState, storedKey);
                     it.next();
                 }
             }
 
-            if (perCredentialTotal.isEmpty()) {
+            if (credits.isEmpty()) {
                 return;
             }
             try (var rewardArchive = archiveStaging.enabled(
@@ -2121,9 +2123,10 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             BigInteger totalCredited = BigInteger.ZERO;
             BigInteger creditedReserves = BigInteger.ZERO;
             BigInteger creditedTreasury = BigInteger.ZERO;
-            for (var entry : perCredentialTotal.entrySet()) {
+            for (var entry : credits.entrySet()) {
                 var ck = entry.getKey();
-                BigInteger amount = entry.getValue();
+                MirCredit credit = entry.getValue();
+                BigInteger amount = credit.amount();
 
                 byte[] acctKey = accountKey(ck.typeInt(), ck.hash());
                 byte[] acctVal = db.get(cfState, acctKey);
@@ -2137,10 +2140,12 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
                 var acct = AccountStateCborCodec.decodeStakeAccount(acctVal);
                 BigInteger newReward = acct.reward().add(amount);
-                putStateWithDelta(acctKey, AccountStateCborCodec.encodeStakeAccount(newReward, acct.deposit()), batch, deltaOps);
+                deltaOps.add(new DeltaOp(OP_PUT, acctKey, acctVal));
+                batch.put(cfState, acctKey,
+                        AccountStateCborCodec.encodeStakeAccount(newReward, acct.deposit()));
                 credited++;
                 totalCredited = totalCredited.add(amount);
-                byte mirType = credentialTypes.getOrDefault(ck, REWARD_REST_MIR_RESERVES);
+                byte mirType = credit.type();
                 if (mirType == REWARD_REST_MIR_RESERVES) {
                     creditedReserves = creditedReserves.add(amount);
                 } else {
@@ -2152,9 +2157,6 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                                 mirType == REWARD_REST_MIR_RESERVES ? "mir_reserves" : "mir_treasury",
                                 epoch - 1, epoch, amount,
                                 (mirType == REWARD_REST_MIR_RESERVES ? "mir-reserves-" : "mir-treasury-") + epoch));
-            }
-            for (byte[] key : keysToDelete) {
-                deleteStateWithDelta(key, batch, deltaOps);
             }
 
             // Store the credited (deregistration-filtered) MIR totals per pot type as metadata.
@@ -2183,6 +2185,9 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             log.error("creditMirRewardRest failed: {}", e.toString(), e);
             throw new RuntimeException("creditMirRewardRest failed for epoch " + epoch, e);
         }
+    }
+
+    private record MirCredit(BigInteger amount, byte type) {
     }
 
     /**
