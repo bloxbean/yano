@@ -15,6 +15,7 @@ import org.rocksdb.RocksDB;
 import org.rocksdb.RocksDBException;
 import org.rocksdb.RocksIterator;
 import org.rocksdb.ReadOptions;
+import org.rocksdb.Snapshot;
 import org.rocksdb.WriteBatch;
 import org.rocksdb.WriteOptions;
 import org.slf4j.Logger;
@@ -75,6 +76,12 @@ public class EpochRewardCalculator {
             com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.RewardFact> rewardArchiveWriter;
     private static final byte[] REWARD_PROGRESS_KEY =
             "meta.reward.progress.v1".getBytes(StandardCharsets.UTF_8);
+    private static final byte REWARD_FLAGS_PREFIX = (byte) 0xFE;
+    static final int REWARD_FLAG_DEREGISTERED_AT_STABILITY = 1;
+    static final int REWARD_FLAG_DEREGISTERED_AT_BOUNDARY = 1 << 1;
+    static final int REWARD_FLAG_REGISTERED_SINCE = 1 << 2;
+    static final int REWARD_FLAG_REGISTERED_UNTIL = 1 << 3;
+    static final int REWARD_FLAG_REGISTERED_NOW = 1 << 4;
     private int rewardArchiveEpoch;
     private int rewardChunkSequence;
     private String rewardResumeAfterPool;
@@ -576,8 +583,9 @@ public class EpochRewardCalculator {
                 SharedPoolRewardAddresses.getSharedAddressesWithoutReward(epoch, networkMagic));
         List<MirCertificate> mirCertificates = buildMirCertificates(feeEpoch);
 
-        try (PoolMajorCursor pools = new PoolMajorCursor(snapshotKey, stakeEpoch, blockCounts,
-                accounts)) {
+        try (PreparedRewardFlags rewardFlags = prepareRewardCredentialFlags(snapshotKey, accounts);
+             PoolMajorCursor pools = new PoolMajorCursor(snapshotKey, stakeEpoch, blockCounts,
+                     accounts, rewardFlags)) {
             EpochCalculationResult result = StreamingEpochRewardOrchestrator.calculate(
                     epoch, previousReserves, previousTreasury, protocolParameters, epochInfo,
                     retiredPools, accounts.deregistered(), mirCertificates, pools,
@@ -966,18 +974,31 @@ public class EpochRewardCalculator {
         private final byte[] prefix;
         private final ReadOptions options = new ReadOptions().setFillCache(false);
         private final RocksIterator iterator;
+        private final RocksIterator flagsIterator;
+        private final byte[] flagsPrefix;
         private StreamingEpochRewardOrchestrator.PoolRewardInput next;
 
         private PoolMajorCursor(int snapshotEpoch, int poolParamsEpoch,
                                 Map<String, Long> blockCounts,
-                                StreamingAccountContext accounts) {
+                                StreamingAccountContext accounts,
+                                PreparedRewardFlags rewardFlags) {
             this.poolParamsEpoch = poolParamsEpoch;
             this.blockCounts = blockCounts;
             this.accounts = accounts;
             this.prefix = poolMajorPrefix(snapshotEpoch);
+            this.flagsPrefix = rewardFlags.prefix();
             this.iterator = db.newIterator(cfEpochSnapshot, options);
+            this.flagsIterator = db.newIterator(cfEpochSnapshot, options);
             iterator.seek(prefix);
-            advance();
+            flagsIterator.seek(flagsPrefix);
+            try {
+                advance();
+            } catch (RuntimeException failure) {
+                flagsIterator.close();
+                iterator.close();
+                options.close();
+                throw failure;
+            }
         }
 
         @Override
@@ -995,6 +1016,10 @@ public class EpochRewardCalculator {
 
         private void advance() {
             if (!iterator.isValid() || !startsWith(iterator.key(), prefix)) {
+                if (flagsIterator.isValid() && startsWith(flagsIterator.key(), flagsPrefix)) {
+                    throw new IllegalStateException(
+                            "Reward credential flags contain rows without pool-major stake rows");
+                }
                 next = null;
                 return;
             }
@@ -1017,16 +1042,9 @@ public class EpochRewardCalculator {
                         .stakeAddress(credential).activeStake(amount).build());
                 activeStake = activeStake.add(amount);
 
-                var summary = accountStateStore.getCredentialEventSummary(credential,
-                        accounts.stabilityCutoff(), accounts.boundaryCutoff(),
-                        accounts.registeredSinceCutoff(), accounts.registeredUntilCutoff());
-                boolean atStability = summary.deregisteredAtStability();
-                boolean atBoundary = summary.deregisteredAtBoundary();
-                if (!ledgerStateProvider.isStakeCredentialRegistered(credential)
-                        && !atStability && !atBoundary) {
-                    atStability = true;
-                    atBoundary = true;
-                }
+                int flags = rewardFlagsFor(key);
+                boolean atStability = (flags & REWARD_FLAG_DEREGISTERED_AT_STABILITY) != 0;
+                boolean atBoundary = (flags & REWARD_FLAG_DEREGISTERED_AT_BOUNDARY) != 0;
                 if (atStability || (accounts.postBabbage() && atBoundary)) {
                     deregistered.add(credential);
                 }
@@ -1048,10 +1066,264 @@ public class EpochRewardCalculator {
                     pool, deregistered, lateDeregistered);
         }
 
+        private int rewardFlagsFor(byte[] poolMajorKey) {
+            if (!flagsIterator.isValid() || !startsWith(flagsIterator.key(), flagsPrefix)) {
+                throw new IllegalStateException("Missing reward credential flags for pool-major snapshot row");
+            }
+            byte[] flagsKey = flagsIterator.key();
+            if (poolMajorKey.length != 62 || flagsKey.length != 62
+                    || !Arrays.equals(poolMajorKey, 0, 4, flagsKey, 0, 4)
+                    || !Arrays.equals(poolMajorKey, 5, 62, flagsKey, 5, 62)) {
+                throw new IllegalStateException("Reward credential flags are not aligned with pool-major snapshot");
+            }
+            byte[] value = flagsIterator.value();
+            if (value.length != 1) {
+                throw new IllegalStateException("Malformed reward credential flags value");
+            }
+            flagsIterator.next();
+            return value[0] & 0xFF;
+        }
+
         @Override
         public void close() {
+            flagsIterator.close();
             iterator.close();
             options.close();
+        }
+    }
+
+    private PreparedRewardFlags prepareRewardCredentialFlags(
+            int snapshotEpoch, StreamingAccountContext accounts) {
+        return prepareRewardCredentialFlags(snapshotEpoch,
+                accounts.stabilityCutoff(), accounts.boundaryCutoff(),
+                accounts.registeredSinceCutoff(), accounts.registeredUntilCutoff());
+    }
+
+    PreparedRewardFlags prepareRewardCredentialFlags(
+            int snapshotEpoch, long stabilityCutoff, long boundaryCutoff,
+            long registeredSinceCutoff, long registeredUntilCutoff) {
+        byte[] flagsPrefix = rewardFlagsPrefix(snapshotEpoch);
+        deleteRewardCredentialFlags(flagsPrefix);
+        long started = System.currentTimeMillis();
+        long maximumCutoff = Math.max(Math.max(stabilityCutoff, boundaryCutoff),
+                Math.max(registeredSinceCutoff, registeredUntilCutoff));
+        int rows = 0;
+        int events = 0;
+        int chunks = 0;
+        Snapshot snapshot = db.getSnapshot();
+        try (ReadOptions readOptions = new ReadOptions().setFillCache(false).setSnapshot(snapshot);
+             RocksIterator snapshotRows = db.newIterator(cfEpochSnapshot, readOptions);
+             RocksIterator credentialEvents = db.newIterator(cfState, readOptions);
+             RocksIterator accounts = db.newIterator(cfState, readOptions);
+             WriteOptions writeOptions = new WriteOptions();
+             WriteBatch batch = new WriteBatch()) {
+            byte[] snapshotPrefix = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN)
+                    .putInt(snapshotEpoch).array();
+            snapshotRows.seek(snapshotPrefix);
+            credentialEvents.seek(new byte[]{DefaultAccountStateStore.PREFIX_STAKE_EVENT_BY_CREDENTIAL});
+            accounts.seek(new byte[]{DefaultAccountStateStore.PREFIX_ACCT});
+            int batchBytes = 0;
+            while (isCredentialMajorSnapshotRow(snapshotRows, snapshotPrefix)) {
+                byte[] snapshotKey = snapshotRows.key();
+                byte[] credentialSuffix = Arrays.copyOfRange(snapshotKey, 4, 33);
+                EventFlags eventFlags = consumeCredentialEvents(
+                        credentialEvents, credentialSuffix, stabilityCutoff, boundaryCutoff,
+                        registeredSinceCutoff, registeredUntilCutoff, maximumCutoff);
+                events += eventFlags.events();
+                boolean registeredNow = consumeRegisteredAccount(accounts, credentialSuffix);
+                int flags = eventFlags.flags();
+                if (registeredNow) flags |= REWARD_FLAG_REGISTERED_NOW;
+                if (!registeredNow
+                        && (flags & (REWARD_FLAG_DEREGISTERED_AT_STABILITY
+                        | REWARD_FLAG_DEREGISTERED_AT_BOUNDARY)) == 0) {
+                    flags |= REWARD_FLAG_DEREGISTERED_AT_STABILITY
+                            | REWARD_FLAG_DEREGISTERED_AT_BOUNDARY;
+                }
+
+                var snapshotValue = AccountStateCborCodec.decodeEpochDelegSnapshot(
+                        snapshotRows.value());
+                byte[] poolHash = HexUtil.decodeHexString(snapshotValue.poolHash());
+                if (poolHash.length != 28) {
+                    throw new IllegalStateException(
+                            "Invalid pool hash length in reward snapshot: " + poolHash.length);
+                }
+                byte[] flagsKey = rewardFlagsKey(
+                        snapshotEpoch, poolHash, credentialSuffix);
+                batch.put(cfEpochSnapshot, flagsKey, new byte[]{(byte) flags});
+                rows++;
+                batchBytes += flagsKey.length + 1;
+                if (batch.count() >= maxBatchOperations || batchBytes >= maxBatchBytes) {
+                    db.write(writeOptions, batch);
+                    batch.clear();
+                    batchBytes = 0;
+                    chunks++;
+                }
+                snapshotRows.next();
+            }
+            if (batch.count() > 0) {
+                db.write(writeOptions, batch);
+                chunks++;
+            }
+            log.info("Prepared reward credential flags for snapshot {}: rows={}, events={}, "
+                            + "chunks={}, elapsedMs={}",
+                    snapshotEpoch, rows, events, chunks,
+                    System.currentTimeMillis() - started);
+            return new PreparedRewardFlags(flagsPrefix, rows);
+        } catch (Exception failure) {
+            try {
+                deleteRewardCredentialFlags(flagsPrefix);
+            } catch (RuntimeException cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            }
+            throw failure instanceof RuntimeException runtimeException
+                    ? runtimeException
+                    : new IllegalStateException(
+                    "Failed to prepare reward credential flags for snapshot " + snapshotEpoch,
+                    failure);
+        } finally {
+            db.releaseSnapshot(snapshot);
+        }
+    }
+
+    private boolean isCredentialMajorSnapshotRow(
+            RocksIterator iterator, byte[] snapshotPrefix) {
+        if (!iterator.isValid()) return false;
+        byte[] key = iterator.key();
+        return key.length == 33 && startsWith(key, snapshotPrefix)
+                && key[4] != REWARD_FLAGS_PREFIX && key[4] != (byte) 0xFF;
+    }
+
+    private EventFlags consumeCredentialEvents(
+            RocksIterator iterator, byte[] credentialSuffix,
+            long stabilityCutoff, long boundaryCutoff,
+            long registeredSinceCutoff, long registeredUntilCutoff,
+            long maximumCutoff) {
+        while (isCredentialEvent(iterator)
+                && compareUnsigned(iterator.key(), 1, credentialSuffix, 0, 29) < 0) {
+            iterator.next();
+        }
+        int lastAtStability = -1;
+        int lastAtBoundary = -1;
+        boolean registeredSince = false;
+        boolean registeredUntil = false;
+        int events = 0;
+        while (isCredentialEvent(iterator)
+                && compareUnsigned(iterator.key(), 1, credentialSuffix, 0, 29) == 0) {
+            byte[] key = iterator.key();
+            long slot = ByteBuffer.wrap(key, 30, 8).order(ByteOrder.BIG_ENDIAN).getLong();
+            if (slot < maximumCutoff) {
+                int event = AccountStateCborCodec.decodeStakeEvent(iterator.value());
+                if (slot < stabilityCutoff) lastAtStability = event;
+                if (slot < boundaryCutoff) lastAtBoundary = event;
+                if (event == AccountStateCborCodec.EVENT_REGISTRATION) {
+                    if (slot < registeredSinceCutoff) registeredSince = true;
+                    if (slot < registeredUntilCutoff) registeredUntil = true;
+                }
+                events++;
+            }
+            iterator.next();
+        }
+        int flags = 0;
+        if (lastAtStability == AccountStateCborCodec.EVENT_DEREGISTRATION) {
+            flags |= REWARD_FLAG_DEREGISTERED_AT_STABILITY;
+        }
+        if (lastAtBoundary == AccountStateCborCodec.EVENT_DEREGISTRATION) {
+            flags |= REWARD_FLAG_DEREGISTERED_AT_BOUNDARY;
+        }
+        if (registeredSince) flags |= REWARD_FLAG_REGISTERED_SINCE;
+        if (registeredUntil) flags |= REWARD_FLAG_REGISTERED_UNTIL;
+        return new EventFlags(flags, events);
+    }
+
+    private boolean consumeRegisteredAccount(
+            RocksIterator iterator, byte[] credentialSuffix) {
+        while (isAccount(iterator)
+                && compareUnsigned(iterator.key(), 1, credentialSuffix, 0, 29) < 0) {
+            iterator.next();
+        }
+        return isAccount(iterator)
+                && compareUnsigned(iterator.key(), 1, credentialSuffix, 0, 29) == 0;
+    }
+
+    private static boolean isCredentialEvent(RocksIterator iterator) {
+        return iterator.isValid() && iterator.key().length == 42
+                && iterator.key()[0] == DefaultAccountStateStore.PREFIX_STAKE_EVENT_BY_CREDENTIAL;
+    }
+
+    private static boolean isAccount(RocksIterator iterator) {
+        return iterator.isValid() && iterator.key().length == 30
+                && iterator.key()[0] == DefaultAccountStateStore.PREFIX_ACCT;
+    }
+
+    private void deleteRewardCredentialFlags(byte[] flagsPrefix) {
+        byte[] end = flagsPrefix.clone();
+        end[4] = (byte) 0xFF;
+        try (WriteOptions options = new WriteOptions();
+             WriteBatch batch = new WriteBatch()) {
+            batch.deleteRange(cfEpochSnapshot, flagsPrefix, end);
+            db.write(options, batch);
+        } catch (RocksDBException e) {
+            throw new IllegalStateException("Failed to clear temporary reward credential flags", e);
+        }
+    }
+
+    static byte[] rewardFlagsPrefix(int snapshotEpoch) {
+        return ByteBuffer.allocate(5).order(ByteOrder.BIG_ENDIAN)
+                .putInt(snapshotEpoch).put(REWARD_FLAGS_PREFIX).array();
+    }
+
+    static byte[] rewardFlagsKey(
+            int snapshotEpoch, byte[] poolHash, byte[] credentialSuffix) {
+        if (poolHash.length != 28 || credentialSuffix.length != 29) {
+            throw new IllegalArgumentException("Invalid reward credential flags key component");
+        }
+        return ByteBuffer.allocate(62).order(ByteOrder.BIG_ENDIAN)
+                .putInt(snapshotEpoch).put(REWARD_FLAGS_PREFIX).put(poolHash)
+                .put(credentialSuffix).array();
+    }
+
+    private static int compareUnsigned(
+            byte[] left, int leftOffset, byte[] right, int rightOffset, int length) {
+        for (int index = 0; index < length; index++) {
+            int comparison = Integer.compare(
+                    left[leftOffset + index] & 0xFF,
+                    right[rightOffset + index] & 0xFF);
+            if (comparison != 0) return comparison;
+        }
+        return 0;
+    }
+
+    private record EventFlags(int flags, int events) {
+    }
+
+    final class PreparedRewardFlags implements AutoCloseable {
+        private final byte[] prefix;
+        private final int rows;
+        private boolean closed;
+
+        private PreparedRewardFlags(byte[] prefix, int rows) {
+            this.prefix = prefix;
+            this.rows = rows;
+        }
+
+        byte[] prefix() {
+            return prefix;
+        }
+
+        int rows() {
+            return rows;
+        }
+
+        @Override
+        public void close() {
+            if (closed) return;
+            closed = true;
+            try {
+                deleteRewardCredentialFlags(prefix);
+            } catch (RuntimeException cleanupFailure) {
+                log.warn("Could not remove temporary reward credential flags: {}",
+                        cleanupFailure.toString());
+            }
         }
     }
 

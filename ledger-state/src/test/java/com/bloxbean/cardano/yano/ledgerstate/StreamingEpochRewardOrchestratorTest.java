@@ -12,8 +12,10 @@ import org.junit.jupiter.api.Test;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -99,5 +101,130 @@ class StreamingEpochRewardOrchestratorTest {
         assertThat(resumed.getReserves()).isEqualTo(expected.getReserves());
         assertThat(resumed.getTotalDistributedRewards())
                 .isEqualTo(expected.getTotalDistributedRewards());
+    }
+
+    @Test
+    void poolAtATimeMatchesEpochApiAcrossCredentialRegistrationStates() {
+        String normalReward = credential("11");
+        String normalMember = credential("12");
+        String stableReward = credential("21");
+        String stableMember = credential("22");
+        String lateReward = credential("31");
+        String lateMember = credential("32");
+        String neverReward = credential("41");
+        String neverMember = credential("42");
+        List<PoolState> pools = List.of(
+                pool("a1", normalReward, normalMember),
+                pool("a2", stableReward, stableMember),
+                pool("a3", lateReward, lateMember),
+                pool("a4", neverReward, neverMember));
+        List<String> poolIds = pools.stream().map(PoolState::getPoolId).toList();
+
+        HashSet<String> deregistered = new HashSet<>(Set.of(
+                stableReward, stableMember, neverReward, neverMember));
+        HashSet<String> lateDeregistered = new HashSet<>(Set.of(
+                lateReward, lateMember));
+        HashSet<String> registeredSince = new HashSet<>(Set.of(
+                stableReward, lateReward));
+        HashSet<String> registeredUntil = new HashSet<>(Set.of(
+                stableReward, lateReward));
+        HashSet<String> deregisteredOnBoundary = new HashSet<>();
+        deregisteredOnBoundary.addAll(deregistered);
+        deregisteredOnBoundary.addAll(lateDeregistered);
+
+        ProtocolParameters parameters = ProtocolParameters.builder()
+                .decentralisation(BigDecimal.ZERO)
+                .treasuryGrowRate(new BigDecimal("0.2"))
+                .monetaryExpandRate(new BigDecimal("0.003"))
+                .optimalPoolCount(500)
+                .poolOwnerInfluence(new BigDecimal("0.3"))
+                .build();
+        BigInteger totalStake = BigInteger.valueOf(4_000_000_000L);
+        Epoch epochInfo = Epoch.builder().number(8).fees(BigInteger.valueOf(1_000_000L))
+                .blockCount(40).nonOBFTBlockCount(40).activeStake(totalStake).build();
+        NetworkConfig network = NetworkConfig.builder()
+                .networkMagic(1).totalLovelace(BigInteger.valueOf(45_000_000_000_000_000L))
+                .poolDepositInLovelace(BigInteger.valueOf(500_000_000L))
+                .expectedSlotsPerEpoch(432_000).genesisConfigSecurityParameter(2_160)
+                .shelleyStartEpoch(0).allegraHardforkEpoch(0).vasilHardforkEpoch(999)
+                .bootstrapAddressAmount(BigInteger.ZERO).activeSlotCoefficient(0.05)
+                .shelleyInitialReserves(BigInteger.ZERO).shelleyInitialTreasury(BigInteger.ZERO)
+                .shelleyInitialUtxo(BigInteger.ZERO).build();
+        BigInteger reserves = BigInteger.valueOf(10_000_000_000_000_000L);
+        BigInteger treasury = BigInteger.valueOf(1_000_000_000_000_000L);
+        HashSet<String> empty = new HashSet<>();
+
+        var expected = EpochCalculation.calculateEpochRewardPots(
+                10, reserves, treasury, parameters, epochInfo, Set.of(), deregistered,
+                List.of(), poolIds, pools, lateDeregistered, registeredSince,
+                registeredUntil, empty, deregisteredOnBoundary, network);
+
+        List<StreamingEpochRewardOrchestrator.PoolRewardInput> inputs = List.of(
+                new StreamingEpochRewardOrchestrator.PoolRewardInput(
+                        pools.get(0), Set.of(), Set.of()),
+                new StreamingEpochRewardOrchestrator.PoolRewardInput(
+                        pools.get(1), Set.of(stableReward, stableMember), Set.of()),
+                new StreamingEpochRewardOrchestrator.PoolRewardInput(
+                        pools.get(2), Set.of(), Set.of(lateReward, lateMember)),
+                new StreamingEpochRewardOrchestrator.PoolRewardInput(
+                        pools.get(3), Set.of(neverReward, neverMember), Set.of()));
+        Map<String, PoolRewardCalculationResult> actualPools = new HashMap<>();
+        var actual = StreamingEpochRewardOrchestrator.calculate(
+                10, reserves, treasury, parameters, epochInfo, Set.of(), deregistered,
+                List.of(), inputs.iterator(), lateDeregistered, registeredSince,
+                registeredUntil, empty, deregisteredOnBoundary, network,
+                null, BigInteger.ZERO, BigInteger.ZERO,
+                (result, totals, replayed) -> actualPools.put(result.getPoolId(), result));
+
+        assertThat(actual.getTreasury()).isEqualTo(expected.getTreasury());
+        assertThat(actual.getReserves()).isEqualTo(expected.getReserves());
+        assertThat(actual.getTotalDistributedRewards())
+                .isEqualTo(expected.getTotalDistributedRewards());
+        assertThat(actual.getTotalUndistributedRewards())
+                .isEqualTo(expected.getTotalUndistributedRewards());
+        assertThat(actual.getTotalRewardsPot()).isEqualTo(expected.getTotalRewardsPot());
+        assertThat(actual.getTotalPoolRewardsPot()).isEqualTo(expected.getTotalPoolRewardsPot());
+        assertThat(actualPools).hasSize(expected.getPoolRewardCalculationResults().size());
+        for (PoolRewardCalculationResult expectedPool : expected.getPoolRewardCalculationResults()) {
+            PoolRewardCalculationResult actualPool = actualPools.get(expectedPool.getPoolId());
+            assertThat(actualPool).as("pool %s", expectedPool.getPoolId()).isNotNull();
+            assertThat(actualPool.getDistributedPoolReward())
+                    .isEqualTo(expectedPool.getDistributedPoolReward());
+            assertThat(actualPool.getUnspendableEarnedRewards())
+                    .isEqualTo(expectedPool.getUnspendableEarnedRewards());
+            assertThat(actualPool.getOperatorReward())
+                    .isEqualTo(expectedPool.getOperatorReward());
+            assertThat(memberRewardAmounts(actualPool))
+                    .isEqualTo(memberRewardAmounts(expectedPool));
+        }
+    }
+
+    private static PoolState pool(String poolByte, String rewardAddress, String memberAddress) {
+        HashSet<Delegator> delegators = new HashSet<>();
+        delegators.add(Delegator.builder().stakeAddress(rewardAddress)
+                .activeStake(BigInteger.valueOf(400_000_000L)).build());
+        delegators.add(Delegator.builder().stakeAddress(memberAddress)
+                .activeStake(BigInteger.valueOf(600_000_000L)).build());
+        return PoolState.builder()
+                .poolId(poolByte.repeat(28)).blockCount(10)
+                .activeStake(BigInteger.valueOf(1_000_000_000L))
+                .delegators(delegators).epoch(8).rewardAddress(rewardAddress)
+                .owners(new HashSet<>(Set.of(rewardAddress)))
+                .ownerActiveStake(BigInteger.valueOf(400_000_000L))
+                .poolFees(BigInteger.ZERO).margin(new BigDecimal("0.05"))
+                .fixedCost(BigInteger.ZERO).pledge(BigInteger.valueOf(100_000_000L))
+                .build();
+    }
+
+    private static String credential(String hashByte) {
+        return "0:" + hashByte.repeat(28);
+    }
+
+    private static Map<String, BigInteger> memberRewardAmounts(
+            PoolRewardCalculationResult result) {
+        Map<String, BigInteger> rewards = new HashMap<>();
+        result.getMemberRewards().forEach(reward ->
+                rewards.put(reward.getStakeAddress(), reward.getAmount()));
+        return rewards;
     }
 }
