@@ -2114,6 +2114,19 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             if (credits.isEmpty()) {
                 return;
             }
+
+            List<byte[]> accountKeys = new ArrayList<>(credits.size());
+            List<ColumnFamilyHandle> accountColumnFamilies = new ArrayList<>(credits.size());
+            for (CredentialKey credential : credits.keySet()) {
+                accountKeys.add(accountKey(credential.typeInt(), credential.hash()));
+                accountColumnFamilies.add(cfState);
+            }
+            List<byte[]> accountValues = db.multiGetAsList(accountColumnFamilies, accountKeys);
+            if (accountValues.size() != accountKeys.size()) {
+                throw new IllegalStateException(
+                        "MIR account MultiGet returned an unexpected value count");
+            }
+
             try (var rewardArchive = archiveStaging.enabled(
                     com.bloxbean.cardano.yano.api.archive.EpochArchiveStagingSink.Dataset.REWARD)
                     ? archiveStaging.openRewards(epoch, "mir") : null) {
@@ -2123,13 +2136,15 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
             BigInteger totalCredited = BigInteger.ZERO;
             BigInteger creditedReserves = BigInteger.ZERO;
             BigInteger creditedTreasury = BigInteger.ZERO;
+            int accountIndex = 0;
             for (var entry : credits.entrySet()) {
                 var ck = entry.getKey();
                 MirCredit credit = entry.getValue();
                 BigInteger amount = credit.amount();
 
-                byte[] acctKey = accountKey(ck.typeInt(), ck.hash());
-                byte[] acctVal = db.get(cfState, acctKey);
+                byte[] acctKey = accountKeys.get(accountIndex);
+                byte[] acctVal = accountValues.get(accountIndex);
+                accountIndex++;
                 if (acctVal == null) {
                     skipped++;
                     if (log.isDebugEnabled()) {
