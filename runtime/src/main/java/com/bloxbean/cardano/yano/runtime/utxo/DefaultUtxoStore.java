@@ -752,9 +752,13 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
     }
 
     @Override
+    public boolean isPointerIndexApplicable() {
+        return enabled && cfPointer != null && hasCompleteStakeBalanceSource();
+    }
+
+    @Override
     public boolean isPointerIndexReadyAtCurrentCoordinate() {
-        if (!enabled || db == null || cfMeta == null || cfPointer == null
-                || !hasCompleteStakeBalanceSource()) {
+        if (!isPointerIndexApplicable() || db == null || cfMeta == null) {
             return false;
         }
         try (ReadOptions readOptions = new ReadOptions().setFillCache(false)) {

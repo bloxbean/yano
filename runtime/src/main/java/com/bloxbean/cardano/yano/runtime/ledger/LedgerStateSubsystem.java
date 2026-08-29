@@ -58,6 +58,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
@@ -239,12 +240,6 @@ public final class LedgerStateSubsystem implements Subsystem {
         }
 
         try {
-            if (accountStateStore instanceof DefaultAccountStateStore defaultStore) {
-                UtxoState utxoState = utxoStateSupplier.get();
-                defaultStore.completeEpochBoundaryStateV2(
-                        utxoState != null && utxoState.isPointerIndexReadyAtCurrentCoordinate());
-            }
-
             // A block body is durably stored before its epoch-transition events run. If the
             // process dies inside the boundary, UTXO/account reconciliation would otherwise
             // apply that first new-epoch block before SNAP resumes. Finish the journaled
@@ -262,11 +257,38 @@ public final class LedgerStateSubsystem implements Subsystem {
                 accountStateReconcilePending = false;
             }
 
+            if (accountStateStore instanceof DefaultAccountStateStore defaultStore) {
+                completePointerIndexVersionGateIfApplicable(
+                        utxoStateSupplier.get(), defaultStore::completeEpochBoundaryStateV2, log);
+            }
+
             publishDirectStartGenesisBootstrapIfNeeded();
             startupDerivedStateRecovered = true;
         } catch (Throwable t) {
             throw new IllegalStateException("Startup ledger-state recovery failed", t);
         }
+    }
+
+    static void completePointerIndexVersionGateIfApplicable(
+            UtxoState utxoState, Consumer<Boolean> completion, Logger log) {
+        Objects.requireNonNull(completion, "completion");
+        Objects.requireNonNull(log, "log");
+        if (utxoState == null) {
+            log.info("Epoch-boundary v2 pointer-index gate not applicable: UTXO state is unavailable");
+            return;
+        }
+        if (!utxoState.isPointerIndexApplicable()) {
+            log.info("Epoch-boundary v2 pointer-index gate not applicable: "
+                    + "UTXO state is disabled, filtered, or lacks a complete stake source");
+            return;
+        }
+
+        boolean ready = utxoState.isPointerIndexReadyAtCurrentCoordinate();
+        if (!ready) {
+            log.error("Epoch-boundary v2 pointer-index gate failed: "
+                    + "no usable completeness marker at the current UTXO coordinate");
+        }
+        completion.accept(ready);
     }
 
     public void completeStartupRecovery() {

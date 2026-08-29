@@ -7,6 +7,9 @@ import com.bloxbean.cardano.yano.api.genesis.GenesisBootstrapData;
 import com.bloxbean.cardano.yano.api.genesis.GenesisDelegation;
 import com.bloxbean.cardano.yano.api.genesis.GenesisPool;
 import com.bloxbean.cardano.yano.api.genesis.ShelleyGenesisBootstrap;
+import com.bloxbean.cardano.yano.api.utxo.UtxoState;
+import com.bloxbean.cardano.yano.api.utxo.model.Outpoint;
+import com.bloxbean.cardano.yano.api.utxo.model.Utxo;
 import com.bloxbean.cardano.yano.runtime.chain.InMemoryChainState;
 import com.bloxbean.cardano.yano.runtime.kernel.SubsystemHealth;
 import org.junit.jupiter.api.Test;
@@ -15,7 +18,9 @@ import org.slf4j.LoggerFactory;
 import java.math.BigInteger;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -100,6 +105,74 @@ class LedgerStateSubsystemTest {
                 "earliest known era is unavailable"))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("earliest known era is unavailable");
+    }
+
+    @Test
+    void pointerIndexVersionGateSkipsStoresWhereIndexIsNotApplicable() {
+        AtomicReference<Boolean> completion = new AtomicReference<>();
+
+        LedgerStateSubsystem.completePointerIndexVersionGateIfApplicable(
+                pointerState(false, false), completion::set,
+                LoggerFactory.getLogger(LedgerStateSubsystemTest.class));
+
+        assertThat(completion.get()).isNull();
+
+        LedgerStateSubsystem.completePointerIndexVersionGateIfApplicable(
+                null, completion::set,
+                LoggerFactory.getLogger(LedgerStateSubsystemTest.class));
+
+        assertThat(completion.get()).isNull();
+    }
+
+    @Test
+    void pointerIndexVersionGatePassesApplicableStoreReadinessToAccountStore() {
+        AtomicReference<Boolean> completion = new AtomicReference<>();
+
+        LedgerStateSubsystem.completePointerIndexVersionGateIfApplicable(
+                pointerState(true, false), completion::set,
+                LoggerFactory.getLogger(LedgerStateSubsystemTest.class));
+
+        assertThat(completion.get()).isFalse();
+
+        LedgerStateSubsystem.completePointerIndexVersionGateIfApplicable(
+                pointerState(true, true), completion::set,
+                LoggerFactory.getLogger(LedgerStateSubsystemTest.class));
+
+        assertThat(completion.get()).isTrue();
+    }
+
+    private static UtxoState pointerState(boolean applicable, boolean ready) {
+        return new UtxoState() {
+            @Override
+            public List<Utxo> getUtxosByAddress(String address, int page, int pageSize) {
+                return List.of();
+            }
+
+            @Override
+            public List<Utxo> getUtxosByPaymentCredential(String credential, int page, int pageSize) {
+                return List.of();
+            }
+
+            @Override
+            public Optional<Utxo> getUtxo(Outpoint outpoint) {
+                return Optional.empty();
+            }
+
+            @Override
+            public boolean isEnabled() {
+                return applicable;
+            }
+
+            @Override
+            public boolean isPointerIndexApplicable() {
+                return applicable;
+            }
+
+            @Override
+            public boolean isPointerIndexReadyAtCurrentCoordinate() {
+                return ready;
+            }
+        };
     }
 
     private static RuntimeOptions options(boolean accountStateEnabled) {

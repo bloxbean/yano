@@ -282,6 +282,7 @@ class DefaultUtxoStoreTest {
         var expected = new CanonicalBlockReference(
                 1, 100, HexUtil.decodeHexString(blockHash));
 
+        assertTrue(store.isPointerIndexApplicable());
         assertTrue(store.isPointerIndexReadyAtCurrentCoordinate());
         chain.rocks().db().delete(
                 chain.rocks().handle(UtxoCfNames.UTXO_META), PointerIndexMarker.KEY);
