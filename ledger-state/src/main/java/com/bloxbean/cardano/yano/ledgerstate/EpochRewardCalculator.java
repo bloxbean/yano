@@ -1111,10 +1111,13 @@ public class EpochRewardCalculator {
         int events = 0;
         int chunks = 0;
         Snapshot snapshot = db.getSnapshot();
-        try (ReadOptions readOptions = new ReadOptions().setFillCache(false).setSnapshot(snapshot);
-             RocksIterator snapshotRows = db.newIterator(cfEpochSnapshot, readOptions);
-             RocksIterator credentialEvents = db.newIterator(cfState, readOptions);
-             RocksIterator accounts = db.newIterator(cfState, readOptions);
+        try (ReadOptions snapshotReadOptions = new ReadOptions()
+                     .setFillCache(false).setSnapshot(snapshot);
+             ReadOptions accountReadOptions = new ReadOptions()
+                     .setFillCache(true).setSnapshot(snapshot);
+             RocksIterator snapshotRows = db.newIterator(cfEpochSnapshot, snapshotReadOptions);
+             RocksIterator credentialEvents = db.newIterator(cfState, accountReadOptions);
+             RocksIterator accounts = db.newIterator(cfState, accountReadOptions);
              WriteOptions writeOptions = new WriteOptions();
              WriteBatch batch = new WriteBatch()) {
             byte[] snapshotPrefix = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN)
