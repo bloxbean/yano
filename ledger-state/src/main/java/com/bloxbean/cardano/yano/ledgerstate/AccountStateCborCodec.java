@@ -27,6 +27,21 @@ public final class AccountStateCborCodec {
     public record StakeAccount(BigInteger reward, BigInteger deposit) {}
 
     public static StakeAccount decodeStakeAccount(byte[] bytes) {
+        try {
+            FastCborReader reader = new FastCborReader(bytes);
+            reader.requireMapSize(2);
+            reader.requireUnsignedKey(0);
+            BigInteger reward = reader.readUnsignedInteger();
+            reader.requireUnsignedKey(1);
+            BigInteger deposit = reader.readUnsignedInteger();
+            reader.requireEnd();
+            return new StakeAccount(reward, deposit);
+        } catch (FastPathFallback ignored) {
+            return decodeStakeAccountGeneric(bytes);
+        }
+    }
+
+    static StakeAccount decodeStakeAccountGeneric(byte[] bytes) {
         Map map = (Map) CborSerializationUtil.deserializeOne(bytes);
         BigInteger reward = CborSerializationUtil.toBigInteger(map.get(new UnsignedInteger(0)));
         BigInteger deposit = CborSerializationUtil.toBigInteger(map.get(new UnsignedInteger(1)));
@@ -242,6 +257,27 @@ public final class AccountStateCborCodec {
     public record EpochDelegSnapshot(String poolHash, BigInteger amount) {}
 
     public static EpochDelegSnapshot decodeEpochDelegSnapshot(byte[] bytes) {
+        try {
+            FastCborReader reader = new FastCborReader(bytes);
+            int entries = reader.readMapSize();
+            if (entries != 1 && entries != 2) {
+                throw FastPathFallback.INSTANCE;
+            }
+            reader.requireUnsignedKey(0);
+            String poolHash = HexUtil.encodeHexString(reader.readByteString(28));
+            BigInteger amount = BigInteger.ZERO;
+            if (entries == 2) {
+                reader.requireUnsignedKey(1);
+                amount = reader.readUnsignedInteger();
+            }
+            reader.requireEnd();
+            return new EpochDelegSnapshot(poolHash, amount);
+        } catch (FastPathFallback ignored) {
+            return decodeEpochDelegSnapshotGeneric(bytes);
+        }
+    }
+
+    static EpochDelegSnapshot decodeEpochDelegSnapshotGeneric(byte[] bytes) {
         Map map = (Map) CborSerializationUtil.deserializeOne(bytes);
         String poolHash = HexUtil.encodeHexString(((ByteString) map.get(new UnsignedInteger(0))).getBytes());
         DataItem amountDi = map.get(new UnsignedInteger(1));
@@ -250,6 +286,26 @@ public final class AccountStateCborCodec {
     }
 
     static byte[] decodeEpochDelegSnapshotPoolHash(byte[] bytes) {
+        try {
+            FastCborReader reader = new FastCborReader(bytes);
+            int entries = reader.readMapSize();
+            if (entries != 1 && entries != 2) {
+                throw FastPathFallback.INSTANCE;
+            }
+            reader.requireUnsignedKey(0);
+            byte[] poolHash = reader.readByteString(28);
+            if (entries == 2) {
+                reader.requireUnsignedKey(1);
+                reader.readUnsignedInteger();
+            }
+            reader.requireEnd();
+            return poolHash;
+        } catch (FastPathFallback ignored) {
+            return decodeEpochDelegSnapshotPoolHashGeneric(bytes);
+        }
+    }
+
+    static byte[] decodeEpochDelegSnapshotPoolHashGeneric(byte[] bytes) {
         Map map = (Map) CborSerializationUtil.deserializeOne(bytes);
         return ((ByteString) map.get(new UnsignedInteger(0))).getBytes();
     }
@@ -259,6 +315,17 @@ public final class AccountStateCborCodec {
     }
 
     static BigInteger decodePoolMajorStake(byte[] bytes) {
+        try {
+            FastCborReader reader = new FastCborReader(bytes);
+            BigInteger amount = reader.readUnsignedInteger();
+            reader.requireEnd();
+            return amount;
+        } catch (FastPathFallback ignored) {
+            return decodePoolMajorStakeGeneric(bytes);
+        }
+    }
+
+    static BigInteger decodePoolMajorStakeGeneric(byte[] bytes) {
         return CborSerializationUtil.toBigInteger(CborSerializationUtil.deserializeOne(bytes));
     }
 
@@ -332,6 +399,19 @@ public final class AccountStateCborCodec {
     }
 
     static int decodeStakeEvent(byte[] bytes) {
+        try {
+            FastCborReader reader = new FastCborReader(bytes);
+            reader.requireMapSize(1);
+            reader.requireUnsignedKey(0);
+            int event = reader.readUnsignedInt();
+            reader.requireEnd();
+            return event;
+        } catch (FastPathFallback ignored) {
+            return decodeStakeEventGeneric(bytes);
+        }
+    }
+
+    static int decodeStakeEventGeneric(byte[] bytes) {
         Map map = (Map) CborSerializationUtil.deserializeOne(bytes);
         return CborSerializationUtil.toInt(map.get(new UnsignedInteger(0)));
     }
@@ -425,5 +505,164 @@ public final class AccountStateCborCodec {
                 CborSerializationUtil.toLong(map.get(new UnsignedInteger(2))),
                 CborSerializationUtil.toLong(map.get(new UnsignedInteger(3))),
                 blockHash);
+    }
+
+    /**
+     * Allocation-light reader for the canonical, fixed-shape values used by the reward path.
+     * Unsupported but otherwise valid CBOR falls back to the generic decoder so existing stores
+     * remain readable. The fallback exception has no writable stack trace because canonical rows
+     * never need diagnostic exception state.
+     */
+    private static final class FastCborReader {
+        private static final int MAJOR_UNSIGNED = 0;
+        private static final int MAJOR_BYTE_STRING = 2;
+        private static final int MAJOR_MAP = 5;
+
+        private final byte[] bytes;
+        private int position;
+
+        private FastCborReader(byte[] bytes) {
+            if (bytes == null) {
+                throw FastPathFallback.INSTANCE;
+            }
+            this.bytes = bytes;
+        }
+
+        private void requireMapSize(int expected) {
+            if (readMapSize() != expected) {
+                throw FastPathFallback.INSTANCE;
+            }
+        }
+
+        private int readMapSize() {
+            long size = readArgument(MAJOR_MAP);
+            if (size > Integer.MAX_VALUE) {
+                throw FastPathFallback.INSTANCE;
+            }
+            return (int) size;
+        }
+
+        private void requireUnsignedKey(int expected) {
+            if (readArgument(MAJOR_UNSIGNED) != expected) {
+                throw FastPathFallback.INSTANCE;
+            }
+        }
+
+        private int readUnsignedInt() {
+            long value = readArgument(MAJOR_UNSIGNED);
+            if (value > Integer.MAX_VALUE) {
+                throw FastPathFallback.INSTANCE;
+            }
+            return (int) value;
+        }
+
+        private BigInteger readUnsignedInteger() {
+            int initialByte = readByte();
+            if ((initialByte >>> 5) != MAJOR_UNSIGNED) {
+                throw FastPathFallback.INSTANCE;
+            }
+
+            int additionalInfo = initialByte & 0x1f;
+            if (additionalInfo < 24) {
+                return BigInteger.valueOf(additionalInfo);
+            }
+
+            int byteCount = byteCount(additionalInfo);
+            requireAvailable(byteCount);
+            int valueOffset = position;
+            requireCanonical(additionalInfo, valueOffset);
+            position += byteCount;
+            return new BigInteger(1, bytes, valueOffset, byteCount);
+        }
+
+        private byte[] readByteString(int expectedLength) {
+            long length = readArgument(MAJOR_BYTE_STRING);
+            if (length != expectedLength) {
+                throw FastPathFallback.INSTANCE;
+            }
+            requireAvailable(expectedLength);
+            byte[] value = new byte[expectedLength];
+            System.arraycopy(bytes, position, value, 0, expectedLength);
+            position += expectedLength;
+            return value;
+        }
+
+        private long readArgument(int expectedMajorType) {
+            int initialByte = readByte();
+            if ((initialByte >>> 5) != expectedMajorType) {
+                throw FastPathFallback.INSTANCE;
+            }
+
+            int additionalInfo = initialByte & 0x1f;
+            if (additionalInfo < 24) {
+                return additionalInfo;
+            }
+
+            int byteCount = byteCount(additionalInfo);
+            requireAvailable(byteCount);
+            int valueOffset = position;
+            requireCanonical(additionalInfo, valueOffset);
+            if (byteCount == Long.BYTES && (bytes[valueOffset] & 0x80) != 0) {
+                throw FastPathFallback.INSTANCE;
+            }
+
+            long value = 0;
+            for (int i = 0; i < byteCount; i++) {
+                value = (value << 8) | (bytes[position++] & 0xffL);
+            }
+            return value;
+        }
+
+        private int byteCount(int additionalInfo) {
+            return switch (additionalInfo) {
+                case 24 -> 1;
+                case 25 -> 2;
+                case 26 -> 4;
+                case 27 -> 8;
+                default -> throw FastPathFallback.INSTANCE;
+            };
+        }
+
+        private void requireCanonical(int additionalInfo, int valueOffset) {
+            boolean canonical = switch (additionalInfo) {
+                case 24 -> (bytes[valueOffset] & 0xff) >= 24;
+                case 25 -> (bytes[valueOffset] & 0xff) != 0;
+                case 26 -> (bytes[valueOffset] & 0xff) != 0
+                        || (bytes[valueOffset + 1] & 0xff) != 0;
+                case 27 -> (bytes[valueOffset] & 0xff) != 0
+                        || (bytes[valueOffset + 1] & 0xff) != 0
+                        || (bytes[valueOffset + 2] & 0xff) != 0
+                        || (bytes[valueOffset + 3] & 0xff) != 0;
+                default -> false;
+            };
+            if (!canonical) {
+                throw FastPathFallback.INSTANCE;
+            }
+        }
+
+        private int readByte() {
+            requireAvailable(1);
+            return bytes[position++] & 0xff;
+        }
+
+        private void requireAvailable(int byteCount) {
+            if (byteCount < 0 || position > bytes.length - byteCount) {
+                throw FastPathFallback.INSTANCE;
+            }
+        }
+
+        private void requireEnd() {
+            if (position != bytes.length) {
+                throw FastPathFallback.INSTANCE;
+            }
+        }
+    }
+
+    private static final class FastPathFallback extends RuntimeException {
+        private static final FastPathFallback INSTANCE = new FastPathFallback();
+
+        private FastPathFallback() {
+            super(null, null, false, false);
+        }
     }
 }
