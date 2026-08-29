@@ -549,6 +549,8 @@ public final class YanoPropertyKeys {
                 "yano.pipeline.slowBodyCallbackWarnMs";
         public static final String NON_RECOVERING_ROLLBACK_WAIT_MS =
                 "yano.pipeline.nonRecoveringRollbackWaitMs";
+        public static final String EPOCH_BOUNDARY_FALLBACK_WAIT_MS =
+                "yano.pipeline.epochBoundaryFallbackWaitMs";
         public static final String HEADER_CONTINUITY_VALIDATION_BLOCKS =
                 "yano.pipeline.headerContinuityValidationBlocks";
 

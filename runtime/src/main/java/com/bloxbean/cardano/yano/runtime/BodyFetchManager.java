@@ -123,6 +123,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
     // Epoch transition detection
     private volatile EpochParamProvider epochParamProvider;
     private volatile int previousEpoch = -1;
+    private final AtomicInteger epochBoundaryFenceEpoch = new AtomicInteger(-1);
     private volatile Supplier<GenesisBootstrapData> genesisBootstrapDataSupplier = GenesisBootstrapData::empty;
 
     // Rollback tracking to prevent storing stale blocks
@@ -267,6 +268,17 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
         int currentEpoch = epochForSlot(slot);
         int appliedEpoch = previousEpoch;
         return appliedEpoch >= 0 && currentEpoch > appliedEpoch ? currentEpoch : -1;
+    }
+
+    public boolean isEpochBoundaryFenceActive() {
+        return epochBoundaryFenceEpoch.get() >= 0;
+    }
+
+    boolean isCurrentBatchFencedAtEpoch(int epoch, long slot) {
+        Point batchTo = currentBatchTo;
+        return epochBoundaryFenceEpoch.get() == epoch
+                && batchTo != null
+                && batchTo.getSlot() == slot;
     }
 
     /**
@@ -570,6 +582,8 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
             rangeSize = maxBatchSize;
         }
 
+        toPoint = fenceRangeAtNextEpoch(fromPoint, toPoint);
+
         if (log.isDebugEnabled()) {
             log.debug("📦 Calculated range: from={}, to={}, size={}",
                      fromPoint.getSlot(), toPoint.getSlot(), rangeSize);
@@ -602,7 +616,36 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
         } catch (Exception e) {
             log.error("Failed to fetch block range: from={}, to={}", range.from, range.to, e);
             batchInProgress = false; // Reset on error
+            clearEpochBoundaryFence();
         }
+    }
+
+    private Point fenceRangeAtNextEpoch(Point fromPoint, Point toPoint) {
+        EpochParamProvider provider = epochParamProvider;
+        int appliedEpoch = previousEpoch;
+        if (provider == null || appliedEpoch < 0 || fromPoint == null || toPoint == null
+                || epochForSlot(toPoint.getSlot()) <= appliedEpoch) {
+            return toPoint;
+        }
+
+        int nextEpoch = appliedEpoch + 1;
+        long boundarySlot = provider.getEpochSlotCalc().epochToStartSlot(nextEpoch);
+        Point transitionPoint = chainState.findNextBlockHeader(new Point(boundarySlot, null));
+        if (transitionPoint == null
+                || transitionPoint.getSlot() < fromPoint.getSlot()
+                || transitionPoint.getSlot() > toPoint.getSlot()
+                || epochForSlot(transitionPoint.getSlot()) != nextEpoch) {
+            return toPoint;
+        }
+
+        epochBoundaryFenceEpoch.set(nextEpoch);
+        log.info("Body fetch fenced boundary batch: epoch={}, fromSlot={}, toSlot={}",
+                nextEpoch, fromPoint.getSlot(), transitionPoint.getSlot());
+        return transitionPoint;
+    }
+
+    private void clearEpochBoundaryFence() {
+        epochBoundaryFenceEpoch.set(-1);
     }
 
     // ================================================================
@@ -1113,6 +1156,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
     @Override
     public void batchDone() {
         batchInProgress = false;
+        clearEpochBoundaryFence();
         batchesCompleted.incrementAndGet();
 
         if (log.isDebugEnabled()) {
@@ -1133,6 +1177,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
     public void noBlockFound(Point from, Point to) {
         log.warn("⚠️ No blocks found in range: from={}, to={}", from, to);
         batchInProgress = false; // Reset state
+        clearEpochBoundaryFence();
     }
 
     @Override
@@ -1146,6 +1191,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
         currentBatchFrom = null;
         currentBatchTo = null;
         currentBatchSize = 0;
+        clearEpochBoundaryFence();
         consecutiveStaleBlocks.set(0);
         resetAppliedBodySlotAfterRollback(point);
     }
@@ -1154,6 +1200,7 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
     public void onDisconnect() {
         log.info("💔 Connection lost - pausing body fetch until reconnection");
         batchInProgress = false; // Reset state on disconnect
+        clearEpochBoundaryFence();
     }
 
     @Override

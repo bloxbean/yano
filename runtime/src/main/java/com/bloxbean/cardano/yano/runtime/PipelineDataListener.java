@@ -25,8 +25,9 @@ import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -45,6 +46,8 @@ public class PipelineDataListener implements BlockChainDataListener {
             positiveLongProperty(YanoPropertyKeys.Pipeline.SLOW_BODY_CALLBACK_WARN_MS, 1_000L);
     private static final long NON_RECOVERING_ROLLBACK_WAIT_MS =
             positiveLongProperty(YanoPropertyKeys.Pipeline.NON_RECOVERING_ROLLBACK_WAIT_MS, 30_000L);
+    private static final long EPOCH_BOUNDARY_FALLBACK_WAIT_MS =
+            positiveLongProperty(YanoPropertyKeys.Pipeline.EPOCH_BOUNDARY_FALLBACK_WAIT_MS, 30_000L);
 
     private final HeaderSyncManager headerSyncManager;
     private final BodyFetchManager bodyFetchManager;
@@ -59,6 +62,7 @@ public class PipelineDataListener implements BlockChainDataListener {
     private record EpochBoundaryQueueHold(int epoch,
                                           int initialQueueDepth,
                                           long initialQueuedBytes,
+                                          boolean fencedBatch,
                                           long startedNanos) {
     }
 
@@ -217,8 +221,7 @@ public class PipelineDataListener implements BlockChainDataListener {
                 CompletableFuture<LedgerApplyProcessor.Outcome> future = enqueueApply(
                         description,
                         estimatedCborBytes(block != null ? block.getCbor() : null),
-                        apply,
-                        boundaryHold != null);
+                        apply);
                 awaitEpochBoundaryQueueHold(boundaryHold, description, future);
             } else {
                 runImmediateApply(apply);
@@ -266,8 +269,7 @@ public class PipelineDataListener implements BlockChainDataListener {
                 CompletableFuture<LedgerApplyProcessor.Outcome> future = enqueueApply(
                         description,
                         estimatedCborBytes(byronBlock != null ? byronBlock.getCbor() : null),
-                        apply,
-                        boundaryHold != null);
+                        apply);
                 awaitEpochBoundaryQueueHold(boundaryHold, description, future);
             } else {
                 runImmediateApply(apply);
@@ -315,8 +317,7 @@ public class PipelineDataListener implements BlockChainDataListener {
                 CompletableFuture<LedgerApplyProcessor.Outcome> future = enqueueApply(
                         description,
                         estimatedCborBytes(byronEbBlock != null ? byronEbBlock.getCbor() : null),
-                        apply,
-                        boundaryHold != null);
+                        apply);
                 awaitEpochBoundaryQueueHold(boundaryHold, description, future);
             } else {
                 runImmediateApply(apply);
@@ -539,20 +540,8 @@ public class PipelineDataListener implements BlockChainDataListener {
     private CompletableFuture<LedgerApplyProcessor.Outcome> enqueueApply(String description,
                                                                           long estimatedBytes,
                                                                           LedgerApplyProcessor.ApplyWork work) {
-        return enqueueApply(description, estimatedBytes, work, false);
-    }
-
-    private CompletableFuture<LedgerApplyProcessor.Outcome> enqueueApply(String description,
-                                                                          long estimatedBytes,
-                                                                          LedgerApplyProcessor.ApplyWork work,
-                                                                          boolean waitForQueueDrain) {
-        CompletableFuture<LedgerApplyProcessor.Outcome> future = waitForQueueDrain
-                ? ledgerApplyProcessor.enqueueApplyBlockAfterQueueDrain(
-                        ledgerGeneration,
-                        description,
-                        estimatedBytes,
-                        work)
-                : ledgerApplyProcessor.enqueueApplyBlockBackpressured(
+        CompletableFuture<LedgerApplyProcessor.Outcome> future =
+                ledgerApplyProcessor.enqueueApplyBlockBackpressured(
                         ledgerGeneration,
                         description,
                         estimatedBytes,
@@ -580,6 +569,7 @@ public class PipelineDataListener implements BlockChainDataListener {
                 pendingEpoch,
                 status.dataQueueDepth(),
                 status.queuedDecodedBytes(),
+                bodyFetchManager.isCurrentBatchFencedAtEpoch(pendingEpoch, slot),
                 System.nanoTime());
     }
 
@@ -589,7 +579,8 @@ public class PipelineDataListener implements BlockChainDataListener {
         }
         LedgerApplyProcessor.Status status = ledgerApplyProcessor.status();
         log.info("Ledger apply queue drained ({} items, {} bytes) before epoch {} boundary: "
-                        + "slot={}, block={}, remainingQueueDepth={}, remainingQueuedDecodedBytes={}",
+                        + "slot={}, block={}, remainingQueueDepthIncludingMarkers={}, "
+                        + "remainingQueuedDecodedBytes={}",
                 hold.initialQueueDepth(),
                 hold.initialQueuedBytes(),
                 hold.epoch(),
@@ -605,8 +596,27 @@ public class PipelineDataListener implements BlockChainDataListener {
         if (hold == null) {
             return;
         }
+        if (hold.fencedBatch()) {
+            long producerHoldMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - hold.startedNanos());
+            log.info("Ledger apply producer released after fenced epoch boundary admission: "
+                            + "epoch={}, description={}, waitedMs={}",
+                    hold.epoch(), description, producerHoldMillis);
+            future.whenComplete((outcome, error) -> {
+                long waitedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - hold.startedNanos());
+                if (error == null) {
+                    log.info("Ledger apply epoch boundary completed asynchronously: epoch={}, description={}, "
+                                    + "wallMs={}, outcome={}",
+                            hold.epoch(), description, waitedMillis, outcome);
+                } else if (error instanceof CancellationException) {
+                    lastAdmittedTransitionEpoch.compareAndSet(hold.epoch(), -1);
+                }
+            });
+            return;
+        }
         try {
-            LedgerApplyProcessor.Outcome outcome = future.join();
+            LedgerApplyProcessor.Outcome outcome = future.get(
+                    EPOCH_BOUNDARY_FALLBACK_WAIT_MS,
+                    TimeUnit.MILLISECONDS);
             long waitedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - hold.startedNanos());
             log.info("Ledger apply producer resumed after epoch boundary: epoch={}, description={}, "
                             + "waitedMs={}, outcome={}",
@@ -615,9 +625,17 @@ public class PipelineDataListener implements BlockChainDataListener {
             lastAdmittedTransitionEpoch.compareAndSet(hold.epoch(), -1);
             log.debug("Epoch boundary queue hold cancelled after generation close: epoch={}, description={}",
                     hold.epoch(), description);
-        } catch (CompletionException e) {
+        } catch (TimeoutException e) {
+            log.warn("Unfenced epoch boundary producer wait exceeded {}ms; releasing network callback "
+                            + "while ledger work remains ordered: epoch={}, description={}",
+                    EPOCH_BOUNDARY_FALLBACK_WAIT_MS, hold.epoch(), description);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("Interrupted while waiting for unfenced epoch boundary: epoch={}, description={}",
+                    hold.epoch(), description);
+        } catch (ExecutionException e) {
             log.warn("Epoch boundary queue hold failed: epoch={}, description={}, error={}",
-                    hold.epoch(), description, e.toString());
+                    hold.epoch(), description, e.getCause() != null ? e.getCause().toString() : e.toString());
         }
     }
 

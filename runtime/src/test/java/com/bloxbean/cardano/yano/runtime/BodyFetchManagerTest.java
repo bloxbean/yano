@@ -17,6 +17,7 @@ import com.bloxbean.cardano.yaci.core.storage.ChainTip;
 import com.bloxbean.cardano.yaci.helper.PeerClient;
 import com.bloxbean.cardano.yaci.helper.model.Transaction;
 import com.bloxbean.cardano.yano.api.SyncPhase;
+import com.bloxbean.cardano.yano.api.EpochParamProvider;
 import com.bloxbean.cardano.yano.api.events.BlockAppliedEvent;
 import com.bloxbean.cardano.yano.api.events.ByronMainBlockAppliedEvent;
 import com.bloxbean.cardano.yano.runtime.chain.InMemoryChainState;
@@ -205,6 +206,55 @@ class BodyFetchManagerTest {
         
         // At minimum, verify the gap was detected correctly
         assertTrue(gapSize > 0, "Gap should be detected");
+    }
+
+    @Test
+    @DisplayName("Body fetch range ends at the first block of a new epoch")
+    void bodyFetchRangeIsFencedAtEpochTransition() throws Exception {
+        bodyFetchManager.setEpochParamProvider(new EpochParamProvider() {
+            @Override
+            public BigInteger getKeyDeposit(long epoch) {
+                return BigInteger.ZERO;
+            }
+
+            @Override
+            public BigInteger getPoolDeposit(long epoch) {
+                return BigInteger.ZERO;
+            }
+
+            @Override
+            public long getEpochLength() {
+                return 100L;
+            }
+
+            @Override
+            public long getByronSlotsPerEpoch() {
+                return 10L;
+            }
+        });
+        bodyFetchManager.initializePreviousEpoch(0);
+
+        chainState.storeBlock(hexToBytes(String.format("%064x", 95)), 95L, 95L, new byte[]{1});
+        for (long slot = 96; slot <= 105; slot++) {
+            chainState.storeBlockHeader(
+                    hexToBytes(String.format("%064x", slot)),
+                    slot,
+                    slot,
+                    new byte[]{2});
+        }
+
+        Method checkAndFetchBodies = BodyFetchManager.class.getDeclaredMethod("checkAndFetchBodies");
+        checkAndFetchBodies.setAccessible(true);
+        checkAndFetchBodies.invoke(bodyFetchManager);
+
+        assertEquals(1, mockPeerClient.getFetchCallCount());
+        assertEquals(96L, mockPeerClient.getLastFetchFrom().getSlot());
+        assertEquals(100L, mockPeerClient.getLastFetchTo().getSlot());
+        assertTrue(bodyFetchManager.isEpochBoundaryFenceActive());
+        assertTrue(bodyFetchManager.isCurrentBatchFencedAtEpoch(1, 100L));
+
+        bodyFetchManager.batchDone();
+        assertFalse(bodyFetchManager.isEpochBoundaryFenceActive());
     }
     
     @Test
@@ -623,6 +673,8 @@ class BodyFetchManagerTest {
     private static class MockPeerClient extends PeerClient {
         private boolean running = false;
         private int fetchCallCount = 0;
+        private Point lastFetchFrom;
+        private Point lastFetchTo;
         
         public MockPeerClient() {
             super("mock-host", 3001, 1, Point.ORIGIN);
@@ -644,10 +696,20 @@ class BodyFetchManagerTest {
         public void resetFetchCallCount() {
             fetchCallCount = 0;
         }
+
+        public Point getLastFetchFrom() {
+            return lastFetchFrom;
+        }
+
+        public Point getLastFetchTo() {
+            return lastFetchTo;
+        }
         
         @Override
         public void fetch(Point from, Point to) {
             fetchCallCount++;
+            lastFetchFrom = from;
+            lastFetchTo = to;
             // Mock implementation - just log the fetch request
             System.out.println("MockPeerClient.fetch() called: from=" + from + ", to=" + to + " (call #" + fetchCallCount + ")");
         }

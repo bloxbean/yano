@@ -349,6 +349,7 @@ public class PeerSession {
         headerAppliedEventPublisher = new HeaderAppliedEventPublisher(eventBus);
         headerSyncManager = new HeaderSyncManager(peerClient, chainState, 50000, syncTipContext,
                 bodyFetchManager, headerAppliedEventPublisher, headerValidator);
+        headerSyncManager.setEpochBoundaryHold(bodyFetchManager::isEpochBoundaryFenceActive);
         log.info("📋 HeaderSyncManager created");
 
         if (epochParamProvider != null) {
