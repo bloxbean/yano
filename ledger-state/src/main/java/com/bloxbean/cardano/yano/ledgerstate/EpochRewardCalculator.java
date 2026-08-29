@@ -598,6 +598,7 @@ public class EpochRewardCalculator {
                         if (replayed) {
                             stagePoolRewardFacts(epoch, poolResult);
                         } else {
+                            prefetchPoolRewardState(poolResult);
                             distributePoolReward(epoch, poolResult);
                             maybeFlushRewardChunk(poolResult.getPoolId(), totals);
                         }
@@ -1425,6 +1426,66 @@ public class EpochRewardCalculator {
             }
         }
         return new int[]{leaderCount, memberCount};
+    }
+
+    private void prefetchPoolRewardState(PoolRewardCalculationResult poolResult) {
+        if (rewardStateOverlay == null) return;
+
+        List<byte[]> keys = new ArrayList<>();
+        HashSet<String> credentials = new HashSet<>();
+        BigInteger leaderReward = poolResult.getOperatorReward();
+        if (leaderReward != null && leaderReward.signum() > 0
+                && poolResult.getRewardAddress() != null) {
+            addRewardStatePrefetchKeys(
+                    poolResult.getRewardAddress(), credentials, keys);
+        }
+        if (poolResult.getMemberRewards() != null) {
+            for (var reward : poolResult.getMemberRewards()) {
+                if (reward.getAmount() != null && reward.getAmount().signum() > 0) {
+                    addRewardStatePrefetchKeys(
+                            reward.getStakeAddress(), credentials, keys);
+                }
+            }
+        }
+        if (keys.isEmpty()) return;
+
+        List<ColumnFamilyHandle> columnFamilies = new ArrayList<>(keys.size());
+        for (int index = 0; index < keys.size(); index++) {
+            columnFamilies.add(cfState);
+        }
+        try {
+            List<byte[]> values = db.multiGetAsList(columnFamilies, keys);
+            if (values.size() != keys.size()) {
+                throw new IllegalStateException(
+                        "Reward state MultiGet returned an unexpected value count");
+            }
+            for (int index = 0; index < keys.size(); index++) {
+                rewardStateOverlay.put(keys.get(index), values.get(index));
+            }
+        } catch (RocksDBException failure) {
+            throw new IllegalStateException(
+                    "Failed to prefetch reward account state for pool "
+                            + poolResult.getPoolId(), failure);
+        }
+    }
+
+    private void addRewardStatePrefetchKeys(
+            String address, Set<String> credentials, List<byte[]> keys) {
+        int credentialType = 0;
+        String credentialHash = address;
+        int separator = address.indexOf(':');
+        if (separator >= 0) {
+            credentialType = Integer.parseInt(address.substring(0, separator));
+            credentialHash = address.substring(separator + 1);
+        }
+        if (!credentials.add(credentialType + ":" + credentialHash)) return;
+
+        byte[] accountKey = DefaultAccountStateStore.accountKey(
+                credentialType, credentialHash);
+        if (!rewardStateOverlay.contains(accountKey)) keys.add(accountKey);
+        byte[] rewardKey = DefaultAccountStateStore.accumulatedRewardKey(
+                credentialType, credentialHash);
+        if (!rewardStateOverlay.contains(rewardKey)) keys.add(rewardKey);
     }
 
     private void stagePoolRewardFacts(int epoch,
