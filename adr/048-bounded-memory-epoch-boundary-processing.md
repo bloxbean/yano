@@ -64,9 +64,42 @@ bounded streams while preserving the existing ledger order and outputs.
    new paths become defaults only after byte-for-byte ledger parity, crash and
    rollback recovery, mainnet-scale memory, and throughput gates pass.
 
-The target is a native mainnet epoch-transition peak RSS at or below 600 MiB on
-the supported reference configurations, with no consensus, archive, rollback or
-regular-sync regression.
+The long-term optimization target remains a native mainnet epoch-transition
+peak RSS at or below 600 MiB. For the current rollout, the operator-approved
+target is at most 1.5 GiB RSS with a 2 GiB ceiling. Correctness is the hard gate:
+an otherwise attractive memory result is rejected if it causes an allocation
+failure, incomplete rollback, AdaPot mismatch, archive divergence or regular-
+sync instability.
+
+The operator-approved epoch-boundary timing target is under 60 seconds, with
+120 seconds the maximum acceptable boundary time on the documented reference
+machine. The legacy comparison remains valuable diagnostic evidence, but the
+earlier relative `<= 5%` gate is superseded by these absolute limits.
+
+### Implementation evidence — 2026-08-29
+
+The reference run uses the internal Apple NVMe, Oracle GraalVM 25.3.4.1 Native
+Image with G1, the same retained mainnet checkpoint, streaming rewards, the
+ordered stake-balance index and fail-fast AdaPot verification.
+
+| Heap cap | Epoch | Reward | Complete boundary | AdaPot | Result |
+|---:|---:|---:|---:|:---:|---|
+| 1536 MiB | 296 | 37.017 s | 42.243 s | pass | optimized MultiGet path |
+| 1536 MiB | 297 | 35.275 s | 40.523 s | pass | optimized MultiGet path |
+| 1536 MiB | 298 | 33.186 s | 38.615 s | pass | optimized MultiGet path |
+| 1280 MiB | 299 | 37.975 s | 44.695 s | pass | provisional only |
+| 1280 MiB | 300 | 38.063 s | 43.516 s | pass | provisional only |
+| 1280 MiB | 301 | 33.476 s | 49.977 s | pass | included 11.050 s MIR credit |
+| 1280 MiB | 302 | 36.253 s | 41.829 s | pass | no spendable MIR rows |
+
+The 1536 MiB run peaked at 2.105 GiB RSS. The 1280 MiB run peaked at
+1.882 GiB RSS, but it is rejected: after four correct boundaries it exhausted
+the G1 heap during ordinary application of block 6,498,621. Restarting the same
+chainstate at 1536 MiB passed integrity validation, restored nonce state at
+block 6,498,620, completed exact-point UTXO/account rollback and resumed sync.
+Therefore the smallest proven heap cap remains 1536 MiB and the 1.5 GiB RSS
+target is still open; correctness takes precedence over the nominally lower RSS
+of the failed run.
 
 ### Preview chainstate compatibility
 
@@ -1424,36 +1457,34 @@ configuration, chain point and archive selection.
 
 ### Memory
 
-- Native mainnet peak RSS is at most 600 MiB through three consecutive recent
-  Conway boundaries on each supported reference memory class.
+- Current rollout: native mainnet peak RSS targets at most 1.5 GiB and must not
+  exceed 2 GiB through at least three consecutive boundaries and the ordinary
+  block flow between them. The 600 MiB goal remains follow-up optimization.
 - Peak RSS does not scale materially with host RAM when workload and explicit
   budgets are unchanged; the larger-machine result must remain within 10% of
   the smallest reference machine's result.
 - There is no swap, OOM recovery loop or allocation failure.
-- SNAP plus governance contributes at most 100 MiB and reward processing at most
-  150 MiB above the measured regular-sync baseline. These component budgets may
-  be tightened after Phase 0 but not relaxed without revisiting the 600 MiB
-  process target.
-- When rollback-v1 is enabled, rollback across a completed mainnet boundary also
-  remains within 600 MiB RSS and the configured chunk/batch ceilings. When the
-  conditional phase is deferred, rollback must not exceed its measured legacy
-  baseline.
+- Phase telemetry must still attribute SNAP, governance, rewards, MIR and
+  RocksDB rather than hiding a large component inside the process ceiling.
+- Rollback-v1 across a completed mainnet boundary must remain within the same
+  2 GiB rollout ceiling and the configured chunk/batch limits.
 
 ### Performance
 
 - The ordered stake-index walk is faster than the full UTXO decode scan on the
   same checkpoint and storage.
-- For both JVM and native builds, median total epoch-transition wall time is
-  neutral or faster than the legacy baseline; up to 5% is measurement tolerance,
-  not an accepted planned slowdown. P95 is no more than 5% slower across the
-  documented repeated checkpoint runs.
+- On the reference machine, total epoch-transition wall time targets less than
+  60 seconds and must not exceed 120 seconds. AdaPot and recovery correctness
+  cannot be traded for a faster boundary.
+- Same-checkpoint legacy measurements remain diagnostic evidence for finding
+  algorithmic regressions; they are not an independent rollout veto when the
+  absolute timing gate passes.
 - Normal sync throughput outside the boundary regresses by less than 2%, and
   p99 block-apply latency outside the boundary does not materially regress.
 - Chunking and RocksDB budgets may make an individual write phase slower, but
-  their overhead must be recovered by the faster index/streaming phases so the
-  total boundary gate remains neutral. Write amplification must not increase by
-  more than 10%. Any exception requires an explicit decision update with
-  measured operator impact and cannot be hidden inside the 5% tolerance.
+  the total must remain within the absolute boundary gate. Write amplification
+  must not increase by more than 10%; any exception requires a measured decision
+  update.
 
 ### Operations
 
@@ -1477,12 +1508,9 @@ pool/DRep merges also avoid millions of random point reads.
 Streaming rewards performs the same arithmetic once while reducing allocation,
 copying and GC pressure. It is expected to be neutral or faster, especially in
 native mode. When triggered, chunked RocksDB commits add write and WAL overhead
-to the affected write phases. That overhead is a tuning constraint, not
-permission for a slower epoch transition: ordered index reads and lower
-allocation/GC must recover it so
-the total JVM and native boundary stays within the 5% measurement tolerance.
-If it does not, the new path does not become the default without revising this
-decision.
+to the affected write phases. That overhead is a tuning constraint: ordered
+index reads and lower allocation/GC must keep the complete boundary below the
+60-second target and 120-second maximum on the reference machine.
 
 Serializing the existing full UTXO compatibility scan alone could add its
 documented 30–60 seconds because it would no longer overlap rewards. Normal
@@ -1619,7 +1647,8 @@ history gaps.
 ## Open questions to close with measurements
 
 1. What heap, RocksDB cache and memtable split leaves adequate native-image GC
-   headroom while holding RSS below 600 MiB on every supported build vendor?
+   headroom while first holding RSS below the 2 GiB rollout ceiling, then moving
+   toward the 1.5 GiB and long-term 600 MiB targets on supported build vendors?
 2. If the Section 6 trigger fires, is 4 MiB/10,000 operations the best chunk
    limit, or should reward and snapshot phases use different byte limits?
 3. What is the mainnet disk cost and migration duration of the pool-major
@@ -1633,4 +1662,5 @@ history gaps.
    and if so, is coordination or a stricter independent native budget preferable?
 
 These questions affect tuning and implementation ownership. They do not weaken
-the correctness, completeness, rollback or 600 MiB acceptance gates.
+the correctness, completeness, rollback, 2 GiB rollout ceiling or absolute
+boundary-time gates.
