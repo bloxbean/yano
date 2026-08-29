@@ -98,8 +98,13 @@ the G1 heap during ordinary application of block 6,498,621. Restarting the same
 chainstate at 1536 MiB passed integrity validation, restored nonce state at
 block 6,498,620, completed exact-point UTXO/account rollback and resumed sync.
 Therefore the smallest proven heap cap remains 1536 MiB and the 1.5 GiB RSS
-target is still open; correctness takes precedence over the nominally lower RSS
-of the failed run.
+target and 2 GiB rollout ceiling are both still open at that cap; correctness
+takes precedence over the nominally lower RSS of the failed run. Correctness and
+boundary-time gates are met. The next evidence-gated memory investigation is the
+ordinary ledger-apply queue: queued work retains decoded block graphs while its
+current byte budget accounts only raw CBOR size. Queue behavior and defaults
+must not change until a heap dump or equivalent profile confirms that retained
+graph as a material contributor.
 
 ### Preview chainstate compatibility
 
