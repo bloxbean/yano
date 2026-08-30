@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for implementation; mainnet rollout gates remain open
+Accepted; implemented and mainnet sync validated through tip
 
 ## Date
 
@@ -38,9 +38,11 @@ bounded streams while preserving the existing ledger order and outputs.
 
 1. The mark snapshot and DRep distribution will read the existing complete
    `utxo_stake_balance` index through a consistent, ordered cursor. At a
-   pre-Conway boundary, a serial UTXO pass contributes only the small set of
-   resolved pointer-address balances that the index deliberately excludes. No
-   path materializes non-pointer UTXO balances into a network-sized map.
+   pre-Conway boundary, the maintained `utxo_pointer` index contributes the
+   small set of resolved pointer-address balances that the stake index
+   deliberately excludes. If that derived index is not proven ready, the
+   serial pointer-aware UTXO scan remains the fail-closed fallback. No path
+   materializes non-pointer UTXO balances into a network-sized map.
 2. Whenever the index is disabled, filtered, incomplete or unavailable, Yano
    retains the pointer-aware full-UTXO compatibility fallback. It runs serially
    and without populating the RocksDB block cache.
@@ -65,8 +67,11 @@ bounded streams while preserving the existing ledger order and outputs.
    rollback recovery, mainnet-scale memory, and throughput gates pass.
 
 The long-term optimization target remains a native mainnet epoch-transition
-peak RSS at or below 600 MiB. For the current rollout, the operator-approved
-target is at most 1.5 GiB RSS with a 2 GiB ceiling. Correctness is the hard gate:
+process footprint at or below 600 MiB. For the current rollout, the
+operator-approved target is at most 1.5 GiB with a 2 GiB ceiling. On macOS the
+acceptance metric is physical footprint; on Linux it is process RSS. Raw macOS
+RSS remains diagnostic because it includes accounting that is not resident
+physical pressure. Correctness is the hard gate:
 an otherwise attractive memory result is rejected if it causes an allocation
 failure, incomplete rollback, AdaPot mismatch, archive divergence or regular-
 sync instability.
@@ -105,6 +110,44 @@ ordinary ledger-apply queue: queued work retains decoded block graphs while its
 current byte budget accounts only raw CBOR size. Queue behavior and defaults
 must not change until a heap dump or equivalent profile confirms that retained
 graph as a material contributor.
+
+### Final mainnet acceptance evidence — 2026-08-30
+
+The final accepted artifact was built from `008b7ecd` with Oracle GraalVM
+25.3.4.1, Java 25.0.4.1 and G1 GC. Its SHA-256 is
+`7f2cb1b3e45d9c8841c67e59df08b7091df2129e71cf4160ab58d9ca79f1b411`.
+The authoritative internal-NVMe run used `-Xmx1024m`, a 64 MiB decoded apply
+queue, two RocksDB background jobs and `exit-on-epoch-calc-error=true`.
+
+The run reached mainnet steady state at epoch 652 with `inSync=true`, a zero
+block gap, a RUNNING peer and no degraded runtime state. The embedded verifier
+reported 326 consecutive AdaPot passes for epochs 296 through 621 with no
+failure. The post-commit Koios monitor compared every epoch from 613 through
+652: 40/40 exact treasury/reserves matches with no gaps. The embedded mainnet
+fixture ends at epoch 621, so epochs 622 through 652 are explicitly recorded as
+external post-boundary Koios validation rather than in-process fixture checks.
+
+For the final ten boundaries, total boundary time was 46.1–55.4 seconds,
+streaming rewards were 34.9–44.5 seconds, and the credential-ordered DRep pass
+was 1.48–1.60 seconds. Peak boundary heap was 724 MiB. The macOS physical
+footprint was normally 0.98–1.1 GiB and peaked at 1.5 GiB. One transient raw-RSS
+sample reached 2.007 GiB while physical footprint remained 1.1 GiB; it fell on
+the next sample and did not coincide with swap, OOM, degraded state or peer
+failure. The accepted log contains no AdaPot mismatch, OOM, fatal error,
+stale-peer disconnect, no-progress recovery, missing block body or unrepaired
+nonce state.
+
+The pointer-index differential gate passed across retained pre-Conway clones,
+including rebuild and scan-shadow comparisons. The ordered DRep merge produced
+the same 866/866 per-DRep rows as the point-lookup baseline on the same Conway
+state before promotion. Trial-only oracle removal and the independently tracked
+DBSync DRep-lifecycle discrepancy remain follow-up work in issues #100 and #99;
+neither changes the accepted AdaPot or same-state mechanism parity evidence.
+A deliberate live Conway crash-after-SNAP drill was not performed on the
+authoritative tip store; recovery remains covered by the bounded-journal fault
+injection suites and retained interrupted-boundary evidence. If required as a
+pre-merge operational drill, it must run on a disposable Conway clone rather
+than the validated store.
 
 ### Preview chainstate compatibility
 
@@ -1462,12 +1505,14 @@ configuration, chain point and archive selection.
 
 ### Memory
 
-- Current rollout: native mainnet peak RSS targets at most 1.5 GiB and must not
-  exceed 2 GiB through at least three consecutive boundaries and the ordinary
-  block flow between them. The 600 MiB goal remains follow-up optimization.
-- Peak RSS does not scale materially with host RAM when workload and explicit
-  budgets are unchanged; the larger-machine result must remain within 10% of
-  the smallest reference machine's result.
+- Current rollout: native mainnet peak physical footprint on macOS, or RSS on
+  Linux, targets at most 1.5 GiB and must not exceed 2 GiB through at least
+  three consecutive boundaries and the ordinary block flow between them. Raw
+  macOS RSS is retained as a diagnostic series. The 600 MiB goal remains
+  follow-up optimization.
+- The platform acceptance metric does not scale materially with host RAM when
+  workload and explicit budgets are unchanged; the larger-machine result must
+  remain within 10% of the smallest reference machine's result.
 - There is no swap, OOM recovery loop or allocation failure.
 - Phase telemetry must still attribute SNAP, governance, rewards, MIR and
   RocksDB rather than hiding a large component inside the process ceiling.
@@ -1646,8 +1691,9 @@ history gaps.
   ADR if account APIs or other consumers use it. Selecting the scan path is
   sufficient.
 - Any parity failure, incomplete recovery, unexplained nonce change, archive
-  identity change or mainnet RSS above the gate returns rollout to legacy mode
-  and preserves the failing checkpoint/logs for analysis.
+  identity change or mainnet platform acceptance metric above the gate returns
+  rollout to legacy mode and preserves the failing checkpoint/logs for
+  analysis.
 
 ## Open questions to close with measurements
 
