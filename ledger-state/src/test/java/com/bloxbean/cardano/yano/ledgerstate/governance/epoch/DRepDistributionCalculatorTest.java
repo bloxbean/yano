@@ -270,6 +270,123 @@ class DRepDistributionCalculatorTest {
     }
 
     @Test
+    void orderedAccountMergeMatchesPointLookupOracleForRegisteredAndSkippedCredentials()
+            throws Exception {
+        registerDRep(0, DREP_A, 200, 84974395L);
+        var deregisteredDRep = new DRepStateRecord(
+                BigInteger.valueOf(500_000_000_000L), null, null,
+                200, null, 220, false, 84974395L, 10, 85000010L);
+        try (WriteBatch batch = new WriteBatch()) {
+            govStore.storeDRepState(0, DREP_B, deregisteredDRep, batch, new ArrayList<>());
+            commit(batch);
+        }
+
+        storeDRepDelegation(0, CRED1, 0, DREP_A, 85000000L);
+        storeDRepDelegation(0, CRED2, 0, DREP_A, 85000001L);
+        storeDRepDelegation(0, CRED3, 0, DREP_B, 85000002L);
+        storeStakeAccount(0, CRED1, BigInteger.valueOf(7), BigInteger.valueOf(2_000_000));
+        storeStakeAccount(0, CRED3, BigInteger.valueOf(13), BigInteger.valueOf(2_000_000));
+
+        var balances = Map.of(
+                new com.bloxbean.cardano.yano.ledgerstate.UtxoBalanceAggregator.CredentialKey(0, CRED1),
+                BigInteger.valueOf(100),
+                new com.bloxbean.cardano.yano.ledgerstate.UtxoBalanceAggregator.CredentialKey(0, CRED2),
+                BigInteger.valueOf(200),
+                new com.bloxbean.cardano.yano.ledgerstate.UtxoBalanceAggregator.CredentialKey(0, CRED3),
+                BigInteger.valueOf(300));
+        var rewardRest = Map.of("0:" + CRED1, BigInteger.valueOf(5));
+
+        var pointLookup = calculator.calculateWithPointLookupsForParity(
+                230, balances, rewardRest);
+        var orderedMerge = calculator.calculate(230, balances, rewardRest);
+
+        assertThat(orderedMerge).isEqualTo(pointLookup);
+        assertThat(orderedMerge.get(new DRepDistributionCalculator.DRepDistKey(0, DREP_A)))
+                .isEqualTo(BigInteger.valueOf(112));
+        assertThat(orderedMerge).doesNotContainKey(
+                new DRepDistributionCalculator.DRepDistKey(0, DREP_B));
+    }
+
+    @Test
+    void orderedAccountMergeMatchesPointLookupAcrossCredentialTypesAndVirtualDReps()
+            throws Exception {
+        registerDRep(0, DREP_A, 200, 84974395L);
+        registerDRep(1, DREP_B, 200, 84974396L);
+
+        storeDRepDelegation(0, CRED1, 2, null, 85000000L);
+        storeDRepDelegation(0, CRED2, 0, DREP_A, 85000001L);
+        storeDRepDelegation(1, CRED1, 3, null, 85000002L);
+        storeDRepDelegation(1, CRED3, 1, DREP_B, 85000003L);
+        storeStakeAccount(0, CRED1, BigInteger.ONE, BigInteger.valueOf(2_000_000));
+        storeStakeAccount(1, CRED1, BigInteger.valueOf(2), BigInteger.valueOf(2_000_000));
+        storeStakeAccount(1, CRED3, BigInteger.valueOf(4), BigInteger.valueOf(2_000_000));
+
+        var balances = Map.of(
+                new com.bloxbean.cardano.yano.ledgerstate.UtxoBalanceAggregator.CredentialKey(0, CRED1),
+                BigInteger.TEN,
+                new com.bloxbean.cardano.yano.ledgerstate.UtxoBalanceAggregator.CredentialKey(0, CRED2),
+                BigInteger.valueOf(20),
+                new com.bloxbean.cardano.yano.ledgerstate.UtxoBalanceAggregator.CredentialKey(1, CRED1),
+                BigInteger.valueOf(30),
+                new com.bloxbean.cardano.yano.ledgerstate.UtxoBalanceAggregator.CredentialKey(1, CRED3),
+                BigInteger.valueOf(40));
+        var rewardRest = Map.of("1:" + CRED1, BigInteger.ONE);
+
+        var pointLookup = calculator.calculateWithPointLookupsForParity(
+                230, balances, rewardRest);
+        var orderedMerge = calculator.calculate(230, balances, rewardRest);
+
+        assertThat(orderedMerge).isEqualTo(pointLookup);
+        assertThat(orderedMerge)
+                .containsEntry(new DRepDistributionCalculator.DRepDistKey(2, "abstain"),
+                        BigInteger.valueOf(11))
+                .containsEntry(new DRepDistributionCalculator.DRepDistKey(3, "no_confidence"),
+                        BigInteger.valueOf(33))
+                .containsEntry(new DRepDistributionCalculator.DRepDistKey(1, DREP_B),
+                        BigInteger.valueOf(44))
+                .doesNotContainKey(new DRepDistributionCalculator.DRepDistKey(0, DREP_A));
+    }
+
+    @Test
+    void orderedAccountMergeSkipsAccountsWithoutDRepDelegations() throws Exception {
+        String delegationBeforeFirstAccount = "00".repeat(27) + "01";
+        String accountBeforeRegisteredDelegation = "00".repeat(27) + "02";
+        String accountBetweenDelegations = "80".repeat(28);
+
+        registerDRep(0, DREP_A, 200, 84974395L);
+        storeDRepDelegation(0, delegationBeforeFirstAccount, 0, DREP_A, 85000000L);
+        storeDRepDelegation(0, CRED2, 0, DREP_A, 85000001L);
+        storeDRepDelegation(0, CRED1, 0, DREP_A, 85000002L);
+
+        storeStakeAccount(0, accountBeforeRegisteredDelegation,
+                BigInteger.valueOf(1000), BigInteger.valueOf(2_000_000));
+        storeStakeAccount(0, CRED2, BigInteger.valueOf(2), BigInteger.valueOf(2_000_000));
+        storeStakeAccount(0, accountBetweenDelegations,
+                BigInteger.valueOf(2000), BigInteger.valueOf(2_000_000));
+        storeStakeAccount(0, CRED1, BigInteger.valueOf(7), BigInteger.valueOf(2_000_000));
+        storeStakeAccount(0, CRED3,
+                BigInteger.valueOf(3000), BigInteger.valueOf(2_000_000));
+
+        var balances = Map.of(
+                new com.bloxbean.cardano.yano.ledgerstate.UtxoBalanceAggregator.CredentialKey(
+                        0, delegationBeforeFirstAccount), BigInteger.TEN,
+                new com.bloxbean.cardano.yano.ledgerstate.UtxoBalanceAggregator.CredentialKey(
+                        0, CRED2), BigInteger.valueOf(20),
+                new com.bloxbean.cardano.yano.ledgerstate.UtxoBalanceAggregator.CredentialKey(
+                        0, CRED1), BigInteger.valueOf(100));
+
+        var pointLookup = calculator.calculateWithPointLookupsForParity(
+                230, balances, Map.of());
+        var orderedMerge = calculator.calculate(230, balances, Map.of());
+
+        assertThat(orderedMerge).isEqualTo(pointLookup);
+        assertThat(orderedMerge)
+                .containsOnlyKeys(new DRepDistributionCalculator.DRepDistKey(0, DREP_A))
+                .containsEntry(new DRepDistributionCalculator.DRepDistKey(0, DREP_A),
+                        BigInteger.valueOf(129));
+    }
+
+    @Test
     @DisplayName("Zero-balance DRep still included in distribution (with 0 amount)")
     void zeroBalanceDRep_included() throws Exception {
         registerDRep(0, DREP_A, 200, 84974395L);
