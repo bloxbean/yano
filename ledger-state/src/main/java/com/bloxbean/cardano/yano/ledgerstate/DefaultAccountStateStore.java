@@ -5658,9 +5658,6 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
 
     public void setBoundaryStarted(EpochArchiveStagingSink.Boundary boundary) {
         Objects.requireNonNull(boundary, "boundary");
-        if (boundary.newEpoch() != boundary.previousEpoch() + 1) {
-            throw new IllegalArgumentException("Boundary epochs are not consecutive: " + boundary);
-        }
         byte[] coordinates = ByteBuffer.allocate(24).order(ByteOrder.BIG_ENDIAN)
                 .putInt(boundary.previousEpoch()).putInt(boundary.newEpoch())
                 .putLong(boundary.slot()).putLong(boundary.blockNumber()).array();

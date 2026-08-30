@@ -110,6 +110,23 @@ class DefaultAccountStateStoreProtocolParamsTest {
     }
 
     @Test
+    void boundaryStartPreservesCollapsedDevnetEpochCoordinates() throws Exception {
+        try (var rocks = TestRocksDBHelper.create(tempDir)) {
+            var store = new DefaultAccountStateStore(
+                    rocks.db(), rocks.cfSupplier(),
+                    LoggerFactory.getLogger(DefaultAccountStateStoreProtocolParamsTest.class),
+                    true, provider());
+            var boundary = new EpochArchiveStagingSink.Boundary(
+                    0, 25, 129L, 2L);
+
+            store.setBoundaryStarted(boundary);
+
+            assertThat(store.getBoundaryStep(25)).isEqualTo(EpochBoundaryProcessor.STEP_STARTED);
+            assertThat(store.getBoundaryCoordinates(25)).contains(boundary);
+        }
+    }
+
+    @Test
     void rollbackUpdatesLastAppliedBlockMetadataToRetainedBlock() throws Exception {
         try (var rocks = TestRocksDBHelper.create(tempDir)) {
             var store = new DefaultAccountStateStore(
