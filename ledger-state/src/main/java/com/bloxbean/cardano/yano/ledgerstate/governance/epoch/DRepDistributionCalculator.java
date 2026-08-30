@@ -244,8 +244,14 @@ public class DRepDistributionCalculator {
         }
 
         BigInteger totalDist = distribution.values().stream().reduce(BigInteger.ZERO, BigInteger::add);
+        BigInteger abstain = distribution.getOrDefault(
+                new DRepDistKey(DREP_ABSTAIN, ABSTAIN_HASH), BigInteger.ZERO);
+        BigInteger noConfidence = distribution.getOrDefault(
+                new DRepDistKey(DREP_NO_CONF, NO_CONFIDENCE_HASH), BigInteger.ZERO);
         log.info("Computed DRep distribution for snapshot epoch {}: {} DReps, {} total delegations",
                 snapshotEpoch, distribution.size(), totalDist);
+        log.info("  DRep virtual distribution for epoch {}: abstain={}, noConfidence={}",
+                snapshotEpoch + 1, abstain, noConfidence);
         log.info("  DRep dist breakdown: utxo={}, rewards={}, rewardRest={}, proposalDeposits={}",
                 totalUtxo, totalRewards, totalRewardRest, totalPropDeposits);
         log.info("  DRep dist stats: {} creds processed, {} skipped (drep invalid), {} skipped (no account), {} proposal deposit entries",
