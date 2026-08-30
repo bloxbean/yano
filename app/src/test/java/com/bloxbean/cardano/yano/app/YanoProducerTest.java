@@ -1,8 +1,11 @@
 package com.bloxbean.cardano.yano.app;
 
 import com.bloxbean.cardano.yano.api.config.UpstreamPreset;
+import com.bloxbean.cardano.yano.api.config.YanoConfig;
 import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.api.plugin.PluginActivationException;
+import com.bloxbean.cardano.yano.app.archive.HistoryArchiveService;
+import com.bloxbean.cardano.yano.app.archive.ProjectionHistoryService;
 import com.bloxbean.cardano.yano.runtime.assembly.Yano;
 import com.bloxbean.cardano.yano.runtime.config.RollbackRetentionGenesisValues;
 import com.bloxbean.cardano.yano.runtime.config.RollbackRetentionPlanner;
@@ -29,6 +32,9 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Answers.RETURNS_DEEP_STUBS;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class YanoProducerTest {
 
@@ -407,11 +413,16 @@ class YanoProducerTest {
     @jakarta.enterprise.inject.Vetoed
     private static final class StartupProbeProducer extends YanoProducer {
         private final Throwable startupFailure;
+        private final Yano assembledYano;
         private int ensureCalls;
 
         private StartupProbeProducer(Throwable startupFailure) {
             super(Thread.currentThread().getContextClassLoader());
             this.startupFailure = startupFailure;
+            historyArchive = mock(HistoryArchiveService.class);
+            projectionHistory = mock(ProjectionHistoryService.class);
+            assembledYano = mock(Yano.class, RETURNS_DEEP_STUBS);
+            when(assembledYano.lifecycle().getConfig()).thenReturn(YanoConfig.serverOnly(0));
         }
 
         @Override
@@ -423,7 +434,7 @@ class YanoProducerTest {
             if (startupFailure instanceof Error error) {
                 throw error;
             }
-            return null;
+            return assembledYano;
         }
     }
 
