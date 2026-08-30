@@ -9,6 +9,14 @@
         "name": "CDDL + GPLv2 with classpath exception",
         "url": "https://oss.oracle.com/licenses/CDDL+GPL-1.1"
       }
+    },
+    {
+      "group": "org.slf4j",
+      "name": "slf4j-reload4j",
+      "version": "2.0.18",
+      "license": {
+        "id": "MIT"
+      }
     }
   ]
 }

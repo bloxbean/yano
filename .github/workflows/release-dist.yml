@@ -79,7 +79,7 @@ jobs:
             label: linux-x64
           - os: ubuntu-22.04-arm
             label: linux-arm64
-          - os: macos-14
+          - os: macos-15
             label: macos-arm64
           - os: windows-latest
             label: windows-x64

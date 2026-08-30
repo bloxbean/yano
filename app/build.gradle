@@ -575,16 +575,31 @@ tasks.register('normalizeYanoReleaseSbom') {
         body.components.each { component ->
             def coordinate =
                     "${component.group}:${component.name}:${component.version}".toString()
-            if ((!(component.licenses instanceof Collection)
-                    || component.licenses.isEmpty())
-                    && licenseOverrides.containsKey(coordinate)) {
-                component.licenses = licenseOverrides[coordinate]
+            if (!licenseOverrides.containsKey(coordinate)) {
+                return
+            }
+            def overrideLicenses = licenseOverrides[coordinate]
+            if (!(component.licenses instanceof Collection)
+                    || component.licenses.isEmpty()) {
+                component.licenses = overrideLicenses
+                usedLicenseOverrides.add(coordinate)
+                return
+            }
+            def declaredLicenseMatches = component.licenses.any { declared ->
+                def declaredLicense = declared.license
+                def overrideLicense = overrideLicenses[0].license
+                declaredLicense instanceof Map
+                        && overrideLicense.every { key, value ->
+                            declaredLicense[key] == value
+                        }
+            }
+            if (declaredLicenseMatches) {
                 usedLicenseOverrides.add(coordinate)
             }
         }
         if (usedLicenseOverrides != licenseOverrides.keySet()) {
             throw new GradleException(
-                    'Unused or shadowed Yano release license overrides: '
+                    'Unused or conflicting Yano release license overrides: '
                             + (licenseOverrides.keySet() - usedLicenseOverrides).sort())
         }
         def externalWithoutLicense = body.components.findAll { component ->
