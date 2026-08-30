@@ -1498,9 +1498,13 @@ def configureNativeGc = {
     def vmName = System.getProperty('java.vm.name', '')
 
     if (vendor.contains('Oracle') && !vmName.contains('Community')) {
-        if (osName.contains('linux') && ['amd64', 'x86_64', 'aarch64', 'arm64'].contains(osArch)) {
+        def linuxG1 = osName.contains('linux')
+                && ['amd64', 'x86_64', 'aarch64', 'arm64'].contains(osArch)
+        def macAarch64G1 = osName.contains('mac')
+                && ['aarch64', 'arm64'].contains(osArch)
+        if (linuxG1 || macAarch64G1) {
             addNativeBuildArgs(['--gc=G1'])
-            println "Oracle GraalVM on Linux detected, setting native-image GC to G1"
+            println "Oracle GraalVM on ${osName} ${osArch} detected, setting native-image GC to G1"
         } else {
             println "Oracle GraalVM on ${osName ?: 'unknown OS'} detected, using native-image default GC"
         }
@@ -2095,7 +2099,7 @@ gradle.taskGraph.whenReady { graph ->
                         "./gradlew :app:prepareYanoDockerNativeContext " +
                         "-Dquarkus.native.enabled=true -Dquarkus.package.jar.enabled=false " +
                         "-Dquarkus.native.container-build=true " +
-                        "-Dquarkus.native.builder-image=container-registry.oracle.com/graalvm/native-image:25 " +
+                        "-Dquarkus.native.builder-image=container-registry.oracle.com/graalvm/native-image:25i3 " +
                         "-Dquarkus.native.container-runtime-options=--workdir,/project " +
                         "-PskipSigning=true"
         )
