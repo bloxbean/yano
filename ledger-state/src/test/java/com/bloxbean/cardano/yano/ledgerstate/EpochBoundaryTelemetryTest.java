@@ -94,6 +94,7 @@ class EpochBoundaryTelemetryTest {
                         heapUsed / 20,
                         heapUsed / 6,
                         heapUsed / 5,
-                        heapUsed / 3));
+                        heapUsed / 3,
+                        heapUsed / 4));
     }
 }

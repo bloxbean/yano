@@ -53,8 +53,9 @@ public final class EpochBoundaryTelemetry {
                                 long pinnedBlockCacheBytes,
                                 long memtableBytes,
                                 long tableReaderBytes,
-                                long pendingCompactionBytes) {
-        static final RocksDbMemory UNAVAILABLE = new RocksDbMemory(-1, -1, -1, -1, -1);
+                                long pendingCompactionBytes,
+                                long sstFileCount) {
+        static final RocksDbMemory UNAVAILABLE = new RocksDbMemory(-1, -1, -1, -1, -1, -1);
     }
 
     public record ResourceSnapshot(long heapUsedBytes,
@@ -225,12 +226,12 @@ public final class EpochBoundaryTelemetry {
                             + "peak_heap_used_bytes={} peak_heap_committed_bytes={} peak_rss_bytes={} "
                             + "peak_rocksdb_block_cache_bytes={} peak_rocksdb_pinned_bytes={} "
                             + "peak_rocksdb_memtable_bytes={} peak_rocksdb_table_reader_bytes={} "
-                            + "peak_rocksdb_pending_compaction_bytes={} phases={}",
+                            + "peak_rocksdb_pending_compaction_bytes={} peak_rocksdb_sst_files={} phases={}",
                     previousEpoch, newEpoch, success, nanosToMillis(wallNanos),
                     peak.heapUsedBytes(), peak.heapCommittedBytes(), peak.rssBytes(),
                     peak.rocksDb().blockCacheBytes(), peak.rocksDb().pinnedBlockCacheBytes(),
                     peak.rocksDb().memtableBytes(), peak.rocksDb().tableReaderBytes(),
-                    peak.rocksDb().pendingCompactionBytes(), phases.size());
+                    peak.rocksDb().pendingCompactionBytes(), peak.rocksDb().sstFileCount(), phases.size());
             return finished;
         }
 
@@ -264,14 +265,14 @@ public final class EpochBoundaryTelemetry {
                             + "heap_committed_after_bytes={} rss_after_bytes={} gc_count_delta={} "
                             + "gc_time_ms_delta={} rocksdb_block_cache_bytes={} rocksdb_pinned_bytes={} "
                             + "rocksdb_memtable_bytes={} rocksdb_table_reader_bytes={} "
-                            + "rocksdb_pending_compaction_bytes={}",
+                            + "rocksdb_pending_compaction_bytes={} rocksdb_sst_files={}",
                     previousEpoch, newEpoch, name, path, nanosToMillis(wallNanos),
                     nanosToMillis(cpuNanos), nanosToMillis(threadCpuNanos),
                     before.heapUsedBytes(), after.heapUsedBytes(),
                     after.heapCommittedBytes(), after.rssBytes(), gcCountDelta, gcTimeDelta,
                     after.rocksDb().blockCacheBytes(), after.rocksDb().pinnedBlockCacheBytes(),
                     after.rocksDb().memtableBytes(), after.rocksDb().tableReaderBytes(),
-                    after.rocksDb().pendingCompactionBytes());
+                    after.rocksDb().pendingCompactionBytes(), after.rocksDb().sstFileCount());
         }
 
         private void logSnapshot(String phase, String path, ResourceSnapshot sample) {
@@ -280,14 +281,14 @@ public final class EpochBoundaryTelemetry {
                             + "rss_bytes={} process_cpu_nanos={} thread_cpu_nanos={} gc_count={} gc_time_ms={} "
                             + "rocksdb_block_cache_bytes={} rocksdb_pinned_bytes={} "
                             + "rocksdb_memtable_bytes={} rocksdb_table_reader_bytes={} "
-                            + "rocksdb_pending_compaction_bytes={}",
+                            + "rocksdb_pending_compaction_bytes={} rocksdb_sst_files={}",
                     previousEpoch, newEpoch, phase, path,
                     sample.heapUsedBytes(), sample.heapCommittedBytes(), sample.heapMaxBytes(),
                     sample.rssBytes(), sample.processCpuNanos(), sample.currentThreadCpuNanos(),
                     sample.gcCount(), sample.gcTimeMillis(),
                     sample.rocksDb().blockCacheBytes(), sample.rocksDb().pinnedBlockCacheBytes(),
                     sample.rocksDb().memtableBytes(), sample.rocksDb().tableReaderBytes(),
-                    sample.rocksDb().pendingCompactionBytes());
+                    sample.rocksDb().pendingCompactionBytes(), sample.rocksDb().sstFileCount());
         }
 
         private void updatePeak(ResourceSnapshot candidate) {
@@ -305,7 +306,8 @@ public final class EpochBoundaryTelemetry {
                             maxAvailable(peak.rocksDb().pinnedBlockCacheBytes(), candidate.rocksDb().pinnedBlockCacheBytes()),
                             maxAvailable(peak.rocksDb().memtableBytes(), candidate.rocksDb().memtableBytes()),
                             maxAvailable(peak.rocksDb().tableReaderBytes(), candidate.rocksDb().tableReaderBytes()),
-                            maxAvailable(peak.rocksDb().pendingCompactionBytes(), candidate.rocksDb().pendingCompactionBytes())));
+                            maxAvailable(peak.rocksDb().pendingCompactionBytes(), candidate.rocksDb().pendingCompactionBytes()),
+                            maxAvailable(peak.rocksDb().sstFileCount(), candidate.rocksDb().sstFileCount())));
         }
 
         private static ResourceSnapshot unavailableSnapshot() {

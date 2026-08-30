@@ -5166,7 +5166,18 @@ public class DefaultAccountStateStore implements AccountStateStore, AccountState
                 readRocksDbLongProperty("rocksdb.block-cache-pinned-usage"),
                 readRocksDbLongProperty("rocksdb.cur-size-all-mem-tables"),
                 readRocksDbLongProperty("rocksdb.estimate-table-readers-mem"),
-                readRocksDbLongProperty("rocksdb.estimate-pending-compaction-bytes"));
+                readRocksDbLongProperty("rocksdb.estimate-pending-compaction-bytes"),
+                readSstFileCount());
+    }
+
+    private long readSstFileCount() {
+        long total = 0;
+        for (int level = 0; level < 7; level++) {
+            long count = readRocksDbLongProperty("rocksdb.num-files-at-level" + level);
+            if (count < 0) return -1;
+            total += count;
+        }
+        return total;
     }
 
     private long readRocksDbLongProperty(String property) {

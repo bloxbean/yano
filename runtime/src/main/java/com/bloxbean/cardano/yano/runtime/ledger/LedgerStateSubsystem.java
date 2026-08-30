@@ -197,19 +197,9 @@ public final class LedgerStateSubsystem implements Subsystem {
         if (epochBoundaryProcessor == null) {
             return null;
         }
-        var err = epochBoundaryProcessor.getLastVerificationError();
-        if (err == null) {
-            return null;
-        }
-        return Map.of(
-                "status", "ERROR",
-                "epoch", err.epoch(),
-                "expectedTreasury", err.expectedTreasury().toString(),
-                "actualTreasury", err.actualTreasury().toString(),
-                "treasuryDiff", err.treasuryDiff().toString(),
-                "expectedReserves", err.expectedReserves().toString(),
-                "actualReserves", err.actualReserves().toString(),
-                "reservesDiff", err.reservesDiff().toString());
+        return EpochCalcStatusMapper.map(
+                epochBoundaryProcessor.getLastVerificationError(),
+                epochBoundaryProcessor.getLastBoundaryTelemetry());
     }
 
     public void refreshGenesisBootstrapData(NetworkGenesisConfig networkGenesisConfig) {
