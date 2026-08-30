@@ -17,6 +17,14 @@
       "license": {
         "id": "MIT"
       }
+    },
+    {
+      "group": "org.cardanofoundation",
+      "name": "cf-rewards-calculation",
+      "version": "1.0.2",
+      "license": {
+        "id": "MIT"
+      }
     }
   ]
 }
