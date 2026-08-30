@@ -2,7 +2,9 @@ package com.bloxbean.cardano.yano.runtime.apply;
 
 import com.bloxbean.cardano.yaci.core.storage.ChainState;
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.p2p.peer.PeerRecoveryReason;
+import com.bloxbean.cardano.yano.runtime.config.ResourceProfile;
 import lombok.extern.slf4j.Slf4j;
 
 import java.time.Duration;
@@ -141,11 +143,14 @@ public final class LedgerApplyProcessor implements AutoCloseable {
          * specific deployment.</p>
          */
         public static Policy defaults() {
+            ResourceProfile profile = ResourceProfile.current();
             return new Policy(
-                    positiveIntProperty("yano.ledger-apply.max-queued-items", DEFAULT_MAX_QUEUED_ITEMS),
-                    positiveLongProperty("yano.ledger-apply.max-queued-decoded-bytes",
-                            DEFAULT_MAX_QUEUED_DECODED_BYTES),
-                    positiveIntProperty("yano.ledger-apply.reserved-control-slots",
+                    positiveIntProperty(YanoPropertyKeys.LedgerApply.MAX_QUEUED_ITEMS,
+                            DEFAULT_MAX_QUEUED_ITEMS),
+                    positiveLongProperty(YanoPropertyKeys.LedgerApply.MAX_QUEUED_DECODED_BYTES,
+                            profile.isLowMemory() ? 32L * 1024L * 1024L
+                                    : DEFAULT_MAX_QUEUED_DECODED_BYTES),
+                    positiveIntProperty(YanoPropertyKeys.LedgerApply.RESERVED_CONTROL_SLOTS,
                             DEFAULT_RESERVED_CONTROL_SLOTS));
         }
 

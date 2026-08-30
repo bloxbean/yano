@@ -1,6 +1,7 @@
 package com.bloxbean.cardano.yano.runtime.apply;
 
 import com.bloxbean.cardano.yaci.core.storage.ChainTip;
+import com.bloxbean.cardano.yano.api.config.YanoPropertyKeys;
 import com.bloxbean.cardano.yano.runtime.chain.InMemoryChainState;
 import com.bloxbean.cardano.yano.p2p.peer.PeerRecoveryReason;
 import org.junit.jupiter.api.AfterEach;
@@ -31,6 +32,20 @@ class LedgerApplyProcessorTest {
         if (processor != null) {
             processor.close();
         }
+        System.clearProperty(YanoPropertyKeys.RESOURCE_PROFILE);
+        System.clearProperty(YanoPropertyKeys.LedgerApply.MAX_QUEUED_DECODED_BYTES);
+    }
+
+    @Test
+    void lowMemoryProfileReducesDecodedQueueDefaultAndAllowsOverride() {
+        System.setProperty(YanoPropertyKeys.RESOURCE_PROFILE, "low-memory");
+
+        assertEquals(32L * 1024 * 1024,
+                LedgerApplyProcessor.Policy.defaults().maxQueuedDecodedBytes());
+
+        System.setProperty(YanoPropertyKeys.LedgerApply.MAX_QUEUED_DECODED_BYTES, "16777216");
+        assertEquals(16L * 1024 * 1024,
+                LedgerApplyProcessor.Policy.defaults().maxQueuedDecodedBytes());
     }
 
     @Test

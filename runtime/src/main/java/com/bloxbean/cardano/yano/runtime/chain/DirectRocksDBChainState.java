@@ -16,6 +16,7 @@ import com.bloxbean.cardano.yano.api.rollback.RollbackCapableStore;
 import com.bloxbean.cardano.yano.runtime.blockproducer.NonceStateStore;
 import com.bloxbean.cardano.yano.runtime.blockproducer.NonceStateSnapshot;
 import com.bloxbean.cardano.yano.ledgerstate.AccountStateCfNames;
+import com.bloxbean.cardano.yano.runtime.config.ResourceProfile;
 import com.bloxbean.cardano.yano.runtime.db.RocksDbContext;
 import com.bloxbean.cardano.yano.api.archive.ProjectionCfNames;
 import com.bloxbean.cardano.yano.runtime.db.RocksDbSupplier;
@@ -72,6 +73,8 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
     private Cache sharedBlockCache;
     private WriteBufferManager sharedWriteBufferManager;
     private long sharedBlockCacheCapacityBytes;
+    private boolean lowMemoryProfile;
+    private long configuredTargetFileSizeBytes;
     private final String dbPath;
     private final LegacyColumnFamilyDropper legacyColumnFamilyDropper;
     private List<ColumnFamilyHandle> openedColumnFamilyHandles = List.of();
@@ -121,22 +124,33 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
         try {
             // Determine if tuning is enabled (system property or env override)
             final boolean tuningEnabled = isRocksTuningEnabled();
+            final ResourceProfile resourceProfile = ResourceProfile.current();
+            lowMemoryProfile = resourceProfile.isLowMemory();
             final long blockCacheBytes = getLong(
                     YanoPropertyKeys.RocksDb.BLOCK_CACHE_BYTES,
                     "YANO_ROCKSDB_BLOCK_CACHE_BYTES",
-                    32L * 1024 * 1024);
+                    lowMemoryProfile ? 16L * 1024 * 1024 : 32L * 1024 * 1024);
             final long writeBufferBytes = getLong(
                     YanoPropertyKeys.RocksDb.WRITE_BUFFER_BYTES,
                     "YANO_ROCKSDB_WRITE_BUFFER_BYTES",
-                    64L * 1024 * 1024);
+                    lowMemoryProfile ? 32L * 1024 * 1024 : 64L * 1024 * 1024);
             final boolean writeBufferAllowStall = getBool(
                     YanoPropertyKeys.RocksDb.WRITE_BUFFER_ALLOW_STALL,
                     "YANO_ROCKSDB_WRITE_BUFFER_ALLOW_STALL",
-                    false);
+                    lowMemoryProfile);
             final int maxBackgroundJobs = getInt(
                     YanoPropertyKeys.RocksDb.MAX_BACKGROUND_JOBS,
                     "YANO_ROCKSDB_MAX_BACKGROUND_JOBS",
-                    2);
+                    lowMemoryProfile ? 1 : 2);
+            final int maxOpenFiles = getInt(
+                    YanoPropertyKeys.RocksDb.MAX_OPEN_FILES,
+                    "YANO_ROCKSDB_MAX_OPEN_FILES",
+                    lowMemoryProfile ? 128 : 256);
+            final long targetFileSizeBytes = getLong(
+                    YanoPropertyKeys.RocksDb.TARGET_FILE_SIZE_BYTES,
+                    "YANO_ROCKSDB_TARGET_FILE_SIZE_BYTES",
+                    lowMemoryProfile ? 128L * 1024 * 1024 : 64L * 1024 * 1024);
+            configuredTargetFileSizeBytes = targetFileSizeBytes;
             // Select write behavior (mutually exclusive when enabled)
             boolean pipelined = getBool(
                     YanoPropertyKeys.RocksDb.PIPELINED_WRITE,
@@ -157,7 +171,7 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
             dbOptions = new DBOptions()
                     .setCreateIfMissing(true)
                     .setCreateMissingColumnFamilies(true)
-                    .setMaxOpenFiles(256)
+                    .setMaxOpenFiles(maxOpenFiles)
                     .setKeepLogFileNum(5);
             if (tuningEnabled) {
                 // When a WriteBufferManager is backed by a Cache, RocksDB charges
@@ -176,6 +190,11 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                 if (pipelined) dbOptions.setEnablePipelinedWrite(true);
                 if (atomic) dbOptions.setAtomicFlush(true);
             }
+            log.info("RocksDB resource profile: profile={}, blockCacheBytes={}, writeBufferBytes={}, "
+                            + "writeBufferAllowStall={}, maxBackgroundJobs={}, maxOpenFiles={}, "
+                            + "targetFileSizeBytes={}",
+                    resourceProfile.externalName(), blockCacheBytes, writeBufferBytes,
+                    writeBufferAllowStall, maxBackgroundJobs, maxOpenFiles, targetFileSizeBytes);
 
             // UTXO CF-specific options (only when tuning enabled)
             ColumnFamilyOptions utxoPointLookup = null;
@@ -401,22 +420,26 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
                 tuningEnabled ? buildSequentialCfOptions(sharedBlockCache) : new ColumnFamilyOptions());
     }
 
-    private static ColumnFamilyOptions buildPointLookupCfOptions(Cache cache) {
+    private ColumnFamilyOptions buildPointLookupCfOptions(Cache cache) {
         ColumnFamilyOptions opts = new ColumnFamilyOptions();
         opts.setCompressionType(CompressionType.ZSTD_COMPRESSION);
+        configureTargetFileSize(opts);
         BlockBasedTableConfig table = new BlockBasedTableConfig();
         table.setFilterPolicy(new BloomFilter(10, false)); // ~10 bits/key
         table.setWholeKeyFiltering(true);
-        table.setPinL0FilterAndIndexBlocksInCache(false);
+        table.setPinL0FilterAndIndexBlocksInCache(lowMemoryProfile);
+        table.setPinTopLevelIndexAndFilter(lowMemoryProfile);
+        table.setOptimizeFiltersForMemory(lowMemoryProfile);
         table.setPartitionFilters(true);
         configureSharedCache(table, cache);
         opts.setTableFormatConfig(table);
         return opts;
     }
 
-    private static ColumnFamilyOptions buildPrefixScanCfOptions(int prefixLen, Cache cache) {
+    private ColumnFamilyOptions buildPrefixScanCfOptions(int prefixLen, Cache cache) {
         ColumnFamilyOptions opts = new ColumnFamilyOptions();
         opts.setCompressionType(CompressionType.ZSTD_COMPRESSION);
+        configureTargetFileSize(opts);
         // Try to set a fixed prefix extractor if available in this RocksJava version
         try {
             Class<?> stClazz = Class.forName("org.rocksdb.SliceTransform");
@@ -432,24 +455,30 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
         BlockBasedTableConfig table = new BlockBasedTableConfig();
         table.setFilterPolicy(new BloomFilter(10, false));
         table.setWholeKeyFiltering(false);
-        table.setPinL0FilterAndIndexBlocksInCache(false);
+        table.setPinL0FilterAndIndexBlocksInCache(lowMemoryProfile);
+        table.setPinTopLevelIndexAndFilter(lowMemoryProfile);
+        table.setOptimizeFiltersForMemory(lowMemoryProfile);
         table.setPartitionFilters(true);
         configureSharedCache(table, cache);
         opts.setTableFormatConfig(table);
         return opts;
     }
 
-    private static ColumnFamilyOptions buildSequentialCfOptions() {
-        return buildSequentialCfOptions(null);
-    }
-
-    private static ColumnFamilyOptions buildSequentialCfOptions(Cache cache) {
+    private ColumnFamilyOptions buildSequentialCfOptions(Cache cache) {
         ColumnFamilyOptions opts = new ColumnFamilyOptions();
         opts.setCompressionType(CompressionType.ZSTD_COMPRESSION);
+        configureTargetFileSize(opts);
         BlockBasedTableConfig table = new BlockBasedTableConfig();
+        table.setPinL0FilterAndIndexBlocksInCache(lowMemoryProfile);
+        table.setPinTopLevelIndexAndFilter(lowMemoryProfile);
+        table.setOptimizeFiltersForMemory(lowMemoryProfile);
         configureSharedCache(table, cache);
         opts.setTableFormatConfig(table);
         return opts;
+    }
+
+    private void configureTargetFileSize(ColumnFamilyOptions options) {
+        options.setTargetFileSizeBase(configuredTargetFileSizeBytes);
     }
 
     private static void configureSharedCache(BlockBasedTableConfig table, Cache cache) {

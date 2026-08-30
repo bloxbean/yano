@@ -18,6 +18,7 @@ class DirectRocksDBChainStateTuningTest {
         System.clearProperty(YanoPropertyKeys.RocksDb.WRITE_BUFFER_ALLOW_STALL);
         System.clearProperty(YanoPropertyKeys.RocksDb.BLOCK_CACHE_BYTES);
         System.clearProperty(YanoPropertyKeys.RocksDb.WRITE_BUFFER_BYTES);
+        System.clearProperty(YanoPropertyKeys.RESOURCE_PROFILE);
     }
 
     @Test
@@ -46,6 +47,29 @@ class DirectRocksDBChainStateTuningTest {
         try (DirectRocksDBChainState chainState =
                      new DirectRocksDBChainState(tempDir.resolve("shared-cache").toString())) {
             assertThat(chainState.sharedBlockCacheCapacityBytes()).isEqualTo(25165824L);
+        }
+    }
+
+    @Test
+    void lowMemoryProfileUsesBoundedRocksDbDefaults() {
+        System.setProperty(YanoPropertyKeys.RESOURCE_PROFILE, "low-memory");
+
+        try (DirectRocksDBChainState chainState =
+                     new DirectRocksDBChainState(tempDir.resolve("low-memory").toString())) {
+            assertThat(chainState.sharedBlockCacheCapacityBytes()).isEqualTo(48L * 1024 * 1024);
+            assertThat(chainState.isWriteBufferStallEnabled()).isTrue();
+        }
+    }
+
+    @Test
+    void explicitBudgetsOverrideLowMemoryProfile() {
+        System.setProperty(YanoPropertyKeys.RESOURCE_PROFILE, "low-memory");
+        System.setProperty(YanoPropertyKeys.RocksDb.BLOCK_CACHE_BYTES, "8388608");
+        System.setProperty(YanoPropertyKeys.RocksDb.WRITE_BUFFER_BYTES, "16777216");
+
+        try (DirectRocksDBChainState chainState =
+                     new DirectRocksDBChainState(tempDir.resolve("low-memory-override").toString())) {
+            assertThat(chainState.sharedBlockCacheCapacityBytes()).isEqualTo(24L * 1024 * 1024);
         }
     }
 }

@@ -40,6 +40,7 @@ import com.bloxbean.cardano.yano.runtime.config.NetworkGenesisConfig;
 import com.bloxbean.cardano.yano.runtime.config.RollbackRetentionGenesisValues;
 import com.bloxbean.cardano.yano.runtime.config.RollbackRetentionPlanner;
 import com.bloxbean.cardano.yano.runtime.config.RollbackRetentionSettings;
+import com.bloxbean.cardano.yano.runtime.config.ResourceProfile;
 import com.bloxbean.cardano.yano.runtime.debug.DebugLedgerStateAccess;
 import com.bloxbean.cardano.yano.runtime.kernel.NodeKernel;
 import com.bloxbean.cardano.yano.runtime.maintenance.RuntimeMaintenanceGate;
@@ -521,7 +522,9 @@ public class YanoProducer {
         if (yano != null) {
             return yano;
         }
-        log.info("Creating Yano with network: {}", network);
+        bridgeRuntimeResourceProperties();
+        log.info("Creating Yano with network: {}, resourceProfile={}",
+                network, ResourceProfile.current().externalName());
 
         YanoConfig yaciConfig = YanoConfig.defaultForNetwork(network);
 
@@ -630,6 +633,7 @@ public class YanoProducer {
 
         // Globals: UTXO options
         Map<String, Object> globals = new HashMap<>();
+        globals.put(YanoPropertyKeys.RESOURCE_PROFILE, ResourceProfile.current().externalName());
         putRollbackRetentionGlobals(globals, rollbackRetentionSettings);
         globals.put(YanoPropertyKeys.Utxo.ENABLED, utxoEnabled);
         globals.put(YanoPropertyKeys.Utxo.PRUNE_DEPTH, utxoPruneDepth);
@@ -782,6 +786,28 @@ public class YanoProducer {
         log.info("Yano created successfully");
 
         return yano;
+    }
+
+    private void bridgeRuntimeResourceProperties() {
+        if (appConfig == null) return;
+        List<String> properties = List.of(
+                YanoPropertyKeys.RESOURCE_PROFILE,
+                YanoPropertyKeys.BodyFetch.MAX_BATCH_SIZE,
+                YanoPropertyKeys.LedgerApply.MAX_QUEUED_ITEMS,
+                YanoPropertyKeys.LedgerApply.MAX_QUEUED_DECODED_BYTES,
+                YanoPropertyKeys.LedgerApply.RESERVED_CONTROL_SLOTS,
+                YanoPropertyKeys.RocksDb.BLOCK_CACHE_BYTES,
+                YanoPropertyKeys.RocksDb.WRITE_BUFFER_BYTES,
+                YanoPropertyKeys.RocksDb.WRITE_BUFFER_ALLOW_STALL,
+                YanoPropertyKeys.RocksDb.MAX_BACKGROUND_JOBS,
+                YanoPropertyKeys.RocksDb.MAX_OPEN_FILES,
+                YanoPropertyKeys.RocksDb.TARGET_FILE_SIZE_BYTES);
+        for (String property : properties) {
+            if (System.getProperty(property) != null) continue;
+            appConfig.getOptionalValue(property, String.class)
+                    .filter(value -> !value.isBlank())
+                    .ifPresent(value -> System.setProperty(property, value));
+        }
     }
 
     @Produces
