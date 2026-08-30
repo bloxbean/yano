@@ -806,6 +806,14 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         byte[] blockBytes = db.get(cfMeta, readOptions, META_LAST_APPLIED_BLOCK);
         byte[] slotBytes = db.get(cfMeta, readOptions, META_LAST_APPLIED_SLOT);
         byte[] hashBytes = db.get(cfMeta, readOptions, META_LAST_APPLIED_HASH);
+        if (blockBytes == null && slotBytes == null && hashBytes == null) {
+            PointerIndexMarker genesisMarker = PointerIndexMarker.decode(
+                    db.get(cfMeta, readOptions, PointerIndexMarker.KEY));
+            if (genesisMarker != null && isColumnFamilyEmpty(cfDelta, readOptions)) {
+                return new CanonicalBlockReference(
+                        genesisMarker.blockNumber(), genesisMarker.slot(), genesisMarker.blockHash());
+            }
+        }
         if (blockBytes == null || blockBytes.length != Long.BYTES
                 || slotBytes == null || slotBytes.length != Long.BYTES
                 || hashBytes == null || hashBytes.length != 32) {
@@ -946,13 +954,6 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         if (cfMeta == null || cfPointer == null) return;
         CanonicalBlockReference coordinate = new CanonicalBlockReference(
                 blockNumber, slot, decodeCanonicalHash(blockHash));
-        batch.put(cfMeta, META_LAST_APPLIED_BLOCK,
-                ByteBuffer.allocate(Long.BYTES).order(ByteOrder.BIG_ENDIAN)
-                        .putLong(blockNumber).array());
-        batch.put(cfMeta, META_LAST_APPLIED_SLOT,
-                ByteBuffer.allocate(Long.BYTES).order(ByteOrder.BIG_ENDIAN)
-                        .putLong(slot).array());
-        batch.put(cfMeta, META_LAST_APPLIED_HASH, coordinate.blockHash());
         batch.put(cfMeta, PointerIndexMarker.KEY,
                 PointerIndexMarker.encode(PointerIndexMarker.at(coordinate)));
     }

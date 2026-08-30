@@ -305,6 +305,7 @@ class DefaultUtxoStoreTest {
         assertTrue(store.isPointerIndexApplicable());
         assertTrue(store.isPointerIndexReadyAtCurrentCoordinate());
         assertEquals(0, store.readLastAppliedBlock());
+        assertEquals(-1, store.getLatestAppliedSlot());
     }
 
     @Test
