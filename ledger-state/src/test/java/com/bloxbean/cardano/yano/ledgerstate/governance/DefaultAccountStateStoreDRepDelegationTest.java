@@ -564,6 +564,117 @@ class DefaultAccountStateStoreDRepDelegationTest {
     }
 
     @Test
+    @DisplayName("PV9 old DRep unregistration while account is absent cannot affect later registration")
+    void pv9OldDRepUnregWhileStakeDeregistered_thenFreshDelegationSurvives() throws Exception {
+        var store = newConwayStore(PV9_PROVIDER);
+
+        applyBlockWithCerts(store, 1, epochStartSlot(520),
+                RegCert.builder()
+                        .stakeCredential(stakeCred(CRED_X))
+                        .coin(BigInteger.valueOf(2_000_000))
+                        .build(),
+                RegDrepCert.builder()
+                        .drepCredential(new Credential(StakeCredType.ADDR_KEYHASH, DREP_A))
+                        .coin(BigInteger.valueOf(500_000_000))
+                        .build(),
+                RegDrepCert.builder()
+                        .drepCredential(new Credential(StakeCredType.ADDR_KEYHASH, DREP_B))
+                        .coin(BigInteger.valueOf(500_000_000))
+                        .build(),
+                RegDrepCert.builder()
+                        .drepCredential(new Credential(StakeCredType.ADDR_KEYHASH, DREP_C))
+                        .coin(BigInteger.valueOf(500_000_000))
+                        .build(),
+                VoteDelegCert.builder()
+                        .stakeCredential(stakeCred(CRED_X))
+                        .drep(Drep.addrKeyHash(DREP_A))
+                        .build());
+        applyBlockWithCerts(store, 2, epochStartSlot(520) + 100,
+                VoteDelegCert.builder()
+                        .stakeCredential(stakeCred(CRED_X))
+                        .drep(Drep.addrKeyHash(DREP_B))
+                        .build());
+        applyBlockWithCerts(store, 3, epochStartSlot(520) + 200,
+                StakeDeregistration.builder()
+                        .stakeCredential(stakeCred(CRED_X))
+                        .build());
+
+        assertThat(reverseEntryExists(0, DREP_A, 0, CRED_X)).isTrue();
+        applyBlockWithCerts(store, 4, epochStartSlot(520) + 300,
+                UnregDrepCert.builder()
+                        .drepCredential(new Credential(StakeCredType.ADDR_KEYHASH, DREP_A))
+                        .coin(BigInteger.valueOf(500_000_000))
+                        .build());
+        assertThat(reverseEntryExists(0, DREP_A, 0, CRED_X)).isFalse();
+
+        applyBlockWithCerts(store, 5, epochStartSlot(520) + 400,
+                RegCert.builder()
+                        .stakeCredential(stakeCred(CRED_X))
+                        .coin(BigInteger.valueOf(2_000_000))
+                        .build(),
+                VoteDelegCert.builder()
+                        .stakeCredential(stakeCred(CRED_X))
+                        .drep(Drep.addrKeyHash(DREP_C))
+                        .build());
+
+        assertForwardDelegation(CRED_X, 0, DREP_C);
+    }
+
+    @Test
+    @DisplayName("PV10 full deregistration lifecycle preserves fresh delegation")
+    void pv10RedelegationThenStakeDeregistration_oldDRepUnregPreservesFreshDelegation() throws Exception {
+        var store = newConwayStore(PV10_PROVIDER);
+
+        applyBlockWithCerts(store, 1, epochStartSlot(540),
+                RegCert.builder()
+                        .stakeCredential(stakeCred(CRED_X))
+                        .coin(BigInteger.valueOf(2_000_000))
+                        .build(),
+                RegDrepCert.builder()
+                        .drepCredential(new Credential(StakeCredType.ADDR_KEYHASH, DREP_A))
+                        .coin(BigInteger.valueOf(500_000_000))
+                        .build(),
+                RegDrepCert.builder()
+                        .drepCredential(new Credential(StakeCredType.ADDR_KEYHASH, DREP_B))
+                        .coin(BigInteger.valueOf(500_000_000))
+                        .build(),
+                RegDrepCert.builder()
+                        .drepCredential(new Credential(StakeCredType.ADDR_KEYHASH, DREP_C))
+                        .coin(BigInteger.valueOf(500_000_000))
+                        .build(),
+                VoteDelegCert.builder()
+                        .stakeCredential(stakeCred(CRED_X))
+                        .drep(Drep.addrKeyHash(DREP_A))
+                        .build());
+        applyBlockWithCerts(store, 2, epochStartSlot(540) + 100,
+                VoteDelegCert.builder()
+                        .stakeCredential(stakeCred(CRED_X))
+                        .drep(Drep.addrKeyHash(DREP_B))
+                        .build());
+        applyBlockWithCerts(store, 3, epochStartSlot(540) + 200,
+                StakeDeregistration.builder()
+                        .stakeCredential(stakeCred(CRED_X))
+                        .build());
+        applyBlockWithCerts(store, 4, epochStartSlot(540) + 300,
+                RegCert.builder()
+                        .stakeCredential(stakeCred(CRED_X))
+                        .coin(BigInteger.valueOf(2_000_000))
+                        .build(),
+                VoteDelegCert.builder()
+                        .stakeCredential(stakeCred(CRED_X))
+                        .drep(Drep.addrKeyHash(DREP_C))
+                        .build());
+        applyBlockWithCerts(store, 5, epochStartSlot(540) + 400,
+                UnregDrepCert.builder()
+                        .drepCredential(new Credential(StakeCredType.ADDR_KEYHASH, DREP_A))
+                        .coin(BigInteger.valueOf(500_000_000))
+                        .build());
+
+        assertForwardDelegation(CRED_X, 0, DREP_C);
+        assertThat(reverseEntryExists(0, DREP_C, 0, CRED_X)).isTrue();
+    }
+
+    @Test
     @DisplayName("PV9 rollback restores delegation cleared through stale reverse membership")
     void pv9OldDRepUnreg_rollback_restoresClearedDelegation() throws Exception {
         var store = newConwayStore(PV9_PROVIDER);
