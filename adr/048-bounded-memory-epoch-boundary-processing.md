@@ -68,10 +68,10 @@ bounded streams while preserving the existing ledger order and outputs.
 
 The long-term optimization target remains a native mainnet epoch-transition
 process footprint at or below 600 MiB. For the current rollout, the
-operator-approved target is at most 1.5 GiB with a 2 GiB ceiling. On macOS the
-acceptance metric is physical footprint; on Linux it is process RSS. Raw macOS
-RSS remains diagnostic because it includes accounting that is not resident
-physical pressure. Correctness is the hard gate:
+operator-approved target is at most 1.5 GiB with a 2 GiB ceiling. The choice of
+raw process RSS or macOS physical footprint as the formal cross-platform
+acceptance metric remains an operator decision; both are reported so the
+decision does not change or hide the evidence. Correctness is the hard gate:
 an otherwise attractive memory result is rejected if it causes an allocation
 failure, incomplete rollback, AdaPot mismatch, archive divergence or regular-
 sync instability.
@@ -123,9 +123,9 @@ The run reached mainnet steady state at epoch 652 with `inSync=true`, a zero
 block gap, a RUNNING peer and no degraded runtime state. The embedded verifier
 reported 326 consecutive AdaPot passes for epochs 296 through 621 with no
 failure. The post-commit Koios monitor compared every epoch from 613 through
-652: 40/40 exact treasury/reserves matches with no gaps. The embedded mainnet
-fixture ends at epoch 621, so epochs 622 through 652 are explicitly recorded as
-external post-boundary Koios validation rather than in-process fixture checks.
+652: 40/40 exact treasury/reserves matches with no gaps. Those validated Koios
+values now extend the embedded mainnet fixture through epoch 652 for future
+fail-fast runs.
 
 For the final ten boundaries, total boundary time was 46.1–55.4 seconds,
 streaming rewards were 34.9–44.5 seconds, and the credential-ordered DRep pass
@@ -143,11 +143,41 @@ the same 866/866 per-DRep rows as the point-lookup baseline on the same Conway
 state before promotion. Trial-only oracle removal and the independently tracked
 DBSync DRep-lifecycle discrepancy remain follow-up work in issues #100 and #99;
 neither changes the accepted AdaPot or same-state mechanism parity evidence.
-A deliberate live Conway crash-after-SNAP drill was not performed on the
-authoritative tip store; recovery remains covered by the bounded-journal fault
-injection suites and retained interrupted-boundary evidence. If required as a
-pre-merge operational drill, it must run on a disposable Conway clone rather
-than the validated store.
+A deliberate live Conway crash-after-SNAP drill was performed on a disposable
+epoch-532 clone on 2026-08-30. The process was killed after the durable snapshot
+write and before COMPLETE. Restart resumed at step 3 without repeating rewards
+or snapshot, completed with exact AdaPot, and took 2.5 seconds. The accepted tip
+store was not disturbed; the drill and its evidence are recorded in the ADR-048
+[acceptance note on issue #97](https://github.com/bloxbean/yano/issues/97#issuecomment-5465411499)
+and the [PR review record](https://github.com/bloxbean/yano/pull/101#issuecomment-5466928345).
+
+### Optional low-memory resource profile
+
+`yano.resource-profile=low-memory` is an explicit, opt-in performance profile;
+there is no host-memory auto-detection. It changes these defaults:
+
+| Setting | Default | Low-memory |
+|---|---:|---:|
+| RocksDB block cache | 32 MiB | 16 MiB |
+| RocksDB write-buffer manager | 64 MiB | 32 MiB, stall allowed |
+| RocksDB background jobs | 2 | 1 |
+| RocksDB open files | 256 | 128 |
+| RocksDB target file size | 64 MiB | 128 MiB |
+| decoded ledger-apply queue | 64 MiB | 32 MiB |
+| body-fetch range | 5,000 blocks | 1,000 blocks |
+
+Index and filter blocks remain inside the shared cache. The low-memory profile
+also enables memory-optimized filters and pins the L0/top-level index within
+that bounded cache. Every individual property overrides the profile default,
+and startup logs the effective values. The profile does not set Java or native
+image heap size; launcher caps, a Serial-GC experiment, and Linux 2 GiB live
+acceptance are deliberately separate follow-up validation items.
+
+The epoch status endpoint exposes the last boundary's per-phase wall/process/
+thread times, path labels, heap, RSS, RocksDB cache/memtable/table-reader/pending-
+compaction values and SST count. When native-image management beans do not
+provide GC counters, it reports `gcMetricsAvailable=false` and retains heap
+before/after/peak values rather than treating `-1` counters as measurements.
 
 ### Preview chainstate compatibility
 
@@ -1505,11 +1535,12 @@ configuration, chain point and archive selection.
 
 ### Memory
 
-- Current rollout: native mainnet peak physical footprint on macOS, or RSS on
-  Linux, targets at most 1.5 GiB and must not exceed 2 GiB through at least
-  three consecutive boundaries and the ordinary block flow between them. Raw
-  macOS RSS is retained as a diagnostic series. The 600 MiB goal remains
-  follow-up optimization.
+- Current rollout: the native mainnet target is at most 1.5 GiB and the ceiling
+  is 2 GiB through at least three consecutive boundaries and the ordinary block
+  flow between them. Until the operator selects the formal cross-platform
+  acceptance metric, every report includes both raw process RSS and macOS
+  physical footprint when available. The 600 MiB goal remains follow-up
+  optimization.
 - The platform acceptance metric does not scale materially with host RAM when
   workload and explicit budgets are unchanged; the larger-machine result must
   remain within 10% of the smallest reference machine's result.
