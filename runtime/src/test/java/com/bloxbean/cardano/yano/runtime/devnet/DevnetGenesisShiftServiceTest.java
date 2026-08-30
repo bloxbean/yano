@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.util.Map;
+import java.util.StringJoiner;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -36,6 +37,7 @@ class DevnetGenesisShiftServiceTest {
         assertTrue(actions.genesisUtxosStoredForFreshStart);
         assertTrue(actions.devnetTimeTravelStarted);
         assertFalse(actions.slotLeaderTimeTravelStarted);
+        assertEquals("start-devnet,store-utxos", actions.startupOrder.toString());
     }
 
     @Test
@@ -57,6 +59,7 @@ class DevnetGenesisShiftServiceTest {
         assertFalse(actions.genesisUtxosStoredForFreshStart);
         assertTrue(actions.slotLeaderTimeTravelStarted);
         assertFalse(actions.devnetTimeTravelStarted);
+        assertEquals("start-slot-leader", actions.startupOrder.toString());
     }
 
     @Test
@@ -205,6 +208,7 @@ class DevnetGenesisShiftServiceTest {
         private boolean genesisUtxosStoredForFreshStart;
         private boolean slotLeaderTimeTravelStarted;
         private boolean devnetTimeTravelStarted;
+        private final StringJoiner startupOrder = new StringJoiner(",");
         private RuntimeException startFailure;
 
         private FakeActions(GenesisConfig genesisConfig, boolean freshStart) {
@@ -255,6 +259,9 @@ class DevnetGenesisShiftServiceTest {
         @Override
         public void storeGenesisUtxosIfNeeded(boolean freshStart) {
             genesisUtxosStoredForFreshStart = freshStart;
+            if (freshStart) {
+                startupOrder.add("store-utxos");
+            }
         }
 
         @Override
@@ -263,6 +270,7 @@ class DevnetGenesisShiftServiceTest {
                 throw startFailure;
             }
             slotLeaderTimeTravelStarted = true;
+            startupOrder.add("start-slot-leader");
         }
 
         @Override
@@ -271,6 +279,7 @@ class DevnetGenesisShiftServiceTest {
                 throw startFailure;
             }
             devnetTimeTravelStarted = true;
+            startupOrder.add("start-devnet");
         }
     }
 

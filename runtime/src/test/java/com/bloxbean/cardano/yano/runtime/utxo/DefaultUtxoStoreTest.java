@@ -296,6 +296,18 @@ class DefaultUtxoStoreTest {
     }
 
     @Test
+    void emptyGenesisEstablishesPointerMarkerAndCanonicalCoordinate() throws Exception {
+        String genesisHash = "a9".repeat(32);
+        assertFalse(store.isPointerIndexApplicable());
+
+        store.storeGenesisUtxos(Map.of(), 1, 0, 0, genesisHash);
+
+        assertTrue(store.isPointerIndexApplicable());
+        assertTrue(store.isPointerIndexReadyAtCurrentCoordinate());
+        assertEquals(0, store.readLastAppliedBlock());
+    }
+
+    @Test
     void malformedOrFuturePointerMarkerFallsBackWithoutExposingIndex() throws Exception {
         String blockHash = "b3".repeat(32);
         publishBlock(100, 1, blockHash, Block.builder().era(Era.Babbage)

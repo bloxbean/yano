@@ -173,7 +173,9 @@ public interface UtxoState {
      * Whether this store configuration can use the pointer UTXO index for
      * epoch-boundary stake input. Disabled, filtered, and incomplete UTXO
      * stores return false and must not be subjected to the pointer-index
-     * chainstate version gate.
+     * chainstate version gate. A completely uninitialized store also returns
+     * false until genesis establishes its canonical coordinate and readiness
+     * marker.
      */
     default boolean isPointerIndexApplicable() {
         return false;

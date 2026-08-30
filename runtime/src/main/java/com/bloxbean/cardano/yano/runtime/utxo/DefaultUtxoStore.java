@@ -753,7 +753,36 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
 
     @Override
     public boolean isPointerIndexApplicable() {
-        return enabled && cfPointer != null && hasCompleteStakeBalanceSource();
+        if (!enabled || cfPointer == null || !hasCompleteStakeBalanceSource()) {
+            return false;
+        }
+        return !isCompletelyUninitialized();
+    }
+
+    private boolean isCompletelyUninitialized() {
+        if (db == null || cfMeta == null || cfUnspent == null || cfDelta == null) {
+            return false;
+        }
+        try (ReadOptions readOptions = new ReadOptions().setFillCache(false)) {
+            if (db.get(cfMeta, readOptions, META_LAST_APPLIED_BLOCK) != null
+                    || db.get(cfMeta, readOptions, META_LAST_APPLIED_SLOT) != null
+                    || db.get(cfMeta, readOptions, META_LAST_APPLIED_HASH) != null
+                    || db.get(cfMeta, readOptions, PointerIndexMarker.KEY) != null) {
+                return false;
+            }
+            return isColumnFamilyEmpty(cfUnspent, readOptions)
+                    && isColumnFamilyEmpty(cfDelta, readOptions);
+        } catch (RocksDBException e) {
+            throw new StakeBalanceConsistencyException(
+                    "Failed to inspect pointer index initialization state", e);
+        }
+    }
+
+    private boolean isColumnFamilyEmpty(ColumnFamilyHandle handle, ReadOptions readOptions) {
+        try (RocksIterator iterator = db.newIterator(handle, readOptions)) {
+            iterator.seekToFirst();
+            return !iterator.isValid();
+        }
     }
 
     @Override
@@ -917,6 +946,13 @@ public final class DefaultUtxoStore implements UtxoState, UtxoStoreWriter, Pruna
         if (cfMeta == null || cfPointer == null) return;
         CanonicalBlockReference coordinate = new CanonicalBlockReference(
                 blockNumber, slot, decodeCanonicalHash(blockHash));
+        batch.put(cfMeta, META_LAST_APPLIED_BLOCK,
+                ByteBuffer.allocate(Long.BYTES).order(ByteOrder.BIG_ENDIAN)
+                        .putLong(blockNumber).array());
+        batch.put(cfMeta, META_LAST_APPLIED_SLOT,
+                ByteBuffer.allocate(Long.BYTES).order(ByteOrder.BIG_ENDIAN)
+                        .putLong(slot).array());
+        batch.put(cfMeta, META_LAST_APPLIED_HASH, coordinate.blockHash());
         batch.put(cfMeta, PointerIndexMarker.KEY,
                 PointerIndexMarker.encode(PointerIndexMarker.at(coordinate)));
     }
