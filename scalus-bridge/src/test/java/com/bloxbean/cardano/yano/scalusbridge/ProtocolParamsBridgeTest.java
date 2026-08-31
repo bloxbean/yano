@@ -15,6 +15,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ProtocolParamsBridgeTest {
 
     @Test
+    void executionUnitLimitsKeepMemoryAndStepsInScalusOrder() {
+        ProtocolParams pp = baseParams(11);
+        addAlonzoParams(pp);
+        addConwayParams(pp);
+
+        var scalusParams = ProtocolParamsBridge$.MODULE$.toScalusProtocolParams(pp);
+
+        assertEquals(50_000_000L, scalusParams.maxBlockExecutionUnits().memory());
+        assertEquals(40_000_000_000L, scalusParams.maxBlockExecutionUnits().steps());
+        assertEquals(10_000_000L, scalusParams.maxTxExecutionUnits().memory());
+        assertEquals(10_000_000_000L, scalusParams.maxTxExecutionUnits().steps());
+    }
+
+    @Test
     void intervalProtocolParamsKeepExactDecimalRationals() {
         ProtocolParams pp = baseParams(4);
         pp.setPriceMem(new BigDecimal("0.0577"));
