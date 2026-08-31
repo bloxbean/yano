@@ -411,23 +411,68 @@ Phase 2: RATIFY + REST (processRatificationPhase)
 
 ## Delta Journal & Rollback
 
-Every `applyBlock()` records a delta journal for rollback support:
+Account state uses rollback format v1. There is no second on-disk journal version
+or automatic format migration.
 
-```
+Every `applyBlock()` records the previous value of each changed account-state key
+in `acct_delta`. Epoch-boundary phases record the same `DeltaOp` representation in
+`acct_boundary_delta`, keyed by boundary slot, explicit phase and bounded chunk.
+Governance enactment and ratification, rewards, MIR credits, pool reaping and their
+derived indexes therefore participate in the same reverse-chronological rollback.
+
+```text
 DeltaOp = (opType, key, previousValue)
     opType: OP_PUT (0x01) or OP_DELETE (0x02)
     key: full byte key including prefix
-    previousValue: value before this block's mutation (null if new)
+    previousValue: value before this mutation (null if new)
 
-Storage: cfDelta[blockNumber] = CBOR-encoded list of DeltaOps
+acct_delta[blockNumber] = CBOR list of DeltaOps plus its slot
+acct_boundary_delta[slot(8) | phase(1) | chunk(4)] = CBOR list of DeltaOps
 ```
 
-On `rollbackTo(blockNumber)`:
-1. Read all `cfDelta` entries with blockNumber >= target
-2. Apply in reverse order (newest first)
-3. For `OP_PUT`: restore `previousValue` (or delete if was new)
-4. For `OP_DELETE`: restore `previousValue`
-5. Update `META_LAST_APPLIED_BLOCK`
+Rollback merges block and boundary entries into one newest-first timeline. At an
+equal slot, the block is undone before the boundary because block application
+followed the boundary transition. Boundary chunks and ordinary block entries are
+committed in bounded batches.
+
+Before the first mutation, rollback writes a durable `rollback-v1` target marker.
+The marker is cleared only with the final metadata commit; startup resumes the
+same target if the process stops between chunks. Forward boundary recovery remains
+separate: boundary step markers skip completed phases, while snapshot generations
+remain `BUILDING` until all rows and completion metadata are durable.
+
+Epoch snapshots are restored by generation rather than by row-level delta. A
+rollback deletes every credential-major, pool-major and reward-flag row for stale
+or incomplete generations, fixes `META_LAST_SNAPSHOT_EPOCH`, removes stale AdaPot
+and boundary-progress metadata, and then permits replay to rebuild them. Account
+derived indexes (stake events, deregistration coordinates, reward events and DRep
+reverse delegations) are journaled with their owning mutations. UTXO rollback
+independently restores its stake-balance and pointer indexes in the same UTXO
+journal operations as their UTXOs.
+
+The manual `rollback-to-slot` and `rollback-to-epoch` startup options use this same
+path. The runtime first resolves a canonical retained block point and validates the
+common rollback floor, then rolls back account state, UTXO state and chain state in
+dependency order. A target below the floor is rejected: pruned reward inputs or
+epoch snapshots cannot be reconstructed safely. Snapshot retention and
+`epoch-block-data-retention-lag` therefore define how far manual rollback can go;
+use a checkpoint or resync for older targets.
+
+### Required fallbacks versus removed trial oracles
+
+- Epoch snapshot `balance-mode=auto` prefers the coordinate-bound
+  `utxo_stake_balance` index and falls back to the historical UTXO scan only when
+  the index view is unavailable before boundary mutation. `index` is fail-closed;
+  `scan` (and the `full-scan` alias) forces the historical path.
+- Before Conway, pointer-address stake is still required. The pointer index is the
+  normal path; a coordinate for which it cannot be prepared uses the
+  pointer-only UTXO scan. Conway and later exclude pointer stake.
+- Streaming reward calculation is the default when a complete pool-major snapshot
+  exists. The legacy whole-snapshot calculation remains the bootstrap/emergency
+  fallback. An interrupted streaming calculation must resume in streaming mode;
+  it cannot switch algorithms mid-boundary.
+- The removed DRep point-lookup and pointer shadow paths were validation oracles,
+  not recovery fallbacks. Production keeps one DRep ordered-merge implementation.
 
 ---
 
@@ -466,18 +511,6 @@ Dependents:
 
 ## TODO / Known Issues
 
-### Epoch boundary rollback handling
-
-The delta journal handles block-level rollback (via `DeltaOp` entries per block in `cfDelta`). However, epoch boundary processing (rewards, snapshots, governance) uses separate `WriteBatch` commits that are NOT part of the block-level delta system.
-
-**Restart recovery via STEP markers:** Each step in `EpochBoundaryProcessor.processEpochBoundary()` writes a `META_BOUNDARY_STEP` marker on completion. On restart, `recoverInterruptedBoundary()` reads the marker to determine which step to resume from, skipping already-committed steps. Steps with markers: STEP_STARTED (0), STEP_REWARDS (1), STEP_SNAPSHOT (2), STEP_POOLREAP (3), STEP_GOVERNANCE (4), STEP_COMPLETE (5).
-
-**What is NOT rollback-safe:**
-- Governance two-phase commit: Phase 1 and Phase 2 are separate `WriteBatch` writes with no delta tracking. If the process crashes between Phase 1 commit and Phase 2 commit, Phase 1 enactments are applied but Phase 2 ratification/DRep updates are not. The STEP_GOVERNANCE marker is only written after both phases complete, so a restart would re-run the entire governance step, which could double-enact proposals if Phase 1 already committed.
-- Delegation snapshot writes to `cfEpochSnapshot` are not delta-tracked.
-- AdaPot updates are not delta-tracked.
-- PV10 reverse-index rebuild is restart-safe via `MARKER_PV10_REVERSE_REBUILD` (idempotent).
-
 ### Earlier reward calculation start
 
 Currently reward calculation starts at the epoch boundary (first block of new epoch). The Cardano spec allows starting reward calculation after the stability window of the previous epoch (2k/f slots before the epoch boundary) since the snapshot is frozen at that point. Starting earlier would reduce epoch boundary processing time and the stall visible to downstream consumers.
@@ -489,11 +522,3 @@ At epoch 526 (mainnet), 53 DReps show a mismatch: Yano computes expiryEpoch=528 
 ### Defensive timing guard in `resolveDRepKey`
 
 The `DRepDistributionCalculator.resolveDRepKey()` method includes a defensive check `delegSlot <= prevDeregSlot` that skips delegations made before the DRep's previous deregistration. This guard does not exist in the Haskell implementation, which instead relies on the UMap structure automatically cleaning delegations on DRep deregistration. After the PV10 reverse-index rebuild and the unconditional `clearDRepDelegationsForDeregisteredDRep` cleanup on deregistration, this check is less critical -- stale delegations should already be removed. The guard remains as a safety net for Yano's tombstone-based DRep state model where deregistered DReps are not fully deleted but marked with `prevDeregSlot`.
-
-### Governance exception silently swallowed in `EpochBoundaryProcessor`
-
-`EpochBoundaryProcessor` catches exceptions thrown during governance processing (Step 5), logs them, and continues to mark `STEP_GOVERNANCE` complete. This means a governance failure (e.g., a bug in ratification, DRep distribution, or enactment) can be silently skipped for an entire epoch. The step marker prevents it from being retried on restart. This should either re-throw the exception (failing the epoch boundary and halting sync) or not mark the step complete so that a restart retries governance processing.
-
-### `buildActiveDRepKeys` exception swallowing
-
-`GovernanceEpochProcessor.buildActiveDRepKeys()` catches any exception and returns a partial or empty active DRep set instead of propagating the error. If the active set is wrong (missing DReps or including expired ones), ratification vote tallies will use incorrect weights, potentially causing proposals to be ratified or rejected incorrectly. This catch-all should be removed or narrowed so that a failure in building the active set halts governance processing rather than producing a silently wrong result.
