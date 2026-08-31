@@ -53,6 +53,11 @@ public final class DuckDbManager implements AutoCloseable {
         this.bulkGate = new ArchiveResourceGate("duckdb-bulk", config.maxConcurrentBulkJobs(),
                 bulkPermits, waitPolicy, DuckDbManager::logWait);
         try {
+            Class.forName("org.duckdb.DuckDBDriver");
+        } catch (ClassNotFoundException e) {
+            throw new ArchiveStoreException("DuckDB driver unavailable", e);
+        }
+        try {
             Files.createDirectories(config.tempDirectory());
         } catch (IOException e) {
             throw new IllegalArgumentException("cannot create DuckDB temp directory", e);
