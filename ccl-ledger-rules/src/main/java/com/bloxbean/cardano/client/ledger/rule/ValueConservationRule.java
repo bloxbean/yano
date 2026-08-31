@@ -38,7 +38,8 @@ public class ValueConservationRule implements LedgerRule {
             return Collections.emptyList();
         }
 
-        Value produced = TxBalanceCalculator.produced(transaction, context.getProtocolParams());
+        Value produced = TxBalanceCalculator.produced(
+                transaction, context.getProtocolParams(), context.getPoolsSlice());
 
         if (!valuesEqual(consumed, produced)) {
             return List.of(ValidationError.builder()
