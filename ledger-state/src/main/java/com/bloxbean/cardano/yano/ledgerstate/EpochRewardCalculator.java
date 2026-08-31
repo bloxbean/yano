@@ -505,8 +505,8 @@ public class EpochRewardCalculator {
 
         // 4. Retired pools — pass real set to cf-rewards library.
         // The library adds unclaimed deposits (unregistered reward address) to treasury.
-        // Individual account credits for registered reward addresses are handled separately
-        // by processPoolDepositRefunds() in EpochBoundaryProcessor.
+        // PoolReapProcessor later credits registered reward addresses from its validated
+        // plan and atomically removes the corresponding live pool lifecycle state.
         Set<RetiredPool> retiredPools = buildRetiredPools(epoch);
 
         // 5. Deregistered and registered account sets — event-based tracking
@@ -1801,68 +1801,6 @@ public class EpochRewardCalculator {
             log.info("Found {} pools retiring at epoch {}", result.size(), epoch);
         }
         return result;
-    }
-
-    /**
-     * Process pool deposit refunds for pools retiring at this epoch.
-     * The cf-rewards library handles the treasury side (unclaimed deposits from unregistered
-     * reward addresses go to treasury). This method handles the other side: crediting deposits
-     * to registered reward addresses. Per the Cardano ledger spec (POOLREAP), if the pool's
-     * reward address is a registered stake credential, the deposit is refunded to that address.
-     *
-     * @param epoch the epoch at which pools retire
-     * @return total amount refunded to individual accounts
-     */
-    public BigInteger processPoolDepositRefunds(int epoch) {
-        if (ledgerStateProvider == null) return BigInteger.ZERO;
-
-        var retiring = ledgerStateProvider.getPoolsRetiringAtEpoch(epoch);
-        BigInteger totalRefunded = BigInteger.ZERO;
-
-        for (var pool : retiring) {
-            var poolParamsOpt = ledgerStateProvider.getPoolParams(pool.poolHash());
-            if (poolParamsOpt.isEmpty()) continue;
-
-            String rewardAccountHex = poolParamsOpt.get().rewardAccount();
-            String credKey = extractCredKeyFromRewardAddress(rewardAccountHex, null);
-            if (credKey == null) continue;
-
-            // Check if the reward address is registered
-            int credType = 0;
-            String credHash = credKey;
-            int colonIdx = credKey.indexOf(':');
-            if (colonIdx >= 0) {
-                credType = Integer.parseInt(credKey.substring(0, colonIdx));
-                credHash = credKey.substring(colonIdx + 1);
-            }
-
-            if (!ledgerStateProvider.isStakeCredentialRegistered(credType, credHash)) {
-                log.debug("Pool {} reward address {} not registered, deposit stays in treasury",
-                        pool.poolHash(), credKey);
-                continue;
-            }
-
-            BigInteger deposit = pool.deposit();
-            if (deposit == null || deposit.signum() <= 0) {
-                throw new IllegalStateException("Pool " + pool.poolHash()
-                        + " has no valid stored lifecycle deposit");
-            }
-
-            try {
-                // A deposit refund is not leader income — type it as REFUND so
-                // reward history (and the accumulated-reward record) label it correctly.
-                creditReward(credType, credHash, deposit, epoch,
-                        RewardType.REFUND, pool.poolHash());
-                totalRefunded = totalRefunded.add(deposit);
-                log.info("Pool {} deposit refund {} credited to {} at epoch {}",
-                        pool.poolHash(), deposit, credKey, epoch);
-            } catch (RocksDBException e) {
-                log.warn("Failed to credit pool deposit refund for {}: {}", pool.poolHash(), e.getMessage());
-                throw new RuntimeException("Failed to credit pool deposit refund for " + pool.poolHash(), e);
-            }
-        }
-
-        return totalRefunded;
     }
 
     // --- Account set construction ---
